@@ -117,7 +117,10 @@ func (m *fnAdminService) GetTopology(_ context.Context) (*service.TopologyRespon
 // the embedded.New constructor requirement for admin-focused tests.
 type noopKVService struct{}
 
-func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error             { return nil }
+func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error { return nil }
+func (m *noopKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return true, nil
+}
 func (m *noopKVService) Get(_ context.Context, _ string) ([]byte, error)             { return nil, nil }
 func (m *noopKVService) Delete(_ context.Context, _ string) error                    { return nil }
 func (m *noopKVService) List(_ context.Context, _ string) ([]string, error)          { return nil, nil }

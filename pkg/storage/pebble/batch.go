@@ -15,6 +15,7 @@
 package pebble
 
 import (
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -22,6 +23,9 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
+
+// Compile-time interface assertion.
+var _ storage.Batch = (*pebbleBatch)(nil)
 
 // pebbleBatch implements storage.Batch backed by a PebbleDB batch.
 // Thread-safe: all mutation methods are guarded by a mutex.
@@ -33,11 +37,65 @@ type pebbleBatch struct {
 }
 
 // newBatch creates a new PebbleDB batch.
+//
+// The batch is INDEXED because storage.Batch requires read-your-own-writes:
+// PebbleDB's indexed batch reads from the batch's pending writes layered over
+// the DB, which is exactly the semantics the interface promises and is what
+// keeps a Raft apply loop's entry grouping invisible in the resulting state. An
+// indexed batch maintains a skiplist over its own contents, so writes cost more
+// than a write-only batch; that cost buys the determinism and is paid only on
+// the apply path, which is the one place that reads what it is writing.
 func newBatch(db *pebble.DB, syncWrites bool) storage.Batch {
 	return &pebbleBatch{
-		batch:      db.NewBatch(),
+		batch:      db.NewIndexedBatch(),
 		syncWrites: syncWrites,
 	}
+}
+
+// Get returns the value for key as the batch sees it: the batch's own pending
+// write when it has one, otherwise the committed value from the database.
+// Returns nil, nil when the key exists in neither, and nil, nil when the batch
+// holds a pending delete for it.
+func (b *pebbleBatch) Get(key []byte) ([]byte, error) {
+	if b.closed.Load() {
+		return nil, &storage.BatchError{Op: "get", Err: &storage.ClosedError{}}
+	}
+	if len(key) == 0 {
+		return nil, &storage.BatchError{Op: "get", Err: storage.ErrEmptyKey}
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	value, closer, err := b.batch.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, &storage.BatchError{Op: "get", Err: err}
+	}
+	defer func() { _ = closer.Close() }()
+
+	result := make([]byte, len(value))
+	copy(result, value)
+	return result, nil
+}
+
+// NewIterator returns an iterator over the batch's pending writes layered on
+// the database's committed contents.
+func (b *pebbleBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	if b.closed.Load() {
+		return &pebbleIterator{err: &storage.BatchError{Op: "iterate", Err: &storage.ClosedError{}}}
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	iter, err := b.batch.NewIter(buildIterOptions(opts))
+	if err != nil {
+		return &pebbleIterator{err: err}
+	}
+	return &pebbleIterator{iter: iter}
 }
 
 // Set adds a key-value pair to the batch.

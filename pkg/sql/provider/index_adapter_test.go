@@ -164,7 +164,7 @@ func TestQRDBIndexCanSupportOrderBy_False(t *testing.T) {
 
 func TestQRDBIndexColumnExpressionTypes_StringField(t *testing.T) {
 	idx := newTestQRDBIndex("db", "users", "Email", "string", false)
-	cets := idx.ColumnExpressionTypes()
+	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "users.Email", cets[0].Expression)
 	assert.NotNil(t, cets[0].Type)
@@ -172,28 +172,28 @@ func TestQRDBIndexColumnExpressionTypes_StringField(t *testing.T) {
 
 func TestQRDBIndexColumnExpressionTypes_Uint64Field(t *testing.T) {
 	idx := newTestQRDBIndex("db", "orders", "CustomerID", "uint64", false)
-	cets := idx.ColumnExpressionTypes()
+	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "orders.CustomerID", cets[0].Expression)
 }
 
 func TestQRDBIndexColumnExpressionTypes_Int64Field(t *testing.T) {
 	idx := newTestQRDBIndex("db", "events", "Timestamp", "int64", false)
-	cets := idx.ColumnExpressionTypes()
+	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "events.Timestamp", cets[0].Expression)
 }
 
 func TestQRDBIndexColumnExpressionTypes_Float64Field(t *testing.T) {
 	idx := newTestQRDBIndex("db", "metrics", "Value", "float64", false)
-	cets := idx.ColumnExpressionTypes()
+	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "metrics.Value", cets[0].Expression)
 }
 
 func TestQRDBIndexColumnExpressionTypes_BooleanField(t *testing.T) {
 	idx := newTestQRDBIndex("db", "users", "Active", "boolean", false)
-	cets := idx.ColumnExpressionTypes()
+	cets := idx.ColumnExpressionTypes(newTestContext())
 	require.Len(t, cets, 1)
 	assert.Equal(t, "users.Active", cets[0].Expression)
 }
@@ -217,8 +217,8 @@ func TestNewQRDBIndex_IDFormat(t *testing.T) {
 	assert.Equal(t, "mydb.users.Email", idx.id)
 	assert.Equal(t, "mydb", idx.database)
 	assert.Equal(t, "users", idx.table)
-	assert.Equal(t, "Email", idx.column)
-	assert.Equal(t, "string", idx.fieldType)
+	assert.Equal(t, "Email", idx.firstColumn())
+	assert.Equal(t, "string", idx.columns[0].fieldType)
 	assert.False(t, idx.unique)
 }
 

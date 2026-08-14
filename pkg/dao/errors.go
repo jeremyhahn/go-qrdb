@@ -229,3 +229,11 @@ func IsUnitOfWorkCommitError(err error) bool {
 	var uowErrPtr *UnitOfWorkCommitError
 	return errors.As(err, &uowErr) || errors.As(err, &uowErrPtr)
 }
+
+// ErrAtomicWriteUnsupported is returned by SaveIfAbsent when the underlying
+// KVStore cannot perform an atomic conditional write.
+//
+// It is a refusal, not a fallback. Emulating the operation with a read followed
+// by a write would appear to succeed while allowing two callers to create the
+// same entity, which for a single-use credential means issuing it twice.
+var ErrAtomicWriteUnsupported = errors.New("dao: underlying store does not support atomic conditional writes")

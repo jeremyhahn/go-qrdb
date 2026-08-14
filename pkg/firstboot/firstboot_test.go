@@ -15,6 +15,7 @@
 package firstboot
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -1000,5 +1001,198 @@ func TestInitialize_SpkiThumbprintError(t *testing.T) {
 	var wantErr *AdminCertGenerationError
 	if !errors.As(err, &wantErr) {
 		t.Fatalf("err = %v, want *AdminCertGenerationError (from thumbprint parse failure)", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Path C — the admin presents a certificate they already hold
+// ---------------------------------------------------------------------------
+
+// issueCertFromCA mints a leaf signed by a freshly generated CA and returns the
+// leaf PEM together with a pool containing that CA.
+//
+// A self-signed certificate cannot exercise Path C honestly: it chains to
+// itself, so putting it in the pool would make the verification step pass for
+// any input. A real issuer/leaf split is what distinguishes "this certificate
+// chains to something we trust" from "this certificate exists".
+func issueCertFromCA(t *testing.T, notBefore, notAfter time.Time) ([]byte, *x509.CertPool) {
+	t.Helper()
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("CA GenerateKey: %v", err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(100),
+		Subject:               pkix.Name{CommonName: "Presenting Org Root"},
+		NotBefore:             time.Now().Add(-2 * time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate(CA): %v", err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatalf("ParseCertificate(CA): %v", err)
+	}
+
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("leaf GenerateKey: %v", err)
+	}
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(101),
+		Subject:      pkix.Name{CommonName: "admin-on-a-piv-card"},
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate(leaf): %v", err)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}), pool
+}
+
+// TestInitialize_PathC_AdoptsPresentedCert covers the enrolment route that lets
+// an administrator authenticate with a credential they already hold — a
+// certificate resident on a PIV card or a security key — instead of one this
+// deployment mints for them.
+//
+// The properties that matter: the presented certificate is what gets bound, no
+// private key is produced (it never left the operator's token), and the CA is
+// not consulted even though one is configured. That last point is the reason
+// Path C is tested before the others in issueAdminCert -- falling through to a
+// configured CA would mint a second, unrelated credential and bind that instead,
+// leaving the operator holding a certificate the server has never heard of.
+func TestInitialize_PathC_AdoptsPresentedCert(t *testing.T) {
+	presented, pool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	binder := &fakeBinder{}
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("CA-KEY")}
+
+	result, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		CA:            ca, // configured, and must NOT be used
+		AdminCertPEM:  presented,
+		AdminCertPool: pool,
+		Binder:        binder,
+		Logger:        discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if !bytes.Equal(result.AdminCertPEM, presented) {
+		t.Fatal("the certificate the admin presented must be the one adopted")
+	}
+	if result.AdminKeyPEM != nil {
+		t.Fatal("Path C must not produce a private key: the admin's key never leaves their token")
+	}
+	if n := ca.called.Load(); n != 0 {
+		t.Fatalf("CA was called %d times; a presented certificate must not trigger issuance", n)
+	}
+	if binder.calls != 1 || binder.thumbprint != result.AdminCertThumbprint || binder.thumbprint == "" {
+		t.Fatalf("presented cert thumbprint was not bound: calls=%d bound=%q result=%q",
+			binder.calls, binder.thumbprint, result.AdminCertThumbprint)
+	}
+}
+
+// TestInitialize_PathC_RejectsUntrustedCert is the counterweight: adoption must
+// be a trust decision, not a formality. Without it, Path C would bind any
+// syntactically valid certificate an attacker could generate for themselves.
+func TestInitialize_PathC_RejectsUntrustedCert(t *testing.T) {
+	presented, _ := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	_, unrelatedPool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	binder := &fakeBinder{}
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		AdminCertPEM:  presented,
+		AdminCertPool: unrelatedPool, // does not contain the presenting CA
+		Binder:        binder,
+		Logger:        discardLogger(),
+	})
+
+	var rejected *AdminCertRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v, want AdminCertRejectedError for a cert that chains to nothing trusted", err)
+	}
+	if binder.calls != 0 {
+		t.Fatal("a rejected certificate must never be bound")
+	}
+}
+
+// TestInitialize_PathC_RejectsExpiredCert pins the validity-window check. A card
+// outlives the certificates on it, so an operator presenting a stale one is an
+// ordinary mistake rather than an attack — and it must still be refused, since
+// binding it would enrol an identity that cannot authenticate.
+func TestInitialize_PathC_RejectsExpiredCert(t *testing.T) {
+	presented, pool := issueCertFromCA(t, time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
+	binder := &fakeBinder{}
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		AdminCertPEM:  presented,
+		AdminCertPool: pool,
+		Binder:        binder,
+		Logger:        discardLogger(),
+	})
+
+	var rejected *AdminCertRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v, want AdminCertRejectedError for an expired certificate", err)
+	}
+	if binder.calls != 0 {
+		t.Fatal("an expired certificate must never be bound")
+	}
+}
+
+// TestInitialize_PathC_RequiresPool refuses a presented certificate when no
+// trust anchors were configured, rather than treating an absent pool as
+// "trust anything" -- the failure mode that would make the check above
+// meaningless.
+func TestInitialize_PathC_RequiresPool(t *testing.T) {
+	presented, _ := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		AdminCertPEM: presented,
+		Logger:       discardLogger(),
+	})
+
+	var missing *MissingAdminCertPoolError
+	if !errors.As(err, &missing) {
+		t.Fatalf("err = %v, want MissingAdminCertPoolError", err)
+	}
+}
+
+// TestInitialize_RejectsConflictingAdminCertInputs refuses a CSR and a
+// certificate together.
+//
+// Either choice would be wrong in a way the operator could not see: signing the
+// CSR leaves the presented certificate unbound, so the card they intended to
+// authenticate with does not work; adopting the certificate silently discards a
+// CSR they generated a key for.
+func TestInitialize_RejectsConflictingAdminCertInputs(t *testing.T) {
+	presented, pool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+
+	_, err := Initialize(context.Background(), Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Signer:        &fakeSigner{cert: realCertPEM(t)},
+		AdminCSRPEM:   []byte("THE-CSR"),
+		AdminCertPEM:  presented,
+		AdminCertPool: pool,
+		Logger:        discardLogger(),
+	})
+
+	var conflict *ConflictingAdminCertInputsError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("err = %v, want ConflictingAdminCertInputsError", err)
 	}
 }

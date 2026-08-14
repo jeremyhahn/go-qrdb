@@ -98,6 +98,14 @@ func ensureShardSnapshot(t *testing.T, cfg *TestConfig, proto ProtocolType) {
 	t.Helper()
 	stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "admin", "snapshot", "--shard-id", "1")
 	if err != nil {
+		// "logdb: snapshot out of date" means a snapshot already exists at
+		// the shard's current applied index (no new entries since the last
+		// one) — the on-disk snapshot backup create needs is present, which
+		// is exactly what this helper ensures. Any other failure is fatal.
+		if strings.Contains(stderr, "snapshot out of date") {
+			t.Logf("[%s] shard snapshot already current (out of date): reuse existing", proto)
+			return
+		}
 		t.Logf("stdout: %s", stdout)
 		t.Logf("stderr: %s", stderr)
 		t.Fatalf("[%s] admin snapshot --shard-id 1 failed: %v", proto, err)

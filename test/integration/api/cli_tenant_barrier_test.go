@@ -255,7 +255,7 @@ func TestCLIMultiProtocolTenantBarrierInitRequiresTenantScope(t *testing.T) {
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"tenant", "barrier-init", "--id", tenantID)
 			if err == nil {
-				t.Fatalf("[%s] expected tenant barrier-init to be denied for the system-tenant admin identity, "+
+				t.Fatalf("[%s] expected tenant barrier-init to fail for the system-tenant admin identity, "+
 					"got success (stdout: %s)", proto, stdout)
 			}
 			output := strings.ToLower(stdout + stderr + err.Error())
@@ -302,7 +302,7 @@ func TestCLIMultiProtocolTenantBarrierUnsealRequiresTenantScope(t *testing.T) {
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"tenant", "barrier-unseal", "--id", tenantID, "--key", "dGVzdC1rZXk=")
 			if err == nil {
-				t.Fatalf("[%s] expected tenant barrier-unseal to be denied for the system-tenant admin identity, "+
+				t.Fatalf("[%s] expected tenant barrier-unseal to fail for the system-tenant admin identity, "+
 					"got success (stdout: %s)", proto, stdout)
 			}
 			output := strings.ToLower(stdout + stderr + err.Error())

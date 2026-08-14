@@ -436,13 +436,19 @@ func (s *userAuthFactorService) Relabel(ctx context.Context, factorID string, la
 	return s.kv.Put(ctx, primaryKey(factor.ID), data)
 }
 
-// MarkUsed updates LastUsedAt without holding the global mutex. The
-// last-write-wins semantics are acceptable because LastUsedAt is
-// best-effort metadata.
+// MarkUsed updates LastUsedAt. LastUsedAt itself is best-effort metadata,
+// but the update is a read-modify-write of the FULL factor record, so it
+// MUST hold the service mutex like every other writer: an unlocked update
+// racing a concurrent Remove/Rotate can read the factor before the
+// revocation lands and write the stale still-active record back after,
+// silently resurrecting a revoked credential (fail-open). Serializing with
+// s.mu makes that interleaving impossible.
 func (s *userAuthFactorService) MarkUsed(ctx context.Context, factorID string, ts time.Time) error {
 	if factorID == "" {
 		return &auth.InvalidFactorError{Reason: "factorID is empty"}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	factor, err := s.Get(ctx, factorID)
 	if err != nil {
 		return err

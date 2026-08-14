@@ -14,13 +14,32 @@
 
 package storage
 
+// Reader is the read half of a key-value view: point lookups and ordered
+// range scans. Storage, Snapshot, and Batch all provide it, so code that only
+// reads can be written once and pointed at committed storage, at a
+// point-in-time snapshot, or at an uncommitted batch.
+//
+// Accepting a Reader is what lets a Raft apply loop stay deterministic. An
+// apply loop packs a variable number of committed entries into one storage
+// batch, and the packing is decided by local timing, so it differs between
+// replicas. If entry N+1 read committed storage it would not see entry N's
+// writes when they landed in the same batch, and the two replicas would reach
+// different states from the same log. Reading through the batch removes the
+// dependence on the packing entirely.
+type Reader interface {
+	// Get retrieves a value by key. Returns nil, nil when key does not exist.
+	Get(key []byte) ([]byte, error)
+
+	// NewIterator creates an iterator for scanning key ranges.
+	NewIterator(opts *IteratorOptions) Iterator
+}
+
 // Storage is the unified key-value storage interface used by all backends.
 // Implementations include PebbleDB, in-memory, file-backed, and encrypted
 // wrappers. The interface is compatible with go-quicraft's seal.StorageBackend
 // via Go duck typing.
 type Storage interface {
-	// Get retrieves a value by key. Returns nil, nil when key does not exist.
-	Get(key []byte) ([]byte, error)
+	Reader
 
 	// Set stores a key-value pair.
 	Set(key, value []byte) error
@@ -38,9 +57,6 @@ type Storage interface {
 	// Batch creates a new write batch for atomic multi-key operations.
 	Batch() Batch
 
-	// NewIterator creates an iterator for scanning key ranges.
-	NewIterator(opts *IteratorOptions) Iterator
-
 	// Snapshot creates a point-in-time snapshot for consistent reads.
 	Snapshot() (Snapshot, error)
 
@@ -49,7 +65,18 @@ type Storage interface {
 }
 
 // Batch groups multiple writes into an atomic operation.
+//
+// A Batch is also a Reader, and it reads its own writes: Get and NewIterator
+// observe the batch's pending, uncommitted operations layered over the
+// committed base, with a pending Delete hiding the committed value. The read
+// capability is part of the interface rather than an optional add-on because a
+// batch that silently served stale reads would let a Raft apply loop produce
+// different state from the same log depending on how it grouped entries — the
+// exact defect this contract exists to prevent. Requiring it here turns a
+// backend that cannot provide it into a compile error instead of a divergence.
 type Batch interface {
+	Reader
+
 	// Set stores a key-value pair in the batch.
 	Set(key, value []byte) error
 
@@ -103,12 +130,7 @@ type Iterator interface {
 
 // Snapshot provides a consistent point-in-time view of the storage.
 type Snapshot interface {
-	// Get retrieves a value by key from the snapshot.
-	// Returns nil, nil when key does not exist.
-	Get(key []byte) ([]byte, error)
-
-	// NewIterator creates an iterator over the snapshot.
-	NewIterator(opts *IteratorOptions) Iterator
+	Reader
 
 	// Close releases resources held by the snapshot.
 	Close() error

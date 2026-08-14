@@ -87,9 +87,9 @@ type RebalanceMoveError struct {
 	// TenantID is the tenant whose dedicated Raft group was being moved.
 	TenantID string
 
-	// Step names the move phase that failed: "find-source", "key-delivery",
-	// "add-node", "add-node-result", "placement-update", "remove-node", or
-	// "remove-node-result".
+	// Step names the move phase that failed: "leader-routing", "wait-leader",
+	// "find-source", "add-placement", "add-observer", "remove-placement", or
+	// "remove-node".
 	Step string
 
 	// Err is the underlying error that caused the step to fail.

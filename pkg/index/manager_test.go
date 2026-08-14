@@ -31,11 +31,15 @@ import (
 // mockBatch is a minimal mock batch implementation.
 type mockBatch struct{}
 
-func (m *mockBatch) Set(key, value []byte) error { return nil }
-func (m *mockBatch) Delete(key []byte) error     { return nil }
-func (m *mockBatch) Commit() error               { return nil }
-func (m *mockBatch) Rollback() error             { return nil }
-func (m *mockBatch) Close() error                { return nil }
+func (m *mockBatch) Set(key, value []byte) error    { return nil }
+func (m *mockBatch) Delete(key []byte) error        { return nil }
+func (m *mockBatch) Get(key []byte) ([]byte, error) { return nil, nil }
+func (m *mockBatch) Commit() error                  { return nil }
+func (m *mockBatch) Rollback() error                { return nil }
+func (m *mockBatch) Close() error                   { return nil }
+func (m *mockBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return &mockIterator{}
+}
 
 // mockIterator is a minimal mock iterator implementation.
 type mockIterator struct{}

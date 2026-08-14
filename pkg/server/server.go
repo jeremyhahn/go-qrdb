@@ -883,9 +883,11 @@ func (s *Server) startREST() error {
 
 	var restOpts []rest.ServerOption
 
-	if s.opts.tlsConfig != nil {
-		restOpts = append(restOpts, rest.WithTLS(s.opts.tlsConfig))
+	tlsCfg, err := s.resolveTransportTLS("REST", s.config.Server.Host)
+	if err != nil {
+		return err
 	}
+	restOpts = append(restOpts, rest.WithTLS(tlsCfg))
 	if s.opts.caCertPool != nil {
 		restOpts = append(restOpts, rest.WithCACertPool(s.opts.caCertPool))
 	}
@@ -949,7 +951,7 @@ func (s *Server) startREST() error {
 	if s.opts.databaseSvc != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(s.opts.databaseSvc))
 		if s.kvSvc != nil {
-			restOpts = append(restOpts, rest.WithSQLService(sqlquery.NewService(s.kvSvc, s.opts.databaseSvc)))
+			restOpts = append(restOpts, rest.WithSQLService(s.newSQLService()))
 		}
 	}
 	if s.opts.barrierSvc != nil {
@@ -1006,6 +1008,9 @@ func (s *Server) startREST() error {
 	if s.opts.soAuthenticator != nil {
 		restOpts = append(restOpts, rest.WithSOAuthenticator(s.opts.soAuthenticator))
 	}
+	if s.config.Auth.SODualFactor {
+		restOpts = append(restOpts, rest.WithSODualFactor())
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		restOpts = append(restOpts, rest.WithServiceRegistry(reg))
 	}
@@ -1023,10 +1028,40 @@ func (s *Server) startREST() error {
 	return nil
 }
 
+// ServiceRegistry returns the transport-neutral per-(tenant, database)
+// service.Registry this server resolves data-plane requests through -- the
+// same object it hands to the REST, gRPC, Unix, MySQL, and PostgreSQL
+// listeners. It returns nil when no database registry is configured (see
+// WithDatabaseServiceRegistry), exactly as the wire listeners observe.
+//
+// It exists so an in-process embedder -- e.g. sdk/go/driver/node, which
+// speaks no wire protocol at all -- can reach the registry the same way the
+// listeners do, rather than reassembling an equivalent one from the
+// individual service fields and inevitably drifting from the tenant/barrier/
+// quota/isolation resolution the listeners enforce.
+//
+// A fresh registry is returned per call, exactly like every internal call
+// site; see buildServiceRegistry for why it is not memoized. Callers that
+// resolve repeatedly should hold on to one registry rather than calling this
+// per request.
+func (s *Server) ServiceRegistry() service.Registry {
+	return s.buildServiceRegistry()
+}
+
 // buildServiceRegistry constructs the transport-neutral per-(tenant, database)
 // service.Registry shared by every protocol (REST, gRPC, Unix). It returns nil
 // when no database registry is configured, in which case transports fall back
 // to their singleton service fields (single-database / embedded behaviour).
+//
+// A fresh restServiceRegistry is deliberately built per call rather than
+// memoized on the Server. Every input it closes over is fixed at server.New
+// time, so a memoized instance would be built from identical inputs -- but it
+// would also SHARE its dedicatedStoreServiceCache across transports, and that
+// cache's *DatabaseServices bundles carry the per-collection, process-local
+// increment ID generators of service.CollectionService (see
+// buildDedicatedStoreServices). Sharing them across transports would change
+// observable ID allocation, so memoization is not a pure optimization and is
+// not applied here.
 func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil
@@ -1037,6 +1072,7 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	}
 	if s.opts.dbManager != nil {
 		regOpts = append(regOpts, WithDatabaseCatalog(newManagerCatalog(s.opts.dbManager, tenant.SystemTenantID)))
+		regOpts = append(regOpts, withDatabaseManager(s.opts.dbManager))
 	}
 	if s.opts.tenantHosts != nil {
 		regOpts = append(regOpts, withTenantHostRegistry(s.opts.tenantHosts))
@@ -1050,15 +1086,40 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...)
 }
 
+// newSQLService constructs the shared ad-hoc SQL query service used by every
+// transport (REST, gRPC, QUIC, Unix, MCP). It is read-only by construction —
+// the RPC/route name ("SQLQuery" / POST /sql/query) and its permission
+// mapping (permission.KVRange, a read permission — see
+// pkg/auth/middleware/mapping.go) both express a read-only contract, and the
+// full-DML surface is served separately by the MySQL/PostgreSQL wire
+// protocol listeners (pkg/sql/mysql, pkg/sql/pgsql), which authenticate a
+// dedicated per-connection session. When a service.Registry is configured
+// (buildServiceRegistry), every query is additionally resolved per-(tenant,
+// db) through it — exactly like the KV/MVCC/Batch data-plane paths — so
+// barrier/quota/isolation are enforced and IsolationRaft/IsolationVolume
+// tenants route to their dedicated backend instead of the shared system
+// store; the tenant is the one authenticated on the request context by the
+// transport's auth middleware, never a fixed system default.
+func (s *Server) newSQLService() service.SQLServicer {
+	return sqlquery.NewService(
+		s.kvSvc,
+		s.opts.databaseSvc,
+		sqlquery.WithReadOnly(),
+		sqlquery.WithRegistry(s.buildServiceRegistry()),
+	)
+}
+
 // startGRPC creates and starts the gRPC server with configured options.
 func (s *Server) startGRPC() error {
 	addr := net.JoinHostPort(s.config.Server.Host, strconv.Itoa(s.config.Server.GRPCPort))
 
 	var grpcOpts []grpcapi.ServerOption
 
-	if s.opts.tlsConfig != nil {
-		grpcOpts = append(grpcOpts, grpcapi.WithTLS(s.opts.tlsConfig))
+	tlsCfg, err := s.resolveTransportTLS("gRPC", s.config.Server.Host)
+	if err != nil {
+		return err
 	}
+	grpcOpts = append(grpcOpts, grpcapi.WithTLS(tlsCfg))
 	if s.opts.userSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserService(s.opts.userSvc))
 	}
@@ -1085,6 +1146,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.ceremonySvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCeremonyService(s.opts.ceremonySvc))
+	}
+	if s.opts.ceremonyCA != nil {
+		grpcOpts = append(grpcOpts, grpcapi.WithCeremonyCA(s.opts.ceremonyCA))
 	}
 	if s.opts.credentialSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithCredentialService(s.opts.credentialSvc))
@@ -1130,6 +1194,9 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.databaseSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithDatabaseService(s.opts.databaseSvc))
+		if s.kvSvc != nil {
+			grpcOpts = append(grpcOpts, grpcapi.WithSQLService(s.newSQLService()))
+		}
 	}
 	if s.opts.tenantSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithTenantService(s.opts.tenantSvc))
@@ -1166,9 +1233,11 @@ func (s *Server) startQUIC() error {
 
 	var quicOpts []quicapi.ServerOption
 
-	if s.opts.tlsConfig != nil {
-		quicOpts = append(quicOpts, quicapi.WithTLS(s.opts.tlsConfig))
+	tlsCfg, err := s.resolveTransportTLS("QUIC", s.config.Server.Host)
+	if err != nil {
+		return err
 	}
+	quicOpts = append(quicOpts, quicapi.WithTLS(tlsCfg))
 	if s.opts.userSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithUserService(s.opts.userSvc))
 	}
@@ -1180,6 +1249,9 @@ func (s *Server) startQUIC() error {
 	}
 	if s.opts.authMW != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuthMiddleware(s.opts.authMW))
+	}
+	if s.opts.sealedWindowProbe != nil {
+		quicOpts = append(quicOpts, quicapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
 	}
 	if s.opts.collectionSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCollectionService(s.opts.collectionSvc))
@@ -1213,15 +1285,24 @@ func (s *Server) startQUIC() error {
 	}
 	if s.opts.databaseSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDatabaseService(s.opts.databaseSvc))
+		if s.kvSvc != nil {
+			quicOpts = append(quicOpts, quicapi.WithSQLService(s.newSQLService()))
+		}
 	}
 	if s.opts.barrierSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if m := s.effectiveEncryptionMigrator(); m != nil {
+		quicOpts = append(quicOpts, quicapi.WithEncryptionMigrator(m))
 	}
 	if s.opts.pinBackend != nil {
 		quicOpts = append(quicOpts, quicapi.WithPINBackend(s.opts.pinBackend))
 	}
 	if s.opts.ceremonySvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCeremonyService(s.opts.ceremonySvc))
+	}
+	if s.opts.ceremonyCA != nil {
+		quicOpts = append(quicOpts, quicapi.WithCeremonyCA(s.opts.ceremonyCA))
 	}
 	if s.opts.auditLogger != nil {
 		quicOpts = append(quicOpts, quicapi.WithAuditLogger(s.opts.auditLogger))
@@ -1247,6 +1328,9 @@ func (s *Server) startQUIC() error {
 	if s.opts.userAuthFactorSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
+	if s.opts.credentialSvc != nil {
+		quicOpts = append(quicOpts, quicapi.WithCredentialService(s.opts.credentialSvc))
+	}
 	if reg := s.buildServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
@@ -1264,6 +1348,11 @@ func (s *Server) startQUIC() error {
 // startUnix creates and starts the Unix domain socket server.
 func (s *Server) startUnix() error {
 	var unixOpts []unixapi.ServerOption
+	tlsCfg, err := s.resolveTransportTLS("unix", s.config.Server.Host)
+	if err != nil {
+		return err
+	}
+	unixOpts = append(unixOpts, unixapi.WithTLS(tlsCfg))
 	if s.opts.userSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserService(s.opts.userSvc))
 	}
@@ -1273,14 +1362,26 @@ func (s *Server) startUnix() error {
 	if s.opts.certProv != nil {
 		unixOpts = append(unixOpts, unixapi.WithCertProvider(s.opts.certProv))
 	}
+	if s.opts.authMW != nil {
+		unixOpts = append(unixOpts, unixapi.WithAuthMiddleware(s.opts.authMW))
+	}
+	if s.opts.sealedWindowProbe != nil {
+		unixOpts = append(unixOpts, unixapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.barrierSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if m := s.effectiveEncryptionMigrator(); m != nil {
+		unixOpts = append(unixOpts, unixapi.WithEncryptionMigrator(m))
 	}
 	if s.opts.pinBackend != nil {
 		unixOpts = append(unixOpts, unixapi.WithPINBackend(s.opts.pinBackend))
 	}
 	if s.opts.ceremonySvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCeremonyService(s.opts.ceremonySvc))
+	}
+	if s.opts.ceremonyCA != nil {
+		unixOpts = append(unixOpts, unixapi.WithCeremonyCA(s.opts.ceremonyCA))
 	}
 	if s.opts.credentialSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithCredentialService(s.opts.credentialSvc))
@@ -1323,12 +1424,20 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.databaseSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithDatabaseService(s.opts.databaseSvc))
+		if s.kvSvc != nil {
+			unixOpts = append(unixOpts, unixapi.WithSQLService(s.newSQLService()))
+		}
 	}
 	if s.opts.auditLogger != nil {
 		unixOpts = append(unixOpts, unixapi.WithAuditLogger(s.opts.auditLogger))
 	}
 	if s.opts.tenantSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithTenantService(s.opts.tenantSvc))
+		// The same TenantServicer backs both tenant CRUD (WithTenantService)
+		// and the per-tenant barrier lifecycle RPCs (WithTenantBarrierService)
+		// — mirrors the TCP gRPC server, which always registers
+		// TenantBarrierService alongside QRDBService using s.tenantSvc.
+		unixOpts = append(unixOpts, unixapi.WithTenantBarrierService(s.opts.tenantSvc))
 	}
 	if s.opts.backupSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithBackupService(s.opts.backupSvc))
@@ -1362,9 +1471,11 @@ func (s *Server) startMCP() error {
 
 	var mcpOpts []mcpapi.ServerOption
 
-	if s.opts.tlsConfig != nil {
-		mcpOpts = append(mcpOpts, mcpapi.WithTLS(s.opts.tlsConfig))
+	tlsCfg, err := s.resolveTransportTLS("MCP", s.config.Server.Host)
+	if err != nil {
+		return err
 	}
+	mcpOpts = append(mcpOpts, mcpapi.WithTLS(tlsCfg))
 	if s.opts.authMW != nil {
 		// Authenticate the mTLS peer and authorize every tool call
 		// (default-deny). Parity with REST/gRPC/QUIC.
@@ -1379,8 +1490,14 @@ func (s *Server) startMCP() error {
 	if s.opts.certProv != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithCertProvider(s.opts.certProv))
 	}
+	if s.opts.sealedWindowProbe != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.barrierSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithBarrierService(s.opts.barrierSvc))
+	}
+	if m := s.effectiveEncryptionMigrator(); m != nil {
+		mcpOpts = append(mcpOpts, mcpapi.WithEncryptionMigrator(m))
 	}
 	if s.opts.pinBackend != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithPINBackend(s.opts.pinBackend))
@@ -1432,6 +1549,9 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.databaseSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDatabaseService(s.opts.databaseSvc))
+		if s.kvSvc != nil {
+			mcpOpts = append(mcpOpts, mcpapi.WithSQLService(s.newSQLService()))
+		}
 	}
 	if s.opts.auditLogger != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithAuditLogger(s.opts.auditLogger))

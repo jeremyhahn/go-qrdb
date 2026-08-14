@@ -238,6 +238,143 @@ func TestClusterSize(t *testing.T) {
 	}
 }
 
+// TestPlaceAdditional_ExcludesExistingNodesAndAssignsIDs verifies the new
+// replicas land on nodes not already hosting a replica of the group, that
+// ReplicaID starts at MaxReplicaID(existing)+1, and that new replicas are
+// marked ReplicaStateObserver.
+func TestPlaceAdditional_ExcludesExistingNodesAndAssignsIDs(t *testing.T) {
+	s := newScheduler(t, []NodeLoad{
+		{NodeID: "n1", RaftAddr: "n1:1", Bytes: 0, Healthy: true},
+		{NodeID: "n2", RaftAddr: "n2:1", Bytes: 1, Healthy: true},
+		{NodeID: "n3", RaftAddr: "n3:1", Bytes: 2, Healthy: true},
+	})
+	existing := &Placement{
+		TenantID:        "acme",
+		Database:        "orders",
+		ShardID:         1000,
+		RF:              1,
+		LeaderReplicaID: 1,
+		Replicas: []Replica{
+			{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1", DataRoot: "/d/n1"},
+		},
+	}
+
+	updated, err := s.PlaceAdditional(context.Background(), existing, 2)
+	if err != nil {
+		t.Fatalf("PlaceAdditional: %v", err)
+	}
+	if updated.RF != 3 || len(updated.Replicas) != 3 {
+		t.Fatalf("RF=%d replicas=%d, want 3/3", updated.RF, len(updated.Replicas))
+	}
+	// Existing replica is untouched, byte for byte.
+	if updated.Replicas[0] != existing.Replicas[0] {
+		t.Fatalf("existing replica mutated: got %+v, want %+v", updated.Replicas[0], existing.Replicas[0])
+	}
+	if updated.LeaderReplicaID != existing.LeaderReplicaID {
+		t.Fatalf("LeaderReplicaID changed: got %d, want %d", updated.LeaderReplicaID, existing.LeaderReplicaID)
+	}
+
+	seen := map[string]bool{}
+	for _, r := range updated.Replicas {
+		if seen[r.NodeID] {
+			t.Fatalf("anti-affinity violated: node %s used twice", r.NodeID)
+		}
+		seen[r.NodeID] = true
+	}
+	if seen["n1"] != true {
+		t.Fatalf("existing node n1 missing from result")
+	}
+
+	// New replicas (n2, n3) get IDs 2 and 3, in ascending load order, and are
+	// marked Observer (non-voting until caught up and promoted).
+	for _, r := range updated.Replicas[1:] {
+		if r.NodeID == "n1" {
+			t.Fatalf("PlaceAdditional re-selected the existing node n1")
+		}
+		if r.State != ReplicaStateObserver {
+			t.Fatalf("new replica %+v State = %v, want ReplicaStateObserver", r, r.State)
+		}
+	}
+	if updated.Replicas[1].ReplicaID != 2 || updated.Replicas[2].ReplicaID != 3 {
+		t.Fatalf("new replica IDs = %d,%d, want 2,3", updated.Replicas[1].ReplicaID, updated.Replicas[2].ReplicaID)
+	}
+}
+
+// TestPlaceAdditional_ReplicaIDStartsAtMaxPlusOne verifies ID assignment
+// continues from the highest existing ReplicaID even when replicas were
+// removed and re-added out of order (a gap in the ID sequence).
+func TestPlaceAdditional_ReplicaIDStartsAtMaxPlusOne(t *testing.T) {
+	s := newScheduler(t, []NodeLoad{
+		{NodeID: "n1", RaftAddr: "n1:1", Healthy: true},
+		{NodeID: "n5", RaftAddr: "n5:1", Healthy: true},
+	})
+	existing := &Placement{
+		TenantID: "acme",
+		Database: "orders",
+		ShardID:  1000,
+		RF:       1,
+		Replicas: []Replica{
+			{ReplicaID: 4, NodeID: "n1", RaftAddr: "n1:1"},
+		},
+	}
+	updated, err := s.PlaceAdditional(context.Background(), existing, 1)
+	if err != nil {
+		t.Fatalf("PlaceAdditional: %v", err)
+	}
+	if updated.Replicas[1].ReplicaID != 5 {
+		t.Fatalf("new replica ID = %d, want 5 (max existing + 1)", updated.Replicas[1].ReplicaID)
+	}
+}
+
+// TestPlaceAdditional_InsufficientNodes verifies the typed error when fewer
+// than addCount eligible nodes remain after excluding the group's existing
+// nodes.
+func TestPlaceAdditional_InsufficientNodes(t *testing.T) {
+	s := newScheduler(t, []NodeLoad{
+		{NodeID: "n1", RaftAddr: "n1:1", Healthy: true},
+		{NodeID: "n2", RaftAddr: "n2:1", Healthy: true},
+	})
+	existing := &Placement{
+		TenantID: "acme",
+		Database: "orders",
+		ShardID:  1000,
+		RF:       1,
+		Replicas: []Replica{
+			{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"},
+		},
+	}
+	// Only n2 remains eligible; requesting 2 additional replicas must fail.
+	_, err := s.PlaceAdditional(context.Background(), existing, 2)
+	if !errors.Is(err, ErrInsufficientNodes) {
+		t.Fatalf("error = %v, want ErrInsufficientNodes", err)
+	}
+	var ie *InsufficientNodesError
+	if !errors.As(err, &ie) {
+		t.Fatalf("error = %v, want *InsufficientNodesError", err)
+	}
+	if ie.Have != 1 || ie.Need != 2 {
+		t.Errorf("InsufficientNodesError = have %d need %d, want have 1 need 2", ie.Have, ie.Need)
+	}
+}
+
+// TestPlaceAdditional_Validation covers input-validation guards.
+func TestPlaceAdditional_Validation(t *testing.T) {
+	s := newScheduler(t, []NodeLoad{{NodeID: "n1", RaftAddr: "n1:1", Healthy: true}})
+	existing := &Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1000, RF: 1,
+		Replicas: []Replica{{ReplicaID: 1, NodeID: "n2", RaftAddr: "n2:1"}},
+	}
+	if _, err := s.PlaceAdditional(context.Background(), nil, 1); err == nil {
+		t.Fatal("PlaceAdditional(nil existing) should error")
+	}
+	if _, err := s.PlaceAdditional(context.Background(), existing, 0); !errors.Is(err, ErrInvalidRF) {
+		t.Fatalf("PlaceAdditional(addCount=0) error = %v, want ErrInvalidRF", err)
+	}
+	if _, err := s.PlaceAdditional(context.Background(), existing, -1); !errors.Is(err, ErrInvalidRF) {
+		t.Fatalf("PlaceAdditional(addCount=-1) error = %v, want ErrInvalidRF", err)
+	}
+}
+
 // TestPlace_AllNodesSelectedWhenRFEqualsHealthy verifies that when RF equals the
 // healthy node count, every healthy node is used exactly once even if some are
 // over the bounded-load ceiling.

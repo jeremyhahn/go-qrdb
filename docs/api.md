@@ -293,6 +293,129 @@ curl -sk 'https://localhost:63002/kv?prefix=config/' | jq .
 
 ---
 
+#### POST /kv/restore
+
+Performs selective point-in-time restore: returns a bounded set of keys to the value they held at an earlier MVCC revision by proposing new writes. This is a logical undo, not a Raft rewind. Requires `raft.sm_type: mvcc`, the `mvcc:restore` permission, and either `--prefix` or `--keys` (exactly one). The restore is planned before applying; use `dry_run: true` to preview without writing.
+
+| Component      | Detail                     |
+|----------------|----------------------------|
+| Method         | `POST`                     |
+| Path           | `/kv/restore`              |
+| Content-Type   | `application/json`         |
+| Permission     | `mvcc:restore` (Admin, Operator) |
+
+**Request body** `application/json`
+
+```json
+{
+  "revision": 1000,
+  "prefix": "session:",
+  "dry_run": false,
+  "force": false
+}
+```
+
+or
+
+```json
+{
+  "revision": 1000,
+  "keys": ["user:1", "user:2", "user:3"],
+  "dry_run": false,
+  "force": false
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "revision": 1000,
+  "changes": [
+    {
+      "key": "session:abc123",
+      "action": "recreate",
+      "from_revision": 0,
+      "to_revision": 998,
+      "value_bytes": 256
+    },
+    {
+      "key": "session:def456",
+      "action": "revert",
+      "from_revision": 1050,
+      "to_revision": 1002,
+      "value_bytes": 128
+    }
+  ],
+  "conflicts": [],
+  "applied": 2,
+  "skipped": 0,
+  "conflicted": 0,
+  "dry_run": false
+}
+```
+
+**Actions**
+
+| Action | Meaning |
+|--------|---------|
+| `revert` | Key exists both now and at target revision with a different value. The historical value is written back. |
+| `recreate` | Key existed at target revision but is deleted now. It is put back under the key. |
+| `delete` | Key exists now but did not exist at target revision. It is removed (added after the target revision). |
+
+**Parameters**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `revision` | int64 | Yes | N/A | Target MVCC revision to restore keys to. Must be positive, at or below current revision, and above compaction floor. |
+| `prefix` | string | No | — | Restore every key beginning with this prefix. Mutually exclusive with `keys`. |
+| `keys` | []string | No | — | Restore this explicit list of keys. Mutually exclusive with `prefix`. |
+| `dry_run` | bool | No | false | Compute and return the plan without writing anything. |
+| `force` | bool | No | false | Apply changes unconditionally, overwriting keys modified since planning. Default (false) is compare-and-swap: conflicts are reported instead of overwritten. |
+
+**Errors**
+
+| Code | Condition |
+|------|-----------|
+| 400 | Missing or invalid revision; scope is empty, ambiguous, or over 10,000 keys; internal keys in scope |
+| 403 | Caller lacks `mvcc:restore` permission or scope reaches internal namespace |
+| 500 | Raft proposal error; restore apply failure; backend does not support MVCC or lacks revision index (prefix-only) |
+
+**Availability**
+
+Requires `raft.sm_type: mvcc`. The default `pebble` state machine returns `400` with a clear message.
+
+**Limits**
+
+- Maximum 10,000 keys per restore (scope is refused if larger).
+- Target revision must be at or below the current committed revision and above `current - compaction_retention`.
+- Internal keys (`__sys:*`, `ts:*`, `idx:*`, `retention:*`) are unreachable.
+
+**Exit Code Semantics**
+
+REST returns `200 OK` whether the request fully applied, partially applied, or encountered conflicts. The `conflicted` count in the response shows which keys were not applied. Retry with `force: true` if needed.
+
+```bash
+# Dry-run: preview the plan
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "revision": 1000,
+    "prefix": "session:",
+    "dry_run": true
+  }' https://localhost:63002/kv/restore | jq .
+
+# Apply with compare-and-swap
+curl -sk -X POST -H 'Content-Type: application/json' \
+  -d '{
+    "revision": 1000,
+    "keys": ["user:1", "user:2"],
+    "dry_run": false,
+    "force": false
+  }' https://localhost:63002/kv/restore | jq .
+```
+
+---
+
 ### Membership Endpoints
 
 #### POST /membership/add
@@ -688,6 +811,8 @@ service QRDBService {
     rpc DisableUser(DisableUserRequest) returns (google.protobuf.Empty);
     // Role management (Create, Get, Update, Delete, List, Assign, Unassign, ListPermissions)
     // Certificate management (Generate, Export, Revoke, List)
+    // MVCC operations (PutWithLease, GetRevision, GetAtRevision, Range, Compact,
+    //   CurrentRevision, RestoreToRevision) -- require raft.sm_type: mvcc
     // Vector operations (20 RPCs when qrdb_vector tag enabled)
 }
 ```
@@ -1058,24 +1183,26 @@ mcp:
 
 ### Tool Surface
 
-All 9 service interfaces are exposed as MCP tools:
+All service interfaces are exposed as MCP tools with `qrdb_` prefix:
 
 | Category | Tools |
 |----------|-------|
-| KV | `put`, `get`, `delete`, `list`, `exists` |
-| MVCC | `put_with_lease`, `get_revision`, `get_at_revision`, `range`, `compact`, `current_revision` |
-| Transaction | `transaction` |
-| Watch | `watch_key`, `watch_prefix` |
-| Batch | `batch` |
-| Lease | `lease_grant`, `lease_revoke`, `lease_keepalive`, `lease_ttl`, `lease_list` |
-| Index | `index_create`, `index_drop`, `index_query`, `index_scan` |
-| TimeSeries | `ts_write`, `ts_write_batch`, `ts_query`, `ts_aggregate` |
-| Admin | `health`, `status`, `peers`, `add_member`, `remove_member`, `snapshot`, `drain` |
-| Barrier | `barrier_init`, `barrier_seal`, `barrier_unseal`, `barrier_status`, `barrier_rotate`, `barrier_rekey`, and tenant operations |
+| KV | `qrdb_kv_put`, `qrdb_kv_get`, `qrdb_kv_delete`, `qrdb_kv_list`, `qrdb_kv_exists`, `qrdb_kv_range` |
+| MVCC | `qrdb_mvcc_put_with_lease`, `qrdb_mvcc_get_revision`, `qrdb_mvcc_get_at_revision`, `qrdb_mvcc_range`, `qrdb_mvcc_compact`, `qrdb_mvcc_current_revision`, `qrdb_mvcc_restore_to_revision` |
+| Transaction | `qrdb_transaction_execute` |
+| Watch | `qrdb_watch` (supports both single key and prefix with options) |
+| Batch | `qrdb_batch_execute` |
+| Lease | `qrdb_lease_grant`, `qrdb_lease_revoke`, `qrdb_lease_keepalive`, `qrdb_lease_ttl`, `qrdb_lease_list` |
+| Index | `qrdb_index_create`, `qrdb_index_drop`, `qrdb_index_query`, `qrdb_index_scan`, `qrdb_index_list` |
+| TimeSeries | `qrdb_timeseries_write`, `qrdb_timeseries_write_batch`, `qrdb_timeseries_query`, `qrdb_timeseries_aggregate` |
+| Admin | `qrdb_admin_health`, `qrdb_admin_status`, `qrdb_admin_peers`, `qrdb_admin_add_member`, `qrdb_admin_remove_member`, `qrdb_admin_snapshot`, `qrdb_admin_drain` |
+| Seal | `qrdb_seal_initialize`, `qrdb_seal_unseal`, `qrdb_seal_seal`, `qrdb_seal_status`, `qrdb_seal_rotate_root_key`, `qrdb_seal_rekey`, `qrdb_seal_generate_recovery`, `qrdb_seal_recover_with_keys` |
+| Tenant | `qrdb_tenant_list`, `qrdb_tenant_create`, `qrdb_tenant_get`, `qrdb_tenant_update`, `qrdb_tenant_delete`, `qrdb_tenant_barrier_initialize`, `qrdb_tenant_barrier_unseal`, `qrdb_tenant_barrier_seal` |
 | Users | `qrdb_user_create`, `qrdb_user_get`, `qrdb_user_update`, `qrdb_user_delete`, `qrdb_user_list`, `qrdb_user_enable`, `qrdb_user_disable` |
 | Roles | `qrdb_role_create`, `qrdb_role_get`, `qrdb_role_update`, `qrdb_role_delete`, `qrdb_role_list`, `qrdb_role_assign`, `qrdb_role_unassign`, `qrdb_permissions_list` |
 | Certs | `qrdb_cert_generate`, `qrdb_cert_export`, `qrdb_cert_revoke`, `qrdb_cert_list` |
-| Vector | 20 tools for namespace, vector CRUD, search, and maintenance |
+| Vector | `qrdb_vector_*` (20 tools for namespace, vector CRUD, search, and maintenance) |
+| Credentials | `qrdb_credentials_submit`, `qrdb_credentials_strategy`, `qrdb_credentials_list`, `qrdb_credentials_delete`, `qrdb_credentials_rotate`, `qrdb_credentials_retrieve_version`, `qrdb_credentials_list_versions` |
 | Capabilities | `qrdb_capabilities` |
 
 ### Authentication

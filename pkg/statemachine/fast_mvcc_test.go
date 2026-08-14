@@ -65,6 +65,7 @@ type mockMVCCStore struct {
 	rangeCalls   []mvccRangeCall
 	compactCalls []int64
 	txnCalls     []txnCall
+	scanCalls    []mvccScanChangesCall
 
 	// Error injection
 	putErr     error
@@ -72,12 +73,14 @@ type mockMVCCStore struct {
 	rangeErr   error
 	compactErr error
 	txnErr     error
+	scanErr    error
 
 	// Return values
 	putResult     interface{}
 	deleteResult  interface{}
 	rangeResult   interface{}
 	rangeRevision int64
+	scanResult    interface{}
 	txnSucceeded  bool
 	txnRevision   int64
 	txnResponses  interface{}
@@ -1308,4 +1311,25 @@ func TestFSM_MVCCCompact_NegativeRevision(t *testing.T) {
 	if ms.compactCalls[0] != -1 {
 		t.Fatalf("expected compact revision -1, got %d", ms.compactCalls[0])
 	}
+}
+
+// mvccScanChangesCall records one ScanChanges invocation.
+type mvccScanChangesCall struct {
+	startRev, endRev int64
+	prefix           []byte
+	limit            int64
+}
+
+// ScanChanges records the call and returns the configured result, satisfying
+// the MVCCStore interface.
+func (m *mockMVCCStore) ScanChanges(startRev, endRev int64, prefix []byte, limit int64) (interface{}, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scanCalls = append(m.scanCalls, mvccScanChangesCall{
+		startRev: startRev, endRev: endRev, prefix: prefix, limit: limit,
+	})
+	if m.scanErr != nil {
+		return nil, m.scanErr
+	}
+	return m.scanResult, nil
 }

@@ -17,11 +17,12 @@ package mcp
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
-	"io"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -37,11 +38,15 @@ type mockBatchSvc struct {
 
 	executeErr     error
 	executeModeErr error
+	importErr      error
 
-	lastOps  []service.Op
-	lastMode writemode.Mode
+	lastOps        []service.Op
+	lastMode       writemode.Mode
+	lastImportFile []byte
+	lastImportOpts service.ImportOptions
 
-	resp []service.OpResponse
+	resp       []service.OpResponse
+	importResp *service.ImportResult
 }
 
 var _ service.BatchServicer = (*mockBatchSvc)(nil)
@@ -139,6 +144,71 @@ func TestExecuteBatch_ServiceError(t *testing.T) {
 	}
 }
 
-func (m *mockBatchSvc) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+func (m *mockBatchSvc) Import(_ context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	m.lastImportFile = data
+	m.lastImportOpts = opts
+
+	if m.importErr != nil {
+		return nil, m.importErr
+	}
+	if m.importResp != nil {
+		return m.importResp, nil
+	}
 	return &service.ImportResult{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// ImportFile
+// ---------------------------------------------------------------------------
+
+func TestImportFile_Success(t *testing.T) {
+	svc := newMockBatchSvc()
+	svc.importResp = &service.ImportResult{
+		Total:     2,
+		Succeeded: 1,
+		Failed:    1,
+		Errors:    []service.ImportError{{Row: 2, Key: "1", Message: "duplicate"}},
+	}
+	tr, cleanup := connectBatchInProcess(t, svc)
+	defer cleanup()
+
+	result, err := tr.ImportFile(context.Background(), "data.csv",
+		strings.NewReader("id,val\n1,a\n2,b\n"),
+		transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row", SkipHeader: true})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if result.Total != 2 || result.Succeeded != 1 || result.Failed != 1 {
+		t.Errorf("result = %+v", result)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].Message != "duplicate" {
+		t.Errorf("errors = %+v", result.Errors)
+	}
+
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if string(svc.lastImportFile) != "id,val\n1,a\n2,b\n" {
+		t.Errorf("file = %q", svc.lastImportFile)
+	}
+	if svc.lastImportOpts.Format != "csv" || svc.lastImportOpts.KeyField != "id" || !svc.lastImportOpts.SkipHeader {
+		t.Errorf("opts = %+v", svc.lastImportOpts)
+	}
+}
+
+func TestImportFile_ServiceError(t *testing.T) {
+	svc := newMockBatchSvc()
+	svc.importErr = errors.New("import failed")
+	tr, cleanup := connectBatchInProcess(t, svc)
+	defer cleanup()
+
+	if _, err := tr.ImportFile(context.Background(), "data.csv", strings.NewReader("x"), transport.ImportOptions{Format: "csv"}); err == nil {
+		t.Fatal("expected error")
+	}
 }

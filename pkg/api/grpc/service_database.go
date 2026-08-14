@@ -24,6 +24,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,10 @@ import (
 // ---------------------------------------------------------------------------
 
 // DatabaseCreate creates a new database with the specified configuration.
+// When the request carries a barrier config with a non-empty secret, the
+// database is created via the credentialed path (routing to
+// CreateForTenantWithCredentials when the resolved DatabaseServicer
+// supports it), mirroring the REST POST /v1/databases handler.
 func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.DatabaseCreateRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
@@ -38,7 +43,12 @@ func (s *qrdbServiceServer) DatabaseCreate(ctx context.Context, req *pb.Database
 
 	cfg := protoDatabaseCreateToConfig(req)
 
-	info, err := s.databaseSvc.CreateForTenant(ctx, cfg)
+	var creds seal.Credentials
+	if b := req.GetBarrier(); b != nil {
+		creds = seal.Credentials{Secret: []byte(b.GetSecret())}
+	}
+
+	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -148,6 +158,21 @@ func (s *qrdbServiceServer) DatabaseUpdateRaft(ctx context.Context, req *pb.Data
 	return databaseInfoToProto(info), nil
 }
 
+// DatabaseScale changes the replication factor of an existing dedicated-raft
+// database.
+func (s *qrdbServiceServer) DatabaseScale(ctx context.Context, req *pb.DatabaseScaleRequest) (*pb.DatabaseInfoResponse, error) {
+	if s.databaseSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
+	}
+
+	info, err := s.databaseSvc.ScaleForTenant(ctx, req.GetName(), int(req.GetTargetReplicas()))
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return databaseInfoToProto(info), nil
+}
+
 // DatabaseUpdateBarrier updates the encryption barrier configuration.
 func (s *qrdbServiceServer) DatabaseUpdateBarrier(ctx context.Context, req *pb.DatabaseUpdateBarrierRequest) (*pb.DatabaseInfoResponse, error) {
 	if s.databaseSvc == nil {
@@ -207,7 +232,7 @@ func (s *qrdbServiceServer) DatabaseBarrierStatus(ctx context.Context, req *pb.D
 	if s.databaseSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "database"}).Error())
 	}
-	st, err := s.databaseSvc.DatabaseBarrierStatus(req.GetName())
+	st, err := s.databaseSvc.DatabaseBarrierStatus(ctx, req.GetName())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -248,6 +273,10 @@ func protoDatabaseCreateToConfig(req *pb.DatabaseCreateRequest) database.Databas
 
 	if r := req.GetRaft(); r != nil {
 		cfg.Raft = protoRaftConfigToDomain(r)
+	}
+
+	if b := req.GetBarrier(); b != nil {
+		cfg.Barrier = protoBarrierConfigToDomain(b)
 	}
 
 	return cfg
@@ -335,7 +364,10 @@ func protoBarrierConfigToDomain(b *pb.DatabaseBarrierConfig) *database.DatabaseB
 		return nil
 	}
 	return &database.DatabaseBarrierConfig{
-		Enabled: b.GetEnabled(),
+		Enabled:        b.GetEnabled(),
+		Mode:           b.GetMode(),
+		SharesRequired: int(b.GetSharesRequired()),
+		SharesTotal:    int(b.GetSharesTotal()),
 	}
 }
 
@@ -377,7 +409,10 @@ func databaseInfoToProto(info *database.DatabaseInfo) *pb.DatabaseInfoResponse {
 
 	if info.Barrier != nil {
 		resp.Barrier = &pb.DatabaseBarrierConfig{
-			Enabled: info.Barrier.Enabled,
+			Enabled:        info.Barrier.Enabled,
+			Mode:           info.Barrier.Mode,
+			SharesRequired: int32(info.Barrier.SharesRequired),
+			SharesTotal:    int32(info.Barrier.SharesTotal),
 		}
 	}
 

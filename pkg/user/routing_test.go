@@ -252,6 +252,148 @@ func TestRoutingUserService_SealedTenantFailsClosed(t *testing.T) {
 	}
 }
 
+// crossTenantSetup builds a router over two barrier tenants "a" and "b" and
+// returns it alongside the two backing stores.
+func crossTenantSetup(t *testing.T) (UserServicer, *fakeKVStore, *fakeKVStore) {
+	t.Helper()
+	storeA := newFakeKVStore()
+	storeB := newFakeKVStore()
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"a": storeA, "b": storeB},
+	}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	return svc, storeA, storeB
+}
+
+// A non-system caller in tenant A that supplies request tenant B is rejected
+// with CrossTenantDeniedError on every IAM routing method that carries a
+// request tenant, and tenant B's store is never touched.
+func TestRoutingUserService_CrossTenantDenied(t *testing.T) {
+	svc, _, storeB := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	assertDenied := func(name string, err error) {
+		t.Helper()
+		var xt *tenant.CrossTenantDeniedError
+		if !errors.As(err, &xt) {
+			t.Fatalf("%s cross-tenant = %v, want CrossTenantDeniedError", name, err)
+		}
+		if xt.IdentityTenantID != "a" || xt.RequestedTenantID != "b" {
+			t.Fatalf("%s error tenants = (%q,%q), want (a,b)", name, xt.IdentityTenantID, xt.RequestedTenantID)
+		}
+	}
+
+	_, err := svc.CreateUser(actx, &CreateUserRequest{Username: "mallory", TenantID: "b"})
+	assertDenied("CreateUser", err)
+
+	_, err = svc.ListUsers(actx, &ListUsersRequest{TenantID: "b"})
+	assertDenied("ListUsers", err)
+
+	_, err = svc.GetUserByUsername(actx, "b", "victim")
+	assertDenied("GetUserByUsername", err)
+
+	if n := len(storeB.m); n != 0 {
+		t.Fatalf("tenant B store unexpectedly holds %d records after denied cross-tenant access", n)
+	}
+}
+
+// A non-system caller in tenant A with a matching or empty request tenant is
+// routed to tenant A's own store, and the stored record's tenant is A (never
+// a client-supplied value).
+func TestRoutingUserService_SameTenantRoutesToSelf(t *testing.T) {
+	svc, storeA, storeB := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	// Explicit matching tenant.
+	if _, err := svc.CreateUser(actx, &CreateUserRequest{Username: "alice", TenantID: "a"}); err != nil {
+		t.Fatalf("CreateUser(match): %v", err)
+	}
+	// Empty request tenant resolves to the identity tenant, not the system
+	// tenant — the record must land in tenant A's store.
+	if _, err := svc.CreateUser(actx, &CreateUserRequest{Username: "annie", TenantID: ""}); err != nil {
+		t.Fatalf("CreateUser(empty): %v", err)
+	}
+	if len(storeA.m) == 0 {
+		t.Fatal("same-tenant users were not routed to tenant A's store")
+	}
+	if len(storeB.m) != 0 {
+		t.Fatalf("tenant B store unexpectedly holds %d records", len(storeB.m))
+	}
+
+	// The stored record's tenant is A even for the empty-request case.
+	got, err := svc.GetUserByUsername(actx, "", "annie")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(empty): %v", err)
+	}
+	if got.TenantID != "a" {
+		t.Fatalf("stored TenantID = %q, want a", got.TenantID)
+	}
+}
+
+// A system-tenant caller MAY target another tenant: the request tenant is
+// honored and the record lands in that tenant's store.
+func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {
+	svc, _, storeB := crossTenantSetup(t)
+	sctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+
+	created, err := svc.CreateUser(sctx, &CreateUserRequest{Username: "provisioned", TenantID: "b"})
+	if err != nil {
+		t.Fatalf("CreateUser(system→b): %v", err)
+	}
+	if created.TenantID != "b" {
+		t.Fatalf("stored TenantID = %q, want b", created.TenantID)
+	}
+	if len(storeB.m) == 0 {
+		t.Fatal("system-caller user was not routed to tenant B's store")
+	}
+
+	// System caller can also read/enumerate tenant B.
+	if _, err := svc.GetUserByUsername(sctx, "b", "provisioned"); err != nil {
+		t.Fatalf("GetUserByUsername(system→b): %v", err)
+	}
+	if _, err := svc.ListUsers(sctx, &ListUsersRequest{TenantID: "b"}); err != nil {
+		t.Fatalf("ListUsers(system→b): %v", err)
+	}
+}
+
+// Completeness guard: every routingUserService method that accepts a
+// request-supplied tenant must reconcile it against the caller's identity, so
+// a future method cannot silently reintroduce the cross-tenant leak. Each
+// entry invokes the method as a non-system caller in tenant A targeting
+// tenant B and asserts a CrossTenantDeniedError.
+func TestRoutingUserService_AllRequestTenantMethodsReconciled(t *testing.T) {
+	svc, _, _ := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"CreateUser", func() error {
+			_, err := svc.CreateUser(actx, &CreateUserRequest{Username: "x", TenantID: "b"})
+			return err
+		}},
+		{"ListUsers", func() error {
+			_, err := svc.ListUsers(actx, &ListUsersRequest{TenantID: "b"})
+			return err
+		}},
+		{"GetUserByUsername", func() error {
+			_, err := svc.GetUserByUsername(actx, "b", "x")
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		var xt *tenant.CrossTenantDeniedError
+		if err := tc.call(); !errors.As(err, &xt) {
+			t.Errorf("%s: cross-tenant call = %v, want CrossTenantDeniedError", tc.name, err)
+		}
+	}
+}
+
 func TestNewRoutingService_NilArgs(t *testing.T) {
 	if _, err := NewRoutingService(nil, newTestIDGen(t)); err == nil {
 		t.Error("expected error for nil resolver")

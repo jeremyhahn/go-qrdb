@@ -93,11 +93,11 @@ func (s *quotaMVCCService) GetAtRevisionWithConsistency(ctx context.Context, key
 	return s.mvcc.GetAtRevisionWithConsistency(ctx, key, revision, opts)
 }
 
-func (s *quotaMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (s *quotaMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	return s.mvcc.Range(ctx, start, end, opts...)
 }
 
-func (s *quotaMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (s *quotaMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	return s.mvcc.RangeWithConsistency(ctx, start, end, opts, rangeOpts...)
 }
 
@@ -107,4 +107,74 @@ func (s *quotaMVCCService) Compact(ctx context.Context, revision int64) error {
 
 func (s *quotaMVCCService) CurrentRevision(ctx context.Context) (int64, error) {
 	return s.mvcc.CurrentRevision(ctx)
+}
+
+// RestoreToRevision accounts the storage a selective restore adds before
+// applying it. A restore is a bulk write like any other and must not be a
+// route around the tenant's storage limit: recreating keys deleted since the
+// target revision grows the keyspace, and reverting to a larger historical
+// value grows it too.
+//
+// The plan is priced with a dry run through the inner service, which is the
+// only way to learn the size of a restore before committing to it, and the
+// reservation covers the plan's gross written bytes. Deletes in the plan free
+// storage, but they are not netted off: crediting them up front would let a
+// plan that deletes early and writes late admit a peak footprint above the
+// limit. Over-reserving is the conservative direction — it can refuse a
+// restore that would have just fit, never admit one that does not.
+//
+// A dry run is forwarded unaccounted: it writes nothing.
+func (s *quotaMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if req != nil && req.DryRun {
+		return s.mvcc.RestoreToRevision(ctx, req)
+	}
+
+	plan, err := s.mvcc.RestoreToRevision(ctx, restoreDryRunOf(req))
+	if err != nil {
+		return nil, err
+	}
+
+	var written int64
+	for _, c := range plan.Changes {
+		written += c.ValueBytes
+	}
+	if written > 0 {
+		if err := s.reserve(ctx, int(written)); err != nil {
+			return nil, err
+		}
+	}
+
+	result, err := s.mvcc.RestoreToRevision(ctx, req)
+	if err != nil {
+		if written > 0 {
+			s.acct.Release(s.tenantID, written)
+		}
+		return nil, err
+	}
+
+	// Changes the compare-and-swap guard refused wrote nothing, so their share
+	// of the reservation is given back. Without this a restore that conflicts
+	// on most of its plan would leave the tenant charged for bytes no write
+	// ever produced.
+	var unapplied int64
+	for _, c := range result.Conflicts {
+		unapplied += c.ValueBytes
+	}
+	if unapplied > 0 {
+		s.acct.Release(s.tenantID, unapplied)
+	}
+
+	return result, nil
+}
+
+// restoreDryRunOf returns a copy of req with DryRun set, used to price a
+// restore before it is applied. A copy is taken rather than the caller's
+// request mutated, so pricing never alters the request the caller passed in.
+func restoreDryRunOf(req *service.RestoreRevisionRequest) *service.RestoreRevisionRequest {
+	if req == nil {
+		return nil
+	}
+	dry := *req
+	dry.DryRun = true
+	return &dry
 }

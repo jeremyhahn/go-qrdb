@@ -42,3 +42,12 @@ var WithRegisterCeremonyService = qrdbgrpc.WithRegisterCeremonyService
 // WithRegisterCredentialService attaches a credential service to the
 // registered qrdb gRPC service.
 var WithRegisterCredentialService = qrdbgrpc.WithRegisterCredentialService
+
+// WithRegisterUserService attaches the user management service to the
+// registered qrdb gRPC service (user lookup / CRUD on qrdb.v1.QRDBService).
+var WithRegisterUserService = qrdbgrpc.WithRegisterUserService
+
+// WithRegisterUserAuthFactorService attaches the user-side auth factor
+// service. RegisterGRPCService registers it as the separate
+// qrdb.v1.UserAuthFactorService on the same *grpc.Server.
+var WithRegisterUserAuthFactorService = qrdbgrpc.WithRegisterUserAuthFactorService

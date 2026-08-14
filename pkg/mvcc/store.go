@@ -16,6 +16,7 @@ package mvcc
 
 import (
 	"bytes"
+	"sort"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -25,6 +26,17 @@ import (
 // Store is a multi-version concurrency control engine backed by storage.Storage.
 // It maintains versioned key-value pairs with revision metadata, supporting
 // point-in-time reads, range queries, and compaction of old revisions.
+//
+// Reads come in two flavours. The plain methods (Get, Range, ScanChanges) read
+// committed storage and are what external, linearizable readers use. The
+// *InBatch methods take the storage.Batch a Raft apply loop is filling and read
+// through it, so an entry observes the writes of every earlier entry in the
+// same apply batch. The distinction matters because the apply loop packs a
+// variable, timing-dependent number of entries into one batch: an apply-path
+// read that went to committed storage would make the packing observable, and
+// two replicas that packed the same log differently would reach different
+// states. The reader is threaded through as a parameter rather than stashed on
+// the Store because Lookup reads the Store concurrently with Update.
 //
 // Thread safety: The underlying storage.Storage implementation handles its own
 // internal synchronization. The atomic revision counter is lock-free.
@@ -144,6 +156,11 @@ func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error)
 		return nil, &StoreError{Op: "put revision", Err: err}
 	}
 
+	// Record the change in the revision index for watch replay.
+	if err := s.setRevIndexInBatch(batch, rev, key, changePut, meta.CreateRevision, meta.Version, meta.LeaseID); err != nil {
+		return nil, err
+	}
+
 	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "put commit", Err: err}
 	}
@@ -158,15 +175,29 @@ func (s *Store) Put(key, value []byte, leaseID int64) (*service.KeyValue, error)
 	}, nil
 }
 
-// Get retrieves the latest value for a key. Returns KeyNotFoundError
-// if the key does not exist.
+// Get retrieves the latest value for a key from committed storage. Returns
+// KeyNotFoundError if the key does not exist.
 func (s *Store) Get(key []byte) (*service.KeyValue, error) {
-	meta, err := s.getMetadata(key)
+	return s.getFrom(s.storage, key)
+}
+
+// GetInBatch retrieves the latest value for a key as seen through batch: the
+// batch's own uncommitted writes layered over committed storage. Apply-path
+// handlers must use this rather than Get so a compare, an existence guard, or
+// a previous-value read observes the entries already applied into the same
+// batch.
+func (s *Store) GetInBatch(batch storage.Batch, key []byte) (*service.KeyValue, error) {
+	return s.getFrom(batch, key)
+}
+
+// getFrom retrieves the latest value for a key through r.
+func (s *Store) getFrom(r storage.Reader, key []byte) (*service.KeyValue, error) {
+	meta, err := s.getMetadataFrom(r, key)
 	if err != nil {
 		return nil, &KeyNotFoundError{Key: string(key)}
 	}
 
-	value, err := s.getDataAtRevision(key, meta.ModRevision)
+	value, err := s.getDataAtRevisionFrom(r, key, meta.ModRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +270,12 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 		return nil, &StoreError{Op: "delete revision", Err: err}
 	}
 
+	// Record the change in the revision index for watch replay. A delete event's
+	// KV carries only the key and its mod revision, so create/version/lease are 0.
+	if err := s.setRevIndexInBatch(batch, rev, key, changeDelete, 0, 0, 0); err != nil {
+		return nil, err
+	}
+
 	if err := batch.Commit(); err != nil {
 		return nil, &StoreError{Op: "delete commit", Err: err}
 	}
@@ -253,10 +290,37 @@ func (s *Store) Delete(key []byte) (*service.KeyValue, error) {
 	}, nil
 }
 
-// Range returns all key-value pairs in the range [start, end).
-// If end is nil, returns only the key matching start.
-// Returns the key-values and the current store revision.
-func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+// Range returns all key-value pairs in the range [start, end), the number
+// of matched keys, and the MVCC revision the read was performed at. If end
+// is nil, only the key matching start is considered.
+//
+// The returned count is distinct from the returned revision: count is the
+// number of matched keys (when RangeOptions.CountOnly is set, every match is
+// counted regardless of any Limit; otherwise count reflects the number of
+// returned results, capped by Limit if set). revision is always the store's
+// current MVCC revision at the time of the read (or the store's current
+// revision when a historical RangeOptions.Revision was requested — the
+// revision the scan targeted is available via that option, not this return
+// value).
+//
+// When RangeOptions.SortOrder/SortTarget request a non-default ordering, all
+// matches are collected before sorting so that Limit is applied to the
+// sorted result set rather than to whatever order the underlying storage
+// iterator happens to produce.
+func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return s.rangeFrom(s.storage, start, end, opts...)
+}
+
+// RangeInBatch is Range as seen through batch: it includes the keys written by
+// earlier entries in the same apply batch and excludes the ones they deleted.
+// Apply-path handlers that scan (index backfill, for example) must use it, or
+// the state they derive would depend on how the apply loop grouped the log.
+func (s *Store) RangeInBatch(batch storage.Batch, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return s.rangeFrom(batch, start, end, opts...)
+}
+
+// rangeFrom implements Range against an arbitrary reader.
+func (s *Store) rangeFrom(r storage.Reader, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	ro := service.ApplyRangeOptions(opts)
 	currentRev := s.CurrentRevision()
 
@@ -264,7 +328,7 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 	if ro.Revision > 0 {
 		compacted := s.compacted.Load()
 		if ro.Revision <= compacted {
-			return nil, 0, &RevisionCompactedError{
+			return nil, 0, 0, &RevisionCompactedError{
 				Requested: ro.Revision,
 				Compacted: compacted,
 			}
@@ -274,17 +338,26 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 
 	// Single key lookup if no end specified.
 	if end == nil {
-		kv, err := s.rangeGetSingle(start, targetRev, ro)
+		kv, err := s.rangeGetSingle(r, start, targetRev, ro)
 		if err != nil {
-			return nil, currentRev, nil // Key not found is not an error for range.
+			// Key not found is not an error for range.
+			return nil, 0, currentRev, nil
 		}
-		return []*service.KeyValue{kv}, currentRev, nil
+		if ro.CountOnly {
+			return nil, 1, currentRev, nil
+		}
+		return []*service.KeyValue{kv}, 1, currentRev, nil
 	}
+
+	// A non-default sort request requires the full match set before Limit is
+	// applied, since Limit must select from the SORTED order, not from
+	// whatever order the storage iterator produces.
+	sorting := ro.SortOrder != service.SortNone || ro.SortTarget != service.SortByKey
 
 	// Range scan over all metadata keys, filtering by user key in [start, end).
 	// With length-prefixed meta keys, we must scan the entire meta namespace
 	// because keys of different lengths sort by length prefix first.
-	iter := s.storage.NewIterator(&storage.IteratorOptions{
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: MetaLowerBound(),
 		UpperBound: MetaUpperBound(),
 	})
@@ -309,7 +382,7 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 			continue
 		}
 
-		kv, err := s.findAtRevision(userKey, targetRev)
+		kv, err := s.findAtRevisionFrom(r, userKey, targetRev)
 		if err != nil {
 			continue // Key might not exist at this revision.
 		}
@@ -321,24 +394,82 @@ func (s *Store) Range(start, end []byte, opts ...service.RangeOption) ([]*servic
 		results = append(results, kv)
 		count++
 
-		if ro.Limit > 0 && count >= ro.Limit {
+		if !sorting && ro.Limit > 0 && count >= ro.Limit {
 			break
 		}
 	}
 
 	if err := iter.Error(); err != nil {
-		return nil, 0, &StoreError{Op: "range scan", Err: err}
+		return nil, 0, 0, &StoreError{Op: "range scan", Err: err}
 	}
 
 	if ro.CountOnly {
-		return nil, count, nil
+		return nil, count, currentRev, nil
+	}
+
+	if sorting {
+		if err := sortKeyValues(results, ro.SortOrder, ro.SortTarget); err != nil {
+			return nil, 0, 0, err
+		}
+		if ro.Limit > 0 && int64(len(results)) > ro.Limit {
+			results = results[:ro.Limit]
+		}
+		count = int64(len(results))
 	}
 
 	if results == nil {
 		results = []*service.KeyValue{}
 	}
 
-	return results, currentRev, nil
+	return results, count, currentRev, nil
+}
+
+// sortKeyValues sorts results in place according to target, in ascending
+// order unless order is service.SortDescend. Sorting is stable so that
+// keys comparing equal on target retain their relative scan order. Returns
+// an UnsupportedSortTargetError for a target value outside the range
+// service.SortTarget defines, rather than silently leaving results
+// unsorted.
+func sortKeyValues(results []*service.KeyValue, order service.SortOrder, target service.SortTarget) error {
+	less, err := sortLessFunc(results, target)
+	if err != nil {
+		return err
+	}
+	if order == service.SortDescend {
+		asc := less
+		less = func(i, j int) bool { return asc(j, i) }
+	}
+	sort.SliceStable(results, less)
+	return nil
+}
+
+// sortLessFunc returns the ascending less-than comparator for target over
+// results.
+func sortLessFunc(results []*service.KeyValue, target service.SortTarget) (func(i, j int) bool, error) {
+	switch target {
+	case service.SortByKey:
+		return func(i, j int) bool {
+			return bytes.Compare(results[i].Key, results[j].Key) < 0
+		}, nil
+	case service.SortByVersion:
+		return func(i, j int) bool {
+			return results[i].Version < results[j].Version
+		}, nil
+	case service.SortByCreateRevision:
+		return func(i, j int) bool {
+			return results[i].CreateRevision < results[j].CreateRevision
+		}, nil
+	case service.SortByModRevision:
+		return func(i, j int) bool {
+			return results[i].ModRevision < results[j].ModRevision
+		}, nil
+	case service.SortByValue:
+		return func(i, j int) bool {
+			return bytes.Compare(results[i].Value, results[j].Value) < 0
+		}, nil
+	default:
+		return nil, &UnsupportedSortTargetError{Target: target}
+	}
 }
 
 // Compact removes old data entries at revisions at or below the given revision,
@@ -358,8 +489,40 @@ func (s *Store) Compact(revision int64) error {
 	batch := s.storage.Batch()
 	defer func() { _ = batch.Close() }()
 
+	if err := s.CompactInBatch(batch, revision); err != nil {
+		return err
+	}
+
+	if err := batch.Commit(); err != nil {
+		return &CompactionError{Err: err}
+	}
+
+	s.compacted.Store(revision)
+	return nil
+}
+
+// CompactInBatch queues a compaction into batch instead of committing its own.
+// The apply path uses it for two reasons: the scan reads through batch, so it
+// sees the data entries earlier entries in the same apply batch wrote; and the
+// deletions land in the caller's batch, so compaction commits atomically with
+// the rest of the apply rather than half a step ahead of it.
+//
+// The compacted marker is advanced immediately, matching Compact: the marker is
+// in-memory state that the caller's commit makes durable, and the apply loop
+// treats a failed Update as fatal.
+func (s *Store) CompactInBatch(batch storage.Batch, revision int64) error {
+	if err := s.compactInto(batch, revision); err != nil {
+		return err
+	}
+	s.compacted.Store(revision)
+	return nil
+}
+
+// compactInto queues the compaction deletions and the compacted marker into
+// batch, reading the entries to remove through batch as well.
+func (s *Store) compactInto(batch storage.Batch, revision int64) error {
 	// Iterate all data entries.
-	iter := s.storage.NewIterator(&storage.IteratorOptions{
+	iter := batch.NewIterator(&storage.IteratorOptions{
 		LowerBound: []byte{prefixData},
 		UpperBound: []byte{prefixData + 1},
 	})
@@ -407,26 +570,33 @@ func (s *Store) Compact(revision int64) error {
 		return &CompactionError{Err: err}
 	}
 
+	// Drop revision-index entries at or below the compaction point: a replay at
+	// or below CompactedRevision is refused, so these change-log entries serve no
+	// purpose and must not accumulate.
+	if err := s.gcRevIndexInBatch(batch, revision); err != nil {
+		return err
+	}
+
 	// Persist the compacted revision marker.
 	if err := batch.Set(CompactedKey(), EncodeRevision(revision)); err != nil {
 		return &CompactionError{Err: err}
 	}
 
-	if err := batch.Commit(); err != nil {
-		return &CompactionError{Err: err}
-	}
-
-	s.compacted.Store(revision)
 	return nil
 }
 
 // PutInBatch writes a key-value pair into the given storage.Batch
 // at the specified revision. Used by the state machine to apply MVCC
 // operations within a Raft entry batch. Returns the resulting KeyValue.
+//
+// The version/create-revision lookup reads through batch, so a key written
+// twice within one apply batch gets Version 2 and keeps its original
+// CreateRevision — the same metadata it would have if each entry had been
+// applied in its own batch.
 func (s *Store) PutInBatch(batch storage.Batch, key, value []byte, leaseID int64, rev int64) (*service.KeyValue, error) {
 	// Read existing metadata for version tracking.
 	var meta KeyMeta
-	existingMeta, err := s.getMetadata(key)
+	existingMeta, err := s.getMetadataFrom(batch, key)
 	if err == nil {
 		meta = *existingMeta
 		meta.ModRevision = rev
@@ -454,6 +624,11 @@ func (s *Store) PutInBatch(batch storage.Batch, key, value []byte, leaseID int64
 		return nil, &StoreError{Op: "batch put meta", Err: err}
 	}
 
+	// Record the change in the revision index within the same batch.
+	if err := s.setRevIndexInBatch(batch, rev, key, changePut, meta.CreateRevision, meta.Version, meta.LeaseID); err != nil {
+		return nil, err
+	}
+
 	return &service.KeyValue{
 		Key:            key,
 		Value:          value,
@@ -469,9 +644,9 @@ func (s *Store) PutInBatch(batch storage.Batch, key, value []byte, leaseID int64
 // previous KeyValue, or nil if the key didn't exist.
 func (s *Store) DeleteInBatch(batch storage.Batch, key []byte, rev int64) (*service.KeyValue, error) {
 	var prevKV *service.KeyValue
-	meta, err := s.getMetadata(key)
+	meta, err := s.getMetadataFrom(batch, key)
 	if err == nil {
-		prevValue, err := s.getDataAtRevision(key, meta.ModRevision)
+		prevValue, err := s.getDataAtRevisionFrom(batch, key, meta.ModRevision)
 		if err == nil {
 			prevKV = &service.KeyValue{
 				Key:            key,
@@ -496,6 +671,13 @@ func (s *Store) DeleteInBatch(batch storage.Batch, key []byte, rev int64) (*serv
 		return nil, &StoreError{Op: "batch delete meta", Err: err}
 	}
 
+	// Record the change in the revision index within the same batch. A delete
+	// event's KV carries only the key and its mod revision, so create/version/
+	// lease are 0.
+	if err := s.setRevIndexInBatch(batch, rev, key, changeDelete, 0, 0, 0); err != nil {
+		return nil, err
+	}
+
 	return prevKV, nil
 }
 
@@ -514,10 +696,15 @@ func (s *Store) Storage() storage.Storage {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// getMetadata reads the current metadata for a key.
+// getMetadata reads the current metadata for a key from committed storage.
 func (s *Store) getMetadata(key []byte) (*KeyMeta, error) {
+	return s.getMetadataFrom(s.storage, key)
+}
+
+// getMetadataFrom reads the current metadata for a key through r.
+func (s *Store) getMetadataFrom(r storage.Reader, key []byte) (*KeyMeta, error) {
 	mk := EncodeMetaKey(key)
-	val, err := s.storage.Get(mk)
+	val, err := r.Get(mk)
 	if err != nil {
 		return nil, &StoreError{Op: "get meta", Err: err}
 	}
@@ -528,10 +715,16 @@ func (s *Store) getMetadata(key []byte) (*KeyMeta, error) {
 	return DecodeMeta(val)
 }
 
-// getDataAtRevision reads the data value at an exact revision.
+// getDataAtRevision reads the data value at an exact revision from committed
+// storage.
 func (s *Store) getDataAtRevision(key []byte, revision int64) ([]byte, error) {
+	return s.getDataAtRevisionFrom(s.storage, key, revision)
+}
+
+// getDataAtRevisionFrom reads the data value at an exact revision through r.
+func (s *Store) getDataAtRevisionFrom(r storage.Reader, key []byte, revision int64) ([]byte, error) {
 	dk := EncodeDataKey(key, revision)
-	val, err := s.storage.Get(dk)
+	val, err := r.Get(dk)
 	if err != nil {
 		return nil, &StoreError{Op: "get data", Err: err}
 	}
@@ -553,14 +746,21 @@ func (s *Store) getDataAtRevision(key []byte, revision int64) ([]byte, error) {
 	return cp, nil
 }
 
-// findAtRevision finds the data entry at or before the requested revision.
-// Uses storage.Iterator's Seek with complement encoding to find the correct entry.
+// findAtRevision finds the data entry at or before the requested revision in
+// committed storage.
 func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, error) {
+	return s.findAtRevisionFrom(s.storage, key, revision)
+}
+
+// findAtRevisionFrom finds the data entry at or before the requested revision
+// through r. Uses storage.Iterator's Seek with complement encoding to find the
+// correct entry.
+func (s *Store) findAtRevisionFrom(r storage.Reader, key []byte, revision int64) (*service.KeyValue, error) {
 	prefix := DataKeyPrefix(key)
 	upper := DataKeyUpperBound(key)
 	seekKey := EncodeDataKey(key, revision)
 
-	iter := s.storage.NewIterator(&storage.IteratorOptions{
+	iter := r.NewIterator(&storage.IteratorOptions{
 		LowerBound: prefix,
 		UpperBound: upper,
 	})
@@ -596,7 +796,7 @@ func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, e
 
 	// Read metadata for full KeyValue construction. If metadata doesn't
 	// exist (key was deleted after this revision), construct partial metadata.
-	meta, metaErr := s.getMetadata(key)
+	meta, metaErr := s.getMetadataFrom(r, key)
 	var kv service.KeyValue
 	if metaErr == nil {
 		kv = service.KeyValue{
@@ -623,8 +823,8 @@ func (s *Store) findAtRevision(key []byte, revision int64) (*service.KeyValue, e
 }
 
 // rangeGetSingle handles Range with nil end (single key lookup).
-func (s *Store) rangeGetSingle(key []byte, targetRev int64, ro service.RangeOptions) (*service.KeyValue, error) {
-	kv, err := s.findAtRevision(key, targetRev)
+func (s *Store) rangeGetSingle(r storage.Reader, key []byte, targetRev int64, ro service.RangeOptions) (*service.KeyValue, error) {
+	kv, err := s.findAtRevisionFrom(r, key, targetRev)
 	if err != nil {
 		return nil, err
 	}

@@ -277,19 +277,6 @@ func TestQUIC_DEK_NotImplemented(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ImportFile NotImplemented path (0% → 100% coverage)
-// ---------------------------------------------------------------------------
-
-func TestQUIC_ImportFile_NotImplemented(t *testing.T) {
-	_, tr := startE2EServer(t)
-	_, err := tr.ImportFile(context.Background(), "csv", nil, transport.ImportOptions{})
-	var nie *transport.NotImplementedError
-	if !errorAs(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // buildTLSConfig error paths (73.7%)
 // CA file read error and cert load error paths.
 // ---------------------------------------------------------------------------

@@ -88,7 +88,7 @@ func (b *StorageBarrier) Rekey(ctx context.Context, newThreshold, newTotal int) 
 	}
 
 	// Replace the strategy in the barrier's strategy map.
-	b.strategies[StrategyShamir] = newStrat
+	b.setStrategy(StrategyShamir, newStrat)
 
 	// Update config if present.
 	if b.config.Shamir != nil {

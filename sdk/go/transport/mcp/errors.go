@@ -71,6 +71,22 @@ func (e *jsonDecodeError) Unwrap() error {
 	return e.Err
 }
 
+// valueDecodeError is returned when a tool result's base64-encoded value
+// field (RFC 4648) cannot be decoded.
+type valueDecodeError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *valueDecodeError) Error() string {
+	return "mcp transport: value base64 decode failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *valueDecodeError) Unwrap() error {
+	return e.Err
+}
+
 // noContentError is returned when a tool result has no content.
 type noContentError struct {
 	Tool string

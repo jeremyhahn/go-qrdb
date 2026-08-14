@@ -39,6 +39,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		Name:              req.Name,
 		IsolationType:     string(req.IsolationType),
 		BarrierAutoUnseal: req.BarrierAutoUnseal,
+		DataRoot:          req.DataRoot,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateTenant", err)

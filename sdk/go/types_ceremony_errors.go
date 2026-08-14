@@ -72,6 +72,20 @@ var (
 	// ErrCeremonyShareNotFound is returned when a share does not exist.
 	ErrCeremonyShareNotFound = ceremony.ErrShareNotFound
 
+	// ErrCeremonyCertThumbprintMismatch is returned when the caller's mTLS
+	// certificate thumbprint does not match the enrolled officer record. It is
+	// the refusal that keeps a named-but-unauthenticated caller from taking an
+	// officer's Shamir share.
+	ErrCeremonyCertThumbprintMismatch = ceremony.ErrCertThumbprintMismatch
+
+	// ErrCeremonyOfficerNotFound is returned when no officer is enrolled under
+	// the requested username.
+	ErrCeremonyOfficerNotFound = ceremony.ErrOfficerNotFound
+
+	// ErrCeremonyNoPendingShare is returned when no unclaimed share exists for
+	// the officer.
+	ErrCeremonyNoPendingShare = ceremony.ErrNoPendingShare
+
 	// ErrCeremonyChallengeVerificationFailed is returned when nonce verification fails.
 	ErrCeremonyChallengeVerificationFailed = ceremony.ErrChallengeVerificationFailed
 

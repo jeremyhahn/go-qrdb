@@ -194,8 +194,15 @@ func handleVectorCreateNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 		if distStr == "" {
 			return mcp.NewToolResultError("distance_metric is required"), nil
 		}
-		distMetric, ok := distanceMetricMap[strings.ToLower(distStr)]
-		if !ok {
+		// The map validates that the metric is recognized; the value FORWARDED
+		// to the service is the lowercase form, matching what REST/gRPC/QUIC/Unix
+		// forward verbatim (the CLI normalizes to lowercase). Forwarding the
+		// map's uppercase canonical value instead made MCP-created namespaces
+		// display a different casing than the other four transports for the same
+		// input — the service layer stores this string verbatim and tolerates
+		// both cases, so only the reported casing diverged.
+		distMetric := strings.ToLower(distStr)
+		if _, ok := distanceMetricMap[distMetric]; !ok {
 			return mcp.NewToolResultError("invalid distance_metric: " + distStr + "; must be one of cosine, euclidean, l2, dot_product, manhattan"), nil
 		}
 
@@ -203,8 +210,8 @@ func handleVectorCreateNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 		if idxStr == "" {
 			return mcp.NewToolResultError("index_type is required"), nil
 		}
-		idxType, ok := vectorIndexTypeMap[strings.ToLower(idxStr)]
-		if !ok {
+		idxType := strings.ToLower(idxStr)
+		if _, ok := vectorIndexTypeMap[idxType]; !ok {
 			return mcp.NewToolResultError("invalid index_type: " + idxStr + "; must be one of hnsw, flat, ivf"), nil
 		}
 

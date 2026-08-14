@@ -17,7 +17,11 @@
 // versions for point-in-time reads and compaction.
 package mvcc
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
 
 // KeyNotFoundError is returned when a key does not exist or has been
 // deleted at the requested revision.
@@ -127,4 +131,16 @@ type TransactionConflictError struct {
 // Error returns a human-readable description of the conflict.
 func (e *TransactionConflictError) Error() string {
 	return "mvcc: transaction conflict on key: " + e.Key
+}
+
+// UnsupportedSortTargetError is returned when a range query requests a
+// service.SortTarget value outside the set of targets the store knows how
+// to sort by.
+type UnsupportedSortTargetError struct {
+	Target service.SortTarget
+}
+
+// Error returns a human-readable description of the unsupported target.
+func (e *UnsupportedSortTargetError) Error() string {
+	return "mvcc: unsupported sort target: " + strconv.FormatUint(uint64(e.Target), 10)
 }

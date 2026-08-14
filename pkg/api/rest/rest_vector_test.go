@@ -1289,7 +1289,7 @@ func TestHandleVectorCompactNamespace_ServiceError(t *testing.T) {
 
 func TestHandleVectorGetCompactionProgress_Success(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&job_id=op-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&operation_id=op-1", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusOK)
@@ -1303,7 +1303,7 @@ func TestHandleVectorGetCompactionProgress_Success(t *testing.T) {
 
 func TestHandleVectorGetCompactionProgress_NilService(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&job_id=op-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&operation_id=op-1", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusNotImplemented)
@@ -1311,13 +1311,13 @@ func TestHandleVectorGetCompactionProgress_NilService(t *testing.T) {
 
 func TestHandleVectorGetCompactionProgress_MissingNamespace(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?job_id=op-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?operation_id=op-1", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleVectorGetCompactionProgress_MissingJobID(t *testing.T) {
+func TestHandleVectorGetCompactionProgress_MissingOperationID(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
 	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns", nil)
 	rec := httptest.NewRecorder()
@@ -1327,7 +1327,7 @@ func TestHandleVectorGetCompactionProgress_MissingJobID(t *testing.T) {
 
 func TestHandleVectorGetCompactionProgress_InvalidShardID(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{})
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&job_id=op-1&shard_id=abc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&operation_id=op-1&shard_id=abc", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
@@ -1340,7 +1340,7 @@ func TestHandleVectorGetCompactionProgress_ServiceError(t *testing.T) {
 		},
 	}
 	srv := newVectorServer(vecSvc)
-	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&job_id=op-1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/vector/compact/progress?namespace=ns&operation_id=op-1", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	assertStatus(t, rec, http.StatusInternalServerError)

@@ -22,7 +22,10 @@ import (
 	"log/slog"
 	"net"
 
+	sqle "github.com/dolthub/go-mysql-server"
 	wire "github.com/jeroenrinzema/psql-wire"
+	"github.com/jeroenrinzema/psql-wire/codes"
+	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -34,15 +37,25 @@ import (
 // defaultDBName is the default database name used when none is configured.
 const defaultDBName = "qrdb"
 
+// sealedWindowProbe is the abstraction the sealed-window gates need to
+// know whether the storage barrier is currently sealed. Implemented by
+// *seal.StorageBarrier in production; defined as an interface so tests
+// can substitute a deterministic fake. Mirrors the unexported probe
+// interfaces on the REST / gRPC / MCP transports.
+type sealedWindowProbe interface {
+	IsSealed() bool
+}
+
 // Server implements a PostgreSQL wire protocol frontend for QRDB. It uses
 // psql-wire for PG wire protocol framing and routes queries through
 // go-mysql-server for SQL execution against the QRDB KV service layer.
 type Server struct {
-	addr     string
-	listener net.Listener
-	wireSrv  *wire.Server
-	kvSvc    service.KVServicer
-	adminSvc service.AdminServicer
+	addr      string
+	listener  net.Listener
+	wireSrv   *wire.Server
+	sqlEngine *sqle.Engine
+	kvSvc     service.KVServicer
+	adminSvc  service.AdminServicer
 
 	tlsConfig *tls.Config
 	authMW    *authmw.AuthMiddleware
@@ -51,6 +64,26 @@ type Server struct {
 	cancel    context.CancelFunc
 	dbManager *database.Manager
 	done      chan struct{} // closed when Serve goroutine exits
+	// sealedProbe gates connections and queries while the storage
+	// barrier is sealed. When nil the gate is disabled.
+	sealedProbe sealedWindowProbe
+	// registry resolves per-(tenant, database) services -- KV, MVCC,
+	// relational tables, and everything else service.Registry exposes --
+	// the same transport-neutral seam every other protocol (REST, gRPC,
+	// Unix, QUIC, MCP) enforces barrier/quota/isolation and routes
+	// IsolationRaft/IsolationVolume tenants through. Nil disables it: the
+	// provider then serves only the fixed engine tables, DAO-registered
+	// entities, and (if configured) collections, scoped by the session's
+	// tenant against the shared kvSvc exactly as before this option
+	// existed.
+	registry service.Registry
+	// collectionSvc, when set, makes collection tables visible over this
+	// listener alongside the fixed engine tables and relational tables.
+	collectionSvc service.CollectionServicer
+	// indexSvc, when set, lets KV, entity, and collection tables served
+	// over this listener use secondary index acceleration for WHERE
+	// clause evaluation.
+	indexSvc service.IndexServicer
 }
 
 // ServerOption configures the Server.
@@ -96,6 +129,53 @@ func WithLogger(logger *slog.Logger) ServerOption {
 	}
 }
 
+// WithServiceRegistry configures the server with a service.Registry for
+// per-(tenant, database) service resolution. When set, every session's
+// provider.Database additionally resolves user-defined relational tables
+// (CREATE TABLE) through reg.TableService, scoped to the session's
+// authenticated tenant (see provider.WithRegistry), and every other
+// registry-backed resolution (KV, MVCC, ...) enforces the same barrier/
+// quota/isolation guarantees every other transport enforces through this
+// same registry -- closing the isolation gap where a PostgreSQL
+// wire-protocol session would otherwise bypass it entirely.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) {
+		s.registry = reg
+	}
+}
+
+// WithCollectionService configures the server with a CollectionServicer so
+// collection tables are visible over the PostgreSQL wire protocol alongside
+// the fixed engine tables and (when WithServiceRegistry is also set)
+// relational tables.
+func WithCollectionService(svc service.CollectionServicer) ServerOption {
+	return func(s *Server) {
+		s.collectionSvc = svc
+	}
+}
+
+// WithIndex configures the server with an IndexServicer so KV, entity, and
+// collection tables served over the PostgreSQL wire protocol use secondary
+// index acceleration for WHERE clause evaluation.
+func WithIndex(svc service.IndexServicer) ServerOption {
+	return func(s *Server) {
+		s.indexSvc = svc
+	}
+}
+
+// WithSealedWindowProbe installs the sealed-window gate. While the
+// probe reports sealed, new PostgreSQL sessions are refused at startup
+// and in-flight sessions have every query rejected, both with SQLSTATE
+// 57P03 (cannot_connect_now) and message "barrier sealed" — consistent
+// with the sealed-window envelope on the other protocol transports.
+// Once the barrier is unsealed the gate is a passthrough; on re-seal it
+// engages again.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedProbe = probe
+	}
+}
+
 // NewServer creates a new PostgreSQL wire protocol server backed by the
 // given KV and admin service interfaces. The server listens on the given
 // address. Options can be used to configure TLS, authentication, database
@@ -120,20 +200,48 @@ func (s *Server) Start() error {
 	// Build the SQL engine pipeline. When a database manager is
 	// configured, use the manager-backed provider for multi-database
 	// support; otherwise fall back to the legacy single-database provider.
+	// Either way, the same set of optional service-wiring options
+	// (registry, collections, index acceleration) applies: NewProvider
+	// takes no options, so the legacy path applies them directly to the
+	// constructed *provider.Provider -- the exported option functions are
+	// just closures over unexported fields and work identically regardless
+	// of which constructor built the Provider.
+	var svcOpts []func(*provider.Provider)
+	if s.collectionSvc != nil {
+		svcOpts = append(svcOpts, provider.WithCollectionService(s.collectionSvc))
+	}
+	if s.indexSvc != nil {
+		svcOpts = append(svcOpts, provider.WithIndexService(s.indexSvc))
+	}
+	if s.registry != nil {
+		svcOpts = append(svcOpts, provider.WithRegistry(s.registry))
+	}
+
 	var dbProvider *provider.Provider
 	if s.dbManager != nil {
-		dbProvider = provider.NewManagerProvider(s.dbManager, s.kvSvc,
-			provider.WithProtocol(provider.ProtocolPostgreSQL))
+		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolPostgreSQL)}, svcOpts...)
+		dbProvider = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		dbProvider = provider.NewProvider(s.dbName, s.kvSvc)
+		for _, opt := range svcOpts {
+			opt(dbProvider)
+		}
 	}
 	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	s.sqlEngine = sqlEngine
 	translator := engine.NewTranslator()
 	parseHandler := NewParseHandler(sqlEngine, translator, s.dbName)
+	parseHandler.sealedProbe = s.sealedProbe
 
-	// Build psql-wire server options.
+	// Build psql-wire server options. The sealed-window session gate is
+	// registered FIRST so it runs before the auth session middleware:
+	// while the barrier is sealed, connections are refused before any
+	// authentication work happens (fail-closed).
 	wireOpts := []wire.OptionFn{
 		wire.Logger(s.logger),
+	}
+	if s.sealedProbe != nil {
+		wireOpts = append(wireOpts, wire.SessionMiddleware(sealedSessionHandler(s.sealedProbe)))
 	}
 
 	// Configure the authenticator when auth middleware is set.
@@ -188,6 +296,13 @@ func (s *Server) Start() error {
 			wire.CloseConn(closeHandler(authenticator)),
 		)
 	}
+
+	// Register the per-connection QRDBSession handler LAST (after any auth
+	// middleware above), so it sees whatever identity authentication
+	// established. This is what lets BEGIN/COMMIT/ROLLBACK/SAVEPOINT state
+	// persist across the statements of one connection -- see
+	// newConnectionSessionHandler's doc comment.
+	wireOpts = append(wireOpts, wire.SessionMiddleware(newConnectionSessionHandler()))
 
 	// Create the psql-wire server.
 	wireSrv, err := wire.NewServer(parseHandler.HandleParse, wireOpts...)
@@ -276,6 +391,25 @@ func sessionHandler(authenticator *Authenticator) wire.SessionHandler {
 		}
 		return authenticator.Authenticate(ctx, remoteAddr)
 	}
+}
+
+// sealedSessionHandler returns a psql-wire SessionHandler that refuses
+// new sessions with SQLSTATE 57P03 (cannot_connect_now) while the
+// storage barrier is sealed.
+func sealedSessionHandler(probe sealedWindowProbe) wire.SessionHandler {
+	return func(ctx context.Context) (context.Context, error) {
+		if probe.IsSealed() {
+			return ctx, sealedWireError(psqlerr.LevelFatal)
+		}
+		return ctx, nil
+	}
+}
+
+// sealedWireError builds the canonical sealed-window error for the PG
+// wire protocol: SQLSTATE 57P03 (cannot_connect_now) at the supplied
+// severity, wrapping the typed BarrierSealedError.
+func sealedWireError(severity psqlerr.Severity) error {
+	return psqlerr.WithSeverity(psqlerr.WithCode(&BarrierSealedError{}, codes.CannotConnectNow), severity)
 }
 
 // closeHandler returns a psql-wire CloseFn that cleans up TLS state

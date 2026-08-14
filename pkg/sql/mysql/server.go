@@ -38,6 +38,15 @@ const defaultDBName = "qrdb"
 // Server wraps go-mysql-server to provide a MySQL wire protocol server
 // backed by the QRDB key-value store. It delegates SQL operations to the
 // service layer through the provider and engine packages.
+// sealedWindowProbe is the abstraction the sealed-window connection
+// gate needs to know whether the storage barrier is currently sealed.
+// Implemented by *seal.StorageBarrier in production; defined as an
+// interface so tests can substitute a deterministic fake. Mirrors the
+// unexported probe interfaces on the REST / gRPC / MCP transports.
+type sealedWindowProbe interface {
+	IsSealed() bool
+}
+
 type Server struct {
 	addr      string
 	listener  net.Listener
@@ -50,6 +59,26 @@ type Server struct {
 	dbName    string
 	logger    *slog.Logger
 	dbManager *database.Manager
+	// sealedProbe gates new connections while the storage barrier is
+	// sealed. When nil the gate is disabled (no seal subsystem).
+	sealedProbe sealedWindowProbe
+	// registry resolves per-(tenant, database) services -- KV, MVCC,
+	// relational tables, and everything else service.Registry exposes --
+	// the same transport-neutral seam every other protocol (REST, gRPC,
+	// Unix, QUIC, MCP) enforces barrier/quota/isolation and routes
+	// IsolationRaft/IsolationVolume tenants through. Nil disables it: the
+	// provider then serves only the fixed engine tables, DAO-registered
+	// entities, and (if configured) collections, scoped by the session's
+	// tenant against the shared kvSvc exactly as before this option
+	// existed.
+	registry service.Registry
+	// collectionSvc, when set, makes collection tables visible over this
+	// listener alongside the fixed engine tables and relational tables.
+	collectionSvc service.CollectionServicer
+	// indexSvc, when set, lets KV, entity, and collection tables served
+	// over this listener use secondary index acceleration for WHERE
+	// clause evaluation.
+	indexSvc service.IndexServicer
 }
 
 // ServerOption configures optional Server dependencies.
@@ -96,6 +125,52 @@ func WithLogger(logger *slog.Logger) ServerOption {
 	}
 }
 
+// WithServiceRegistry configures the server with a service.Registry for
+// per-(tenant, database) service resolution. When set, every connection's
+// provider.Database additionally resolves user-defined relational tables
+// (CREATE TABLE) through reg.TableService, scoped to the session's
+// authenticated tenant (see provider.WithRegistry), and every other
+// registry-backed resolution (KV, MVCC, ...) enforces the same barrier/
+// quota/isolation guarantees every other transport enforces through this
+// same registry -- closing the isolation gap where a MySQL wire-protocol
+// session would otherwise bypass it entirely.
+func WithServiceRegistry(reg service.Registry) ServerOption {
+	return func(s *Server) {
+		s.registry = reg
+	}
+}
+
+// WithCollectionService configures the server with a CollectionServicer so
+// collection tables are visible over the MySQL wire protocol alongside the
+// fixed engine tables and (when WithServiceRegistry is also set) relational
+// tables.
+func WithCollectionService(svc service.CollectionServicer) ServerOption {
+	return func(s *Server) {
+		s.collectionSvc = svc
+	}
+}
+
+// WithIndex configures the server with an IndexServicer so KV, entity, and
+// collection tables served over the MySQL wire protocol use secondary
+// index acceleration for WHERE clause evaluation.
+func WithIndex(svc service.IndexServicer) ServerOption {
+	return func(s *Server) {
+		s.indexSvc = svc
+	}
+}
+
+// WithSealedWindowProbe installs the sealed-window connection gate.
+// While the probe reports sealed, every new MySQL connection is refused
+// during the handshake with a "barrier sealed" error, consistent with
+// the sealed-window envelope on the other protocol transports. Once the
+// barrier is unsealed the gate is a passthrough; on re-seal it engages
+// again for new connections.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) {
+		s.sealedProbe = probe
+	}
+}
+
 // NewServer creates a new MySQL wire protocol server that delegates SQL
 // operations to the provided KV and admin services.
 func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr string, opts ...ServerOption) *Server {
@@ -119,18 +194,37 @@ func (s *Server) Start() error {
 	// Build the QRDB database provider and SQL engine. When a database
 	// manager is configured, use the manager-backed provider for
 	// multi-database support; otherwise fall back to the legacy
-	// single-database provider.
+	// single-database provider. Either way, the same set of optional
+	// service-wiring options (registry, collections, index acceleration)
+	// applies: NewProvider takes no options, so the legacy path applies
+	// them directly to the constructed *provider.Provider -- the exported
+	// option functions are just closures over unexported fields and work
+	// identically regardless of which constructor built the Provider.
+	var svcOpts []func(*provider.Provider)
+	if s.collectionSvc != nil {
+		svcOpts = append(svcOpts, provider.WithCollectionService(s.collectionSvc))
+	}
+	if s.indexSvc != nil {
+		svcOpts = append(svcOpts, provider.WithIndexService(s.indexSvc))
+	}
+	if s.registry != nil {
+		svcOpts = append(svcOpts, provider.WithRegistry(s.registry))
+	}
+
 	var prov *provider.Provider
 	if s.dbManager != nil {
-		prov = provider.NewManagerProvider(s.dbManager, s.kvSvc,
-			provider.WithProtocol(provider.ProtocolMySQL))
+		managerOpts := append([]func(*provider.Provider){provider.WithProtocol(provider.ProtocolMySQL)}, svcOpts...)
+		prov = provider.NewManagerProvider(s.dbManager, s.kvSvc, managerOpts...)
 	} else {
 		prov = provider.NewProvider(s.dbName, s.kvSvc)
+		for _, opt := range svcOpts {
+			opt(prov)
+		}
 	}
 	s.sqlEngine = engine.New(engine.Config{Provider: prov})
 
 	// Build the session builder for connection authentication.
-	sb := newSessionBuilder(s.authMW)
+	sb := newSessionBuilder(s.authMW, s.sealedProbe)
 
 	// Configure the go-mysql-server server.
 	cfg := server.Config{

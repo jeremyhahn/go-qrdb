@@ -127,6 +127,7 @@ func startUnixTestServerWithCredentials(t *testing.T, credSvc *mockCredentialSvc
 	socketPath := tempSocketPath(t)
 	srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath,
 		unixserver.WithCredentialService(credSvc),
+		unixserver.WithTLS(testUnixServerTLS),
 	)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("failed to start Unix server: %v", err)
@@ -140,7 +141,7 @@ func connectTransportWithCredentials(t *testing.T, credSvc *mockCredentialSvc) (
 	t.Helper()
 	socketPath, stopSrv := startUnixTestServerWithCredentials(t, credSvc)
 
-	tr, err := New(transport.WithAddress(socketPath))
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
 	if err != nil {
 		stopSrv()
 		t.Fatalf("New: %v", err)
@@ -175,7 +176,7 @@ func TestTransport_CredentialSubmit_RoundTrip(t *testing.T) {
 	defer cleanup()
 
 	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
-		Name: "api-token", Value: "letmein",
+		Name: "api-token", Value: []byte("letmein"),
 	}); err != nil {
 		t.Fatalf("CredentialSubmit: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestTransport_CredentialSubmit_ServerError(t *testing.T) {
 	}
 	tr, cleanup := connectTransportWithCredentials(t, svc)
 	defer cleanup()
-	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "x", Value: "v"}); err == nil {
+	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "x", Value: []byte("v")}); err == nil {
 		t.Fatal("expected error from server")
 	}
 }
@@ -348,7 +349,7 @@ func TestTransport_CredentialRotate_RoundTrip(t *testing.T) {
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:               "db-password",
-		NewValue:           "v2-secret",
+		NewValue:           []byte("v2-secret"),
 		GracePeriodSeconds: 120,
 	})
 	if err != nil {
@@ -381,7 +382,7 @@ func TestTransport_CredentialRotate_NoGrace(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
-		Name: "k", NewValue: "v",
+		Name: "k", NewValue: []byte("v"),
 	})
 	if err != nil {
 		t.Fatalf("CredentialRotate: %v", err)
@@ -408,7 +409,7 @@ func TestTransport_CredentialRotate_ServerError(t *testing.T) {
 	tr, cleanup := connectTransportWithCredentials(t, svc)
 	defer cleanup()
 	if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
-		Name: "x", NewValue: "v",
+		Name: "x", NewValue: []byte("v"),
 	}); err == nil {
 		t.Fatal("expected error from server")
 	}
@@ -437,7 +438,7 @@ func TestTransport_CredentialRetrieveVersion_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialRetrieveVersion: %v", err)
 	}
-	if resp.Value != "v7-data" {
+	if string(resp.Value) != "v7-data" {
 		t.Errorf("got value %q, want v7-data", resp.Value)
 	}
 	if gotName != "db" || gotVersion != 7 {
@@ -601,7 +602,7 @@ func TestTransport_Credential_ClosedTransport(t *testing.T) {
 		fn   func() error
 	}{
 		{"Submit", func() error {
-			return tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "x", Value: "y"})
+			return tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "x", Value: []byte("y")})
 		}},
 		{"Strategy", func() error {
 			_, err := tr.CredentialStrategy(context.Background())
@@ -615,7 +616,7 @@ func TestTransport_Credential_ClosedTransport(t *testing.T) {
 			return err
 		}},
 		{"Rotate", func() error {
-			_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "x", NewValue: "y"})
+			_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "x", NewValue: []byte("y")})
 			return err
 		}},
 		{"RetrieveVersion", func() error {

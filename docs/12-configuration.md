@@ -392,6 +392,16 @@ Configures the MVCC (Multi-Version Concurrency Control) versioned key-value engi
 - Setting `revision_limit` to `0` means unlimited revisions are retained per key.
 - The `compaction_retention` value determines how many revisions survive a compaction pass. For example, with a retention of `1000`, at least the most recent 1000 revisions across all keys are preserved.
 
+**Features requiring `raft.sm_type: mvcc`:**
+
+The following KV features are **only** available when using the MVCC state machine. The default `pebble` state machine does not retain revision history and refuses these operations with a clear error message:
+
+- **As-of reads** (`mvcc:get_at_revision`) — read the value of a key at an earlier MVCC revision.
+- **Watch replay** (`watch --start-revision`) — stream changes starting from a historical revision.
+- **Selective restore** (`mvcc:restore`) — logical undo of a bounded key set to an earlier revision.
+
+For these features, you must configure `raft.sm_type: mvcc` before the daemon starts. The state machine type cannot be changed on a running instance.
+
 ---
 
 ### watch

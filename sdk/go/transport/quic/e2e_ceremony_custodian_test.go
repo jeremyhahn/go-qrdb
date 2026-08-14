@@ -102,7 +102,7 @@ func TestE2E_CredentialStore_RoundTrip(t *testing.T) {
 func TestE2E_CredentialRetrieve_RoundTrip(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("credential.Retrieve", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveResponse{Value: "p@ss"})
+		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveResponse{Value: []byte("p@ss")})
 	})
 	val, err := tr.CredentialRetrieve(context.Background(), "db-cred")
 	if err != nil {

@@ -60,7 +60,53 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}, nil
 }
 
-// ImportFile is not yet implemented for the gRPC transport.
-func (t *Transport) ImportFile(_ context.Context, _ string, _ io.Reader, _ transport.ImportOptions) (*transport.ImportResult, error) {
-	return nil, &transport.NotImplementedError{Method: "ImportFile"}
+// ImportFile reads filename's entire contents from data and imports it as
+// key-value pairs through the gRPC transport's unary BatchImport RPC. The
+// active database scope is carried by the transport's x-qrdb-database
+// metadata interceptor (the same mechanism used by every other data-plane
+// RPC), so no explicit database field is sent on the wire.
+func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	file, err := io.ReadAll(data)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+	}
+
+	resp, err := t.client.BatchImport(ctx, &pb.BatchImportRequest{
+		File:          file,
+		Format:        opts.Format,
+		Filename:      filename,
+		KeyField:      opts.KeyField,
+		ValueMode:     opts.ValueMode,
+		ValueField:    opts.ValueField,
+		SkipHeader:    opts.SkipHeader,
+		Transactional: opts.Transactional,
+	})
+	if err != nil {
+		return nil, mapGRPCError("ImportFile", err)
+	}
+
+	return batchImportResponseFromProto(resp), nil
+}
+
+// batchImportResponseFromProto converts a proto BatchImportResponse to a
+// transport.ImportResult.
+func batchImportResponseFromProto(resp *pb.BatchImportResponse) *transport.ImportResult {
+	errs := make([]transport.ImportError, len(resp.GetErrors()))
+	for i, e := range resp.GetErrors() {
+		errs[i] = transport.ImportError{
+			Row:     int(e.GetRow()),
+			Key:     e.GetKey(),
+			Message: e.GetMessage(),
+		}
+	}
+	return &transport.ImportResult{
+		Total:     int(resp.GetTotal()),
+		Succeeded: int(resp.GetSucceeded()),
+		Failed:    int(resp.GetFailed()),
+		Errors:    errs,
+	}
 }

@@ -29,11 +29,10 @@ import (
 
 // drainProtocol describes a single transport target for the admin drain test.
 // scheme is the URL scheme the qrdb CLI uses to select the transport, and tls
-// reports whether the transport requires mTLS client material. The Unix socket
-// transport uses kernel-level access control with insecure gRPC credentials,
-// so it carries no TLS flags; every other transport speaks TLS 1.3 and the CLI
-// must present the admin client certificate (CN=admin, OU=system) so RBAC
-// authorizes the drain platform-wide.
+// reports whether the transport requires mTLS client material. Every
+// transport, including Unix (grpc-over-UDS, "verified TLS 1.3 only"), speaks
+// TLS 1.3 and the CLI must present the admin client certificate (CN=admin,
+// OU=system) so RBAC authorizes the drain platform-wide.
 type drainProtocol struct {
 	name   string
 	scheme string
@@ -56,7 +55,7 @@ func TestAdminDrain_PerProtocol(t *testing.T) {
 		{name: "grpc", scheme: "grpcs", tls: true},
 		{name: "mcp", scheme: "mcp", tls: true},
 		{name: "quic", scheme: "quics", tls: true},
-		{name: "unix", scheme: "unix", tls: false},
+		{name: "unix", scheme: "unix", tls: true},
 	}
 
 	for _, proto := range protocols {

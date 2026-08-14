@@ -53,3 +53,18 @@ type UnsupportedSyntaxError struct {
 func (e *UnsupportedSyntaxError) Error() string {
 	return "sql/engine: unsupported PostgreSQL syntax: " + e.Feature
 }
+
+// UnsupportedColumnTypeError is returned when a PostgreSQL column type in a
+// CREATE TABLE or ALTER TABLE column definition has no go-mysql-server
+// counterpart that preserves its meaning. It names the type as written so
+// the client sees which declaration was refused, rather than receiving a
+// column silently typed as something else -- a translation that runs but is
+// wrong is worse than one that is cleanly rejected.
+type UnsupportedColumnTypeError struct {
+	Type string
+}
+
+// Error returns a human-readable description of the unsupported type.
+func (e *UnsupportedColumnTypeError) Error() string {
+	return "sql/engine: unsupported PostgreSQL column type: " + e.Type
+}

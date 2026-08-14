@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -69,8 +70,10 @@ type Server struct {
 	collectionSvc     service.CollectionServicer
 	databaseSvc       service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
+	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
+	ceremonyCA        ceremony.CeremonyCA
 	tenantSvc         tenant.TenantServicer
 	backupSvc         service.BackupServicer
 	rebalanceSvc      service.RebalanceServicer
@@ -79,8 +82,10 @@ type Server struct {
 	credentialSvc     service.CredentialServicer
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
+	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
+	sealedWindowProbe sealedWindowProbe
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. The tenant comes from the authenticated identity; the database
@@ -94,6 +99,20 @@ type Server struct {
 	handlers  map[string]methodHandler
 	closed    atomic.Bool
 	wg        sync.WaitGroup
+
+	// conns tracks every live *quicgo.Conn (key) accepted by acceptLoop,
+	// mapped to struct{}{}, so Stop can actively close them instead of
+	// merely stopping new accepts. QUIC rides UDP: closing the listener
+	// only stops future Accept calls, it does NOT touch connections already
+	// established, and a client that exits its process without sending an
+	// explicit CONNECTION_CLOSE frame (the qrdb CLI does this today -- each
+	// invocation dials, runs one RPC, and exits without closing the SDK
+	// transport) leaves handleConnection blocked in AcceptStream until the
+	// server's own MaxIdleTimeout (30s) elapses. Without this, Stop's
+	// s.wg.Wait() -- and therefore the whole sealed-window-to-full-boot
+	// listener swap in pkg/server.ServeSealedWindow -- would stall for up
+	// to 30 seconds behind a single idle connection.
+	conns sync.Map
 }
 
 // ServerOption configures optional Server dependencies.
@@ -180,6 +199,35 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
+// WithEncryptionMigrator configures the QUIC server with the
+// enable-encryption migrator, exposing BarrierEnableEncryption over the
+// native QUIC transport the same way it is exposed over REST, gRPC, and Unix.
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(s *Server) { s.encMigrator = m }
+}
+
+// WithSQLService configures the QUIC server with a SQL query service for
+// ad-hoc SQL execution against a named database.
+func WithSQLService(svc service.SQLServicer) ServerOption {
+	return func(s *Server) { s.sqlSvc = svc }
+}
+
+// sealedWindowProbe is the abstraction the sealed-window gate needs to know
+// whether the storage barrier is currently sealed. Mirrors grpcpkg's
+// unexported interface of the same name.
+type sealedWindowProbe interface {
+	IsSealed() bool
+}
+
+// WithSealedWindowProbe installs the sealed-window gate on the native QUIC
+// transport. While probe.IsSealed() returns true, every method whose
+// leading dot-separated component is not "barrier" or "ceremony" (plus
+// admin.Health / admin.Status) is rejected with wire.StatusUnavailable,
+// mirroring SealedWindowAllowlist on the gRPC/REST servers.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) { s.sealedWindowProbe = probe }
+}
+
 // WithPINBackend configures the QUIC server with the canonical
 // pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
 // layer on barrier administrative operations.
@@ -190,6 +238,16 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 // WithCeremonyService configures the QUIC server with a ceremony management service.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) { s.ceremonySvc = svc }
+}
+
+// WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
+// handler to issue the TLS and SO certificates. The CA cannot be serialized
+// over the wire, so it must be injected at server creation time and is held
+// as a server-side reference, mirroring the REST, MCP, and gRPC transports.
+// When unset, CeremonyInitialize fails closed with a
+// *CeremonyCANotConfiguredError instead of dereferencing a nil CA.
+func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
+	return func(s *Server) { s.ceremonyCA = ca }
 }
 
 // WithTenantService configures the QUIC server with a tenant management service.
@@ -325,14 +383,25 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the QUIC server, closing the listener and
-// waiting for in-flight connections to drain.
+// Stop gracefully shuts down the QUIC server: it closes the listener (so
+// no new connections are accepted), actively closes every currently-live
+// connection tracked in s.conns, then waits for their handler goroutines to
+// drain. Actively closing live connections -- rather than merely closing
+// the listener and waiting -- is required because QUIC rides UDP: an idle
+// connection whose client never sent an explicit CONNECTION_CLOSE frame
+// (e.g. a CLI process that exited without calling the SDK transport's
+// Close()) would otherwise sit in AcceptStream until the server's own
+// MaxIdleTimeout (30s) elapses, stalling Stop for up to that long.
 func (s *Server) Stop() {
 	if s.listener == nil {
 		return
 	}
 	s.closed.Store(true)
 	_ = s.listener.Close()
+	s.conns.Range(func(key, _ any) bool {
+		_ = key.(*quicgo.Conn).CloseWithError(0, "server shutting down")
+		return true
+	})
 	s.wg.Wait()
 	slog.Info("QUIC server stopped")
 }
@@ -359,14 +428,19 @@ func (s *Server) acceptLoop() {
 			continue
 		}
 
+		s.conns.Store(conn, struct{}{})
 		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
 }
 
-// handleConnection processes streams on a single QUIC connection.
+// handleConnection processes streams on a single QUIC connection. It
+// deregisters the connection from s.conns on exit so Stop's active-close
+// pass (see Stop's doc comment) never touches an already-finished
+// connection.
 func (s *Server) handleConnection(conn *quicgo.Conn) {
 	defer s.wg.Done()
+	defer s.conns.Delete(conn)
 
 	for {
 		stream, err := conn.AcceptStream(context.Background())
@@ -431,6 +505,17 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 			s.logRequest(method, requestID, wire.StatusPermissionDenied, start)
 			return
 		}
+	}
+
+	// Sealed-window gate: while the barrier is sealed, every method not on
+	// SealedWindowAllowlist is rejected so operators can still drive the
+	// unseal flow (barrier.*/ceremony.*) and liveness probes (admin.Health,
+	// admin.Status) over the native QUIC transport. Mirrors the REST/gRPC
+	// sealed-window middleware/interceptors.
+	if s.sealedWindowProbe != nil && s.sealedWindowProbe.IsSealed() && !sealedWindowAllowed(method) {
+		_ = wire.WriteResponse(stream, requestID, wire.StatusUnavailable, []byte("barrier sealed"))
+		s.logRequest(method, requestID, wire.StatusUnavailable, start)
+		return
 	}
 
 	// Watch is server-streaming: it writes a stream of response frames on this

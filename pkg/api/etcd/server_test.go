@@ -41,6 +41,12 @@ type mockMVCCSvc struct{}
 func (m *mockMVCCSvc) Put(_ context.Context, _ string, _ []byte) error {
 	panic("not implemented")
 }
+
+// PutIfAbsent reports a successful create. This mock keeps no state, so
+// there is nothing for the condition to consult.
+func (m *mockMVCCSvc) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return true, nil
+}
 func (m *mockMVCCSvc) Get(_ context.Context, _ string) ([]byte, error) {
 	panic("not implemented")
 }
@@ -110,10 +116,10 @@ func (m *mockMVCCSvc) GetAtRevision(_ context.Context, _ string, _ int64) (*serv
 func (m *mockMVCCSvc) GetAtRevisionWithConsistency(_ context.Context, _ string, _ int64, _ consistency.ReadOptions) (*service.KeyValue, error) {
 	panic("not implemented")
 }
-func (m *mockMVCCSvc) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (m *mockMVCCSvc) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	panic("not implemented")
 }
-func (m *mockMVCCSvc) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (m *mockMVCCSvc) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	panic("not implemented")
 }
 func (m *mockMVCCSvc) Compact(_ context.Context, _ int64) error {
@@ -959,4 +965,9 @@ func TestStartAllServicesRegistersAll(t *testing.T) {
 			t.Errorf("expected %s to be registered", svcName)
 		}
 	}
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (m *mockMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, nil
 }

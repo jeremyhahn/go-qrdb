@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
@@ -27,6 +28,32 @@ import (
 	pool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// listTenantsWhenReady lists tenants at boot, waiting out the ReadIndex
+// warm-up window on a freshly elected leader. A linearizable read issued
+// before the leader commits its first entry of the current term fails with
+// quicraft.ErrReadIndexNotReady; that state resolves as soon as the no-op
+// commit lands, so the read is retried on that specific transient. Any
+// other error — and the transient persisting past the deadline — is
+// returned to abort boot, preserving fail-closed behavior.
+func listTenantsWhenReady(ctx context.Context, tenantSvc tenant.TenantServicer) ([]tenant.TenantInfo, error) {
+	const (
+		readyDeadline = 15 * time.Second
+		retryInterval = 100 * time.Millisecond
+	)
+	deadline := time.Now().Add(readyDeadline)
+	for {
+		tenants, err := tenantSvc.ListTenants(ctx)
+		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
+			return tenants, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retryInterval):
+		}
+	}
+}
 
 // TenantInfra is the assembled per-tenant isolation stack for one node. All
 // three fields are optional — a nil field means the corresponding subsystem
@@ -214,6 +241,8 @@ func BuildTenantInfra(cfg TenantInfraConfig) (*TenantInfra, error) {
 				cfg.RaftAddr,
 				logger,
 				WithBarrierReadiness(cfg.BarrierReg),
+				WithJoinObserver(ti.Raft),
+				WithPromoter(newRaftPromoter(cfg.Host)),
 			)
 		}
 	}
@@ -258,7 +287,7 @@ func reattachVolumeTenants(
 	hostReg *TenantHostRegistry,
 	logger *slog.Logger,
 ) error {
-	tenants, err := tenantSvc.ListTenants(ctx)
+	tenants, err := listTenantsWhenReady(ctx, tenantSvc)
 	if err != nil {
 		return err
 	}
@@ -334,7 +363,7 @@ func reattachRaftTenants(
 	manager *database.Manager,
 	logger *slog.Logger,
 ) error {
-	tenants, err := tenantSvc.ListTenants(ctx)
+	tenants, err := listTenantsWhenReady(ctx, tenantSvc)
 	if err != nil {
 		return err
 	}

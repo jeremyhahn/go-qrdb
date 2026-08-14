@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
@@ -61,14 +62,24 @@ func (f *fakeMVCCServicer) GetAtRevision(_ context.Context, key string, revision
 func (f *fakeMVCCServicer) GetAtRevisionWithConsistency(_ context.Context, key string, revision int64, _ consistency.ReadOptions) (*kv.KeyValue, error) {
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("v"), ModRevision: revision, Version: 1}, nil
 }
-func (f *fakeMVCCServicer) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1}}, 1, nil
+func (f *fakeMVCCServicer) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1}}, 1, 42, nil
 }
-func (f *fakeMVCCServicer) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1}}, 1, nil
+func (f *fakeMVCCServicer) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1}}, 1, 42, nil
 }
 func (f *fakeMVCCServicer) Compact(_ context.Context, _ int64) error         { return nil }
 func (f *fakeMVCCServicer) CurrentRevision(_ context.Context) (int64, error) { return 42, nil }
+func (f *fakeMVCCServicer) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return &service.RestoreRevisionResult{
+		Revision: req.Revision,
+		Changes: []service.RestoreKeyChange{
+			{Key: "restored-key", Action: service.RestoreActionRevert, FromRevision: 5, ToRevision: 3, ValueBytes: 7},
+		},
+		Applied: 1,
+		DryRun:  req.DryRun,
+	}, nil
+}
 
 // ===========================================================================
 // fakeTransactionServicer
@@ -218,8 +229,18 @@ func TestGRPCMVCC_AllMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("Range", func(t *testing.T) {
-		if _, err := tr.Range(ctx, []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10}); err != nil {
+		resp, err := tr.Range(ctx, []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10})
+		if err != nil {
 			t.Fatalf("Range: %v", err)
+		}
+		// Count and Revision are deliberately distinct values (1 vs 42) so
+		// this test cannot pass by coincidence if the revision is dropped
+		// or confused with the count.
+		if resp.Count != 1 {
+			t.Fatalf("Count = %d, want 1", resp.Count)
+		}
+		if resp.Revision != 42 {
+			t.Fatalf("Revision = %d, want 42", resp.Revision)
 		}
 	})
 	t.Run("Compact", func(t *testing.T) {
@@ -232,6 +253,87 @@ func TestGRPCMVCC_AllMethods_Success(t *testing.T) {
 			t.Fatalf("CurrentRevision: %v", err)
 		}
 	})
+	t.Run("RestoreToRevision", func(t *testing.T) {
+		result, err := tr.RestoreToRevision(ctx, &transport.RestoreRevisionRequest{
+			Revision: 5,
+			Prefix:   []byte("prefix"),
+		})
+		if err != nil {
+			t.Fatalf("RestoreToRevision: %v", err)
+		}
+		if result.Applied != 1 {
+			t.Fatalf("Applied = %d, want 1", result.Applied)
+		}
+		if len(result.Changes) != 1 || string(result.Changes[0].Key) != "restored-key" {
+			t.Fatalf("unexpected changes: %+v", result.Changes)
+		}
+	})
+}
+
+// TestGRPCMVCC_RestoreToRevision_BinaryRoundTrip proves an arbitrary
+// byte-valued prefix and key round-trip byte-for-byte through the gRPC
+// proto `bytes` wire encoding.
+func TestGRPCMVCC_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryKey := []byte{0x00, 0xff, 0xfe, 'k', 0x80, 0x81}
+
+	var captured *service.RestoreRevisionRequest
+	fake := &fakeMVCCServicer{mockKVService: newMockKVService()}
+	fakeWithCapture := &capturingMVCCServicer{fakeMVCCServicer: fake, captured: &captured}
+
+	srv := googlegrpc.NewServer()
+	kvSvc := newMockKVService()
+	adminSvc := newMockAdminService()
+	grpcpkg.RegisterService(srv, kvSvc, adminSvc, grpcpkg.WithRegisterMVCC(fakeWithCapture))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(lis) }()
+	defer srv.Stop()
+
+	tr, cleanup := connectMVCCTransport(t, lis.Addr().String())
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Keys:     [][]byte{binaryKey},
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected a non-nil result")
+	}
+
+	if captured == nil || len(captured.Keys) != 1 || captured.Keys[0] != string(binaryKey) {
+		t.Fatalf("expected service to receive binary key %v, got %+v", binaryKey, captured)
+	}
+}
+
+// capturingMVCCServicer wraps fakeMVCCServicer and records the last
+// RestoreToRevision request it received, for binary round-trip assertions.
+type capturingMVCCServicer struct {
+	*fakeMVCCServicer
+	captured **service.RestoreRevisionRequest
+}
+
+func (c *capturingMVCCServicer) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	*c.captured = req
+	return c.fakeMVCCServicer.RestoreToRevision(ctx, req)
+}
+
+// TestGRPCMVCC_RestoreToRevision_NilRequest proves the client fails fast on
+// a nil request rather than sending a zero-value RPC.
+func TestGRPCMVCC_RestoreToRevision_NilRequest(t *testing.T) {
+	addr, stop := startMVCCServer(t)
+	defer stop()
+	tr, cleanup := connectMVCCTransport(t, addr)
+	defer cleanup()
+
+	_, err := tr.RestoreToRevision(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request")
+	}
 }
 
 // ===========================================================================
@@ -288,6 +390,23 @@ func TestGRPCBatch_Execute_Success(t *testing.T) {
 	}
 	if len(resp.Responses) != 2 {
 		t.Fatalf("got %d responses", len(resp.Responses))
+	}
+}
+
+func TestGRPCBatch_Import_Success(t *testing.T) {
+	addr, stop := startMVCCServer(t)
+	defer stop()
+	tr, cleanup := connectMVCCTransport(t, addr)
+	defer cleanup()
+
+	result, err := tr.ImportFile(context.Background(), "data.csv",
+		strings.NewReader("id,val\n1,a\n2,b\n"),
+		transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
 	}
 }
 

@@ -179,7 +179,7 @@ func (s *stubMCPDBWithBarrier) SealDatabase(ctx context.Context, name string) er
 func (s *stubMCPDBWithBarrier) UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error {
 	return s.unsealFn(ctx, name, creds)
 }
-func (s *stubMCPDBWithBarrier) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (s *stubMCPDBWithBarrier) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	return s.barrierStatusFn(name)
 }
 
@@ -223,7 +223,10 @@ func (s *stubMCPCeremonySvc) CeremonyBeginClaimCert(_ context.Context, _ string)
 func (s *stubMCPCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
 	return nil, nil
 }
-func (s *stubMCPCeremonySvc) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
+func (s *stubMCPCeremonySvc) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
+	return nil, nil
+}
+func (s *stubMCPCeremonySvc) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
 	return nil, nil
 }
 func (s *stubMCPCeremonySvc) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
@@ -990,7 +993,7 @@ func TestHandleCredentialStore_Success(t *testing.T) {
 	handler := handleCredentialStore(svc)
 	req := buildCallToolRequest(t, "qrdb_credential_store", map[string]any{
 		"name":  "mykey",
-		"value": "s3cr3t",
+		"value": base64.StdEncoding.EncodeToString([]byte("s3cr3t")),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1012,7 +1015,7 @@ func TestHandleCredentialStore_ServiceError(t *testing.T) {
 	handler := handleCredentialStore(svc)
 	req := buildCallToolRequest(t, "qrdb_credential_store", map[string]any{
 		"name":  "k",
-		"value": "v",
+		"value": base64.StdEncoding.EncodeToString([]byte("v")),
 	})
 	_, err := handler(context.Background(), req)
 	if err == nil {
@@ -1051,8 +1054,12 @@ func TestHandleCredentialRetrieve_Success(t *testing.T) {
 	if result.IsError {
 		t.Errorf("unexpected error result")
 	}
-	if resultText(t, result) != "retrieved-value" {
-		t.Errorf("text = %q, want retrieved-value", resultText(t, result))
+	decoded, decErr := base64.StdEncoding.DecodeString(resultText(t, result))
+	if decErr != nil {
+		t.Fatalf("result is not valid base64: %v", decErr)
+	}
+	if string(decoded) != "retrieved-value" {
+		t.Errorf("value = %q, want retrieved-value", string(decoded))
 	}
 }
 

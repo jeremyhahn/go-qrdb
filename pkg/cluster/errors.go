@@ -119,6 +119,31 @@ func (e *NoPeersError) Error() string {
 	return "cluster: no peers configured for static discovery"
 }
 
+// UnknownAPIProtocolError is returned when an advertised (or requested) API
+// protocol is not one of cluster.APIProtocols.
+type UnknownAPIProtocolError struct {
+	// Name is the unrecognized protocol name.
+	Name string
+}
+
+// Error returns a human-readable description of the unknown protocol.
+func (e *UnknownAPIProtocolError) Error() string {
+	return "cluster: unknown api protocol " + strconv.Quote(e.Name)
+}
+
+// EmptyAPIEndpointError is returned when a member advertises a known protocol
+// with an empty address. Publishing an empty address is worse than publishing
+// nothing: a consumer cannot distinguish it from "not served".
+type EmptyAPIEndpointError struct {
+	// Protocol is the protocol whose address was empty.
+	Protocol APIProtocol
+}
+
+// Error returns a human-readable description of the empty endpoint.
+func (e *EmptyAPIEndpointError) Error() string {
+	return "cluster: empty api endpoint for protocol " + strconv.Quote(string(e.Protocol))
+}
+
 // MembershipError is a membership manager configuration or state error.
 type MembershipError struct {
 	// Reason describes the failure.

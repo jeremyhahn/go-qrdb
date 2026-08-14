@@ -57,6 +57,18 @@ const (
 	// Payload: [keyLen:2 LE][key][leaseID:8 LE][value]
 	OpMVCCPut byte = 10
 
+	// OpMVCCPutIfAbsent stores a key-value pair with MVCC revision tracking
+	// only when the key is absent.
+	//
+	// It carries a distinct opcode rather than a flag on OpMVCCPut so an older
+	// replica rejects it as unknown instead of applying it as an unconditional
+	// put — which would silently discard the condition and let a single-use
+	// credential be issued twice.
+	//
+	// The condition is evaluated inside the state machine, against replicated
+	// state at this log position, so every replica decides identically.
+	OpMVCCPutIfAbsent byte = 65
+
 	// OpMVCCDelete removes a key with MVCC revision tracking.
 	// Payload: [keyLen:2 LE][key]
 	OpMVCCDelete byte = 11
@@ -154,6 +166,31 @@ const (
 // headerSize is 1 byte for the op code.
 const headerSize = 1
 
+// FrameSize is the width, in bytes, of every length and count prefix in the
+// transaction and batch encodings (EncodeOp, EncodeCompare, EncodeTransaction,
+// EncodeBatch and their decoders).
+//
+// It is 4 rather than 2 because these are the encodings the SQL layer writes
+// rows through: a 2-byte prefix caps a single value at 65535 bytes and a
+// single transaction at 65535 operations, which makes an ordinary BLOB column
+// or a moderately sized batch insert unrepresentable. A 4-byte prefix removes
+// both ceilings, leaving go-quicraft's proto.MaxEntrySize (8 MiB per Raft log
+// entry) as the only real limit — an operational bound the service layer
+// already accounts for.
+//
+// It is exported because callers that size or chunk proposals must account for
+// this framing exactly; deriving it from here keeps their arithmetic correct if
+// the width ever changes again, rather than silently under-counting.
+//
+// Note that these encodings appear in the Raft log, so this width is not a
+// free parameter: changing it makes previously written log entries
+// undecodable. That is acceptable while qrdb is pre-release and no
+// compatibility is promised.
+const FrameSize = 4
+
+// frameSize is the unexported spelling used throughout this package.
+const frameSize = FrameSize
+
 // ---------------------------------------------------------------------------
 // MVCC encoders
 // ---------------------------------------------------------------------------
@@ -163,6 +200,19 @@ const headerSize = 1
 func EncodeMVCCPut(key, value []byte, leaseID int64) []byte {
 	buf := make([]byte, headerSize+2+len(key)+8+len(value))
 	buf[0] = OpMVCCPut
+	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	copy(buf[3:], key)
+	binary.LittleEndian.PutUint64(buf[3+len(key):], uint64(leaseID))
+	copy(buf[3+len(key)+8:], value)
+	return buf
+}
+
+// EncodeMVCCPutIfAbsent creates a binary MVCC conditional-put command.
+// Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value] — identical to
+// EncodeMVCCPut apart from the opcode, so the decoder needs no new path.
+func EncodeMVCCPutIfAbsent(key, value []byte, leaseID int64) []byte {
+	buf := make([]byte, headerSize+2+len(key)+8+len(value))
+	buf[0] = OpMVCCPutIfAbsent
 	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
 	copy(buf[3:], key)
 	binary.LittleEndian.PutUint64(buf[3+len(key):], uint64(leaseID))
@@ -458,27 +508,27 @@ func DecodeTSWriteBatch(payload []byte) ([]TSWriteParams, error) {
 // ---------------------------------------------------------------------------
 
 // EncodeOp encodes a single operation for use in transaction and batch payloads.
-// Format: [opType:1][keyLen:2 LE][key][valLen:2 LE][value][rangeEndLen:2 LE][rangeEnd][leaseID:8 LE]
+// Format: [opType:1][keyLen:4 LE][key][valLen:4 LE][value][rangeEndLen:4 LE][rangeEnd][leaseID:8 LE]
 func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) []byte {
-	size := 1 + 2 + len(key) + 2 + len(value) + 2 + len(rangeEnd) + 8
+	size := 1 + frameSize + len(key) + frameSize + len(value) + frameSize + len(rangeEnd) + 8
 	buf := make([]byte, size)
 	off := 0
 
 	buf[off] = opType
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(key)))
-	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(key)))
+	off += frameSize
 	copy(buf[off:], key)
 	off += len(key)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(value)))
-	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(value)))
+	off += frameSize
 	copy(buf[off:], value)
 	off += len(value)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(rangeEnd)))
-	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(rangeEnd)))
+	off += frameSize
 	copy(buf[off:], rangeEnd)
 	off += len(rangeEnd)
 
@@ -488,14 +538,14 @@ func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) []byte {
 }
 
 // EncodeCompare encodes a single compare for transaction payloads.
-// Format: [keyLen:2 LE][key][target:1][result:1][valLen:2 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE]
+// Format: [keyLen:4 LE][key][target:1][result:1][valLen:4 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE]
 func EncodeCompare(key []byte, target, result byte, value []byte, version, createRevision, modRevision int64) []byte {
-	size := 2 + len(key) + 1 + 1 + 2 + len(value) + 8 + 8 + 8
+	size := frameSize + len(key) + 1 + 1 + frameSize + len(value) + 8 + 8 + 8
 	buf := make([]byte, size)
 	off := 0
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(key)))
-	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(key)))
+	off += frameSize
 	copy(buf[off:], key)
 	off += len(key)
 
@@ -504,8 +554,8 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 	buf[off] = result
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(value)))
-	off += 2
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(value)))
+	off += frameSize
 	copy(buf[off:], value)
 	off += len(value)
 
@@ -519,17 +569,17 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 }
 
 // EncodeTransaction creates a binary Transaction command.
-// Format: [op:1][compareCount:2 LE][compares...][successCount:2 LE][successOps...][failureCount:2 LE][failureOps...]
+// Format: [op:1][compareCount:4 LE][compares...][successCount:4 LE][successOps...][failureCount:4 LE][failureOps...]
 func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
-	size := headerSize + 2 + 2 + 2
+	size := headerSize + frameSize + frameSize + frameSize
 	for _, c := range compares {
-		size += 2 + len(c)
+		size += frameSize + len(c)
 	}
 	for _, op := range successOps {
-		size += 2 + len(op)
+		size += frameSize + len(op)
 	}
 	for _, op := range failureOps {
-		size += 2 + len(op)
+		size += frameSize + len(op)
 	}
 
 	buf := make([]byte, size)
@@ -538,42 +588,19 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
 	buf[off] = OpTransaction
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(compares)))
-	off += 2
-	for _, c := range compares {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(c)))
-		off += 2
-		copy(buf[off:], c)
-		off += len(c)
-	}
-
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(successOps)))
-	off += 2
-	for _, op := range successOps {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(op)))
-		off += 2
-		copy(buf[off:], op)
-		off += len(op)
-	}
-
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(failureOps)))
-	off += 2
-	for _, op := range failureOps {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(op)))
-		off += 2
-		copy(buf[off:], op)
-		off += len(op)
-	}
+	off += encodeFramedSlices(buf[off:], compares)
+	off += encodeFramedSlices(buf[off:], successOps)
+	encodeFramedSlices(buf[off:], failureOps)
 
 	return buf
 }
 
 // EncodeBatch creates a binary Batch command.
-// Format: [op:1][opCount:2 LE][ops...]
+// Format: [op:1][opCount:4 LE][ops...]
 func EncodeBatch(ops [][]byte) []byte {
-	size := headerSize + 2
+	size := headerSize + frameSize
 	for _, op := range ops {
-		size += 2 + len(op)
+		size += frameSize + len(op)
 	}
 
 	buf := make([]byte, size)
@@ -582,16 +609,26 @@ func EncodeBatch(ops [][]byte) []byte {
 	buf[off] = OpBatch
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(ops)))
-	off += 2
-	for _, op := range ops {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(op)))
-		off += 2
-		copy(buf[off:], op)
-		off += len(op)
-	}
+	encodeFramedSlices(buf[off:], ops)
 
 	return buf
+}
+
+// encodeFramedSlices writes a count-prefixed run of length-prefixed byte
+// slices into buf and returns the number of bytes written. Both the count and
+// each element length are frameSize-byte little-endian values. buf must be
+// large enough to hold the whole run.
+func encodeFramedSlices(buf []byte, items [][]byte) int {
+	off := 0
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(items)))
+	off += frameSize
+	for _, item := range items {
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(item)))
+		off += frameSize
+		copy(buf[off:], item)
+		off += len(item)
+	}
+	return off
 }
 
 // ---------------------------------------------------------------------------
@@ -868,34 +905,34 @@ func DecodeOp(data []byte) (DecodedOp, int, error) {
 	opType := data[off]
 	off++
 
-	if off+2 > len(data) {
+	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing key length"}
 	}
-	keyLen := int(binary.LittleEndian.Uint16(data[off:]))
-	off += 2
-	if off+keyLen > len(data) {
+	keyLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += frameSize
+	if keyLen < 0 || off+keyLen > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: key exceeds data"}
 	}
 	key := data[off : off+keyLen]
 	off += keyLen
 
-	if off+2 > len(data) {
+	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing value length"}
 	}
-	valLen := int(binary.LittleEndian.Uint16(data[off:]))
-	off += 2
-	if off+valLen > len(data) {
+	valLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += frameSize
+	if valLen < 0 || off+valLen > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: value exceeds data"}
 	}
 	value := data[off : off+valLen]
 	off += valLen
 
-	if off+2 > len(data) {
+	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing range end length"}
 	}
-	reLen := int(binary.LittleEndian.Uint16(data[off:]))
-	off += 2
-	if off+reLen > len(data) {
+	reLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += frameSize
+	if reLen < 0 || off+reLen > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: range end exceeds data"}
 	}
 	rangeEnd := data[off : off+reLen]
@@ -929,14 +966,14 @@ type DecodedCompare struct {
 
 // DecodeCompare decodes a single compare from its binary representation.
 func DecodeCompare(data []byte) (DecodedCompare, int, error) {
-	if len(data) < 2 {
+	if len(data) < frameSize {
 		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: data too short"}
 	}
 
 	off := 0
-	keyLen := int(binary.LittleEndian.Uint16(data[off:]))
-	off += 2
-	if off+keyLen > len(data) {
+	keyLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += frameSize
+	if keyLen < 0 || off+keyLen > len(data) {
 		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: key exceeds data"}
 	}
 	key := data[off : off+keyLen]
@@ -950,12 +987,12 @@ func DecodeCompare(data []byte) (DecodedCompare, int, error) {
 	result := data[off]
 	off++
 
-	if off+2 > len(data) {
+	if off+frameSize > len(data) {
 		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: missing value length"}
 	}
-	valLen := int(binary.LittleEndian.Uint16(data[off:]))
-	off += 2
-	if off+valLen > len(data) {
+	valLen := int(binary.LittleEndian.Uint32(data[off:]))
+	off += frameSize
+	if valLen < 0 || off+valLen > len(data) {
 		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: value exceeds data"}
 	}
 	value := data[off : off+valLen]
@@ -989,24 +1026,41 @@ type DecodedTransaction struct {
 	FailureOps []DecodedOp
 }
 
+// maxPrealloc bounds how many elements a decoder will reserve capacity for up
+// front. Element counts are read from the payload before the corresponding
+// bytes have been shown to exist, and with a 4-byte count field a corrupt or
+// hostile header can name billions of elements. Reserving min(count,
+// maxPrealloc) keeps the common case allocation-efficient while ensuring a bad
+// count costs a bounded allocation rather than an out-of-memory kill; append
+// grows the slice normally for genuinely large payloads.
+const maxPrealloc = 1024
+
+// preallocSize returns the capacity to reserve for a decoded element count.
+func preallocSize(count int) int {
+	if count < 0 || count > maxPrealloc {
+		return maxPrealloc
+	}
+	return count
+}
+
 // DecodeTransaction decodes a full transaction payload.
 func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 	off := 0
 
-	if off+2 > len(payload) {
+	if off+frameSize > len(payload) {
 		return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: missing compare count"}
 	}
-	compareCount := int(binary.LittleEndian.Uint16(payload[off:]))
-	off += 2
+	compareCount := int(binary.LittleEndian.Uint32(payload[off:]))
+	off += frameSize
 
-	compares := make([]DecodedCompare, 0, compareCount)
+	compares := make([]DecodedCompare, 0, preallocSize(compareCount))
 	for i := 0; i < compareCount; i++ {
-		if off+2 > len(payload) {
+		if off+frameSize > len(payload) {
 			return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: truncated compare length"}
 		}
-		cLen := int(binary.LittleEndian.Uint16(payload[off:]))
-		off += 2
-		if off+cLen > len(payload) {
+		cLen := int(binary.LittleEndian.Uint32(payload[off:]))
+		off += frameSize
+		if cLen < 0 || off+cLen > len(payload) {
 			return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: compare exceeds payload"}
 		}
 		c, _, err := DecodeCompare(payload[off : off+cLen])
@@ -1018,19 +1072,19 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 	}
 
 	decodeOps := func(label string) ([]DecodedOp, error) {
-		if off+2 > len(payload) {
+		if off+frameSize > len(payload) {
 			return nil, &InvalidCommandError{Reason: "txn: missing " + label + " count"}
 		}
-		count := int(binary.LittleEndian.Uint16(payload[off:]))
-		off += 2
-		ops := make([]DecodedOp, 0, count)
+		count := int(binary.LittleEndian.Uint32(payload[off:]))
+		off += frameSize
+		ops := make([]DecodedOp, 0, preallocSize(count))
 		for i := 0; i < count; i++ {
-			if off+2 > len(payload) {
+			if off+frameSize > len(payload) {
 				return nil, &InvalidCommandError{Reason: "txn: truncated " + label + " op length"}
 			}
-			oLen := int(binary.LittleEndian.Uint16(payload[off:]))
-			off += 2
-			if off+oLen > len(payload) {
+			oLen := int(binary.LittleEndian.Uint32(payload[off:]))
+			off += frameSize
+			if oLen < 0 || off+oLen > len(payload) {
 				return nil, &InvalidCommandError{Reason: "txn: " + label + " op exceeds payload"}
 			}
 			op, _, err := DecodeOp(payload[off : off+oLen])
@@ -1062,22 +1116,22 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 
 // DecodeBatch decodes a batch payload into individual operations.
 func DecodeBatch(payload []byte) ([]DecodedOp, error) {
-	if len(payload) < 2 {
+	if len(payload) < frameSize {
 		return nil, &InvalidCommandError{Reason: "batch: payload too short"}
 	}
 
 	off := 0
-	opCount := int(binary.LittleEndian.Uint16(payload[off:]))
-	off += 2
+	opCount := int(binary.LittleEndian.Uint32(payload[off:]))
+	off += frameSize
 
-	ops := make([]DecodedOp, 0, opCount)
+	ops := make([]DecodedOp, 0, preallocSize(opCount))
 	for i := 0; i < opCount; i++ {
-		if off+2 > len(payload) {
+		if off+frameSize > len(payload) {
 			return nil, &InvalidCommandError{Reason: "batch: truncated op length"}
 		}
-		oLen := int(binary.LittleEndian.Uint16(payload[off:]))
-		off += 2
-		if off+oLen > len(payload) {
+		oLen := int(binary.LittleEndian.Uint32(payload[off:]))
+		off += frameSize
+		if oLen < 0 || off+oLen > len(payload) {
 			return nil, &InvalidCommandError{Reason: "batch: op exceeds payload"}
 		}
 		op, _, err := DecodeOp(payload[off : off+oLen])

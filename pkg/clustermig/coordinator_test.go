@@ -86,6 +86,67 @@ func TestCoordinator_Request_BumpsGeneration(t *testing.T) {
 	}
 }
 
+// shamirOpts returns a Shamir-target MigrationOptions that passes Validate.
+func shamirOpts(threshold, total int) seal.MigrationOptions {
+	return seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: threshold,
+		ShamirTotal:     total,
+	}
+}
+
+// TestCoordinator_Request_CarriesShamirFields proves a Shamir-target request's
+// ShamirThreshold/ShamirTotal are threaded into the persisted ClusterMigration
+// record (both the return value and what a fresh Store read sees) — the exact
+// field that was missing, causing every owner's reconciler to rebuild
+// threshold=0/total=0 and fail seal.MigrationOptions.Validate() forever.
+func TestCoordinator_Request_CarriesShamirFields(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	c := NewCoordinator(s, fixedOwners{shardID: 7, owners: []string{"n1", "n2", "n3"}}, nil,
+		func() bool { return true }, nil)
+
+	m, err := c.Request(ctx, tid, db, shamirOpts(2, 3), nil)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if m.Target != seal.StrategyShamir || m.ShamirThreshold != 2 || m.ShamirTotal != 3 {
+		t.Fatalf("intent shamir fields = target=%s threshold=%d total=%d, want shamir/2/3",
+			m.Target, m.ShamirThreshold, m.ShamirTotal)
+	}
+	got, err := s.GetMigration(ctx, tid, db)
+	if err != nil || got == nil {
+		t.Fatalf("GetMigration = %v, %v", got, err)
+	}
+	if got.ShamirThreshold != 2 || got.ShamirTotal != 3 {
+		t.Fatalf("persisted shamir fields = %d/%d, want 2/3", got.ShamirThreshold, got.ShamirTotal)
+	}
+}
+
+// TestCoordinator_Request_RejectsInvalidShamirThreshold proves an out-of-range
+// Shamir M-of-N is rejected with a typed error AT REQUEST TIME — before any
+// owner is resolved or any intent record written — rather than being silently
+// accepted and only failing later, invisibly, inside the reconciler.
+func TestCoordinator_Request_RejectsInvalidShamirThreshold(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	c := NewCoordinator(s, fixedOwners{owners: []string{"n1"}}, nil, func() bool { return true }, nil)
+
+	// threshold(1) < 2.
+	if _, err := c.Request(ctx, tid, db, shamirOpts(1, 3), nil); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
+		t.Fatalf("Request(threshold=1) = %v, want ErrShamirThresholdInvalid", err)
+	}
+	// threshold(4) > total(3).
+	if _, err := c.Request(ctx, tid, db, shamirOpts(4, 3), nil); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
+		t.Fatalf("Request(threshold=4,total=3) = %v, want ErrShamirThresholdInvalid", err)
+	}
+	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
+		t.Fatal("an invalid Shamir request must not write an intent record")
+	}
+}
+
 // TestCoordinator_Request_NotLeader proves a follower forwards (errors) rather
 // than writing the replicated intent twice.
 func TestCoordinator_Request_NotLeader(t *testing.T) {

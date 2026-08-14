@@ -50,6 +50,21 @@ const (
 	MVCCCompact Permission = "mvcc:compact"
 	// MVCCCurrentRevision grants access to query the current revision.
 	MVCCCurrentRevision Permission = "mvcc:current_revision"
+	// MVCCRestore grants selective point-in-time restore: returning a
+	// bounded, explicitly scoped set of user keys to the value they held at
+	// an earlier MVCC revision by proposing new writes.
+	//
+	// It is a privileged BULK MUTATION, not a read, and is separated from
+	// mvcc:get_at_revision for that reason: reading history is an ordinary
+	// data-plane capability, while rewriting a range of live keys from
+	// history can undo a deliberate change across many keys at once. It is
+	// granted only to Admin and Operator — never to User, Auditor, or the
+	// Security Officer (who holds no data-plane verb at all).
+	//
+	// Unlike mvcc:compact this is NOT store-global: a restore names the keys
+	// it writes and is confined to the caller's tenant and database namespace
+	// by server.namespacedMVCCService, so it keeps the default ScopeSelf.
+	MVCCRestore Permission = "mvcc:restore"
 )
 
 // ---------------------------------------------------------------------------
@@ -375,6 +390,23 @@ const (
 )
 
 // ---------------------------------------------------------------------------
+// SSH key vault permissions
+// ---------------------------------------------------------------------------
+
+const (
+	// SSHRead grants access to read, list, and export SSH keys, known hosts,
+	// and authorized keys. Export returns private key material for a key whose
+	// backend allows it, so this is not a metadata-only verb.
+	SSHRead Permission = "ssh:read"
+	// SSHWrite grants access to generate or import SSH keys, sign with them,
+	// and add known-host or authorized-key entries.
+	SSHWrite Permission = "ssh:write"
+	// SSHDelete grants access to delete SSH keys and remove known-host or
+	// authorized-key entries.
+	SSHDelete Permission = "ssh:delete"
+)
+
+// ---------------------------------------------------------------------------
 // Seal management permissions
 // ---------------------------------------------------------------------------
 
@@ -593,6 +625,12 @@ const (
 	// databases.
 	DatabasesCreateVolume Permission = "databases:create_volume"
 
+	// DatabasesScale gates changing the replication factor of an existing
+	// dedicated-raft database -- a privileged infra operation distinct from
+	// DatabasesUpdate (it consumes quota and mutates cluster placement/Raft
+	// membership, unlike a config-field update).
+	DatabasesScale Permission = "databases:scale"
+
 	// Database encryption-barrier lifecycle. Sealing/unsealing a database's
 	// at-rest barrier is a sensitive custody operation, gated separately from
 	// generic configuration updates.
@@ -728,6 +766,7 @@ var categories = []Category{
 		Permissions: []Permission{
 			MVCCPutWithLease, MVCCGetRevision, MVCCGetAtRevision,
 			MVCCRange, MVCCCompact, MVCCCurrentRevision,
+			MVCCRestore,
 		},
 	},
 	{
@@ -851,6 +890,13 @@ var categories = []Category{
 		},
 	},
 	{
+		Name:  "SSH Key Vault",
+		Group: "Security Services",
+		Permissions: []Permission{
+			SSHRead, SSHWrite, SSHDelete,
+		},
+	},
+	{
 		Name:  "Seal Management",
 		Group: "Admin Services",
 		Permissions: []Permission{
@@ -925,7 +971,7 @@ var categories = []Category{
 		Group: "Management Services",
 		Permissions: []Permission{
 			DatabasesCreate, DatabasesRead, DatabasesList, DatabasesDelete, DatabasesUpdate,
-			DatabasesCreateRaft, DatabasesCreateVolume,
+			DatabasesCreateRaft, DatabasesCreateVolume, DatabasesScale,
 			DatabasesSeal, DatabasesUnseal, DatabasesBarrierStatus,
 		},
 	},
@@ -1005,9 +1051,28 @@ var categories = []Category{
 	},
 }
 
+// credentialPermissions returns every named-credential permission. The
+// credential store is a single system-scoped barrier keyed by credential name
+// with NO tenant namespacing (see pkg/credentials/versioned.go), so these
+// permissions MUST be system-scoped: a tenant-local role must never be able to
+// satisfy them and thereby read or mutate another tenant's (or the platform's)
+// credential material. Tagging them ScopeCross confines every credential
+// operation to the structurally privileged system tenant.
+func credentialPermissions() []Permission {
+	return []Permission{
+		CredentialsSubmit, CredentialsStrategy, CredentialsList, CredentialsDelete,
+		CredentialsRotate, CredentialsGCExpired, CredentialsRetrieveVersion,
+		CredentialsListVersions, CredentialsStore, CredentialsRetrieve,
+	}
+}
+
 func init() {
 	// Register all permissions from all categories into the global registry.
 	for _, cat := range categories {
 		Register(cat.Permissions...)
 	}
+	// The credential store is not tenant-namespaced; confine every credential
+	// permission to the system tenant so a tenant-scoped role can never satisfy
+	// it (latent cross-tenant hole — no built-in tenant role grants these).
+	RegisterScope(ScopeCross, credentialPermissions()...)
 }

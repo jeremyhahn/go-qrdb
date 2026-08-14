@@ -87,6 +87,20 @@ func (m *intKV) Put(_ context.Context, k string, v []byte) error {
 	return nil
 }
 
+// PutIfAbsent stores v under k only when k is absent, reporting whether it
+// stored. The whole check-and-store is done under the same lock Put uses, so
+// concurrent callers see exactly one winner — the atomicity the interface
+// requires, not a Get-then-Put approximation of it.
+func (m *intKV) PutIfAbsent(_ context.Context, k string, v []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.store[k]; exists {
+		return false, nil
+	}
+	m.store[k] = append([]byte(nil), v...)
+	return true, nil
+}
+
 func (m *intKV) Get(_ context.Context, k string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -250,7 +264,10 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.grpcLis = lis
 	h.grpcSrv = grpc.NewServer()
-	grpcsrv.RegisterUserAuthFactorService(h.grpcSrv, svc)
+	// userSvc is nil here: this harness exercises the auth-factor RPCs, not
+	// login-response enrichment (which is best-effort and skipped on a nil
+	// user servicer).
+	grpcsrv.RegisterUserAuthFactorService(h.grpcSrv, svc, nil)
 	go func() { _ = h.grpcSrv.Serve(lis) }()
 
 	conn, err := grpc.NewClient(lis.Addr().String(),

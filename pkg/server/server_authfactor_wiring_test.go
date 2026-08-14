@@ -109,7 +109,7 @@ func TestEnsureAuthFactorService_NoRegistry(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() without FactorRegistry: %v", err)

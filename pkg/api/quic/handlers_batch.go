@@ -15,6 +15,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 
 	"google.golang.org/protobuf/proto"
@@ -53,6 +54,60 @@ func (s *Server) handleBatch(ctx context.Context, payload []byte) ([]byte, error
 	}
 
 	resp, err := proto.Marshal(&pb.BatchResponse{Responses: responses})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleBatchImport parses and imports key-value pairs from the file carried
+// in the request. It resolves the batch service through the SAME
+// per-(tenant, database) scope as handleBatch, so the namespaced wrapper's
+// KeyPrefix is applied to every imported key exactly as it is for every
+// other write to the database. The file must fit within the wire protocol's
+// MaxPayloadSize (see wire.MaxPayloadSize), which ReadRequest enforces
+// before this handler ever runs.
+func (s *Server) handleBatchImport(ctx context.Context, payload []byte) ([]byte, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.BatchImportRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	opts := service.ImportOptions{
+		Format:        req.GetFormat(),
+		Filename:      req.GetFilename(),
+		KeyField:      req.GetKeyField(),
+		ValueMode:     req.GetValueMode(),
+		ValueField:    req.GetValueField(),
+		SkipHeader:    req.GetSkipHeader(),
+		Transactional: req.GetTransactional(),
+	}
+
+	result, err := batchSvc.Import(ctx, bytes.NewReader(req.GetFile()), opts)
+	if err != nil {
+		return nil, err
+	}
+
+	errs := make([]*pb.BatchImportError, len(result.Errors))
+	for i, e := range result.Errors {
+		errs[i] = &pb.BatchImportError{
+			Row:     int32(e.Row),
+			Key:     e.Key,
+			Message: e.Message,
+		}
+	}
+
+	resp, err := proto.Marshal(&pb.BatchImportResponse{
+		Total:     int32(result.Total),
+		Succeeded: int32(result.Succeeded),
+		Failed:    int32(result.Failed),
+		Errors:    errs,
+	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

@@ -38,7 +38,7 @@ type mockMVCCKVServicer struct {
 	getRevisionFn     func(ctx context.Context, key string) (*kv.KeyValue, error)
 	putWithLeaseFn    func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
 	deleteFn          func(ctx context.Context, key string) error
-	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
 	compactFn         func(ctx context.Context, revision int64) error
 	currentRevisionFn func(ctx context.Context) (int64, error)
 }
@@ -64,11 +64,11 @@ func (m *mockMVCCKVServicer) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (m *mockMVCCKVServicer) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCKVServicer) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeFn != nil {
 		return m.rangeFn(ctx, start, end, opts...)
 	}
-	return nil, 0, nil
+	return nil, 0, 0, nil
 }
 
 func (m *mockMVCCKVServicer) Compact(ctx context.Context, revision int64) error {
@@ -222,11 +222,11 @@ func TestRange_WithLimitOption(t *testing.T) {
 		currentRevisionFn: func(_ context.Context) (int64, error) {
 			return 10, nil
 		},
-		rangeFn: func(_ context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			capturedOpts = opts
 			return []*kv.KeyValue{
 				{Key: []byte("a"), Value: []byte("1"), ModRevision: 8, Version: 1},
-			}, 3, nil
+			}, 3, 8, nil
 		},
 	}
 
@@ -261,13 +261,13 @@ func TestRange_AllKeysRange(t *testing.T) {
 		currentRevisionFn: func(_ context.Context) (int64, error) {
 			return 7, nil
 		},
-		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			capturedStart = start
 			capturedEnd = end
 			return []*kv.KeyValue{
 				{Key: []byte("a"), Value: []byte("1"), ModRevision: 3, Version: 1},
 				{Key: []byte("b"), Value: []byte("2"), ModRevision: 5, Version: 1},
-			}, 2, nil
+			}, 2, 5, nil
 		},
 	}
 
@@ -305,8 +305,8 @@ func TestRange_RangeError(t *testing.T) {
 		currentRevisionFn: func(_ context.Context) (int64, error) {
 			return 1, nil
 		},
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, errors.New("storage failure")
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, errors.New("storage failure")
 		},
 	}
 
@@ -335,9 +335,9 @@ func TestRange_WithRevisionAndCountOnlyAndKeysOnly(t *testing.T) {
 		currentRevisionFn: func(_ context.Context) (int64, error) {
 			return 20, nil
 		},
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			capturedOpts = opts
-			return nil, 5, nil
+			return nil, 5, 20, nil
 		},
 	}
 
@@ -661,12 +661,12 @@ func TestDeleteRange_RangeDeleteWithPrevKV(t *testing.T) {
 
 	deletedKeys := make(map[string]bool)
 	mvcc := &mockMVCCKVServicer{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte("a"), Value: []byte("1"), ModRevision: 3, Version: 1},
 				{Key: []byte("b"), Value: []byte("2"), ModRevision: 4, Version: 1},
 				{Key: []byte("c"), Value: []byte("3"), ModRevision: 5, Version: 1},
-			}, 3, nil
+			}, 3, 5, nil
 		},
 		deleteFn: func(_ context.Context, key string) error {
 			deletedKeys[key] = true
@@ -703,10 +703,10 @@ func TestDeleteRange_RangeDeleteWithoutPrevKV(t *testing.T) {
 	t.Parallel()
 
 	mvcc := &mockMVCCKVServicer{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte("x"), Value: []byte("1")},
-			}, 1, nil
+			}, 1, 9, nil
 		},
 		deleteFn: func(_ context.Context, _ string) error {
 			return nil
@@ -761,8 +761,8 @@ func TestDeleteRange_RangeScanError(t *testing.T) {
 	t.Parallel()
 
 	mvcc := &mockMVCCKVServicer{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, errors.New("scan failed")
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, errors.New("scan failed")
 		},
 	}
 
@@ -787,10 +787,10 @@ func TestDeleteRange_RangeDeletePerKeyError(t *testing.T) {
 	t.Parallel()
 
 	mvcc := &mockMVCCKVServicer{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte("a"), Value: []byte("1")},
-			}, 1, nil
+			}, 1, 1, nil
 		},
 		deleteFn: func(_ context.Context, _ string) error {
 			return errors.New("delete failed")
@@ -1641,4 +1641,9 @@ func TestTxn_MultipleCompareSecondFails(t *testing.T) {
 	if resp.Succeeded {
 		t.Error("Succeeded = true, want false (second compare should fail)")
 	}
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (m *mockMVCCKVServicer) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, nil
 }

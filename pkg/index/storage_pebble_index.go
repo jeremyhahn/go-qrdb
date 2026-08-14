@@ -296,7 +296,10 @@ func (idx *StoragePebbleIndex) Delete(entityKey []byte, fieldValue []byte) error
 
 // Scan retrieves all index entries within the given range. For numeric
 // indexes, start and end are encoded before use and result map keys are
-// decoded back to decimal strings.
+// decoded back to decimal strings. A nil start or end means unbounded on
+// that side. Returns an InvalidNumericBoundError if a non-nil bound cannot
+// be parsed as a number on a numeric index; an unparseable bound is a
+// caller error and must never be reported as an empty result.
 func (idx *StoragePebbleIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 	startTime := time.Now()
 	defer func() {
@@ -305,19 +308,21 @@ func (idx *StoragePebbleIndex) Scan(start, end []byte) (map[string][][]byte, err
 
 	idx.metrics.scanOps.Inc()
 
-	// Normalize field values if needed
+	// Resolve field values if needed
 	var normalizedStart, normalizedEnd []byte
 	if start != nil {
-		ns, ok := NormalizeFieldValue(start, idx.config)
-		if !ok {
-			return map[string][][]byte{}, nil
+		ns, err := idx.resolveScanBound(start, "scan start")
+		if err != nil {
+			idx.metrics.errors.Inc()
+			return nil, err
 		}
 		normalizedStart = ns
 	}
 	if end != nil {
-		ne, ok := NormalizeFieldValue(end, idx.config)
-		if !ok {
-			return map[string][][]byte{}, nil
+		ne, err := idx.resolveScanBound(end, "scan end")
+		if err != nil {
+			idx.metrics.errors.Inc()
+			return nil, err
 		}
 		normalizedEnd = ne
 	}
@@ -562,6 +567,22 @@ func (idx *StoragePebbleIndex) ScanWithContext(ctx context.Context, start, end [
 	case res := <-resultCh:
 		return res.data, res.err
 	}
+}
+
+// resolveScanBound resolves a Scan boundary value for this index's
+// configuration. For non-numeric indexes this defers to
+// NormalizeFieldValue, which passes string values through unchanged (or
+// lowercases them for case-insensitive indexes) — this also correctly
+// preserves the trailing-0x00 exclusivity marker that
+// pkg/sql/provider/range_translator.go appends to byte-comparable string
+// bounds. For numeric indexes the marker must instead be resolved after
+// encoding; see resolveNumericScanBound.
+func (idx *StoragePebbleIndex) resolveScanBound(raw []byte, op string) ([]byte, error) {
+	if idx.config.ValueType != IndexValueTypeNumeric {
+		normalized, _ := NormalizeFieldValue(raw, idx.config)
+		return normalized, nil
+	}
+	return resolveNumericScanBound(raw, idx.config.Name, op)
 }
 
 // checkUniqueConstraint verifies that the field value is unique.

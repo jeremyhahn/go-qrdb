@@ -31,6 +31,7 @@ func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 		ID:            info.ID,
 		Name:          info.Name,
 		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
+		DataRoot:      info.DataRoot,
 		CreatedAt:     info.CreatedAt,
 		UpdatedAt:     info.UpdatedAt,
 	}
@@ -93,8 +94,12 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
 
-	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType),
-		tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal))
+	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal)}
+	if req.DataRoot != "" {
+		opts = append(opts, tenant.WithDataRoot(req.DataRoot))
+	}
+
+	info, err := t.tenantSvc.CreateTenant(ctx, req.ID, req.Name, tenant.IsolationType(req.IsolationType), opts...)
 	if err != nil {
 		return nil, err
 	}

@@ -62,6 +62,15 @@ type RoleNameExistsError = role.RoleNameExistsError
 // RoleNotFoundError is returned when a role ID does not exist.
 type RoleNotFoundError = role.RoleNotFoundError
 
+// RoleValidationError is returned when a role request fails validation
+// (e.g. an empty name or malformed field).
+type RoleValidationError = role.ValidationError
+
+// RoleInvalidPermissionError is returned when a role create/update carries a
+// permission string that is neither registered in the global permission
+// registry nor a whole-segment wildcard (e.g. "keys:*").
+type RoleInvalidPermissionError = role.InvalidPermissionError
+
 // Canonical built-in role names. These are the role names a token's `roles`
 // claim carries and that the PDP resolves to permissions. Consumers (e.g. the
 // quicbaas broker) reconcile their admin identity against these instead of
@@ -82,6 +91,13 @@ const (
 	// RoleNameOwner is the standard-posture superuser role name.
 	RoleNameOwner = role.RoleNameOwner
 )
+
+// BuiltInRoles returns the canonical system roles, with their canonical
+// permission sets, for the given tenant. It is the seam a consumer uses to see
+// exactly what a role grant confers — for example, to prove in a test that a
+// surface it hosts is reachable by qrdb's "admin" role and by no lesser role.
+// An empty tenantID defaults to the system tenant.
+var BuiltInRoles = role.BuiltInRoles
 
 // SystemRoleID returns the deterministic, cluster-stable ID of a named
 // built-in role in the given tenant. An empty tenantID defaults to the system

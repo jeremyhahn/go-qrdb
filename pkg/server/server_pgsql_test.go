@@ -40,7 +40,7 @@ func TestStartPgSQL_Success(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startPgSQL(srv); err != nil {
 		t.Fatalf("startPgSQL failed: %v", err)
@@ -82,7 +82,7 @@ func TestStartPgSQL_Failure_PortOccupied(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startPgSQL(srv); err == nil {
 		stopPgSQL(srv)
@@ -127,7 +127,7 @@ func TestStartPgSQL_EmptyDefaultDatabase(t *testing.T) {
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startPgSQL(srv); err != nil {
 		t.Fatalf("startPgSQL failed: %v", err)
@@ -163,7 +163,7 @@ func TestStopPgSQL_ActiveServer(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startPgSQL(srv); err != nil {
 		t.Fatalf("startPgSQL failed: %v", err)
@@ -228,7 +228,7 @@ func TestStartPgSQL_WithoutDatabaseManager(t *testing.T) {
 	}
 
 	// No WithDatabaseManager: legacy single-database mode.
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startPgSQL(srv); err != nil {
 		t.Fatalf("startPgSQL without dbManager failed: %v", err)
@@ -247,6 +247,54 @@ func TestStartPgSQL_WithoutDatabaseManager(t *testing.T) {
 // Full orchestration: Start() with PgSQL through function pointer
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// startPgSQL: registry / collection / index wiring (Phase 9a)
+//
+// These pin the isolation-closing wiring at the orchestration layer: when
+// the server has a database service registry, a CollectionServicer, and/or
+// an IndexServicer configured, startPgSQL must thread all three into the
+// pgsql.Server it builds (pgsqlapi.WithServiceRegistry/WithCollectionService/
+// WithIndex) rather than only wiring kvSvc/adminSvc as before. The deeper
+// proof that the registry/collection/index options actually reach the
+// served provider lives in pkg/sql/pgsql's own test suite; this is the
+// orchestration-layer plumbing check.
+// ---------------------------------------------------------------------------
+
+func TestStartPgSQL_WithServiceRegistryCollectionIndex(t *testing.T) {
+	cfg := testConfig(false, false)
+	cfg.Protocols.PostgreSQL = true
+	cfg.Server.PgSQLPort = 0
+	cfg.SQL = config.SQLConfig{
+		DefaultDatabase: "testdb",
+		MaxConnections:  10,
+		QueryTimeout:    "5s",
+	}
+
+	dbRegistry := &DatabaseServiceRegistry{}
+	collectionSvc := &stubCollectionService{}
+	indexSvc := &stubIndexService{}
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithCeremonyCA(testServerCA),
+		WithDatabaseServiceRegistry(dbRegistry),
+		WithCollectionService(collectionSvc),
+		WithIndex(indexSvc),
+	)
+
+	if err := startPgSQL(srv); err != nil {
+		t.Fatalf("startPgSQL with registry/collection/index failed: %v", err)
+	}
+	defer stopPgSQL(srv)
+
+	if srv.pgsqlSrv == nil {
+		t.Fatal("expected pgsqlSrv to be set")
+	}
+	addr := srv.pgsqlSrv.Addr()
+	if addr == "" {
+		t.Fatal("expected non-empty Addr from PgSQL server")
+	}
+}
+
 func TestStart_PgSQLViaOrchestrator(t *testing.T) {
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = true
@@ -257,7 +305,7 @@ func TestStart_PgSQLViaOrchestrator(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)

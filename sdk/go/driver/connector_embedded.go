@@ -15,72 +15,78 @@
 package driver
 
 import (
-	"context"
 	"database/sql/driver"
 	"io"
-	"sync"
-	"sync/atomic"
-
-	sqle "github.com/dolthub/go-mysql-server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
-	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
 // Compile-time interface assertions.
 var (
 	_ driver.Connector = (*EmbeddedConnector)(nil)
 	_ io.Closer        = (*EmbeddedConnector)(nil)
+	_ Connector        = (*EmbeddedConnector)(nil)
 )
 
 // EmbeddedConnector creates in-process connections to a GMS SQL engine
-// backed by a local storage backend. The engine is lazily initialized on
-// the first Connect call and shared across all connections (GMS is
-// thread-safe).
+// backed by a local storage backend it creates and owns. The backend and
+// engine are lazily initialized on the first Connect call and shared across
+// all connections (GMS is thread-safe).
+//
+// It is the KV-only in-process path: the storage backend it builds is a plain
+// database.Backend with no Raft state machine behind it, so there is no
+// service.Registry and therefore no relational-table catalog unless the
+// caller supplies one via WithRegistry. See sdk/go/driver/node for the
+// node:// scheme, which runs the full in-process stack.
+//
+// Everything except backend creation and disposal is the shared connector
+// core; see serviceConnector.
 type EmbeddedConnector struct {
-	cfg    *DSNConfig
-	mu     sync.Mutex
-	engine *sqle.Engine
-	kvSvc  *service.BackendKVService
-	closed atomic.Bool
+	*serviceConnector
 
-	// backend is kept for Close cleanup.
+	// backend is created by createServices and closed by Close. This
+	// connector created it, so this connector is what releases it.
 	backend database.Backend
 }
 
 // NewEmbeddedConnector creates a new EmbeddedConnector from the given
 // DSN configuration. The underlying storage and GMS engine are not
 // created until the first call to Connect.
-func NewEmbeddedConnector(cfg *DSNConfig) *EmbeddedConnector {
-	return &EmbeddedConnector{cfg: cfg}
+//
+// Options take precedence over the equivalent DSN parameters, so a caller
+// holding an *auth.Identity can pass it directly rather than encoding it in a
+// connection string.
+func NewEmbeddedConnector(cfg *DSNConfig, opts ...EmbeddedOption) *EmbeddedConnector {
+	c := &EmbeddedConnector{}
+	c.serviceConnector = newServiceConnector(cfg, c.createServices, opts...)
+	return c
 }
 
-// Connect returns a new embedded connection. On the first call, the
-// storage backend and GMS engine are lazily initialized.
-func (c *EmbeddedConnector) Connect(_ context.Context) (driver.Conn, error) {
-	if c.closed.Load() {
-		return nil, &ConnectorClosedError{}
-	}
-
-	eng, err := c.getOrCreateEngine()
+// createServices is this connector's serviceSource: it creates the local
+// storage backend and returns a KV service over it. The core calls it once,
+// under its lock, on the first Connect.
+//
+// The KV servicer is NOT prescoped: it addresses the backend directly, so the
+// KV and entity tables compose their own "<tenant>/<database>/" prefix exactly
+// as they always have on this path.
+func (c *EmbeddedConnector) createServices() (engineServices, error) {
+	factory := database.NewEmbeddedBackendFactory()
+	backend, err := factory.Create(database.DatabaseConfig{
+		Name:    c.cfg.Database,
+		Engine:  database.EngineType(c.cfg.Engine),
+		Backend: database.BackendType(c.cfg.Backend),
+	}, c.cfg.DataDir)
 	if err != nil {
-		return nil, err
+		return engineServices{}, &BackendCreateError{Backend: c.cfg.Backend, Err: err}
 	}
+	c.backend = backend
 
-	return &embeddedConn{
-		engine:   eng,
-		database: c.cfg.Database,
-	}, nil
+	return engineServices{kv: service.NewBackendKVService(backend)}, nil
 }
 
-// Driver returns the driver that created this connector.
-func (c *EmbeddedConnector) Driver() driver.Driver {
-	return &Driver{}
-}
-
-// Close releases the GMS engine and underlying storage backend.
+// Close releases the GMS engine and the storage backend this connector
+// created.
 func (c *EmbeddedConnector) Close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
@@ -89,52 +95,11 @@ func (c *EmbeddedConnector) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.engine != nil {
-		_ = c.engine.Close()
-		c.engine = nil
-	}
+	c.closeEngineLocked()
 	if c.backend != nil {
 		err := c.backend.Close()
 		c.backend = nil
 		return err
 	}
 	return nil
-}
-
-// getOrCreateEngine lazily creates the storage backend and GMS engine.
-func (c *EmbeddedConnector) getOrCreateEngine() (*sqle.Engine, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.engine != nil {
-		return c.engine, nil
-	}
-
-	// Create the storage backend via the embedded factory.
-	factory := database.NewEmbeddedBackendFactory()
-	backend, err := factory.Create(database.DatabaseConfig{
-		Name:    c.cfg.Database,
-		Engine:  database.EngineType(c.cfg.Engine),
-		Backend: database.BackendType(c.cfg.Backend),
-	}, c.cfg.DataDir)
-	if err != nil {
-		return nil, &BackendCreateError{Backend: c.cfg.Backend, Err: err}
-	}
-	c.backend = backend
-
-	// Create the KV service over the backend.
-	kvSvc := service.NewBackendKVService(backend)
-	c.kvSvc = kvSvc
-
-	// Create the SQL provider and engine.
-	prov := provider.NewProviderWithEngine(
-		c.cfg.Database,
-		kvSvc,
-		database.EngineType(c.cfg.Engine),
-	)
-
-	eng := engine.New(engine.Config{Provider: prov})
-	c.engine = eng
-
-	return eng, nil
 }

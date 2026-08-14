@@ -229,6 +229,19 @@ type ServerConfig struct {
 
 	// Host is the bind address for all listeners.
 	Host string `yaml:"host"`
+
+	// AdvertiseHost is the host or IP that peers and clients should use to
+	// reach this node's client-facing APIs. It is published into the cluster
+	// registry alongside the configured ports so any consumer can map a
+	// replica ID onto a reachable API address.
+	//
+	// It is distinct from Host, which is a bind address and is commonly a
+	// wildcard that no remote peer can dial. When AdvertiseHost is unset the
+	// node falls back to the host portion of Raft.RaftAddress, which is by
+	// definition the address peers already use to reach this node. Deployments
+	// where the API and Raft planes are reached over different addresses (NAT,
+	// split networking) must set it explicitly.
+	AdvertiseHost string `yaml:"advertise_host"`
 }
 
 // ProtocolsConfig controls which API protocols are enabled.
@@ -685,6 +698,19 @@ type AuthConfig struct {
 	//
 	// Default: false.
 	SeparationOfDuties bool `yaml:"separation_of_duties"`
+
+	// SODualFactor enables Security Officer dual-factor enforcement on
+	// the REST transport. When true, routes mapped to SO-gated
+	// permissions (ceremony initialize / enroll-custodian /
+	// revoke-custodian / sign-csr, seal rekey / rotate-root-key /
+	// generate-recovery / shamir-initialize) additionally require a
+	// valid in-band SO PIN via the X-QRDB-SO-PIN header, verified
+	// against the Argon2id commit stored at SO bootstrap. Requests over
+	// plain HTTP are rejected before the header is read. Requires the
+	// SO authenticator to be wired (server.WithSOAuthenticator); when
+	// the flag is set without a verifier the middleware is not
+	// installed. Default: false.
+	SODualFactor bool `yaml:"so_dual_factor"`
 
 	// SPIFFETrustDomain is the operator-configured SPIFFE trust domain. When
 	// set, the mTLS authenticator derives the tenant from a peer certificate's

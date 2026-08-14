@@ -68,9 +68,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/service/backupsink"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -111,6 +113,7 @@ type startFlags struct {
 	discoveryInsecure    bool
 	clusterMinPeers      int
 	dynamicMembership    bool
+	advertiseHost        string
 	adminPort            int
 	grpcPort             int
 	maxInMemLogSize      uint64
@@ -165,6 +168,19 @@ type startFlags struct {
 	bootstrapAddr         string
 	leaseRead             bool
 	checkQuorum           bool
+
+	// backupDir roots a durable, file-backed BackupSink used by the Backup
+	// service (create/list/get/verify/delete/restore) so backup artifacts
+	// survive a daemon restart. Empty (default) keeps backups in-memory only
+	// (lost on process exit), matching prior behavior. This directory is also
+	// where --restore-backup-id reads the backup artifact from.
+	backupDir string
+
+	// restoreBackupID, when non-empty, makes this boot perform an OFFLINE,
+	// one-shot restore of the named backup into the primary system shard
+	// (shard.ShardKV) BEFORE the shard is started for normal service and
+	// before any API listener opens. It requires backupDir. See restore.go.
+	restoreBackupID string
 
 	// databases holds the database configurations loaded from the YAML
 	// config file. When no config file is provided, this defaults to a
@@ -421,6 +437,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&f.discoveryInsecure, "discovery-insecure-http", false, "Allow http:// token discovery endpoint (dev/testing only)")
 	cmd.Flags().IntVar(&f.clusterMinPeers, "cluster-min-peers", 0, "Minimum cluster size for bootstrap quorum + dynamic-membership removal guard (0 = default 3)")
 	cmd.Flags().BoolVar(&f.dynamicMembership, "dynamic-membership", false, "Enable opt-in lease/watch dynamic Raft membership (off by default)")
+	cmd.Flags().StringVar(&f.advertiseHost, "advertise-host", "", "Host or IP peers/clients use to reach this node's APIs (default: host portion of --raft-address)")
 	cmd.Flags().IntVar(&f.adminPort, "admin-port", 63002, "Admin HTTP server port")
 	cmd.Flags().IntVar(&f.grpcPort, "grpc-port", 63003, "gRPC server port")
 	cmd.Flags().Uint64Var(&f.maxInMemLogSize, "max-in-mem-log-size", 0,
@@ -469,6 +486,10 @@ func newStartCmd() *cobra.Command {
 		"Enable leader step-down on quorum loss (required for --lease-read)")
 	cmd.Flags().StringVar(&f.clusterTrustDomain, "cluster-trust-domain", "qrdb.cluster",
 		"Cluster-wide SPIFFE trust domain for node identity (e.g. spiffe://<domain>/node/<raftAddr>); must be identical on all cluster members")
+	cmd.Flags().StringVar(&f.backupDir, "backup-dir", "",
+		"Directory for a durable, file-backed backup repository (empty = in-memory only, lost on restart)")
+	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
+		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
 
 	return cmd
 }
@@ -548,6 +569,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("dynamic-membership") && cfg.Discovery.DynamicMembership {
 		f.dynamicMembership = cfg.Discovery.DynamicMembership
+	}
+	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
+		f.advertiseHost = cfg.Server.AdvertiseHost
 	}
 	if !cmd.Flags().Changed("admin-port") {
 		f.adminPort = cfg.Server.AdminPort
@@ -1232,9 +1256,28 @@ func runStart(f *startFlags) error {
 				}
 			}
 
+			// A durable backup repository makes the Backup service's artifacts
+			// survive a daemon restart -- required for disaster recovery, since
+			// an in-memory-only backup dies with the very process a DR restore
+			// needs to recover from. Opt-in via --backup-dir; the file-backed
+			// storage engine holds no OS-level lock, so restore.go's own
+			// short-lived open/close against the same directory (during a
+			// --restore-backup-id boot) never contends with this one.
+			var backupSink service.BackupSink
+			if f.backupDir != "" {
+				backupFileStore, berr := file.New(f.backupDir)
+				if berr != nil {
+					_ = shutdownNode(host)
+					return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
+				}
+				defer func() { _ = backupFileStore.Close() }()
+				backupSink = backupsink.New(backupFileStore)
+			}
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
 				Host:                      adapter,
 				WatchHub:                  watchHub,
+				BackupSink:                backupSink,
 				DataDir:                   f.dataDir,
 				DatabaseManager:           dbManager,
 				KVOptions:                 nil,
@@ -1330,21 +1373,13 @@ func runStart(f *startFlags) error {
 					bootStrategy = bootstrap.StrategyShamir
 				}
 			}
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy)
-			if err != nil {
-				_ = shutdownNode(host)
-				if sigCtx.Err() != nil {
-					slog.Info("user/role store bootstrap canceled by shutdown signal")
-					return nil
-				}
-				return err
-			}
-
 			// Compliance-grade AuditLogger is always constructed, regardless of
 			// --auth-enabled, because FIPS/FedRAMP/PCI-DSS/HIPAA require an audit
 			// trail even in environments where RBAC is disabled. The AuditLogger is
 			// injected into all protocol servers so the /v1/audit/events endpoint
-			// is available and seal/ceremony/custodian operations emit events.
+			// is available and seal/ceremony/custodian operations emit events. It is
+			// built BEFORE the user/role stores so IAM mutations (create/update/
+			// delete/enable/disable, role permission changes) emit an audit trail.
 			runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
 			chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
 			if err != nil {
@@ -1358,6 +1393,23 @@ func runStart(f *startFlags) error {
 			)
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
+
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
+			if err != nil {
+				_ = shutdownNode(host)
+				if sigCtx.Err() != nil {
+					slog.Info("user/role store bootstrap canceled by shutdown signal")
+					return nil
+				}
+				return err
+			}
+
+			// Attach the compliance audit logger to the seal subsystem's
+			// credential service (built before the logger existed) so credential
+			// submit/store/rotate/delete/gc emit an audit trail.
+			if sealSub != nil && sealSub.CredCoreSvc != nil {
+				sealSub.CredCoreSvc.SetAuditLogger(complianceAudit)
+			}
 
 			// Bootstrap authentication enforcement (RBAC, legacy audit logger, auth
 			// middleware, custodian service, SO authenticator, auth factor service).
@@ -1434,6 +1486,16 @@ func runStart(f *startFlags) error {
 			raftBackendReg := ti.Raft
 			if ti.Reconciler != nil {
 				go ti.Reconciler.Run(bootCtx)
+			}
+			// Wire the IsolationRaft factory into the already-built backup
+			// service as its ShardRestarter, enabling ONLINE restore (the
+			// guarded stop -> import -> restart sequence, see
+			// service.RestoreShardOnline) for dedicated per-database Raft
+			// shards. This must happen here rather than at BuildServices time:
+			// raftBackendReg does not exist until BuildTenantInfra runs, which
+			// itself depends on svcNode.PlacementStore from BuildServices.
+			if raftBackendReg != nil && svcNode.Backup != nil {
+				service.SetShardRestarter(svcNode.Backup, raftBackendReg)
 			}
 
 			// Storage-byte quota accountant (Phase 3). Enforces each non-system
@@ -1588,13 +1650,24 @@ func runStart(f *startFlags) error {
 
 			// Phase 4c-1d: wire the Raft host into DatabaseService so CreateForTenant
 			// can call AddFollowerNode for each follower replica immediately after the
-			// placement is persisted. raftBackendReg being non-nil implies the shared
-			// host is configured for IsolationRaft tenants. The raftFollowerAdder
-			// adapter wraps host.RequestAddNode + rs.Result() into the narrow
-			// service.RaftHost interface (AddFollowerNode → error only).
+			// placement is persisted, and into RebalanceService so a dedicated-tenant
+			// shard MOVE can admit its destination replica observer-first
+			// (RaftHost.AddObserver) and evict its source replica
+			// (RaftHost.RemoveFollowerNode) -- see RebalanceService.moveTenantGroupShard.
+			// raftBackendReg being non-nil implies the shared host is configured for
+			// IsolationRaft tenants. The raftFollowerAdder adapter wraps
+			// host.RequestAddNode/RequestAddObserver/RequestRemoveNode + rs.Result()
+			// into the narrow service.RaftHost interface; the SAME instance is shared
+			// by both services since it is stateless beyond the host reference.
 			if raftBackendReg != nil {
+				raftHostAdapter := &raftFollowerAdder{host: host}
 				if concrete, ok := dbSvc.(*service.DatabaseService); ok {
-					concrete.SetRaftHost(&raftFollowerAdder{host: host})
+					concrete.SetRaftHost(raftHostAdapter)
+				}
+				if svcNode.Rebalance != nil {
+					if concrete, ok := svcNode.Rebalance.(*service.RebalanceService); ok {
+						concrete.SetRaftHost(raftHostAdapter)
+					}
 				}
 			}
 
@@ -1684,10 +1757,16 @@ func runStart(f *startFlags) error {
 				server.WithDatabaseManager(dbManager),
 			}
 			// User and role management services are always wired — they are
-			// organizational primitives independent of auth enforcement.
+			// organizational primitives independent of auth enforcement. The
+			// SERVED services are the StoreResolver-routed variants (when a
+			// barrier registry is present): a barrier-isolated tenant's IAM is
+			// persisted in its own TenantBarrier-backed store and a SEALED
+			// barrier tenant's IAM fails closed (tenant.ErrTenantSealed → 503)
+			// rather than leaking through the shared system store. System/prefix
+			// tenants resolve transparently to the shared store.
 			serverOpts = append(serverOpts,
-				server.WithUserService(mgmtResult.userSvc),
-				server.WithRoleService(mgmtResult.roleSvc),
+				server.WithUserService(mgmtResult.servedUserSvc),
+				server.WithRoleService(mgmtResult.servedRoleSvc),
 			)
 			// Compliance audit logger is always wired so the /v1/audit/events
 			// endpoint is available regardless of auth-enabled state.
@@ -2248,6 +2327,17 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// Build shard configuration.
 	shardCfg := buildShardConfig(f)
 
+	// A one-shot offline restore takes over shard startup entirely: it
+	// bootstraps the shard, stops it, imports the backup artifact, and
+	// starts it again from the recovered state. See restore.go.
+	if f.restoreBackupID != "" {
+		if err := restoreShardFromBackup(ctx, f, host, createFn, shardCfg); err != nil {
+			_ = host.Close()
+			return nil, err
+		}
+		return host, nil
+	}
+
 	// Start the shard using the selected discovery method.
 	if err := startShard(ctx, f, host, createFn, shardCfg); err != nil {
 		_ = host.Close()
@@ -2255,6 +2345,35 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	}
 
 	return host, nil
+}
+
+// advertisedAPIEndpoints builds the client-facing API endpoint map this node
+// publishes into the cluster registry. Every value comes from this node's own
+// configuration: the advertise host (explicit, else the host portion of the
+// Raft address peers already use to reach us) plus the ports of the protocols
+// actually enabled. A disabled protocol is omitted, and a wildcard bind host
+// with no explicit advertise host publishes nothing rather than an address no
+// peer can dial.
+func advertisedAPIEndpoints(f *startFlags) (map[cluster.APIProtocol]string, error) {
+	host := f.advertiseHost
+	if host == "" {
+		host = cluster.HostFromAddress(f.raftAddress)
+	}
+
+	ports := make(map[cluster.APIProtocol]int, len(cluster.APIProtocols))
+	if f.enableREST {
+		ports[cluster.APIProtocolREST] = f.adminPort
+	}
+	if f.enableGRPC {
+		ports[cluster.APIProtocolGRPC] = f.grpcPort
+	}
+	if f.enableQUIC {
+		ports[cluster.APIProtocolQUIC] = f.quicPort
+	}
+	if f.enableMCP {
+		ports[cluster.APIProtocolMCP] = f.mcpPort
+	}
+	return cluster.BuildAPIEndpoints(host, ports)
 }
 
 // startDynamicMembership builds an in-process (embedded) qrdb SDK client over
@@ -2288,8 +2407,13 @@ func startDynamicMembership(
 	if minPeers <= 0 {
 		minPeers = 3
 	}
+	endpoints, err := advertisedAPIEndpoints(f)
+	if err != nil {
+		return nil, err
+	}
+
 	mgr, err := client.NewMembershipManager(
-		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress},
+		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
 	)
@@ -2462,11 +2586,28 @@ func buildDNSDiscovery(f *startFlags) (discovery.Method, error) {
 
 // mgmtBootstrapResult holds the user and role stores created unconditionally
 // during startup, independent of whether auth enforcement is enabled.
+//
+// userSvc/roleSvc are the plain shared-store services used by the internal
+// auth plane (RBAC authorizer, auth-middleware enrichment): they read the
+// system-tenant IAM records that bootstrap seeds and that authorization
+// consults on every request.
+//
+// servedUserSvc/servedRoleSvc are the services wired into the protocol API
+// surface (server.WithUserService / server.WithRoleService). When a barrier
+// registry and tenant servicer are present they are StoreResolver-routed
+// RoutingServices: prefix/system tenants transparently resolve to the shared
+// store (so system IAM behaves identically to the plain service), while a
+// barrier-isolated tenant resolves to its own TenantBarrier-backed store and
+// a SEALED barrier tenant fails closed with tenant.ErrTenantSealed instead of
+// leaking IAM through the shared store. When no barrier registry is present
+// they alias the plain services.
 type mgmtBootstrapResult struct {
-	userSvc     user.UserServicer
-	roleSvc     role.RoleServicer
-	bootUserSvc user.UserServicer // StaleRead-backed fallback for auth middleware
-	bootRoleSvc role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
+	userSvc       user.UserServicer
+	roleSvc       role.RoleServicer
+	servedUserSvc user.UserServicer // resolver-routed service exposed on the API surface
+	servedRoleSvc role.RoleServicer // resolver-routed service exposed on the API surface
+	bootUserSvc   user.UserServicer // StaleRead-backed fallback for auth middleware
+	bootRoleSvc   role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
 }
 
 // authBootstrapResult holds the auth enforcement middleware and audit logger
@@ -2492,7 +2633,7 @@ type authBootstrapResult struct {
 // the structurally-privileged system tenant. Required (non-nil): tests
 // supply a small in-memory tenant servicer; production startup wires
 // the real one from svcNode.Tenant.
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, node raftNode, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -2507,11 +2648,11 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 
 	// Create bootstrap stores backed by StaleRead for initial setup.
 	bootStore := newKVServiceAdapter(bootKVSvc, nil, nil)
-	bootUserSvc, err := user.NewStore(bootStore, userIDGen)
+	bootUserSvc, err := user.NewStore(bootStore, userIDGen, user.WithAuditLogger(auditLogger))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
-	bootRoleSvc, err := role.NewStore(bootStore)
+	bootRoleSvc, err := role.NewStore(bootStore, role.WithAuditLogger(auditLogger))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -2528,20 +2669,50 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// operations. This ensures CRUD handlers see the latest committed state.
 	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
 
-	userSvc, err := user.NewStore(runtimeStore, userIDGen)
+	userSvc, err := user.NewStore(runtimeStore, userIDGen, user.WithAuditLogger(auditLogger))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
-	roleSvc, err := role.NewStore(runtimeStore)
+	roleSvc, err := role.NewStore(runtimeStore, role.WithAuditLogger(auditLogger))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
 
+	// Services exposed on the protocol API surface. When a barrier registry and
+	// tenant servicer are present, route IAM (user/role) reads and writes
+	// through a StoreResolver so barrier-isolated tenants persist their IAM in
+	// their own TenantBarrier-backed store and a SEALED barrier tenant fails
+	// closed (tenant.ErrTenantSealed) instead of leaking through the shared
+	// store. The system tenant (structurally a prefix tenant) always resolves
+	// to runtimeStore, so system-tenant IAM served through the routed service
+	// is byte-for-byte the shared-store behaviour bootstrap seeded above. When
+	// no barrier registry exists, the served services alias the plain stores.
+	servedUserSvc := userSvc
+	servedRoleSvc := roleSvc
+	if barriers != nil && tenantSvc != nil {
+		resolver, resErr := tenant.NewStoreResolver(runtimeStore, barriers, tenantSvc)
+		if resErr != nil {
+			return nil, &AuthBootstrapError{Step: "store resolver", Err: resErr}
+		}
+		routedUsers, ruErr := user.NewRoutingService(resolver, userIDGen, user.WithAuditLogger(auditLogger))
+		if ruErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed user store", Err: ruErr}
+		}
+		routedRoles, rrErr := role.NewRoutingService(resolver, role.WithAuditLogger(auditLogger))
+		if rrErr != nil {
+			return nil, &AuthBootstrapError{Step: "routed role store", Err: rrErr}
+		}
+		servedUserSvc = routedUsers
+		servedRoleSvc = routedRoles
+	}
+
 	return &mgmtBootstrapResult{
-		userSvc:     userSvc,
-		roleSvc:     roleSvc,
-		bootUserSvc: bootUserSvc,
-		bootRoleSvc: bootRoleSvc,
+		userSvc:       userSvc,
+		roleSvc:       roleSvc,
+		servedUserSvc: servedUserSvc,
+		servedRoleSvc: servedRoleSvc,
+		bootUserSvc:   bootUserSvc,
+		bootRoleSvc:   bootRoleSvc,
 	}, nil
 }
 
@@ -2675,48 +2846,77 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	slog.Info("first-boot: bootstrapping system tenant + roles + admin user",
 		slog.String("tenant", tenant.SystemTenantID))
 
-	var firstBootErr error
-	if barriers != nil {
-		// Seal enabled: route through the seal-aware orchestrator. By this
-		// point the system barrier has already been initialized+unsealed
-		// out-of-band (admin barrier API for passphrase, SO ceremony for
-		// shamir) during awaitUnseal, so we pass an EMPTY passphrase.
-		// BootstrapSystem observes the unsealed barrier
-		// (BarrierAlreadyInitialized), demands no credential, and runs
-		// first-boot. A still-sealed barrier here is an operator error (unseal
-		// not completed) surfaced as a SystemBarrierInitError, NOT routed to
-		// the follower-wait below.
-		_, bsErr := bootstrap.BootstrapSystem(ctx, bootstrap.SystemConfig{
-			Strategy:           sealStrategy,
-			SeparationOfDuties: strictSoD,
-		}, bootstrap.Dependencies{
-			Tenants:  tenantSvc,
-			Users:    userSvc,
-			Roles:    roleSvc,
-			Barriers: barriers,
-			Logger:   slog.Default(),
-		})
-		if bsErr != nil {
-			// Only the first-boot leg of BootstrapSystem is eligible for the
-			// follower NotLeader retry; barrier/credential failures are real
-			// errors and propagate unchanged.
-			var fbErr *bootstrap.FirstBootError
-			if !errors.As(bsErr, &fbErr) {
-				return bsErr
-			}
-			firstBootErr = fbErr
+	runInit := func() error {
+		if barriers != nil {
+			// Seal enabled: route through the seal-aware orchestrator. By this
+			// point the system barrier has already been initialized+unsealed
+			// out-of-band (admin barrier API for passphrase, SO ceremony for
+			// shamir) during awaitUnseal, so we pass an EMPTY passphrase.
+			// BootstrapSystem observes the unsealed barrier
+			// (BarrierAlreadyInitialized), demands no credential, and runs
+			// first-boot. A still-sealed barrier here is an operator error (unseal
+			// not completed) surfaced as a SystemBarrierInitError, NOT routed to
+			// the follower-wait below.
+			_, bsErr := bootstrap.BootstrapSystem(ctx, bootstrap.SystemConfig{
+				Strategy:           sealStrategy,
+				SeparationOfDuties: strictSoD,
+			}, bootstrap.Dependencies{
+				Tenants:  tenantSvc,
+				Users:    userSvc,
+				Roles:    roleSvc,
+				Barriers: barriers,
+				Logger:   slog.Default(),
+			})
+			return bsErr
 		}
-	} else {
 		// Seal disabled (no barrier registry): keep the direct first-boot
 		// path. BootstrapSystem requires a non-nil barrier registry, so wiring
 		// it here would force a synthetic barrier with no benefit.
-		_, firstBootErr = firstboot.Initialize(ctx, firstboot.Dependencies{
+		_, fbErr := firstboot.Initialize(ctx, firstboot.Dependencies{
 			Tenants:            tenantSvc,
 			Users:              userSvc,
 			Roles:              roleSvc,
 			Logger:             slog.Default(),
 			SeparationOfDuties: strictSoD,
 		})
+		return fbErr
+	}
+
+	// A freshly elected leader rejects linearizable reads with
+	// quicraft.ErrReadIndexNotReady until its first entry of the current
+	// term commits. First-boot's existence checks hit exactly that window
+	// on THIS node when it IS the leader; misclassifying it as the
+	// follower case below would wait 30s for a replication that never
+	// comes on a single node. Retry the transient out (bounded) before
+	// classifying the failure.
+	var firstBootErr error
+	readyDeadline := time.Now().Add(15 * time.Second)
+	for {
+		initErr := runInit()
+		if initErr == nil {
+			return nil
+		}
+		if errors.Is(initErr, quicraft.ErrReadIndexNotReady) && time.Now().Before(readyDeadline) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+		if barriers != nil {
+			// Only the first-boot leg of BootstrapSystem is eligible for the
+			// follower NotLeader retry; barrier/credential failures are real
+			// errors and propagate unchanged.
+			var fbErr *bootstrap.FirstBootError
+			if !errors.As(initErr, &fbErr) {
+				return initErr
+			}
+			firstBootErr = fbErr
+		} else {
+			firstBootErr = initErr
+		}
+		break
 	}
 
 	if firstBootErr != nil {
@@ -2858,7 +3058,9 @@ type raftFollowerAdder struct {
 }
 
 // AddFollowerNode calls RequestAddNode on the shared Raft host and blocks
-// until the config change commits or ctx is cancelled.
+// until the config change commits or ctx is cancelled. Used ONLY for
+// founding members at create time (service.DatabaseService.CreateForTenant);
+// see AddObserver for scale-up.
 func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
 	rs, err := a.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
 	if err != nil {
@@ -2871,4 +3073,62 @@ func (a *raftFollowerAdder) AddFollowerNode(ctx context.Context, shardID, replic
 	case result := <-rs.ResultC():
 		return result.Err
 	}
+}
+
+// AddObserver calls RequestAddObserver on the shared Raft host and blocks
+// until the config change commits or ctx is cancelled. Used exclusively by
+// DatabaseService.ScaleForTenant's scale-up path (scaleUp) to admit a
+// dynamically added replica as a NON-VOTING observer, so scale-up never
+// transiently changes -- and therefore never breaks -- the group's existing
+// voting quorum (see the elastic-scaling design doc §B.2/§D.4). The
+// observer is later promoted to a full voting member asynchronously by
+// server.TenantShardReconciler's Promoter (see raftPromoter), which reuses
+// RequestAddNode against this same, already-admitted replica ID -- go-quicraft
+// treats that as an observer -> voter promotion rather than a fresh add.
+func (a *raftFollowerAdder) AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
+	rs, err := a.host.RequestAddObserver(ctx, shardID, replicaID, raftAddr, 0)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		rs.Release()
+		return ctx.Err()
+	case result := <-rs.ResultC():
+		return result.Err
+	}
+}
+
+// RemoveFollowerNode calls RequestRemoveNode on the shared Raft host and
+// blocks until the config change commits or ctx is cancelled. Used by
+// DatabaseService.ScaleForTenant's scale-down path.
+func (a *raftFollowerAdder) RemoveFollowerNode(ctx context.Context, shardID, replicaID uint64) error {
+	rs, err := a.host.RequestRemoveNode(ctx, shardID, replicaID, 0)
+	if err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		rs.Release()
+		return ctx.Err()
+	case result := <-rs.ResultC():
+		return result.Err
+	}
+}
+
+// LeaderReplicaID returns the shard's current leader replica ID via the
+// shared Raft host. Used by DatabaseService.ScaleForTenant's scale-down
+// replica-selection policy so the current leader is removed last.
+func (a *raftFollowerAdder) LeaderReplicaID(_ context.Context, shardID uint64) (uint64, bool, error) {
+	return a.host.GetLeaderID(shardID)
+}
+
+// RequestLeaderTransfer calls RequestLeaderTransfer on the shared Raft host.
+// Used by service.RemoveFollowerNode's caller (removeReplicaFromGroup, see
+// database_service.go's transferLeadershipAwayFromRemoved) to move
+// leadership away from a replica before evicting it, so the config change
+// removing it is driven to full replication by a leader that survives the
+// removal rather than the replica being removed.
+func (a *raftFollowerAdder) RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error {
+	return a.host.RequestLeaderTransfer(ctx, shardID, targetReplicaID)
 }

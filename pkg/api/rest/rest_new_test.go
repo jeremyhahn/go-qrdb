@@ -46,9 +46,11 @@ type mockMVCCService struct {
 	putWithLeaseFn    func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
 	getRevisionFn     func(ctx context.Context, key string) (*kv.KeyValue, error)
 	getAtRevisionFn   func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
-	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
+	rangeRevision     int64
 	compactFn         func(ctx context.Context, revision int64) error
 	currentRevisionFn func(ctx context.Context) (int64, error)
+	restoreFn         func(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error)
 }
 
 func (m *mockMVCCService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error) {
@@ -72,11 +74,11 @@ func (m *mockMVCCService) GetAtRevision(ctx context.Context, key string, revisio
 	return nil, nil
 }
 
-func (m *mockMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeFn != nil {
 		return m.rangeFn(ctx, start, end, opts...)
 	}
-	return nil, 0, nil
+	return nil, 0, m.rangeRevision, nil
 }
 
 func (m *mockMVCCService) Compact(ctx context.Context, revision int64) error {
@@ -105,8 +107,8 @@ func (m *mockMVCCService) PutWithLeaseAndMode(_ context.Context, _ string, _ []b
 	return nil, nil
 }
 
-func (m *mockMVCCService) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-	return nil, 0, nil
+func (m *mockMVCCService) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+	return nil, 0, m.rangeRevision, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -503,7 +505,7 @@ func TestHandleKVPut_WithLeaseID_Success(t *testing.T) {
 	if resp.LeaseID != 42 {
 		t.Fatalf("lease_id = %d, want 42", resp.LeaseID)
 	}
-	if resp.Key != "mykey" {
+	if string(resp.Key) != "mykey" {
 		t.Fatalf("key = %q, want %q", resp.Key, "mykey")
 	}
 }
@@ -677,10 +679,10 @@ func TestHandleKVGet_WithAtRevision_ServiceError(t *testing.T) {
 
 func TestHandleRange_Success(t *testing.T) {
 	mvccSvc := &mockMVCCService{
-		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: start, Value: []byte("v1"), ModRevision: 10},
-			}, 1, nil
+			}, 1, 42, nil
 		},
 	}
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithMVCC(mvccSvc))
@@ -697,6 +699,11 @@ func TestHandleRange_Success(t *testing.T) {
 	}
 	if len(resp.Kvs) != 1 {
 		t.Fatalf("kvs length = %d, want 1", len(resp.Kvs))
+	}
+	// Revision is distinct from count and must be threaded through from the
+	// MVCC read, not left at its zero value.
+	if resp.Revision != 42 {
+		t.Fatalf("revision = %d, want 42", resp.Revision)
 	}
 }
 
@@ -745,8 +752,8 @@ func TestHandleRange_InvalidRevision(t *testing.T) {
 
 func TestHandleRange_ServiceError(t *testing.T) {
 	mvccSvc := &mockMVCCService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, &service.KeyNotFoundError{Key: "a"}
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, &service.KeyNotFoundError{Key: "a"}
 		},
 	}
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithMVCC(mvccSvc))
@@ -760,8 +767,8 @@ func TestHandleRange_ServiceError(t *testing.T) {
 
 func TestHandleRange_WithAllOptions(t *testing.T) {
 	mvccSvc := &mockMVCCService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 5, nil
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 5, 7, nil
 		},
 	}
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithMVCC(mvccSvc))
@@ -2426,7 +2433,8 @@ func TestKvToResponse_Nil(t *testing.T) {
 func TestKvToResponse_NonNil(t *testing.T) {
 	kv := &kv.KeyValue{Key: []byte("k"), Value: []byte("v"), CreateRevision: 1, ModRevision: 2, Version: 3, LeaseID: 4}
 	got := kvToResponse(kv)
-	if got.Key != "k" || got.Value != "v" || got.CreateRevision != 1 || got.ModRevision != 2 || got.Version != 3 || got.LeaseID != 4 {
+	if !bytes.Equal(got.Key, []byte("k")) || !bytes.Equal(got.Value, []byte("v")) ||
+		got.CreateRevision != 1 || got.ModRevision != 2 || got.Version != 3 || got.LeaseID != 4 {
 		t.Fatalf("unexpected kvResponse: %+v", got)
 	}
 }
@@ -2440,8 +2448,38 @@ func TestKvsToResponse(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2", len(got))
 	}
-	if got[0].Key != "a" || got[1].Key != "b" {
+	if !bytes.Equal(got[0].Key, []byte("a")) || !bytes.Equal(got[1].Key, []byte("b")) {
 		t.Fatalf("unexpected keys: %s, %s", got[0].Key, got[1].Key)
+	}
+}
+
+// TestKvToResponse_NonUTF8RoundTrip verifies that a KV value containing
+// invalid UTF-8 bytes round-trips byte-identical through kvToResponse and
+// JSON marshal/unmarshal. kvResponse fields are []byte so encoding/json
+// base64-encodes them (RFC 4648) rather than mangling invalid UTF-8
+// sequences into U+FFFD, as a string field would.
+func TestKvToResponse_NonUTF8RoundTrip(t *testing.T) {
+	rawKey := []byte{0xff, 0xfe, 0x00, 'k'}
+	rawValue := []byte{0xff, 0xfe, 0x00, 'v', 0x80, 0x81}
+
+	kv := &kv.KeyValue{Key: rawKey, Value: rawValue, CreateRevision: 1, ModRevision: 2, Version: 3}
+	got := kvToResponse(kv)
+
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var decoded kvResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if !bytes.Equal(decoded.Key, rawKey) {
+		t.Fatalf("key round-trip mismatch: got %v, want %v", decoded.Key, rawKey)
+	}
+	if !bytes.Equal(decoded.Value, rawValue) {
+		t.Fatalf("value round-trip mismatch: got %v, want %v", decoded.Value, rawValue)
 	}
 }
 
@@ -3328,4 +3366,12 @@ func TestHandleKVPut_WithLeaseID_ForwardSuccess(t *testing.T) {
 
 	// The server should forward to the leader and return the leader's response.
 	assertStatus(t, rec, http.StatusOK)
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (m *mockMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if m.restoreFn != nil {
+		return m.restoreFn(ctx, req)
+	}
+	return nil, nil
 }

@@ -142,7 +142,7 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 
 	// Use unsealDirect to initialize/unseal the EpochBarrier with
 	// the recovered root key.
-	shamirStrat, ok := b.strategies[StrategyShamir]
+	shamirStrat, ok := b.strategyByID(StrategyShamir)
 	if !ok {
 		// Create a temporary strategy to unseal.
 		return b.recoverWithSoftwareStrategy(ctx, rootKey)
@@ -192,7 +192,7 @@ func (b *StorageBarrier) recoverWithSoftwareStrategy(ctx context.Context, rootKe
 	}
 
 	// Find the original strategy for BarrierEncryptor delegation.
-	delegate, ok := b.strategies[sealed.Strategy]
+	delegate, ok := b.strategyByID(sealed.Strategy)
 	if !ok {
 		return ErrStrategyNotFound
 	}

@@ -18,7 +18,11 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // StartError is returned when the QUIC server fails to start listening.
@@ -104,6 +108,17 @@ func (e *ServiceNotConfiguredError) Error() string {
 	return "quic: " + e.Service + " service is not configured"
 }
 
+// CeremonyCANotConfiguredError is returned when CeremonyInitialize is
+// invoked but the server was not configured with a CeremonyCA via
+// WithCeremonyCA. The ceremony service dereferences the CA to issue
+// certificates, so failing closed here avoids a nil-pointer panic.
+type CeremonyCANotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *CeremonyCANotConfiguredError) Error() string {
+	return "quic: ceremony CA is not configured"
+}
+
 // InvalidArgumentError is returned when a handler receives an invalid or
 // incomplete request payload.
 type InvalidArgumentError struct {
@@ -174,6 +189,100 @@ func mapServiceError(err error) (uint16, []byte) {
 	var snc *ServiceNotConfiguredError
 	if errors.As(err, &snc) {
 		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
+	var ccnc *CeremonyCANotConfiguredError
+	if errors.As(err, &ccnc) {
+		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
+	var tqee *tenant.QuotaExceededError
+	if errors.As(err, &tqee) {
+		return wire.StatusError, []byte(err.Error())
+	}
+
+	var infe *placement.InsufficientNodesError
+	if errors.As(err, &infe) {
+		// Cluster has no free node for the request — distinct from a quota
+		// rejection, retryable once capacity changes.
+		return wire.StatusUnavailable, []byte(err.Error())
+	}
+
+	var bse *service.BarrierSealedError
+	if errors.As(err, &bse) {
+		// A data-plane operation targeted a sealed barrier. Surface
+		// Unavailable so the caller retries after the barrier is unsealed,
+		// matching the gRPC and REST BarrierSealedError mapping.
+		return wire.StatusUnavailable, []byte(err.Error())
+	}
+
+	if errors.Is(err, tenant.ErrTenantSealed) {
+		// A barrier-isolated tenant's IAM (user/role) store resolved to a
+		// SEALED barrier. The StoreResolver fails closed rather than leaking
+		// the operation through the shared system store — surface Unavailable
+		// so the caller retries after the tenant's barrier is unsealed,
+		// matching the BarrierSealedError data-plane mapping.
+		return wire.StatusUnavailable, []byte(err.Error())
+	}
+
+	var xt *tenant.CrossTenantDeniedError
+	if errors.As(err, &xt) {
+		// A normal tenant caller supplied a target tenant other than its own.
+		// The IAM routing layer refuses to act on a client-supplied tenant —
+		// surface PermissionDenied, matching the REST 403 / gRPC PermissionDenied
+		// mapping across transports.
+		return wire.StatusPermissionDenied, []byte(err.Error())
+	}
+
+	var cso *service.CompactSystemOnlyError
+	if errors.As(err, &cso) {
+		// A non-system tenant attempted a store-global MVCC compaction — the
+		// service layer fails closed. PermissionDenied, matching the REST 403 /
+		// gRPC PermissionDenied mapping and the ScopeCross authz gate.
+		return wire.StatusPermissionDenied, []byte(err.Error())
+	}
+
+	var tade *database.TenantAccessDeniedError
+	if errors.As(err, &tade) {
+		// A caller targeted a per-database control operation (seal/unseal/
+		// barrier-status, drop) on a database owned by a different tenant. The
+		// service layer fails closed independently of transport RBAC.
+		return wire.StatusPermissionDenied, []byte(err.Error())
+	}
+
+	if errors.Is(err, watch.ErrCompacted) {
+		// A watch requested a start revision at or below the compacted floor
+		// — the intervening history is gone.
+		return wire.StatusError, []byte(err.Error())
+	}
+
+	if errors.Is(err, watch.ErrStartRevisionUnsupported) {
+		// A watch requested a start revision against a store with no change
+		// history attached (a non-MVCC store) — replay is impossible.
+		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
+	var mbr *service.MVCCBackendRequiredError
+	if errors.As(err, &mbr) {
+		// The shard's state machine keeps no MVCC revision history (the
+		// default raft.sm_type is "pebble", not "mvcc") — Unimplemented so
+		// the caller learns the operation is unavailable on this deployment,
+		// not merely that this one call failed. Matches the gRPC/REST mapping.
+		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
+	var rciu *service.RestoreChangeIndexUnavailableError
+	if errors.As(err, &rciu) {
+		// A prefix-scoped restore needs the durable revision index and this
+		// backend maintains none — same family as MVCCBackendRequiredError.
+		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
+	var rike *service.RestoreInternalKeyError
+	if errors.As(err, &rike) {
+		// A restore scope reached the internal key namespace — refused as an
+		// authority the caller does not have, not a malformed request.
+		return wire.StatusPermissionDenied, []byte(err.Error())
 	}
 
 	return wire.StatusError, []byte(err.Error())

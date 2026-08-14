@@ -221,6 +221,7 @@ func (f *FastStateMachine) Update(ctx context.Context, entries []sm.Entry, resul
 //   - service.MVCCGetQuery: MVCC point lookup
 //   - service.MVCCRangeQuery: MVCC range query
 //   - service.MVCCRevisionQuery: current MVCC revision
+//   - service.MVCCScanChangesQuery: keys changed in a revision window
 //   - timeseries.TSQueryRequest: time-series range query
 //   - timeseries.TSAggregateRequest: time-series aggregation
 //   - timeseries.TSRichQueryRequest: rich time-series query

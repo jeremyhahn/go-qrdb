@@ -17,10 +17,10 @@ package driver
 import (
 	"context"
 	sqld "database/sql/driver"
-	"encoding/json"
 	"errors"
-	"net/http"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TestCountPlaceholders_Various verifies placeholder counting with various queries.
@@ -30,13 +30,23 @@ func TestCountPlaceholders_Various(t *testing.T) {
 		query string
 		want  int
 	}{
-		{"empty query", "", 0},
+		// An empty string is not a statement, so the count is unknown (-1)
+		// rather than zero. Reporting -1 tells database/sql to skip its
+		// argument-count check and let the engine report the real error.
+		{"empty query", "", -1},
+		{"unparseable query", "NOT SQL AT ALL", -1},
+
 		{"no placeholders", "SELECT * FROM t", 0},
 		{"single placeholder", "SELECT * FROM t WHERE id = ?", 1},
 		{"two placeholders", "INSERT INTO t VALUES (?, ?)", 2},
 		{"three placeholders", "UPDATE t SET a=?, b=? WHERE c=?", 3},
+
+		// Question marks that are not placeholders must not be counted.
+		// Miscounting rejects a correct call before it reaches the engine.
 		{"placeholder in quote skipped", "SELECT '?' FROM t", 0},
 		{"mixed quote and real", "SELECT '?' FROM t WHERE a=? AND b=?", 2},
+		{"question mark in comment skipped", "SELECT a FROM t -- why?\nWHERE b = ?", 1},
+		{"question mark in backtick identifier skipped", "SELECT `who?` FROM t WHERE b = ?", 1},
 	}
 
 	for _, tt := range tests {
@@ -130,6 +140,10 @@ func TestStmt_CloseAndOpsReturnError(t *testing.T) {
 }
 
 // TestStmt_NumInput verifies NumInput returns correct placeholder count.
+//
+// The statement is prepared against a table that exists, because Prepare now
+// resolves the query through the engine and therefore reports an unknown table
+// at prepare time — the same as MySQL's PREPARE.
 func TestStmt_NumInput(t *testing.T) {
 	d := &Driver{}
 	conn, err := d.Open("embedded://memory?database=numinputtest")
@@ -138,7 +152,7 @@ func TestStmt_NumInput(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	rawStmt, err := conn.Prepare("SELECT * FROM t WHERE a=? AND b=?")
+	rawStmt, err := conn.Prepare("SELECT * FROM kv WHERE `key`=? AND value=?")
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -150,13 +164,25 @@ func TestStmt_NumInput(t *testing.T) {
 	}
 }
 
+// TestStmt_PrepareRejectsUnknownTable verifies that preparing against a table
+// that does not exist fails at prepare time rather than deferring the error to
+// execution, matching MySQL's PREPARE behaviour.
+func TestStmt_PrepareRejectsUnknownTable(t *testing.T) {
+	d := &Driver{}
+	conn, err := d.Open("embedded://memory?database=preparestricttest")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Prepare("SELECT * FROM definitely_not_a_table WHERE a=?"); err == nil {
+		t.Fatal("expected Prepare to reject an unknown table, got nil error")
+	}
+}
+
 // TestNetworkStmt_CloseAndOpsReturnError verifies networkStmt operations on closed stmt.
 func TestNetworkStmt_CloseAndOpsReturnError(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "db")
 	s := &networkStmt{conn: conn, query: "SELECT 1"}
 
 	if err := s.Close(); err != nil {
@@ -199,11 +225,7 @@ func TestNetworkStmt_CloseAndOpsReturnError(t *testing.T) {
 
 // TestNetworkStmt_NumInput verifies NumInput for networkStmt.
 func TestNetworkStmt_NumInput(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "db")
 	s := &networkStmt{conn: conn, query: "INSERT INTO t VALUES (?, ?, ?)"}
 	if n := s.NumInput(); n != 3 {
 		t.Errorf("NumInput() = %d, want 3", n)
@@ -212,11 +234,7 @@ func TestNetworkStmt_NumInput(t *testing.T) {
 
 // TestNetworkStmt_PrepareFromConn verifies Prepare via networkConn.
 func TestNetworkStmt_PrepareFromConn(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "db")
 	raw, err := conn.Prepare("SELECT ?")
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -273,18 +291,9 @@ func TestStmt_ExecAndQuery_NotClosed(t *testing.T) {
 
 // TestNetworkStmt_ExecAndQuery_NotClosed verifies Exec and Query on open networkStmt.
 func TestNetworkStmt_ExecAndQuery_NotClosed(t *testing.T) {
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		resp := sqlResponse{
-			Columns:  []string{"id"},
-			Rows:     []map[string]interface{}{},
-			RowCount: 0,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
+	conn := newFakeNetworkConn(&fakeSQLClient{result: &transport.SQLQueryResult{
+		Columns: []string{"id"},
+	}}, "testdb")
 
 	rawStmt, err := conn.Prepare("SELECT `key` FROM kv")
 	if err != nil {
@@ -313,14 +322,7 @@ func TestNetworkStmt_ExecAndQuery_NotClosed(t *testing.T) {
 
 // TestNetworkStmt_ExecContext_NotClosed verifies ExecContext on open networkStmt.
 func TestNetworkStmt_ExecContext_NotClosed(t *testing.T) {
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		resp := sqlResponse{RowCount: 1}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
+	conn := newFakeNetworkConn(&fakeSQLClient{result: &transport.SQLQueryResult{RowCount: 1}}, "testdb")
 	ns := &networkStmt{conn: conn, query: "DELETE FROM kv WHERE `key` = 'x'"}
 
 	res, err := ns.ExecContext(context.Background(), nil)
@@ -334,18 +336,9 @@ func TestNetworkStmt_ExecContext_NotClosed(t *testing.T) {
 
 // TestNetworkStmt_QueryContext_NotClosed verifies QueryContext on open networkStmt.
 func TestNetworkStmt_QueryContext_NotClosed(t *testing.T) {
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		resp := sqlResponse{
-			Columns:  []string{"key"},
-			Rows:     []map[string]interface{}{},
-			RowCount: 0,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
+	conn := newFakeNetworkConn(&fakeSQLClient{result: &transport.SQLQueryResult{
+		Columns: []string{"key"},
+	}}, "testdb")
 	ns := &networkStmt{conn: conn, query: "SELECT `key` FROM kv"}
 
 	rows, err := ns.QueryContext(context.Background(), nil)

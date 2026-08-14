@@ -789,7 +789,7 @@ func TestCustodianToProtoQUIC_WithTimestamps(t *testing.T) {
 
 func TestHandleCredentialStore_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: []byte("v")})
 	_, err := srv.handleCredentialStore(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected ServiceNotConfiguredError")
@@ -825,7 +825,7 @@ func TestHandleCredentialStore_Success(t *testing.T) {
 		},
 	}
 	srv := newCredentialTestServer(t, svc)
-	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "db-pass", Value: "s3cret"})
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "db-pass", Value: []byte("s3cret")})
 	resp, err := srv.handleCredentialStore(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("handleCredentialStore failed: %v", err)
@@ -848,7 +848,7 @@ func TestHandleCredentialStore_ServiceError(t *testing.T) {
 		},
 	}
 	srv := newCredentialTestServer(t, svc)
-	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: []byte("v")})
 	_, err := srv.handleCredentialStore(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -895,7 +895,7 @@ func TestHandleCredentialRetrieve_Success(t *testing.T) {
 	if err := proto.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.GetValue() != "s3cret" {
+	if string(out.GetValue()) != "s3cret" {
 		t.Fatalf("expected value 's3cret', got %q", out.GetValue())
 	}
 }

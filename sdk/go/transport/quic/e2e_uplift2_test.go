@@ -133,7 +133,7 @@ func TestE2E_CredentialStore_RPCError(t *testing.T) {
 func TestE2E_CredentialRetrieve_Success(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("credential.Retrieve", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveResponse{Value: "secret"})
+		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveResponse{Value: []byte("secret")})
 	})
 	val, err := tr.CredentialRetrieve(context.Background(), "key")
 	if err != nil {

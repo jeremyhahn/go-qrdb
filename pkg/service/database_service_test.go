@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -382,19 +383,30 @@ func TestDatabaseService_UpdateRaft_InvalidClusterMode(t *testing.T) {
 // UpdateBarrier tests
 // ---------------------------------------------------------------------------
 
+// TestDatabaseService_UpdateBarrier_Success verifies the one safe
+// transition UpdateBarrier performs: re-affirming an already-active
+// barrier, which refreshes its non-secret bookkeeping fields
+// (Mode/SharesRequired/SharesTotal) without changing the active encryption
+// state. Enabling a barrier for the first time via UpdateBarrier is
+// rejected (database.BarrierMigrationNotSupportedError) since it would
+// require re-encrypting any existing plaintext data, a migration this API
+// does not perform -- so the database is created WITH its barrier already
+// active. Shamir is not yet an implemented strategy (EnsureBarrier only
+// supports passphrase), so the refreshed Mode here is passphrase.
 func TestDatabaseService_UpdateBarrier_Success(t *testing.T) {
-	svc := newTestDatabaseService(t)
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
 
-	// Create a database first.
 	cfg := testDBConfig("barrier-db")
-	if _, err := svc.Create(cfg); err != nil {
-		t.Fatalf("Create() returned unexpected error: %v", err)
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+		t.Fatalf("CreateWithCredentials() returned unexpected error: %v", err)
 	}
 
 	// Update barrier config via service.
 	barrierCfg := &database.DatabaseBarrierConfig{
 		Enabled:        true,
-		Mode:           "shamir",
+		Mode:           database.BarrierModePassphrase,
 		SharesRequired: 3,
 		SharesTotal:    5,
 	}
@@ -412,8 +424,8 @@ func TestDatabaseService_UpdateBarrier_Success(t *testing.T) {
 	if !info.Barrier.Enabled {
 		t.Error("UpdateBarrier().Barrier.Enabled = false, want true")
 	}
-	if info.Barrier.Mode != "shamir" {
-		t.Errorf("UpdateBarrier().Barrier.Mode = %q, want %q", info.Barrier.Mode, "shamir")
+	if info.Barrier.Mode != database.BarrierModePassphrase {
+		t.Errorf("UpdateBarrier().Barrier.Mode = %q, want %q", info.Barrier.Mode, database.BarrierModePassphrase)
 	}
 	if info.Barrier.SharesRequired != 3 {
 		t.Errorf("UpdateBarrier().Barrier.SharesRequired = %d, want 3", info.Barrier.SharesRequired)
@@ -572,7 +584,7 @@ func TestDatabaseService_SealDatabase_NoBarrierManager(t *testing.T) {
 func TestDatabaseService_DatabaseBarrierStatus_NoBarrierManager(t *testing.T) {
 	svc := newTestDatabaseService(t)
 
-	_, err := svc.DatabaseBarrierStatus("some-db")
+	_, err := svc.DatabaseBarrierStatus(context.Background(), "some-db")
 	if err == nil {
 		t.Fatal("DatabaseBarrierStatus() returned nil, want *BarrierManagerNotConfiguredError")
 	}
@@ -841,5 +853,222 @@ func TestCreateForTenant_SystemTenantBypassesChecks(t *testing.T) {
 
 	if _, err := svc.CreateForTenant(ctx, testDBConfig("sysdb")); err != nil {
 		t.Fatalf("CreateForTenant(system) error = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CreateWithCredentials / CreateForTenantWithCredentials / DatabaseCredentialCreator
+// ---------------------------------------------------------------------------
+
+// newTestDatabaseServiceWithBarrier creates a DatabaseService backed by a
+// real Manager and a real DatabaseBarrierManager (wrapping a fresh, none
+// -strategy system barrier registry), suitable for exercising the credentialed
+// create path and Seal/Unseal end to end.
+func newTestDatabaseServiceWithBarrier(t *testing.T) (*DatabaseService, *database.Manager) {
+	t.Helper()
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := database.NewManager(logger, dataDir)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	reg, _ := initNoneSystemRegistry(t)
+	bm := database.NewDatabaseBarrierManager(logger, reg)
+	// Wire the same barrier manager into both the Manager (Create/Open call
+	// EnsureBarrier/RegisterBarrier through it) and the DatabaseService
+	// (Seal/Unseal/Status read it directly) -- mirroring how
+	// pkg/server/lifecycle.BuildServices wires production daemons.
+	mgr.SetBarrierManager(bm)
+
+	svc, ok := NewDatabaseService(mgr, WithBarrierManager(bm)).(*DatabaseService)
+	if !ok {
+		t.Fatal("NewDatabaseService() did not return *DatabaseService")
+	}
+	return svc, mgr
+}
+
+func TestDatabaseService_ImplementsDatabaseCredentialCreator(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+	var _ DatabaseCredentialCreator = svc
+	if _, ok := DatabaseServicer(svc).(DatabaseCredentialCreator); !ok {
+		t.Fatal("*DatabaseService does not satisfy DatabaseCredentialCreator via the DatabaseServicer interface value")
+	}
+}
+
+func TestDatabaseService_CreateWithCredentials_DedicatedStore(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+
+	cfg := testDBConfig("cred-db")
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+
+	info, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret-passphrase")})
+	if err != nil {
+		t.Fatalf("CreateWithCredentials() returned unexpected error: %v", err)
+	}
+	if info.Barrier == nil || !info.Barrier.Enabled {
+		t.Fatal("CreateWithCredentials() info.Barrier.Enabled = false, want true")
+	}
+
+	status, err := svc.DatabaseBarrierStatus(context.Background(), "cred-db")
+	if err != nil {
+		t.Fatalf("DatabaseBarrierStatus() returned unexpected error: %v", err)
+	}
+	if status.Sealed {
+		t.Error("DatabaseBarrierStatus().Sealed = true immediately after CreateWithCredentials, want false (EnsureBarrier initializes+unseals)")
+	}
+}
+
+func TestDatabaseService_CreateWithCredentials_SharedStoreRejected(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+
+	cfg := testDBConfig("cred-shared-db") // no DataDir: shared store
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+
+	_, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")})
+	if err == nil {
+		t.Fatal("CreateWithCredentials() on a shared-store database = nil, want *SharedStoreBarrierUnsupportedError")
+	}
+	var sharedErr *database.SharedStoreBarrierUnsupportedError
+	if !errors.As(err, &sharedErr) {
+		t.Fatalf("error type = %T, want *database.SharedStoreBarrierUnsupportedError", err)
+	}
+}
+
+func TestDatabaseService_CreateForTenantWithCredentials_SystemTenant(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+
+	cfg := testDBConfig("cred-sys-db")
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+
+	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{Secret: []byte("s3cret")})
+	if err != nil {
+		t.Fatalf("CreateForTenantWithCredentials(system) returned unexpected error: %v", err)
+	}
+	if info.Name != "cred-sys-db" {
+		t.Errorf("Name = %q, want %q", info.Name, "cred-sys-db")
+	}
+}
+
+// TestDatabaseService_CreateForTenantWithCredentials_TenantScoped verifies
+// tenant-scoped credentialed create. A caller-supplied DataDir is never
+// trusted on this path (see CreateForTenantWithCredentials); the barrier
+// requires a dedicated store, so the tenant is resolved via an
+// IsolationVolume TenantInfo with a real DataRoot, letting the Manager
+// compute a legitimate dedicated DataDir server-side.
+func TestDatabaseService_CreateForTenantWithCredentials_TenantScoped(t *testing.T) {
+	base, mgr := newTestDatabaseServiceWithBarrier(t)
+	lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
+		ID:            "acme",
+		IsolationType: tenant.IsolationVolume,
+		DataRoot:      t.TempDir(),
+	}}
+	svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
+	if !ok {
+		t.Fatal("NewDatabaseService() did not return *DatabaseService")
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	cfg := testDBConfig("cred-tenant-db")
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+
+	info, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{Secret: []byte("s3cret")})
+	if err != nil {
+		t.Fatalf("CreateForTenantWithCredentials(tenant) returned unexpected error: %v", err)
+	}
+	if info.TenantID != "acme" {
+		t.Errorf("TenantID = %q, want %q", info.TenantID, "acme")
+	}
+	if info.Barrier == nil || !info.Barrier.Enabled {
+		t.Fatal("info.Barrier.Enabled = false, want true")
+	}
+}
+
+func TestDatabaseService_Create_EmptyCredentials_BarrierDisabledStillWorks(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+
+	// Create (no credentials param) must still work for a database with no
+	// barrier requested.
+	info, err := svc.Create(testDBConfig("no-cred-db"))
+	if err != nil {
+		t.Fatalf("Create() returned unexpected error: %v", err)
+	}
+	if info.Barrier != nil {
+		t.Errorf("Barrier = %+v, want nil", info.Barrier)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SealDatabase / UnsealDatabase status propagation
+// ---------------------------------------------------------------------------
+
+func TestDatabaseService_SealDatabase_UpdatesDatabaseStatus(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+
+	cfg := testDBConfig("seal-status-db")
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+		t.Fatalf("CreateWithCredentials() error = %v", err)
+	}
+
+	info, err := svc.Get("seal-status-db")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if info.Status != database.StatusOpen {
+		t.Fatalf("Status() before seal = %q, want %q", info.Status, database.StatusOpen)
+	}
+
+	if err := svc.SealDatabase(context.Background(), "seal-status-db"); err != nil {
+		t.Fatalf("SealDatabase() returned unexpected error: %v", err)
+	}
+
+	info, err = svc.Get("seal-status-db")
+	if err != nil {
+		t.Fatalf("Get() after seal error = %v", err)
+	}
+	if info.Status != database.StatusSealed {
+		t.Errorf("Status() after SealDatabase = %q, want %q", info.Status, database.StatusSealed)
+	}
+}
+
+func TestDatabaseService_UnsealDatabase_UpdatesDatabaseStatus(t *testing.T) {
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
+
+	cfg := testDBConfig("unseal-status-db")
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	secret := []byte("s3cret-passphrase")
+	if _, err := svc.CreateWithCredentials(context.Background(), cfg, seal.Credentials{Secret: secret}); err != nil {
+		t.Fatalf("CreateWithCredentials() error = %v", err)
+	}
+	if err := svc.SealDatabase(context.Background(), "unseal-status-db"); err != nil {
+		t.Fatalf("SealDatabase() error = %v", err)
+	}
+
+	// Wrong secret must fail and leave status sealed.
+	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.Credentials{Secret: []byte("wrong")}); err == nil {
+		t.Fatal("UnsealDatabase() with wrong secret = nil, want error")
+	}
+	info, err := svc.Get("unseal-status-db")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if info.Status != database.StatusSealed {
+		t.Fatalf("Status() after failed unseal = %q, want %q", info.Status, database.StatusSealed)
+	}
+
+	// Correct secret succeeds and flips status back to open.
+	if err := svc.UnsealDatabase(context.Background(), "unseal-status-db", seal.Credentials{Secret: secret}); err != nil {
+		t.Fatalf("UnsealDatabase() with correct secret returned unexpected error: %v", err)
+	}
+	info, err = svc.Get("unseal-status-db")
+	if err != nil {
+		t.Fatalf("Get() after unseal error = %v", err)
+	}
+	if info.Status != database.StatusOpen {
+		t.Errorf("Status() after successful unseal = %q, want %q", info.Status, database.StatusOpen)
 	}
 }

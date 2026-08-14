@@ -456,11 +456,15 @@ type mockStandaloneBatch struct {
 	commitErr error
 }
 
-func (b *mockStandaloneBatch) Set(_, _ []byte) error { return b.setErr }
-func (b *mockStandaloneBatch) Delete(_ []byte) error { return nil }
-func (b *mockStandaloneBatch) Commit() error         { return b.commitErr }
-func (b *mockStandaloneBatch) Rollback() error       { return nil }
-func (b *mockStandaloneBatch) Close() error          { return nil }
+func (b *mockStandaloneBatch) Set(_, _ []byte) error        { return b.setErr }
+func (b *mockStandaloneBatch) Delete(_ []byte) error        { return nil }
+func (b *mockStandaloneBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
+func (b *mockStandaloneBatch) Commit() error                { return b.commitErr }
+func (b *mockStandaloneBatch) Rollback() error              { return nil }
+func (b *mockStandaloneBatch) Close() error                 { return nil }
+func (b *mockStandaloneBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
+	return &emptyStandaloneIterator{}
+}
 
 // emptyStandaloneIterator implements storage.Iterator and always returns false.
 type emptyStandaloneIterator struct{}

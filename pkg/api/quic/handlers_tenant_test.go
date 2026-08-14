@@ -644,6 +644,59 @@ func TestHandleTenantUpdateQuotas_Success(t *testing.T) {
 	}
 }
 
+// TestHandleTenantUpdateQuotas_ExtendedFieldsRoundTrip is a regression test
+// for the QUIC quota decode gap: SystemBarrierQuota, MaxDedicatedWALGroups,
+// and MaxDatabaseSizeBytes were silently dropped when decoding
+// pb.TenantQuotas into quota.Quotas, even though the gRPC/REST equivalents
+// carried the full field set.
+func TestHandleTenantUpdateQuotas_ExtendedFieldsRoundTrip(t *testing.T) {
+	var captured *quota.Quotas
+	svc := &mockTenantService{
+		updateQuotasFn: func(_ context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error) {
+			captured = q
+			return &tenant.TenantInfo{ID: id, Quotas: q, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
+
+	payload, _ := proto.Marshal(&pb.TenantUpdateQuotasRequest{
+		Id: "acme",
+		Quotas: &pb.TenantQuotas{
+			MaxDatabaseSizeBytes:  1 << 30,
+			SystemBarrierQuota:    2048,
+			MaxDedicatedWalGroups: 4,
+		},
+	})
+	resp, err := srv.handleTenantUpdateQuotas(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected UpdateQuotas to be called with non-nil quotas")
+	}
+	if captured.MaxDatabaseSizeBytes != 1<<30 {
+		t.Errorf("expected MaxDatabaseSizeBytes %d, got %d", int64(1<<30), captured.MaxDatabaseSizeBytes)
+	}
+	if captured.SystemBarrierQuota != 2048 {
+		t.Errorf("expected SystemBarrierQuota 2048, got %d", captured.SystemBarrierQuota)
+	}
+	if captured.MaxDedicatedWALGroups != 4 {
+		t.Errorf("expected MaxDedicatedWALGroups 4, got %d", captured.MaxDedicatedWALGroups)
+	}
+
+	var tenantResp pb.TenantResponse
+	if err := proto.Unmarshal(resp, &tenantResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tenantResp.GetQuotas().GetSystemBarrierQuota() != 2048 {
+		t.Errorf("expected response SystemBarrierQuota 2048, got %d", tenantResp.GetQuotas().GetSystemBarrierQuota())
+	}
+	if tenantResp.GetQuotas().GetMaxDedicatedWalGroups() != 4 {
+		t.Errorf("expected response MaxDedicatedWalGroups 4, got %d", tenantResp.GetQuotas().GetMaxDedicatedWalGroups())
+	}
+}
+
 func TestHandleTenantUpdateQuotas_NotFound(t *testing.T) {
 	svc := &mockTenantService{
 		updateQuotasFn: func(_ context.Context, _ string, _ *quota.Quotas) (*tenant.TenantInfo, error) {
@@ -732,6 +785,60 @@ func TestTenantInfoToProto_WithQuotas(t *testing.T) {
 	}
 	if got.GetQuotas().GetMaxTsMetrics() != 100 {
 		t.Errorf("expected MaxTsMetrics 100, got %d", got.GetQuotas().GetMaxTsMetrics())
+	}
+}
+
+// TestTenantInfoToProto_WithEntitlementsAndExtendedQuotas is a regression
+// test for the QUIC tenant response encoder dropping
+// Entitlements.AllowedBarrierModes, Entitlements.AllowDedicatedWal,
+// Quotas.SystemBarrierQuota, and Quotas.MaxDedicatedWalGroups. These fields
+// are part of the gRPC/REST canon (see grpc.entitlementsToProto /
+// grpc.quotaToProto) and must round-trip identically on QUIC.
+func TestTenantInfoToProto_WithEntitlementsAndExtendedQuotas(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	info := &tenant.TenantInfo{
+		ID:            "t1",
+		Name:          "Test Corp",
+		IsolationType: tenant.IsolationBarrier,
+		Quotas: &quota.Quotas{
+			MaxDatabases:          3,
+			SystemBarrierQuota:    4096,
+			MaxDedicatedWALGroups: 2,
+		},
+		Entitlements: &quota.Entitlements{
+			AllowedIsolationModes: []string{"barrier"},
+			AllowDedicatedRaft:    true,
+			AllowedBarrierModes:   []string{"none", "passphrase", "shamir"},
+			AllowDedicatedWAL:     true,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	got := tenantInfoToProto(info)
+	if got == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if got.GetQuotas().GetSystemBarrierQuota() != 4096 {
+		t.Errorf("expected SystemBarrierQuota 4096, got %d", got.GetQuotas().GetSystemBarrierQuota())
+	}
+	if got.GetQuotas().GetMaxDedicatedWalGroups() != 2 {
+		t.Errorf("expected MaxDedicatedWalGroups 2, got %d", got.GetQuotas().GetMaxDedicatedWalGroups())
+	}
+	if got.GetEntitlements() == nil {
+		t.Fatal("expected non-nil entitlements")
+	}
+	gotModes := got.GetEntitlements().GetAllowedBarrierModes()
+	wantModes := []string{"none", "passphrase", "shamir"}
+	if len(gotModes) != len(wantModes) {
+		t.Fatalf("expected AllowedBarrierModes %v, got %v", wantModes, gotModes)
+	}
+	for i := range wantModes {
+		if gotModes[i] != wantModes[i] {
+			t.Fatalf("expected AllowedBarrierModes %v, got %v", wantModes, gotModes)
+		}
+	}
+	if !got.GetEntitlements().GetAllowDedicatedWal() {
+		t.Error("expected AllowDedicatedWal true")
 	}
 }
 

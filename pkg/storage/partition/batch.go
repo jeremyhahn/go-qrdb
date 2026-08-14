@@ -80,6 +80,47 @@ func (b *partitionBatch) Delete(key []byte) error {
 	return batch.Delete(key)
 }
 
+// Get reads the key through its partition's batch when this batch has already
+// written to that partition, so a read observes this batch's own pending
+// writes; otherwise it reads the partition's committed state directly.
+func (b *partitionBatch) Get(key []byte) ([]byte, error) {
+	if b.closed.Load() {
+		return nil, &storage.BatchError{Op: "get", Err: &storage.ClosedError{}}
+	}
+
+	id := b.manager.router.Route(key)
+
+	b.mu.Lock()
+	batch, buffered := b.batches[id]
+	b.mu.Unlock()
+
+	if buffered {
+		return batch.Get(key)
+	}
+	return b.manager.partitions[id].Get(key)
+}
+
+// NewIterator merges every partition's view, reading through this batch's
+// pending writes for the partitions it has touched.
+func (b *partitionBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	if b.closed.Load() {
+		return newClosedMergeIterator()
+	}
+
+	b.mu.Lock()
+	iters := make([]storage.Iterator, len(b.manager.partitions))
+	for i, p := range b.manager.partitions {
+		if batch, buffered := b.batches[uint32(i)]; buffered {
+			iters[i] = batch.NewIterator(opts)
+			continue
+		}
+		iters[i] = p.NewIterator(opts)
+	}
+	b.mu.Unlock()
+
+	return newMergeIterator(iters, opts)
+}
+
 // Commit commits all partition batches. If any partition's batch fails to
 // commit, all errors are collected and returned as a BatchCommitError.
 // This is best-effort: each partition commits independently.

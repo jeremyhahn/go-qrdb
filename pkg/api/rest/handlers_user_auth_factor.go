@@ -192,12 +192,20 @@ func (s *Server) resolveUserAuthFactorLogin(ctx context.Context, req *transport.
 		Active: true,
 		Factor: userAuthFactorToRecord(factor),
 	}
-	// Best-effort enrichment from the user service, when wired.
-	if s.userSvc != nil {
-		// User IDs in this layer are uint64 but pkg/user uses string IDs;
-		// callers that need the username/email/roles should adapt by
-		// providing a UserLookup at a higher layer.
-		_ = factor.UserID
+	// Enrich the response from the user service, when wired. The factor login
+	// yields only the user ID; the wire contract also carries the username,
+	// tenant, role set, and enabled state. Resolve the user record by ID
+	// (pkg/user keys users by the same uint64 as AuthFactor.UserID) and
+	// populate those fields. Enrichment is best-effort: a lookup failure
+	// leaves the base identifiers intact rather than failing an otherwise
+	// successful login.
+	if s.userSvc != nil && factor.UserID != 0 {
+		if u, uErr := s.userSvc.GetUser(ctx, factor.UserID); uErr == nil && u != nil {
+			resp.Username = u.Username
+			resp.TenantID = u.TenantID
+			resp.Roles = u.RoleIDs
+			resp.Active = u.Enabled
+		}
 	}
 	return resp, nil
 }

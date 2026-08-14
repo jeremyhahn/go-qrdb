@@ -369,7 +369,7 @@ func (s *testQRDBServer) CredentialRetrieve(ctx context.Context, req *pb.Credent
 	if s.credRetrieveFn != nil {
 		return s.credRetrieveFn(ctx, req)
 	}
-	return &pb.CredentialRetrieveResponse{Value: "secret-value"}, nil
+	return &pb.CredentialRetrieveResponse{Value: []byte("secret-value")}, nil
 }
 
 // ---------------------------------------------------------------------------

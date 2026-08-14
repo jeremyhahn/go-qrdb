@@ -17,11 +17,26 @@ package clustermig
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
+
+// MaxRecycleAttempts bounds how many times the Reconciler retries a failing
+// local recycle for one (scope, generation) before giving up and leaving the
+// node's status as a terminal, operator-visible failure instead of retrying
+// forever on the fixed poll interval. A structurally invalid migration record
+// (e.g. an out-of-range Shamir M-of-N, or an unknown mechanism) fails
+// deterministically on every attempt, so retrying it is pure noise; bounding
+// the count turns "silent infinite retry with no operator signal" into a
+// small, fixed number of attempts followed by a durable, inspectable failure
+// (see NodeMigrationStatus.Attempts / Detail). It is a var (not const),
+// mirroring clusterMigReconcileInterval in cmd/qrdbd/cluster_migrate.go, so
+// tests can shrink it; production never reassigns it.
+var MaxRecycleAttempts = 5
 
 // LocalRecycler performs this node's in-process per-node recycle for one
 // migration scope: quiesce the local data plane, re-encrypt the at-rest stores
@@ -106,8 +121,14 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) (recycled int, err error
 	return recycled, nil
 }
 
-// owedByThisNode reports whether this node is a named owner of m that has not yet
-// acked m's current generation with a terminal-success phase.
+// owedByThisNode reports whether this node is a named owner of m that has not
+// yet acked m's current generation with a terminal-success phase, AND has not
+// exhausted its retry budget (MaxRecycleAttempts) for a terminal-failure
+// phase. An exhausted node is no longer owed — the Reconciler stops scheduling
+// it — but the scope stays incomplete forever (Store.IsComplete only counts
+// PhaseComplete), leaving the failure durably visible until the operator
+// re-issues the request (a new generation resets the budget, see
+// recordFailure/priorAttempts).
 func (r *Reconciler) owedByThisNode(ctx context.Context, m *ClusterMigration) (bool, error) {
 	isOwner := false
 	for _, o := range m.Owners {
@@ -123,12 +144,32 @@ func (r *Reconciler) owedByThisNode(ctx context.Context, m *ClusterMigration) (b
 	if err != nil {
 		return false, err
 	}
-	// Owed unless we already completed THIS generation. A status for an older
-	// generation, a non-terminal phase, or no status at all all mean owed.
-	if st != nil && st.Generation == m.Generation && st.Phase == seal.PhaseComplete {
+	// A status for an older generation, or no status at all, means owed: a new
+	// generation always starts with a fresh retry budget.
+	if st == nil || st.Generation != m.Generation {
+		return true, nil
+	}
+	if st.Phase == seal.PhaseComplete {
+		return false, nil
+	}
+	if st.Phase == seal.PhaseFailed && st.Attempts >= MaxRecycleAttempts {
 		return false, nil
 	}
 	return true, nil
+}
+
+// permanentRecycleError reports whether err is a structurally deterministic
+// migration-shape failure (invalid target/mechanism/availability, or an
+// out-of-range Shamir M-of-N) that will fail identically on every retry.
+// Recognizing it lets recordFailure abandon the scope on the FIRST failure
+// instead of burning MaxRecycleAttempts identical retries before giving up —
+// the exact bug this bound exists to close (a structurally invalid intent
+// record retried every poll interval forever with no operator signal).
+func permanentRecycleError(err error) bool {
+	return errors.Is(err, seal.ErrMigrationInvalidTarget) ||
+		errors.Is(err, seal.ErrMigrationInvalidMechanism) ||
+		errors.Is(err, seal.ErrMigrationInvalidAvailability) ||
+		errors.Is(err, seal.ErrShamirThresholdInvalid)
 }
 
 // recycleScope runs the local recycle for one scope, recording phase transitions
@@ -140,29 +181,70 @@ func (r *Reconciler) recycleScope(ctx context.Context, m *ClusterMigration) erro
 		slog.String("target", string(m.Target)),
 		slog.Uint64("generation", m.Generation))
 
+	prevAttempts := r.priorAttempts(ctx, m)
+
 	// Open this node's sealed unlock credential (if any) for the recycle. The
 	// plaintext is wiped after the recycle returns so it never lingers.
 	var credential []byte
 	if r.opener != nil {
 		cred, oerr := r.opener.Open(ctx, m)
 		if oerr != nil {
-			r.putStatus(ctx, m, seal.PhaseFailed, "open credential: "+oerr.Error())
+			r.recordFailure(ctx, m, prevAttempts, "open credential: "+oerr.Error(), false)
 			return oerr
 		}
 		credential = cred
 	}
 	defer wipe(credential)
 
-	r.putStatus(ctx, m, seal.PhaseCopying, "")
+	// Checkpoint with attempts=prevAttempts, NOT 0: this write lands before
+	// Recycle runs, so a crash during Recycle leaves it as the last-persisted
+	// status. Zeroing the counter here would let a reliably-crashing recycle
+	// retry forever across reboots — each restart would read Attempts=0 from
+	// this checkpoint and reopen a fresh MaxRecycleAttempts budget, forever
+	// resetting the bound recordFailure (and owedByThisNode) rely on to stop
+	// retrying. Carrying prevAttempts forward means an attempt interrupted by
+	// a crash still counts against the budget once recordFailure runs on the
+	// next pass.
+	r.putStatus(ctx, m, seal.PhaseCopying, "", prevAttempts)
 	if err := r.recycler.Recycle(ctx, m, credential); err != nil {
-		r.putStatus(ctx, m, seal.PhaseFailed, err.Error())
+		r.recordFailure(ctx, m, prevAttempts, err.Error(), permanentRecycleError(err))
 		return err
 	}
-	r.putStatus(ctx, m, seal.PhaseComplete, "")
+	r.putStatus(ctx, m, seal.PhaseComplete, "", 0)
 	r.logger.Info("local encryption recycle complete",
 		slog.String("scope", scopeLabel(m.TenantID, m.Database)),
 		slog.Uint64("generation", m.Generation))
 	return nil
+}
+
+// priorAttempts returns this node's recorded failure-attempt count for m's
+// CURRENT generation, or 0 when there is no status yet or the recorded status
+// is for a stale generation — a new generation always starts its own retry
+// budget (mirrors owedByThisNode's generation handling).
+func (r *Reconciler) priorAttempts(ctx context.Context, m *ClusterMigration) int {
+	st, err := r.store.GetNodeStatus(ctx, m.TenantID, m.Database, r.nodeID)
+	if err != nil || st == nil || st.Generation != m.Generation {
+		return 0
+	}
+	return st.Attempts
+}
+
+// recordFailure writes this node's PhaseFailed status for m, bumping the
+// attempt counter from prevAttempts. A permanent (structurally deterministic)
+// failure jumps straight to MaxRecycleAttempts on its FIRST occurrence, since
+// retrying a validation error that can never succeed is pure noise. Once
+// attempts reaches MaxRecycleAttempts, Detail is annotated to say so:
+// owedByThisNode then stops scheduling further retries for this generation,
+// leaving this record as the durable, operator-visible terminal failure.
+func (r *Reconciler) recordFailure(ctx context.Context, m *ClusterMigration, prevAttempts int, detail string, permanent bool) {
+	attempts := prevAttempts + 1
+	if permanent && attempts < MaxRecycleAttempts {
+		attempts = MaxRecycleAttempts
+	}
+	if attempts >= MaxRecycleAttempts {
+		detail = fmt.Sprintf("abandoned after %d attempt(s) (retries exhausted): %s", attempts, detail)
+	}
+	r.putStatus(ctx, m, seal.PhaseFailed, detail, attempts)
 }
 
 // wipe zeroes a plaintext credential buffer so it does not linger in memory
@@ -174,12 +256,13 @@ func wipe(b []byte) { secure.Wipe(b) }
 // putStatus writes this node's status for the scope, swallowing (logging) write
 // errors so a transient KV failure does not abort the recycle outcome — the next
 // pass re-derives owed-ness from the persisted status.
-func (r *Reconciler) putStatus(ctx context.Context, m *ClusterMigration, phase seal.MigrationPhase, detail string) {
+func (r *Reconciler) putStatus(ctx context.Context, m *ClusterMigration, phase seal.MigrationPhase, detail string, attempts int) {
 	st := &NodeMigrationStatus{
 		NodeID:     r.nodeID,
 		Generation: m.Generation,
 		Phase:      phase,
 		Detail:     detail,
+		Attempts:   attempts,
 	}
 	if r.nowUnix != nil {
 		st.UpdatedAtUnix = r.nowUnix()

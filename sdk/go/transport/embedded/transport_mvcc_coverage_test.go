@@ -79,16 +79,16 @@ func (m *mockMVCCService) GetAtRevisionWithConsistency(_ context.Context, key st
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("v"), ModRevision: revision, Version: 1}, nil
 }
 
-func (m *mockMVCCService) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	return []*kv.KeyValue{
 		{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1},
-	}, 1, nil
+	}, 1, 77, nil
 }
 
-func (m *mockMVCCService) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	return []*kv.KeyValue{
 		{Key: start, Value: []byte("v"), ModRevision: 1, Version: 1},
-	}, 1, nil
+	}, 1, 77, nil
 }
 
 func (m *mockMVCCService) Compact(_ context.Context, _ int64) error {
@@ -97,6 +97,17 @@ func (m *mockMVCCService) Compact(_ context.Context, _ int64) error {
 
 func (m *mockMVCCService) CurrentRevision(_ context.Context) (int64, error) {
 	return m.currentRev, nil
+}
+
+func (m *mockMVCCService) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return &service.RestoreRevisionResult{
+		Revision: req.Revision,
+		Changes: []service.RestoreKeyChange{
+			{Key: "restored-key", Action: service.RestoreActionRevert, FromRevision: 5, ToRevision: 3, ValueBytes: 7},
+		},
+		Applied: 1,
+		DryRun:  req.DryRun,
+	}, nil
 }
 
 var _ service.MVCCKVServicer = (*mockMVCCService)(nil)
@@ -180,6 +191,11 @@ func TestEmbeddedMVCC_Range_Success(t *testing.T) {
 	if resp.Count != 1 || len(resp.Kvs) != 1 {
 		t.Fatalf("unexpected: %+v", resp)
 	}
+	// Revision (77) is deliberately distinct from Count (1) so this
+	// assertion cannot pass by coincidence if the revision is dropped.
+	if resp.Revision != 77 {
+		t.Fatalf("Revision = %d, want 77", resp.Revision)
+	}
 }
 
 func TestEmbeddedMVCC_Range_WithConsistency(t *testing.T) {
@@ -190,6 +206,9 @@ func TestEmbeddedMVCC_Range_WithConsistency(t *testing.T) {
 	}
 	if resp.Count != 1 {
 		t.Fatalf("Count = %d", resp.Count)
+	}
+	if resp.Revision != 77 {
+		t.Fatalf("Revision = %d, want 77", resp.Revision)
 	}
 }
 
@@ -209,6 +228,90 @@ func TestEmbeddedMVCC_CurrentRevision_Success(t *testing.T) {
 	if rev != 1 {
 		t.Fatalf("rev = %d", rev)
 	}
+}
+
+func TestEmbeddedMVCC_RestoreToRevision_Success(t *testing.T) {
+	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result.Revision != 5 || result.Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "restored-key" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+}
+
+func TestEmbeddedMVCC_RestoreToRevision_NilRequest(t *testing.T) {
+	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
+	if _, err := tr.RestoreToRevision(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+func TestEmbeddedMVCC_RestoreToRevision_NilService(t *testing.T) {
+	tr := newExtTransport(t)
+	_, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1})
+	var nse *NilServiceError
+	if !errors.As(err, &nse) {
+		t.Fatalf("expected *NilServiceError, got %T: %v", err, err)
+	}
+}
+
+// TestEmbeddedMVCC_RestoreToRevision_BinaryRoundTrip proves an arbitrary
+// byte-valued prefix/key survives the []byte<->string conversion the
+// embedded transport applies between the SDK's binary-safe DTO and the
+// service layer's string-keyed RestoreRevisionRequest -- a lossless,
+// in-process conversion, unlike the JSON/base64 or proto `bytes` encodings
+// the other transports apply across the wire.
+func TestEmbeddedMVCC_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryPrefix := []byte{0x00, 0xff, 0xfe, 'p'}
+	binaryKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	svc := &captureRestoreMVCCService{mockMVCCService: newMockMVCCService()}
+	tr := newExtTransport(t, WithMVCCService(svc))
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   binaryPrefix,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if svc.captured == nil || svc.captured.Prefix != string(binaryPrefix) {
+		t.Fatalf("service received prefix %+v, want %v", svc.captured, binaryPrefix)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "restored-key" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+
+	// Keys direction, using a genuinely non-UTF-8 key.
+	if _, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Keys:     [][]byte{binaryKey},
+	}); err != nil {
+		t.Fatalf("RestoreToRevision (keys): %v", err)
+	}
+	if len(svc.captured.Keys) != 1 || svc.captured.Keys[0] != string(binaryKey) {
+		t.Fatalf("expected service to receive binary key %v, got %v", binaryKey, svc.captured.Keys)
+	}
+}
+
+// captureRestoreMVCCService wraps mockMVCCService and records the last
+// RestoreToRevision request it received.
+type captureRestoreMVCCService struct {
+	*mockMVCCService
+	captured *service.RestoreRevisionRequest
+}
+
+func (c *captureRestoreMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	c.captured = req
+	return c.mockMVCCService.RestoreToRevision(ctx, req)
 }
 
 // ===========================================================================
@@ -252,6 +355,23 @@ func TestEmbeddedMVCC_Dispatch(t *testing.T) {
 		var rev int64
 		if err := tr.Request(ctx, "CurrentRevision", nil, &rev); err != nil {
 			t.Fatalf("dispatch: %v", err)
+		}
+	})
+	t.Run("RestoreToRevision", func(t *testing.T) {
+		var resp *transport.RestoreRevisionResult
+		req := &transport.RestoreRevisionRequest{Revision: 5, Prefix: []byte("prefix")}
+		if err := tr.Request(ctx, "RestoreToRevision", req, &resp); err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if resp == nil || resp.Applied != 1 {
+			t.Fatalf("unexpected dispatch result: %+v", resp)
+		}
+	})
+	t.Run("RestoreToRevision_InvalidRequestType", func(t *testing.T) {
+		err := tr.Request(ctx, "RestoreToRevision", "not-a-request", nil)
+		var ire *InvalidRequestError
+		if !errors.As(err, &ire) {
+			t.Fatalf("expected *InvalidRequestError, got %T: %v", err, err)
 		}
 	})
 }
@@ -490,15 +610,18 @@ func (m *mockMVCCFailing) GetAtRevision(_ context.Context, _ string, _ int64) (*
 func (m *mockMVCCFailing) GetAtRevisionWithConsistency(_ context.Context, _ string, _ int64, _ consistency.ReadOptions) (*kv.KeyValue, error) {
 	return nil, errSentinel
 }
-func (m *mockMVCCFailing) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-	return nil, 0, errSentinel
+func (m *mockMVCCFailing) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+	return nil, 0, 0, errSentinel
 }
-func (m *mockMVCCFailing) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-	return nil, 0, errSentinel
+func (m *mockMVCCFailing) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+	return nil, 0, 0, errSentinel
 }
 func (m *mockMVCCFailing) Compact(_ context.Context, _ int64) error { return errSentinel }
 func (m *mockMVCCFailing) CurrentRevision(_ context.Context) (int64, error) {
 	return 0, errSentinel
+}
+func (m *mockMVCCFailing) RestoreToRevision(_ context.Context, _ *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, errSentinel
 }
 
 var _ service.MVCCKVServicer = (*mockMVCCFailing)(nil)
@@ -525,6 +648,9 @@ func TestEmbeddedMVCC_AllMethods_ServiceError(t *testing.T) {
 	}
 	if _, err := tr.CurrentRevision(ctx); err == nil {
 		t.Fatal("CurrentRevision: expected error")
+	}
+	if _, err := tr.RestoreToRevision(ctx, &transport.RestoreRevisionRequest{Revision: 1, Prefix: []byte("k")}); err == nil {
+		t.Fatal("RestoreToRevision: expected error")
 	}
 	// With consistency
 	if _, err := tr.GetRevision(ctx, "k", transport.WithConsistency(transport.ConsistencyLinearizable)); err == nil {

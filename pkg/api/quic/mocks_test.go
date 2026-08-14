@@ -61,6 +61,12 @@ func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error
 	return nil
 }
 
+// PutIfAbsent reports a successful create. This mock keeps no state, so
+// there is nothing for the condition to consult.
+func (m *mockKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return true, nil
+}
+
 func (m *mockKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, key)
@@ -289,13 +295,14 @@ type mockMVCCKVService struct {
 	putWithLeaseFn                 func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
 	getRevisionFn                  func(ctx context.Context, key string) (*kv.KeyValue, error)
 	getAtRevisionFn                func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
-	rangeFn                        func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeFn                        func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
 	compactFn                      func(ctx context.Context, revision int64) error
 	currentRevisionFn              func(ctx context.Context) (int64, error)
 	putWithLeaseAndModeFn          func(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*kv.KeyValue, error)
 	getRevisionWithConsistencyFn   func(ctx context.Context, key string, opts consistency.ReadOptions) (*kv.KeyValue, error)
 	getAtRevisionWithConsistencyFn func(ctx context.Context, key string, revision int64, opts consistency.ReadOptions) (*kv.KeyValue, error)
-	rangeWithConsistencyFn         func(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeWithConsistencyFn         func(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
+	restoreToRevisionFn            func(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error)
 }
 
 func (m *mockMVCCKVService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error) {
@@ -319,11 +326,11 @@ func (m *mockMVCCKVService) GetAtRevision(ctx context.Context, key string, revis
 	return &kv.KeyValue{}, nil
 }
 
-func (m *mockMVCCKVService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCKVService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeFn != nil {
 		return m.rangeFn(ctx, start, end, opts...)
 	}
-	return nil, 0, nil
+	return nil, 0, 0, nil
 }
 
 func (m *mockMVCCKVService) Compact(ctx context.Context, revision int64) error {
@@ -361,11 +368,11 @@ func (m *mockMVCCKVService) GetAtRevisionWithConsistency(ctx context.Context, ke
 	return &kv.KeyValue{}, nil
 }
 
-func (m *mockMVCCKVService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCKVService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeWithConsistencyFn != nil {
 		return m.rangeWithConsistencyFn(ctx, start, end, opts, rangeOpts...)
 	}
-	return nil, 0, nil
+	return nil, 0, 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -695,4 +702,12 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (m *mockMVCCKVService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if m.restoreToRevisionFn != nil {
+		return m.restoreToRevisionFn(ctx, req)
+	}
+	return &service.RestoreRevisionResult{}, nil
 }

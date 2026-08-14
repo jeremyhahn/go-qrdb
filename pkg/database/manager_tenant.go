@@ -18,25 +18,37 @@ import (
 	"context"
 	"sort"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // CreateForTenant creates a new database scoped to the tenant from the context.
-// It sets cfg.TenantID from the context and delegates to Create.
+// It sets cfg.TenantID from the context and delegates to Create. Equivalent
+// to CreateForTenantWithCredentials with an empty seal.Credentials -- barrier
+// initialization with an empty secret only succeeds when cfg.Barrier is nil
+// or not enabled.
 func (m *Manager) CreateForTenant(ctx context.Context, cfg DatabaseConfig) (*Database, error) {
+	return m.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{})
+}
+
+// CreateForTenantWithCredentials creates a new database scoped to the tenant
+// from the context, using creds to initialize a barrier when cfg.Barrier is
+// enabled. It sets cfg.TenantID from the context and delegates to
+// CreateWithCredentials.
+func (m *Manager) CreateForTenantWithCredentials(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "CreateForTenant"}
 	}
 	cfg.TenantID = tenantID
-	return m.Create(cfg)
+	return m.CreateWithCredentials(ctx, cfg, creds)
 }
 
 // GetForTenant returns a database by name after verifying tenant ownership.
 // Returns TenantAccessDeniedError if the database belongs to a different tenant.
 func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "GetForTenant"}
 	}
 
@@ -59,7 +71,7 @@ func (m *Manager) GetForTenant(ctx context.Context, name string) (*Database, err
 // Results are sorted by name.
 func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return nil, &TenantIDRequiredError{Operation: "ListForTenant"}
 	}
 
@@ -81,7 +93,7 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 // Returns TenantAccessDeniedError if the database belongs to a different tenant.
 func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "DropForTenant"}
 	}
 
@@ -103,7 +115,7 @@ func (m *Manager) DropForTenant(ctx context.Context, name string) error {
 // UpdateProtocolForTenant updates protocol config after verifying tenant ownership.
 func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, protocol ProtocolConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateProtocolForTenant"}
 	}
 
@@ -124,7 +136,7 @@ func (m *Manager) UpdateProtocolForTenant(ctx context.Context, name string, prot
 // UpdateEtcdForTenant updates etcd config after verifying tenant ownership.
 func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *EtcdConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateEtcdForTenant"}
 	}
 
@@ -145,7 +157,7 @@ func (m *Manager) UpdateEtcdForTenant(ctx context.Context, name string, etcd *Et
 // UpdateRaftForTenant updates Raft config after verifying tenant ownership.
 func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *DatabaseRaftConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateRaftForTenant"}
 	}
 
@@ -166,7 +178,7 @@ func (m *Manager) UpdateRaftForTenant(ctx context.Context, name string, raft *Da
 // UpdateBarrierForTenant updates barrier config after verifying tenant ownership.
 func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barrier *DatabaseBarrierConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateBarrierForTenant"}
 	}
 
@@ -187,7 +199,7 @@ func (m *Manager) UpdateBarrierForTenant(ctx context.Context, name string, barri
 // UpdateConnectionForTenant updates connection config after verifying tenant ownership.
 func (m *Manager) UpdateConnectionForTenant(ctx context.Context, name string, conn *DatabaseConnectionConfig) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return &TenantIDRequiredError{Operation: "UpdateConnectionForTenant"}
 	}
 

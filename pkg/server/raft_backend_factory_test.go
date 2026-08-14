@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,9 +28,11 @@ import (
 	logdblib "github.com/jeremyhahn/go-quicraft/pkg/logdb"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
 
+	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -409,6 +412,326 @@ func TestRaftBackendFactory_AttachIdempotent(t *testing.T) {
 	}
 	if _, err := f.Services(ctx, "at", "db"); err != nil {
 		t.Fatalf("Services after Attach: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ShardRestarter (online backup restore) tests
+// ---------------------------------------------------------------------------
+
+// TestRaftBackendFactory_OnlineBackupRestore_RF1Success is the real,
+// end-to-end proof for the ONLINE (running-shard) backup restore path,
+// through the actual go-quicraft snapshot/import/StartShard/StopShard
+// plumbing (no mocks): a disaster-recovery scenario where a single-replica
+// dedicated shard's node was lost and re-provisioned. The REPLACEMENT node
+// runs the same (tenant, db) shard at the same shard ID, already STARTED
+// (satisfying the online-restore precondition) but with no data and no
+// recorded snapshot of its own; online restore populates it from a backup
+// captured on the ORIGINAL node.
+//
+// # Why this is the scenario that proves genuine data restoration
+//
+// *quicraft.Host.ImportSnapshot refuses an artifact that does not ADVANCE
+// the target replica's own recorded snapshot (checkImportAdvancesSnapshot),
+// and a successful import only compacts LOCAL log entries AT OR BELOW the
+// imported index (see ImportSnapshot's log-compaction comment in
+// go-quicraft/pkg/host.go) — it never discards entries ABOVE it. For an
+// RF=1 shard that never went anywhere, there is no "behind" state: the sole
+// replica's own log already contains everything up to and including
+// whatever CreateBackup just snapshotted, so re-importing that SAME backup
+// back onto the SAME replica can only ever be a no-op (see the companion
+// test below, which proves and documents exactly that safe behavior). A
+// REPLACEMENT replica — same shard ID, same RF=1 eligibility, but with no
+// snapshot of its own yet — is the only case where the advance-check can
+// pass and genuinely install different data, which is exactly the
+// production disaster-recovery scenario this feature targets: a node's
+// data is gone, so an operator online-restores the affected tenant's shard
+// from backup without stopping the rest of the cluster.
+func TestRaftBackendFactory_OnlineBackupRestore_RF1Success(t *testing.T) {
+	ctx := context.Background()
+
+	// Original node/replica: where the data was written and the backup was
+	// captured.
+	fSrc, regSrc, srcInfo := newRaftFactory(t)
+	dataRootSrc, _ := registerVolumeTenant(t, regSrc, "or")
+	const shardID = uint64(1000)
+	srcInfo.add("or", "db", shardID, dataRootSrc)
+
+	svcsSrc, err := fSrc.Services(ctx, "or", "db")
+	if err != nil {
+		t.Fatalf("Services (source): %v", err)
+	}
+	if err := svcsSrc.KV.Put(ctx, "k", []byte("restored-from-backup")); err != nil {
+		t.Fatalf("KV.Put: %v", err)
+	}
+
+	providerSrc := service.NewHostShardSnapshotProvider(raftbackend.New(fSrc.host))
+	data, err := providerSrc.SnapshotShard(ctx, shardID)
+	if err != nil {
+		t.Fatalf("SnapshotShard (source): %v", err)
+	}
+
+	// Replacement node/replica: a SEPARATE host (simulating re-provisioned
+	// hardware) hosting the SAME (tenant, db) shard at the SAME shard ID,
+	// already running but with no data of its own yet. Wired exactly as
+	// production wires it: the provider is built first (mirroring
+	// lifecycle.BuildServices, which runs before the IsolationRaft factory
+	// exists), and the factory is wired in as the ShardRestarter afterward
+	// via service.SetShardRestarter (mirroring cmd/qrdbd/start.go /
+	// sdk/go/node/node.go).
+	fDst, regDst, dstInfo := newRaftFactory(t)
+	dataRootDst, _ := registerVolumeTenant(t, regDst, "or")
+	dstInfo.add("or", "db", shardID, dataRootDst)
+	if _, err := fDst.Services(ctx, "or", "db"); err != nil {
+		t.Fatalf("Services (replacement): %v", err)
+	}
+
+	providerDst := service.NewHostShardSnapshotProvider(raftbackend.New(fDst.host))
+	backupSvc := service.NewBackupService(providerDst)
+	service.SetShardRestarter(backupSvc, fDst)
+
+	online, ok := providerDst.(service.OnlineShardRestorer)
+	if !ok {
+		t.Fatal("expected host-backed provider to implement OnlineShardRestorer")
+	}
+	// RestoreShardOnline's RF guard requires a linearizable membership read
+	// (ReadIndex), which can transiently fail with "read index not ready"
+	// immediately after the replacement replica's leader election — the same
+	// warm-up window getWhenReadable tolerates for KV reads elsewhere in this
+	// file. Poll rather than assume the very first attempt lands after
+	// waitForShardLeader merely observes a leader ID.
+	restoreDeadline := time.Now().Add(15 * time.Second)
+	for {
+		err = online.RestoreShardOnline(ctx, shardID, data)
+		if err == nil || !strings.Contains(err.Error(), "read index not ready") || time.Now().After(restoreDeadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("RestoreShardOnline: %v", err)
+	}
+
+	// The shard must be usable again post-restart. RestartAfterRestore's
+	// Attach re-caches a fresh service set under the same (tenant, db) key,
+	// so re-resolving through the factory (not a stale pre-restart handle)
+	// is required — exactly the ReattachPersistence pattern above.
+	svcsDstAfter, err := fDst.Services(ctx, "or", "db")
+	if err != nil {
+		t.Fatalf("Services after restore: %v", err)
+	}
+	got, err := getWhenReadable(ctx, t, svcsDstAfter.KV.Get, "k")
+	if err != nil {
+		t.Fatalf("KV.Get after restore: %v", err)
+	}
+	if string(got) != "restored-from-backup" {
+		t.Fatalf("KV.Get after restore = %q, want restored-from-backup (online restore did not install the backed-up data)", got)
+	}
+
+	// The restored shard must still accept new writes (fully functional, not
+	// wedged in some half-restarted state).
+	if err := svcsDstAfter.KV.Put(ctx, "k2", []byte("post-restore-write")); err != nil {
+		t.Fatalf("KV.Put after restore: %v", err)
+	}
+	if got, err := svcsDstAfter.KV.Get(ctx, "k2"); err != nil || string(got) != "post-restore-write" {
+		t.Fatalf("KV.Get(k2) after restore = %q, %v; want post-restore-write", got, err)
+	}
+}
+
+// TestRaftBackendFactory_OnlineBackupRestore_RF1_PostBackupWriteSurvivesIdempotentPath
+// documents and proves a safety property discovered while writing the
+// success test above: for an RF=1 shard's OWN prior backup — as opposed to
+// the disaster-recovery "replacement replica" scenario above — a write
+// committed AFTER the backup snapshot was taken, but before Raft's own
+// auto-snapshot threshold produces a NEWER recorded snapshot, is NOT rolled
+// back by re-importing that same backup. *quicraft.Host.ImportSnapshot only
+// refuses OR advances based on the RECORDED SNAPSHOT index
+// (checkImportAdvancesSnapshot); it never inspects or truncates the raft
+// LOG. Since nothing here forced a newer snapshot, the backup's index
+// exactly equals the shard's already-recorded snapshot index, so the import
+// is refused with the idempotent logdb.ErrSnapshotOutOfDate ("already
+// applied") — service.RestoreShardOnline treats that as success and simply
+// restarts, and normal Raft recovery then replays the still-present
+// post-backup log entry, landing back on the CURRENT (post-write) value.
+//
+// This is the correct, SAFE behavior: it is exactly what stops online
+// restore from silently discarding committed data it has no way to know a
+// caller did not intend to keep (see the package doc on
+// RestoreShardOnline's idempotent handling). A genuine "roll back this
+// shard's own live history to an older point" is deliberately NOT
+// supported by this mechanism — that would require discarding committed
+// Raft log entries, which neither this feature nor *quicraft.Host does.
+func TestRaftBackendFactory_OnlineBackupRestore_RF1_PostBackupWriteSurvivesIdempotentPath(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	ctx := context.Background()
+
+	dataRoot, _ := registerVolumeTenant(t, reg, "op")
+	const shardID = uint64(1000)
+	src.add("op", "db", shardID, dataRoot)
+
+	svcs, err := f.Services(ctx, "op", "db")
+	if err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "k", []byte("before-backup")); err != nil {
+		t.Fatalf("KV.Put(before-backup): %v", err)
+	}
+
+	hostAdapter := raftbackend.New(f.host)
+	provider := service.NewHostShardSnapshotProvider(hostAdapter)
+	backupSvc := service.NewBackupService(provider)
+	service.SetShardRestarter(backupSvc, f)
+
+	backup, err := backupSvc.CreateBackup(ctx, service.BackupOptions{
+		Destination: "test-online-restore-idempotent",
+		ShardIDs:    []uint64{shardID},
+	})
+	if err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	// A write after the snapshot, below Raft's own auto-snapshot threshold:
+	// the recorded snapshot stays at the backup's own index, but the log
+	// entry for this write is still present and gets replayed on any
+	// restart, restore or not.
+	if err := svcs.KV.Put(ctx, "k", []byte("after-backup")); err != nil {
+		t.Fatalf("KV.Put(after-backup): %v", err)
+	}
+
+	result, err := backupSvc.RestoreBackup(ctx, service.RestoreOptions{
+		BackupID:     backup.ID,
+		TargetShards: []uint64{shardID},
+	})
+	if err != nil {
+		t.Fatalf("RestoreBackup: %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("RestoreBackup reported shard errors: %+v", result.Errors)
+	}
+	if result.ShardsRestored != 1 {
+		t.Fatalf("expected 1 shard restored (idempotent no-op counts as restored), got %d", result.ShardsRestored)
+	}
+
+	svcsAfter, err := f.Services(ctx, "op", "db")
+	if err != nil {
+		t.Fatalf("Services after restore: %v", err)
+	}
+	got, err := getWhenReadable(ctx, t, svcsAfter.KV.Get, "k")
+	if err != nil {
+		t.Fatalf("KV.Get after restore: %v", err)
+	}
+	if string(got) != "after-backup" {
+		t.Fatalf("KV.Get after restore = %q, want after-backup (the post-backup write must survive the idempotent no-op restore)", got)
+	}
+}
+
+// TestRaftBackendFactory_OnlineBackupRestore_SystemShardRefused proves the
+// system-shard guard is enforced even when a real ShardRestarter is wired
+// in: shard.ShardKV is refused unconditionally, and — because the guard
+// fires before StopForRestore is ever called — a dedicated shard this
+// factory legitimately manages is provably untouched by the attempt.
+func TestRaftBackendFactory_OnlineBackupRestore_SystemShardRefused(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	ctx := context.Background()
+
+	dataRoot, _ := registerVolumeTenant(t, reg, "sr")
+	const shardID = uint64(1000)
+	src.add("sr", "db", shardID, dataRoot)
+	if _, err := f.Services(ctx, "sr", "db"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+
+	hostAdapter := raftbackend.New(f.host)
+	provider := service.NewHostShardSnapshotProvider(hostAdapter, service.WithShardRestarter(f))
+
+	online, ok := provider.(service.OnlineShardRestorer)
+	if !ok {
+		t.Fatal("expected host-backed provider to implement OnlineShardRestorer")
+	}
+	err := online.RestoreShardOnline(ctx, shard.ShardKV, []byte("data"))
+	var sysErr *service.OnlineRestoreSystemShardError
+	if !errors.As(err, &sysErr) {
+		t.Fatalf("expected OnlineRestoreSystemShardError, got %T: %v", err, err)
+	}
+
+	// The dedicated shard this factory legitimately manages must be
+	// unaffected: StopForRestore was never reached for the system shard, and
+	// the dedicated shard's own cache entry (and lease-sweeper goroutine) is
+	// still intact.
+	f.mu.Lock()
+	_, stillCached := f.shards[raftShardKey{tenantID: "sr", database: "db"}]
+	f.mu.Unlock()
+	if !stillCached {
+		t.Fatal("dedicated shard was evicted from the factory's cache by a refused system-shard restore")
+	}
+}
+
+// TestRaftBackendFactory_StopForRestore_UnmanagedShard proves StopForRestore
+// fails closed with ShardNotManagedError for a shard ID this factory has
+// never started (e.g. the system shard, or a typo'd ID) rather than
+// attempting a Host.StopShard call the factory cannot safely follow up with
+// a restart for.
+func TestRaftBackendFactory_StopForRestore_UnmanagedShard(t *testing.T) {
+	f, _, _ := newRaftFactory(t)
+
+	err := f.StopForRestore(shard.ShardKV)
+	var notManaged *ShardNotManagedError
+	if !errors.As(err, &notManaged) {
+		t.Fatalf("expected ShardNotManagedError, got %T: %v", err, err)
+	}
+	if notManaged.ShardID != shard.ShardKV {
+		t.Fatalf("expected ShardID=%d, got %d", shard.ShardKV, notManaged.ShardID)
+	}
+}
+
+// TestRaftBackendFactory_RestartAfterRestore_NoPendingStop proves
+// RestartAfterRestore refuses a shard ID with no matching StopForRestore
+// call rather than guessing at an (tenantID, database) identity to restart.
+func TestRaftBackendFactory_RestartAfterRestore_NoPendingStop(t *testing.T) {
+	f, _, _ := newRaftFactory(t)
+
+	err := f.RestartAfterRestore(context.Background(), 1000)
+	var notManaged *ShardNotManagedError
+	if !errors.As(err, &notManaged) {
+		t.Fatalf("expected ShardNotManagedError, got %T: %v", err, err)
+	}
+}
+
+// TestRaftBackendFactory_StopForRestore_RestoresCacheOnStopFailure proves
+// that if the underlying Host.StopShard call itself fails, StopForRestore
+// restores the shard's cache entry rather than leaving the factory believing
+// a still-running shard is stopped.
+func TestRaftBackendFactory_StopForRestore_RestoresCacheOnStopFailure(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	ctx := context.Background()
+
+	dataRoot, _ := registerVolumeTenant(t, reg, "sf")
+	const shardID = uint64(1000)
+	src.add("sf", "db", shardID, dataRoot)
+	if _, err := f.Services(ctx, "sf", "db"); err != nil {
+		t.Fatalf("Services: %v", err)
+	}
+
+	// Close the underlying host so the subsequent Host.StopShard call fails
+	// with quicraft.ErrClosed, without tearing down the factory's own state.
+	if err := f.host.Close(); err != nil {
+		t.Fatalf("host.Close: %v", err)
+	}
+
+	err := f.StopForRestore(shardID)
+	if err == nil {
+		t.Fatal("expected StopForRestore to fail once the host is closed")
+	}
+
+	f.mu.Lock()
+	_, stillCached := f.shards[raftShardKey{tenantID: "sf", database: "db"}]
+	_, pending := f.pendingRestore[shardID]
+	f.mu.Unlock()
+	if !stillCached {
+		t.Fatal("shard cache entry was not restored after a failed StopForRestore")
+	}
+	if pending {
+		t.Fatal("pendingRestore must not record a shard whose stop failed")
 	}
 }
 

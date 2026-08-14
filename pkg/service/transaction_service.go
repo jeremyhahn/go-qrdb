@@ -71,7 +71,10 @@ func NewTransactionService(host Host, shardID uint64) TransactionServicer {
 // operation set through Raft consensus. When all compares succeed, successOps
 // are applied; otherwise failureOps are applied.
 func (s *TransactionService) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
-	cmd := s.encodeTransactionCommand(compares, successOps, failureOps)
+	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)
@@ -91,7 +94,10 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 // Raft consensus. When all compares succeed, successOps are applied;
 // otherwise failureOps are applied.
 func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
-	cmd := s.encodeTransactionCommand(compares, successOps, failureOps)
+	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
+	if err != nil {
+		return nil, err
+	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, s.translateProposeError(err)
@@ -104,8 +110,10 @@ func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Com
 }
 
 // encodeTransactionCommand encodes compares, success ops, and failure ops
-// into a single transaction command for Raft proposal.
-func (s *TransactionService) encodeTransactionCommand(compares []Compare, successOps, failureOps []Op) []byte {
+// into a single transaction command for Raft proposal. Returns an error,
+// without proposing anything, if any success or failure operation is not a
+// supported transaction op type (see UnsupportedTransactionOpError).
+func (s *TransactionService) encodeTransactionCommand(compares []Compare, successOps, failureOps []Op) ([]byte, error) {
 	// Encode compares.
 	encodedCompares := make([][]byte, len(compares))
 	for i, c := range compares {
@@ -123,16 +131,24 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 	// Encode success operations.
 	encodedSuccess := make([][]byte, len(successOps))
 	for i, op := range successOps {
-		encodedSuccess[i] = encodeServiceOp(op)
+		encoded, err := encodeServiceOp(op)
+		if err != nil {
+			return nil, err
+		}
+		encodedSuccess[i] = encoded
 	}
 
 	// Encode failure operations.
 	encodedFailure := make([][]byte, len(failureOps))
 	for i, op := range failureOps {
-		encodedFailure[i] = encodeServiceOp(op)
+		encoded, err := encodeServiceOp(op)
+		if err != nil {
+			return nil, err
+		}
+		encodedFailure[i] = encoded
 	}
 
-	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure), nil
 }
 
 // buildTransactionResponse constructs a TransactionResponse from the Raft
@@ -214,6 +230,12 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 	if proposeErr != nil {
 		return nil, s.translateProposeError(proposeErr)
 	}
+	// A state-machine-encoded application error (e.g. a unique-index violation
+	// that rejected the transaction without stalling consensus) must be
+	// surfaced before the result.Data success flag is interpreted.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
+	}
 
 	// Parse result: Value = revision, Data[0] = succeeded flag.
 	succeeded := len(result.Data) > 0 && result.Data[0] == 1
@@ -281,13 +303,19 @@ var opTypeMap = map[OpType]byte{
 	OpDelete: protocol.OpMVCCDelete,
 }
 
-// encodeServiceOp converts a service.Op to its binary protocol representation.
-func encodeServiceOp(op Op) []byte {
+// encodeServiceOp converts a service.Op to its binary protocol
+// representation. Only OpPut and OpDelete are supported: transaction and
+// batch write-op encoding (the only callers of this function) never
+// operate on reads (OpGet, OpRange), which are executed as linearizable
+// reads through separate code paths and must never reach this encoder.
+// An unmapped OpType — including OpGet, OpRange, or any future/invalid
+// value — fails closed with UnsupportedTransactionOpError rather than
+// silently defaulting to a write, which would otherwise let a caller's
+// read request corrupt the target key with an empty-value put.
+func encodeServiceOp(op Op) ([]byte, error) {
 	protocolOp, ok := opTypeMap[op.Type]
 	if !ok {
-		// Default to put for unknown types; the state machine will reject
-		// invalid op codes at execution time.
-		protocolOp = protocol.OpMVCCPut
+		return nil, &UnsupportedTransactionOpError{OpType: op.Type}
 	}
-	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
+	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID), nil
 }

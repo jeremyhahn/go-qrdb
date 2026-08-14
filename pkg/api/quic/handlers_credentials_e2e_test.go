@@ -179,7 +179,7 @@ func TestE2E_CredentialSubmit_HappyPath(t *testing.T) {
 	}
 	addr, clientCfg := startCredentialE2EServer(t, svc)
 
-	payload, err := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: "s3cret"})
+	payload, err := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: []byte("s3cret")})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestE2E_CredentialRotate_HappyPath(t *testing.T) {
 
 	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{
 		Name:               "db",
-		NewValue:           "rotated",
+		NewValue:           []byte("rotated"),
 		GracePeriodSeconds: 30,
 	})
 	status, respPayload := credentialE2ERoundTrip(t, addr, clientCfg, "credential.Rotate", payload)
@@ -352,7 +352,7 @@ func TestE2E_CredentialRetrieveVersion_HappyPath(t *testing.T) {
 	if err := proto.Unmarshal(respPayload, &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if resp.GetValue() != "v2-bytes" {
+	if string(resp.GetValue()) != "v2-bytes" {
 		t.Fatalf("value = %q, want v2-bytes", resp.GetValue())
 	}
 }

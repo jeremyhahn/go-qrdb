@@ -50,6 +50,19 @@ type Registry interface {
 
 	// BatchService returns the BatchServicer for the given scope.
 	BatchService(tenant, db string) (BatchServicer, error)
+
+	// TableService returns the TableServicer for the given (tenant, db)
+	// scope -- the relational table catalog (CREATE TABLE and friends). Like
+	// every other resolver on this interface, the returned TableServicer's
+	// underlying KV/MVCC access is scoped to the caller's (tenant, db)
+	// namespace, so a table created for one tenant is invisible to another.
+	TableService(tenant, db string) (TableServicer, error)
+
+	// SequenceService returns the SequenceServicer for the given (tenant,
+	// db) scope. It is exposed independently of TableService because
+	// AUTO_INCREMENT columns allocate from the same per-database sequence
+	// space directly, without going through the table catalog.
+	SequenceService(tenant, db string) (SequenceServicer, error)
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated

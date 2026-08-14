@@ -18,6 +18,7 @@ import (
 	"errors"
 	"testing"
 
+	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -152,12 +153,32 @@ func TestErrorsImplementErrorInterface(t *testing.T) {
 		{"IndexLookupError", &IndexLookupError{IndexName: "idx", Err: errors.New("e")}},
 		{"RangeTranslationError", &RangeTranslationError{Reason: "bad range"}},
 		{"UnsupportedRangeTypeError", &UnsupportedRangeTypeError{RangeType: "99"}},
+		{"RelationalCatalogUnavailableError", &RelationalCatalogUnavailableError{Operation: "CREATE TABLE"}},
+		{"TableServiceUnavailableError", &TableServiceUnavailableError{Table: "t"}},
+		{"GeneratedColumnUnsupportedError", &GeneratedColumnUnsupportedError{Column: "c"}},
+		{"ColumnOrderUnsupportedError", &ColumnOrderUnsupportedError{Table: "t", Column: "c"}},
+		{"RewriteRequiredError", &RewriteRequiredError{Table: "t", Column: "c", Operation: "DROP COLUMN"}},
+		{"RewriteRequiresColumnError", &RewriteRequiresColumnError{Table: "t"}},
+		{"RewriteJournalMissingTargetError", &RewriteJournalMissingTargetError{Database: "db", Name: "t"}},
+		{"RewriteColumnNotFoundError", &RewriteColumnNotFoundError{Column: "c"}},
+		{"RewriteColumnMismatchError", &RewriteColumnMismatchError{Database: "db", Name: "t"}},
+		{"RowRewriteError", &RowRewriteError{Key: "k", Err: errors.New("e")}},
+		{"PrimaryKeyRewriteUnsupportedError", &PrimaryKeyRewriteUnsupportedError{Table: "t"}},
+		{"IndexNoColumnsError", &IndexNoColumnsError{Index: "idx"}},
+		{"ColumnNotFoundOnTableError", &ColumnNotFoundOnTableError{Table: "t", Column: "c"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.NotEmpty(t, tt.err.Error())
 		})
 	}
+}
+
+// TestNewRelationalErrors_Unwrap verifies Unwrap on every new error type
+// that wraps another error.
+func TestNewRelationalErrors_Unwrap(t *testing.T) {
+	inner := errors.New("underlying")
+	assert.ErrorIs(t, &RowRewriteError{Key: "k", Err: inner}, inner)
 }
 
 // ---------------------------------------------------------------------------
@@ -208,4 +229,45 @@ func TestUnsupportedRangeTypeError(t *testing.T) {
 func TestUnsupportedRangeTypeError_Named(t *testing.T) {
 	err := &UnsupportedRangeTypeError{RangeType: "RangeType_Invalid"}
 	assert.Equal(t, "provider: unsupported range type: RangeType_Invalid", err.Error())
+}
+
+// TestAutoIncrementUnavailableError_IsNoAutoIncrementCol pins that a table
+// with no AUTO_INCREMENT column reports the sentinel go-mysql-server's
+// AutoIncrementTable contract defines for exactly that condition.
+//
+// go-mysql-server builds information_schema.TABLES by calling
+// PeekNextAutoIncrementValue on every AutoIncrementTable and aborts the whole
+// iteration on any error that is not sql.ErrNoAutoIncrementCol. Without this
+// match, information_schema.TABLES was empty for every database, so a MySQL
+// client could not tell whether a table existed.
+func TestAutoIncrementUnavailableError_IsNoAutoIncrementCol(t *testing.T) {
+	err := error(&AutoIncrementUnavailableError{Table: "widgets"})
+
+	if !errors.Is(err, sqle.ErrNoAutoIncrementCol) {
+		t.Fatalf("errors.Is(%v, sql.ErrNoAutoIncrementCol) = false, want true", err)
+	}
+
+	// The typed error must still be recoverable, with its table name intact.
+	var typed *AutoIncrementUnavailableError
+	if !errors.As(err, &typed) {
+		t.Fatal("errors.As must still recover *AutoIncrementUnavailableError")
+	}
+	if typed.Table != "widgets" {
+		t.Errorf("Table = %q, want %q", typed.Table, "widgets")
+	}
+}
+
+// TestAutoIncrementUnavailableError_MatchesSentinelMessage pins the other
+// half of the go-mysql-server contract: SHOW CREATE TABLE tolerates this
+// condition by comparing the rendered message against
+// sql.ErrNoAutoIncrementCol.Error() rather than by errors.Is (see
+// sql/rowexec/show_iters.go). A qrdb-specific message therefore made
+// SHOW CREATE TABLE fail outright for every table without an AUTO_INCREMENT
+// column, which is most of them.
+func TestAutoIncrementUnavailableError_MatchesSentinelMessage(t *testing.T) {
+	err := error(&AutoIncrementUnavailableError{Table: "widgets"})
+
+	if err.Error() != sqle.ErrNoAutoIncrementCol.Error() {
+		t.Fatalf("Error() = %q, want %q", err.Error(), sqle.ErrNoAutoIncrementCol.Error())
+	}
 }

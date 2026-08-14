@@ -217,6 +217,73 @@ func TestStore_Validation(t *testing.T) {
 	}
 }
 
+// TestStore_ShamirFieldsRoundTrip proves ShamirThreshold/ShamirTotal survive a
+// PutMigration/GetMigration round trip through the replicated KV (JSON
+// marshal/unmarshal), which is what every owner's reconciler relies on to
+// rebuild seal.MigrationOptions for a Shamir-target migration. Before this
+// field existed on ClusterMigration, every reconciler tick reconstructed
+// threshold=0/total=0 regardless of the operator's request, failing
+// seal.MigrationOptions.Validate() forever.
+func TestStore_ShamirFieldsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	if err := s.PutMigration(ctx, &ClusterMigration{
+		TenantID: "", Database: "",
+		Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
+		ShamirThreshold: 2, ShamirTotal: 3,
+		Owners: []string{"n1"}, Generation: 1,
+	}); err != nil {
+		t.Fatalf("PutMigration: %v", err)
+	}
+	got, err := s.GetMigration(ctx, "", "")
+	if err != nil || got == nil {
+		t.Fatalf("GetMigration = %v, %v", got, err)
+	}
+	if got.ShamirThreshold != 2 || got.ShamirTotal != 3 {
+		t.Fatalf("ShamirThreshold/ShamirTotal = %d/%d, want 2/3", got.ShamirThreshold, got.ShamirTotal)
+	}
+}
+
+// TestStore_ShamirFieldsZeroForPassphrase proves a passphrase-target record
+// round-trips with zero Shamir fields (omitempty), matching
+// seal.MigrationOptions.Validate's contract that they are ignored for a
+// non-Shamir target.
+func TestStore_ShamirFieldsZeroForPassphrase(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	got, err := s.GetMigration(ctx, tid, db)
+	if err != nil || got == nil {
+		t.Fatalf("GetMigration = %v, %v", got, err)
+	}
+	if got.ShamirThreshold != 0 || got.ShamirTotal != 0 {
+		t.Fatalf("passphrase-target record ShamirThreshold/ShamirTotal = %d/%d, want 0/0", got.ShamirThreshold, got.ShamirTotal)
+	}
+}
+
+// TestStore_NodeStatusAttemptsRoundTrip proves NodeMigrationStatus.Attempts
+// survives a PutNodeStatus/GetNodeStatus round trip, which the Reconciler's
+// bounded-retry logic depends on to persist (and later read back) the retry
+// budget across reconcile passes / process restarts.
+func TestStore_NodeStatusAttemptsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newMemKV())
+	seedMigration(t, s, 1, []string{"n1"})
+	if err := s.PutNodeStatus(ctx, tid, db, &NodeMigrationStatus{
+		NodeID: "n1", Generation: 1, Phase: seal.PhaseFailed,
+		Detail: "boom", Attempts: 3,
+	}); err != nil {
+		t.Fatalf("PutNodeStatus: %v", err)
+	}
+	got, err := s.GetNodeStatus(ctx, tid, db, "n1")
+	if err != nil || got == nil {
+		t.Fatalf("GetNodeStatus = %v, %v", got, err)
+	}
+	if got.Attempts != 3 {
+		t.Fatalf("Attempts = %d, want 3", got.Attempts)
+	}
+}
+
 // TestStore_StatusListExcludesIntentRecord proves the status scan returns only
 // per-node children, not the intent record sharing the prefix path.
 func TestStore_StatusListExcludesIntentRecord(t *testing.T) {

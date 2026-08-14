@@ -83,8 +83,10 @@ export interface ShardInfo {
     /** Replica ID of the current shard leader. Zero when unknown. */
     readonly leaderId: number;
     /** Mapping of replica ID → Raft transport address for all known members.
-     * Keys are stringified uint64 replica IDs (JSON always uses string keys). */
-    readonly nodes: Readonly<Record<string, string>>;
+     * Keys are stringified uint64 replica IDs (JSON always uses string keys).
+     * Absent/null on the wire when a shard has no known members yet — treat
+     * as an empty map rather than assuming it is always present. */
+    readonly nodes?: Readonly<Record<string, string>>;
 }
 
 /** Cluster topology as seen from a single node. Returned by GET /admin/topology. */
@@ -193,13 +195,18 @@ export interface SnapshotRequest {
 // ---------------------------------------------------------------------------
 
 /**
- * A versioned key-value pair with MVCC revision metadata. Keys and values
- * are base64-encoded strings representing raw byte content.
+ * A versioned key-value pair with MVCC revision metadata.
+ *
+ * On the wire (REST JSON and Wails IPC), Go marshals `key`/`value` as
+ * base64 because the underlying transport struct carries them as `[]byte`.
+ * The SDK decodes both to UTF-8 plaintext before returning `MVCCKeyValue`
+ * to callers — the fields below are always plaintext, matching `kv.get`
+ * and `kv.scan`. Never base64-decode them yourself.
  */
 export interface MVCCKeyValue {
-    /** Base64-encoded key. */
+    /** Plaintext key (decoded from the wire's base64 representation). */
     readonly key: string;
-    /** Base64-encoded value. */
+    /** Plaintext value (decoded from the wire's base64 representation). */
     readonly value: string;
     /** Revision at which this key was first created. */
     readonly createRevision: number;
@@ -265,6 +272,111 @@ export interface PutWithLeaseResponse {
 export interface CurrentRevisionResponse {
     /** Latest committed MVCC revision. */
     readonly revision: number;
+}
+
+// ---------------------------------------------------------------------------
+// Selective point-in-time restore
+// ---------------------------------------------------------------------------
+
+/**
+ * Identifies the single change a restore plan makes to one key.
+ *
+ * - `'revert'` — the key exists both now and at the target revision; it is
+ *   overwritten with the value it held at the target revision.
+ * - `'recreate'` — the key existed at the target revision and does not
+ *   exist now; it is re-created.
+ * - `'delete'` — the key exists now and did not exist at the target
+ *   revision; it is removed.
+ */
+export type RestoreAction = 'revert' | 'recreate' | 'delete';
+
+/**
+ * Describes a selective point-in-time restore: returns a bounded set of
+ * keys to the value they held at an earlier MVCC revision by proposing new
+ * writes (a logical undo, never a Raft rewind).
+ *
+ * Exactly one of `prefix` and `keys` must be set — an unscoped request
+ * (neither set) is refused, and setting both is refused as ambiguous.
+ * `prefix` and each element of `keys` are plain UTF-8 strings; the SDK
+ * base64-encodes them before sending, matching the wire's binary-safe
+ * `[]byte` field convention (the server accepts arbitrary byte-valued
+ * keys, not just valid UTF-8).
+ *
+ * This operation requires the target daemon to run `raft.sm_type: mvcc`;
+ * the default (`pebble`) has no MVCC revision history and the call fails
+ * with an actionable "not implemented" error naming the fix.
+ */
+export interface RestoreRevisionRequest {
+    /**
+     * The target revision to restore the scoped keys to. Must be positive,
+     * at or below the store's current committed revision, and above the
+     * compaction floor.
+     */
+    readonly revision: number;
+    /** Restore every key beginning with this prefix. Mutually exclusive with `keys`. */
+    readonly prefix?: string;
+    /** Restore this explicit list of keys. Mutually exclusive with `prefix`. */
+    readonly keys?: readonly string[];
+    /** Compute and return the plan without writing anything. */
+    readonly dryRun?: boolean;
+    /**
+     * Apply the plan unconditionally, overwriting any key that has been
+     * written since the plan was computed. The default (`false`) is
+     * compare-and-swap: a key that moved on since the plan was computed is
+     * left alone and reported in {@link RestoreRevisionResult.conflicts}.
+     */
+    readonly force?: boolean;
+}
+
+/**
+ * One entry in a restore plan: the change that would be (or was) applied
+ * to a single key.
+ *
+ * The restored value is deliberately not carried here — only its length
+ * (`valueBytes`) — so a plan is not a bulk data export of the keyspace at
+ * a historical revision.
+ */
+export interface RestoreKeyChange {
+    /** Plaintext key (decoded from the wire's base64 representation). */
+    readonly key: string;
+    /** The change applied to `key`. */
+    readonly action: RestoreAction;
+    /** The key's current ModRevision, or 0 when the key does not currently exist (a recreate). */
+    readonly fromRevision: number;
+    /** The ModRevision of the version being restored, or 0 when the key did not exist at the target revision (a delete). */
+    readonly toRevision: number;
+    /** The length of the value the change writes, or 0 for a delete. */
+    readonly valueBytes: number;
+}
+
+/** Reports the outcome of a selective restore. */
+export interface RestoreRevisionResult {
+    /** The target revision the plan was computed against. */
+    readonly revision: number;
+    /**
+     * The plan, ordered by key. On a dry run this is the plan that would
+     * be applied; on an apply it is the plan that was computed —
+     * including any entry that turned out to conflict, which is reported
+     * in {@link conflicts} rather than removed from here.
+     */
+    readonly changes: readonly RestoreKeyChange[];
+    /**
+     * The plan entries that were NOT applied because the key changed
+     * between the diff and the write. Only populated when the request did
+     * not set `force`.
+     */
+    readonly conflicts?: readonly RestoreKeyChange[];
+    /** The number of changes committed. Always 0 for a dry run. */
+    readonly applied: number;
+    /**
+     * The number of in-scope keys whose current state already matched the
+     * target revision, including keys absent in both.
+     */
+    readonly skipped: number;
+    /** `conflicts.length`: the number of keys left untouched because they changed since the plan was computed. */
+    readonly conflicted: number;
+    /** Echoes the request's `dryRun` flag. */
+    readonly dryRun: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -2216,6 +2328,11 @@ export interface TenantInfo {
     readonly quotas?: TenantQuotas;
     /** Feature entitlements for this tenant, if configured. */
     readonly entitlements?: TenantEntitlements;
+    /**
+     * Dedicated filesystem root for an IsolationVolume/IsolationRaft tenant.
+     * Empty for prefix/barrier tenants.
+     */
+    readonly dataRoot?: string;
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last-updated timestamp. */
@@ -2240,6 +2357,13 @@ export interface CreateTenantRequest {
      * (the secure self-managed mode where the tenant admin holds the key).
      */
     readonly barrierAutoUnseal?: boolean;
+    /**
+     * Pins an IsolationVolume/IsolationRaft tenant's dedicated filesystem data
+     * root to this operator-supplied absolute path instead of pool
+     * allocation. Empty (the default) allocates from the configured volume
+     * pool. Rejected by the server for prefix/barrier isolation.
+     */
+    readonly dataRoot?: string;
 }
 
 /** Request to apply a partial update to an existing tenant. */
@@ -2473,8 +2597,8 @@ export interface RestoreResult {
     readonly shardsRestored: number;
     /** Human-readable restore duration. */
     readonly duration: string;
-    /** Per-shard errors, if any. */
-    readonly errors: ShardError[];
+    /** Per-shard errors, if any. Omitted on the wire when there are none. */
+    readonly errors?: ShardError[];
 }
 
 /** A per-shard error within a restore result. */
@@ -2495,8 +2619,8 @@ export interface VerifyResult {
     readonly expectedChecksum: string;
     /** Actual (computed) checksum. */
     readonly actualChecksum: string;
-    /** Verification error messages, if any. */
-    readonly errors: string[];
+    /** Verification error messages, if any. Omitted on the wire when there are none. */
+    readonly errors?: string[];
 }
 
 /** Response containing all available backups. */
@@ -2591,6 +2715,38 @@ export interface ImbalanceReport {
     readonly imbalanceScore: number;
     /** Node addresses identified as load hotspots. */
     readonly hotspots: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Credential types
+// ---------------------------------------------------------------------------
+
+/**
+ * Version metadata entry for a named credential. Value bytes are
+ * intentionally absent — use CredentialClient.retrieveVersion to fetch the
+ * value for a specific version.
+ */
+export interface CredentialVersionInfo {
+    /** Version number (monotonically increasing). */
+    readonly version: number;
+    /** Whether this is the current (active) version. */
+    readonly isCurrent: boolean;
+    /** Unix timestamp (seconds) this version was created. */
+    readonly createdAtUnix?: number;
+    /** Unix timestamp (seconds) after which this version is no longer retrievable. */
+    readonly graceUntilUnix?: number;
+}
+
+/** Result of a credential rotation. */
+export interface CredentialRotateResult {
+    /** Credential name that was rotated. */
+    readonly name: string;
+    /** Version number prior to rotation. */
+    readonly previousVersion: number;
+    /** Version number after rotation. */
+    readonly newVersion: number;
+    /** Unix timestamp (seconds) after which the previous version expires. */
+    readonly graceUntilUnix?: number;
 }
 
 // ---------------------------------------------------------------------------

@@ -15,9 +15,13 @@
 package transport
 
 // CredentialSubmitRequest holds a named credential value for submission.
+// Value is []byte so arbitrary binary content (private keys, certificates,
+// random tokens) round-trips byte-for-byte across every transport. Over the
+// JSON transports (REST, MCP) encoding/json renders it as base64 (RFC 4648);
+// over gRPC/QUIC/unix it maps to a protobuf bytes field.
 type CredentialSubmitRequest struct {
 	Name  string `json:"name"`
-	Value string `json:"value"`
+	Value []byte `json:"value"`
 }
 
 // CredentialStrategyResponse describes the active credential management
@@ -50,8 +54,11 @@ type CredentialListResponse struct {
 // CredentialRotate call. GracePeriodSeconds == 0 means "no grace":
 // the previous value is wiped immediately.
 type CredentialRotateRequest struct {
-	Name               string `json:"name"`
-	NewValue           string `json:"new_value"`
+	Name string `json:"name"`
+	// NewValue is []byte so binary credential material round-trips
+	// byte-for-byte. JSON transports render it as base64 (RFC 4648);
+	// gRPC/QUIC/unix map it to a protobuf bytes field.
+	NewValue           []byte `json:"new_value"`
 	GracePeriodSeconds int64  `json:"grace_period_seconds"`
 }
 
@@ -74,9 +81,11 @@ type CredentialRetrieveVersionRequest struct {
 }
 
 // CredentialRetrieveVersionResponse carries the credential value for
-// the requested version. Value is empty on error responses.
+// the requested version. Value is []byte so binary credential material
+// round-trips byte-for-byte; JSON transports render it as base64
+// (RFC 4648). Value is empty on error responses.
 type CredentialRetrieveVersionResponse struct {
-	Value string `json:"value"`
+	Value []byte `json:"value"`
 }
 
 // CredentialListVersionsRequest identifies the credential whose

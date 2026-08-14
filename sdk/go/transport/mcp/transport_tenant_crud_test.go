@@ -318,6 +318,74 @@ func TestUpdateTenantQuotas_Closed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// UpdateTenantEntitlements
+// ---------------------------------------------------------------------------
+
+// TestUpdateTenantEntitlements_BarrierModesAndWALRoundTrip is a regression
+// test for the MCP entitlements round-trip bug: the SDK client encoder never
+// sent the allowed_barrier_modes/allow_dedicated_wal tool arguments, so a
+// `tenant set-entitlement --allowed-barrier-modes ...` call over the MCP
+// transport silently cleared those fields even though the request carried
+// them. mockTenantSvc.UpdateEntitlements echoes back exactly the
+// *quota.Entitlements it receives, so this exercises the full SDK encode ->
+// tool call -> server decode -> service -> server encode -> SDK decode path.
+func TestUpdateTenantEntitlements_BarrierModesAndWALRoundTrip(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	defer cleanup()
+
+	resp, err := tr.UpdateTenantEntitlements(context.Background(), &transport.UpdateTenantEntitlementsRequest{
+		TenantID: "acme",
+		Entitlements: transport.TenantEntitlements{
+			AllowedBarrierModes: []string{"none", "passphrase", "shamir"},
+			AllowDedicatedWAL:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateTenantEntitlements: %v", err)
+	}
+	if resp.Tenant.Entitlements == nil {
+		t.Fatal("expected non-nil entitlements in response")
+	}
+	got := resp.Tenant.Entitlements.AllowedBarrierModes
+	want := []string{"none", "passphrase", "shamir"}
+	if len(got) != len(want) {
+		t.Fatalf("AllowedBarrierModes: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AllowedBarrierModes: got %v, want %v", got, want)
+		}
+	}
+	if !resp.Tenant.Entitlements.AllowDedicatedWAL {
+		t.Error("expected AllowDedicatedWAL true in response")
+	}
+}
+
+func TestUpdateTenantEntitlements_ServiceError(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), &transport.UpdateTenantEntitlementsRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpdateTenantEntitlements_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), &transport.UpdateTenantEntitlementsRequest{TenantID: "acme"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // mcpTenantInfoToTransport
 // ---------------------------------------------------------------------------
 
@@ -344,5 +412,39 @@ func TestMcpTenantInfoToTransport_Populated(t *testing.T) {
 	}
 	if out.Quotas == nil || out.Quotas.MaxKeys != 100 {
 		t.Errorf("quotas: got %+v", out.Quotas)
+	}
+}
+
+// TestMcpTenantInfoToTransport_Timestamps is a regression test: the
+// conversion previously dropped CreatedAt/UpdatedAt entirely, leaving them
+// at the zero time regardless of what the server reported.
+func TestMcpTenantInfoToTransport_Timestamps(t *testing.T) {
+	in := &mcpTenantInfo{
+		ID:        "t1",
+		CreatedAt: "2026-01-02T15:04:05Z",
+		UpdatedAt: "2026-03-04T05:06:07Z",
+	}
+	out := mcpTenantInfoToTransport(in)
+	if out.CreatedAt.IsZero() {
+		t.Error("expected non-zero CreatedAt")
+	}
+	if out.UpdatedAt.IsZero() {
+		t.Error("expected non-zero UpdatedAt")
+	}
+	if !out.CreatedAt.Equal(out.CreatedAt.UTC()) {
+		t.Errorf("expected UTC CreatedAt, got %v", out.CreatedAt)
+	}
+	wantCreated := "2026-01-02T15:04:05Z"
+	if got := out.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != wantCreated {
+		t.Errorf("CreatedAt: got %q, want %q", got, wantCreated)
+	}
+}
+
+// TestMcpTenantInfoToTransport_EmptyTimestamps confirms empty timestamp
+// strings leave CreatedAt/UpdatedAt at their zero value instead of erroring.
+func TestMcpTenantInfoToTransport_EmptyTimestamps(t *testing.T) {
+	out := mcpTenantInfoToTransport(&mcpTenantInfo{ID: "t1"})
+	if !out.CreatedAt.IsZero() || !out.UpdatedAt.IsZero() {
+		t.Errorf("expected zero timestamps, got %+v", out)
 	}
 }

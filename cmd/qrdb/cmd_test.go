@@ -50,6 +50,14 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := m.store[key]
 	if !ok {
@@ -146,6 +154,10 @@ type errorKVService struct{}
 
 func (e *errorKVService) Put(_ context.Context, _ string, _ []byte) error {
 	return &service.ProposeError{Err: errors.New("raft unavailable")}
+}
+
+func (e *errorKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return false, &service.ProposeError{Err: errors.New("raft unavailable")}
 }
 
 func (e *errorKVService) Get(_ context.Context, _ string) ([]byte, error) {

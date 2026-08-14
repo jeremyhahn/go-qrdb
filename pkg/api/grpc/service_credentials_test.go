@@ -146,7 +146,7 @@ func TestCredentialSubmit_Success_Proto(t *testing.T) {
 	}
 	s := &qrdbServiceServer{credentialSvc: svc}
 
-	resp, err := s.CredentialSubmit(context.Background(), &pb.CredentialSubmitRequest{Name: "n", Value: "v"})
+	resp, err := s.CredentialSubmit(context.Background(), &pb.CredentialSubmitRequest{Name: "n", Value: []byte("v")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestCredentialRotate_Success_Proto(t *testing.T) {
 
 	resp, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{
 		Name:               "cred",
-		NewValue:           "new-secret",
+		NewValue:           []byte("new-secret"),
 		GracePeriodSeconds: 60,
 	})
 	if err != nil {
@@ -341,7 +341,7 @@ func TestCredentialRotate_ZeroGraceOmitsUnix_Proto(t *testing.T) {
 	}
 	s := &qrdbServiceServer{credentialSvc: svc}
 
-	resp, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{Name: "n", NewValue: "v"})
+	resp, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{Name: "n", NewValue: []byte("v")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestCredentialRotate_InvalidGracePeriod_Proto(t *testing.T) {
 	}
 	s := &qrdbServiceServer{credentialSvc: svc}
 
-	_, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{Name: "n", NewValue: "v"})
+	_, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{Name: "n", NewValue: []byte("v")})
 	if codeOf(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", codeOf(err))
 	}
@@ -392,7 +392,7 @@ func TestCredentialRetrieveVersion_Success_Proto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.GetValue() != "secret" {
+	if string(resp.GetValue()) != "secret" {
 		t.Errorf("unexpected value: %q", resp.GetValue())
 	}
 	if capturedVersion != 7 {

@@ -30,9 +30,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-objstore/pkg/common"
+	"github.com/jeremyhahn/go-objstore/pkg/local"
+	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -80,6 +86,60 @@ func newRegistry(t *testing.T, strategies ...seal.SealingStrategy) *seal.Barrier
 		t.Fatalf("NewBarrierRegistry: %v", err)
 	}
 	return reg
+}
+
+// newPooledRegistry builds a BarrierRegistry with a durable local volume
+// pool, a Pebble-backed pool state store, and a per-tenant Pebble registry
+// wired via seal.WithVolumePool / seal.WithPerTenantRegistry — mirroring
+// pkg/seal's own newPooledRegistry test helper. Used to prove
+// InitializeTenantBarrier registers tenants against a DURABLE backend (not
+// seal.NewMemoryBackend()) when the registry is configured for it.
+func newPooledRegistry(t *testing.T) (*seal.BarrierRegistry, pebblestore.PerTenantRegistry) {
+	t.Helper()
+
+	poolDir := t.TempDir()
+	poolStore := local.New()
+	if err := poolStore.Configure(map[string]string{"path": poolDir}); err != nil {
+		t.Fatalf("configure pool backend: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	stateStorage, err := pebblestore.New(&pebblestore.Config{DataDir: stateDir})
+	if err != nil {
+		t.Fatalf("open pool state-store Pebble: %v", err)
+	}
+	t.Cleanup(func() { _ = stateStorage.Close() })
+
+	state, err := qrdbpool.NewPebbleStateStore(stateStorage)
+	if err != nil {
+		t.Fatalf("NewPebbleStateStore: %v", err)
+	}
+
+	mgr := objpool.NewManager()
+	rr := &objpool.RoundRobinStrategy{State: state}
+	if err := mgr.Register("default", []common.Storage{poolStore}, rr); err != nil {
+		t.Fatalf("pool Register: %v", err)
+	}
+
+	system, err := seal.NewStorageBarrier(discardLogger(), seal.NewMemoryBackend(),
+		seal.BarrierConfig{RootKeyPath: "system/root-key"}, seal.NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+
+	perTenantReg := pebblestore.NewPerTenantRegistry()
+	t.Cleanup(func() { _ = perTenantReg.CloseAll(context.Background()) })
+
+	reg, err := seal.NewBarrierRegistry(
+		discardLogger(),
+		system,
+		seal.WithVolumePool(mgr, state, "default"),
+		seal.WithPerTenantRegistry(perTenantReg),
+	)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	return reg, perTenantReg
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +705,7 @@ func TestProvisionTenant_IdempotentReRun(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInitializeTenantBarrier_None(t *testing.T) {
-	reg := newRegistry(t, seal.NewNoneStrategy())
+	reg, perTenantReg := newPooledRegistry(t)
 
 	err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
 		Barriers: reg, Logger: discardLogger(),
@@ -660,10 +720,18 @@ func TestInitializeTenantBarrier_None(t *testing.T) {
 	if tb.IsSealed() {
 		t.Error("tenant barrier still sealed after init")
 	}
+
+	// Regression guard for the memory-backend footgun: the tenant must have
+	// been registered against the registry's DURABLE per-tenant Pebble pool
+	// (proving InitializeTenantBarrier did not fall back to
+	// seal.NewMemoryBackend()), not merely succeed.
+	if _, err := perTenantReg.Get("acme"); err != nil {
+		t.Fatalf("expected a durable per-tenant Pebble opened for acme, got: %v", err)
+	}
 }
 
 func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
-	reg := newRegistry(t, seal.NewNoneStrategy())
+	reg, perTenantReg := newPooledRegistry(t)
 
 	err := InitializeTenantBarrier(context.Background(), "acme", StrategyPassphrase,
 		seal.Credentials{Secret: []byte("tenant-passphrase")}, Dependencies{
@@ -679,6 +747,9 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	if tb.IsSealed() {
 		t.Error("tenant barrier still sealed after passphrase init")
 	}
+	if _, err := perTenantReg.Get("acme"); err != nil {
+		t.Fatalf("expected a durable per-tenant Pebble opened for acme, got: %v", err)
+	}
 
 	// Round-trip: seal then unseal with the same passphrase proves the
 	// passphrase strategy actually protects the root key.
@@ -687,6 +758,28 @@ func TestInitializeTenantBarrier_Passphrase(t *testing.T) {
 	}
 	if err := reg.UnsealTenant(context.Background(), "acme", seal.Credentials{Secret: []byte("tenant-passphrase")}); err != nil {
 		t.Fatalf("UnsealTenant with correct passphrase: %v", err)
+	}
+}
+
+// TestInitializeTenantBarrier_FailsClosedWithoutDurablePool is the direct
+// regression test for the memory-backend footgun: when the registry is not
+// configured with a durable volume pool / per-tenant registry (see
+// seal.WithVolumePool / WithPerTenantRegistry), InitializeTenantBarrier must
+// fail closed rather than silently falling back to a non-durable
+// seal.NewMemoryBackend(), whose wrapped-root-key/epoch bookkeeping would be
+// lost on restart and make the tenant's barrier-encrypted IAM unrecoverable.
+func TestInitializeTenantBarrier_FailsClosedWithoutDurablePool(t *testing.T) {
+	reg := newRegistry(t, seal.NewNoneStrategy())
+
+	err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, Dependencies{
+		Barriers: reg, Logger: discardLogger(),
+	})
+	var want *TenantBarrierRegistrationError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantBarrierRegistrationError (registry has no durable volume pool configured)", err)
+	}
+	if got := reg.ListTenants(); len(got) != 0 {
+		t.Errorf("tenant barrier registered despite no durable pool configured: %v", got)
 	}
 }
 
@@ -916,7 +1009,7 @@ func TestInitializeTenantBarrier_MissingLoggerRejected(t *testing.T) {
 // TestInitializeTenantBarrier_EmptyStrategyDefaultsToNone covers the empty
 // strategy → StrategyNone default in InitializeTenantBarrier.
 func TestInitializeTenantBarrier_EmptyStrategyDefaultsToNone(t *testing.T) {
-	reg := newRegistry(t, seal.NewNoneStrategy())
+	reg, perTenantReg := newPooledRegistry(t)
 	err := InitializeTenantBarrier(context.Background(), "acme", "", seal.Credentials{}, Dependencies{
 		Barriers: reg, Logger: discardLogger(),
 	})
@@ -929,6 +1022,9 @@ func TestInitializeTenantBarrier_EmptyStrategyDefaultsToNone(t *testing.T) {
 	}
 	if tb.IsSealed() {
 		t.Error("tenant barrier still sealed after empty-strategy init")
+	}
+	if _, err := perTenantReg.Get("acme"); err != nil {
+		t.Fatalf("expected a durable per-tenant Pebble opened for acme, got: %v", err)
 	}
 }
 

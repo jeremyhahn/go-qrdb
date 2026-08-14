@@ -98,3 +98,20 @@ var ErrFactorRevoked = auth.ErrFactorRevoked
 
 // ErrLastFactor is returned when attempting to remove the last active factor.
 var ErrLastFactor = auth.ErrLastFactor
+
+// ErrFactorNotFound is returned when no factor matches the given identifier
+// or credential lookup key.
+var ErrFactorNotFound = auth.ErrFactorNotFound
+
+// ErrFactorAlreadyExists is returned when an identical credential is already
+// enrolled for the user.
+var ErrFactorAlreadyExists = auth.ErrFactorAlreadyExists
+
+// ErrFactorTypeUnsupported is returned for an unrecognized factor type.
+var ErrFactorTypeUnsupported = auth.ErrFactorTypeUnsupported
+
+// ErrInvalidFactor is returned when a factor record fails validation.
+var ErrInvalidFactor = auth.ErrInvalidFactor
+
+// ErrUserHasNoFactors is returned when a principal has no enrolled factors.
+var ErrUserHasNoFactors = auth.ErrUserHasNoFactors

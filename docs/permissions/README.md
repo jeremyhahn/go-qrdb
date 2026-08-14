@@ -74,6 +74,7 @@ All permissions are registered automatically via the `init()` function in `const
 | MVCC | `MVCCRange` | `mvcc:range` |
 | MVCC | `MVCCCompact` | `mvcc:compact` |
 | MVCC | `MVCCCurrentRevision` | `mvcc:current_revision` |
+| MVCC | `MVCCRestore` | `mvcc:restore` |
 | Transaction | `TransactionExecute` | `transaction:execute` |
 | Batch | `BatchExecute` | `batch:execute` |
 | Watch | `WatchWatch` | `watch:watch` |
@@ -216,6 +217,27 @@ All permissions are registered automatically via the `init()` function in `const
 | `AdminShardState` | `admin:shard_state` |
 | `AdminTopology` | `admin:topology` |
 
+> **Note:** The tables above document selected permission categories. The authoritative complete list of all registered permissions is in `pkg/permission/constants.go`, which includes:
+> - **Cryptographic key operations** (`keys:*`) — sign, verify, encrypt, decrypt, wrap, unwrap, create, rotate, delete, import, export, derive
+> - **Certificate management** (`certs:*`) — generate, export, revoke, list, read
+> - **Certificate authority** (`ca:*`) — create, read, list, update
+> - **ACME server** (`acme:*`) — account and order management
+> - **Seal management** (`seal:*`) — bootstrap, unseal, seal, status, rotate, rekey, recovery, shamir, officer operations
+> - **Ceremony** (`ceremony:*`) — initialization, custodian enrollment, CSR signing
+> - **Tenant barriers** (`tenant_barrier:*`) — per-tenant barrier operations and officer management
+> - **Credentials** (`credentials:*`) — rotation, versioning, retrieval
+> - **Password, SSH, PIN, PIV backends** (`passwords:*`, `ssh:*`, `pin:*`, `piv:*`)
+> - **Hardware backends** (`backends:*`) — list, read
+> - **Backup & restore** (`backup:*`) — create, list, read, delete, restore, verify
+> - **Cluster rebalance** (`rebalance:*`) — stats, plan, execute, report
+> - **Volume pools** (`volumepool:*`) — create, list, read, update, delete
+> - **Registration policies** (`registrationconfig:*`) — read, update
+> - **Authentication factors** (`authfactor:*`) — enroll, list, revoke
+> - **User authentication factors** (`user_authfactors:*`)
+> - **Database management** (`databases:*`)
+> - **Collection management** (`collections:*`)
+> - **Broker data-plane families** (`objstore:*`, `orchestrator:*`, `scheduler:*`, `messaging:*`, `parameters:*`, `dynamic_secrets:*`, `project:*`, `ollama:*`)
+
 ## Authorization posture (DEFAULT-DENY)
 
 Every protocol transport enforces authorization with a **default-deny** posture:
@@ -262,6 +284,80 @@ All permissions are registered into a global `sync.RWMutex`-protected map during
 // constants.go init() → Register(cat.Permissions...) for each category
 // → registry map[Permission]struct{}
 ```
+
+## Built-In Role Default Grants
+
+Source: `pkg/permission/role_grant.go`, `pkg/permission/builtin_role_grants.go`
+
+Role placement is metadata carried by the permission, not a parallel list maintained by `pkg/role`. Each permission that belongs on one of the five registry-derived built-in roles (Security Officer, Admin, Operator, User, Auditor) is registered once, here, with the role(s) it defaults onto:
+
+```go
+// RegisterRoleGrant records that perms are granted by default to role.
+func RegisterRoleGrant(role string, perms ...Permission)
+
+// RolePermissions returns every permission granted to role, sorted. It is
+// evaluated against the live registry on every call -- not memoized at
+// package-init time -- so a permission registered by a higher layer
+// (go-quicbaas, go-xkms) before role seeding is reflected.
+func RolePermissions(role string) []Permission
+
+// HasRoleGrant reports whether p is granted to role by default.
+func HasRoleGrant(role string, p Permission) bool
+```
+
+`pkg/role.BuiltInRoles` materializes each of the five roles by calling `RolePermissions` directly -- there is no hand-maintained permission list in `pkg/role` to keep in sync. This closed a drift hazard: previously `pkg/role/store.go` held five separate hard-coded permission lists (~219 entries) that a contributor had to update by hand whenever a permission's role placement changed, with no compiler check that the two stayed consistent.
+
+The five canonical role names (`RoleSO`, `RoleAdmin`, `RoleOperator`, `RoleUser`, `RoleAuditor`) are untyped string constants; `pkg/role`'s `RoleNameSO` / `RoleNameAdmin` / etc. alias them directly.
+
+### Structural separation-of-duties enforcement (FIPS 140-3 AS10.03)
+
+When `role == RoleSO`, `RegisterRoleGrant` admits **only** permissions declared `DutyGovernance`. Everything else panics, with a distinct error for each diagnosis:
+
+| Rejected grant | Panic | Why |
+|----------------|-------|-----|
+| A cryptographic permission | `SoDViolationError` | The invariant itself. Covers any permission declared `DutyCryptoUse` (`keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`) **and** any resource whose action names a cryptographic primitive -- `sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote` -- including resources contributed by a higher layer, such as go-quicbaas's `attestation:attest`. |
+| A permission whose duty nobody declared | `UndeclaredDutyError` | Fail-safe. Silence is a denial, so a new permission cannot become SO-grantable by omission. The message names the `RegisterDuty` call the author must add. |
+| A whole-segment wildcard (`keys:*`) | `WildcardGrantError` | A wildcard spans verbs of different duties, so it cannot be classified, and the authorizer would expand it onto `keys:sign`. Other roles may hold wildcards; the SO must name every permission it holds. |
+
+The classification is metadata the permission's **author** declares, exactly as role placement and tenancy reach are:
+
+```go
+// RegisterDuty declares which separated duty perms belong to. Immutable:
+// a conflicting re-declaration panics with *DutyConflictError, so a
+// cryptographic permission cannot later be relabelled as governance.
+func RegisterDuty(duty Duty, perms ...Permission)
+
+// LookupDuty returns p's declared duty, or DutyUndeclared.
+func LookupDuty(p Permission) Duty
+
+// IsCryptoUse reports whether p performs a cryptographic primitive with key
+// material: declared DutyCryptoUse, or carrying a crypto primitive verb in
+// any resource family (not overridable by a declaration).
+func IsCryptoUse(p Permission) bool
+```
+
+Only two groups need declaring, in `pkg/permission/builtin_duties.go`: the permissions the SO holds (`DutyGovernance`) and the permissions that perform a cryptographic primitive (`DutyCryptoUse`). Everything else -- the whole tenant data plane -- is deliberately left undeclared, because undeclared already means "not Security-Officer business".
+
+Why a declaration rather than a rule over names: the line is not a resource family (`keys` holds both `keys:sign` and `keys:create`, and cryptographic use is not confined to `keys` -- `piv:use`, `attestation:attest`), and it is not the action verb alone (`seal:unseal` and `ceremony:sign_csr` are cryptographic by mechanism yet are the SO's own FIPS-assigned module lifecycle, while `backup:verify` touches no key). The verb set above is a **backstop** on top of the declaration, not the classification itself: it cannot be overridden by a `DutyGovernance` declaration, so `foo:sign` can never be laundered onto the SO.
+
+The runtime RBAC deny-list in `pkg/auth/rbac` (`soDeniedActions` + `soDeniedCryptoVerbs`) remains as defense-in-depth. It is an independent mechanism -- it classifies the requested `resource:action` itself and never consults the duty registry -- and `TestSODenyList_AgreesWithPermissionDutyRegistry` proves the two agree in both directions rather than leaving it to belief.
+
+Custodian and Owner are **not** derived from this registry: Custodian holds a fixed, minimal share-submission set (`pkg/role.custodianPermissions`) and Owner is the standard-posture convenience superuser defined as `permission.All()` (`pkg/role.OwnerRole`).
+
+## Cross-Layer Extension Points
+
+Source: `sdk/go/types_permission.go`
+
+A higher layer (go-quicbaas, go-xkms) contributing a permission to qrdb's registry has four re-exported extension points, used together at composition-root time, before role seeding:
+
+```go
+sdk.RegisterPermissions(myPerm)                                    // add to the registry
+sdk.RegisterPermissionScope(sdk.PermissionScopeTenantOnly, myPerm) // tag tenancy reach
+sdk.RegisterPermissionDuty(sdk.PermissionDutyCryptoUse, myPerm)    // classify the separated duty
+sdk.RegisterPermissionRoleGrant(sdk.PermissionRoleAdmin, myPerm)   // place on a built-in role
+```
+
+Without the scope call a contributed permission defaults to `PermissionScopeSelf`; without the role-grant call it is reachable only through a hand-authored custom role. The duty call has no permissive default: it is required only to place a permission on the **Security Officer** role, and it is what a contributor uses to permanently bar a cryptographic permission from that role. Omitting it leaves the permission `PermissionDutyUndeclared`, which is not SO-grantable — the fail-safe answer for the many contributed permissions the Security Officer has no part in.
 
 ## Protocol Endpoints
 

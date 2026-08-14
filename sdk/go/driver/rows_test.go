@@ -21,13 +21,16 @@ import (
 	sqld "database/sql/driver"
 	"errors"
 	"io"
+	"math"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // TestNetworkRows_Columns verifies Columns returns the correct column names.
 func TestNetworkRows_Columns(t *testing.T) {
-	resp := &sqlResponse{
+	resp := &transport.SQLQueryResult{
 		Columns: []string{"id", "name", "email"},
 		Rows:    nil,
 	}
@@ -43,7 +46,7 @@ func TestNetworkRows_Columns(t *testing.T) {
 
 // TestNetworkRows_ColumnsEmpty verifies Columns returns empty slice when no columns.
 func TestNetworkRows_ColumnsEmpty(t *testing.T) {
-	resp := &sqlResponse{}
+	resp := &transport.SQLQueryResult{}
 	rows := newNetworkRows(resp)
 	cols := rows.Columns()
 	if len(cols) != 0 {
@@ -53,7 +56,7 @@ func TestNetworkRows_ColumnsEmpty(t *testing.T) {
 
 // TestNetworkRows_Next_Iteration verifies Next iterates through all rows.
 func TestNetworkRows_Next_Iteration(t *testing.T) {
-	resp := &sqlResponse{
+	resp := &transport.SQLQueryResult{
 		Columns: []string{"id", "name"},
 		Rows: []map[string]interface{}{
 			{"id": float64(1), "name": "alice"},
@@ -85,7 +88,7 @@ func TestNetworkRows_Next_Iteration(t *testing.T) {
 
 // TestNetworkRows_EOF verifies io.EOF is returned when no rows.
 func TestNetworkRows_EOF(t *testing.T) {
-	resp := &sqlResponse{
+	resp := &transport.SQLQueryResult{
 		Columns: []string{"id"},
 		Rows:    []map[string]interface{}{},
 	}
@@ -100,7 +103,7 @@ func TestNetworkRows_EOF(t *testing.T) {
 
 // TestNetworkRows_Close verifies Close marks rows as closed and Next returns error.
 func TestNetworkRows_Close(t *testing.T) {
-	resp := &sqlResponse{
+	resp := &transport.SQLQueryResult{
 		Columns: []string{"id"},
 		Rows:    []map[string]interface{}{{"id": float64(1)}},
 	}
@@ -123,7 +126,7 @@ func TestNetworkRows_Close(t *testing.T) {
 
 // TestNetworkRows_MissingColumnValue verifies nil is used for missing columns.
 func TestNetworkRows_MissingColumnValue(t *testing.T) {
-	resp := &sqlResponse{
+	resp := &transport.SQLQueryResult{
 		Columns: []string{"a", "b"},
 		Rows:    []map[string]interface{}{{"a": "present"}}, // "b" is missing
 	}
@@ -388,7 +391,7 @@ func TestEmbeddedRows_NextOnClosed(t *testing.T) {
 }
 
 // TestNormalizeNetworkValue_AllTypes verifies normalizeNetworkValue handles all JSON-decoded types.
-func TestNormalizeNetworkValue_AllTypes(t *testing.T) {
+func TestToDriverValue_AllTypes(t *testing.T) {
 	tests := []struct {
 		name  string
 		input interface{}
@@ -425,18 +428,81 @@ func TestNormalizeNetworkValue_AllTypes(t *testing.T) {
 			check: func(got driver.Value) bool { b, ok := got.([]byte); return ok && string(b) == "raw" },
 		},
 		{
-			name:  "default int",
+			name:  "int64",
+			input: int64(7),
+			check: func(got driver.Value) bool { i, ok := got.(int64); return ok && i == 7 },
+		},
+		{
+			// A type the wire contract does not produce is rejected as nil
+			// rather than being given an invented string rendering, so a
+			// contract violation is visible instead of silently papered over.
+			name:  "unexpected type rejected",
 			input: 42,
-			check: func(got driver.Value) bool { _, ok := got.(string); return ok },
+			check: func(got driver.Value) bool { return got == nil },
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeNetworkValue(tt.input)
+			got := toDriverValue(tt.input)
 			if !tt.check(got) {
-				t.Errorf("normalizeNetworkValue(%v) = %v (%T), check failed", tt.input, got, got)
+				t.Errorf("toDriverValue(%v) = %v (%T), check failed", tt.input, got, got)
 			}
 		})
+	}
+}
+
+// TestConvertValue_Uint64AcrossInt64Boundary is the silent-corruption guard
+// for BIGINT UNSIGNED. driver.Value has no unsigned integer, so the upper half
+// of the column's range has no int64 that represents it -- narrowing
+// 18446744073709551615 yields -1, a different row returned without an error.
+// Above the boundary the value is handed over as its decimal text, which is
+// what go-sql-driver/mysql does for the same case, and what lets database/sql
+// scan it back into a uint64 exactly.
+func TestConvertValue_Uint64AcrossInt64Boundary(t *testing.T) {
+	tests := []struct {
+		name string
+		in   uint64
+		want driver.Value
+	}{
+		{name: "zero", in: 0, want: int64(0)},
+		{name: "small", in: 42, want: int64(42)},
+		{name: "maxint64", in: math.MaxInt64, want: int64(math.MaxInt64)},
+		{name: "maxint64+1", in: math.MaxInt64 + 1, want: []byte("9223372036854775808")},
+		{name: "maxuint64", in: math.MaxUint64, want: []byte("18446744073709551615")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, got := range []driver.Value{convertValue(tt.in), convertValue(uint(tt.in))} {
+				switch want := tt.want.(type) {
+				case int64:
+					if got != want {
+						t.Fatalf("convertValue(%d) = %v (%T), want %d", tt.in, got, got, want)
+					}
+				case []byte:
+					gotB, ok := got.([]byte)
+					if !ok {
+						t.Fatalf("convertValue(%d) = %v (%T), want []byte", tt.in, got, got)
+					}
+					if !bytes.Equal(gotB, want) {
+						t.Fatalf("convertValue(%d) = %q, want %q", tt.in, gotB, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestConvertValue_Uint64IsDriverValue asserts every rendering convertValue
+// produces for a uint64 is a type database/sql/driver.Value admits. A uint64
+// returned as itself would scan correctly today and violate the interface --
+// the kind of thing that works until a caller uses a different destination.
+func TestConvertValue_Uint64IsDriverValue(t *testing.T) {
+	for _, in := range []uint64{0, math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
+		got := convertValue(in)
+		if !driver.IsValue(got) {
+			t.Fatalf("convertValue(%d) = %v (%T), which is not a driver.Value", in, got, got)
+		}
 	}
 }

@@ -14,7 +14,10 @@
 
 package database
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
 
 // InvalidNameError is returned when a database name is empty or contains
 // characters outside the allowed set (alphanumeric, hyphens, underscores).
@@ -377,3 +380,127 @@ type InvalidStorageCodecError struct {
 func (e *InvalidStorageCodecError) Error() string {
 	return "database: invalid or unsupported storage codec: " + strconv.Quote(e.Codec)
 }
+
+// SharedStoreBarrierUnsupportedError is returned when a caller attempts to
+// enable a per-database encryption barrier on a database that has no
+// dedicated store of its own (see DatabaseConfig.HasDedicatedStore) -- i.e.
+// it shares the system's default store keyspace with other prefix-isolated
+// databases. A barrier over shared storage cannot provide real cryptographic
+// isolation, so the request fails closed instead of creating inert barrier
+// state.
+type SharedStoreBarrierUnsupportedError struct {
+	Name    string
+	Backend BackendType
+}
+
+// Error returns a human-readable description of the unsupported request.
+func (e *SharedStoreBarrierUnsupportedError) Error() string {
+	return "database: encryption barrier requires a dedicated store: database " +
+		strconv.Quote(e.Name) + " (backend " + strconv.Quote(string(e.Backend)) +
+		") uses the shared default store"
+}
+
+// UnsupportedBarrierStrategyError is returned when a database barrier is
+// requested with a strategy mode that EnsureBarrier does not yet implement.
+// Only the passphrase (software) strategy is currently supported for
+// per-database barriers; Shamir quorum splitting for this subsystem is not
+// yet implemented.
+type UnsupportedBarrierStrategyError struct {
+	Mode string
+}
+
+// Error returns a human-readable description of the unsupported mode.
+func (e *UnsupportedBarrierStrategyError) Error() string {
+	return "database: unsupported barrier strategy: " + strconv.Quote(e.Mode)
+}
+
+// InvalidDataDirError is returned when a caller-supplied per-database
+// DataDir cannot be canonicalized (e.g. filepath.Abs or symlink resolution
+// fails).
+type InvalidDataDirError struct {
+	Name    string
+	DataDir string
+	Err     error
+}
+
+// Error returns a human-readable description of the invalid data directory.
+func (e *InvalidDataDirError) Error() string {
+	return "database: invalid data directory for database " + strconv.Quote(e.Name) +
+		" (" + strconv.Quote(e.DataDir) + "): " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *InvalidDataDirError) Unwrap() error {
+	return e.Err
+}
+
+// DataDirReservedPathError is returned when a caller-supplied per-database
+// DataDir resolves to, or overlaps, a path the manager reserves for its own
+// catalog or node-internal state (the manager's own data root, its shared
+// databases catalog directory, or a database's own meta.json/barrier
+// bookkeeping directory).
+type DataDirReservedPathError struct {
+	Name     string
+	DataDir  string
+	Reserved string
+}
+
+// Error returns a human-readable description of the reserved-path collision.
+func (e *DataDirReservedPathError) Error() string {
+	return "database: data directory for database " + strconv.Quote(e.Name) +
+		" overlaps a reserved path " + strconv.Quote(e.Reserved) + ": " + strconv.Quote(e.DataDir)
+}
+
+// DataDirConflictError is returned when a caller-supplied per-database
+// DataDir collides -- by equality, ancestry, or descendance -- with another
+// already-registered database's own storage directory.
+type DataDirConflictError struct {
+	Name    string
+	DataDir string
+	With    string
+}
+
+// Error returns a human-readable description of the cross-database conflict.
+func (e *DataDirConflictError) Error() string {
+	return "database: data directory for database " + strconv.Quote(e.Name) +
+		" conflicts with database " + strconv.Quote(e.With) + ": " + strconv.Quote(e.DataDir)
+}
+
+// BarrierMigrationNotSupportedError is returned when a caller attempts to
+// flip a database's encryption barrier between enabled and disabled via
+// UpdateBarrier. Changing barrier state on a database that may already hold
+// data requires re-encrypting (enable) or decrypting (disable) every
+// existing value under the new state; this API performs neither migration,
+// so the barrier's Enabled flag is fixed at database creation time.
+type BarrierMigrationNotSupportedError struct {
+	Name      string
+	Direction string // "enable" or "disable"
+}
+
+// Error returns a human-readable description of the unsupported transition.
+func (e *BarrierMigrationNotSupportedError) Error() string {
+	return "database: cannot " + e.Direction + " the encryption barrier for database " +
+		strconv.Quote(e.Name) + " after creation: no re-encryption migration is available; " +
+		"create the database with the desired barrier configuration instead"
+}
+
+// BarrierEncryptorUnavailableError is returned when a database barrier was
+// just registered or initialized but the registry cannot yet produce a
+// usable BarrierEncryptor for it. This indicates an internal registry
+// inconsistency rather than a caller error.
+type BarrierEncryptorUnavailableError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the unavailable encryptor.
+func (e *BarrierEncryptorUnavailableError) Error() string {
+	return "database: barrier encryptor unavailable for database " + strconv.Quote(e.Name) + " immediately after registration"
+}
+
+// ErrAtomicWriteUnsupported is returned when a conditional write is requested
+// of a backend that cannot perform one atomically.
+//
+// It is a refusal, not a fallback. Performing the check and the write as two
+// operations would appear to succeed while allowing two callers to both create
+// the same key, which for a single-use credential means issuing it twice.
+var ErrAtomicWriteUnsupported = errors.New("database: backend does not support atomic conditional writes")

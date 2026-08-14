@@ -45,21 +45,24 @@ var _ UserServicer = (*routingUserService)(nil)
 type routingUserService struct {
 	resolver tenant.StoreResolver
 	idgen    dao.IDGenerator
+	opts     []Option // applied to every per-tenant kvUserStore (e.g. audit logger)
 	stores   sync.Map // map[kvstore.KVStore]UserServicer
 }
 
 // NewRoutingService wraps user services with per-tenant store routing. The
 // resolver maps a tenant ID to its backing KVStore; idgen is the
 // node-unique Snowflake source threaded into each per-tenant kvUserStore.
-// Both must be non-nil.
-func NewRoutingService(resolver tenant.StoreResolver, idgen dao.IDGenerator) (UserServicer, error) {
+// Both must be non-nil. Optional Options are applied to every per-tenant
+// store the router builds, so cross-cutting concerns like audit logging
+// reach barrier-isolated tenants.
+func NewRoutingService(resolver tenant.StoreResolver, idgen dao.IDGenerator, opts ...Option) (UserServicer, error) {
 	if resolver == nil {
 		return nil, &StoreError{Op: "new_routing", Detail: "store resolver must not be nil"}
 	}
 	if idgen == nil {
 		return nil, &StoreError{Op: "new_routing", Detail: "id generator must not be nil"}
 	}
-	return &routingUserService{resolver: resolver, idgen: idgen}, nil
+	return &routingUserService{resolver: resolver, idgen: idgen, opts: opts}, nil
 }
 
 // storeFor resolves the backing KVStore for tenantID and returns a
@@ -79,7 +82,7 @@ func (r *routingUserService) storeForKV(kv kvstore.KVStore) (UserServicer, error
 	if cached, ok := r.stores.Load(kv); ok {
 		return cached.(UserServicer), nil
 	}
-	svc, err := NewStore(kv, r.idgen)
+	svc, err := NewStore(kv, r.idgen, r.opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -87,25 +90,30 @@ func (r *routingUserService) storeForKV(kv kvstore.KVStore) (UserServicer, error
 	return actual.(UserServicer), nil
 }
 
-// requestTenant returns the explicit tenant from a value, defaulting to the
-// system tenant when empty. Used by methods that carry the tenant in the
-// request/argument (CreateUser, GetUserByUsername, ListUsers).
-func requestTenant(explicit string) string {
-	if explicit == "" {
-		return tenant.SystemTenantID
-	}
-	return explicit
-}
-
-// CreateUser routes on the request's TenantID.
+// CreateUser routes on the EFFECTIVE tenant reconciled from the caller's
+// authenticated identity and the request's TenantID (see
+// tenant.EffectiveTenant). A normal tenant caller may only create users in
+// its own tenant; a request tenant naming a different tenant is rejected with
+// *tenant.CrossTenantDeniedError. The request's TenantID is normalized to the
+// effective tenant before the store call so the stored record's tenant is
+// authoritative rather than attacker-controlled.
 func (r *routingUserService) CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error) {
-	tid := tenant.SystemTenantID
+	requested := ""
 	if req != nil {
-		tid = requestTenant(req.TenantID)
+		requested = req.TenantID
 	}
-	svc, err := r.storeFor(ctx, tid)
+	eff, err := tenant.EffectiveTenant(ctx, requested, "create user")
 	if err != nil {
 		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	if req != nil {
+		normalized := *req
+		normalized.TenantID = eff
+		req = &normalized
 	}
 	return svc.CreateUser(ctx, req)
 }
@@ -121,13 +129,21 @@ func (r *routingUserService) GetUser(ctx context.Context, id uint64) (*User, err
 	return svc.GetUser(ctx, id)
 }
 
-// GetUserByUsername routes on the explicit tenant argument.
+// GetUserByUsername routes on the EFFECTIVE tenant reconciled from the
+// caller's identity and the explicit tenant argument. Enumeration/read of
+// another tenant's users is denied for a normal tenant caller
+// (*tenant.CrossTenantDeniedError); the effective tenant — never the raw
+// argument — is passed to the store lookup.
 func (r *routingUserService) GetUserByUsername(ctx context.Context, tenantID, username string) (*User, error) {
-	svc, err := r.storeFor(ctx, requestTenant(tenantID))
+	eff, err := tenant.EffectiveTenant(ctx, tenantID, "read user by username")
 	if err != nil {
 		return nil, err
 	}
-	return svc.GetUserByUsername(ctx, tenantID, username)
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	return svc.GetUserByUsername(ctx, eff, username)
 }
 
 // UserByCertThumbprint routes on the context tenant.
@@ -166,15 +182,28 @@ func (r *routingUserService) DeleteUser(ctx context.Context, id uint64) error {
 	return svc.DeleteUser(ctx, id)
 }
 
-// ListUsers routes on the request's TenantID.
+// ListUsers routes on the EFFECTIVE tenant reconciled from the caller's
+// identity and the request's TenantID. A normal tenant caller may only
+// enumerate its own tenant; a request tenant naming a different tenant is
+// rejected with *tenant.CrossTenantDeniedError. The request's TenantID filter
+// is normalized to the effective tenant before the store scan.
 func (r *routingUserService) ListUsers(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
-	tid := tenant.SystemTenantID
+	requested := ""
 	if req != nil {
-		tid = requestTenant(req.TenantID)
+		requested = req.TenantID
 	}
-	svc, err := r.storeFor(ctx, tid)
+	eff, err := tenant.EffectiveTenant(ctx, requested, "list users")
 	if err != nil {
 		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	if req != nil {
+		normalized := *req
+		normalized.TenantID = eff
+		req = &normalized
 	}
 	return svc.ListUsers(ctx, req)
 }

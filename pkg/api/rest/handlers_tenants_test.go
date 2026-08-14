@@ -204,6 +204,12 @@ func (m *mockServiceRegistry) TransactionService(_, _ string) (service.Transacti
 func (m *mockServiceRegistry) BatchService(_, _ string) (service.BatchServicer, error) {
 	return nil, nil
 }
+func (m *mockServiceRegistry) TableService(_, _ string) (service.TableServicer, error) {
+	return nil, nil
+}
+func (m *mockServiceRegistry) SequenceService(_, _ string) (service.SequenceServicer, error) {
+	return nil, nil
+}
 
 var _ service.Registry = (*mockServiceRegistry)(nil)
 

@@ -415,7 +415,7 @@ func TestRange_SingleKey_NilEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	results, rev, err := s.Range([]byte("only"), nil)
+	results, count, rev, err := s.Range([]byte("only"), nil)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -425,6 +425,11 @@ func TestRange_SingleKey_NilEnd(t *testing.T) {
 	if !bytes.Equal(results[0].Value, []byte("one")) {
 		t.Errorf("Value: got %q, want %q", results[0].Value, "one")
 	}
+	// count is the match count, distinct from revision -- a single-key hit
+	// must report count 1 regardless of how many revisions the store holds.
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
+	}
 	if rev != s.CurrentRevision() {
 		t.Errorf("revision: got %d, want %d", rev, s.CurrentRevision())
 	}
@@ -432,13 +437,16 @@ func TestRange_SingleKey_NilEnd(t *testing.T) {
 
 func TestRange_SingleKey_Missing(t *testing.T) {
 	s := newTestStore(t)
-	results, _, err := s.Range([]byte("nope"), nil)
+	results, count, _, err := s.Range([]byte("nope"), nil)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	// Missing key in range returns empty result, not error.
 	if len(results) != 0 {
 		t.Errorf("Range results: got %d, want 0", len(results))
+	}
+	if count != 0 {
+		t.Errorf("count: got %d, want 0", count)
 	}
 }
 
@@ -455,7 +463,7 @@ func TestRange_StartEnd(t *testing.T) {
 		}
 	}
 	// Range [b, d) should return b, c.
-	results, _, err := s.Range([]byte("b"), []byte("d"))
+	results, count, rev, err := s.Range([]byte("b"), []byte("d"))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -468,6 +476,17 @@ func TestRange_StartEnd(t *testing.T) {
 	if !bytes.Equal(results[1].Key, []byte("c")) {
 		t.Errorf("results[1].Key: got %q, want %q", results[1].Key, "c")
 	}
+	// count must be the real match count, not the store's current revision
+	// (4 Puts were issued to seed a, b, c, d).
+	if count != 2 {
+		t.Errorf("count: got %d, want 2", count)
+	}
+	if rev != s.CurrentRevision() {
+		t.Errorf("revision: got %d, want %d", rev, s.CurrentRevision())
+	}
+	if count == rev {
+		t.Fatalf("count (%d) coincidentally equals revision (%d); strengthen the fixture so this test cannot pass by accident", count, rev)
+	}
 }
 
 func TestRange_StartEnd_EmptyResult(t *testing.T) {
@@ -477,12 +496,15 @@ func TestRange_StartEnd_EmptyResult(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	// Range [m, z) with no keys in that range.
-	results, _, err := s.Range([]byte("m"), []byte("z"))
+	results, count, _, err := s.Range([]byte("m"), []byte("z"))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if len(results) != 0 {
 		t.Errorf("Range results: got %d, want 0", len(results))
+	}
+	if count != 0 {
+		t.Errorf("count: got %d, want 0", count)
 	}
 }
 
@@ -498,12 +520,17 @@ func TestRange_WithLimit(t *testing.T) {
 			t.Fatalf("Put %s: %v", k, err)
 		}
 	}
-	results, _, err := s.Range([]byte("a"), []byte("z"), service.WithLimit(2))
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithLimit(2))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if len(results) != 2 {
 		t.Fatalf("Range results: got %d, want 2", len(results))
+	}
+	// Non-count-only count is capped at Limit, matching len(results): 5 keys
+	// exist (a..e) but Limit(2) caps both the returned slice and count.
+	if count != 2 {
+		t.Errorf("count: got %d, want 2 (capped by Limit)", count)
 	}
 }
 
@@ -513,12 +540,15 @@ func TestRange_WithLimit_LargerThanResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	results, _, err := s.Range([]byte("a"), []byte("z"), service.WithLimit(100))
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithLimit(100))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if len(results) != 1 {
 		t.Errorf("Range results: got %d, want 1", len(results))
+	}
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
 	}
 }
 
@@ -532,7 +562,7 @@ func TestRange_KeysOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	results, _, err := s.Range([]byte("key"), nil, service.WithKeysOnly())
+	results, count, _, err := s.Range([]byte("key"), nil, service.WithKeysOnly())
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -541,6 +571,9 @@ func TestRange_KeysOnly(t *testing.T) {
 	}
 	if results[0].Value != nil {
 		t.Errorf("Value: got %v, want nil for KeysOnly", results[0].Value)
+	}
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
 	}
 }
 
@@ -552,7 +585,7 @@ func TestRange_KeysOnly_RangeQuery(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 	}
-	results, _, err := s.Range([]byte("a"), []byte("c"), service.WithKeysOnly())
+	results, count, _, err := s.Range([]byte("a"), []byte("c"), service.WithKeysOnly())
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -560,6 +593,9 @@ func TestRange_KeysOnly_RangeQuery(t *testing.T) {
 		if kv.Value != nil {
 			t.Errorf("results[%d].Value: got %v, want nil", i, kv.Value)
 		}
+	}
+	if count != 2 {
+		t.Errorf("count: got %d, want 2", count)
 	}
 }
 
@@ -575,7 +611,7 @@ func TestRange_CountOnly(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 	}
-	results, count, err := s.Range([]byte("a"), []byte("d"), service.WithCountOnly())
+	results, count, rev, err := s.Range([]byte("a"), []byte("d"), service.WithCountOnly())
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -585,11 +621,74 @@ func TestRange_CountOnly(t *testing.T) {
 	if count != 3 {
 		t.Errorf("count: got %d, want 3", count)
 	}
+	if rev != s.CurrentRevision() {
+		t.Errorf("revision: got %d, want %d", rev, s.CurrentRevision())
+	}
+}
+
+// TestRange_CountOnly_IgnoresLimit verifies the documented CountOnly
+// semantics: count reflects every match, not the value capped by Limit
+// (the non-CountOnly path caps count at Limit; CountOnly must not).
+func TestRange_CountOnly_IgnoresLimit(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		_, err := s.Put([]byte(k), []byte("v"), 0)
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithCountOnly(), service.WithLimit(2))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if results != nil {
+		t.Errorf("results: got %v, want nil for CountOnly", results)
+	}
+	if count != 5 {
+		t.Errorf("count: got %d, want 5 (CountOnly must ignore Limit)", count)
+	}
+}
+
+// TestRange_Count_DistinctFromRevision verifies that a range's match count
+// and the store's MVCC revision are reported as two genuinely distinct
+// values, reproducing (as a regression guard) the bug where Range's
+// non-CountOnly path returned the current revision in place of the match
+// count.
+func TestRange_Count_DistinctFromRevision(t *testing.T) {
+	s := newTestStore(t)
+	// Issue far more revisions (10 Puts across 2 keys) than the range will
+	// match (2 keys), so count and revision can never coincidentally be
+	// equal -- this specifically guards against the store returning
+	// currentRev where count belongs.
+	for i := 0; i < 5; i++ {
+		if _, err := s.Put([]byte("a"), []byte("va"), 0); err != nil {
+			t.Fatalf("Put a: %v", err)
+		}
+		if _, err := s.Put([]byte("b"), []byte("vb"), 0); err != nil {
+			t.Fatalf("Put b: %v", err)
+		}
+	}
+	results, count, rev, err := s.Range([]byte("a"), []byte("c"))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Range results: got %d, want 2", len(results))
+	}
+	if count != 2 {
+		t.Fatalf("count: got %d, want 2 (match count, not revision)", count)
+	}
+	if rev != 10 {
+		t.Fatalf("revision: got %d, want 10 (10 Puts issued)", rev)
+	}
+	if rev != s.CurrentRevision() {
+		t.Errorf("revision: got %d, want %d (store's current revision)", rev, s.CurrentRevision())
+	}
 }
 
 func TestRange_CountOnly_Empty(t *testing.T) {
 	s := newTestStore(t)
-	results, count, err := s.Range([]byte("a"), []byte("z"), service.WithCountOnly())
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithCountOnly())
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -616,7 +715,7 @@ func TestRange_WithRevision(t *testing.T) {
 		t.Fatalf("Put 2: %v", err)
 	}
 	// Read at the first revision.
-	results, _, err := s.Range([]byte("key"), nil, service.WithRevision(kv1.ModRevision))
+	results, count, _, err := s.Range([]byte("key"), nil, service.WithRevision(kv1.ModRevision))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -625,6 +724,9 @@ func TestRange_WithRevision(t *testing.T) {
 	}
 	if !bytes.Equal(results[0].Value, []byte("v1")) {
 		t.Errorf("Value: got %q, want %q", results[0].Value, "v1")
+	}
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
 	}
 }
 
@@ -641,7 +743,7 @@ func TestRange_WithRevision_Compacted(t *testing.T) {
 	if err := s.Compact(1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	_, _, err = s.Range([]byte("key"), nil, service.WithRevision(1))
+	_, _, _, err = s.Range([]byte("key"), nil, service.WithRevision(1))
 	if err == nil {
 		t.Fatal("Range: expected error for compacted revision, got nil")
 	}
@@ -957,7 +1059,7 @@ func TestRange_WithRevision_StartEnd(t *testing.T) {
 	}
 
 	// At rev1, only "a" existed.
-	results, _, err := s.Range([]byte("a"), []byte("c"), service.WithRevision(rev1))
+	results, count, _, err := s.Range([]byte("a"), []byte("c"), service.WithRevision(rev1))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -968,6 +1070,9 @@ func TestRange_WithRevision_StartEnd(t *testing.T) {
 	}
 	if !bytes.Equal(results[0].Key, []byte("a")) {
 		t.Errorf("Key: got %q, want %q", results[0].Key, "a")
+	}
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
 	}
 }
 
@@ -1079,7 +1184,7 @@ func TestRange_SingleKey_KeysOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	results, _, err := s.Range([]byte("k"), nil, service.WithKeysOnly())
+	results, count, _, err := s.Range([]byte("k"), nil, service.WithKeysOnly())
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -1091,6 +1196,9 @@ func TestRange_SingleKey_KeysOnly(t *testing.T) {
 	}
 	if !bytes.Equal(results[0].Key, []byte("k")) {
 		t.Errorf("Key: got %q, want %q", results[0].Key, "k")
+	}
+	if count != 1 {
+		t.Errorf("count: got %d, want 1", count)
 	}
 }
 
@@ -1111,7 +1219,7 @@ func TestRange_StartEnd_CompactedRevision(t *testing.T) {
 	if err := s.Compact(1); err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
-	_, _, err = s.Range([]byte("a"), []byte("c"), service.WithRevision(1))
+	_, _, _, err = s.Range([]byte("a"), []byte("c"), service.WithRevision(1))
 	if err == nil {
 		t.Fatal("Range: expected error for compacted revision, got nil")
 	}
@@ -1367,12 +1475,15 @@ func TestRange_AllKeys(t *testing.T) {
 		}
 	}
 	// Range covering all keys using byte boundaries.
-	results, _, err := s.Range([]byte{0x00}, []byte{0xFF})
+	results, count, _, err := s.Range([]byte{0x00}, []byte{0xFF})
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if len(results) != 4 {
 		t.Errorf("Range results: got %d, want 4", len(results))
+	}
+	if count != 4 {
+		t.Errorf("count: got %d, want 4", count)
 	}
 }
 
@@ -1409,13 +1520,16 @@ func TestRange_SkipsDeletedKeys(t *testing.T) {
 	}
 
 	// Range [a, d) should skip deleted "b" since its metadata is gone.
-	results, _, err := s.Range([]byte("a"), []byte("d"))
+	results, count, _, err := s.Range([]byte("a"), []byte("d"))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	// "b" metadata was deleted so only "a" and "c" have metadata entries.
 	if len(results) != 2 {
 		t.Fatalf("Range results: got %d, want 2", len(results))
+	}
+	if count != 2 {
+		t.Errorf("count: got %d, want 2", count)
 	}
 }
 
@@ -1436,12 +1550,15 @@ func TestRange_SingleKey_DeletedAtRevision_ReturnsEmpty(t *testing.T) {
 	deleteRev := s.CurrentRevision()
 
 	// Single key range at delete revision should return empty (tombstone).
-	results, _, err := s.Range([]byte("k"), nil, service.WithRevision(deleteRev))
+	results, count, _, err := s.Range([]byte("k"), nil, service.WithRevision(deleteRev))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
 	if len(results) != 0 {
 		t.Errorf("Range results at delete rev: got %d, want 0", len(results))
+	}
+	if count != 0 {
+		t.Errorf("count: got %d, want 0", count)
 	}
 }
 
@@ -1532,7 +1649,7 @@ func TestRange_WithRevision_MultipleKeys(t *testing.T) {
 	}
 
 	// At revision 2, "a" should be at v1, "b" should be at v1.
-	results, _, err := s.Range([]byte("a"), []byte("c"), service.WithRevision(2))
+	results, count, _, err := s.Range([]byte("a"), []byte("c"), service.WithRevision(2))
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
@@ -1541,6 +1658,249 @@ func TestRange_WithRevision_MultipleKeys(t *testing.T) {
 	}
 	if !bytes.Equal(results[0].Value, []byte("a-v1")) {
 		t.Errorf("results[0].Value: got %q, want %q", results[0].Value, "a-v1")
+	}
+	if count != 2 {
+		t.Errorf("count: got %d, want 2", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Range - sort ordering
+// ---------------------------------------------------------------------------
+
+// rangeKeys extracts the Key field from each result, as plain strings, for
+// order assertions.
+func rangeKeys(results []*service.KeyValue) []string {
+	keys := make([]string, len(results))
+	for i, kv := range results {
+		keys[i] = string(kv.Key)
+	}
+	return keys
+}
+
+// assertKeyOrder fails the test unless got matches want exactly, in order.
+func assertKeyOrder(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("key order: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("key order: got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestRange_Sort_AscendByKey(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"c", "a", "b"} {
+		if _, err := s.Put([]byte(k), []byte("v-"+k), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByKey))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("count: got %d, want 3", count)
+	}
+	assertKeyOrder(t, rangeKeys(results), []string{"a", "b", "c"})
+}
+
+func TestRange_Sort_DescendByKey(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte("v-"+k), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, count, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortDescend, service.SortByKey))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("count: got %d, want 3", count)
+	}
+	assertKeyOrder(t, rangeKeys(results), []string{"c", "b", "a"})
+}
+
+// TestRange_Sort_DescendWithLimit verifies Limit is applied to the SORTED
+// result set, not to whatever order the underlying storage iterator
+// produces: descending by key with Limit(1) must return only the
+// lexicographically largest key, not the first key the scan happened to
+// visit.
+func TestRange_Sort_DescendWithLimit(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		if _, err := s.Put([]byte(k), []byte("v-"+k), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, count, _, err := s.Range([]byte("a"), []byte("z"),
+		service.WithSort(service.SortDescend, service.SortByKey), service.WithLimit(2))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("count: got %d, want 2", count)
+	}
+	assertKeyOrder(t, rangeKeys(results), []string{"e", "d"})
+}
+
+func TestRange_Sort_ByValue(t *testing.T) {
+	s := newTestStore(t)
+	// Values deliberately invert key order: "a" holds the lexicographically
+	// largest value, "c" the smallest.
+	values := map[string]string{"a": "zval", "b": "yval", "c": "xval"}
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte(values[k]), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByValue))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	// Ascending by value: xval < yval < zval -> c, b, a.
+	assertKeyOrder(t, rangeKeys(results), []string{"c", "b", "a"})
+}
+
+func TestRange_Sort_ByCreateRevision(t *testing.T) {
+	s := newTestStore(t)
+	// Insert in an order that diverges from key-lexicographic order so the
+	// assertion cannot pass by coincidentally matching key order.
+	for _, k := range []string{"c", "a", "b"} {
+		if _, err := s.Put([]byte(k), []byte("v"), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	// Re-putting "a" changes its ModRevision but must leave CreateRevision
+	// (insertion order) untouched.
+	if _, err := s.Put([]byte("a"), []byte("v2"), 0); err != nil {
+		t.Fatalf("Put a v2: %v", err)
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByCreateRevision))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	// Insertion (create) order was c, a, b.
+	assertKeyOrder(t, rangeKeys(results), []string{"c", "a", "b"})
+}
+
+func TestRange_Sort_ByModRevision(t *testing.T) {
+	s := newTestStore(t)
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte("v"), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	// Re-put "a" last so its ModRevision becomes the newest, diverging from
+	// key-lexicographic order.
+	if _, err := s.Put([]byte("a"), []byte("v2"), 0); err != nil {
+		t.Fatalf("Put a v2: %v", err)
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByModRevision))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	// Mod order: b (rev2), c (rev3), a (rev4, re-put last).
+	assertKeyOrder(t, rangeKeys(results), []string{"b", "c", "a"})
+}
+
+func TestRange_Sort_ByVersion(t *testing.T) {
+	s := newTestStore(t)
+	// "a" is put 3 times (version 3), "b" once (version 1), "c" twice
+	// (version 2) -- version order (b, c, a) diverges from key order.
+	for i := 0; i < 3; i++ {
+		if _, err := s.Put([]byte("a"), []byte("v"), 0); err != nil {
+			t.Fatalf("Put a: %v", err)
+		}
+	}
+	if _, err := s.Put([]byte("b"), []byte("v"), 0); err != nil {
+		t.Fatalf("Put b: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := s.Put([]byte("c"), []byte("v"), 0); err != nil {
+			t.Fatalf("Put c: %v", err)
+		}
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByVersion))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	assertKeyOrder(t, rangeKeys(results), []string{"b", "c", "a"})
+}
+
+// TestRange_Sort_TargetOnly_DefaultsAscending verifies that requesting a
+// non-key SortTarget without an explicit SortOrder (the zero value,
+// SortNone) still triggers sorting -- matching the "either field set"
+// trigger condition used by every transport handler to decide whether to
+// thread WithSort at all.
+func TestRange_Sort_TargetOnly_DefaultsAscending(t *testing.T) {
+	s := newTestStore(t)
+	values := map[string]string{"a": "zval", "b": "yval", "c": "xval"}
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte(values[k]), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortNone, service.SortByValue))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	assertKeyOrder(t, rangeKeys(results), []string{"c", "b", "a"})
+}
+
+func TestRange_Sort_UnsupportedTarget(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("a"), []byte("v"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	const outOfRangeTarget = service.SortTarget(255)
+	_, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, outOfRangeTarget))
+	if err == nil {
+		t.Fatal("Range: expected error for unsupported sort target, got nil")
+	}
+	var uste *UnsupportedSortTargetError
+	if !errors.As(err, &uste) {
+		t.Fatalf("Range: expected *UnsupportedSortTargetError, got %T: %v", err, err)
+	}
+}
+
+func TestRange_Sort_StableOnTies(t *testing.T) {
+	s := newTestStore(t)
+	// All three keys share the same value, so sorting by value must fall
+	// back to preserving the underlying scan's relative order (stability),
+	// not reorder ties arbitrarily.
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Put([]byte(k), []byte("same"), 0); err != nil {
+			t.Fatalf("Put %s: %v", k, err)
+		}
+	}
+	results, _, _, err := s.Range([]byte("a"), []byte("z"), service.WithSort(service.SortAscend, service.SortByValue))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("Range results: got %d, want 3", len(results))
+	}
+}
+
+// TestRange_Sort_SingleKey_Unaffected verifies that sort options are inert
+// on the single-key (nil end) path, which can only ever produce zero or one
+// result.
+func TestRange_Sort_SingleKey_Unaffected(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.Put([]byte("only"), []byte("v"), 0); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	results, count, _, err := s.Range([]byte("only"), nil, service.WithSort(service.SortDescend, service.SortByValue))
+	if err != nil {
+		t.Fatalf("Range: %v", err)
+	}
+	if len(results) != 1 || count != 1 {
+		t.Fatalf("Range results/count: got %d/%d, want 1/1", len(results), count)
 	}
 }
 

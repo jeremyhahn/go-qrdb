@@ -17,10 +17,12 @@ package quic
 import (
 	"context"
 	"io"
+	"strconv"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -310,8 +312,9 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	}
 
 	return &transport.RangeResponse{
-		Kvs:   kvs,
-		Count: pbResp.GetCount(),
+		Kvs:      kvs,
+		Count:    pbResp.GetCount(),
+		Revision: pbResp.GetRevision(),
 	}, nil
 }
 
@@ -352,6 +355,44 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 	}
 
 	return pbResp.GetRevision(), nil
+}
+
+// RestoreToRevision returns a bounded set of keys to the value they held at
+// an earlier MVCC revision through the QUIC transport -- a logical undo,
+// never a Raft rewind. Exactly one of req.Prefix and req.Keys must be set.
+func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
+	}
+
+	keys := make([][]byte, len(req.Keys))
+	copy(keys, req.Keys)
+
+	payload, err := proto.Marshal(&pb.RestoreRevisionRequest{
+		Revision: req.Revision,
+		Prefix:   req.Prefix,
+		Keys:     keys,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	resp, err := t.call(ctx, "mvcc.RestoreToRevision", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var pbResp pb.RestoreRevisionResponse
+	if err := proto.Unmarshal(resp, &pbResp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+
+	return protoToRestoreResult(&pbResp), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -456,9 +497,89 @@ func (t *Transport) ExecuteBatch(ctx context.Context, ops []transport.Op, opts .
 	}, nil
 }
 
-// ImportFile is not yet implemented for the QUIC transport.
-func (t *Transport) ImportFile(_ context.Context, _ string, _ io.Reader, _ transport.ImportOptions) (*transport.ImportResult, error) {
-	return nil, &transport.NotImplementedError{Method: "ImportFile"}
+// maxQUICImportFileSize bounds the file payload accepted by ImportFile so
+// the client fails fast with a clear typed error instead of buffering an
+// oversized file only to have the wire protocol reject the frame with
+// wire.PayloadTooLargeError. It leaves headroom under wire.MaxPayloadSize
+// (64MB) for the request's other BatchImportRequest fields and protobuf
+// framing overhead. This is lower than the 100MB bound used by REST/gRPC
+// because the native QUIC wire protocol's MaxPayloadSize is a pre-existing,
+// transport-wide limit shared by every QUIC RPC, not specific to batch
+// import.
+const maxQUICImportFileSize = wire.MaxPayloadSize - (1 << 20)
+
+// ImportFile reads filename's entire contents from data and imports it as
+// key-value pairs through the QUIC transport's unary batch.Import method.
+// The active database scope is carried by the transport's wire-frame
+// database field (the same mechanism used by every other data-plane call),
+// so no explicit database field is sent in the payload.
+func (t *Transport) ImportFile(ctx context.Context, filename string, data io.Reader, opts transport.ImportOptions) (*transport.ImportResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	file, err := io.ReadAll(data)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ImportFile", Err: err}
+	}
+	if len(file) > maxQUICImportFileSize {
+		return nil, &transport.RequestError{
+			Method: "ImportFile",
+			Err:    &importFileTooLargeError{Size: len(file), Max: maxQUICImportFileSize},
+		}
+	}
+
+	payload, err := proto.Marshal(&pb.BatchImportRequest{
+		File:          file,
+		Format:        opts.Format,
+		Filename:      filename,
+		KeyField:      opts.KeyField,
+		ValueMode:     opts.ValueMode,
+		ValueField:    opts.ValueField,
+		SkipHeader:    opts.SkipHeader,
+		Transactional: opts.Transactional,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	resp, err := t.call(ctx, "batch.Import", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var pbResp pb.BatchImportResponse
+	if err := proto.Unmarshal(resp, &pbResp); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+
+	errs := make([]transport.ImportError, len(pbResp.GetErrors()))
+	for i, e := range pbResp.GetErrors() {
+		errs[i] = transport.ImportError{
+			Row:     int(e.GetRow()),
+			Key:     e.GetKey(),
+			Message: e.GetMessage(),
+		}
+	}
+
+	return &transport.ImportResult{
+		Total:     int(pbResp.GetTotal()),
+		Succeeded: int(pbResp.GetSucceeded()),
+		Failed:    int(pbResp.GetFailed()),
+		Errors:    errs,
+	}, nil
+}
+
+// importFileTooLargeError is returned when ImportFile's file exceeds
+// maxQUICImportFileSize.
+type importFileTooLargeError struct {
+	Size int
+	Max  int
+}
+
+// Error returns a human-readable description.
+func (e *importFileTooLargeError) Error() string {
+	return "quic: import file too large: " + strconv.Itoa(e.Size) + " bytes exceeds max " + strconv.Itoa(e.Max) + " bytes"
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +712,53 @@ func (t *Transport) LeaseList(ctx context.Context) ([]*transport.LeaseInfo, erro
 // ---------------------------------------------------------------------------
 // Proto conversion helpers
 // ---------------------------------------------------------------------------
+
+// restoreActionFromProto converts proto RestoreAction to transport
+// RestoreAction.
+var restoreActionFromProto = map[pb.RestoreAction]transport.RestoreAction{
+	pb.RestoreAction_RESTORE_ACTION_REVERT:   transport.RestoreActionRevert,
+	pb.RestoreAction_RESTORE_ACTION_RECREATE: transport.RestoreActionRecreate,
+	pb.RestoreAction_RESTORE_ACTION_DELETE:   transport.RestoreActionDelete,
+}
+
+// protoToRestoreChange converts a proto RestoreKeyChange to its transport
+// representation.
+func protoToRestoreChange(c *pb.RestoreKeyChange) *transport.RestoreKeyChange {
+	if c == nil {
+		return nil
+	}
+	return &transport.RestoreKeyChange{
+		Key:          c.GetKey(),
+		Action:       restoreActionFromProto[c.GetAction()],
+		FromRevision: c.GetFromRevision(),
+		ToRevision:   c.GetToRevision(),
+		ValueBytes:   c.GetValueBytes(),
+	}
+}
+
+// protoToRestoreChanges converts a slice of proto RestoreKeyChange to their
+// transport representation.
+func protoToRestoreChanges(changes []*pb.RestoreKeyChange) []*transport.RestoreKeyChange {
+	out := make([]*transport.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = protoToRestoreChange(c)
+	}
+	return out
+}
+
+// protoToRestoreResult converts a proto RestoreRevisionResponse to the
+// transport RestoreRevisionResult.
+func protoToRestoreResult(resp *pb.RestoreRevisionResponse) *transport.RestoreRevisionResult {
+	return &transport.RestoreRevisionResult{
+		Revision:   resp.GetRevision(),
+		Changes:    protoToRestoreChanges(resp.GetChanges()),
+		Conflicts:  protoToRestoreChanges(resp.GetConflicts()),
+		Applied:    int(resp.GetApplied()),
+		Skipped:    int(resp.GetSkipped()),
+		Conflicted: int(resp.GetConflicted()),
+		DryRun:     resp.GetDryRun(),
+	}
+}
 
 // protoToMVCCKeyValue converts a proto KeyValue to a transport MVCCKeyValue.
 func protoToMVCCKeyValue(kv *pb.KeyValue) *transport.MVCCKeyValue {

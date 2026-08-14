@@ -31,9 +31,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // credentialSubmitRequest is the JSON payload for POST /v1/credentials/submit.
+// Value is a []byte so encoding/json decodes it from base64 (RFC 4648),
+// preserving arbitrary binary credential material byte-for-byte. Malformed
+// base64 surfaces as a JSON decode error (400) via the standard decoder.
 type credentialSubmitRequest struct {
 	Name  string `json:"name"`
-	Value string `json:"value"` // base64 or plain text
+	Value []byte `json:"value"`
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +65,7 @@ func (s *Server) handleCredentialSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.credentialSvc.CredentialSubmit(r.Context(), req.Name, []byte(req.Value)); err != nil {
+	if err := s.credentialSvc.CredentialSubmit(r.Context(), req.Name, req.Value); err != nil {
 		writeErrorJSON(w, mapCredentialHTTPError(err), err)
 		return
 	}
@@ -149,7 +152,7 @@ func (s *Server) handleCredentialRotate(w http.ResponseWriter, r *http.Request, 
 	req.Name = name
 
 	opts := credentials.RotateOptions{
-		NewValue:    []byte(req.NewValue),
+		NewValue:    req.NewValue,
 		GracePeriod: time.Duration(req.GracePeriodSeconds) * time.Second,
 	}
 
@@ -194,7 +197,7 @@ func (s *Server) handleCredentialRetrieveVersion(w http.ResponseWriter, r *http.
 		return
 	}
 
-	writeJSON(w, transport.CredentialRetrieveVersionResponse{Value: string(value)})
+	writeJSON(w, transport.CredentialRetrieveVersionResponse{Value: value})
 }
 
 // handleCredentialListVersions handles GET /v1/credentials/{name}/versions
@@ -381,15 +384,18 @@ func mapCredentialHTTPError(err error) int {
 }
 
 // credentialStoreRequest is the JSON payload for POST /v1/credentials/store.
+// Value is a []byte so encoding/json decodes it from base64 (RFC 4648),
+// preserving arbitrary binary credential material byte-for-byte.
 type credentialStoreRequest struct {
 	Name  string `json:"name"`
-	Value string `json:"value"`
+	Value []byte `json:"value"`
 }
 
 // credentialValueResponse is the JSON payload returned by
-// GET /v1/credentials/{name}/value.
+// GET /v1/credentials/{name}/value. Value is a []byte so encoding/json
+// renders it as base64 (RFC 4648), preserving binary content byte-for-byte.
 type credentialValueResponse struct {
-	Value string `json:"value"`
+	Value []byte `json:"value"`
 }
 
 // handleCredentialStore handles POST /v1/credentials/store -- persists a
@@ -406,7 +412,7 @@ func (s *Server) handleCredentialStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.credentialSvc.CredentialStore(r.Context(), req.Name, []byte(req.Value)); err != nil {
+	if err := s.credentialSvc.CredentialStore(r.Context(), req.Name, req.Value); err != nil {
 		writeErrorJSON(w, mapCredentialHTTPError(err), err)
 		return
 	}
@@ -422,5 +428,5 @@ func (s *Server) handleCredentialRetrieve(w http.ResponseWriter, r *http.Request
 		writeErrorJSON(w, mapCredentialHTTPError(err), err)
 		return
 	}
-	writeJSON(w, credentialValueResponse{Value: string(value)})
+	writeJSON(w, credentialValueResponse{Value: value})
 }

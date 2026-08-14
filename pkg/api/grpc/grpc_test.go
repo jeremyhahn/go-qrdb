@@ -16,13 +16,13 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -52,6 +52,16 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	}
 	m.store[key] = value
 	return nil
+}
+
+// PutIfAbsent stores only when the key is absent, matching the real
+// engines. The map lookup is the same check they perform.
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
 }
 
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
@@ -415,7 +425,7 @@ func TestServer_StartStop(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0")
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithTLS(testServerTLSConfig(t)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -439,7 +449,7 @@ func TestServer_Addr_BeforeStart(t *testing.T) {
 }
 
 func TestServer_StartError_InvalidAddress(t *testing.T) {
-	srv := NewServer(newMockKVService(), newMockAdminService(), "invalid-address-no-port")
+	srv := NewServer(newMockKVService(), newMockAdminService(), "invalid-address-no-port", WithTLS(testServerTLSConfig(t)))
 	err := srv.Start()
 	if err == nil {
 		srv.Stop()
@@ -465,6 +475,36 @@ func TestServer_WithTLS(t *testing.T) {
 	}
 }
 
+// TestServer_WithTLS_ClonesAndDefaultsMinVersion proves WithTLS clones the
+// supplied config (never retaining the caller's pointer) and upgrades an
+// unset MinVersion to TLS 1.3 (Codex #8).
+func TestServer_WithTLS_ClonesAndDefaultsMinVersion(t *testing.T) {
+	cfg := &tls.Config{}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithTLS(cfg))
+	if srv.tls == nil {
+		t.Fatal("expected tls field to be set")
+	}
+	if srv.tls == cfg {
+		t.Fatal("expected WithTLS to clone the config, not retain the caller's pointer")
+	}
+	if srv.tls.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %#x, want TLS 1.3", srv.tls.MinVersion)
+	}
+}
+
+// TestServer_WithTLS_RejectsWeakExplicitMinVersion proves an explicit
+// MinVersion below TLS 1.3 fails Start with a typed *WeakTLSVersionError
+// (Codex #8).
+func TestServer_WithTLS_RejectsWeakExplicitMinVersion(t *testing.T) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithTLS(cfg))
+	err := srv.Start()
+	var weakErr *WeakTLSVersionError
+	if !errors.As(err, &weakErr) {
+		t.Fatalf("expected *WeakTLSVersionError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Full gRPC round-trip tests
 // ---------------------------------------------------------------------------
@@ -474,14 +514,15 @@ func TestServer_WithTLS(t *testing.T) {
 func startTestServer(t *testing.T, kvSvc service.KVServicer, adminSvc service.AdminServicer) (pb.QRDBServiceClient, func()) {
 	t.Helper()
 
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
 	conn, err := grpc.NewClient(
 		srv.Addr(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)),
 	)
 	if err != nil {
 		srv.Stop()

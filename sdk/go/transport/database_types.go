@@ -70,6 +70,13 @@ type DatabaseBarrierConfig struct {
 	Mode           string `json:"mode,omitempty"`
 	SharesRequired int    `json:"sharesRequired,omitempty"`
 	SharesTotal    int    `json:"sharesTotal,omitempty"`
+
+	// Secret carries the barrier passphrase for the initial Initialize call
+	// when Enabled is set on a CreateDatabaseRequest. It is never persisted
+	// (the server's on-disk DatabaseBarrierConfig / meta.json has no secret
+	// field) and is only meaningful on the request path -- a DatabaseInfo /
+	// UpdateDatabaseBarrierRequest never populates it.
+	Secret string `json:"secret,omitempty"`
 }
 
 // DatabaseConnectionConfig holds remote connection settings for a database.
@@ -100,6 +107,13 @@ type CreateDatabaseRequest struct {
 type UpdateDatabaseRaftRequest struct {
 	Name string              `json:"-"`
 	Raft *DatabaseRaftConfig `json:"raft"`
+}
+
+// ScaleDatabaseRequest represents a request to change the replication factor
+// of an existing dedicated-raft database.
+type ScaleDatabaseRequest struct {
+	Name           string `json:"-"`
+	TargetReplicas int    `json:"target_replicas"`
 }
 
 // UpdateDatabaseBarrierRequest represents a request to update barrier config.
@@ -171,6 +185,11 @@ type DatabaseClient interface {
 	// UpdateDatabaseBarrier updates the encryption barrier configuration
 	// for a database.
 	UpdateDatabaseBarrier(ctx context.Context, req UpdateDatabaseBarrierRequest) (*DatabaseInfo, error)
+
+	// ScaleDatabase changes the replication factor of an existing
+	// dedicated-raft database, adding or removing voting replicas without
+	// recreating the database.
+	ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error)
 
 	// UpdateDatabaseConnection updates the remote connection configuration
 	// for a database.

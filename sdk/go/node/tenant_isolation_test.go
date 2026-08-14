@@ -18,9 +18,12 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/stretchr/testify/require"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -30,6 +33,23 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// awaitReadIndexReady performs a warm-up linearizable read, waiting out the
+// ReadIndex window on a freshly (re-)attached tenant shard — a fresh leader
+// rejects linearizable reads with quicraft.ErrReadIndexNotReady until its
+// first entry of the current term commits. Bounded so a wedged shard still
+// fails the test.
+func awaitReadIndexReady(ctx context.Context, t *testing.T, kv service.KVServicer, key string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		_, err := kv.Get(ctx, key)
+		if err == nil || !errors.Is(err, quicraft.ErrReadIndexNotReady) || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
 
 // volumeEntitlements returns the entitlement set that permits creating
 // IsolationVolume tenants with system-managed auto-unseal barriers. These are
@@ -231,6 +251,7 @@ func TestNode_TenantIsolation_EnableEncryption(t *testing.T) {
 	require.NotNil(t, svc2.KV)
 
 	// Verify all 100 keys are readable through the now-keyed tenant Host.
+	awaitReadIndexReady(ctx, t, svc2.KV, "enc/key/000")
 	for k, v := range want {
 		got, gerr := svc2.KV.Get(ctx, k)
 		require.NoErrorf(t, gerr, "Get(%q) after tenant encryption migration", k)
@@ -299,6 +320,7 @@ func TestNode_TenantIsolation_RestartSurvival(t *testing.T) {
 	require.NotNil(t, svc2.KV)
 
 	// All previously-written keys must be intact.
+	awaitReadIndexReady(ctx, t, svc2.KV, "post/restart-warmup")
 	for k, v := range want {
 		got, gerr := svc2.KV.Get(ctx, k)
 		require.NoErrorf(t, gerr, "Get(%q) after restart", k)

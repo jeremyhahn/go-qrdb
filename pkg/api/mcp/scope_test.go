@@ -83,6 +83,14 @@ func (r *recordingRegistry) BatchService(t, d string) (service.BatchServicer, er
 	r.record("batch", t, d)
 	return nil, nil
 }
+func (r *recordingRegistry) TableService(t, d string) (service.TableServicer, error) {
+	r.record("table", t, d)
+	return nil, nil
+}
+func (r *recordingRegistry) SequenceService(t, d string) (service.SequenceServicer, error) {
+	r.record("sequence", t, d)
+	return nil, nil
+}
 
 func TestMCPResolveKVUsesRegistryScope(t *testing.T) {
 	regKV := &mockKVService{}

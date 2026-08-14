@@ -266,6 +266,36 @@ func TestCLIMultiProtocolCAInfoAndBundle(t *testing.T) {
 	}
 }
 
+// TestCLICAInfoAndBundleHelpIsAccurate is a non-multi-protocol regression
+// test (--help requires no server connection) asserting that "ca info" and
+// "ca bundle" no longer advertise semantics they do not deliver. Both are
+// aliases of "ca list" (they render the issued-certificate table, not
+// standalone root-CA metadata or a CA+chain bundle), because that data is
+// not yet exposed through the SDK CertClient contract on any transport.
+// This guards against re-introducing the misleading "Show CA metadata (DN,
+// fingerprint, validity)" / "Print the active CA bundle (CA + chain)"
+// descriptions the command group help previously carried.
+func TestCLICAInfoAndBundleHelpIsAccurate(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	stdout, stderr, err := execCLIRaw(t, cfg, "ca", "info", "--help")
+	if err != nil {
+		t.Fatalf("ca info --help: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	assertFalse(t, strings.Contains(stdout, "DN, fingerprint, validity"),
+		"ca info --help must not advertise standalone CA metadata it does not deliver")
+	assertContains(t, stdout, "alias", "ca info --help should document that it is an alias for \"list\"")
+
+	stdout, stderr, err = execCLIRaw(t, cfg, "ca", "bundle", "--help")
+	if err != nil {
+		t.Fatalf("ca bundle --help: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	assertFalse(t, strings.Contains(stdout, "CA + chain"),
+		"ca bundle --help must not advertise a standalone CA+chain bundle it does not deliver")
+	assertContains(t, stdout, "alias", "ca bundle --help should document that it is an alias for \"list\"")
+}
+
 // ---------------------------------------------------------------------------
 // 4. certs redirect
 // ---------------------------------------------------------------------------

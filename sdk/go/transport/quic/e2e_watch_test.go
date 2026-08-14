@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -147,5 +149,117 @@ func TestE2E_Watch_NonOKStatus(t *testing.T) {
 	}
 	if !resp.Canceled || resp.CancelReason != "watch failed" {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// start_revision threading
+// ---------------------------------------------------------------------------
+
+// TestE2E_Watch_StartRevisionThreaded verifies WatchOptions.StartRevision is
+// encoded onto the wire pb.WatchRequest.start_revision field.
+func TestE2E_Watch_StartRevisionThreaded(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("watch.Watch", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.WatchResponse{WatchId: 1, Revision: 1})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := tr.Watch(ctx, "k", transport.WatchOptions{StartRevision: 42})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	if _, ok := <-ch; !ok {
+		t.Fatal("channel closed without event")
+	}
+
+	rec := srv.LastRequest("watch.Watch")
+	if rec == nil {
+		t.Fatal("server never received a watch.Watch request")
+	}
+	var req pb.WatchRequest
+	if err := proto.Unmarshal(rec.Payload, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if req.GetStartRevision() != 42 {
+		t.Fatalf("StartRevision = %d, want 42", req.GetStartRevision())
+	}
+}
+
+// TestE2E_WatchPrefix_StartRevisionThreaded mirrors the above for
+// WatchPrefix.
+func TestE2E_WatchPrefix_StartRevisionThreaded(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("watch.WatchPrefix", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.WatchResponse{WatchId: 2, Revision: 1})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := tr.WatchPrefix(ctx, "p/", transport.WatchOptions{StartRevision: 7})
+	if err != nil {
+		t.Fatalf("WatchPrefix: %v", err)
+	}
+	if _, ok := <-ch; !ok {
+		t.Fatal("channel closed without event")
+	}
+
+	rec := srv.LastRequest("watch.WatchPrefix")
+	if rec == nil {
+		t.Fatal("server never received a watch.WatchPrefix request")
+	}
+	var req pb.WatchRequest
+	if err := proto.Unmarshal(rec.Payload, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if req.GetStartRevision() != 7 {
+		t.Fatalf("StartRevision = %d, want 7", req.GetStartRevision())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Context cancellation must unblock a pending read promptly
+// ---------------------------------------------------------------------------
+
+// TestE2E_Watch_ContextCancel_ClosesChannelPromptly exercises the fix in
+// watchStream that ties the QUIC stream's read side to ctx via
+// stream.CancelRead: without it, a caller cancellation while
+// readWatchResponses is blocked in wire.ReadResponse (the server holding the
+// stream open with no response yet — the ordinary state while waiting for
+// the next watch event) would leave the reader goroutine, and the returned
+// channel, hanging until the server independently closed the connection.
+func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
+	srv, tr := startE2EServer(t)
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	srv.SetResponder("watch.Watch", func(_ []byte) (uint16, []byte) {
+		<-block // never respond during the test; simulates an idle watch stream.
+		return wire.StatusOK, nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch, err := tr.Watch(ctx, "k", transport.WatchOptions{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// Give the reader goroutine time to actually enter the blocking read
+	// before canceling, so this exercises unblocking an in-flight read
+	// rather than the pre-read ctx.Done() check at the top of the loop.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected the channel to close, not deliver a response")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("channel did not close promptly after context cancellation")
 	}
 }

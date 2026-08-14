@@ -16,7 +16,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -59,6 +58,27 @@ type Member struct {
 
 	// Address is the member's Raft network address.
 	Address string `json:"address"`
+
+	// APIEndpoints maps each client-facing API protocol this member serves to
+	// the address clients should dial for it (for example
+	// {"rest": "10.0.0.2:63002", "grpc": "10.0.0.2:63003"}).
+	//
+	// It is a protocol-keyed set rather than one canonical address because a
+	// replica serves several protocols at once and a client that has located
+	// the leader must reach it over the SAME protocol it is already speaking:
+	// the payload codec, streaming semantics, TLS configuration and
+	// credential-presentation shape all differ per protocol. Omitting a
+	// protocol is how a node states that it does not serve it.
+	//
+	// The value is authoritative — each node publishes it from its own
+	// configuration — and is never derived from Address by port arithmetic,
+	// which breaks under NAT, split networking and non-default ports.
+	//
+	// The field is optional. A member registered before API advertisement
+	// existed, or by a node whose operator configured no advertise address,
+	// carries a nil map; consumers see no endpoint and fall back to their
+	// pre-advertisement behavior rather than failing.
+	APIEndpoints map[APIProtocol]string `json:"api_endpoints,omitempty"`
 
 	// Metadata carries optional descriptive key-value pairs.
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -209,6 +229,12 @@ type MembershipManager struct {
 	cfg      MembershipConfig
 	logger   *slog.Logger
 
+	// advertiser owns the local node's registration: writing the Member
+	// descriptor (Raft address + advertised API endpoints) and refreshing its
+	// lease. Delegating keeps exactly one registration code path shared with
+	// callers that want advertisement without Raft reconfiguration.
+	advertiser *Advertiser
+
 	membersMu sync.RWMutex
 	members   map[uint64]Member
 
@@ -239,6 +265,9 @@ type reconfigIntent struct {
 func NewMembershipManager(store MembershipStore, self Member, shardID uint64, cfg MembershipConfig, opts ...MembershipOption) (*MembershipManager, error) {
 	if store == nil {
 		return nil, &MembershipError{Reason: "store must not be nil"}
+	}
+	if err := ValidateAPIEndpoints(self.APIEndpoints); err != nil {
+		return nil, err
 	}
 	m := &MembershipManager{
 		store:        store,
@@ -275,7 +304,21 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 	m.runCtx, m.cancel = runCtx, cancel
 	m.mu.Unlock()
 
-	if err := m.register(runCtx); err != nil {
+	// A fresh Advertiser per Start attempt: an Advertiser is single-use
+	// (Close is terminal), and a rolled-back Start must remain retryable.
+	advertiser, err := NewAdvertiser(m.store, m.self, AdvertiseConfig{
+		LeaseTTL:          m.cfg.LeaseTTL,
+		KeepAliveInterval: m.cfg.KeepAliveInterval,
+	}, WithAdvertiseLogger(m.logger))
+	if err != nil {
+		m.abortStart(runCtx)
+		return err
+	}
+	m.mu.Lock()
+	m.advertiser = advertiser
+	m.mu.Unlock()
+
+	if err := advertiser.Start(runCtx); err != nil {
 		m.abortStart(runCtx)
 		return err
 	}
@@ -297,8 +340,7 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 
 	m.reconcile(runCtx)
 
-	m.wg.Add(3)
-	go m.keepAlive(runCtx)
+	m.wg.Add(2)
 	go m.watchLoop(runCtx, events)
 	go m.reconfigWorker(runCtx)
 
@@ -306,20 +348,30 @@ func (m *MembershipManager) Start(ctx context.Context) error {
 }
 
 // abortStart rolls back a failed Start: cancel the run context, deregister any
-// lease that register may have created, and reset start state so a retry is
+// lease the Advertiser may have created, and reset start state so a retry is
 // possible.
-func (m *MembershipManager) abortStart(runCtx context.Context) {
+func (m *MembershipManager) abortStart(_ context.Context) {
 	if m.cancel != nil {
 		m.cancel()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
-	_ = m.store.DeleteMember(ctx, m.self.NodeID)
-	cancel()
 	m.mu.Lock()
+	advertiser := m.advertiser
+	m.advertiser = nil
 	m.started = false
 	m.runCtx = nil
 	m.cancel = nil
 	m.mu.Unlock()
+
+	if advertiser != nil {
+		// Close stops the refresh loop and deregisters on a fresh context.
+		if err := advertiser.Close(); err != nil {
+			m.logger.Warn("membership rollback deregister failed", "node_id", m.self.NodeID, "error", err)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reconfigTimeout)
+	_ = m.store.DeleteMember(ctx, m.self.NodeID)
+	cancel()
 }
 
 // reconcile loads the current membership snapshot and converges local state to
@@ -352,46 +404,6 @@ func (m *MembershipManager) reconcile(ctx context.Context) {
 	m.membersMu.RUnlock()
 	for _, member := range departed {
 		m.handleLeave(member)
-	}
-}
-
-// register writes the local node's member entry.
-func (m *MembershipManager) register(ctx context.Context) error {
-	data, err := json.Marshal(m.self)
-	if err != nil {
-		return &MembershipCauseError{Reason: "failed to marshal self", Cause: err}
-	}
-	if err := m.store.PutMember(ctx, m.self.NodeID, data, m.cfg.LeaseTTL); err != nil {
-		return &MembershipCauseError{Reason: "failed to register self", Cause: err}
-	}
-	m.logger.Info("registered cluster member", "node_id", m.self.NodeID, "address", m.self.Address)
-	return nil
-}
-
-// keepAlive periodically refreshes the local registration so its lease does
-// not expire while the node is healthy.
-func (m *MembershipManager) keepAlive(runCtx context.Context) {
-	defer m.wg.Done()
-	ticker := time.NewTicker(m.cfg.KeepAliveInterval)
-	defer ticker.Stop()
-
-	data, err := json.Marshal(m.self)
-	if err != nil {
-		m.logger.Error("keepalive marshal failed", "error", err)
-		return
-	}
-
-	for {
-		select {
-		case <-runCtx.Done():
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(runCtx, m.cfg.KeepAliveInterval)
-			if err := m.store.PutMember(ctx, m.self.NodeID, data, m.cfg.LeaseTTL); err != nil {
-				m.logger.Warn("membership keepalive failed", "node_id", m.self.NodeID, "error", err)
-			}
-			cancel()
-		}
 	}
 }
 

@@ -432,7 +432,7 @@ func ReencryptWALStore(srcDir string, src *seal.StorageBarrier, dstDir string, d
 	}
 
 	var staged []StagedSnapshot
-	snapFn := func(_, _ uint64, snap logdb.Snapshot) (uint64, error) {
+	snapFn := func(shardID, replicaID uint64, snap logdb.Snapshot) (uint64, error) {
 		// The migrated metadata records the destination barrier's current epoch
 		// (0 for a plaintext destination); for a data snapshot this is replaced
 		// by the actual re-encryption epoch below.
@@ -454,7 +454,11 @@ func ReencryptWALStore(srcDir string, src *seal.StorageBarrier, dstDir string, d
 		}
 		dstDat := snapDataDest(snap.Filepath)
 		_ = os.Remove(dstDat) // clear stale staging from an interrupted run
-		epoch, rerr := quicraft.ReencryptSnapshotFile(srcDat, dstDat, srcQ, dstQ)
+		// shardID/replicaID/index identify the snapshot being re-keyed; the
+		// frames are AAD-bound to that identity (engine.NewSnapshotAAD), so
+		// they must match on both the read and the seal side.
+		epoch, rerr := quicraft.ReencryptSnapshotFile(srcDat, dstDat,
+			shardID, replicaID, snap.Index, srcQ, dstQ)
 		if rerr != nil {
 			return 0, rerr
 		}

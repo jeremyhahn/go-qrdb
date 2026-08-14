@@ -159,7 +159,7 @@ func TestInitializeTenantBarrier_UnsupportedStrategyRejected(t *testing.T) {
 // initializing an already-initialized tenant barrier returns a wrapped
 // TenantBarrierInitError.
 func TestInitializeTenantBarrier_DoubleInitWrapped(t *testing.T) {
-	reg := newRegistry(t, seal.NewNoneStrategy())
+	reg, _ := newPooledRegistry(t)
 	deps := Dependencies{Barriers: reg, Logger: discardLogger()}
 
 	if err := InitializeTenantBarrier(context.Background(), "acme", StrategyNone, seal.Credentials{}, deps); err != nil {

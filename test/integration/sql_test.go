@@ -18,24 +18,17 @@ package integration_test
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"database/sql"
-	"encoding/pem"
 	"fmt"
-	"math/big"
-	"os"
-	"path/filepath"
+	"os/exec"
 	"sort"
 	"testing"
 	"time"
 
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
 // startSingleNodeWithSQL starts a single-node QRDB instance with MySQL and
@@ -82,63 +75,197 @@ func startSingleNodeWithSQL(t *testing.T) (adminPort, mysqlPort, pgsqlPort int, 
 	return adminPorts[0], mysqlPorts[0], pgsqlPorts[0], ca
 }
 
+// ---------------------------------------------------------------------------
+// Multi-node SQL cluster harness
+// ---------------------------------------------------------------------------
+//
+// startSingleNodeWithSQL above proves the SQL surface works; it cannot prove
+// anything about the distributed tier, because there is only one replica and
+// one state machine. sqlCluster below is its 3-node counterpart, and it is the
+// single harness every sql_*_test.go file that needs more than one replica
+// uses. It deliberately reuses the existing primitives rather than
+// reimplementing them: qrdbdharness's reserved-window port allocator
+// (allocatePorts/allocateTCPPorts), the shared CA (generateTestCA), node
+// spawning (startNode), readiness (waitForHealthy/waitForAdmin/
+// waitForLeaderViaAdmin/warmupWrite) and MySQL dialling (waitForMySQL).
+
+// sqlClusterNode is one replica of a sqlCluster.
+type sqlClusterNode struct {
+	replicaID int
+	adminPort int
+	mysqlPort int
+	dataDir   string
+	cmd       *exec.Cmd
+
+	// dead is set once the test has deliberately killed this replica, so the
+	// cluster helpers stop polling it and stop offering it to callers.
+	dead bool
+}
+
+// sqlCluster is a 3-node qrdbd cluster with the MySQL wire protocol server
+// enabled on every replica. Every node serves the same Raft shard, so a write
+// accepted anywhere is committed through the same log: quicraft's Host.Propose
+// forwards a proposal to the shard leader whenever a leader is known, which is
+// what makes "write to any node" meaningful here rather than a NotLeader
+// error.
+type sqlCluster struct {
+	ca         *testCA
+	nodes      []*sqlClusterNode
+	clientCert string
+	clientKey  string
+}
+
+// startThreeNodeClusterWithSQL boots a 3-node cluster whose replicas each
+// serve the MySQL wire protocol, and blocks until every node is healthy, a
+// leader has been elected, and the ReadIndex pipeline is warm.
+//
+// The state machine is "mvcc", and that is load-bearing rather than
+// incidental: the whole relational stack is built on MVCC revisions -- the
+// table catalog is a compare-and-swap keyed off a revision, an interactive
+// transaction commits its buffered write-set as one revision-guarded
+// compare-and-swap, and AUTO_INCREMENT allocates from a Raft-committed
+// sequence the same way. Booted with the default "pebble" SM, or with the
+// "memory" SM startSingleNodeWithSQL uses, the very first CREATE TABLE fails
+// with `statemachine: mvcc not configured`.
+func startThreeNodeClusterWithSQL(t *testing.T) *sqlCluster {
+	t.Helper()
+
+	bin := buildBinary(t)
+	ca := generateTestCA(t)
+	raftPorts := allocatePorts(t, 3)
+	adminPorts := allocateTCPPorts(t, 3)
+	grpcPorts := allocateTCPPorts(t, 3)
+	mysqlPorts := allocateTCPPorts(t, 3)
+	peersFlag := buildPeersFlag(raftPorts)
+
+	c := &sqlCluster{ca: ca}
+	for i := range 3 {
+		dataDir := t.TempDir()
+		args := []string{
+			"start",
+			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
+			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
+			"--data-dir", dataDir,
+			"--sm", "mvcc",
+			"--discovery", "static",
+			"--peers", peersFlag,
+			"--shard-id", "1",
+			"--replica-id", fmt.Sprintf("%d", i+1),
+			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
+			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
+			"--enable-mysql",
+			"--mysql-port", fmt.Sprintf("%d", mysqlPorts[i]),
+			"--sql-database", sqlClusterDatabase,
+		}
+		args = append(args, ca.tlsFlags(t)...)
+
+		cmd := startNode(t, bin, args, fmt.Sprintf("[sqlcluster-node%d] ", i+1))
+		c.nodes = append(c.nodes, &sqlClusterNode{
+			replicaID: i + 1,
+			adminPort: adminPorts[i],
+			mysqlPort: mysqlPorts[i],
+			dataDir:   dataDir,
+			cmd:       cmd,
+		})
+	}
+
+	for _, n := range c.nodes {
+		waitForHealthy(t, n.dataDir, 60*time.Second)
+		waitForAdmin(t, ca.Pool, n.adminPort, 90*time.Second)
+	}
+	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
+	warmupWrite(t, ca, leaderPort, 15*time.Second)
+
+	c.clientCert, c.clientKey = generateClientCert(t, ca, adminUser, adminTenant)
+	return c
+}
+
+// sqlClusterDatabase is the --sql-database every sqlCluster node serves. It
+// matches the DSN waitForMySQL builds ("/qrdb").
+const sqlClusterDatabase = "qrdb"
+
+// liveAdminPorts returns the admin ports of every replica the test has not
+// killed.
+func (c *sqlCluster) liveAdminPorts() []int {
+	var ports []int
+	for _, n := range c.nodes {
+		if !n.dead {
+			ports = append(ports, n.adminPort)
+		}
+	}
+	return ports
+}
+
+// leaderIndex returns the index of the replica currently leading shard 1,
+// polling until one is found. Killed replicas are never polled and never
+// returned.
+func (c *sqlCluster) leaderIndex(t *testing.T, timeout time.Duration) int {
+	t.Helper()
+	leaderPort := waitForLeaderViaAdmin(t, c.ca, c.liveAdminPorts(), timeout)
+	for i, n := range c.nodes {
+		if n.adminPort == leaderPort {
+			return i
+		}
+	}
+	t.Fatalf("leaderIndex: leader admin port %d is not a cluster member", leaderPort)
+	return -1
+}
+
+// followerIndexes returns the indexes of every live replica that is not idx.
+func (c *sqlCluster) followerIndexes(idx int) []int {
+	var out []int
+	for i, n := range c.nodes {
+		if i != idx && !n.dead {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// liveIndexes returns the indexes of every replica the test has not killed.
+func (c *sqlCluster) liveIndexes() []int {
+	var out []int
+	for i, n := range c.nodes {
+		if !n.dead {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// mysql opens a pooled MySQL connection to replica idx as admin@system. The
+// pool is closed on test cleanup by waitForMySQL.
+func (c *sqlCluster) mysql(t *testing.T, idx int) *sql.DB {
+	t.Helper()
+	return waitForMySQL(t, c.ca, c.clientCert, c.clientKey, c.nodes[idx].mysqlPort, adminUser)
+}
+
+// kill terminates replica idx immediately (SIGKILL, no graceful shutdown) and
+// marks it dead so the cluster helpers stop considering it. This is the
+// failure the AUTO_INCREMENT suite injects: a leader that vanishes mid-write
+// without draining, forcing a real election.
+func (c *sqlCluster) kill(t *testing.T, idx int) {
+	t.Helper()
+	n := c.nodes[idx]
+	if n.dead {
+		return
+	}
+	if n.cmd.Process != nil {
+		if err := n.cmd.Process.Kill(); err != nil {
+			t.Fatalf("kill replica %d: %v", n.replicaID, err)
+		}
+		n.cmd.Wait()
+	}
+	n.dead = true
+}
+
 // generateClientCert creates a client certificate signed by the test CA with
 // the specified CN (username) and OU (tenantID). The cert and key are written
 // to temporary files and their paths are returned.
 func generateClientCert(t *testing.T, ca *testCA, cn, ou string) (certPath, keyPath string) {
 	t.Helper()
-
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generateClientCert: generate key: %v", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		t.Fatalf("generateClientCert: serial: %v", err)
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization:       []string{"go-quicraft-test"},
-			CommonName:         cn,
-			OrganizationalUnit: []string{ou},
-		},
-		NotBefore: time.Now().Add(-1 * time.Minute),
-		NotAfter:  time.Now().Add(1 * time.Hour),
-		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &clientKey.PublicKey, ca.key)
-	if err != nil {
-		t.Fatalf("generateClientCert: create cert: %v", err)
-	}
-
-	keyDER, err := x509.MarshalECPrivateKey(clientKey)
-	if err != nil {
-		t.Fatalf("generateClientCert: marshal key: %v", err)
-	}
-
-	clientCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	clientKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	dir := t.TempDir()
-	certPath = filepath.Join(dir, fmt.Sprintf("%s-cert.pem", cn))
-	keyPath = filepath.Join(dir, fmt.Sprintf("%s-key.pem", cn))
-
-	if err := os.WriteFile(certPath, clientCertPEM, 0600); err != nil {
-		t.Fatalf("generateClientCert: write cert: %v", err)
-	}
-	if err := os.WriteFile(keyPath, clientKeyPEM, 0600); err != nil {
-		t.Fatalf("generateClientCert: write key: %v", err)
-	}
-
-	return certPath, keyPath
+	kp := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(cn, ou))
+	return kp.CertPath, kp.KeyPath
 }
 
 // loadTLSCert loads a TLS certificate and key from PEM files on disk.

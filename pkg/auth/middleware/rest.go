@@ -63,8 +63,22 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Authenticate the caller.
-		ctx, identity, authnErr := m.authenticate(ctx)
+		// Authenticate the caller. A forwarded write from a cluster peer
+		// carries a signed on-behalf-of assertion of the ORIGINAL caller;
+		// when present it is verified (peer must be a cluster node, signature
+		// and request-binding must hold) and the request is authorized AS THE
+		// CALLER with roles re-resolved from this node's own store -- never as
+		// the forwarding node, and never trusting asserted roles. When absent,
+		// normal mTLS authentication runs unchanged.
+		var (
+			identity *auth.Identity
+			authnErr error
+		)
+		if hasOnBehalfAssertion(r) {
+			ctx, identity, authnErr = m.authenticateOnBehalf(ctx, r)
+		} else {
+			ctx, identity, authnErr = m.authenticate(ctx)
+		}
 		if authnErr != nil {
 			code := mapHTTPAuthError(authnErr)
 			writeJSONError(w, code, authnErr.Error())
@@ -72,18 +86,30 @@ func (m *AuthMiddleware) RESTMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Determine the canonical path for permission lookup.
-		// The REST server routes /kv/{key} requests through a
-		// prefix match, so we normalize to /kv for method-based
-		// dispatch.
-		path := normalizePath(r.URL.Path)
-
-		// Look up the required permission for this route. DEFAULT-DENY: an
-		// unmapped route that lands on the REST API surface is rejected rather
-		// than treated as public. Requests outside the API surface (the
-		// embedded web UI / static assets served as the router's fallback) and
-		// a small authenticated-but-unprivileged allowlist (e.g. /metrics) pass
-		// through so the SPA and monitoring keep working.
+		//
+		// An EXACT mapping always wins. A sub-route that declares its own
+		// permission (POST /kv/restore, /kv/scan, ...) must never be collapsed
+		// into the /kv/{key} dispatch: normalization would authorize it under a
+		// different permission than the one it declared, or — when /kv has no
+		// mapping for that method — reject it outright. Normalization is only
+		// the fallback for the genuinely dynamic /kv/{key} form, where the key
+		// is arbitrary and cannot be enumerated in the map.
+		//
+		// This ordering also means a NEW sub-route is protected by simply
+		// declaring it in the permission map, with no second registration to
+		// keep in sync.
+		path := r.URL.Path
 		perm, ok := LookupREST(r.Method, path)
+		if !ok {
+			path = normalizePath(r.URL.Path)
+			perm, ok = LookupREST(r.Method, path)
+		}
+
+		// DEFAULT-DENY: an unmapped route that lands on the REST API surface is
+		// rejected rather than treated as public. Requests outside the API
+		// surface (the embedded web UI / static assets served as the router's
+		// fallback) and a small authenticated-but-unprivileged allowlist (e.g.
+		// /metrics) pass through so the SPA and monitoring keep working.
 		if !ok {
 			if isRESTAPISurface(path) && !isRESTAuthzPublic(path) {
 				code := mapHTTPAuthError(&auth.AuthError{Code: "unauthorized"})

@@ -16,6 +16,11 @@ package unix
 
 import (
 	"context"
+	"errors"
+	"io"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -71,7 +76,7 @@ func (t *Transport) watchStream(ctx context.Context, key, rangeEnd []byte, opts 
 		ProgressNotify: opts.ProgressNotify,
 	})
 	if err != nil {
-		return nil, mapGRPCError("Watch", err)
+		return nil, transport.ClassifyWatchError(mapGRPCError("Watch", err))
 	}
 
 	ch := make(chan transport.WatchResponse, 16)
@@ -84,6 +89,14 @@ func (t *Transport) watchStream(ctx context.Context, key, rangeEnd []byte, opts 
 // server stream and sends them to the channel. The loop terminates
 // when the context is canceled, the stream is closed, or a read error
 // occurs. The channel is always closed on exit.
+//
+// A server-side watch failure (e.g. a compacted start revision, see
+// mapServiceError) ends the RPC with a gRPC status error rather than a final
+// WatchResponse frame — that is delivered to Recv(), not sent as a message.
+// Recv() also returns an error for a normal, healthy stream end (io.EOF) and
+// for caller-initiated cancellation (ctx.Done()). Only the first case is a
+// server-reported watch failure worth surfacing to the caller as a terminal
+// Canceled response; the other two are silent, expected stream ends.
 func readGRPCWatchResponses(ctx context.Context, stream pb.QRDBService_WatchClient, ch chan<- transport.WatchResponse) {
 	defer close(ch)
 
@@ -96,6 +109,28 @@ func readGRPCWatchResponses(ctx context.Context, stream pb.QRDBService_WatchClie
 
 		pbResp, err := stream.Recv()
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) {
+				return
+			}
+			// A context-deadline/cancel driven teardown (the CLI's --timeout or
+			// Ctrl-C) surfaces here as a gRPC Canceled/DeadlineExceeded status on
+			// a timing path where ctx.Err() may not yet be observable in this
+			// goroutine. Treat it as the same silent, expected local shutdown
+			// rather than leaking the transport's RST_STREAM text into the
+			// caller's watch output. A genuine server-initiated terminal error
+			// (compacted → OutOfRange, unsupported → Unimplemented, overflow, …)
+			// carries a different code and still surfaces as a Canceled response.
+			if code := status.Code(err); code == codes.Canceled || code == codes.DeadlineExceeded {
+				return
+			}
+			reason := err.Error()
+			if st, ok := status.FromError(err); ok {
+				reason = st.Message()
+			}
+			select {
+			case ch <- transport.WatchResponse{Canceled: true, CancelReason: reason}:
+			case <-ctx.Done():
+			}
 			return
 		}
 

@@ -18,7 +18,10 @@ package server
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+
+	quicraftshamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -87,7 +90,7 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToPassphrase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Services(post-migrate): %v", err)
 	}
-	if got, err := svcs.KV.Get(ctx, "kv-key"); err != nil || string(got) != "kv-value" {
+	if got, err := getWhenReadable(ctx, t, svcs.KV.Get, "kv-key"); err != nil || string(got) != "kv-value" {
 		t.Fatalf("KV.Get(post-migrate) = %q, %v; want kv-value", got, err)
 	}
 	if got, err := svcs.MVCC.Get(ctx, "mv-key"); err != nil || string(got) != "mv-value" {
@@ -100,6 +103,164 @@ func TestTenantHostRegistry_MigrateEncryption_NoneToPassphrase(t *testing.T) {
 	}
 	if got, err := svcs.KV.Get(ctx, "kv-key2"); err != nil || string(got) != "after" {
 		t.Fatalf("KV.Get(post-migrate new) = %q, %v; want after", got, err)
+	}
+}
+
+// serverCaptureDist is a test-only seal.CeremonyDistributor that captures the
+// Shamir shares generated during a direct-mode InitializeShamir/migration so
+// tests can later reconstruct quorum and drive UnsealWithShare.
+type serverCaptureDist struct {
+	mu     sync.Mutex
+	shares []string
+}
+
+func (c *serverCaptureDist) SealAndDistribute(_ context.Context, secret []byte, threshold, total int) (int, error) {
+	raw, err := quicraftshamir.Split(secret, threshold, total)
+	if err != nil {
+		return 0, err
+	}
+	c.mu.Lock()
+	c.shares = make([]string, len(raw))
+	for i, s := range raw {
+		c.shares[i] = s.Value
+	}
+	c.mu.Unlock()
+	return len(raw), nil
+}
+
+func (c *serverCaptureDist) RekeyAndDistribute(ctx context.Context, newSecret []byte, newThreshold, newTotal int) (int, error) {
+	c.mu.Lock()
+	c.shares = nil
+	c.mu.Unlock()
+	return c.SealAndDistribute(ctx, newSecret, newThreshold, newTotal)
+}
+
+func (c *serverCaptureDist) Shares() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.shares...)
+}
+
+// TestTenantHostRegistry_MigrateEncryption_NoneToShamir proves the Shamir
+// target migration produces a GENUINE M-of-N Shamir barrier — not a silently
+// mislabeled passphrase barrier — and that it survives the full lifecycle: the
+// migration completes, the barrier reports strategy=shamir with the correct
+// threshold/total, the tenant Host correctly stays detached (Services reports
+// seal.ErrSealed rather than erroring the migration) because Shamir never
+// auto-unseals, and submitting a quorum of the REAL distributed shares
+// unseals it and recovers the pre-migration data with zero loss.
+func TestTenantHostRegistry_MigrateEncryption_NoneToShamir(t *testing.T) {
+	ctx := context.Background()
+	reg, hostReg, _ := migrateTestTenant(t, "vt-shamir")
+
+	// Wire a ceremony distributor on the tenant's dedicated barrier BEFORE
+	// migrating — the same operational precondition a fresh
+	// BarrierShamirInitialize has.
+	tb, err := reg.GetTenant("vt-shamir")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	dist := &serverCaptureDist{}
+	tb.Barrier().SetCeremonyDistributor(dist)
+
+	// Seed data through the live (unencrypted) Host before migrating.
+	svcs, err := hostReg.Services(ctx, "vt-shamir")
+	if err != nil {
+		t.Fatalf("Services(pre-migrate): %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "shamir-key", []byte("shamir-value")); err != nil {
+		t.Fatalf("KV.Put: %v", err)
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: 2,
+		ShamirTotal:     3,
+	}
+	if err := hostReg.MigrateEncryption(ctx, "vt-shamir", opts); err != nil {
+		t.Fatalf("MigrateEncryption(shamir): %v", err)
+	}
+	if len(dist.Shares()) != 3 {
+		t.Fatalf("distributor captured %d shares, want 3", len(dist.Shares()))
+	}
+
+	// The live tenant barrier is genuinely Shamir — correct label, correct
+	// M/N — and SEALED (Shamir never auto-unseals from disk, migration or
+	// not).
+	status := tenantStatus(t, reg, "vt-shamir")
+	if status.Strategy != seal.StrategyShamir {
+		t.Fatalf("post-migrate strategy = %q, want shamir (not silently downgraded to passphrase)", status.Strategy)
+	}
+	if !status.Sealed {
+		t.Fatal("post-migrate shamir barrier must be sealed pending Security Officer quorum")
+	}
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Fatalf("post-migrate scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
+	}
+
+	// The tenant Host correctly stays detached: Services must fail with the
+	// typed seal.ErrSealed, not silently serve stale (pre-migration) state and
+	// not have aborted the migration.
+	if _, err := hostReg.Services(ctx, "vt-shamir"); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("Services on a sealed post-migration tenant = %v, want seal.ErrSealed", err)
+	}
+
+	// Submitting a quorum (2-of-3) of the REAL distributed shares unseals the
+	// migrated barrier — the "shares are usable" proof.
+	tb2, err := reg.GetTenant("vt-shamir")
+	if err != nil {
+		t.Fatalf("GetTenant(post-migrate): %v", err)
+	}
+	shares := dist.Shares()
+	if _, uerr := tb2.UnsealWithShare(ctx, shares[0]); uerr != nil {
+		t.Fatalf("UnsealWithShare(1/2): %v", uerr)
+	}
+	progress, uerr := tb2.UnsealWithShare(ctx, shares[1])
+	if uerr != nil {
+		t.Fatalf("UnsealWithShare(2/2): %v", uerr)
+	}
+	if !progress.Complete || tb2.IsSealed() {
+		t.Fatalf("barrier not unsealed after a 2-of-3 quorum: progress=%+v sealed=%v", progress, tb2.IsSealed())
+	}
+
+	// Every datum written before the migration survives, readable once the
+	// Host reattaches under the now-unsealed keyed barrier.
+	if err := hostReg.Attach(ctx, "vt-shamir"); err != nil {
+		t.Fatalf("Attach(post-unseal): %v", err)
+	}
+	svcs, err = hostReg.Services(ctx, "vt-shamir")
+	if err != nil {
+		t.Fatalf("Services(post-unseal): %v", err)
+	}
+	if got, gerr := getWhenReadable(ctx, t, svcs.KV.Get, "shamir-key"); gerr != nil || string(got) != "shamir-value" {
+		t.Fatalf("KV.Get(post-unseal) = %q, %v; want shamir-value (DATA LOSS)", got, gerr)
+	}
+}
+
+// TestTenantHostRegistry_MigrateEncryption_ShamirNoDistributor proves a Shamir
+// target migration fails CLOSED with the same typed error a fresh
+// BarrierShamirInitialize would give when no CeremonyDistributor is wired —
+// rather than silently completing as a mislabeled passphrase barrier.
+func TestTenantHostRegistry_MigrateEncryption_ShamirNoDistributor(t *testing.T) {
+	ctx := context.Background()
+	reg, hostReg, _ := migrateTestTenant(t, "vt-shamir-nodist")
+	// No SetCeremonyDistributor call.
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: 2,
+		ShamirTotal:     3,
+	}
+	if err := hostReg.MigrateEncryption(ctx, "vt-shamir-nodist", opts); !errors.Is(err, seal.ErrCeremonyDistributorNotConfigured) {
+		t.Fatalf("MigrateEncryption(shamir, no distributor) = %v, want ErrCeremonyDistributorNotConfigured", err)
+	}
+	// The barrier must be untouched by the failed attempt.
+	if got := tenantStrategy(t, reg, "vt-shamir-nodist"); got != seal.StrategyNone {
+		t.Fatalf("tenant strategy after a rejected shamir migration = %q, want none (unaffected)", got)
 	}
 }
 
@@ -231,6 +392,16 @@ func tenantStrategy(t *testing.T, reg *seal.BarrierRegistry, id string) seal.Str
 		t.Fatalf("GetTenant(%s): %v", id, err)
 	}
 	return tb.Status().Strategy
+}
+
+// tenantStatus returns the full barrier status of a tenant's barrier.
+func tenantStatus(t *testing.T, reg *seal.BarrierRegistry, id string) *seal.BarrierStatus {
+	t.Helper()
+	tb, err := reg.GetTenant(id)
+	if err != nil {
+		t.Fatalf("GetTenant(%s): %v", id, err)
+	}
+	return tb.Status()
 }
 
 // encMigratorFunc adapts a function to service.EncryptionMigrator for tests.

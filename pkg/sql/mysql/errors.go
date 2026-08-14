@@ -75,3 +75,14 @@ func (e *AuthenticationError) Error() string {
 func (e *AuthenticationError) Unwrap() error {
 	return e.Err
 }
+
+// BarrierSealedError is returned when a MySQL connection is attempted
+// while the storage barrier is sealed. The server is fail-closed during
+// the sealed window: only the unseal-flow endpoints on the multi-protocol
+// API surface accept requests until the barrier is unsealed.
+type BarrierSealedError struct{}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	return "sql/mysql: barrier sealed"
+}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -502,8 +503,20 @@ func mapRoleError(err error) int {
 	var sri *role.SystemRoleImmutableError
 	var se *role.StoreError
 	var ip *role.InvalidPermissionError
+	var xt *tenant.CrossTenantDeniedError
 
 	switch {
+	case errors.As(err, &xt):
+		// A normal tenant caller supplied a target tenant other than its own.
+		// The IAM routing layer refuses to act on a client-supplied tenant —
+		// fail closed with 403, matching the tenant-isolation posture.
+		return http.StatusForbidden
+	case errors.Is(err, tenant.ErrTenantSealed):
+		// A barrier-isolated tenant's IAM store resolved to a SEALED barrier.
+		// The StoreResolver fails closed rather than leaking the operation
+		// through the shared system store — surface 503, matching the
+		// BarrierSealedError data-plane mapping.
+		return http.StatusServiceUnavailable
 	case errors.As(err, &ve):
 		return http.StatusBadRequest
 	case errors.As(err, &rnf):

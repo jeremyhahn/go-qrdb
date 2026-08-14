@@ -21,11 +21,64 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Scan - the MCP server marshals []byte values as plain strings (not base64)
-// while the SDK expects []byte (which JSON decodes from base64). This is a
-// known shape mismatch; tests assert the decode behavior end-to-end without
-// asserting on value contents.
+// Scan - the MCP server marshals values as map[string][]byte, which
+// encoding/json base64-encodes (RFC 4648); the SDK's Scan decodes the same
+// way, so arbitrary binary content round-trips byte-for-byte. See
+// TestScan_BinaryRoundTrip below for an end-to-end value assertion.
 // ---------------------------------------------------------------------------
+
+// nonUTF8Value is a byte string that is not valid UTF-8: 0xFF and 0xFE are
+// invalid lead bytes in every UTF-8 sequence. Round-tripping it through the
+// MCP transport (which carries values as base64 JSON strings, see
+// pkg/api/mcp/tools_kv.go) must reproduce it byte-for-byte.
+var nonUTF8Value = []byte{0x00, 0xff, 0xfe, 0x01}
+
+func TestPutGet_BinaryRoundTrip(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := tr.Put(ctx, "binkey", nonUTF8Value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	got, err := tr.Get(ctx, "binkey")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != string(nonUTF8Value) {
+		t.Errorf("Get = %#v, want %#v", got, nonUTF8Value)
+	}
+}
+
+func TestScan_BinaryRoundTrip(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := tr.Put(ctx, "bin/a", nonUTF8Value); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := tr.Put(ctx, "bin/b", []byte("plain text")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	pairs, err := tr.Scan(ctx, "bin/")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Fatalf("expected 2 pairs, got %d: %v", len(pairs), pairs)
+	}
+	if got := pairs["bin/a"]; string(got) != string(nonUTF8Value) {
+		t.Errorf("bin/a = %#v, want %#v", got, nonUTF8Value)
+	}
+	if got := pairs["bin/b"]; string(got) != "plain text" {
+		t.Errorf("bin/b = %q, want %q", got, "plain text")
+	}
+}
 
 func TestScan_EmptyResult(t *testing.T) {
 	kvSvc := newMockKVService()

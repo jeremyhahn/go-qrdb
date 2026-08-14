@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"gopkg.in/yaml.v3"
@@ -31,6 +32,84 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+)
+
+// ---------------------------------------------------------------------------
+// Import resource limits
+//
+// These bound every stage of Import so that no single call -- a huge raw
+// file, a zip/tar bomb, an archive with millions of entries, a dataset with
+// millions of rows, an oversized key/value, or an oversized encoded Raft
+// command -- can exhaust node memory or CPU. Transports already cap the
+// request bytes they accept (REST/gRPC/MCP: 100MB; QUIC: ~63MB), but these
+// service-level limits apply unconditionally, including to callers (like
+// the embedded transport) that have no request-size cap of their own.
+// ---------------------------------------------------------------------------
+
+const (
+	// maxImportInputBytes bounds the raw bytes read from the Import file
+	// argument. It matches the request-body cap already enforced by the
+	// REST (http.MaxBytesReader) and gRPC (grpc.MaxRecvMsgSize) transports
+	// so behavior is consistent regardless of which layer applies it.
+	maxImportInputBytes = 100 << 20 // 100 MB
+
+	// maxImportExpandedBytes bounds the cumulative decompressed bytes
+	// produced while extracting a zip/tar/tar.gz archive, summed across
+	// every member of a single archive. It defends against archive ("zip
+	// bomb") inputs that are small on the wire but expand to gigabytes in
+	// memory. Set to a small, fixed multiple of maxImportInputBytes rather
+	// than left unbounded.
+	maxImportExpandedBytes = 4 * maxImportInputBytes // 400 MB
+
+	// maxImportArchiveEntries bounds the number of entries examined within
+	// a single zip/tar/tar.gz archive. Defends against archives containing
+	// a huge number of tiny or empty entries, which can exhaust CPU
+	// iterating per-entry bookkeeping even while individually staying
+	// under maxImportExpandedBytes.
+	maxImportArchiveEntries = 10_000
+
+	// maxImportRows bounds the number of records a single Import call will
+	// process, regardless of source format. This bounds both the in-memory
+	// parsed-record slice and the number of encoded Raft operations built
+	// from it. Callers with larger datasets should split them across
+	// multiple Import calls.
+	maxImportRows = 1_000_000
+
+	// maxImportKeySize and maxImportValueSize bound the size of any single
+	// imported key/value.
+	//
+	// These are no longer wire-format ceilings: protocol.EncodeOp frames
+	// lengths in protocol.FrameSize-byte fields, which is wide enough that
+	// truncation is not a concern. They are deliberate operational bounds,
+	// and they must stay comfortably below maxImportProposalBytes so that a
+	// single operation always fits in one Raft log entry — the invariant
+	// buildImportProposalChunks relies on to guarantee every chunk contains
+	// at least one op.
+	//
+	// The key bound stays small: keys are identifiers, and 64 KiB is already
+	// far beyond any legitimate use (MySQL, for comparison, caps an index key
+	// at 3072 bytes). The value bound is sized for real payloads such as BLOB
+	// columns, leaving ample headroom under the 8 MiB proposal ceiling for the
+	// key, the op framing, and the batch header.
+	maxImportKeySize   = 65535
+	maxImportValueSize = 4 << 20 // 4 MB
+
+	// maxImportProposalBytes bounds the size of a single encoded batch
+	// command sent to Raft via SyncPropose. It matches go-quicraft's
+	// proto.MaxEntrySize (8MB), the hard ceiling the consensus layer
+	// enforces on any single log entry. Non-transactional imports whose
+	// encoded operations exceed this are split across multiple sequential
+	// proposals (each its own MVCC revision); transactional imports --
+	// which require every row to land in a single atomic revision -- are
+	// rejected outright rather than silently losing their all-or-nothing
+	// guarantee by chunking.
+	maxImportProposalBytes = 8 << 20 // 8 MB
+
+	// importBatchHeaderOverhead is protocol.EncodeBatch's fixed per-command
+	// overhead (1-byte op code + one framed op count), used when estimating
+	// the encoded size of a chunk during proposal chunking. It is derived
+	// from protocol.FrameSize so the estimate cannot drift from the encoder.
+	importBatchHeaderOverhead = 1 + protocol.FrameSize
 )
 
 // entityOpTypeHandlers maps entity operation type strings to the
@@ -95,6 +174,14 @@ type ImportOptions struct {
 	// Transactional enables all-or-nothing mode where any error causes
 	// the entire import to be rolled back.
 	Transactional bool
+
+	// KeyPrefix is prepended to every imported key before it is written.
+	// It is set by the namespaced (per-database) batch wrapper to the
+	// composite "<tenant>/<db>/" namespace so imported rows land in the
+	// same keyspace as every other write to that database. Empty means
+	// no prefixing (the unscoped/system path). Error rows report the
+	// original user-supplied key, not the prefixed form.
+	KeyPrefix string
 }
 
 // ImportResult contains statistics from a batch import operation.
@@ -174,7 +261,11 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 	var writeOps [][]byte
 	for _, op := range ops {
 		if op.Type == OpPut || op.Type == OpDelete {
-			writeOps = append(writeOps, encodeServiceOp(op))
+			encoded, err := encodeServiceOp(op)
+			if err != nil {
+				return nil, err
+			}
+			writeOps = append(writeOps, encoded)
 		}
 	}
 
@@ -234,7 +325,11 @@ func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode write
 	var writeOps [][]byte
 	for _, op := range ops {
 		if op.Type == OpPut || op.Type == OpDelete {
-			writeOps = append(writeOps, encodeServiceOp(op))
+			encoded, err := encodeServiceOp(op)
+			if err != nil {
+				return nil, err
+			}
+			writeOps = append(writeOps, encoded)
 		}
 	}
 
@@ -361,9 +456,15 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 		shardID = req.ShardID
 	}
 
-	_, err := s.host.SyncPropose(ctx, shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)
+	}
+	// Surface a state-machine-encoded application error (e.g. a unique-index
+	// violation that rejected the batch without stalling consensus) instead
+	// of falsely reporting the writes as succeeded.
+	if resultErr := checkResultError(result); resultErr != nil {
+		return nil, resultErr
 	}
 
 	// All ops succeed atomically; build per-operation results.
@@ -400,10 +501,15 @@ func (s *BatchService) Import(ctx context.Context, file io.Reader, opts ImportOp
 		return nil, err
 	}
 
-	// Read file into memory for potential archive handling.
-	data, err := io.ReadAll(file)
+	// Read file into memory for potential archive handling. Bounded to
+	// maxImportInputBytes so the service is safe even when the calling
+	// transport applies no request-size cap of its own.
+	data, err := io.ReadAll(io.LimitReader(file, maxImportInputBytes+1))
 	if err != nil {
 		return nil, &ImportParseError{Err: err}
+	}
+	if len(data) > maxImportInputBytes {
+		return nil, &ImportInputTooLargeError{Max: maxImportInputBytes}
 	}
 
 	// Resolve "auto" (or empty) format by probing the filename and data.
@@ -440,6 +546,10 @@ func (s *BatchService) Import(ctx context.Context, file io.Reader, opts ImportOp
 
 	if err != nil {
 		return nil, err
+	}
+
+	if len(records) > maxImportRows {
+		return nil, &ImportTooManyRowsError{Max: maxImportRows}
 	}
 
 	return s.importRecords(ctx, records, opts)
@@ -625,36 +735,119 @@ func convertJSONRecords(objs []map[string]interface{}) []map[string]string {
 	return records
 }
 
+// importExpansionLimiter bounds the total decompressed bytes and the total
+// entry count examined while extracting a single zip/tar/tar.gz archive.
+// The byte budget is shared across every member of the archive so the
+// aggregate expansion is bounded, not just each member individually --
+// this is what defends against zip/tar bombs (small on the wire, huge once
+// decompressed).
+type importExpansionLimiter struct {
+	remainingBytes int64
+	entries        int
+}
+
+// newImportExpansionLimiter returns a limiter with a fresh
+// maxImportExpandedBytes budget for a single archive-parse attempt.
+func newImportExpansionLimiter() *importExpansionLimiter {
+	return &importExpansionLimiter{remainingBytes: maxImportExpandedBytes}
+}
+
+// checkEntry increments the entry counter and returns
+// ImportTooManyEntriesError once the archive-wide entry limit is exceeded.
+// Called once per archive entry (file or directory) before it is examined,
+// bounding total loop iterations regardless of entry size.
+func (l *importExpansionLimiter) checkEntry() error {
+	l.entries++
+	if l.entries > maxImportArchiveEntries {
+		return &ImportTooManyEntriesError{Max: maxImportArchiveEntries}
+	}
+	return nil
+}
+
+// limitReader wraps r so reads beyond the shared cumulative
+// maxImportExpandedBytes budget fail with ImportArchiveExpandedTooLargeError
+// instead of allocating unbounded memory.
+func (l *importExpansionLimiter) limitReader(r io.Reader) io.Reader {
+	return &expansionLimitedReader{r: r, limiter: l}
+}
+
+// expansionLimitedReader is an io.Reader that decrements a shared
+// cumulative budget on every read, failing once the budget is exhausted.
+type expansionLimitedReader struct {
+	r       io.Reader
+	limiter *importExpansionLimiter
+}
+
+// Read implements io.Reader.
+func (er *expansionLimitedReader) Read(p []byte) (int, error) {
+	if er.limiter.remainingBytes <= 0 {
+		return 0, &ImportArchiveExpandedTooLargeError{Max: maxImportExpandedBytes}
+	}
+	if int64(len(p)) > er.limiter.remainingBytes {
+		p = p[:er.limiter.remainingBytes]
+	}
+	n, err := er.r.Read(p)
+	er.limiter.remainingBytes -= int64(n)
+	return n, err
+}
+
+// isImportLimitError reports whether err is one of the resource-limit
+// errors an archive extractor can produce (too many entries, or too much
+// expanded content). parseArchive uses this to distinguish "this input is
+// not a valid archive of this type, try the next format" from "this IS a
+// valid archive of this type but exceeds a resource limit" -- the latter
+// must propagate immediately rather than be masked by retrying the next
+// format against the same (already identified) bytes.
+func isImportLimitError(err error) bool {
+	var entries *ImportTooManyEntriesError
+	var expanded *ImportArchiveExpandedTooLargeError
+	return errors.As(err, &entries) || errors.As(err, &expanded)
+}
+
 // parseArchive extracts and parses files from zip, tar, or tar.gz archives.
 // Combines all CSV/JSON files found in the archive.
 func parseArchive(data []byte, skipHeader bool) ([]map[string]string, error) {
 	// Try zip first.
 	if records, err := parseZip(data, skipHeader); err == nil {
 		return records, nil
+	} else if isImportLimitError(err) {
+		return nil, err
 	}
 
 	// Try tar.gz.
 	if records, err := parseTarGz(data, skipHeader); err == nil {
 		return records, nil
+	} else if isImportLimitError(err) {
+		return nil, err
 	}
 
 	// Try plain tar.
 	if records, err := parseTar(bytes.NewReader(data), skipHeader); err == nil {
 		return records, nil
+	} else if isImportLimitError(err) {
+		return nil, err
 	}
 
 	return nil, &ImportArchiveError{Err: errors.New("unsupported archive format")}
 }
 
-// parseZip extracts and parses files from a zip archive.
+// parseZip extracts and parses files from a zip archive. Decompressed
+// member bytes are bounded by a shared importExpansionLimiter so a
+// malicious zip cannot expand into an unbounded amount of memory.
 func parseZip(data []byte, skipHeader bool) ([]map[string]string, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, err
 	}
 
+	limiter := newImportExpansionLimiter()
+
 	var allRecords []map[string]string
 	for _, f := range reader.File {
+		if err := limiter.checkEntry(); err != nil {
+			return nil, err
+		}
+
 		if f.FileInfo().IsDir() {
 			continue
 		}
@@ -664,9 +857,12 @@ func parseZip(data []byte, skipHeader bool) ([]map[string]string, error) {
 			return nil, &ImportArchiveError{Err: err}
 		}
 
-		fileData, err := io.ReadAll(rc)
+		fileData, err := io.ReadAll(limiter.limitReader(rc))
 		_ = rc.Close()
 		if err != nil {
+			if isImportLimitError(err) {
+				return nil, err
+			}
 			return nil, &ImportArchiveError{Err: err}
 		}
 
@@ -691,9 +887,12 @@ func parseTarGz(data []byte, skipHeader bool) ([]map[string]string, error) {
 	return parseTar(gzReader, skipHeader)
 }
 
-// parseTar extracts and parses files from a tar archive.
+// parseTar extracts and parses files from a tar archive. Member bytes are
+// bounded by a shared importExpansionLimiter so a malicious tar (or
+// gzipped tar) cannot expand into an unbounded amount of memory.
 func parseTar(r io.Reader, skipHeader bool) ([]map[string]string, error) {
 	tarReader := tar.NewReader(r)
+	limiter := newImportExpansionLimiter()
 
 	var allRecords []map[string]string
 	for {
@@ -705,12 +904,19 @@ func parseTar(r io.Reader, skipHeader bool) ([]map[string]string, error) {
 			return nil, err
 		}
 
+		if err := limiter.checkEntry(); err != nil {
+			return nil, err
+		}
+
 		if header.Typeflag != tar.TypeReg {
 			continue
 		}
 
-		fileData, err := io.ReadAll(tarReader)
+		fileData, err := io.ReadAll(limiter.limitReader(tarReader))
 		if err != nil {
+			if isImportLimitError(err) {
+				return nil, err
+			}
 			return nil, &ImportArchiveError{Err: err}
 		}
 
@@ -824,7 +1030,33 @@ func (s *BatchService) importRecords(ctx context.Context, records []map[string]s
 			continue
 		}
 
-		encodedOps = append(encodedOps, protocol.EncodeOp(protocol.OpMVCCPut, []byte(key), value, nil, 0))
+		// Prepend the namespace prefix (if any) to the stored key so
+		// imported rows share the database's keyspace. The reported key
+		// (in keys/errors) stays the original user-supplied value.
+		storedKey := opts.KeyPrefix + key
+
+		if len(storedKey) > maxImportKeySize {
+			msg := "key exceeds maximum size of " + strconv.Itoa(maxImportKeySize) +
+				" bytes (got " + strconv.Itoa(len(storedKey)) + ")"
+			if opts.Transactional {
+				return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: msg}
+			}
+			result.Failed++
+			result.Errors = append(result.Errors, ImportError{Row: rowNum, Key: key, Message: msg})
+			continue
+		}
+		if len(value) > maxImportValueSize {
+			msg := "value exceeds maximum size of " + strconv.Itoa(maxImportValueSize) +
+				" bytes (got " + strconv.Itoa(len(value)) + ")"
+			if opts.Transactional {
+				return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: msg}
+			}
+			result.Failed++
+			result.Errors = append(result.Errors, ImportError{Row: rowNum, Key: key, Message: msg})
+			continue
+		}
+
+		encodedOps = append(encodedOps, protocol.EncodeOp(protocol.OpMVCCPut, []byte(storedKey), value, nil, 0))
 		keys = append(keys, key)
 		rowNums = append(rowNums, rowNum)
 	}
@@ -833,26 +1065,90 @@ func (s *BatchService) importRecords(ctx context.Context, records []map[string]s
 		return result, nil
 	}
 
-	// Execute batch through Raft.
-	cmd := protocol.EncodeBatch(encodedOps)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
-	if err != nil {
-		if opts.Transactional {
-			// For transactional mode, return the error directly.
-			return nil, s.translateProposeError(err)
+	return s.proposeImportOps(ctx, result, encodedOps, keys, rowNums, opts.Transactional)
+}
+
+// importChunk is a contiguous group of encoded import operations (with
+// their aligned original keys and row numbers) sized to fit within a
+// single Raft proposal.
+type importChunk struct {
+	ops     [][]byte
+	keys    []string
+	rowNums []int
+}
+
+// buildImportProposalChunks partitions ops (with their aligned keys and row
+// numbers) into groups whose encoded protocol.EncodeBatch payload does not
+// exceed maxImportProposalBytes, the ceiling go-quicraft enforces on any
+// single Raft log entry (proto.MaxEntrySize). Each chunk preserves its
+// ops' original relative order. Since every op is already bounded by
+// maxImportKeySize/maxImportValueSize (well under maxImportProposalBytes),
+// every chunk is guaranteed to contain at least one op.
+func buildImportProposalChunks(ops [][]byte, keys []string, rowNums []int) []importChunk {
+	var chunks []importChunk
+	var cur importChunk
+	curBytes := importBatchHeaderOverhead
+
+	for i, op := range ops {
+		opBytes := protocol.FrameSize + len(op) // protocol.EncodeBatch's per-op framing: length prefix + payload.
+		if len(cur.ops) > 0 && curBytes+opBytes > maxImportProposalBytes {
+			chunks = append(chunks, cur)
+			cur = importChunk{}
+			curBytes = importBatchHeaderOverhead
 		}
-		// For non-transactional mode, mark all as failed.
-		for i, rowNum := range rowNums {
-			result.Errors = append(result.Errors, ImportError{
-				Row:     rowNum,
-				Key:     keys[i],
-				Message: err.Error(),
-			})
-		}
-		result.Failed += len(encodedOps)
-		return result, nil
+		cur.ops = append(cur.ops, op)
+		cur.keys = append(cur.keys, keys[i])
+		cur.rowNums = append(cur.rowNums, rowNums[i])
+		curBytes += opBytes
+	}
+	if len(cur.ops) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
+}
+
+// proposeImportOps proposes the given encoded import operations through
+// Raft, splitting them across multiple sequential proposals when their
+// total encoded size exceeds maxImportProposalBytes. Transactional imports
+// require every row to land in a single atomic MVCC revision, so an
+// oversized transactional import is rejected outright (ImportProposalTooLargeError)
+// instead of being silently chunked into multiple non-atomic revisions;
+// non-transactional imports (which already only guarantee atomicity within
+// pieces, not across the whole import) are chunked and applied piece by
+// piece, with failures recorded per affected row rather than aborting the
+// entire import.
+func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResult, ops [][]byte, keys []string, rowNums []int, transactional bool) (*ImportResult, error) {
+	totalBytes := importBatchHeaderOverhead
+	for _, op := range ops {
+		totalBytes += protocol.FrameSize + len(op)
 	}
 
-	result.Succeeded = len(encodedOps)
+	if transactional && totalBytes > maxImportProposalBytes {
+		return nil, &ImportProposalTooLargeError{Max: maxImportProposalBytes}
+	}
+
+	for _, chunk := range buildImportProposalChunks(ops, keys, rowNums) {
+		cmd := protocol.EncodeBatch(chunk.ops)
+		_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+		if err != nil {
+			if transactional {
+				// For transactional mode, return the error directly.
+				return nil, s.translateProposeError(err)
+			}
+			// For non-transactional mode, mark this chunk's rows as failed
+			// and continue with the remaining chunks.
+			for i, rowNum := range chunk.rowNums {
+				result.Errors = append(result.Errors, ImportError{
+					Row:     rowNum,
+					Key:     chunk.keys[i],
+					Message: err.Error(),
+				})
+			}
+			result.Failed += len(chunk.ops)
+			continue
+		}
+		result.Succeeded += len(chunk.ops)
+	}
+
 	return result, nil
 }

@@ -17,6 +17,13 @@ package sdk
 import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 
 // Embedding returns an EmbeddingClient for text-embedding operations.
+// Returns nil when the active transport does not implement
+// transport.EmbeddingClient; callers should nil-check the result and fall
+// back appropriately (see Client.UserAuthFactors for the established
+// pattern).
 func (c *Client) Embedding() transport.EmbeddingClient {
-	return c.transport.(transport.EmbeddingClient)
+	if ec, ok := c.transport.(transport.EmbeddingClient); ok {
+		return ec
+	}
+	return nil
 }

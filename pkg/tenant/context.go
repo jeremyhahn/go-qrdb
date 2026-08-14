@@ -30,6 +30,25 @@ import "context"
 // WithInternalCall(ctx) to bypass the reservation check.
 const SystemTenantID = "system"
 
+// IsSystemTenant reports whether id denotes the structurally privileged
+// system tenant. It returns true for both SystemTenantID and the empty
+// string: per the documented rule, an identity or context with no tenant
+// binding resolves to the system tenant (see FromContext), so "no tenant"
+// and "system tenant" are the same scope for authorization purposes. This
+// is the single canonical predicate for that question — callers must use
+// it instead of re-deriving the `x == "" || x == SystemTenantID` (or bare
+// `x == SystemTenantID`) comparison at each call site.
+//
+// Note that on a normalized path (e.g. after FromContext, or downstream of
+// auth/middleware's identity normalization) the empty case can never
+// occur, since those paths already fold "" into SystemTenantID. The
+// predicate is still correct there — it simply never observes "" — which
+// is why it is safe to adopt uniformly rather than only at the string's
+// origin.
+func IsSystemTenant(id string) bool {
+	return id == "" || id == SystemTenantID
+}
+
 // contextKey is an unexported type used as the key for tenant ID values
 // in context.Context. Using a dedicated type prevents collisions with
 // keys from other packages.
@@ -68,6 +87,41 @@ func IDFromContext(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return v, true
+}
+
+// EffectiveTenant reconciles a request-supplied tenant against the caller's
+// authenticated identity tenant and returns the tenant that an IAM operation
+// MUST act on. For a normal tenant caller the effective tenant is NEVER
+// sourced from a client-supplied request field — it is the identity tenant —
+// mirroring the data-plane rule enforced by the REST scope middleware.
+//
+// Rules:
+//   - System-tenant callers (identity == SystemTenantID) may target any
+//     tenant: the request-supplied tenant is honoured, defaulting to the
+//     system tenant when empty. This is the legitimate cross-tenant admin
+//     path (first-boot bootstrap, platform provisioning).
+//   - Normal tenant callers may act only on their own tenant. An empty or
+//     matching request tenant resolves to the identity tenant; a non-empty
+//     request tenant that differs from the identity tenant is rejected with a
+//     *CrossTenantDeniedError (fail closed — never silently coerced).
+//
+// op names the attempted operation for the error message (e.g. "create user").
+func EffectiveTenant(ctx context.Context, requested, op string) (string, error) {
+	identityTenant := FromContext(ctx)
+	if IsSystemTenant(identityTenant) {
+		if requested == "" {
+			return SystemTenantID, nil
+		}
+		return requested, nil
+	}
+	if requested != "" && requested != identityTenant {
+		return "", &CrossTenantDeniedError{
+			IdentityTenantID:  identityTenant,
+			RequestedTenantID: requested,
+			Op:                op,
+		}
+	}
+	return identityTenant, nil
 }
 
 // WithInternalCall returns a context marked as originating from a trusted

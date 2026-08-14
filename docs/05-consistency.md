@@ -330,6 +330,5 @@ Latency by consistency level (measured on local 3-node cluster):
 
 - [MVCC Engine](02-mvcc.md) -- Revision tracking and versioning
 - [Transactions](03-transactions.md) -- Transactional consistency guarantees
-- [Watch](04-watch.md) -- Real-time notification consistency
 - [Configuration](12-configuration.md) -- go-quicraft lease settings
 - [Architecture](01-architecture.md) -- Read path implementation

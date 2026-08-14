@@ -36,3 +36,11 @@ var WithPINBackend = qrdbserver.WithPINBackend
 // WithFactorRegistry attaches an auth factor registry to the embedded qrdb
 // server.
 var WithFactorRegistry = qrdbserver.WithFactorRegistry
+
+// WithCeremonyCA attaches the certificate authority the init ceremony uses to
+// issue the TLS serving certificate, sign officer CSRs, and publish the CA
+// bundle / SPKI pin. Composers supply go-xkms's CAAdapter — the stack's single
+// hardware-backed CA — via sdk/go NewCAAdapter. Without it every CA-dependent
+// ceremony verb fails closed with ErrCeremonyCANotInitialized. The argument
+// type is the re-exported CeremonyCA (see types_ceremony.go).
+var WithCeremonyCA = qrdbserver.WithCeremonyCA

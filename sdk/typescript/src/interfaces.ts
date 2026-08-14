@@ -24,6 +24,8 @@ import type {
     MVCCKeyValue,
     RangeOptions,
     RangeResponse,
+    RestoreRevisionRequest,
+    RestoreRevisionResult,
 
     // Transaction
     TransactionRequest,
@@ -216,7 +218,12 @@ import type {
     RebalancePlan,
     RebalanceResult,
     ImbalanceReport,
+
+    // Credentials
+    CredentialVersionInfo,
+    CredentialRotateResult,
 } from './types.js';
+import type { AuditFilter, AuditPage } from './audit.js';
 
 // ---------------------------------------------------------------------------
 // Connection lifecycle
@@ -430,6 +437,20 @@ export interface MVCCClient {
      * @returns The current revision number.
      */
     currentRevision(): Promise<number>;
+
+    /**
+     * Returns a bounded set of keys to the value they held at an earlier
+     * MVCC revision by proposing new writes — a logical undo, never a Raft
+     * rewind. Exactly one of `req.prefix` and `req.keys` must be set.
+     *
+     * Requires the target daemon to run `raft.sm_type: mvcc`; the default
+     * (`pebble`) has no MVCC revision history and this call fails with an
+     * actionable error naming the fix rather than a generic failure.
+     *
+     * @param req - The restore request (target revision, scope, and options).
+     * @returns The computed (and, unless `req.dryRun`, applied) restore plan.
+     */
+    restoreToRevision(req: RestoreRevisionRequest): Promise<RestoreRevisionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1250,16 @@ export interface DatabaseClient {
      * @returns The updated database information.
      */
     updateConnection(name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo>;
+
+    /**
+     * Changes the replication factor of an existing dedicated-raft database,
+     * adding or removing voting replicas without recreating the database.
+     *
+     * @param name - Database name.
+     * @param targetReplicas - Desired replication factor (must be >= 1).
+     * @returns The updated database information.
+     */
+    scale(name: string, targetReplicas: number): Promise<DatabaseInfo>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,6 +1903,119 @@ export interface RebalanceClient {
 }
 
 // ---------------------------------------------------------------------------
+// Credential management operations
+// ---------------------------------------------------------------------------
+
+/**
+ * CredentialClient manages named-credential submission, storage, and
+ * versioned rotation. Credential VALUES are handled as opaque strings on
+ * the wire (base64 or plain text, per the storing caller's convention);
+ * this SDK never interprets or validates their contents.
+ */
+export interface CredentialClient {
+    /**
+     * Submits a credential value for the named credential, notifying any
+     * blocked retrievers for the manual strategy or delegating to storage
+     * for the barrier strategy.
+     *
+     * @param name - Credential name.
+     * @param value - Credential value (base64 or plain text).
+     */
+    submit(name: string, value: string): Promise<void>;
+
+    /**
+     * Persists a credential value under the given name.
+     *
+     * @param name - Credential name.
+     * @param value - Credential value (base64 or plain text).
+     */
+    store(name: string, value: string): Promise<void>;
+
+    /**
+     * Returns the credential value for the given name. For the manual
+     * strategy this may block server-side until the credential is
+     * submitted.
+     *
+     * @param name - Credential name.
+     * @returns The stored credential value.
+     */
+    retrieve(name: string): Promise<string>;
+
+    /**
+     * Returns the sorted list of every stored credential name. Values are
+     * never returned.
+     */
+    list(): Promise<string[]>;
+
+    /** Returns the active credential management strategy name. */
+    strategy(): Promise<string>;
+
+    /**
+     * Removes a named credential and all of its non-current historical
+     * versions.
+     *
+     * @param name - Credential name to delete.
+     */
+    delete(name: string): Promise<void>;
+
+    /**
+     * Atomically replaces the current value of a credential, optionally
+     * keeping the previous version retrievable for a grace period.
+     *
+     * @param name - Credential name to rotate.
+     * @param newValue - The new credential value.
+     * @param gracePeriodSeconds - Seconds the previous version remains
+     *   retrievable. Omit or pass 0 to wipe the previous value immediately.
+     * @returns The previous and new version numbers.
+     */
+    rotate(name: string, newValue: string, gracePeriodSeconds?: number): Promise<CredentialRotateResult>;
+
+    /**
+     * Returns the version history (current + non-expired grace) for a
+     * credential. Values are never returned.
+     *
+     * @param name - Credential name.
+     */
+    listVersions(name: string): Promise<CredentialVersionInfo[]>;
+
+    /**
+     * Returns the stored credential value for a specific version.
+     *
+     * @param name - Credential name.
+     * @param version - Version number; 0 means the current version.
+     */
+    retrieveVersion(name: string, version: number): Promise<string>;
+
+    /**
+     * Reaps historical versions whose grace period has elapsed for the
+     * named credential.
+     *
+     * @param name - Credential name.
+     * @returns The number of versions reaped.
+     */
+    gcExpired(name: string): Promise<number>;
+}
+
+// ---------------------------------------------------------------------------
+// Audit query operations
+// ---------------------------------------------------------------------------
+
+/**
+ * AuditQueryClient queries compliance-grade audit events. Requires the
+ * "audit:query" permission on the active connection.
+ */
+export interface AuditQueryClient {
+    /**
+     * Queries audit events matching the provided filter.
+     *
+     * @param f - Filter criteria (time range, actor, resource, action,
+     *   outcome, tenant, pagination). Omit for the server default page.
+     * @returns A paginated page of matching audit events.
+     */
+    query(f?: AuditFilter): Promise<AuditPage>;
+}
+
+// ---------------------------------------------------------------------------
 // Connection manager operations
 // ---------------------------------------------------------------------------
 
@@ -2009,6 +2153,12 @@ export interface Client {
 
     /** Shard rebalancing operations. */
     readonly rebalance: RebalanceClient;
+
+    /** Named-credential submission, storage, and versioned rotation. */
+    readonly credentials: CredentialClient;
+
+    /** Compliance-grade audit event querying. */
+    readonly audit: AuditQueryClient;
 
     /** Server configuration queries. */
     readonly config: ServerConfigClient;

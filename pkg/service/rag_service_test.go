@@ -164,6 +164,15 @@ func (m *ragMockKVSvc) Put(_ context.Context, key string, val []byte) error {
 	return nil
 }
 
+// PutIfAbsent stores only when the key is absent, matching the real engines.
+func (m *ragMockKVSvc) PutIfAbsent(_ context.Context, key string, val []byte) (bool, error) {
+	if _, exists := m.kvStore[key]; exists {
+		return false, nil
+	}
+	m.kvStore[key] = val
+	return true, nil
+}
+
 func (m *ragMockKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := m.kvStore[key]
 	if !ok {

@@ -38,7 +38,7 @@ func TestNewMetricsTable(t *testing.T) {
 func TestMetricsTable_Schema(t *testing.T) {
 	tbl := NewMetricsTable()
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	require.Len(t, schema, 3)
 

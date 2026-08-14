@@ -29,8 +29,8 @@ import (
 // scoping of its own; applying the full composite prefix (which includes the
 // tenant segment) therefore double-encodes the tenant in the physical key for
 // non-system tenants. This is redundant but correct — it never weakens
-// isolation — and keeps a single composeNamespace helper in use across every
-// engine.
+// isolation — and keeps a single tenant.ComposeNamespace formula in use
+// across every engine.
 type namespacedVectorService struct {
 	inner  service.VectorServicer
 	prefix string

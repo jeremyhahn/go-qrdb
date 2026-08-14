@@ -163,6 +163,14 @@ type Infra struct {
 	// nil, nil-entitlement tenants fall back to the conservative built-in
 	// defaults (prefix-only isolation; dedicated raft/volume denied).
 	DefaultTenantEntitlements *quota.Entitlements
+
+	// BackupSink, when non-nil, is wired into the Backup service so backup
+	// artifacts (shard payloads + metadata) are persisted durably instead of
+	// held only in the daemon process's memory. Without it, backups do not
+	// survive a process restart, which makes them unusable for disaster
+	// recovery. The caller constructs and owns the sink's lifecycle (e.g. the
+	// storage.Storage it wraps); BuildServices only reads from it.
+	BackupSink service.BackupSink
 }
 
 // Node aggregates all services built by BuildServices and provides a
@@ -291,7 +299,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	}
 	n.Lock = lockSvc
 
-	n.Collection = service.NewCollectionServiceWithIndex(n.KV, n.Index)
+	// SequenceServicer backs Collection's IDStrategyIncrement document IDs
+	// with a Raft-replicated compare-and-swap counter (see
+	// service.CollectionService.WithSequenceService) instead of the
+	// process-local counter that would otherwise restart at 0 on every
+	// process restart and diverge across replicas.
+	n.Collection = service.NewCollectionServiceWithIndex(n.KV, n.Index).
+		WithSequenceService(service.NewSequenceService(n.MVCC, n.Transaction))
 
 	// Cluster operations. Rebalance inspects shard stats and moves shards via
 	// the host. Backup snapshots/restores shards via the host's snapshot/export
@@ -299,7 +313,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// on a clustered Raft host; on the single-node LocalBackend, Rebalance has
 	// no peers to balance and Backup reports BackupUnsupportedError per shard.
 	n.Rebalance = service.NewRebalanceService(infra.Host)
-	n.Backup = service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host))
+	var backupOpts []service.BackupServiceOption
+	if infra.BackupSink != nil {
+		backupOpts = append(backupOpts, service.WithBackupSink(infra.BackupSink))
+	}
+	n.Backup = service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host), backupOpts...)
 
 	// Auth services (user, role) backed by KV storage.
 	authStore := newKVStoreAdapter(n.KV)
@@ -346,6 +364,20 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 
+	// Wire the per-database encryption barrier manager now that the seal
+	// subsystem's BarrierRegistry is available (BuildServices runs after the
+	// barrier is unsealed). dbManager may already have been open for a while
+	// -- callers construct it, and OpenAll it, before the registry exists --
+	// so SetBarrierManager also re-registers the barrier for every
+	// already-open database that has one enabled on a dedicated store. When
+	// infra.BarrierRegistry is nil (seal disabled) no manager is set, so
+	// per-database barrier operations correctly fail closed with
+	// BarrierManagerNotConfiguredError. Guarded on BarrierManager() == nil so
+	// a caller that already wired one explicitly is not clobbered.
+	if infra.BarrierRegistry != nil && dbManager.BarrierManager() == nil {
+		dbManager.SetBarrierManager(database.NewDatabaseBarrierManager(log, infra.BarrierRegistry))
+	}
+
 	// Replicated placement table (Phase 4c) over the shared system KV, plus the
 	// load-aware scheduler over the live cluster topology (host roster +
 	// RebalanceService load scoring). These are wired into the DatabaseService
@@ -365,6 +397,15 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				service.WithDatabaseLogger(log),
 			}
 		}
+	}
+	// Thread the same DatabaseBarrierManager instance dbManager was just
+	// wired with into DatabaseService, so SealDatabase/UnsealDatabase/
+	// DatabaseBarrierStatus (which read DatabaseService.barrierMgr directly)
+	// and Create/Open (which read Manager.barrierMgr) operate against the
+	// same seal.BarrierRegistry. Appended to placementOpts so it survives the
+	// tenant-quota-opts rebuild below.
+	if bm := dbManager.BarrierManager(); bm != nil {
+		placementOpts = append(placementOpts, service.WithBarrierManager(bm))
 	}
 
 	n.Database = service.NewDatabaseService(dbManager, placementOpts...)
@@ -692,6 +733,15 @@ func resolveReplicaID(id uint64) uint64 {
 // included so the TenantService can resolve hardware/cloud seal strategies.
 func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 	var opts []tenant.TenantServiceOption
+	// Reserve the node's own data directory so an operator-supplied dedicated
+	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the
+	// system data dir — which would nest a tenant's dedicated disk inside the
+	// daemon's own storage and cause data-confusion. Pool-base and existing-
+	// tenant overlap are checked unconditionally in CreateTenant; this activates
+	// the system-data-dir arm of that check in production.
+	if infra.DataDir != "" {
+		opts = append(opts, tenant.WithReservedDataRoots(infra.DataDir))
+	}
 	if infra.StrategyRegistry != nil {
 		opts = append(opts, tenant.WithStrategyRegistry(infra.StrategyRegistry))
 	}

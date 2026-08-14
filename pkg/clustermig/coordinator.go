@@ -109,13 +109,15 @@ func (c *Coordinator) Request(ctx context.Context, tenantID, database string, op
 		mech = seal.MechanismSwap
 	}
 	m := &ClusterMigration{
-		TenantID:   tenantID,
-		Database:   database,
-		ShardID:    shardID,
-		Target:     opts.TargetStrategy,
-		Mechanism:  mech,
-		Owners:     owners,
-		Generation: gen,
+		TenantID:        tenantID,
+		Database:        database,
+		ShardID:         shardID,
+		Target:          opts.TargetStrategy,
+		Mechanism:       mech,
+		ShamirThreshold: opts.ShamirThreshold,
+		ShamirTotal:     opts.ShamirTotal,
+		Owners:          owners,
+		Generation:      gen,
 	}
 	if c.nowUnix != nil {
 		m.RequestedAtUnix = c.nowUnix()

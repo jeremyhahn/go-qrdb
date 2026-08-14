@@ -144,6 +144,12 @@ func (r *errServiceRegistry) TransactionService(_, _ string) (service.Transactio
 func (m *errServiceRegistry) BatchService(_, _ string) (service.BatchServicer, error) {
 	return nil, m.err
 }
+func (r *errServiceRegistry) TableService(_, _ string) (service.TableServicer, error) {
+	return nil, r.err
+}
+func (r *errServiceRegistry) SequenceService(_, _ string) (service.SequenceServicer, error) {
+	return nil, r.err
+}
 
 // ---------------------------------------------------------------------------
 // Helper: build test auth factor
@@ -920,6 +926,22 @@ func TestKvSvcFor_RegistryError(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
+// TestKvSvcFor_InvalidTenantIDCharError proves a forbidden tenant-scope
+// character (e.g. '/' in an x-qrdb-tenant-resolved ID) maps to 400 Bad
+// Request instead of falling through to the generic 500 default (LOW /
+// Codex E follow-up).
+func TestKvSvcFor_InvalidTenantIDCharError(t *testing.T) {
+	reg := &errServiceRegistry{err: &tenant.InvalidTenantIDCharError{TenantID: "a/b", Byte: '/'}}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithServiceRegistry(reg))
+	rec := httptest.NewRecorder()
+	svc := s.kvSvcFor(rec, context.Background())
+	if svc != nil {
+		t.Error("expected nil KVService on registry error")
+	}
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
 func TestMvccSvcFor_RegistryError(t *testing.T) {
 	reg := &errServiceRegistry{err: &service.KeyNotFoundError{Key: "x"}}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
@@ -1206,6 +1228,12 @@ func (r *stubServiceRegistryForTenant) TransactionService(_, _ string) (service.
 	return nil, errors.New("not implemented")
 }
 func (r *stubServiceRegistryForTenant) BatchService(_, _ string) (service.BatchServicer, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *stubServiceRegistryForTenant) TableService(_, _ string) (service.TableServicer, error) {
+	return nil, errors.New("not implemented")
+}
+func (r *stubServiceRegistryForTenant) SequenceService(_, _ string) (service.SequenceServicer, error) {
 	return nil, errors.New("not implemented")
 }
 

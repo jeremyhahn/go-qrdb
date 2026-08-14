@@ -68,6 +68,7 @@ func newKVCmd() *cobra.Command {
 	kvCmd.AddCommand(newKVRangeCmd())
 	kvCmd.AddCommand(newKVCompactCmd())
 	kvCmd.AddCommand(newKVRevisionCmd())
+	kvCmd.AddCommand(newKVRestoreCmd())
 
 	return kvCmd
 }
@@ -418,6 +419,196 @@ func newKVRevisionCmd() *cobra.Command {
 				return nil
 			}
 		},
+	}
+}
+
+// newKVRestoreCmd creates the "kv restore" subcommand for selective
+// point-in-time restore.
+func newKVRestoreCmd() *cobra.Command {
+	var (
+		revision int64
+		prefix   string
+		keys     []string
+		dryRun   bool
+		force    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "restore",
+		Short: "Restore keys to the value they held at an earlier MVCC revision",
+		Long: `Restore returns a bounded set of keys to the value they held at an earlier
+MVCC revision by proposing NEW writes. It is a logical undo, never a Raft
+rewind: committed history is never discarded, and every restored key is
+written forward as an ordinary new revision.
+
+This command requires the target daemon to run raft.sm_type: mvcc. The
+default "pebble" state machine keeps no revision history and refuses this
+command.
+
+Scope is exactly one of --prefix or --keys; an unscoped restore (neither
+flag) or an ambiguous one (both flags) is refused.
+
+Use --dry-run to preview the plan (ACTION, KEY, FROM-REV, TO-REV) without
+writing anything. Without --dry-run, each key is applied as a
+compare-and-swap against the revision the plan observed: a key modified
+since the plan was computed is left untouched and reported as a conflict
+instead of being overwritten. Pass --force to overwrite unconditionally.
+
+Exit code: when one or more keys conflict and --force was not set, this
+command exits non-zero even though the request itself succeeded, because a
+partially applied restore that reports exit 0 reads as a complete undo. The
+conflicting keys are listed in the output; re-run with --force, or re-run
+"kv restore" again once the conflicting writers have quiesced.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			req := &transport.RestoreRevisionRequest{
+				Revision: revision,
+				DryRun:   dryRun,
+				Force:    force,
+			}
+			if prefix != "" {
+				req.Prefix = []byte(prefix)
+			}
+			if len(keys) > 0 {
+				req.Keys = make([][]byte, len(keys))
+				for i, k := range keys {
+					req.Keys[i] = []byte(k)
+				}
+			}
+
+			result, err := client.MVCC().RestoreToRevision(cmd.Context(), req)
+			if err != nil {
+				return err
+			}
+
+			if printErr := printRestoreRevisionResult(result); printErr != nil {
+				return printErr
+			}
+
+			if !dryRun && !force && result.Conflicted > 0 {
+				// The restore itself succeeded and per-key detail was
+				// already printed above; a non-nil error here only serves
+				// to give scripted/automation callers a non-zero exit code
+				// for a partially-applied restore.
+				return &RestoreConflictsError{Revision: result.Revision, Conflicted: result.Conflicted}
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().Int64Var(&revision, "revision", 0, "Target MVCC revision to restore keys to")
+	_ = cmd.MarkFlagRequired("revision")
+	cmd.Flags().StringVar(&prefix, "prefix", "", "Restore every key beginning with this prefix (mutually exclusive with --keys)")
+	cmd.Flags().StringSliceVar(&keys, "keys", nil, "Restore this explicit list of keys, comma-separated or repeatable (mutually exclusive with --prefix)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Compute and print the restore plan without writing anything")
+	cmd.Flags().BoolVar(&force, "force", false, "Apply the plan unconditionally, overwriting keys modified since the plan was computed")
+	cmd.MarkFlagsOneRequired("prefix", "keys")
+	cmd.MarkFlagsMutuallyExclusive("prefix", "keys")
+
+	return cmd
+}
+
+// restoreKeyChangeDisplay is a string-typed display wrapper for
+// transport.RestoreKeyChange that prevents Go's JSON/YAML encoders from
+// base64-encoding the Key field.
+type restoreKeyChangeDisplay struct {
+	Key          string                  `json:"key"`
+	Action       transport.RestoreAction `json:"action"`
+	FromRevision int64                   `json:"from_revision,omitempty"`
+	ToRevision   int64                   `json:"to_revision,omitempty"`
+	ValueBytes   int64                   `json:"value_bytes,omitempty"`
+}
+
+// restoreRevisionResultDisplay is a string-typed display wrapper for
+// transport.RestoreRevisionResult.
+type restoreRevisionResultDisplay struct {
+	Revision   int64                     `json:"revision"`
+	Changes    []restoreKeyChangeDisplay `json:"changes"`
+	Conflicts  []restoreKeyChangeDisplay `json:"conflicts,omitempty"`
+	Applied    int                       `json:"applied"`
+	Skipped    int                       `json:"skipped"`
+	Conflicted int                       `json:"conflicted"`
+	DryRun     bool                      `json:"dry_run"`
+}
+
+// restoreKeyChangeDisplayFrom converts a single RestoreKeyChange to display form.
+func restoreKeyChangeDisplayFrom(c *transport.RestoreKeyChange) restoreKeyChangeDisplay {
+	return restoreKeyChangeDisplay{
+		Key:          string(c.Key),
+		Action:       c.Action,
+		FromRevision: c.FromRevision,
+		ToRevision:   c.ToRevision,
+		ValueBytes:   c.ValueBytes,
+	}
+}
+
+// restoreKeyChangeDisplaysFrom converts a slice of RestoreKeyChange to display form.
+func restoreKeyChangeDisplaysFrom(changes []*transport.RestoreKeyChange) []restoreKeyChangeDisplay {
+	out := make([]restoreKeyChangeDisplay, len(changes))
+	for i, c := range changes {
+		out[i] = restoreKeyChangeDisplayFrom(c)
+	}
+	return out
+}
+
+// restoreRevisionResultDisplayFrom converts a RestoreRevisionResult to display form.
+func restoreRevisionResultDisplayFrom(result *transport.RestoreRevisionResult) restoreRevisionResultDisplay {
+	return restoreRevisionResultDisplay{
+		Revision:   result.Revision,
+		Changes:    restoreKeyChangeDisplaysFrom(result.Changes),
+		Conflicts:  restoreKeyChangeDisplaysFrom(result.Conflicts),
+		Applied:    result.Applied,
+		Skipped:    result.Skipped,
+		Conflicted: result.Conflicted,
+		DryRun:     result.DryRun,
+	}
+}
+
+// restoreKeyChangeRow converts a RestoreKeyChange to a table row of
+// {ACTION, KEY, FROM-REV, TO-REV}.
+func restoreKeyChangeRow(c *transport.RestoreKeyChange) []string {
+	return []string{
+		string(c.Action),
+		string(c.Key),
+		strconv.FormatInt(c.FromRevision, 10),
+		strconv.FormatInt(c.ToRevision, 10),
+	}
+}
+
+// printRestoreRevisionResult prints a RestoreRevisionResult in the current
+// output format. Table output lists the full plan, then a one-line summary,
+// then any conflicts distinctly so an operator can see exactly what was NOT
+// restored and why.
+func printRestoreRevisionResult(result *transport.RestoreRevisionResult) error {
+	switch outputFormat {
+	case "json":
+		return printJSON(restoreRevisionResultDisplayFrom(result))
+	case "yaml":
+		return printYAML(restoreRevisionResultDisplayFrom(result))
+	default:
+		headers := []string{"ACTION", "KEY", "FROM-REV", "TO-REV"}
+		rows := make([][]string, 0, len(result.Changes))
+		for _, c := range result.Changes {
+			rows = append(rows, restoreKeyChangeRow(c))
+		}
+		printTable(headers, rows)
+
+		mode := "apply"
+		if result.DryRun {
+			mode = "dry-run"
+		}
+		_, _ = fmt.Fprintf(outputWriter, "\nRevision: %d  Mode: %s  Applied: %d  Skipped: %d  Conflicted: %d\n",
+			result.Revision, mode, result.Applied, result.Skipped, result.Conflicted)
+
+		if len(result.Conflicts) > 0 {
+			_, _ = fmt.Fprintf(outputWriter, "\nCONFLICTS (not applied -- key changed since the plan was computed; retry with --force to override):\n")
+			crows := make([][]string, 0, len(result.Conflicts))
+			for _, c := range result.Conflicts {
+				crows = append(crows, restoreKeyChangeRow(c))
+			}
+			printTable(headers, crows)
+		}
+		return nil
 	}
 }
 

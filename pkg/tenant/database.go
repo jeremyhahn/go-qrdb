@@ -50,3 +50,33 @@ func DatabaseFromContext(ctx context.Context) string {
 	}
 	return DefaultDatabase
 }
+
+// ComposeNamespace returns the composite key-namespace prefix "<tenant>/<db>/"
+// for a (tenant, db) pair. A database is a key-namespace layered over the
+// tenant's already-resolved store, so the physical key prefix is the
+// concatenation of a tenant segment and a database segment. The prefix is
+// ALWAYS non-empty and uniform — including for the bootstrap (SystemTenantID,
+// DefaultDatabase) pair, which resolves to "system/system/" rather than an
+// unprefixed keyspace. Special-casing any pair to an empty prefix would give
+// it the entire shared store root as its keyspace, leaking every other
+// database's and every other tenant's keys into a scan.
+//
+// An empty tenantID or db falls back to SystemTenantID / DefaultDatabase, so
+// the result is always a complete "<tenant>/<db>/" with no empty or doubled
+// segment.
+//
+// ComposeNamespace is the single canonical formula for per-(tenant, database)
+// physical key isolation, shared by every transport that keys into the
+// shared store: REST, gRPC, QUIC, Unix, MCP (via the composite prefix applied
+// by their service.Registry), and the SQL wire protocols (MySQL/PostgreSQL)
+// and ad-hoc SQL query service, which key into the store directly through
+// pkg/sql/provider.
+func ComposeNamespace(tenantID, db string) string {
+	if tenantID == "" {
+		tenantID = SystemTenantID
+	}
+	if db == "" {
+		db = DefaultDatabase
+	}
+	return tenantID + "/" + db + "/"
+}

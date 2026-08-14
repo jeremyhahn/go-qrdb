@@ -136,7 +136,7 @@ func (s *credentialsServer) handler() http.Handler {
 				http.Error(w, "fail", int(code))
 				return
 			}
-			out := &transport.CredentialRetrieveVersionResponse{Value: ""}
+			out := &transport.CredentialRetrieveVersionResponse{Value: []byte("")}
 			if v, ok := s.retrieveResp.Load().(*transport.CredentialRetrieveVersionResponse); ok && v != nil {
 				out = v
 			}
@@ -235,7 +235,7 @@ func TestCredentialRotate_Success(t *testing.T) {
 
 	resp, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:               "apikey",
-		NewValue:           "newsecret",
+		NewValue:           []byte("newsecret"),
 		GracePeriodSeconds: 60,
 	})
 	if err != nil {
@@ -247,7 +247,7 @@ func TestCredentialRotate_Success(t *testing.T) {
 	if v, _ := srv.rotateName.Load().(string); v != "apikey" {
 		t.Errorf("server saw name = %q", v)
 	}
-	if body, _ := srv.rotateBody.Load().(transport.CredentialRotateRequest); body.NewValue != "newsecret" || body.GracePeriodSeconds != 60 {
+	if body, _ := srv.rotateBody.Load().(transport.CredentialRotateRequest); string(body.NewValue) != "newsecret" || body.GracePeriodSeconds != 60 {
 		t.Errorf("body = %+v", body)
 	}
 	if resp.PreviousVersion != 1 || resp.NewVersion != 2 || resp.GraceUntilUnix != 1700000000 {
@@ -261,7 +261,7 @@ func TestCredentialRotate_PathEscape(t *testing.T) {
 
 	_, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:     "a/b",
-		NewValue: "x",
+		NewValue: []byte("x"),
 	})
 	// "/" in the name must be URL-encoded; the in-memory mux will not match
 	// a literal "a/b" path. We accept either a 404 (server demux miss) or
@@ -298,7 +298,7 @@ func TestCredentialRotate_ServerError(t *testing.T) {
 
 	_, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:     "k",
-		NewValue: "x",
+		NewValue: []byte("x"),
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -328,7 +328,7 @@ func TestCredentialRotate_AfterClose(t *testing.T) {
 
 func TestCredentialRetrieveVersion_Success(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
-	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: "secret"})
+	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: []byte("secret")})
 
 	resp, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "apikey",
@@ -346,14 +346,14 @@ func TestCredentialRetrieveVersion_Success(t *testing.T) {
 	if v, _ := srv.retrieveVersion.Load().(string); v != "3" {
 		t.Errorf("server saw version = %q", v)
 	}
-	if resp.Value != "secret" {
+	if string(resp.Value) != "secret" {
 		t.Errorf("Value = %q", resp.Value)
 	}
 }
 
 func TestCredentialRetrieveVersion_CurrentVersionZero(t *testing.T) {
 	rt, srv := newCredentialsTestTransport(t)
-	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: "current"})
+	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: []byte("current")})
 
 	_, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name:    "k",
@@ -544,5 +544,47 @@ func TestCredentialGCExpired_AfterClose(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Binary (non-UTF-8) round-trip
+// ---------------------------------------------------------------------------
+
+// nonUTF8CredentialValue is a credential payload whose leading bytes
+// (0x00 0xff 0xfe 0x01) are invalid UTF-8. The REST transport carries the
+// value as a base64 (RFC 4648) []byte JSON field, so binary credential
+// material round-trips byte-for-byte through the SDK client.
+var nonUTF8CredentialValue = []byte{0x00, 0xff, 0xfe, 0x01, 'k', 'e', 'y'}
+
+// TestCredential_BinaryRoundTrip exercises both wire directions through the
+// SDK REST client: CredentialRotate encodes NewValue on send (server decodes
+// the body.NewValue []byte from base64) and CredentialRetrieveVersion decodes
+// Value on receive (server encodes the raw bytes as base64).
+func TestCredential_BinaryRoundTrip(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	srv.rotateResp.Store(&transport.CredentialRotateResponse{Name: "bin", NewVersion: 2})
+	srv.retrieveResp.Store(&transport.CredentialRetrieveVersionResponse{Value: nonUTF8CredentialValue})
+
+	if _, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
+		Name:     "bin",
+		NewValue: nonUTF8CredentialValue,
+	}); err != nil {
+		t.Fatalf("CredentialRotate: %v", err)
+	}
+	body, _ := srv.rotateBody.Load().(transport.CredentialRotateRequest)
+	if string(body.NewValue) != string(nonUTF8CredentialValue) {
+		t.Fatalf("server decoded NewValue = %#v, want %#v", body.NewValue, nonUTF8CredentialValue)
+	}
+
+	resp, err := rt.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+		Name:    "bin",
+		Version: 0,
+	})
+	if err != nil {
+		t.Fatalf("CredentialRetrieveVersion: %v", err)
+	}
+	if string(resp.Value) != string(nonUTF8CredentialValue) {
+		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
 	}
 }

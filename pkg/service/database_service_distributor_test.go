@@ -35,10 +35,10 @@ type captureDistributor struct {
 }
 
 type captureDistributorCall struct {
-	plan        *placement.Placement
+	plan          *placement.Placement
 	leaderBarrier *seal.StorageBarrier
-	selfNodeID  string
-	autoUnseal  bool
+	selfNodeID    string
+	autoUnseal    bool
 }
 
 func (c *captureDistributor) DistributeTenantKey(
@@ -49,10 +49,10 @@ func (c *captureDistributor) DistributeTenantKey(
 	autoUnseal bool,
 ) error {
 	c.calls = append(c.calls, captureDistributorCall{
-		plan:        p,
+		plan:          p,
 		leaderBarrier: lb,
-		selfNodeID:  nodeID,
-		autoUnseal:  autoUnseal,
+		selfNodeID:    nodeID,
+		autoUnseal:    autoUnseal,
 	})
 	return nil
 }
@@ -133,9 +133,9 @@ func TestCreateForTenant_DistributorCalledOnPlacement(t *testing.T) {
 	localNode := "node1:63001"
 
 	raftInfo := &tenant.TenantInfo{
-		ID:               "rt",
-		IsolationType:    tenant.IsolationRaft,
-		DataRoot:         t.TempDir(),
+		ID:                "rt",
+		IsolationType:     tenant.IsolationRaft,
+		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: true, // system-managed
 	}
 	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
@@ -185,9 +185,9 @@ func TestCreateForTenant_DistributorCalledSelfManagedMode(t *testing.T) {
 	localNode := "leader:63001"
 
 	raftInfo := &tenant.TenantInfo{
-		ID:               "self-rt",
-		IsolationType:    tenant.IsolationRaft,
-		DataRoot:         t.TempDir(),
+		ID:                "self-rt",
+		IsolationType:     tenant.IsolationRaft,
+		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: false, // self-managed
 	}
 	svc, _ := newDistributorDatabaseService(t, raftInfo, dist, lookup, localNode,
@@ -294,9 +294,9 @@ func TestSetDistributor_PostConstruction(t *testing.T) {
 	t.Parallel()
 
 	raftInfo := &tenant.TenantInfo{
-		ID:               "rt",
-		IsolationType:    tenant.IsolationRaft,
-		DataRoot:         t.TempDir(),
+		ID:                "rt",
+		IsolationType:     tenant.IsolationRaft,
+		DataRoot:          t.TempDir(),
 		BarrierAutoUnseal: true,
 	}
 

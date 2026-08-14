@@ -60,6 +60,26 @@ Shares are **never persisted to disk**. During M-of-N enrollment:
 
 If the ceremony is abandoned (e.g., server restart), all shares are lost and the ceremony must be re-run. This is intentional: shares are secrets that belong to custodians, not the system.
 
+**Invariants, pinned by tests in `pkg/ceremony/share_store_test.go`:**
+
+- `Store` **consumes** the caller's slice, wiping it. A copy left on the heap would survive in a core dump or a swapped page, defeating the enclave the share was just placed in.
+- `Claim` **destroys** the enclave and retains only the fact that a claim occurred, so a second attempt is refused rather than served. Once a custodian retrieves their share, they alone hold it.
+- What persists is the officer **record** (`ceremony/officers/<name>`): certificate thumbprint or public key, share **index**, auth factor, timestamps. **Never share bytes.**
+
+Recovering the root key later therefore requires a threshold of holders to bring their shares back — the server cannot do it alone, which is the property an M-of-N ceremony is chosen for.
+
+### Officer enrollment kinds
+
+An officer supplies key material one of three ways, parsed by `ceremony.ParseEnrollmentSpec` (`<username>:<kind>:<path>`, the same vocabulary the platform admin uses):
+
+| Kind | Entry point | Trust |
+|------|-------------|-------|
+| `csr` | `RegisterOfficer` | Derived — the ceremony CA signs it |
+| `cert` | `EnrollExternalOfficer` | Verified — parsed, in-validity, chains to the configured external CA pool |
+| `pubkey` | `EnrollExternalOfficer` | Asserted by the administrator running the ceremony; a bare key has no chain |
+
+The two-field form `<username>:<path>` means `csr`.
+
 ## CeremonyCA Interface
 
 The ceremony requires a narrow CA interface that decouples it from any specific CA implementation:
@@ -110,6 +130,28 @@ sequenceDiagram
 ```
 
 Both are idempotent and safe to re-run on cluster nodes: leader writes propagate via Raft, follower runs are no-ops.
+
+### Admin credential paths (firstboot)
+
+`firstboot.Initialize` binds the admin's SPKI thumbprint by one of three mutually-exclusive paths, selected by which `Dependencies` inputs it receives:
+
+| Path | Input | What happens | Key custody |
+|------|-------|--------------|-------------|
+| **A** generate-and-distribute | `CA` | `CertProvider.GenerateAdminCert` issues a key + cert bundle | CA emits the bundle |
+| **B** CSR-sign | `AdminCSRPEM` + `Signer` | `CertSigner.SignAdminCSR` signs the admin's CSR | Key never leaves the admin |
+| **C** adopt-presented | `AdminCertPEM` + `AdminCertPool` | The certificate the admin **already holds** (PIV card, security key) is validated and adopted; nothing is issued | Key never leaves the operator's token |
+
+Path C is checked **first**, because it is the only path that issues nothing: a deployment that presents a certificate has already decided which identity the admin authenticates as, so falling through to a configured CA would mint a second, unrelated credential and bind that instead — leaving the operator holding a certificate the server has never heard of.
+
+Refusals:
+
+- `AdminCSRPEM` **and** `AdminCertPEM` together → `ConflictingAdminCertInputsError`. Signing the CSR would leave the presented certificate unbound; adopting the certificate would silently discard the CSR. Neither is choosable on the operator's behalf.
+- `AdminCertPEM` without `AdminCertPool` → `MissingAdminCertPoolError`. An absent pool is refused rather than treated as "trust anything".
+- Parse failure, expiry, or no chain to the pool → `AdminCertRejectedError`.
+
+`AdminCertPool` is deliberately **not** the platform CA: a certificate the operator already holds was issued by something else (corporate PKI, card vendor), so validating against the CA this deployment is about to create would reject every legitimate input.
+
+This makes admin enrolment the mirror of `EnrollExternalOfficer` — the admin and every security officer enrol by the same rule, and an operator who can bring their own credential to one role can bring it to the other.
 
 ## Authenticator Types
 

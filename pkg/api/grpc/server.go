@@ -34,6 +34,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -44,6 +45,17 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
+
+// MaxImportMessageSize is the maximum gRPC message size accepted by the
+// server, sized to carry a BatchImport request's file payload. It mirrors
+// the REST /batch/import 100 MB bound plus headroom for the other
+// BatchImportRequest fields and protobuf/HTTP2 framing overhead. gRPC's
+// default max receive message size (4 MB) would otherwise reject any
+// import file larger than a few megabytes before the handler ever runs;
+// this option is applied to both the TCP gRPC server (this package) and
+// the Unix domain socket server, which shares this server's
+// QRDBServiceServer implementation.
+const MaxImportMessageSize = 100<<20 + 1<<20
 
 // Server is the gRPC server for QRDB. It registers the QRDBService with
 // recovery and logging interceptors for both unary and streaming RPCs.
@@ -66,6 +78,7 @@ type Server struct {
 	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
+	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
 	tenantSvc         tenant.TenantServicer
 	userSvc           user.UserServicer
@@ -76,12 +89,14 @@ type Server struct {
 	rebalanceSvc      service.RebalanceServicer
 	authFactorSvc     service.AuthFactorServicer
 	userAuthFactorSvc service.UserAuthFactorServicer
+	sqlSvc            service.SQLServicer
 	authMW            *authmw.AuthMiddleware
 	auditLogger       audit.AuditLogger
 	addr              string
 	server            *grpc.Server
 	listener          net.Listener
 	tls               *tls.Config
+	tlsErr            error
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. When nil the singleton service fields are used.
@@ -98,9 +113,29 @@ type Server struct {
 type ServerOption func(*Server)
 
 // WithTLS configures the gRPC server with TLS credentials.
+//
+// cfg is cloned — the caller's copy is never mutated or retained — and its
+// MinVersion is enforced: unset defaults to tls.VersionTLS13; an explicit
+// value below TLS 1.3 fails Start with a typed *WeakTLSVersionError instead
+// of silently negotiating a weaker handshake. A nil cfg leaves TLS
+// unconfigured; because the gRPC transport is TLS-only, Start then fails
+// closed with a *TLSNotConfiguredError rather than serve plaintext. The
+// orchestrator (pkg/server) auto-provisions a certificate from the node's
+// CeremonyCA so this is transparent for every normal deployment shape.
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
-		s.tls = cfg
+		if cfg == nil {
+			return
+		}
+		clone := cfg.Clone()
+		switch {
+		case clone.MinVersion == 0:
+			clone.MinVersion = tls.VersionTLS13
+		case clone.MinVersion < tls.VersionTLS13:
+			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+			return
+		}
+		s.tls = clone
 	}
 }
 
@@ -194,6 +229,12 @@ func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
 	return func(s *Server) { s.encMigrator = m }
 }
 
+// WithSQLService configures the gRPC server with a SQL query service for
+// ad-hoc SQL execution against a named database.
+func WithSQLService(svc service.SQLServicer) ServerOption {
+	return func(s *Server) { s.sqlSvc = svc }
+}
+
 // WithPINBackend configures the gRPC server with the canonical
 // pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
 // layer on barrier administrative operations. When nil, PIN fields supplied
@@ -205,6 +246,16 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 // WithCeremonyService configures the gRPC server with a ceremony management service.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) { s.ceremonySvc = svc }
+}
+
+// WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
+// handler to issue the TLS and SO certificates. The CA cannot be serialized
+// over the wire, so it must be injected at server creation time and is held
+// as a server-side reference, mirroring the REST and MCP transports. When
+// unset, CeremonyInitialize fails closed with a *CeremonyCANotConfiguredError
+// instead of dereferencing a nil CA.
+func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
+	return func(s *Server) { s.ceremonyCA = ca }
 }
 
 // WithCredentialService configures the gRPC server with a credential management service.
@@ -333,6 +384,21 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // listener, registers the QRDBService, and starts serving in the
 // background. The method returns after the listener is bound.
 func (s *Server) Start() error {
+	// A WithTLS config with an explicitly weak MinVersion was rejected at
+	// option-application time; surface it now.
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
+	// The gRPC transport is TLS-only: the mTLS client certificate is the
+	// identity the auth middleware authenticates against, so an absent TLS
+	// config would silently strip RBAC and identity checks. Fail closed rather
+	// than bind a plaintext listener. The orchestrator (pkg/server)
+	// auto-provisions a certificate from the node's CeremonyCA, so a normal
+	// deployment never reaches here.
+	if s.tls == nil {
+		return &TLSNotConfiguredError{}
+	}
+
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
@@ -373,6 +439,7 @@ func (s *Server) Start() error {
 	serverOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryInterceptors...),
 		grpc.ChainStreamInterceptor(streamInterceptors...),
+		grpc.MaxRecvMsgSize(MaxImportMessageSize),
 	}
 
 	// Add TLS credentials when configured.
@@ -403,6 +470,7 @@ func (s *Server) Start() error {
 		encMigrator:   s.encMigrator,
 		pinBackend:    s.pinBackend,
 		ceremonySvc:   s.ceremonySvc,
+		ceremonyCA:    s.ceremonyCA,
 		credentialSvc: s.credentialSvc,
 		tenantSvc:     s.tenantSvc,
 		userSvc:       s.userSvc,
@@ -411,6 +479,7 @@ func (s *Server) Start() error {
 		collectionSvc: s.collectionSvc,
 		backupSvc:     s.backupSvc,
 		rebalanceSvc:  s.rebalanceSvc,
+		sqlSvc:        s.sqlSvc,
 		registry:      s.registry,
 	}
 	pb.RegisterQRDBServiceServer(s.server, svc)
@@ -419,7 +488,7 @@ func (s *Server) Start() error {
 	RegisterAuthFactorService(s.server, s.authFactorSvc)
 
 	// Register the user-side auth factor service (M14) when configured.
-	RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc)
+	RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc, s.userSvc)
 
 	// Register the per-tenant barrier service when a tenant servicer is configured.
 	RegisterTenantBarrierService(s.server, s.tenantSvc, s.authMW)

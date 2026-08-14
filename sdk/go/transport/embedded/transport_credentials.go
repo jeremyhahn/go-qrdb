@@ -36,7 +36,7 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 	if t.credentialSvc == nil {
 		return &NilServiceError{Service: "CredentialServicer"}
 	}
-	return t.credentialSvc.CredentialSubmit(ctx, req.Name, []byte(req.Value))
+	return t.credentialSvc.CredentialSubmit(ctx, req.Name, req.Value)
 }
 
 // CredentialStrategy returns the active credential management strategy by
@@ -99,7 +99,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		return nil, &NilRequestError{Method: "CredentialRotate"}
 	}
 	res, err := t.credentialSvc.CredentialRotate(ctx, req.Name, credentials.RotateOptions{
-		NewValue:    []byte(req.NewValue),
+		NewValue:    req.NewValue,
 		GracePeriod: time.Duration(req.GracePeriodSeconds) * time.Second,
 	})
 	if err != nil {
@@ -134,7 +134,7 @@ func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transpor
 		return nil, err
 	}
 	return &transport.CredentialRetrieveVersionResponse{
-		Value: string(value),
+		Value: value,
 	}, nil
 }
 

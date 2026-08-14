@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -32,6 +33,7 @@ type mcpTenantInfo struct {
 	ID            string                        `json:"id"`
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
+	DataRoot      string                        `json:"data_root,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAt     string                        `json:"created_at"`
@@ -85,6 +87,9 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 	}
 	if req.BarrierAutoUnseal {
 		args["barrier_auto_unseal"] = true
+	}
+	if req.DataRoot != "" {
+		args["data_root"] = req.DataRoot
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_create", args)
@@ -236,6 +241,8 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 		"allow_dedicated_raft":         req.Entitlements.AllowDedicatedRaft,
 		"allow_volume_storage":         req.Entitlements.AllowVolumeStorage,
 		"allow_system_managed_barrier": req.Entitlements.AllowSystemManagedBarrier,
+		"allow_dedicated_wal":          req.Entitlements.AllowDedicatedWAL,
+		"allowed_barrier_modes":        strings.Join(req.Entitlements.AllowedBarrierModes, ","),
 	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update_entitlements", args)
@@ -598,11 +605,23 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 	if m == nil {
 		return transport.TenantInfo{}
 	}
-	return transport.TenantInfo{
+	info := transport.TenantInfo{
 		ID:            m.ID,
 		Name:          m.Name,
 		IsolationType: m.IsolationType,
+		DataRoot:      m.DataRoot,
 		Quotas:        m.Quotas,
 		Entitlements:  m.Entitlements,
 	}
+	if m.CreatedAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
+			info.CreatedAt = parsed
+		}
+	}
+	if m.UpdatedAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, m.UpdatedAt); err == nil {
+			info.UpdatedAt = parsed
+		}
+	}
+	return info
 }

@@ -42,7 +42,7 @@ func (s *qrdbServiceServer) CredentialSubmit(ctx context.Context, req *pb.Creden
 	if s.credentialSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
 	}
-	if err := s.credentialSvc.CredentialSubmit(ctx, req.GetName(), []byte(req.GetValue())); err != nil {
+	if err := s.credentialSvc.CredentialSubmit(ctx, req.GetName(), req.GetValue()); err != nil {
 		return nil, mapCredentialError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -93,7 +93,7 @@ func (s *qrdbServiceServer) CredentialRotate(ctx context.Context, req *pb.Creden
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
 	}
 	result, err := s.credentialSvc.CredentialRotate(ctx, req.GetName(), credentials.RotateOptions{
-		NewValue:    []byte(req.GetNewValue()),
+		NewValue:    req.GetNewValue(),
 		GracePeriod: time.Duration(req.GetGracePeriodSeconds()) * time.Second,
 	})
 	if err != nil {
@@ -122,7 +122,7 @@ func (s *qrdbServiceServer) CredentialRetrieveVersion(ctx context.Context, req *
 		return nil, mapCredentialError(err)
 	}
 	return &pb.CredentialRetrieveVersionResponse{
-		Value: string(value),
+		Value: value,
 	}, nil
 }
 
@@ -179,7 +179,7 @@ func (s *qrdbServiceServer) CredentialStore(ctx context.Context, req *pb.Credent
 	if s.credentialSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "credential"}).Error())
 	}
-	if err := s.credentialSvc.CredentialStore(ctx, req.GetName(), []byte(req.GetValue())); err != nil {
+	if err := s.credentialSvc.CredentialStore(ctx, req.GetName(), req.GetValue()); err != nil {
 		return nil, mapCredentialError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -194,5 +194,5 @@ func (s *qrdbServiceServer) CredentialRetrieve(ctx context.Context, req *pb.Cred
 	if err != nil {
 		return nil, mapCredentialError(err)
 	}
-	return &pb.CredentialRetrieveResponse{Value: string(value)}, nil
+	return &pb.CredentialRetrieveResponse{Value: value}, nil
 }

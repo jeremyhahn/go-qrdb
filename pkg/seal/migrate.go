@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // migrationJournalSuffix is appended to the configured RootKeyPath to form the
@@ -408,15 +410,24 @@ func (b *StorageBarrier) FinishMigration(ctx context.Context) error {
 	return b.clearMigrationJournal(ctx)
 }
 
-// DeleteRootKey removes this barrier's persisted sealed root-key blob from the
-// backend. It is used to clean up a STAGING sibling barrier (minted via
-// MintKeyedSibling) when a migration rolls back: without this, the orphaned
-// staging blob makes the next MintKeyedSibling's Initialize fail with
-// ErrAlreadyInitialized, permanently wedging every retry. Unlike Delete it is not
-// seal-gated — cleanup of a staging blob must succeed regardless of seal state. A
-// missing blob is not an error.
+// DeleteRootKey removes this barrier's persisted sealed root-key blob, and its
+// wrapped-root-key sibling (see unsealkey.go), from the backend. It is used to
+// clean up a STAGING sibling barrier (minted via MintKeyedSibling or
+// MintKeyedShamirSibling) when a migration rolls back, or on mint failure:
+// without this, the orphaned staging blob makes the next mint's Initialize
+// fail with ErrAlreadyInitialized, permanently wedging every retry. The
+// wrapped sibling is deleted too so a failed or rolled-back Shamir mint
+// (MintKeyedShamirSibling writes the wrapped blob to the staging ".wrapped"
+// path before this is ever called for rollback) does not leave orphaned
+// ciphertext behind — it carries no plaintext secret, but cleanup should
+// still be complete. Unlike Delete it is not seal-gated — cleanup of a
+// staging blob must succeed regardless of seal state. A missing blob (either
+// one) is not an error.
 func (b *StorageBarrier) DeleteRootKey(ctx context.Context) error {
 	if err := b.base.Delete(ctx, b.config.RootKeyPath); err != nil && !isSecretNotFound(err) {
+		return err
+	}
+	if err := b.base.Delete(ctx, b.wrappedRootKeyPath()); err != nil && !isSecretNotFound(err) {
 		return err
 	}
 	return nil
@@ -475,12 +486,113 @@ func (b *StorageBarrier) MintKeyedSibling(ctx context.Context, stagingSuffix str
 	return sib, nil
 }
 
+// MintKeyedShamirSibling is the Shamir analogue of MintKeyedSibling. A Shamir
+// barrier cannot be produced by MintKeyedSibling's generic Initialize path:
+// ShamirStrategy.SealRootKey deliberately persists no key material (the whole
+// point of Shamir custody), so a plain Initialize against it would silently
+// "succeed" while leaving the root key unrecoverable. A real Shamir barrier
+// requires the direct-mode ceremony: the freshly-generated root key is wrapped
+// under an ephemeral unseal key, and that unseal key — not the root key — is
+// split threshold-of-total and sealed to THIS barrier's enrolled Security
+// Officers via its CeremonyDistributor.
+//
+// This does NOT delegate to sib.InitializeShamir: that helper's wrapped-blob
+// AEAD binds its associated data to the barrier's OWN RootKeyPath
+// (wrappedRootKeyAAD, an explicit anti-transplant protection — see
+// unsealkey.go), which for a sibling is the STAGING path. AdoptMigratedRootKey
+// copies the wrapped blob verbatim onto the CANONICAL path, so a blob wrapped
+// under the staging AAD would authenticate-fail forever on every future
+// unseal. This method instead wraps the sibling's root key using b.wrapRootKey
+// — bound to THIS (the migration source's canonical) RootKeyPath — so the
+// blob is already correct for wherever AdoptMigratedRootKey installs it.
+//
+// It mints the sibling at b.RootKeyPath()+stagingSuffix, generates its root
+// key via the plain Initialize path (ShamirStrategy.SealRootKey's envelope
+// carries no key material, matching initializeShamirDirect's own bootstrap),
+// wraps that root key under a fresh unseal key with the canonical AAD, splits
+// the unseal key to the enrolled officers, and returns the unsealed sibling
+// plus the ShamirInitParams (threshold/total/share count) — no share bytes;
+// officers claim their share via the normal share-claim flow once the
+// migration adopts this sibling's root key (AdoptMigratedRootKey).
+//
+// Preconditions mirror a fresh BarrierShamirInitialize exactly: b must already
+// have a CeremonyDistributor wired (SetCeremonyDistributor) and at least
+// `total` officers enrolled for it, or this fails with the same typed errors
+// (ErrCeremonyDistributorNotConfigured / ErrInsufficientOfficers) a fresh
+// Shamir init would. Enabling encryption to Shamir has the same operational
+// precondition as initializing a new Shamir barrier — it is not a lesser or
+// different ceremony.
+func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuffix string, threshold, total int) (*StorageBarrier, *ShamirInitParams, error) {
+	if b.distributor == nil {
+		return nil, nil, ErrCeremonyDistributorNotConfigured
+	}
+	strat, err := NewShamirStrategy(threshold, total)
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg := BarrierConfig{
+		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
+		DeploymentID: b.config.DeploymentID,
+	}
+	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strat)
+	if err != nil {
+		return nil, nil, err
+	}
+	// See MintKeyedSibling: the staging path is migration-owned, so clear any
+	// abandoned prior attempt before Initialize's first-writer CAS.
+	if derr := sib.DeleteRootKey(ctx); derr != nil {
+		return nil, nil, derr
+	}
+	sib.SetShamirConfig(&ShamirConfig{Threshold: threshold, TotalShares: total})
+	sib.SetCeremonyDistributor(b.distributor)
+
+	if ierr := sib.Initialize(ctx, Credentials{}); ierr != nil {
+		return nil, nil, ierr
+	}
+	rootKey, err := sib.GetMasterKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer secure.Wipe(rootKey)
+
+	unsealKey, err := generateUnsealKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer secure.Wipe(unsealKey)
+
+	wrappedBlob, err := b.wrapRootKey(unsealKey, rootKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	if perr := sib.base.Put(ctx, sib.wrappedRootKeyPath(), wrappedBlob); perr != nil {
+		return nil, nil, perr
+	}
+
+	shareCount, err := b.distributor.SealAndDistribute(ctx, unsealKey, threshold, total)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return sib, &ShamirInitParams{Threshold: threshold, TotalShares: total, ShareCount: shareCount}, nil
+}
+
 // ReopenKeyed constructs a fresh barrier over THIS barrier's backend and config
 // (canonical RootKeyPath, same DeploymentID) using the given keyed strategy and
 // unseals it. It is the post-commit step of an encryption migration: after
 // AdoptMigratedRootKey has written the keyed root key onto the canonical path,
 // the live (none) barrier is replaced with the value ReopenKeyed returns. The
 // caller has already quiesced the stores the barrier protects.
+//
+// A Shamir strategy is the one exception: ShamirStrategy.UnsealRootKey always
+// fails closed with ErrShamirUnsealRequiresQuorum — by design, a Shamir
+// barrier never auto-unseals from disk, migration or not — so ReopenKeyed does
+// not attempt Unseal for it. Instead it registers the M-of-N scheme and this
+// barrier's CeremonyDistributor on the fresh instance and returns it SEALED,
+// pending the normal Security Officer quorum via UnsealWithShare(s). This
+// matches Shamir's behavior everywhere else in this package; the caller must
+// tolerate a sealed return (Services()-style callers already do, via
+// seal.ErrSealed).
 func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrategy, creds Credentials) (*StorageBarrier, error) {
 	cfg := BarrierConfig{
 		RootKeyPath:  b.config.RootKeyPath,
@@ -489,6 +601,13 @@ func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrate
 	nb, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {
 		return nil, err
+	}
+	if strategy.ID() == StrategyShamir {
+		if shamirStrat, ok := strategy.(*ShamirStrategy); ok {
+			nb.SetShamirConfig(&ShamirConfig{Threshold: shamirStrat.Threshold(), TotalShares: shamirStrat.TotalShares()})
+		}
+		nb.SetCeremonyDistributor(b.distributor)
+		return nb, nil
 	}
 	if err := nb.Unseal(ctx, creds); err != nil && !errors.Is(err, ErrAlreadyUnsealed) {
 		return nil, err
@@ -511,6 +630,18 @@ func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrate
 // target must be an initialized, unsealed keyed barrier (StrategyPassphrase or
 // StrategyShamir); both barriers share this package so the keyed sealed blob is
 // read directly from target.
+//
+// For a Shamir target this ALSO adopts the wrapped-root-key blob the Shamir
+// indirection depends on (see unsealkey.go): ShamirStrategy.SealRootKey
+// persists no key material in the envelope copied below by design (that is
+// the whole point of Shamir custody) — the actual root key lives, AEAD-wrapped
+// under the ephemeral unseal key the M-of-N shares reconstruct, at
+// target.wrappedRootKeyPath(). Without also copying that blob onto b's
+// canonical wrappedRootKeyPath(), a migrated Shamir barrier would adopt an
+// envelope with no way to ever recover the root key — permanently unsealable.
+// It also registers the target's ShamirStrategy (with its threshold/total) and
+// CeremonyDistributor onto b so this in-process instance can serve a
+// subsequent UnsealWithShare(s) / Status() call immediately.
 func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *StorageBarrier) error {
 	if target == nil {
 		return ErrNilSealedData
@@ -535,10 +666,47 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	if err != nil {
 		return err
 	}
+
+	// For a Shamir target, write the wrapped-root-key blob BEFORE the
+	// canonical root-key blob. The canonical blob at b.config.RootKeyPath is
+	// the boot marker: boot logic keys off its presence (and its Strategy
+	// field) to decide how to unseal, and resolveDirectSecret falls back to
+	// legacy direct-mode (treating the reconstructed unseal key AS the root
+	// key) whenever the wrapped blob is missing. Writing the canonical blob
+	// LAST makes the commit crash-safe write-ahead: if the process crashes
+	// between the two Puts, boot still observes the PRE-migration (source)
+	// canonical blob and the migration simply restarts from scratch — it can
+	// never observe a canonical blob naming Shamir without the wrapped blob
+	// its unseal path depends on. The previous ordering (canonical first,
+	// wrapped second) left exactly that crash window and produced a
+	// permanently unsealable barrier with wrong DEKs derived from the raw
+	// unseal key.
+	if targetStrategy == StrategyShamir {
+		wrapped, werr := target.base.Get(ctx, target.wrappedRootKeyPath())
+		if werr != nil {
+			return werr
+		}
+		if perr := b.base.Put(ctx, b.wrappedRootKeyPath(), wrapped); perr != nil {
+			return perr
+		}
+	}
+
 	// Overwrite the canonical root-key blob with the keyed sealed root key.
+	// This MUST be the last durable write in the commit sequence (see the
+	// ordering comment above): its presence is the boot marker, and for a
+	// Shamir target it must only ever be observed alongside an already-durable
+	// wrapped blob.
 	if err := b.base.Put(ctx, b.config.RootKeyPath, blob); err != nil {
 		return err
 	}
+
+	if targetStrategy == StrategyShamir {
+		if strat := target.ShamirStrategy(); strat != nil {
+			b.setStrategy(StrategyShamir, strat)
+			b.SetShamirConfig(&ShamirConfig{Threshold: strat.Threshold(), TotalShares: strat.TotalShares()})
+		}
+	}
+
 	// Transition the in-memory active strategy so Status() reflects the keyed
 	// strategy immediately; the durable transition is the blob above.
 	b.activeStrategy.Store(targetStrategy)

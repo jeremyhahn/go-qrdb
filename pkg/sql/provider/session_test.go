@@ -100,3 +100,51 @@ func TestQRDBSession_EmbeddedBaseSession(t *testing.T) {
 	// Verify the embedded BaseSession is functional by calling its methods.
 	assert.Equal(t, base.ID(), sess.ID())
 }
+
+// TestQRDBSession_SharesBaseSessionState verifies that the session is embedded
+// by pointer, so mutable per-connection state is shared with the base session
+// rather than copied at construction. Transaction state lives on
+// sql.BaseSession, so a copy would silently strand a transaction started
+// through the QRDBSession where no other holder of the base session could see
+// it.
+func TestQRDBSession_SharesBaseSessionState(t *testing.T) {
+	base := sqle.NewBaseSession()
+	sess := NewSession(base, &auth.Identity{Subject: "frank"})
+
+	// A write through the wrapper is observable on the base session.
+	sess.SetCurrentDatabase("via_wrapper")
+	assert.Equal(t, "via_wrapper", base.GetCurrentDatabase())
+
+	// ...and a write through the base session is observable on the wrapper.
+	base.SetCurrentDatabase("via_base")
+	assert.Equal(t, "via_base", sess.GetCurrentDatabase())
+}
+
+// stubTransaction is a minimal sql.Transaction used to assert that
+// transaction state set through a QRDBSession lands on the shared base
+// session rather than on a copy.
+type stubTransaction struct{ name string }
+
+func (t stubTransaction) String() string   { return t.name }
+func (t stubTransaction) IsReadOnly() bool { return false }
+
+// TestQRDBSession_TransactionStateIsShared verifies that a transaction set
+// through the QRDBSession is visible on the underlying base session. This is
+// the property that lets go-mysql-server's sql.TransactionSession contract
+// work across the statements of one connection: GMS reads and writes the
+// active transaction through sql.BaseSession, so a by-value copy would strand
+// it.
+func TestQRDBSession_TransactionStateIsShared(t *testing.T) {
+	base := sqle.NewBaseSession()
+	sess := NewSession(base, nil)
+
+	require.Nil(t, sess.GetTransaction())
+
+	tx := stubTransaction{name: "txn-1"}
+	sess.SetTransaction(tx)
+
+	require.NotNil(t, base.GetTransaction())
+	assert.Equal(t, "txn-1", base.GetTransaction().String(),
+		"transaction set through the wrapper must be visible on the base session")
+	assert.Equal(t, tx, sess.GetTransaction())
+}

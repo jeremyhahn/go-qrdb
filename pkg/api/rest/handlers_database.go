@@ -15,11 +15,15 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -73,7 +77,22 @@ type createDatabaseRequest struct {
 		MySQL      bool `json:"mysql"`
 		PostgreSQL bool `json:"postgresql"`
 	} `json:"protocol"`
-	Raft *raftConfigRequest `json:"raft,omitempty"`
+	Raft    *raftConfigRequest    `json:"raft,omitempty"`
+	Barrier *barrierConfigRequest `json:"barrier,omitempty"`
+}
+
+// barrierConfigRequest is the JSON representation of encryption barrier
+// configuration in a database creation request. Secret carries the barrier
+// passphrase for the initial Initialize call; it is never persisted (the
+// on-disk DatabaseBarrierConfig / meta.json has no secret field) and is
+// zeroed as soon as it has been copied into the seal.Credentials passed to
+// EnsureBarrier.
+type barrierConfigRequest struct {
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode,omitempty"`
+	SharesRequired int    `json:"sharesRequired,omitempty"`
+	SharesTotal    int    `json:"sharesTotal,omitempty"`
+	Secret         string `json:"secret,omitempty"`
 }
 
 // raftConfigRequest is the JSON representation of Raft consensus configuration
@@ -154,6 +173,11 @@ type updateDatabaseRaftRequest struct {
 	Multicast      *multicastDiscoveryConfigRequest `json:"multicast,omitempty"`
 	DNS            *dnsDiscoveryConfigRequest       `json:"dns,omitempty"`
 	Token          *tokenDiscoveryConfigRequest     `json:"token,omitempty"`
+}
+
+// scaleDatabaseRequest is the JSON payload for PATCH /v1/databases/{name}/scale.
+type scaleDatabaseRequest struct {
+	TargetReplicas int `json:"target_replicas"`
 }
 
 // updateDatabaseBarrierRequest is the JSON payload for PATCH /v1/databases/{name}/barrier.
@@ -281,7 +305,19 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 		cfg.Raft = raftConfigFromRequest(req.Raft)
 	}
 
-	info, err := s.databaseSvc.CreateForTenant(r.Context(), cfg)
+	var creds seal.Credentials
+	if req.Barrier != nil {
+		cfg.Barrier = &database.DatabaseBarrierConfig{
+			Enabled:        req.Barrier.Enabled,
+			Mode:           req.Barrier.Mode,
+			SharesRequired: req.Barrier.SharesRequired,
+			SharesTotal:    req.Barrier.SharesTotal,
+		}
+		creds = seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+		req.Barrier.Secret = ""
+	}
+
+	info, err := s.createDatabaseForTenant(r.Context(), cfg, creds)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -290,6 +326,14 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(databaseInfoToResponse(info))
+}
+
+// createDatabaseForTenant creates cfg via the tenant-scoped path, threading
+// creds through when the resolved DatabaseServicer supports credentialed
+// creation. See service.CreateDatabaseForTenantWithCredentials, the shared
+// helper every transport (REST, gRPC, QUIC, MCP, Unix) delegates to.
+func (s *Server) createDatabaseForTenant(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	return service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)
 }
 
 // handleListDatabases handles GET /v1/databases/list -- returns information
@@ -317,8 +361,8 @@ func (s *Server) handleListDatabases(w http.ResponseWriter, r *http.Request) {
 // handleDatabaseByName routes GET /v1/databases/{name},
 // DELETE /v1/databases/{name}, PATCH /v1/databases/{name}/protocol,
 // PATCH /v1/databases/{name}/etcd, PATCH /v1/databases/{name}/raft,
-// PATCH /v1/databases/{name}/barrier, and
-// PATCH /v1/databases/{name}/connection to the appropriate handler
+// PATCH /v1/databases/{name}/barrier, PATCH /v1/databases/{name}/connection,
+// and PATCH /v1/databases/{name}/scale to the appropriate handler
 // using the database name extracted from the URL path.
 func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 	if s.databaseSvc == nil {
@@ -356,6 +400,10 @@ func (s *Server) handleDatabaseByName(w http.ResponseWriter, r *http.Request) {
 	}
 	if subPath == "barrier" && r.Method == http.MethodPatch {
 		s.handleUpdateDatabaseBarrier(w, r, name)
+		return
+	}
+	if subPath == "scale" && r.Method == http.MethodPatch {
+		s.handleScaleDatabase(w, r, name)
 		return
 	}
 	if subPath == "connection" && r.Method == http.MethodPatch {
@@ -486,6 +534,38 @@ func (s *Server) handleUpdateDatabaseRaft(w http.ResponseWriter, r *http.Request
 
 	info, err := s.databaseSvc.UpdateRaftForTenant(r.Context(), name, raftCfg)
 	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, databaseInfoToResponse(info))
+}
+
+// handleScaleDatabase handles PATCH /v1/databases/{name}/scale -- changes
+// the replication factor of an existing dedicated-raft database. When the
+// local node is not the dedicated group's Raft leader and leader forwarding
+// is configured, the request is transparently proxied to the leader (see
+// tryForwardWrite), mirroring the KV PUT/DELETE handlers. The body is
+// buffered up front (rather than decoded directly off r.Body) so the
+// original bytes remain available for forwarding.
+func (s *Server) handleScaleDatabase(w http.ResponseWriter, r *http.Request, name string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	var req scaleDatabaseRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	info, err := s.databaseSvc.ScaleForTenant(r.Context(), name, req.TargetReplicas)
+	if err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}

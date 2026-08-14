@@ -43,9 +43,20 @@ type CeremonyServicer interface {
 	// by verifying the officer's nonce signature and returning the certificate.
 	CeremonyCompleteClaimCert(ctx context.Context, username, nonceHex string, signature []byte) (*CeremonyClaimCertResult, error)
 
-	// CeremonyClaimShare retrieves the Shamir share for the given officer
-	// username.
-	CeremonyClaimShare(ctx context.Context, username string) ([]byte, error)
+	// CeremonyBeginClaimShare starts the Shamir share claim handshake for the
+	// given officer username, returning a challenge nonce. callerCertThumbprint
+	// is the thumbprint of the mTLS client certificate the caller presented,
+	// computed with ceremony.CertThumbprint; it must match the thumbprint
+	// recorded for the officer at enrollment time or the handshake is refused
+	// with ceremony.ErrCertThumbprintMismatch. Callers that cannot produce a
+	// peer certificate must not invoke this method.
+	CeremonyBeginClaimShare(ctx context.Context, username, callerCertThumbprint string) (*CeremonyChallenge, error)
+
+	// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+	// verifying the officer's signature over the challenge nonce AND
+	// re-verifying callerCertThumbprint against the enrolled officer record.
+	// The share is released exactly once and its enclave is destroyed.
+	CeremonyCompleteClaimShare(ctx context.Context, username, nonceHex string, signature []byte, callerCertThumbprint string) (*CeremonyShareClaimResult, error)
 
 	// CeremonySignCSR signs a CSR during the ceremony for an officer or
 	// service, returning the issued certificate.
@@ -193,12 +204,6 @@ type CeremonyInitResult struct {
 	// TLSCertPEM is the PEM-encoded TLS certificate issued for the server.
 	TLSCertPEM []byte
 
-	// SOCertPEM is the PEM-encoded Security Officer certificate.
-	SOCertPEM []byte
-
-	// SOKeyPEM is the PEM-encoded Security Officer private key.
-	SOKeyPEM []byte
-
 	// State is the ceremony state after initialization.
 	State string
 
@@ -224,6 +229,19 @@ type CeremonyClaimCertResult struct {
 
 	// CACertPEM is the PEM-encoded CA certificate for trust chain verification.
 	CACertPEM []byte
+}
+
+// CeremonyShareClaimResult contains the output of a successful Shamir share
+// claim. It is returned exactly once per officer per distribution round.
+type CeremonyShareClaimResult struct {
+	// ShareIndex is the 1-based Shamir share index assigned to the officer.
+	ShareIndex int
+
+	// ShareBytes is the marshalled Shamir share envelope. The field is
+	// excluded from JSON serialisation so that a struct-level marshal can
+	// never leak it; transports must emit it deliberately and only over the
+	// officer's own authenticated session.
+	ShareBytes []byte `json:"-"`
 }
 
 // CeremonySignCSRResult contains the output of a successful CSR signing
@@ -304,8 +322,6 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		SPKIPin:    result.SPKIPin,
 		CACertPEM:  result.CACertPEM,
 		TLSCertPEM: result.TLSCertPEM,
-		SOCertPEM:  result.SOCertPEM,
-		SOKeyPEM:   result.SOKeyPEM,
 		State:      string(result.State),
 		ShareCount: result.ShareCount,
 	}, nil
@@ -341,11 +357,41 @@ func (s *CeremonyService) CeremonyCompleteClaimCert(ctx context.Context, usernam
 	}, nil
 }
 
-// CeremonyClaimShare retrieves the Shamir share for the given officer
-// username by delegating to the underlying CeremonyService's ClaimShare
-// method.
-func (s *CeremonyService) CeremonyClaimShare(ctx context.Context, username string) ([]byte, error) {
-	return s.ceremony.ClaimShare(ctx, username)
+// CeremonyBeginClaimShare starts the Shamir share claim handshake by
+// delegating to the underlying CeremonyService's BeginClaimShare method.
+// The raw nonce bytes are converted to a hex-encoded string. The caller
+// certificate thumbprint is passed through unmodified so the ceremony layer
+// can match it against the enrolled officer record.
+func (s *CeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, callerCertThumbprint string) (*CeremonyChallenge, error) {
+	challenge, err := s.ceremony.BeginClaimShare(ctx, username, callerCertThumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CeremonyChallenge{
+		NonceHex:  hex.EncodeToString(challenge.Nonce),
+		ExpiresAt: challenge.ExpiresAt,
+	}, nil
+}
+
+// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+// delegating to the underlying CeremonyService's CompleteClaimShare method
+// and mapping the result to the service-layer CeremonyShareClaimResult type.
+func (s *CeremonyService) CeremonyCompleteClaimShare(
+	ctx context.Context,
+	username, nonceHex string,
+	signature []byte,
+	callerCertThumbprint string,
+) (*CeremonyShareClaimResult, error) {
+	result, err := s.ceremony.CompleteClaimShare(ctx, username, nonceHex, signature, callerCertThumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CeremonyShareClaimResult{
+		ShareIndex: result.ShareIndex,
+		ShareBytes: result.ShareBytes,
+	}, nil
 }
 
 // CeremonySignCSR signs a CSR during the ceremony by delegating to the

@@ -17,6 +17,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,10 +87,15 @@ type nodeLoadResponse struct {
 }
 
 // imbalanceReportResponse is the JSON payload returned by GET /v1/rebalance/report.
+// Hotspots has NO omitempty: it is a collection the client iterates
+// unconditionally (RebalancePanel reads report.hotspots.length), so it must
+// always serialize as a JSON array — never be omitted (a balanced cluster has
+// zero hotspots, the common case) and never be null. The build site below
+// guarantees a non-nil slice so the wire value is [] rather than null.
 type imbalanceReportResponse struct {
 	Nodes          []nodeLoadResponse `json:"nodes"`
 	ImbalanceScore float64            `json:"imbalance_score"`
-	Hotspots       []string           `json:"hotspots,omitempty"`
+	Hotspots       []string           `json:"hotspots"`
 }
 
 // ---------------------------------------------------------------------------
@@ -163,15 +169,28 @@ func (s *Server) handleRebalancePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rebalancePlanToResponse(plan))
 }
 
-// handleRebalanceExecute handles POST /v1/rebalance/execute -- executes a plan.
+// handleRebalanceExecute handles POST /v1/rebalance/execute -- executes a
+// plan. A dedicated-tenant shard MOVE within the plan must run on that
+// group's current Raft leader; when the local node is not it,
+// RebalanceService.ExecuteRebalance returns *service.NotLeaderError and this
+// handler transparently proxies the whole request to the leader (see
+// tryForwardWrite), mirroring the KV PUT/DELETE and database-scale handlers.
+// The body is buffered up front (rather than decoded directly off r.Body) so
+// the original bytes remain available for forwarding.
 func (s *Server) handleRebalanceExecute(w http.ResponseWriter, r *http.Request) {
 	if s.rebalanceSvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "rebalance"})
 		return
 	}
 
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
 	var req rebalancePlanResponse
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -180,7 +199,10 @@ func (s *Server) handleRebalanceExecute(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 	result, err := s.rebalanceSvc.ExecuteRebalance(ctx, responseToRebalancePlan(&req))
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, err)
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -219,10 +241,17 @@ func (s *Server) handleImbalanceReport(w http.ResponseWriter, r *http.Request) {
 			LeaderCount: report.Nodes[i].LeaderCount,
 		}
 	}
+	// Guarantee a non-nil slice so the "hotspots" field serializes as [] (not
+	// null, and — with the omitempty removed above — never omitted) when the
+	// cluster is balanced, so clients can iterate report.hotspots safely.
+	hotspots := report.Hotspots
+	if hotspots == nil {
+		hotspots = []string{}
+	}
 	writeJSON(w, imbalanceReportResponse{
 		Nodes:          nodes,
 		ImbalanceScore: report.ImbalanceScore,
-		Hotspots:       report.Hotspots,
+		Hotspots:       hotspots,
 	})
 }
 

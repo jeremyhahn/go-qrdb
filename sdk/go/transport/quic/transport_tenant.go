@@ -40,6 +40,7 @@ func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenan
 		Name:              req.Name,
 		IsolationType:     string(req.IsolationType),
 		BarrierAutoUnseal: req.BarrierAutoUnseal,
+		DataRoot:          req.DataRoot,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateTenant", Err: err}
@@ -500,6 +501,7 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		ID:            resp.GetId(),
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
+		DataRoot:      resp.GetDataRoot(),
 	}
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {

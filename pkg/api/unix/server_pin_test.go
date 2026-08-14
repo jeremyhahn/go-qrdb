@@ -49,7 +49,7 @@ func TestWithPINBackend_Applied(t *testing.T) {
 	backend := &stubPINBackend{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-pinbackend.sock",
 		WithPINBackend(backend),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.pinBackend != backend {
 		t.Fatalf("pinBackend = %v, want injected backend", srv.pinBackend)
 	}
@@ -60,7 +60,7 @@ func TestWithPINBackend_Applied(t *testing.T) {
 func TestWithPINBackend_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-pinbackend-nil.sock",
 		WithPINBackend(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.pinBackend != nil {
 		t.Fatal("expected nil pinBackend")
 	}

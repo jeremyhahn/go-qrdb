@@ -17,14 +17,28 @@
 package unix
 
 import (
+	"context"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+// stubEncryptionMigrator is a minimal service.EncryptionMigrator used to
+// verify the WithEncryptionMigrator option and its Start-time registration.
+type stubEncryptionMigrator struct{}
+
+func (stubEncryptionMigrator) EnableEncryption(_ context.Context, _ service.BarrierScope, _ seal.MigrationOptions) error {
+	return nil
+}
+
+var _ service.EncryptionMigrator = stubEncryptionMigrator{}
 
 // TestWithLock_Applied verifies the WithLock option sets the lockSvc field.
 func TestWithLock_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-lock.sock",
 		WithLock(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.lockSvc != nil {
 		t.Fatal("expected nil lockSvc")
 	}
@@ -34,9 +48,50 @@ func TestWithLock_Applied(t *testing.T) {
 func TestWithTenantService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tenant.sock",
 		WithTenantService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.tenantSvc != nil {
 		t.Fatal("expected nil tenantSvc")
+	}
+}
+
+// TestWithEncryptionMigrator_Applied verifies the WithEncryptionMigrator
+// option sets the encMigrator field. The nil case must not crash Start.
+func TestWithEncryptionMigrator_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-encmigrator.sock",
+		WithEncryptionMigrator(nil),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.encMigrator != nil {
+		t.Fatal("expected nil encMigrator")
+	}
+}
+
+// TestWithEncryptionMigrator_NonNil verifies the WithEncryptionMigrator
+// option propagates a non-nil migrator through to the Server struct.
+func TestWithEncryptionMigrator_NonNil(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-encmigrator-nn.sock",
+		WithEncryptionMigrator(stubEncryptionMigrator{}),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.encMigrator == nil {
+		t.Fatal("expected non-nil encMigrator after WithEncryptionMigrator")
+	}
+}
+
+// TestStart_WithEncryptionMigrator_Registered exercises the non-nil
+// encMigrator branch in Start so that BarrierEnableEncryption is reachable
+// over the Unix socket the same way it is over REST and TCP gRPC.
+func TestStart_WithEncryptionMigrator_Registered(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithEncryptionMigrator(stubEncryptionMigrator{}),
+		WithTLS(selfSignedTLSConfig(t)))
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.Addr() == "" {
+		t.Fatal("expected non-empty Addr after Start")
 	}
 }
 
@@ -44,7 +99,7 @@ func TestWithTenantService_Applied(t *testing.T) {
 func TestWithAuthFactorService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-authfactor.sock",
 		WithAuthFactorService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.authFactorSvc != nil {
 		t.Fatal("expected nil authFactorSvc")
 	}
@@ -55,7 +110,7 @@ func TestWithAuthFactorService_Applied(t *testing.T) {
 func TestWithTenantBarrierService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tenantbarrier.sock",
 		WithTenantBarrierService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.tenantBarrierSvc != nil {
 		t.Fatal("expected nil tenantBarrierSvc")
 	}
@@ -67,7 +122,7 @@ func TestWithTenantBarrierService_NonNil(t *testing.T) {
 	stub := &stubTenantBarrierSvc{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tenantbarrier-nn.sock",
 		WithTenantBarrierService(stub),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.tenantBarrierSvc == nil {
 		t.Fatal("expected non-nil tenantBarrierSvc after WithTenantBarrierService")
 	}
@@ -77,7 +132,7 @@ func TestWithTenantBarrierService_NonNil(t *testing.T) {
 func TestWithKVService_Applied(t *testing.T) {
 	srv := NewServer(nil, nil, "/tmp/test-kvsvc.sock",
 		WithKVService(newMockKVService()),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.kvSvc == nil {
 		t.Fatal("expected non-nil kvSvc after WithKVService")
 	}
@@ -87,7 +142,7 @@ func TestWithKVService_Applied(t *testing.T) {
 func TestWithAdminService_Applied(t *testing.T) {
 	srv := NewServer(nil, nil, "/tmp/test-adminsvc.sock",
 		WithAdminService(&mockAdminService{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.adminSvc == nil {
 		t.Fatal("expected non-nil adminSvc after WithAdminService")
 	}
@@ -97,7 +152,7 @@ func TestWithAdminService_Applied(t *testing.T) {
 func TestWithAuditLogger_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-audit.sock",
 		WithAuditLogger(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.auditLogger != nil {
 		t.Fatal("expected nil auditLogger")
 	}
@@ -113,7 +168,7 @@ func TestWithAllNewOptions_StartStop(t *testing.T) {
 		WithAuthFactorService(nil),
 		WithTenantBarrierService(nil),
 		WithAuditLogger(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -133,7 +188,7 @@ func TestStart_WithTenantBarrierService_Registered(t *testing.T) {
 	socketPath := tempSocketPath(t)
 	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
 		WithTenantBarrierService(&stubTenantBarrierSvc{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)

@@ -37,6 +37,9 @@ type failingInnerKV struct {
 }
 
 func (f *failingInnerKV) Put(_ context.Context, _ string, _ []byte) error { return f.err }
+func (f *failingInnerKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return false, f.err
+}
 func (f *failingInnerKV) Get(_ context.Context, _ string) ([]byte, error) {
 	return nil, f.err
 }

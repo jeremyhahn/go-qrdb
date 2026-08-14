@@ -46,6 +46,10 @@ func TestRESTMVCC_AllMethods_Closed(t *testing.T) {
 		}},
 		{"Compact", func() error { return rt.Compact(ctx, 1) }},
 		{"CurrentRevision", func() error { _, e := rt.CurrentRevision(ctx); return e }},
+		{"RestoreToRevision", func() error {
+			_, e := rt.RestoreToRevision(ctx, &transport.RestoreRevisionRequest{Revision: 1})
+			return e
+		}},
 		{"ExecuteTransaction", func() error {
 			_, e := rt.ExecuteTransaction(ctx, &transport.TransactionRequest{})
 			return e

@@ -91,36 +91,33 @@ Source: `pkg/role/store.go` -- `BuiltInRoles(tenantID string) []*Role`
 
 Built-in roles are created at bootstrap for each tenant. They use deterministic UUIDs so the same role always has the same ID within a given tenant. All built-in roles are marked `System: true` and cannot be deleted.
 
-| Role | Description | Permission Scope |
-|------|-------------|-----------------|
-| `superadmin` | Full access, bypasses all authorization checks | All registered permissions |
-| `admin` | Administrative operations without data access | Admin, Users, Roles, Certs, Seal, Tenants |
-| `operator` | Data operations plus limited admin visibility | All data services + `admin:health`, `admin:status` |
-| `readwrite` | Data read and write without admin or index/TS/vector mutation | KV, MVCC (no compact), Transaction, Batch, Watch, Lease (no revoke) |
-| `readonly` | Data read-only access | KV read, MVCC read, Lease read |
+The canonical set is the six FIPS 140-3 / PCI-DSS v4 roles from [auth/roles.md](../auth/roles.md): SO, Admin, Operator, User, Auditor, Custodian. A seventh, `Owner`, is a standard-posture convenience superuser -- see `pkg/role.OwnerRole` -- that is inert whenever strict separation of duties is enforced.
 
-### Permission Details
+| Role | Description |
+|------|-------------|
+| `so` | Security Officer -- module lifecycle, PIN/PIV governance, CA and ACME administration, role/user/tenant management. **No** cryptographic key-use permissions (FIPS 140-3 AS10.03). |
+| `admin` | Operational key lifecycle, certificate/password/SSH vault administration, tenant configuration, and (system-tenant only) cross-tenant provisioning + the broker data-plane admin wildcards. |
+| `operator` | Routine cryptographic operations, all data-service verbs (KV/MVCC/Vector/TimeSeries/...), and the day-to-day (non-admin) broker data-plane verbs. |
+| `user` | Cryptographic operations using existing keys, plus the broker orchestrator consumer slice. No key or configuration management. |
+| `auditor` | Read-only visibility into audit logs, user/role/cert/tenant metadata, and orchestrator metadata (FIPS 140-3 AS10.10 -- never payload data). |
+| `custodian` | Shamir share holder. Holds only `barrier:unseal-share` and the tenant-barrier share/vote equivalents (FIPS 140-3 AS10.06). |
+| `owner` | Full `permission.All()`. Standard-posture only; the RBAC authorizer strips this grant under strict separation of duties. |
 
-**superadmin**: Receives `permission.All()` -- every permission in the registry. The RBAC authorizer also has a fast-path bypass: if any role name equals `"superadmin"`, authorization succeeds without resolving permissions.
+### Registry-derived permission sets
 
-**admin**: All permissions from Admin Services and Management Services groups (see [permissions/README.md](../permissions/README.md)). No data service permissions.
+The SO, Admin, Operator, User, and Auditor permission sets are **not** hand-maintained lists inside `pkg/role`. Each is a live projection of `permission.RolePermissions(role)` -- see [permissions/README.md](../permissions/README.md#built-in-role-default-grants). Every permission declares its own default role placement, once, in `pkg/permission/builtin_role_grants.go`; `BuiltInRoles` only materializes the projection. This means:
 
-**operator**: All data service permissions (KV, MVCC, Transaction, Batch, Watch, Lease, Index, TimeSeries, Vector) plus `admin:health` and `admin:status`.
+- There is exactly one place to change a permission's role placement.
+- A higher layer (go-quicbaas, go-xkms) can place a permission it contributes onto a built-in role via the `sdk/go` re-export (`RegisterPermissionRoleGrant`) instead of being limited to a hand-authored custom role.
+- The projection is evaluated at role-seed time, not cached at package-init time, so a permission registered late (e.g. by a higher layer's composition root, before role seeding) is still included.
 
-**readwrite**: Core data read/write permissions. Excludes `mvcc:compact`, `lease:revoke`, Index, TimeSeries, and Vector.
-
-**readonly**: Read-only subset: `kv:get`, `kv:list`, `kv:exists`, `kv:range`, MVCC read operations, `lease:ttl`, `lease:list`.
+`custodian` and `owner` are the two exceptions: Custodian's set is a fixed, minimal literal (`pkg/role.custodianPermissions`) unrelated to the registry, and Owner is `permission.All()`.
 
 ## RBAC Authorizer
 
 Source: `pkg/auth/rbac/rbac.go`
 
 ```go
-type RBACAuthorizer struct {
-    roles role.RoleServicer
-    cache *permissionCache
-}
-
 func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer
 
 func (a *RBACAuthorizer) Authorize(
@@ -130,14 +127,24 @@ func (a *RBACAuthorizer) Authorize(
 ) error
 ```
 
-### Authorization Flow
+Options set the security posture:
 
-1. **Nil identity check** -- Returns `auth.ErrUnauthenticated`
-2. **Superadmin bypass** -- If any role in `identity.Roles` equals `"superadmin"`, return `nil` immediately
-3. **Cache lookup** -- Check `sync.Map`-based permission cache keyed by `(tenantID, subject)`
-4. **Cache miss** -- Call `roles.ResolvePermissions(ctx, identity.Roles)` to resolve all permissions, then cache the result
-5. **Permission check** -- Construct `Permission(resource + ":" + action)` and check membership in the resolved set
-6. **Denied** -- Return `PermissionDeniedError` (wraps `auth.ErrUnauthorized`)
+- `WithStrictSeparation(bool)` -- when strict (the daemon sets this from `crypto/fips140.Enabled()` or the separation-of-duties config flag), the `owner` role is stripped from every identity before permissions are resolved, so no one inherits `permission.All()`.
+- `WithScopeResolver(...)` -- resolves each permission's scope in the identity's own tenant instead of the process-global default. A resolution error (for example, a sealed barrier tenant) denies the request.
+- `WithRoleServiceFallback(...)` -- a StaleRead-backed role store consulted only when the primary linearizable read fails or times out (cold ReadIndex, draining host). Role data is replicated before servers accept traffic, so the stale read is safe for authorization.
+- `WithCacheTTL(...)` -- TTL for the per-identity permission cache (default 30s).
+
+### Authorization flow
+
+There is no superadmin or god-mode role. Assigning a role that does not exist grants nothing, so the request is denied by default. The one special case runs the other way: an explicit deny that no grant can override.
+
+1. **Nil identity** -- returns `auth.ErrUnauthenticated`.
+2. **SO deny-list (FIPS 140-3 AS10.03)** -- if the identity holds the `so` role and the request is a cryptographic operation, it is denied here, before anything else. A Security Officer administers the module but must not use the keys. The deny-list has two halves in `rbac.go`: `soDeniedActions` pins the operations whose verb alone is not conclusive (`keys:sign`, `encrypt`, `decrypt`, `verify`, `wrap`, `unwrap`, `derive`, and `piv:use`), and `soDeniedCryptoVerbs` denies any resource whose action names a cryptographic primitive (`sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote`) so that a permission contributed by a higher layer -- go-quicbaas's `attestation:attest`, for example -- is covered without qrdb knowing the resource exists. `seal:unseal`, `seal:seal` and `ceremony:sign_csr` are deliberately **not** denied: they are the SO's own module-lifecycle duty. The check precedes permission resolution so an erroneous grant cannot re-open it.
+3. **Effective roles** -- under strict separation of duties, the `owner` role (by name or per-tenant system ID) is removed from the identity's role list.
+4. **Permission resolution** -- the union of the effective roles' permissions is resolved through the role service and cached per `(tenantID, subject)`. A transient failure of the primary linearizable read falls back to the StaleRead store when one is configured.
+5. **Permission check** -- the request is allowed only when `resource:action` is in the resolved set. Whole-segment wildcards match too: `resource:*`, `*:action`, and `*:*`. The built-in roles use concrete permissions.
+6. **Scope / system-tenant rule** -- a `ScopeCross` permission requires the identity to belong to the system tenant; a `ScopeSelf` permission requires the identity's tenant to equal the request's target tenant (the system tenant may target any). The scope is read live from the identity's own tenant, and a scope-resolution error denies.
+7. **Default deny** -- anything not granted returns `PermissionDeniedError` (wrapping `auth.ErrUnauthorized`).
 
 ### Permission Cache
 

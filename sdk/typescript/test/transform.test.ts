@@ -26,7 +26,15 @@ import {
     camelToSnakeKey,
     deepSnakeToCamel,
     deepCamelToSnake,
+    decodeBase64Utf8,
+    encodeBase64Utf8,
+    decodeMVCCKV,
+    decodeWatchEventKV,
+    decodeOpResponses,
+    decodeRestoreKeyChange,
+    decodeRestoreResult,
 } from '../src/transform.js';
+import type { MVCCKeyValue, WatchEvent, OpResponse, RestoreKeyChange, RestoreRevisionResult } from '../src/types.js';
 
 // ---------------------------------------------------------------------------
 // snakeToCamelKey
@@ -352,5 +360,247 @@ describe('TestJsonBody_RoundTrip camel→snake→camel', () => {
         expect(backToCamel.compares[0]['createRevision']).toBe(5);
         expect(backToCamel.successOps[0]['leaseId']).toBe(99);
         expect(backToCamel.failureOps).toHaveLength(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// MVCCKeyValue base64 → plaintext decoding
+//
+// sdk/go/transport.MVCCKeyValue carries key/value as []byte, so both wire
+// protocols the SDK speaks (REST JSON and Wails IPC) base64-encode them.
+// These helpers are shared by RestClient and WailsClient (rest.ts, wails.ts)
+// so every MVCCKeyValue the SDK returns -- single-key MVCC reads, range
+// results, transaction/batch Get/Range results, and watch events -- is
+// plaintext, matching kv.get/kv.scan.
+// ---------------------------------------------------------------------------
+
+describe('decodeBase64Utf8', () => {
+    it('decodes ASCII base64 to plaintext', () => {
+        expect(decodeBase64Utf8('aGVsbG8=')).toBe('hello');
+    });
+
+    it('decodes multibyte UTF-8 base64 to plaintext', () => {
+        // "aMOpbGxv" === base64(UTF-8 bytes of "héllo").
+        expect(decodeBase64Utf8('aMOpbGxv')).toBe('héllo');
+    });
+
+    it('decodes empty string to empty string', () => {
+        expect(decodeBase64Utf8('')).toBe('');
+    });
+});
+
+describe('decodeMVCCKV', () => {
+    const kv = (key: string, value: string): MVCCKeyValue => ({
+        key,
+        value,
+        createRevision: 1,
+        modRevision: 2,
+        version: 3,
+        leaseId: 0,
+    });
+
+    it('decodes base64 key/value to plaintext, preserving other fields', () => {
+        const decoded = decodeMVCCKV(kv('aGVsbG8=', 'd29ybGQ='));
+
+        expect(decoded.key).toBe('hello');
+        expect(decoded.value).toBe('world');
+        expect(decoded.createRevision).toBe(1);
+        expect(decoded.modRevision).toBe(2);
+        expect(decoded.version).toBe(3);
+        expect(decoded.leaseId).toBe(0);
+    });
+
+    it('leaves empty key/value as empty strings', () => {
+        const decoded = decodeMVCCKV(kv('', ''));
+
+        expect(decoded.key).toBe('');
+        expect(decoded.value).toBe('');
+    });
+});
+
+describe('decodeWatchEventKV', () => {
+    it('decodes kv and prevKv from base64 to plaintext', () => {
+        const evt: WatchEvent = {
+            type: 0,
+            kv: {
+                key: 'aGVsbG8=',
+                value: 'd29ybGQ=',
+                createRevision: 1,
+                modRevision: 1,
+                version: 1,
+                leaseId: 0,
+            },
+            prevKv: {
+                key: 'aGVsbG8=',
+                value: 'b2xk', // base64("old")
+                createRevision: 1,
+                modRevision: 0,
+                version: 0,
+                leaseId: 0,
+            },
+        };
+
+        const decoded = decodeWatchEventKV(evt);
+
+        expect(decoded.kv.key).toBe('hello');
+        expect(decoded.kv.value).toBe('world');
+        expect(decoded.prevKv?.key).toBe('hello');
+        expect(decoded.prevKv?.value).toBe('old');
+    });
+
+    it('leaves prevKv undefined when absent', () => {
+        const evt: WatchEvent = {
+            type: 1,
+            kv: {
+                key: 'aGVsbG8=',
+                value: '',
+                createRevision: 1,
+                modRevision: 2,
+                version: 2,
+                leaseId: 0,
+            },
+        };
+
+        const decoded = decodeWatchEventKV(evt);
+
+        expect(decoded.kv.key).toBe('hello');
+        expect(decoded.prevKv).toBeUndefined();
+    });
+});
+
+describe('decodeOpResponses', () => {
+    it('decodes kvs on each OpResponse from base64 to plaintext', () => {
+        const responses: OpResponse[] = [
+            {
+                succeeded: true,
+                kvs: [
+                    {
+                        key: 'aGVsbG8=',
+                        value: 'd29ybGQ=',
+                        createRevision: 1,
+                        modRevision: 1,
+                        version: 1,
+                        leaseId: 0,
+                    },
+                ],
+            },
+            { succeeded: true },
+        ];
+
+        const decoded = decodeOpResponses(responses);
+
+        expect(decoded[0].kvs?.[0]?.key).toBe('hello');
+        expect(decoded[0].kvs?.[0]?.value).toBe('world');
+        // Responses without kvs (e.g. a Put or Delete op) are returned
+        // unchanged -- no crash on the missing/optional field.
+        expect(decoded[1].kvs).toBeUndefined();
+        expect(decoded[1].succeeded).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// encodeBase64Utf8 / decodeRestoreKeyChange / decodeRestoreResult
+// ---------------------------------------------------------------------------
+
+describe('encodeBase64Utf8', () => {
+    it('encodes ASCII plaintext to base64', () => {
+        expect(encodeBase64Utf8('hello')).toBe('aGVsbG8=');
+    });
+
+    it('encodes multibyte UTF-8 plaintext to base64', () => {
+        expect(encodeBase64Utf8('héllo')).toBe('aMOpbGxv');
+    });
+
+    it('encodes empty string to empty string', () => {
+        expect(encodeBase64Utf8('')).toBe('');
+    });
+
+    it('round-trips through decodeBase64Utf8 for arbitrary plaintext', () => {
+        const original = 'prefix/with/slashes and spaces héllo 日本語';
+        expect(decodeBase64Utf8(encodeBase64Utf8(original))).toBe(original);
+    });
+});
+
+describe('decodeRestoreKeyChange', () => {
+    const change = (key: string): RestoreKeyChange => ({
+        key,
+        action: 'revert',
+        fromRevision: 9,
+        toRevision: 5,
+        valueBytes: 3,
+    });
+
+    it('decodes base64 key to plaintext, preserving other fields', () => {
+        const decoded = decodeRestoreKeyChange(change('aGVsbG8='));
+
+        expect(decoded.key).toBe('hello');
+        expect(decoded.action).toBe('revert');
+        expect(decoded.fromRevision).toBe(9);
+        expect(decoded.toRevision).toBe(5);
+        expect(decoded.valueBytes).toBe(3);
+    });
+
+    it('leaves empty key as empty string', () => {
+        expect(decodeRestoreKeyChange(change('')).key).toBe('');
+    });
+});
+
+describe('decodeRestoreResult', () => {
+    it('decodes changes and conflicts key fields from base64 to plaintext', () => {
+        const result: RestoreRevisionResult = {
+            revision: 5,
+            changes: [
+                { key: 'aGVsbG8=', action: 'revert', fromRevision: 9, toRevision: 5, valueBytes: 3 },
+                { key: 'd29ybGQ=', action: 'recreate', fromRevision: 0, toRevision: 5, valueBytes: 1 },
+            ],
+            conflicts: [
+                { key: 'aGVsbG8=', action: 'revert', fromRevision: 9, toRevision: 5, valueBytes: 3 },
+            ],
+            applied: 1,
+            skipped: 0,
+            conflicted: 1,
+            dryRun: false,
+        };
+
+        const decoded = decodeRestoreResult(result);
+
+        expect(decoded.changes[0].key).toBe('hello');
+        expect(decoded.changes[1].key).toBe('world');
+        expect(decoded.conflicts?.[0]?.key).toBe('hello');
+        // Non-key fields pass through unchanged.
+        expect(decoded.revision).toBe(5);
+        expect(decoded.applied).toBe(1);
+        expect(decoded.conflicted).toBe(1);
+        expect(decoded.dryRun).toBe(false);
+    });
+
+    it('leaves conflicts undefined when absent', () => {
+        const result: RestoreRevisionResult = {
+            revision: 5,
+            changes: [{ key: 'aGVsbG8=', action: 'delete', fromRevision: 9, toRevision: 0, valueBytes: 0 }],
+            applied: 1,
+            skipped: 0,
+            conflicted: 0,
+            dryRun: false,
+        };
+
+        const decoded = decodeRestoreResult(result);
+
+        expect(decoded.conflicts).toBeUndefined();
+        expect(decoded.changes[0].key).toBe('hello');
+    });
+
+    it('round-trips an arbitrary non-ASCII key through encode then decode', () => {
+        const original = '日本語キー';
+        const result: RestoreRevisionResult = {
+            revision: 1,
+            changes: [{ key: encodeBase64Utf8(original), action: 'revert', fromRevision: 1, toRevision: 1, valueBytes: 0 }],
+            applied: 1,
+            skipped: 0,
+            conflicted: 0,
+            dryRun: false,
+        };
+
+        expect(decodeRestoreResult(result).changes[0].key).toBe(original);
     });
 });

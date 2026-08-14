@@ -15,6 +15,7 @@
 package rest
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -248,16 +249,20 @@ func TestWithCORS_IntegrationWithServer(t *testing.T) {
 		AllowedHeaders: []string{"Authorization", "Content-Type"},
 		MaxAge:         3600,
 	}
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithCORS(corsConfig))
+	tlsCfg, pool := generateTestTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithCORS(corsConfig), WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
 	defer srv.Stop()
 
-	// Make a CORS preflight request.
-	req, _ := http.NewRequest(http.MethodOptions, "http://"+srv.Addr()+"/health", nil)
+	// Make a CORS preflight request over TLS (the transport is TLS-only).
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+	}}
+	req, _ := http.NewRequest(http.MethodOptions, "https://"+srv.Addr()+"/health", nil)
 	req.Header.Set("Origin", "https://browser.example.com")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

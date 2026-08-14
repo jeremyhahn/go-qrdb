@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -55,16 +56,22 @@ var _ RoleServicer = (*kvRoleStore)(nil)
 //	__sys:role_idx/name/{tenantID}/{roleName}    -> roleID (as bytes)
 type kvRoleStore struct {
 	store        kvstore.KVStore
-	quotaChecker quota.Checker // optional; nil skips quota enforcement
+	quotaChecker quota.Checker     // optional; nil skips quota enforcement
+	audit        audit.AuditLogger // optional; nil disables audit emission
 }
 
 // NewStore creates a new KVStore-backed RoleServicer. The provided
-// kvstore must not be nil.
-func NewStore(store kvstore.KVStore) (RoleServicer, error) {
+// kvstore must not be nil. Optional Options (e.g. WithAuditLogger) tune
+// the store's behavior.
+func NewStore(store kvstore.KVStore, opts ...Option) (RoleServicer, error) {
 	if store == nil {
 		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
 	}
-	return &kvRoleStore{store: store}, nil
+	s := &kvRoleStore{store: store}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // WithQuotaChecker returns a new kvRoleStore with the given quota.Checker
@@ -152,6 +159,12 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (*
 		return nil, &StoreError{Op: "create", Detail: "put name index", Err: err}
 	}
 
+	s.emitAudit(ctx, "create", "role:"+r.ID, map[string]any{
+		"name":        r.Name,
+		"tenantID":    tenantID,
+		"permissions": len(r.Permissions),
+	})
+
 	return r, nil
 }
 
@@ -180,7 +193,7 @@ func (s *kvRoleStore) GetRole(ctx context.Context, id string) (*Role, error) {
 	// (prefix-isolation) store; barrier-isolated tenants are already
 	// physically isolated by the routing layer. GetRoleByName and
 	// ResolvePermissions both funnel through here, so they inherit the check.
-	if ctxTenant := tenant.FromContext(ctx); ctxTenant != tenant.SystemTenantID && r.TenantID != ctxTenant {
+	if ctxTenant := tenant.FromContext(ctx); !tenant.IsSystemTenant(ctxTenant) && r.TenantID != ctxTenant {
 		return nil, &RoleNotFoundError{ID: id}
 	}
 	return &r, nil
@@ -269,6 +282,14 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 		return nil, &StoreError{Op: "update", Detail: "put primary", Err: err}
 	}
 
+	s.emitAudit(ctx, "update", "role:"+existing.ID, map[string]any{
+		"name":                existing.Name,
+		"tenantID":            existing.TenantID,
+		"name_changed":        nameChanged,
+		"permissions_changed": req.Permissions != nil,
+		"permissions":         len(existing.Permissions),
+	})
+
 	return existing, nil
 }
 
@@ -300,6 +321,11 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 	if err := s.store.Delete(ctx, nameIndexKey(existing.TenantID, existing.Name)); err != nil {
 		return &StoreError{Op: "delete", Detail: "name index", Err: err}
 	}
+
+	s.emitAudit(ctx, "delete", "role:"+id, map[string]any{
+		"name":     existing.Name,
+		"tenantID": existing.TenantID,
+	})
 
 	return nil
 }
@@ -398,8 +424,21 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 // BuiltInRoles returns the predefined system roles for the given tenant.
 // Each role uses a deterministic UUID derived from its name and tenant ID.
 //
+// The SO, Admin, Operator, User, and Auditor permission sets are NOT
+// hand-maintained lists: each is a live projection of the permission
+// registry's default role-grant metadata (permission.RolePermissions),
+// registered once per permission in pkg/permission/builtin_role_grants.go
+// rather than duplicated here. Role placement is metadata carried by the
+// permission; this function only materializes it. Because
+// permission.RolePermissions reads the registry at call time rather than a
+// value cached at package-init time, a permission registered by a
+// higher-layer package (go-quicbaas, go-xkms) before role seeding is
+// reflected here even though it was contributed after this package's own
+// init() ran.
+//
 // Roles are ordered as follows:
-//  1. SO (Security Officer) — governance only, no crypto (FIPS 140-3 AS10.03)
+//  1. SO (Security Officer) — governance only, no crypto (FIPS 140-3 AS10.03,
+//     enforced structurally by permission.RegisterRoleGrant)
 //  2. Admin — key lifecycle and tenant management. Grants cross-tenant
 //     authority only when the role is held in the system tenant
 //     (Admin@system); the system-tenant rule in pkg/auth/rbac filters
@@ -407,7 +446,8 @@ func (s *kvRoleStore) ResolvePermissions(ctx context.Context, roleIDs []string) 
 //  3. Operator — routine crypto and maintenance
 //  4. User — end-user cryptographic operations
 //  5. Auditor — read-only audit and state visibility
-//  6. Custodian — Shamir share holder; single permission only
+//  6. Custodian — Shamir share holder; single permission only (a fixed,
+//     minimal set, not registry-derived — see custodianPermissions)
 func BuiltInRoles(tenantID string) []*Role {
 	if tenantID == "" {
 		tenantID = tenant.SystemTenantID
@@ -420,7 +460,7 @@ func BuiltInRoles(tenantID string) []*Role {
 			ID:          SystemRoleID(tenantID, RoleNameSO),
 			Name:        RoleNameSO,
 			TenantID:    tenantID,
-			Permissions: soPermissions(),
+			Permissions: permission.RolePermissions(permission.RoleSO),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -429,7 +469,7 @@ func BuiltInRoles(tenantID string) []*Role {
 			ID:          SystemRoleID(tenantID, RoleNameAdmin),
 			Name:        RoleNameAdmin,
 			TenantID:    tenantID,
-			Permissions: adminPermissions(),
+			Permissions: permission.RolePermissions(permission.RoleAdmin),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -438,7 +478,7 @@ func BuiltInRoles(tenantID string) []*Role {
 			ID:          SystemRoleID(tenantID, RoleNameOperator),
 			Name:        RoleNameOperator,
 			TenantID:    tenantID,
-			Permissions: operatorPermissions(),
+			Permissions: permission.RolePermissions(permission.RoleOperator),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -447,7 +487,7 @@ func BuiltInRoles(tenantID string) []*Role {
 			ID:          SystemRoleID(tenantID, RoleNameUser),
 			Name:        RoleNameUser,
 			TenantID:    tenantID,
-			Permissions: userPermissions(),
+			Permissions: permission.RolePermissions(permission.RoleUser),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -456,7 +496,7 @@ func BuiltInRoles(tenantID string) []*Role {
 			ID:          SystemRoleID(tenantID, RoleNameAuditor),
 			Name:        RoleNameAuditor,
 			TenantID:    tenantID,
-			Permissions: auditorPermissions(),
+			Permissions: permission.RolePermissions(permission.RoleAuditor),
 			System:      true,
 			CreatedAt:   now,
 			UpdatedAt:   now,
@@ -528,404 +568,6 @@ func deterministicUUID(tenantID, name string) string {
 	nsData := sha256.Sum256([]byte("go-qrdb:role-namespace"))
 	ns, _ := uuid.FromBytes(nsData[:16])
 	return uuid.NewSHA1(ns, []byte(tenantID+"/"+name)).String()
-}
-
-// soPermissions returns the permission set for the Security Officer role.
-// The SO manages module lifecycle and governance. Cryptographic operations
-// (keys:sign, keys:encrypt, keys:decrypt, keys:verify, keys:wrap, keys:unwrap)
-// are NOT included here and are also enforced via the RBAC deny-list even if
-// erroneously added (FIPS 140-3 AS10.03 defense-in-depth).
-func soPermissions() []permission.Permission {
-	perms := []permission.Permission{
-		// Seal management (SO-exclusive)
-		permission.SealBootstrap, permission.SealUnseal, permission.SealSeal,
-		permission.SealStatus, permission.SealRotateRootKey, permission.SealRekey,
-		permission.SealGenerateRecovery, permission.SealRecoverWithKeys,
-		permission.SealInitializeShamir,
-		// Security Officer operations (SO-exclusive)
-		permission.SealOfficerRegister, permission.SealOfficerList,
-		permission.SealSubmitSealVote,
-		// Ceremony (SO-exclusive)
-		permission.CeremonyInitialize, permission.CeremonyEnrollCustodian,
-		permission.CeremonyRevokeCustodian, permission.CeremonyClaimCert,
-		permission.CeremonySignCSR, permission.CeremonyStatus,
-		// Certificate management
-		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
-		permission.CertsList, permission.CertsRead,
-		// Role management (SO-exclusive)
-		permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
-		permission.RolesDelete, permission.RolesList, permission.RolesAssign,
-		permission.RolesUnassign, permission.PermissionsList,
-		// User management
-		permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
-		permission.UsersDelete, permission.UsersList, permission.UsersEnable,
-		permission.UsersDisable,
-		// Tenant management
-		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
-		permission.TenantsDelete, permission.TenantsList,
-		permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
-		// Key lifecycle (infrastructure keys — delete any key; create infra keys)
-		permission.KeysCreate, permission.KeysDelete, permission.KeysList, permission.KeysGet,
-		// Key material import/export (privileged lifecycle — NOT sign/encrypt/decrypt)
-		permission.KeysImport, permission.KeysExport,
-		// Hardware crypto backend inventory
-		permission.BackendsList, permission.BackendsRead,
-		// PKCS#11 PIN management and PIV slot administration (governance, no crypto use)
-		permission.PINRead, permission.PINWrite,
-		permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
-		// Audit (operational oversight)
-		permission.AuditRead, permission.AuditQuery,
-		// Admin
-		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
-		permission.AdminAddMember, permission.AdminRemoveMember,
-		permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
-		// Auth factor management
-		permission.AuthFactorEnroll, permission.AuthFactorList, permission.AuthFactorRevoke,
-	}
-	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
-	return perms
-}
-
-// adminPermissions returns the permission set for the Admin built-in role.
-// Admins manage operational key lifecycle and tenant configuration. They cannot
-// initialize the module, reset SO PINs, or perform barrier bootstrapping.
-//
-// The cross-scope permissions at the bottom of this list (TenantsListCross,
-// TenantsCreateCross, TenantsApprove, VolumePool*, RegistrationConfig*,
-// AuditReadCross) confer cross-tenant authority only when held by an
-// identity in the system tenant (the system-tenant rule in
-// pkg/auth/rbac filters them out for tenant-local identities). A
-// tenant-local Admin can carry these grants without exercising them
-// outside their own tenant.
-func adminPermissions() []permission.Permission {
-	perms := []permission.Permission{
-		// Key lifecycle (operational keys — cannot delete infrastructure keys)
-		permission.KeysCreate, permission.KeysRotate, permission.KeysDelete,
-		permission.KeysList, permission.KeysGet,
-		// Wrap/unwrap for key transport
-		permission.KeysWrap, permission.KeysUnwrap,
-		// Key material import/export (privileged lifecycle)
-		permission.KeysImport, permission.KeysExport,
-		// Certificate management
-		permission.CertsGenerate, permission.CertsExport, permission.CertsRevoke,
-		permission.CertsList, permission.CertsRead,
-		// Hardware crypto backend inventory
-		permission.BackendsList, permission.BackendsRead,
-		// PKCS#11 PIN management and PIV slot administration (no crypto use)
-		permission.PINRead, permission.PINWrite,
-		permission.PIVRead, permission.PIVWrite, permission.PIVDelete,
-		// Password vault administration
-		permission.PasswordsRead, permission.PasswordsWrite, permission.PasswordsDelete,
-		permission.PasswordsGenerate, permission.PasswordsLock, permission.PasswordsUnlock,
-		// Seal management (operational subset: no bootstrap, rotate, rekey)
-		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
-		permission.SealRecoverWithKeys,
-		// Ceremony (status only)
-		permission.CeremonyStatus,
-		// Tenant management (self-scope: act on own tenant)
-		permission.TenantsCreate, permission.TenantsRead, permission.TenantsUpdate,
-		permission.TenantsDelete, permission.TenantsList,
-		// Tenant provisioning controls: isolation tier and plan entitlements.
-		permission.TenantsSetIsolation, permission.TenantsSetEntitlements,
-		// Per-tenant barrier management (tenant-only scope: a tenant admin
-		// may init/unseal/seal their OWN tenant's barrier; the system tenant
-		// is structurally denied these by the ScopeTenantOnly rule even
-		// though the perm is present in the role).
-		permission.TenantBarrierInit, permission.TenantBarrierUnseal,
-		permission.TenantBarrierSeal,
-		// Per-tenant Security Officer management (ScopeTenantOnly: tenant admin
-		// registers and lists officers for their OWN tenant's barrier only).
-		permission.TenantBarrierOfficerRegister, permission.TenantBarrierOfficerList,
-		// User management
-		permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
-		permission.UsersDelete, permission.UsersList, permission.UsersEnable,
-		permission.UsersDisable,
-		// Role management (read/assign — cannot create/delete system roles)
-		permission.RolesRead, permission.RolesList, permission.RolesAssign,
-		permission.RolesUnassign, permission.PermissionsList,
-		// Admin service
-		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
-		permission.AdminAddMember, permission.AdminRemoveMember,
-		permission.AdminSnapshot, permission.AdminDrain, permission.AdminCapabilities,
-		// Audit (self-scope)
-		permission.AuditRead, permission.AuditQuery,
-		// Cross-scope tenant management — only effective for system-tenant Admin.
-		permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
-		// Cross-scope volume pool management — only effective for system-tenant Admin.
-		permission.VolumePoolCreate, permission.VolumePoolList, permission.VolumePoolRead,
-		permission.VolumePoolUpdate, permission.VolumePoolDelete,
-		// Cross-scope registration policy — only effective for system-tenant Admin.
-		permission.RegistrationConfigRead, permission.RegistrationConfigUpdate,
-		// Cross-scope audit — only effective for system-tenant Admin.
-		permission.AuditReadCross,
-		// Broker-domain tenant security surfaces (ScopeTenantOnly: a tenant
-		// admin manages their OWN tenant's secret vault, trust pool, and ACME
-		// issuance; the system tenant is structurally denied by the
-		// ScopeTenantOnly rule). Parallels the Admin role already holding
-		// certs:* and passwords:*. mcp/agent scopes are intentionally NOT
-		// granted here — they are wired by the broker's role->scope mapping.
-		permission.SecretsRead, permission.SecretsWrite, permission.SecretsDelete,
-		permission.SecretsList,
-		permission.TrustRead, permission.TrustWrite,
-		permission.ACMERead, permission.ACMEWrite,
-		// Broker data-plane families (ScopeTenantOnly). A tenant admin owns the
-		// full lifecycle of their OWN tenant's data-plane surfaces, so each whole
-		// family is granted via a resource:* whole-segment wildcard (expanded
-		// against concrete resource:action checks by the RBAC authorizer). The
-		// system tenant is structurally denied these by the ScopeTenantOnly rule
-		// even though the wildcard is present in the role. Without these grants a
-		// human tenant-admin's USER token resolves no data-plane scopes and is
-		// denied every broker data-plane operation.
-		permission.ObjStoreAll,
-		permission.OrchestratorAll,
-		permission.SchedulerAll,
-		permission.MessagingAll,
-		permission.ParametersAll,
-		permission.DynamicSecretsAll,
-		permission.ProjectAll,
-		permission.OllamaAll,
-	}
-	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
-	return perms
-}
-
-// operatorPermissions returns the permission set for the Operator built-in role.
-// Operators perform routine crypto operations and maintenance. They can sign,
-// encrypt, and decrypt using existing keys, and seal/unseal the barrier, but
-// cannot create/delete keys or manage tenants. Operators are also the non-admin
-// humans who USE the broker data-plane services: they hold the day-to-day verbs
-// of the eight broker data-plane families (objstore, orchestrator, scheduler,
-// messaging, parameters, dynamic_secrets, project, ollama) — but NOT each
-// family's administrative / governance verbs, which remain Admin-only.
-func operatorPermissions() []permission.Permission {
-	perms := []permission.Permission{
-		// Cryptographic operations
-		permission.KeysSign, permission.KeysVerify,
-		permission.KeysEncrypt, permission.KeysDecrypt,
-		permission.KeysList, permission.KeysGet,
-		// Key rotation (not creation/deletion)
-		permission.KeysRotate,
-		// Key derivation (KDF / ECDH key agreement)
-		permission.KeysDerive,
-		// Hardware crypto backend inventory (read-only — operators use backends)
-		permission.BackendsList, permission.BackendsRead,
-		// PIN read, PIV slot read + cryptographic use
-		permission.PINRead, permission.PIVRead, permission.PIVUse,
-		// Password vault (operational use)
-		permission.PasswordsRead, permission.PasswordsWrite, permission.PasswordsDelete,
-		permission.PasswordsGenerate, permission.PasswordsLock, permission.PasswordsUnlock,
-		// Barrier (operational: not bootstrap or SO-exclusive ops)
-		permission.SealUnseal, permission.SealSeal, permission.SealStatus,
-		// Ceremony (status only)
-		permission.CeremonyStatus,
-		// KV
-		permission.KVPut, permission.KVGet, permission.KVDelete,
-		permission.KVList, permission.KVExists, permission.KVRange,
-		// MVCC
-		permission.MVCCPutWithLease, permission.MVCCGetRevision,
-		permission.MVCCGetAtRevision, permission.MVCCRange,
-		permission.MVCCCompact, permission.MVCCCurrentRevision,
-		// Transaction
-		permission.TransactionExecute,
-		// Batch
-		permission.BatchExecute,
-		// Watch
-		permission.WatchWatch, permission.WatchWatchPrefix,
-		// Lease
-		permission.LeaseGrant, permission.LeaseRevoke,
-		permission.LeaseKeepAlive, permission.LeaseTTL, permission.LeaseList,
-		// Index
-		permission.IndexCreate, permission.IndexDrop,
-		permission.IndexQuery, permission.IndexScan,
-		// TimeSeries
-		permission.TSWrite, permission.TSWriteBatch,
-		permission.TSQuery, permission.TSAggregate,
-		// Vector
-		permission.VectorNamespaceCreate, permission.VectorNamespaceDelete,
-		permission.VectorNamespaceList, permission.VectorNamespaceInfo,
-		permission.VectorUpsert, permission.VectorGet, permission.VectorDelete,
-		permission.VectorBatchUpsert, permission.VectorBatchDelete, permission.VectorList,
-		permission.VectorUpdateMetadata, permission.VectorSearchSimilar,
-		permission.VectorSearchByMetadata, permission.VectorHybridSearch,
-		permission.VectorSearchByID, permission.VectorRebuildIndex,
-		permission.VectorGetRebuildProg, permission.VectorGetIndexStats,
-		permission.VectorCompact, permission.VectorGetCompactProg,
-		// Admin (limited)
-		permission.AdminHealth, permission.AdminStatus,
-		// Audit (read)
-		permission.AuditRead,
-		// Broker data-plane families (ScopeTenantOnly): day-to-day, non-admin
-		// verbs only. Operators are non-admin humans who USE the BaaS services;
-		// they create/read/update/delete THEIR OWN data objects but do NOT hold
-		// the administrative / governance verbs of each family (those remain
-		// Admin-only via the resource:* wildcards in adminPermissions). The
-		// concrete perms are enumerated deliberately — operator is NEVER granted
-		// a resource:* wildcard, which would sweep in admin verbs such as
-		// objstore:admin or dynamic_secrets:role_*. The ScopeTenantOnly rule in
-		// pkg/auth/rbac still confines these to the operator's OWN tenant.
-		//
-		// Object storage: full object lifecycle on the operator's own objects.
-		// Excluded: objstore:admin (backend admin/GC/repair/compaction),
-		// objstore:write_policy + objstore:tenant_quota_write (governance), and
-		// objstore:replicate + objstore:migrate (cross-backend data movement —
-		// conservatively reserved to Admin).
-		permission.ObjStorePut, permission.ObjStoreGet, permission.ObjStoreDelete,
-		permission.ObjStoreList, permission.ObjStoreHead, permission.ObjStoreCopy,
-		permission.ObjStoreArchive, permission.ObjStoreRestore,
-		permission.ObjStoreVerify, permission.ObjStoreBatch,
-		permission.ObjStoreReadPolicy, permission.ObjStoreReadBackend,
-		permission.ObjStoreReadStats, permission.ObjStoreTenantUsage,
-		permission.ObjStoreTenantQuotaRead,
-		// Orchestrator: all 32 concrete verbs. Operators run the full
-		// orchestration data plane day-to-day — spawning/observing sessions,
-		// authoring workflows, dispatching and completing tasks, managing the
-		// agent fleet (including removing dead/stuck agents), reading/writing the
-		// shared cache, and broadcasting drain/reload to the fleet. Workflow
-		// authoring (orchestrator:workflow_write), removing dead agents
-		// (orchestrator:agent_remove), and fleet broadcast
-		// (orchestrator:broadcast) are operational verbs, not governance.
-		// The concrete verbs are enumerated deliberately rather than granting the
-		// orchestrator:* wildcard, so any future admin-only orchestrator verb does
-		// NOT silently accrue to operator (that wildcard stays Admin-only).
-		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
-		permission.OrchestratorStatus, permission.OrchestratorClose,
-		permission.OrchestratorList, permission.OrchestratorTaskCreate,
-		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
-		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
-		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
-		permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
-		permission.OrchestratorJobRead, permission.OrchestratorJobList,
-		permission.OrchestratorJobCancel, permission.OrchestratorBackendList,
-		permission.OrchestratorDiscover, permission.OrchestratorHook,
-		permission.OrchestratorWorkflowRead, permission.OrchestratorWorkflowWrite,
-		permission.OrchestratorHealth, permission.OrchestratorInference,
-		permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
-		permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
-		permission.OrchestratorAgentHeartbeat, permission.OrchestratorCacheRead,
-		permission.OrchestratorCacheWrite, permission.OrchestratorBroadcast,
-		// Messaging: full channel lifecycle + pub/sub on the operator's own
-		// channels (delete is a day-to-day op on the user's own data object).
-		permission.MessagingChannelCreate, permission.MessagingChannelRead,
-		permission.MessagingChannelList, permission.MessagingChannelDelete,
-		permission.MessagingPublish, permission.MessagingSubscribe,
-		permission.MessagingUnsubscribe, permission.MessagingWatch,
-		permission.MessagingStats,
-		// Scheduler: full job lifecycle on the operator's own jobs.
-		permission.SchedulerCreate, permission.SchedulerRead, permission.SchedulerList,
-		permission.SchedulerUpdate, permission.SchedulerDelete,
-		permission.SchedulerTrigger, permission.SchedulerPause,
-		permission.SchedulerResume, permission.SchedulerCancel,
-		permission.SchedulerHistory, permission.SchedulerStatus,
-		// Parameters: full CRUD + search on the operator's own parameters.
-		permission.ParametersRead, permission.ParametersWrite,
-		permission.ParametersDelete, permission.ParametersList,
-		permission.ParametersSearch,
-		// Dynamic secrets: issue and manage leases. Excluded: all
-		// dynamic_secrets:role_* (role definition management is governance).
-		permission.DynamicSecretsGenerate, permission.DynamicSecretsLeaseRenew,
-		permission.DynamicSecretsLeaseRevoke, permission.DynamicSecretsLeaseList,
-		// Project: full project lifecycle. Excluded: project:grant + project:revoke
-		// (granting/revoking other agents' project roles is governance).
-		permission.ProjectCreate, permission.ProjectRead, permission.ProjectList,
-		permission.ProjectUpdate, permission.ProjectDelete,
-		// Ollama: inference + read-only model inspection.
-		permission.OllamaHealth, permission.OllamaModelList,
-		permission.OllamaModelInfo, permission.OllamaEmbed,
-	}
-	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
-	return perms
-}
-
-// userPermissions returns the permission set for the User built-in role.
-// Users perform cryptographic operations (sign, verify, encrypt, decrypt) using
-// existing keys. They cannot create, delete, or modify keys or configurations.
-func userPermissions() []permission.Permission {
-	perms := []permission.Permission{
-		// Cryptographic operations (read-only key access)
-		permission.KeysSign, permission.KeysVerify,
-		permission.KeysEncrypt, permission.KeysDecrypt,
-		// Key derivation (KDF / ECDH)
-		permission.KeysDerive,
-		// Key metadata (public fields only)
-		permission.KeysGet, permission.KeysList,
-		// PIV slot cryptographic use
-		permission.PIVUse,
-		// Personal password vault (use own credentials)
-		permission.PasswordsRead, permission.PasswordsLock, permission.PasswordsUnlock,
-		// System health (all roles can check health)
-		permission.AdminHealth, permission.AdminStatus,
-		// Orchestrator: the consumer slice (17 verbs). End users are CONSUMERS of
-		// the orchestration data plane: they spawn/observe/close their own
-		// sessions, prompt and run inference, submit and track their own tasks
-		// (create/read/list/decompose) and jobs (start/read/list/cancel), read
-		// their own artifacts, and read workflows + health. This is the read +
-		// own-work slice, NOT the operator/fleet slice.
-		//
-		// Deliberately EXCLUDED from user (these are operator+ verbs):
-		//   - Worker verbs: task_claim, task_complete, artifact_submit (a user
-		//     submits work, it does not execute the worker side of the queue).
-		//   - Agent fleet verbs: agent_register/read/list/remove/heartbeat (fleet
-		//     membership and lifecycle are operations, not consumption).
-		//   - Shared cache: cache_read, cache_write (cross-session shared state).
-		//   - Fleet control: broadcast (drain/reload the fleet).
-		//   - Authoring/topology: workflow_write, discover, hook, backend_list.
-		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
-		permission.OrchestratorStatus, permission.OrchestratorClose,
-		permission.OrchestratorList, permission.OrchestratorTaskCreate,
-		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
-		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactRead,
-		permission.OrchestratorJobStart, permission.OrchestratorJobRead,
-		permission.OrchestratorJobList, permission.OrchestratorJobCancel,
-		permission.OrchestratorWorkflowRead, permission.OrchestratorHealth,
-		permission.OrchestratorInference,
-	}
-	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
-	return perms
-}
-
-// auditorPermissions returns the permission set for the Auditor built-in role.
-// Auditors have read-only access to audit logs and system state. They cannot
-// modify any state (FIPS 140-3 AS10.10).
-func auditorPermissions() []permission.Permission {
-	perms := []permission.Permission{
-		// Audit visibility (the core auditor capability)
-		permission.AuditRead, permission.AuditQuery, permission.AuditStream,
-		// System state (read-only)
-		permission.AdminHealth, permission.AdminStatus, permission.AdminPeers,
-		// User, role, cert, tenant listing (metadata only — no writes)
-		permission.UsersList, permission.UsersRead,
-		permission.RolesList, permission.RolesRead, permission.PermissionsList,
-		permission.CertsList, permission.CertsRead,
-		// Hardware crypto backend inventory (read-only visibility)
-		permission.BackendsList, permission.BackendsRead,
-		// PIN / PIV / password state (read-only visibility)
-		permission.PINRead, permission.PIVRead, permission.PasswordsRead,
-		permission.TenantsList, permission.TenantsRead,
-		// Key metadata (public fields only — no cryptographic operations)
-		permission.KeysList, permission.KeysGet,
-		// Ceremony status
-		permission.CeremonyStatus,
-		// Auth factor listing
-		permission.AuthFactorList,
-		// Orchestrator: read-only METADATA slice (11 verbs). Auditors observe the
-		// shape and state of the orchestration data plane — session status/list,
-		// task read/list, job read/list, workflow read, agent read/list, backend
-		// list, and health — for compliance review.
-		//
-		// Deliberately EXCLUDED (FIPS 140-3 AS10.10, auditors are metadata-only):
-		//   - orchestrator:artifact_read and orchestrator:cache_read return tenant
-		//     DATA PAYLOADS, not system state; auditors never read payload data.
-		//   - All write/exec verbs (inference, prompt, spawn, task_create, ...) —
-		//     auditors cannot modify any state.
-		permission.OrchestratorStatus, permission.OrchestratorList,
-		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
-		permission.OrchestratorJobRead, permission.OrchestratorJobList,
-		permission.OrchestratorWorkflowRead, permission.OrchestratorAgentRead,
-		permission.OrchestratorAgentList, permission.OrchestratorBackendList,
-		permission.OrchestratorHealth,
-	}
-	sort.Slice(perms, func(i, j int) bool { return perms[i] < perms[j] })
-	return perms
 }
 
 // custodianPermissions returns the permission set for the Custodian built-in role.

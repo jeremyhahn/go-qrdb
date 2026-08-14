@@ -213,6 +213,32 @@ func (b *memBatch) Rollback() error {
 	return nil
 }
 
+// Get reads through the batch's pending operations by replaying them onto a
+// copy of the committed state, so the fake honours storage.Batch's
+// read-your-own-writes contract.
+func (b *memBatch) Get(key []byte) ([]byte, error) {
+	return b.overlay().Get(key)
+}
+
+func (b *memBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return b.overlay().NewIterator(opts)
+}
+
+// overlay materializes the committed state with this batch's pending
+// operations applied.
+func (b *memBatch) overlay() *memStorage {
+	b.store.mu.RLock()
+	view := &memStorage{data: make(map[string][]byte, len(b.store.data))}
+	for k, v := range b.store.data {
+		view.data[k] = v
+	}
+	b.store.mu.RUnlock()
+
+	shadow := &memBatch{store: view, ops: b.ops}
+	_ = shadow.Commit()
+	return view
+}
+
 func (b *memBatch) Close() error {
 	b.ops = nil
 	return nil

@@ -17,7 +17,9 @@
 package rest
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -29,6 +31,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
+
+// nonUTF8CredentialValue is a credential payload with bytes that are invalid
+// UTF-8 (leading 0x00 0xff 0xfe 0x01). Credentials routinely carry such
+// non-UTF-8 content (private keys, certificates, random tokens); these tests
+// prove it round-trips byte-for-byte over the JSON REST transport, which
+// carries the value as a base64 (RFC 4648) []byte field.
+var nonUTF8CredentialValue = []byte{0x00, 0xff, 0xfe, 0x01, 'k', 'e', 'y'}
 
 // ---------------------------------------------------------------------------
 // CredentialList
@@ -147,7 +156,7 @@ func TestHandleCredentialRotate_Success(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
 
-	body := `{"name":"ignored","new_value":"newsecret","grace_period_seconds":60}`
+	body := `{"name":"ignored","new_value":"bmV3c2VjcmV0","grace_period_seconds":60}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/apikey/rotate", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleCredentialRotate(rec, req, "apikey")
@@ -183,7 +192,7 @@ func TestHandleCredentialRotate_NoGrace(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
 
-	body := `{"new_value":"x"}`
+	body := `{"new_value":"eA=="}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotate", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	s.handleCredentialRotate(rec, req, "k")
@@ -205,7 +214,7 @@ func TestHandleCredentialRotate_InvalidGracePeriod(t *testing.T) {
 	}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotate", strings.NewReader(`{"new_value":"x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotate", strings.NewReader(`{"new_value":"eA=="}`))
 	rec := httptest.NewRecorder()
 	s.handleCredentialRotate(rec, req, "k")
 	assertStatus(t, rec, http.StatusBadRequest)
@@ -275,7 +284,7 @@ func TestHandleCredentialRetrieveVersion_Success(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Value != "hello" {
+	if string(resp.Value) != "hello" {
 		t.Errorf("Value = %q, want hello", resp.Value)
 	}
 }
@@ -506,7 +515,7 @@ func TestHandleCredentialByPath_DispatchRotate(t *testing.T) {
 	}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotate", strings.NewReader(`{"new_value":"v"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/k/rotate", strings.NewReader(`{"new_value":"dg=="}`))
 	rec := httptest.NewRecorder()
 	s.handleCredentialByPath(rec, req)
 	assertStatus(t, rec, http.StatusOK)
@@ -639,5 +648,97 @@ func TestMapCredentialHTTPError(t *testing.T) {
 				t.Errorf("mapCredentialHTTPError(%v) = %d, want %d", c.err, got, c.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Binary (non-UTF-8) round-trip
+// ---------------------------------------------------------------------------
+
+// TestHandleCredentialSubmitRetrieveVersion_BinaryRoundTrip proves the submit
+// request body decodes a base64 value to raw bytes before reaching the service
+// and the retrieve-version response re-encodes the raw bytes as base64, so a
+// non-UTF-8 credential survives the JSON REST wire byte-for-byte.
+func TestHandleCredentialSubmitRetrieveVersion_BinaryRoundTrip(t *testing.T) {
+	var stored []byte
+	svc := newCoverageCredentialService()
+	svc.submitFn = func(_ context.Context, _ string, v []byte) error {
+		stored = append([]byte(nil), v...)
+		return nil
+	}
+	svc.retrieveVersionFn = func(_ context.Context, _ string, _ uint64) ([]byte, error) {
+		return stored, nil
+	}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithCredentialService(svc))
+
+	body, err := json.Marshal(credentialSubmitRequest{Name: "k", Value: nonUTF8CredentialValue})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The wire body must carry the value as base64, never the raw bytes.
+	if !strings.Contains(string(body), base64.StdEncoding.EncodeToString(nonUTF8CredentialValue)) {
+		t.Fatalf("submit body is not base64-encoded: %s", body)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCredentialSubmit(rec, req)
+	assertStatus(t, rec, http.StatusNoContent)
+	if !bytes.Equal(stored, nonUTF8CredentialValue) {
+		t.Fatalf("service received %#v, want %#v", stored, nonUTF8CredentialValue)
+	}
+
+	rreq := httptest.NewRequest(http.MethodGet, "/v1/credentials/k/versions/0", nil)
+	rrec := httptest.NewRecorder()
+	s.handleCredentialRetrieveVersion(rrec, rreq, "k", "0")
+	assertStatus(t, rrec, http.StatusOK)
+
+	var resp transport.CredentialRetrieveVersionResponse
+	if err := json.NewDecoder(rrec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(resp.Value, nonUTF8CredentialValue) {
+		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
+	}
+}
+
+// TestHandleCredentialStoreRetrieve_BinaryRoundTrip proves the store request
+// body and the retrieve (value) response both carry the credential as a base64
+// []byte field, preserving non-UTF-8 content byte-for-byte.
+func TestHandleCredentialStoreRetrieve_BinaryRoundTrip(t *testing.T) {
+	var stored []byte
+	svc := newCoverageCredentialService()
+	svc.storeFn = func(_ context.Context, _ string, v []byte) error {
+		stored = append([]byte(nil), v...)
+		return nil
+	}
+	svc.retrieveFn = func(_ context.Context, _ string) ([]byte, error) {
+		return stored, nil
+	}
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0", WithCredentialService(svc))
+
+	body, err := json.Marshal(credentialStoreRequest{Name: "k", Value: nonUTF8CredentialValue})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/store", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCredentialStore(rec, req)
+	assertStatus(t, rec, http.StatusNoContent)
+	if !bytes.Equal(stored, nonUTF8CredentialValue) {
+		t.Fatalf("service received %#v, want %#v", stored, nonUTF8CredentialValue)
+	}
+
+	rreq := httptest.NewRequest(http.MethodGet, "/v1/credentials/k/value", nil)
+	rrec := httptest.NewRecorder()
+	s.handleCredentialRetrieve(rrec, rreq, "k")
+	assertStatus(t, rrec, http.StatusOK)
+
+	var resp credentialValueResponse
+	if err := json.NewDecoder(rrec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !bytes.Equal(resp.Value, nonUTF8CredentialValue) {
+		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
 	}
 }

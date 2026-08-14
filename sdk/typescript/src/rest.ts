@@ -13,9 +13,15 @@
 // limitations under the License.
 
 import {
+    decodeBase64Utf8,
+    decodeMVCCKV,
+    decodeOpResponses,
+    decodeRestoreResult,
+    decodeWatchEventKV,
     deepSnakeToCamel,
     deepCamelToSnake,
     distanceMetricToRestWire,
+    encodeBase64Utf8,
     indexTypeToRestWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
@@ -23,6 +29,7 @@ import {
 } from './transform.js';
 import type {
     AdminClient,
+    AuditQueryClient,
     BackupClient,
     BatchClient,
     CertClient,
@@ -30,6 +37,7 @@ import type {
     CollectionClient,
     ConnectionClient,
     ConnectionManagerClient,
+    CredentialClient,
     DaemonClient,
     DatabaseClient,
     EmbeddedServerClient,
@@ -138,6 +146,8 @@ import type {
     RebuildIndexRequest,
     RebuildIndexResponse,
     RebuildProgress,
+    RestoreRevisionRequest,
+    RestoreRevisionResult,
     Role,
     SealStatus,
     SearchByIDRequest,
@@ -217,6 +227,8 @@ import type {
     TenantShareClaimBeginRequest,
     TenantShareClaimCompleteRequest,
     TenantShamirSealVoteRequest,
+    CredentialVersionInfo,
+    CredentialRotateResult,
 } from './types.js';
 import {
     DesktopOnlyError,
@@ -224,6 +236,7 @@ import {
     NotConnectedError,
     TransportError,
 } from './errors.js';
+import type { AuditFilter, AuditPage } from './audit.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -381,28 +394,6 @@ function buildQuery(params: Record<string, string | number | boolean | undefined
         }
     }
     return parts.length > 0 ? `?${parts.join('&')}` : '';
-}
-
-/**
- * Decodes a base64 string into its UTF-8 plaintext representation.
- *
- * Go's `json.Marshal` encodes `[]byte` values as base64, so any JSON response
- * field that carries raw byte content (e.g. the `pairs` map returned by
- * `GET /kv/scan`) arrives base64-encoded on the wire. This helper restores the
- * original plaintext, keeping the REST client consistent with both the Wails
- * client (whose Go bindings convert values via `string(v)`) and the REST
- * single-key `GET /kv/{key}` handler (which returns raw plaintext bytes).
- *
- * The `atob` → `Uint8Array` → `TextDecoder` chain is used (rather than the
- * lossy `atob` shortcut) so that multibyte UTF-8 sequences decode correctly.
- */
-function decodeBase64Utf8(b64: string): string {
-    const binary = atob(b64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -662,19 +653,25 @@ export class RestClient implements Client {
                 leaseId: number,
             ): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'lease-id': leaseId })}`,
+                const kv = await this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'lease-id': leaseId })}`,
                     { method: 'PUT', body: value },
                 );
+                // Wire key/value are base64 (Go marshals MVCCKeyValue's []byte
+                // fields that way); decode to plaintext for consistency with
+                // kv.get/kv.scan.
+                return decodeMVCCKV(kv);
             },
             getRevision: async (key: string): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}?revision=true`,
+                const kv = await this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}?revision=true`,
                 );
+                return decodeMVCCKV(kv);
             },
             getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
                 this.ensureConnected();
-                return this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'at-revision': revision })}`,
+                const kv = await this.fetchJSON<MVCCKeyValue>(`/kv/${encodeURIComponent(key)}${buildQuery({ 'at-revision': revision })}`,
                 );
+                return decodeMVCCKV(kv);
             },
             range: async (
                 start: string,
@@ -682,7 +679,7 @@ export class RestClient implements Client {
                 opts: RangeOptions,
             ): Promise<RangeResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<RangeResponse>(`/kv/range${buildQuery({
+                const resp = await this.fetchJSON<RangeResponse>(`/kv/range${buildQuery({
                         start,
                         end,
                         limit: opts.limit,
@@ -693,6 +690,7 @@ export class RestClient implements Client {
                         'sort-target': sortTargetToString(opts.sortTarget),
                     })}`,
                 );
+                return { ...resp, kvs: (resp.kvs ?? []).map(decodeMVCCKV) };
             },
             compact: async (revision: number): Promise<void> => {
                 this.ensureConnected();
@@ -707,6 +705,37 @@ export class RestClient implements Client {
                 );
                 return resp.revision;
             },
+            restoreToRevision: async (
+                req: RestoreRevisionRequest,
+            ): Promise<RestoreRevisionResult> => {
+                this.ensureConnected();
+                // prefix/keys are plaintext in the public API; base64-encode
+                // them here to match the server's binary-safe []byte field
+                // convention (POST /kv/restore), the same wire contract
+                // MVCCKeyValue's key/value fields use.
+                const body: Record<string, unknown> = { revision: req.revision };
+                if (req.prefix !== undefined) {
+                    body.prefix = encodeBase64Utf8(req.prefix);
+                }
+                if (req.keys !== undefined) {
+                    body.keys = req.keys.map(encodeBase64Utf8);
+                }
+                if (req.dryRun !== undefined) {
+                    body.dry_run = req.dryRun;
+                }
+                if (req.force !== undefined) {
+                    body.force = req.force;
+                }
+                const result = await this.fetchJSON<RestoreRevisionResult>('/kv/restore', {
+                    method: 'POST',
+                    ...jsonBody(body),
+                });
+                // The response's change/conflict "key" fields are base64 on
+                // the wire (server-side []byte, see restoreKeyChangeResponse
+                // in pkg/api/rest/handlers_mvcc.go); decode to plaintext for
+                // consistency with kv.get/kv.scan/mvcc.getRevision.
+                return decodeRestoreResult(result);
+            },
         };
     }
 
@@ -719,7 +748,7 @@ export class RestClient implements Client {
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TransactionResponse>('/tx', {
+                const resp = await this.fetchJSON<TransactionResponse>('/tx', {
                     method: 'POST',
                     ...jsonBody({
                         compares: req.compares.map(serializeCompare),
@@ -727,6 +756,10 @@ export class RestClient implements Client {
                         failure_ops: req.failureOps.map(serializeOp),
                     }),
                 });
+                // Get/Range ops within the transaction return MVCCKeyValue
+                // results whose key/value are base64 on the wire; decode them
+                // to plaintext for consistency with kv.get/kv.scan.
+                return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
         };
     }
@@ -740,10 +773,14 @@ export class RestClient implements Client {
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchResponse>('/batch', {
+                const resp = await this.fetchJSON<BatchResponse>('/batch', {
                     method: 'POST',
                     ...jsonBody({ ops }),
                 });
+                // Get/Range ops within the batch return MVCCKeyValue results
+                // whose key/value are base64 on the wire; decode them to
+                // plaintext for consistency with kv.get/kv.scan.
+                return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
             importFile: async (_filePath: string, _opts: ImportOptions): Promise<ImportResult> => {
                 throw new DesktopOnlyError('batch.importFile');
@@ -908,7 +945,16 @@ export class RestClient implements Client {
                                     JSON.parse(json) as unknown,
                                 ) as WatchResponse;
                                 normalizeWatchEventTypes(event);
-                                callback(event);
+                                // Each event's kv/prevKv carries base64
+                                // key/value on the wire (Go marshals
+                                // MVCCKeyValue's []byte fields that way);
+                                // decode to plaintext so WatchEvent consumers
+                                // (e.g. the GUI's WatchView) see the same
+                                // plaintext kv.get/kv.scan already return.
+                                callback({
+                                    ...event,
+                                    events: (event.events ?? []).map(decodeWatchEventKV),
+                                });
                             } catch {
                                 // Skip malformed JSON frames.
                             }
@@ -1049,8 +1095,21 @@ export class RestClient implements Client {
                 end: string,
             ): Promise<IndexScanResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<IndexScanResponse>(`/index/scan${buildQuery({ index_name: indexName, start, end })}`,
+                // The REST endpoint serializes entries as a JSON object
+                // (Go map[string][]string), not the IndexScanEntry[] array
+                // the SDK contract declares (which matches the desktop/Wails
+                // transport). Convert it here so callers can always iterate
+                // scanResult.entries as an array regardless of transport.
+                const raw = await this.fetchJSON<{ entries?: Record<string, string[]> }>(
+                    `/index/scan${buildQuery({ index_name: indexName, start, end })}`,
                 );
+                const entries = raw.entries ?? {};
+                return {
+                    entries: Object.entries(entries).map(([value, keys]) => ({
+                        value,
+                        keys: keys ?? [],
+                    })),
+                };
             },
             list: async (): Promise<IndexListResponse> => {
                 this.ensureConnected();
@@ -1639,6 +1698,16 @@ export class RestClient implements Client {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(connection),
+                    },
+                );
+            },
+            scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
+                this.ensureConnected();
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/scale`,
+                    {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ target_replicas: targetReplicas }),
                     },
                 );
             },
@@ -2244,6 +2313,112 @@ export class RestClient implements Client {
             getImbalanceReport: async (): Promise<ImbalanceReport> => {
                 this.ensureConnected();
                 return this.fetchJSON<ImbalanceReport>('/v1/rebalance/report');
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Credentials
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get credentials(): CredentialClient {
+        return {
+            submit: async (name: string, value: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/v1/credentials/submit', {
+                    method: 'POST',
+                    ...jsonBody({ name, value }),
+                });
+            },
+            store: async (name: string, value: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid('/v1/credentials/store', {
+                    method: 'POST',
+                    ...jsonBody({ name, value }),
+                });
+            },
+            retrieve: async (name: string): Promise<string> => {
+                this.ensureConnected();
+                interface ValueResponse { readonly value: string }
+                const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/value`,
+                );
+                return resp.value;
+            },
+            list: async (): Promise<string[]> => {
+                this.ensureConnected();
+                interface ListResponse { readonly names: string[] }
+                const resp = await this.fetchJSON<ListResponse>('/v1/credentials');
+                return resp.names ?? [];
+            },
+            strategy: async (): Promise<string> => {
+                this.ensureConnected();
+                interface StrategyResponse { readonly strategy: string }
+                const resp = await this.fetchJSON<StrategyResponse>('/v1/credentials/strategy');
+                return resp.strategy;
+            },
+            delete: async (name: string): Promise<void> => {
+                this.ensureConnected();
+                await this.fetchVoid(`/v1/credentials/${encodeURIComponent(name)}`,
+                    { method: 'DELETE' },
+                );
+            },
+            rotate: async (name: string, newValue: string, gracePeriodSeconds?: number): Promise<CredentialRotateResult> => {
+                this.ensureConnected();
+                return this.fetchJSON<CredentialRotateResult>(`/v1/credentials/${encodeURIComponent(name)}/rotate`,
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            name,
+                            newValue,
+                            gracePeriodSeconds: gracePeriodSeconds ?? 0,
+                        }),
+                    },
+                );
+            },
+            listVersions: async (name: string): Promise<CredentialVersionInfo[]> => {
+                this.ensureConnected();
+                interface VersionsResponse { readonly versions: CredentialVersionInfo[] }
+                const resp = await this.fetchJSON<VersionsResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions`,
+                );
+                return resp.versions ?? [];
+            },
+            retrieveVersion: async (name: string, version: number): Promise<string> => {
+                this.ensureConnected();
+                interface ValueResponse { readonly value: string }
+                const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
+                );
+                return resp.value;
+            },
+            gcExpired: async (name: string): Promise<number> => {
+                this.ensureConnected();
+                interface GCResponse { readonly reaped: number }
+                const resp = await this.fetchJSON<GCResponse>(`/v1/credentials/${encodeURIComponent(name)}/gc`,
+                    { method: 'POST' },
+                );
+                return resp.reaped;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get audit(): AuditQueryClient {
+        return {
+            query: async (f: AuditFilter = {}): Promise<AuditPage> => {
+                this.ensureConnected();
+                const snake = deepCamelToSnake(f) as Record<string, unknown>;
+                const params = new URLSearchParams();
+                for (const [k, v] of Object.entries(snake)) {
+                    if (v !== undefined && v !== null && v !== '') {
+                        params.set(k, String(v));
+                    }
+                }
+                const query = params.size > 0 ? `?${params.toString()}` : '';
+                return this.fetchJSON<AuditPage>(`/v1/audit/events${query}`);
             },
         };
     }

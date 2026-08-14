@@ -177,11 +177,15 @@ type failableBatch struct {
 	err      error
 }
 
-func (b *failableBatch) Set(key, value []byte) error { return b.delegate.Set(key, value) }
-func (b *failableBatch) Delete(key []byte) error     { return b.err }
-func (b *failableBatch) Commit() error               { return b.err }
-func (b *failableBatch) Rollback() error             { return b.delegate.Rollback() }
-func (b *failableBatch) Close() error                { return b.delegate.Close() }
+func (b *failableBatch) Set(key, value []byte) error    { return b.delegate.Set(key, value) }
+func (b *failableBatch) Delete(key []byte) error        { return b.err }
+func (b *failableBatch) Get(key []byte) ([]byte, error) { return b.delegate.Get(key) }
+func (b *failableBatch) Commit() error                  { return b.err }
+func (b *failableBatch) Rollback() error                { return b.delegate.Rollback() }
+func (b *failableBatch) Close() error                   { return b.delegate.Close() }
+func (b *failableBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return b.delegate.NewIterator(opts)
+}
 
 // ---------------------------------------------------------------------------
 // NewStoragePebbleIndex constructor tests

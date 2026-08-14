@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,8 +63,6 @@ func newCoverageCeremonyService() *coverageCeremonyService {
 			SPKIPin:    "pin123",
 			CACertPEM:  []byte("ca-cert"),
 			TLSCertPEM: []byte("tls-cert"),
-			SOCertPEM:  []byte("so-cert"),
-			SOKeyPEM:   []byte("so-key"),
 			State:      "initialized",
 			ShareCount: 3,
 		},
@@ -88,8 +87,17 @@ func (m *coverageCeremonyService) CeremonyBeginClaimCert(_ context.Context, _ st
 func (m *coverageCeremonyService) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
 	return m.completeResult, m.completeErr
 }
-func (m *coverageCeremonyService) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
-	return m.claimShareResult, m.claimShareErr
+func (m *coverageCeremonyService) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (m *coverageCeremonyService) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
 }
 func (m *coverageCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return m.signCSRResult, m.signCSRErr
@@ -140,6 +148,8 @@ type coverageCredentialService struct {
 	submitFn          func(ctx context.Context, name string, value []byte) error
 	strategyFn        func() string
 	deleteFn          func(ctx context.Context, name string) error
+	storeFn           func(ctx context.Context, name string, value []byte) error
+	retrieveFn        func(ctx context.Context, name string) ([]byte, error)
 	listFn            func(ctx context.Context) ([]string, error)
 	rotateFn          func(ctx context.Context, name string, opts credentials.RotateOptions) (*credentials.RotateResult, error)
 	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
@@ -173,10 +183,16 @@ func (m *coverageCredentialService) CredentialDelete(ctx context.Context, name s
 	}
 	return nil
 }
-func (m *coverageCredentialService) CredentialStore(_ context.Context, _ string, _ []byte) error {
+func (m *coverageCredentialService) CredentialStore(ctx context.Context, name string, value []byte) error {
+	if m.storeFn != nil {
+		return m.storeFn(ctx, name, value)
+	}
 	return nil
 }
-func (m *coverageCredentialService) CredentialRetrieve(_ context.Context, _ string) ([]byte, error) {
+func (m *coverageCredentialService) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
+	if m.retrieveFn != nil {
+		return m.retrieveFn(ctx, name)
+	}
 	return nil, nil
 }
 func (m *coverageCredentialService) CredentialList(ctx context.Context) ([]string, error) {
@@ -536,36 +552,127 @@ func TestHandleCeremonyClaimCertComplete_ServiceError(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
-func TestHandleCeremonyClaimShare_NilService(t *testing.T) {
+func TestHandleCeremonyBeginClaimShare_NilService(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-share", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimShare(rec, req)
+	s.handleCeremonyBeginClaimShare(rec, req)
 	assertStatus(t, rec, http.StatusNotImplemented)
 }
 
-func TestHandleCeremonyClaimShare_BadBody(t *testing.T) {
+// TestHandleCeremonyBeginClaimShare_RequiresClientCert proves a request with no
+// mTLS peer certificate is refused with 401 before the ceremony service is
+// consulted: the certificate thumbprint IS the authentication for this route.
+func TestHandleCeremonyBeginClaimShare_RequiresClientCert(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-share", strings.NewReader(`bad`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{"username":"alice"}`))
 	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimShare(rec, req)
+	s.handleCeremonyBeginClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestHandleCeremonyBeginClaimShare_BadBody(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`bad`))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyBeginClaimShare(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleCeremonyClaimShare_Success(t *testing.T) {
+func TestHandleCeremonyBeginClaimShare_Success(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCeremonyService(newCoverageCeremonyService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-share", strings.NewReader(`{"username":"alice"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/begin", strings.NewReader(`{"username":"alice"}`))
+	injectFakeTLS(req)
 	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimShare(rec, req)
+	s.handleCeremonyBeginClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["nonce_hex"] == "" {
+		t.Fatalf("expected a challenge nonce, got: %#v", resp)
+	}
+}
+
+func TestHandleCeremonyCompleteClaimShare_NilService(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusNotImplemented)
+}
+
+// TestHandleCeremonyCompleteClaimShare_RequiresClientCert proves the completing
+// half refuses a certificate-less caller AND that the response body carries no
+// share material.
+func TestHandleCeremonyCompleteClaimShare_RequiresClientCert(t *testing.T) {
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusUnauthorized)
+
+	if strings.Contains(rec.Body.String(), "share_json") {
+		t.Fatalf("share material leaked on refusal: %s", rec.Body.String())
+	}
+}
+
+func TestHandleCeremonyCompleteClaimShare_MissingNonce(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`{"username":"alice"}`))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCeremonyCompleteClaimShare_BadSignatureEncoding(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete",
+		strings.NewReader(`{"username":"alice","nonce_hex":"aa","signature":"!!!not-base64!!!"}`))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCeremonyCompleteClaimShare_BadBody(t *testing.T) {
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(`bad`))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
+	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
+		WithCeremonyService(newCoverageCeremonyService()))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
+	injectFakeTLS(req)
+	rec := httptest.NewRecorder()
+	s.handleCeremonyCompleteClaimShare(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 
 	// Regression guard: the response key and encoding must match
-	// transport.ClaimShareResponse{ShareJSON string `json:"share_json"`} --
-	// the shared SDK type gRPC/QUIC/embedded all populate with the raw JSON
-	// share text (not base64). A prior {"share": base64(...)} shape here
-	// left every REST-transport caller's ShareJSON field empty.
+	// transport.CompleteClaimShareResponse{ShareJSON string `json:"share_json"`}
+	// -- the shared SDK type gRPC/QUIC/embedded all populate with the raw JSON
+	// share text (not base64). A prior {"share": base64(...)} shape here left
+	// every REST-transport caller's ShareJSON field empty.
 	var resp map[string]interface{}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -579,14 +686,17 @@ func TestHandleCeremonyClaimShare_Success(t *testing.T) {
 	}
 }
 
-func TestHandleCeremonyClaimShare_ServiceError(t *testing.T) {
+func TestHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
+	sig := base64.StdEncoding.EncodeToString([]byte("sig"))
+	body := `{"username":"alice","nonce_hex":"aa","signature":"` + sig + `"}`
 	svc := newCoverageCeremonyService()
 	svc.claimShareErr = &service.KeyNotFoundError{Key: "k"}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCeremonyService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/claim-share", strings.NewReader(`{"username":"alice"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/ceremony/officer-share/complete", strings.NewReader(body))
+	injectFakeTLS(req)
 	rec := httptest.NewRecorder()
-	s.handleCeremonyClaimShare(rec, req)
+	s.handleCeremonyCompleteClaimShare(rec, req)
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
@@ -638,8 +748,6 @@ func TestCeremonyInitToResponse(t *testing.T) {
 		SPKIPin:    "pin",
 		CACertPEM:  []byte("ca"),
 		TLSCertPEM: []byte("tls"),
-		SOCertPEM:  []byte("so"),
-		SOKeyPEM:   []byte("key"),
 		State:      "initialized",
 		ShareCount: 2,
 	}
@@ -718,7 +826,7 @@ func TestHandleCredentialSubmit_BadBody(t *testing.T) {
 func TestHandleCredentialSubmit_Success(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(newCoverageCredentialService()))
-	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{"name":"apikey","value":"secret"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{"name":"apikey","value":"c2VjcmV0"}`))
 	rec := httptest.NewRecorder()
 	s.handleCredentialSubmit(rec, req)
 	assertStatus(t, rec, http.StatusNoContent)
@@ -731,7 +839,7 @@ func TestHandleCredentialSubmit_ServiceError(t *testing.T) {
 	}
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
-	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{"name":"k","value":"v"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/submit", strings.NewReader(`{"name":"k","value":"dg=="}`))
 	rec := httptest.NewRecorder()
 	s.handleCredentialSubmit(rec, req)
 	assertStatus(t, rec, http.StatusNotFound)
@@ -951,9 +1059,10 @@ func TestMapHTTPError_CollectionErrors(t *testing.T) {
 func TestForwardToLeader_LoopDetection(t *testing.T) {
 	s := NewServer(&mockKVService{}, newDefaultAdminSvc(), ":0")
 	req := httptest.NewRequest(http.MethodPut, "/kv/key", strings.NewReader(`{}`))
-	req.Header.Set(headerForwardedBy, "some-node")
+	// maxForwardHops hops already taken -- one more forward must be rejected.
+	req.Header.Set(headerForwardHops, strconv.Itoa(maxForwardHops))
 	rec := httptest.NewRecorder()
-	s.forwardToLeader(rec, req, "http://leader", "key", nil)
+	s.forwardToLeader(rec, req, "http://leader", nil)
 	assertStatus(t, rec, http.StatusLoopDetected)
 }
 

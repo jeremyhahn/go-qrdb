@@ -159,7 +159,7 @@ func TestTransportCredential_Submit_Success(t *testing.T) {
 	defer cleanup()
 
 	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
-		Name: "secret-key", Value: "abc123",
+		Name: "secret-key", Value: []byte("abc123"),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -357,7 +357,7 @@ func TestTransportCredential_Rotate_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
-		Name: "n", NewValue: "v", GracePeriodSeconds: 30,
+		Name: "n", NewValue: []byte("v"), GracePeriodSeconds: 30,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -415,7 +415,7 @@ func TestTransportCredential_RetrieveVersion_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Value != "the-secret" {
+	if string(resp.Value) != "the-secret" {
 		t.Errorf("unexpected value: %q", resp.Value)
 	}
 	if capturedVersion != 9 {

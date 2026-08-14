@@ -81,3 +81,94 @@ func (e *ScopeDecodeError) Error() string {
 func (e *ScopeDecodeError) Unwrap() error {
 	return e.Err
 }
+
+// SoDViolationError is raised by RegisterRoleGrant when a caller attempts to
+// grant a permission that performs a cryptographic operation with key material
+// (see IsCryptoUse) to the Security Officer role, violating the FIPS 140-3
+// AS10.03 separation-of-duties invariant. It is panicked rather than returned:
+// the violation can only originate from a package init() or an explicit
+// registration call made before role seeding, both of which are programmer
+// errors with no reasonable recovery path.
+type SoDViolationError struct {
+	Role       string
+	Permission Permission
+}
+
+// Error returns a human-readable description of the separation-of-duties
+// violation.
+func (e *SoDViolationError) Error() string {
+	return "permission: FIPS 140-3 AS10.03 violation: role " + e.Role +
+		" cannot be granted cryptographic permission " + string(e.Permission)
+}
+
+// UndeclaredDutyError is raised by RegisterRoleGrant when a caller attempts to
+// grant the Security Officer role a permission whose separated duty its author
+// never declared. It is the fail-safe half of the FIPS 140-3 AS10.03 guard: a
+// permission does not become Security-Officer-grantable by nobody having
+// classified it, so the omission surfaces as a registration-time panic naming
+// the declaration the author must add.
+type UndeclaredDutyError struct {
+	Role       string
+	Permission Permission
+}
+
+// Error returns a human-readable description of the missing declaration,
+// including the call that resolves it.
+func (e *UndeclaredDutyError) Error() string {
+	return "permission: FIPS 140-3 AS10.03: role " + e.Role +
+		" cannot be granted " + string(e.Permission) +
+		": its duty is undeclared - declare RegisterDuty(DutyGovernance, " +
+		string(e.Permission) + ") at the permission's declaration site if the " +
+		"Security Officer is meant to hold it, or declare " +
+		"RegisterDuty(DutyCryptoUse, ...) and drop the grant if it performs a " +
+		"cryptographic operation"
+}
+
+// WildcardGrantError is raised by RegisterRoleGrant when a caller attempts to
+// grant the Security Officer role a whole-segment wildcard permission (e.g.
+// "keys:*"). A wildcard spans verbs of different duties by construction, so it
+// cannot be classified, and granting one would sweep cryptographic operations
+// onto the Security Officer through the RBAC authorizer's wildcard expansion.
+// Other built-in roles may hold wildcards; the Security Officer must name every
+// permission it holds.
+type WildcardGrantError struct {
+	Role       string
+	Permission Permission
+}
+
+// Error returns a human-readable description of the rejected wildcard grant.
+func (e *WildcardGrantError) Error() string {
+	return "permission: FIPS 140-3 AS10.03: role " + e.Role +
+		" cannot be granted wildcard permission " + string(e.Permission) +
+		": a wildcard cannot be classified as governance or cryptographic use - " +
+		"grant the concrete permissions instead"
+}
+
+// InvalidDutyError is raised by RegisterDuty when the supplied Duty is not one
+// a caller may declare. DutyUndeclared is invalid on purpose: a permission is
+// undeclared by omitting the RegisterDuty call, never by declaring it.
+type InvalidDutyError struct {
+	Duty Duty
+}
+
+// Error returns a human-readable description of the invalid duty.
+func (e *InvalidDutyError) Error() string {
+	return "permission: invalid duty: " + e.Duty.String() +
+		" (declare DutyGovernance or DutyCryptoUse; omit the call for undeclared)"
+}
+
+// DutyConflictError is raised by RegisterDuty when a permission that already
+// has a declared duty is re-declared with a different one. Duty declarations
+// are immutable: re-declaration would otherwise let a later caller relabel a
+// cryptographic permission as governance and hand it to the Security Officer.
+type DutyConflictError struct {
+	Permission Permission
+	Existing   Duty
+	Requested  Duty
+}
+
+// Error returns a human-readable description of the conflicting declaration.
+func (e *DutyConflictError) Error() string {
+	return "permission: duty for " + string(e.Permission) + " is already declared as " +
+		e.Existing.String() + " and cannot be re-declared as " + e.Requested.String()
+}

@@ -16,9 +16,11 @@ package server
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
@@ -115,29 +117,41 @@ func (s *namespacedMVCCService) GetAtRevisionWithConsistency(ctx context.Context
 // the namespace. The lower bound is confined to the namespace prefix and the
 // upper bound to the namespace successor, so an absent start or end can never
 // escape the namespace and expose another tenant's or database's keys. Returned
-// keys have the namespace prefix stripped.
-func (s *namespacedMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, error) {
-	kvs, count, err := s.inner.Range(ctx, prefixStartBytes(start, s.prefix), prefixEndBytes(end, s.prefix), opts...)
+// keys have the namespace prefix stripped. The MVCC revision the read was
+// performed at is a store-global value and is passed through unchanged.
+func (s *namespacedMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	kvs, count, revision, err := s.inner.Range(ctx, prefixStartBytes(start, s.prefix), prefixEndBytes(end, s.prefix), opts...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return stripKeyValues(kvs, s.prefix), count, nil
+	return stripKeyValues(kvs, s.prefix), count, revision, nil
 }
 
 // RangeWithConsistency returns key-value pairs in [start, end) within the
 // namespace at the specified consistency level. Both bounds are confined to the
-// namespace exactly as in Range.
-func (s *namespacedMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*service.KeyValue, int64, error) {
-	kvs, count, err := s.inner.RangeWithConsistency(ctx, prefixStartBytes(start, s.prefix), prefixEndBytes(end, s.prefix), opts, rangeOpts...)
+// namespace exactly as in Range. The MVCC revision the read was performed at
+// is a store-global value and is passed through unchanged.
+func (s *namespacedMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	kvs, count, revision, err := s.inner.RangeWithConsistency(ctx, prefixStartBytes(start, s.prefix), prefixEndBytes(end, s.prefix), opts, rangeOpts...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return stripKeyValues(kvs, s.prefix), count, nil
+	return stripKeyValues(kvs, s.prefix), count, revision, nil
 }
 
-// Compact forwards unchanged: MVCC revisions are a store-global counter, not a
-// per-namespace value.
+// Compact is gated to the system tenant. MVCC revisions are a store-global
+// monotonic counter shared by every prefix-isolated tenant on this store, so a
+// Compact to revision N discards ALL historical revisions below N for EVERY
+// tenant's keys — destroying other tenants' time-travel history even though it
+// is issued through a single tenant's namespaced view. Because compaction
+// cannot be confined to the namespace prefix, a non-system caller is rejected
+// here (the data-plane defense) in addition to the ScopeCross authz gate on
+// the mvcc:compact permission. The system tenant — the legitimate store-global
+// admin — is forwarded unchanged.
 func (s *namespacedMVCCService) Compact(ctx context.Context, revision int64) error {
+	if callerTenant := tenant.FromContext(ctx); !tenant.IsSystemTenant(callerTenant) {
+		return &service.CompactSystemOnlyError{TenantID: callerTenant}
+	}
 	return s.inner.Compact(ctx, revision)
 }
 
@@ -145,4 +159,75 @@ func (s *namespacedMVCCService) Compact(ctx context.Context, revision int64) err
 // to the store.
 func (s *namespacedMVCCService) CurrentRevision(ctx context.Context) (int64, error) {
 	return s.inner.CurrentRevision(ctx)
+}
+
+// RestoreToRevision confines a selective point-in-time restore to this
+// namespace. Unlike Compact, a restore CAN be confined — it names the keys it
+// writes — so it is prefixed and forwarded rather than reserved to the system
+// tenant.
+//
+// The request is validated BEFORE the namespace prefix is attached, and this
+// ordering is the whole point of the method. Two guards would otherwise be
+// defeated by prefixing:
+//
+//   - The internal-key refusal. "acme/reports/" + "__sys:roles/x" is an
+//     ordinary user key, which the inner service's guard admits. Validating
+//     the caller's own key first is what keeps "__sys:" unrestorable from
+//     inside a namespaced view.
+//   - The empty-scope refusal. "acme/reports/" + "" is a non-empty prefix,
+//     which the inner service accepts — and which spans this tenant and
+//     database's ENTIRE keyspace. A caller who supplied no scope at all would
+//     get a whole-database rollback, the exact outcome
+//     *RestoreScopeEmptyError exists to prevent.
+//
+// The inner service validates again on the fully qualified keys, which is
+// what protects the system tenant, whose namespace prefix is empty. Neither
+// check subsumes the other.
+//
+// Every key the plan reaches is derived from this namespace's prefix: a
+// prefix scope becomes prefix+Prefix and an explicit key list becomes
+// prefix+key, so neither can name another tenant's or database's keyspace.
+// Returned plan keys are stripped back to the caller's view.
+func (s *namespacedMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if err := service.ValidateRestoreRequest(req); err != nil {
+		return nil, err
+	}
+
+	scoped := &service.RestoreRevisionRequest{
+		Revision: req.Revision,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	}
+	if req.Prefix != "" {
+		scoped.Prefix = s.prefix + req.Prefix
+	}
+	if len(req.Keys) > 0 {
+		scoped.Keys = make([]string, 0, len(req.Keys))
+		for _, k := range req.Keys {
+			scoped.Keys = append(scoped.Keys, s.prefix+k)
+		}
+	}
+
+	result, err := s.inner.RestoreToRevision(ctx, scoped)
+	if err != nil {
+		return nil, err
+	}
+	return stripRestoreResult(result, s.prefix), nil
+}
+
+// stripRestoreResult removes the namespace prefix from every key in a restore
+// plan — both the applied changes and the conflicts — so the caller sees the
+// keys it named. The result is rewritten in place; it is a value the inner
+// service just constructed for this call and is not shared.
+func stripRestoreResult(result *service.RestoreRevisionResult, prefix string) *service.RestoreRevisionResult {
+	if result == nil {
+		return nil
+	}
+	for i := range result.Changes {
+		result.Changes[i].Key = strings.TrimPrefix(result.Changes[i].Key, prefix)
+	}
+	for i := range result.Conflicts {
+		result.Conflicts[i].Key = strings.TrimPrefix(result.Conflicts[i].Key, prefix)
+	}
+	return result
 }

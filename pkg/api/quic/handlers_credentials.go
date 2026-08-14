@@ -37,7 +37,7 @@ func (s *Server) handleCredentialSubmit(ctx context.Context, payload []byte) ([]
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.credentialSvc.CredentialSubmit(ctx, req.GetName(), []byte(req.GetValue())); err != nil {
+	if err := s.credentialSvc.CredentialSubmit(ctx, req.GetName(), req.GetValue()); err != nil {
 		return nil, err
 	}
 
@@ -123,7 +123,7 @@ func (s *Server) handleCredentialRotate(ctx context.Context, payload []byte) ([]
 	}
 
 	result, err := s.credentialSvc.CredentialRotate(ctx, req.GetName(), credentials.RotateOptions{
-		NewValue:    []byte(req.GetNewValue()),
+		NewValue:    req.GetNewValue(),
 		GracePeriod: time.Duration(req.GetGracePeriodSeconds()) * time.Second,
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func (s *Server) handleCredentialRetrieveVersion(ctx context.Context, payload []
 	}
 
 	resp, err := proto.Marshal(&pb.CredentialRetrieveVersionResponse{
-		Value: string(value),
+		Value: value,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
@@ -252,7 +252,7 @@ func (s *Server) handleCredentialStore(ctx context.Context, payload []byte) ([]b
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.credentialSvc.CredentialStore(ctx, req.GetName(), []byte(req.GetValue())); err != nil {
+	if err := s.credentialSvc.CredentialStore(ctx, req.GetName(), req.GetValue()); err != nil {
 		return nil, err
 	}
 
@@ -275,7 +275,7 @@ func (s *Server) handleCredentialRetrieve(ctx context.Context, payload []byte) (
 		return nil, err
 	}
 
-	out, err := proto.Marshal(&pb.CredentialRetrieveResponse{Value: string(value)})
+	out, err := proto.Marshal(&pb.CredentialRetrieveResponse{Value: value})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

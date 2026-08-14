@@ -14,6 +14,7 @@
 
 import type {
     AdminClient,
+    AuditQueryClient,
     BackupClient,
     BatchClient,
     CertClient,
@@ -21,6 +22,7 @@ import type {
     CollectionClient,
     ConnectionClient,
     ConnectionManagerClient,
+    CredentialClient,
     DaemonClient,
     DatabaseClient,
     EmbeddedServerClient,
@@ -124,6 +126,8 @@ import type {
     RebuildIndexRequest,
     RebuildIndexResponse,
     RebuildProgress,
+    RestoreRevisionRequest,
+    RestoreRevisionResult,
     Role,
     SealStatus,
     SearchByIDRequest,
@@ -202,12 +206,19 @@ import type {
     TenantShareClaimBeginRequest,
     TenantShareClaimCompleteRequest,
     TenantShamirSealVoteRequest,
+    CredentialVersionInfo,
+    CredentialRotateResult,
 } from './types.js';
+import type { AuditFilter, AuditPage } from './audit.js';
 
 import {
+    decodeMVCCKV,
+    decodeOpResponses,
+    decodeRestoreResult,
     deepSnakeToCamel,
     deepCamelToSnake,
     distanceMetricToIpcWire,
+    encodeBase64Utf8,
     indexTypeToIpcWire,
     normalizeVectorEnumFields,
     normalizeVectorIDField,
@@ -310,6 +321,8 @@ interface WailsBindings {
         OfficerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         RebalanceBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        AuditBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
     };
 }
@@ -479,26 +492,64 @@ export class WailsClient implements Client {
                 value: string,
                 leaseId: number,
             ): Promise<MVCCKeyValue> => {
-                return b.PutWithLease(key, value, leaseId) as Promise<MVCCKeyValue>;
+                // MVCCBinding returns *transport.MVCCKeyValue unconverted, so
+                // the Wails IPC JSON marshaling base64-encodes its []byte
+                // key/value fields, same as the REST wire. Decode to
+                // plaintext for consistency with kv.get/kv.scan (see
+                // decodeMVCCKV in transform.ts for the full explanation).
+                const kv = await b.PutWithLease(key, value, leaseId) as MVCCKeyValue;
+                return decodeMVCCKV(kv);
             },
             getRevision: async (key: string): Promise<MVCCKeyValue> => {
-                return b.GetRevision(key) as Promise<MVCCKeyValue>;
+                const kv = await b.GetRevision(key) as MVCCKeyValue;
+                return decodeMVCCKV(kv);
             },
             getAtRevision: async (key: string, revision: number): Promise<MVCCKeyValue> => {
-                return b.GetAtRevision(key, revision) as Promise<MVCCKeyValue>;
+                const kv = await b.GetAtRevision(key, revision) as MVCCKeyValue;
+                return decodeMVCCKV(kv);
             },
             range: async (
                 start: string,
                 end: string,
                 opts: RangeOptions,
             ): Promise<RangeResponse> => {
-                return b.Range(start, end, toSnake(opts)) as Promise<RangeResponse>;
+                const resp = await b.Range(start, end, toSnake(opts)) as RangeResponse;
+                return { ...resp, kvs: (resp.kvs ?? []).map(decodeMVCCKV) };
             },
             compact: async (revision: number): Promise<void> => {
                 await b.Compact(revision);
             },
             currentRevision: async (): Promise<number> => {
                 return b.CurrentRevision() as Promise<number>;
+            },
+            restoreToRevision: async (
+                req: RestoreRevisionRequest,
+            ): Promise<RestoreRevisionResult> => {
+                // prefix/keys are plaintext in the public API; base64-encode
+                // them here to match the server's binary-safe []byte field
+                // convention over Wails IPC, the same wire contract
+                // MVCCKeyValue's key/value fields use. MVCCBinding.RestoreToRevision
+                // is expected to take a single snake_case request object
+                // (mirroring TransactionBinding.Execute) and return
+                // *transport.RestoreRevisionResult unconverted.
+                const wireReq: Record<string, unknown> = { revision: req.revision };
+                if (req.prefix !== undefined) {
+                    wireReq.prefix = encodeBase64Utf8(req.prefix);
+                }
+                if (req.keys !== undefined) {
+                    wireReq.keys = req.keys.map(encodeBase64Utf8);
+                }
+                if (req.dryRun !== undefined) {
+                    wireReq.dryRun = req.dryRun;
+                }
+                if (req.force !== undefined) {
+                    wireReq.force = req.force;
+                }
+                const result = await b.RestoreToRevision(toSnake(wireReq)) as RestoreRevisionResult;
+                // Response change/conflict "key" fields carry the same
+                // base64 []byte encoding as MVCCKeyValue; decode to
+                // plaintext for consistency.
+                return decodeRestoreResult(result);
             },
         };
     }
@@ -512,7 +563,13 @@ export class WailsClient implements Client {
         const b = wrapBindings(getBindings().main.TransactionBinding);
         return {
             execute: async (req: TransactionRequest): Promise<TransactionResponse> => {
-                return b.Execute(toSnake(req)) as Promise<TransactionResponse>;
+                // TransactionBinding.Execute returns
+                // *transport.TransactionResponse unconverted, so Get/Range
+                // op results carry base64-encoded MVCCKeyValue key/value
+                // over Wails IPC, same as the REST wire. Decode to
+                // plaintext for consistency.
+                const resp = await b.Execute(toSnake(req)) as TransactionResponse;
+                return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
         };
     }
@@ -526,7 +583,12 @@ export class WailsClient implements Client {
         const b = wrapBindings(getBindings().main.BatchBinding);
         return {
             execute: async (ops: readonly Op[]): Promise<BatchResponse> => {
-                return b.Execute(toSnake(ops)) as Promise<BatchResponse>;
+                // BatchBinding.Execute returns *transport.BatchResponse
+                // unconverted, so Get/Range op results carry base64-encoded
+                // MVCCKeyValue key/value over Wails IPC, same as the REST
+                // wire. Decode to plaintext for consistency.
+                const resp = await b.Execute(toSnake(ops)) as BatchResponse;
+                return { ...resp, responses: decodeOpResponses(resp.responses) };
             },
             importFile: async (filePath: string, opts: ImportOptions): Promise<ImportResult> => {
                 return b.ImportFile(filePath, toSnake(opts)) as Promise<ImportResult>;
@@ -1012,6 +1074,9 @@ export class WailsClient implements Client {
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 return b.UpdateConnection(name, connection) as Promise<DatabaseInfo>;
             },
+            scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
+                return b.Scale(name, targetReplicas) as Promise<DatabaseInfo>;
+            },
         };
     }
 
@@ -1284,6 +1349,67 @@ export class WailsClient implements Client {
             },
             getImbalanceReport: async (): Promise<ImbalanceReport> => {
                 return b.GetImbalanceReport() as Promise<ImbalanceReport>;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Credentials
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get credentials(): CredentialClient {
+        const b = wrapBindings(getBindings().main.CredentialBinding);
+        return {
+            submit: async (name: string, value: string): Promise<void> => {
+                await b.Submit(name, value);
+            },
+            store: async (name: string, value: string): Promise<void> => {
+                await b.Store(name, value);
+            },
+            retrieve: async (name: string): Promise<string> => {
+                return b.Retrieve(name) as Promise<string>;
+            },
+            list: async (): Promise<string[]> => {
+                return b.List() as Promise<string[]>;
+            },
+            strategy: async (): Promise<string> => {
+                return b.Strategy() as Promise<string>;
+            },
+            delete: async (name: string): Promise<void> => {
+                await b.Delete(name);
+            },
+            rotate: async (name: string, newValue: string, gracePeriodSeconds?: number): Promise<CredentialRotateResult> => {
+                return b.Rotate(toSnake({
+                    name,
+                    newValue,
+                    gracePeriodSeconds: gracePeriodSeconds ?? 0,
+                })) as Promise<CredentialRotateResult>;
+            },
+            listVersions: async (name: string): Promise<CredentialVersionInfo[]> => {
+                interface VersionsResponse { readonly versions: CredentialVersionInfo[] }
+                const resp = await b.ListVersions(name) as VersionsResponse;
+                return resp.versions ?? [];
+            },
+            retrieveVersion: async (name: string, version: number): Promise<string> => {
+                return b.RetrieveVersion(name, version) as Promise<string>;
+            },
+            gcExpired: async (name: string): Promise<number> => {
+                return b.GCExpired(name) as Promise<number>;
+            },
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit
+    // -----------------------------------------------------------------------
+
+    /** @inheritdoc */
+    get audit(): AuditQueryClient {
+        const b = wrapBindings(getBindings().main.AuditBinding);
+        return {
+            query: async (f: AuditFilter = {}): Promise<AuditPage> => {
+                return b.Query(toSnake(f)) as Promise<AuditPage>;
             },
         };
     }

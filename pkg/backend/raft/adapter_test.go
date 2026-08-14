@@ -43,6 +43,7 @@ type mockQuicraftHost struct {
 	syncGetShardMembershipFn func(ctx context.Context, shardID uint64) (*quicraft.Membership, error)
 	getShardMembershipFn     func(shardID uint64) (*quicraft.Membership, error)
 	requestSnapshotFn        func(ctx context.Context, shardID uint64, opt quicraft.SnapshotOption) (*quicraft.RequestState, error)
+	isShardJoiningFn         func(shardID uint64) bool
 }
 
 func (m *mockQuicraftHost) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) (sm.Result, error) {
@@ -92,6 +93,13 @@ func (m *mockQuicraftHost) RequestSnapshot(ctx context.Context, shardID uint64, 
 		return m.requestSnapshotFn(ctx, shardID, opt)
 	}
 	return &quicraft.RequestState{}, nil
+}
+
+func (m *mockQuicraftHost) IsShardJoining(shardID uint64) bool {
+	if m.isShardJoiningFn != nil {
+		return m.isShardJoiningFn(shardID)
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +271,27 @@ func TestHostAdapter_GetShardRaftState(t *testing.T) {
 		a := newTestAdapter(mock)
 		_, _, err := a.GetShardRaftState(1)
 		assert.Error(t, err)
+	})
+}
+
+func TestHostAdapter_IsShardJoining(t *testing.T) {
+	t.Run("delegates true", func(t *testing.T) {
+		mock := &mockQuicraftHost{
+			isShardJoiningFn: func(shardID uint64) bool {
+				assert.Equal(t, uint64(1), shardID)
+				return true
+			},
+		}
+		a := newTestAdapter(mock)
+		assert.True(t, a.IsShardJoining(1))
+	})
+
+	t.Run("delegates false", func(t *testing.T) {
+		mock := &mockQuicraftHost{
+			isShardJoiningFn: func(uint64) bool { return false },
+		}
+		a := newTestAdapter(mock)
+		assert.False(t, a.IsShardJoining(1))
 	})
 }
 

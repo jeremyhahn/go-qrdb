@@ -70,7 +70,7 @@ func (t *VectorsTable) String() string {
 }
 
 // Schema returns the table's column schema.
-func (t *VectorsTable) Schema() sqle.Schema {
+func (t *VectorsTable) Schema(_ *sqle.Context) sqle.Schema {
 	return vectorsSchema
 }
 

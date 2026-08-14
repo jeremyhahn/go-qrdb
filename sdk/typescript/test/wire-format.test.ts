@@ -38,6 +38,7 @@ import type {
     CapabilitiesResponse,
     MVCCKeyValue,
     LeaseInfo,
+    WatchEvent,
     WatchResponse,
 } from '../src/types.js';
 
@@ -237,25 +238,31 @@ describe('Wire-format contract: MVCC endpoints', () => {
         vi.unstubAllGlobals();
     });
 
-    it('GET /kv/:key?revision=true — snake_case KV wire → camelCase MVCCKeyValue', async () => {
+    it('GET /kv/:key?revision=true — snake_case KV wire → camelCase MVCCKeyValue, base64 key/value decoded to plaintext', async () => {
         const client = await makeConnectedClient(mvccKVWire);
         const kv: MVCCKeyValue = await client.mvcc.getRevision('hello');
 
-        expect(kv.key).toBe('aGVsbG8=');
-        expect(kv.value).toBe('d29ybGQ=');
+        // Go marshals MVCCKeyValue.Key/Value ([]byte) as base64
+        // ("aGVsbG8=" === base64("hello"), "d29ybGQ=" === base64("world")).
+        // The SDK decodes both to plaintext before returning, matching
+        // kv.get/kv.scan.
+        expect(kv.key).toBe('hello');
+        expect(kv.value).toBe('world');
         expect(kv.createRevision).toBe(5);
         expect(kv.modRevision).toBe(10);
         expect(kv.version).toBe(3);
         expect(kv.leaseId).toBe(0);
     });
 
-    it('range response — snake_case kvs array → camelCase MVCCKeyValue[]', async () => {
+    it('range response — snake_case kvs array → camelCase MVCCKeyValue[], base64 key/value decoded to plaintext', async () => {
         const wire = { kvs: [mvccKVWire], count: 1 };
         const client = await makeConnectedClient(wire);
         const resp = await client.mvcc.range('hello', 'hellz', {});
 
         expect(resp.count).toBe(1);
         const kv = resp.kvs[0];
+        expect(kv.key).toBe('hello');
+        expect(kv.value).toBe('world');
         expect(kv.createRevision).toBe(5);
         expect(kv.modRevision).toBe(10);
         expect(kv.leaseId).toBe(0);
@@ -306,6 +313,65 @@ describe('Wire-format contract: watch SSE stream', () => {
         expect(kv.createRevision).toBe(1);
         expect(kv.modRevision).toBe(1);
         expect(kv.leaseId).toBe(0);
+    });
+
+    it('consumeSSE delivers base64 kv.key/kv.value to the callback as plaintext', async () => {
+        // End-to-end: exercise the real SSE consumption loop (not just
+        // deepSnakeToCamel in isolation) so a regression in consumeSSE's
+        // base64 decoding step is actually caught.
+
+        // First: mock for the connect() call (health check + status).
+        vi.stubGlobal(
+            'fetch',
+            async (): Promise<Response> =>
+                new Response(
+                    JSON.stringify({ status: 'ok', is_leader: true }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } },
+                ),
+        );
+
+        const client = new RestClient('https://localhost:63002');
+        await client.connection.connect('https://localhost:63002');
+
+        // Now: install a deferred mock for the GET /watch SSE call. Resolving
+        // it only after onEvent() is registered below avoids a race between
+        // callback registration and the background SSE consumption loop
+        // (createSSEWatchHandle fires consumeSSE without awaiting it).
+        let resolveFetch!: (resp: Response) => void;
+        const deferredFetch = new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+        });
+        vi.stubGlobal('fetch', async (): Promise<Response> => deferredFetch);
+
+        const handle = await client.watch.watch('hello', {});
+
+        const received: WatchEvent[] = [];
+        const delivered = new Promise<void>((resolve) => {
+            handle.onEvent((events) => {
+                received.push(...events);
+                resolve();
+            });
+        });
+
+        const sseFrame = `data: ${JSON.stringify(watchResponseWire)}\n\n`;
+        resolveFetch(
+            new Response(sseFrame, {
+                status: 200,
+                headers: { 'Content-Type': 'text/event-stream' },
+            }),
+        );
+
+        await delivered;
+        await handle.cancel();
+
+        expect(received).toHaveLength(1);
+        // watchResponseWire's kv is { key: "aGVsbG8=", value: "d29ybGQ=" }
+        // ("hello"/"world" base64). consumeSSE must decode both to plaintext
+        // before invoking onEvent callbacks — this is what the GUI's
+        // WatchView (cmd/qrdb/frontend/src/views/user/WatchView.svelte)
+        // renders directly.
+        expect(received[0].kv.key).toBe('hello');
+        expect(received[0].kv.value).toBe('world');
     });
 });
 

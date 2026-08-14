@@ -410,6 +410,37 @@ func (e *ShamirError) Error() string {
 // matching the original inline "%w" sentinel wrapping.
 func (e *ShamirError) Unwrap() error { return e.Sentinel }
 
+// DataRootMountMissingError is returned by ReattachVolumeTenant (the boot
+// re-attach path) when a tenant's persisted barrier store is absent at the
+// recorded DataRoot. The record was written on a prior run, so the barrier
+// Pebble directory ({dataRoot}/barrier) MUST already exist; when it does not —
+// typically because the operator's dedicated disk/mount is not mounted at boot
+// — re-attach fails closed with this error rather than silently opening a
+// fresh, empty barrier on the underlying root filesystem (a fail-open
+// availability and data-confusion hazard).
+type DataRootMountMissingError struct {
+	TenantID    string
+	BarrierPath string
+	Err         error
+}
+
+// Error returns a human-readable description of the missing-mount failure.
+func (e *DataRootMountMissingError) Error() string {
+	subject := "qrdb/seal: tenant barrier store"
+	if e.TenantID != "" {
+		subject = "qrdb/seal: tenant " + e.TenantID + " barrier store"
+	}
+	msg := subject + " " + e.BarrierPath +
+		" is absent on re-attach (dedicated mount not present?); refusing to create a fresh empty barrier"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error, if any.
+func (e *DataRootMountMissingError) Unwrap() error { return e.Err }
+
 // MigrationRecoveryError is returned by RegisterVolumeTenant when the
 // configured MigrationRecoverer fails to reconcile an interrupted encryption
 // migration recorded in the tenant's journal. Registration fails closed: the

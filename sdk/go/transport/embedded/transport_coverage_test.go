@@ -16,14 +16,21 @@ package embedded
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"errors"
 	"io"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
@@ -725,8 +732,6 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 		SPKIPin:    "pin",
 		CACertPEM:  []byte("CA"),
 		TLSCertPEM: []byte("TLS"),
-		SOCertPEM:  []byte("SO"),
-		SOKeyPEM:   []byte("KEY"),
 		State:      "initialized",
 		ShareCount: 3,
 	}, nil
@@ -746,11 +751,24 @@ func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, use
 	return &service.CeremonyClaimCertResult{CertPEM: []byte("CERT"), CACertPEM: []byte("CA")}, nil
 }
 
-func (m *mockCeremonyService) CeremonyClaimShare(ctx context.Context, username string) ([]byte, error) {
+func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
 	if m.claimShareFn != nil {
-		return m.claimShareFn(ctx, username)
+		if _, err := m.claimShareFn(ctx, username); err != nil {
+			return nil, err
+		}
 	}
-	return []byte(`{"share":"x"}`), nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareFn != nil {
+		share, err := m.claimShareFn(ctx, username)
+		if err != nil {
+			return nil, err
+		}
+		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"share":"x"}`)}, nil
 }
 
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
@@ -1109,18 +1127,50 @@ func TestEmbeddedCeremony_ClaimCertComplete_ServiceError(t *testing.T) {
 
 func TestEmbeddedCeremony_ClaimShare(t *testing.T) {
 	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	resp, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{Username: "alice"})
+	ctx := ctxWithEmbeddedPeerCert(t)
+
+	begun, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{Username: "alice"})
 	if err != nil {
-		t.Fatalf("CeremonyClaimShare: %v", err)
+		t.Fatalf("CeremonyBeginClaimShare: %v", err)
+	}
+	if begun.NonceHex == "" {
+		t.Fatal("expected a challenge nonce")
+	}
+
+	resp, err := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{
+		Username: "alice", NonceHex: begun.NonceHex, Signature: []byte("sig"),
+	})
+	if err != nil {
+		t.Fatalf("CeremonyCompleteClaimShare: %v", err)
 	}
 	if resp.ShareJSON != `{"share":"x"}` {
 		t.Fatalf("ShareJSON = %q", resp.ShareJSON)
 	}
 }
 
+// TestEmbeddedCeremony_ClaimShare_RequiresPeerCert proves the embedded
+// transport is not a bypass: without a peer certificate on the context the
+// claim is refused and no share material is returned.
+func TestEmbeddedCeremony_ClaimShare_RequiresPeerCert(t *testing.T) {
+	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
+
+	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "alice"}); err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+
+	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{Username: "alice"})
+	var cr *ClientCertRequiredError
+	if !errors.As(err, &cr) {
+		t.Fatalf("expected ClientCertRequiredError, got %T", err)
+	}
+	if resp != nil {
+		t.Fatalf("share material leaked on refusal: %#v", resp)
+	}
+}
+
 func TestEmbeddedCeremony_ClaimShare_NilService(t *testing.T) {
 	tr := newExtTransport(t)
-	_, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{})
+	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{})
 	var ne *NilServiceError
 	if !errors.As(err, &ne) {
 		t.Fatalf("expected NilServiceError, got %T", err)
@@ -1129,18 +1179,45 @@ func TestEmbeddedCeremony_ClaimShare_NilService(t *testing.T) {
 
 func TestEmbeddedCeremony_ClaimShare_Closed(t *testing.T) {
 	tr := closedExtTransport(t, WithCeremonyService(&mockCeremonyService{}))
-	_, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{})
+	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
 
+// ctxWithEmbeddedPeerCert returns a context carrying a self-signed leaf as the
+// mTLS peer certificate, mirroring what a real transport installs.
+func ctxWithEmbeddedPeerCert(t *testing.T) context.Context {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "embedded-officer"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse cert: %v", err)
+	}
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+	})
+}
+
 func TestEmbeddedCeremony_ClaimShare_ServiceError(t *testing.T) {
 	tr := newExtTransport(t, WithCeremonyService(&mockCeremonyService{
 		claimShareFn: func(_ context.Context, _ string) ([]byte, error) { return nil, errSentinel },
 	}))
-	_, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{Username: "x"})
+	_, err := tr.CeremonyBeginClaimShare(ctxWithEmbeddedPeerCert(t), &transport.BeginClaimShareRequest{Username: "x"})
 	if !errors.Is(err, errSentinel) {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -1322,14 +1399,21 @@ func TestEmbeddedCeremony_Dispatch(t *testing.T) {
 		}
 	})
 	t.Run("ClaimShare", func(t *testing.T) {
-		var resp *transport.ClaimShareResponse
-		if err := tr.Request(context.Background(), "CeremonyClaimShare",
-			&transport.ClaimShareRequest{Username: "x"}, &resp); err != nil {
+		var resp *transport.BeginClaimShareResponse
+		if err := tr.Request(ctxWithEmbeddedPeerCert(t), "CeremonyBeginClaimShare",
+			&transport.BeginClaimShareRequest{Username: "x"}, &resp); err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+	})
+	t.Run("CompleteClaimShare", func(t *testing.T) {
+		var resp *transport.CompleteClaimShareResponse
+		if err := tr.Request(ctxWithEmbeddedPeerCert(t), "CeremonyCompleteClaimShare",
+			&transport.CompleteClaimShareRequest{Username: "x"}, &resp); err != nil {
 			t.Fatalf("dispatch: %v", err)
 		}
 	})
 	t.Run("ClaimShareBadReq", func(t *testing.T) {
-		err := tr.Request(context.Background(), "CeremonyClaimShare", "bad", nil)
+		err := tr.Request(context.Background(), "CeremonyBeginClaimShare", "bad", nil)
 		var ie *InvalidRequestError
 		if !errors.As(err, &ie) {
 			t.Fatalf("expected InvalidRequestError, got %T", err)

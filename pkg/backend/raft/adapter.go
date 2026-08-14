@@ -45,6 +45,12 @@ type QuicraftHost interface {
 	// without a linearizable ReadIndex round-trip. Suitable for health checks.
 	GetShardMembership(shardID uint64) (*quicraft.Membership, error)
 	RequestSnapshot(ctx context.Context, shardID uint64, opt quicraft.SnapshotOption) (*quicraft.RequestState, error)
+	// IsShardJoining reports whether shardID is still in its join bootstrap
+	// window: started locally with join=true and not yet given its first
+	// snapshot. Used by the placement reconciler (JoinObserver) to promote a
+	// dynamically added replica from ReplicaStateObserver to
+	// ReplicaStateObserverReady once it has caught up.
+	IsShardJoining(shardID uint64) bool
 }
 
 // HostAdapter wraps a QuicraftHost to satisfy the service.Host interface.
@@ -158,6 +164,13 @@ func (a *HostAdapter) GetShardRaftState(shardID uint64) (configChangeIndex uint6
 		return 0, 0, err
 	}
 	return membership.ConfigChangeID, 0, nil
+}
+
+// IsShardJoining reports whether shardID is still in its join bootstrap
+// window on this host: started locally with join=true and not yet given its
+// first snapshot. Satisfies server.JoinObserver.
+func (a *HostAdapter) IsShardJoining(shardID uint64) bool {
+	return a.inner.IsShardJoining(shardID)
 }
 
 // BootstrapAdapter wraps HostAdapter and redirects SyncRead to StaleRead.

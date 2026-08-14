@@ -18,9 +18,13 @@
 //
 // The authorizer enforces three layered rules in this order:
 //
-//  1. SO deny-list (FIPS 140-3 AS10.03): an identity holding the SO role
-//     is denied keys:sign, keys:encrypt, keys:decrypt, keys:verify,
-//     keys:wrap, and keys:unwrap regardless of any explicit grant.
+//  1. SO deny-list (FIPS 140-3 AS10.03): an identity holding the SO role is
+//     denied every cryptographic operation regardless of any explicit grant —
+//     the keys:* crypto verbs (sign, verify, encrypt, decrypt, wrap, unwrap,
+//     derive), hardware-token key use (piv:use), and any resource whose action
+//     names a cryptographic primitive, which covers permissions contributed by
+//     a higher layer that this package cannot enumerate (go-quicbaas's
+//     attestation:attest among them).
 //  2. Permission resolution: the role service returns the union of all
 //     permissions granted by the identity's roles (cached per identity).
 //     If the requested permission is not in the union, the request is
@@ -66,10 +70,21 @@ const (
 	resolveSyncTimeout = 500 * time.Millisecond
 )
 
-// soDeniedActions is the set of cryptographic actions explicitly denied to
-// the SO role regardless of any permission grants (FIPS 140-3 AS10.03).
+// soDeniedActions is the set of resource-specific cryptographic actions
+// explicitly denied to the SO role regardless of any permission grants (FIPS
+// 140-3 AS10.03). It names the operations whose action verb alone does not
+// identify them as cryptographic use: "verify" is ambiguous across families
+// (backup:verify and objstore:verify are integrity checks over stored bytes)
+// and "use" says nothing on its own, so both are pinned to their resource here.
+//
 // Defense-in-depth: even if an SO role is erroneously granted these
-// permissions, the authorizer rejects the request at this layer.
+// permissions — by a hand-authored custom role named "so", or by a role store
+// written by an earlier build — the authorizer rejects the request at this
+// layer. This table is deliberately INDEPENDENT of the registration-time guard
+// in pkg/permission (it classifies the requested resource:action itself rather
+// than consulting the duty registry) so that a defect in one mechanism does not
+// disable the other. TestSODenyList_AgreesWithPermissionDutyRegistry proves the
+// two agree.
 var soDeniedActions = map[string]map[string]struct{}{
 	"keys": {
 		"sign":    {},
@@ -78,12 +93,50 @@ var soDeniedActions = map[string]map[string]struct{}{
 		"verify":  {},
 		"wrap":    {},
 		"unwrap":  {},
+		"derive":  {},
+	},
+	"piv": {
+		// "use a PIV slot key for cryptographic operations" — keys:sign
+		// reached through a smart card. The SO administers PIV slots
+		// (piv:read / piv:write / piv:delete) but never uses their keys.
+		"use": {},
 	},
 }
 
-// isSODenied reports whether the given resource+action combination is
-// explicitly denied for the SO role per FIPS 140-3 AS10.03.
+// soDeniedCryptoVerbs is the resource-independent half of the deny-list: action
+// verbs that name a cryptographic primitive performed with key material in any
+// resource family. It is what makes this layer complete for permissions this
+// package cannot enumerate — a higher layer (go-quicbaas, go-xkms) contributes
+// its own resources to the shared RBAC vocabulary, and go-quicbaas's
+// attestation:attest (extend a PCR, return a signed TPM quote) must be denied
+// to the SO without qrdb knowing the resource exists.
+//
+// The set mirrors permission.cryptoPrimitiveActions and excludes the same
+// ambiguous verbs, for the same reasons: "verify" (integrity checks),
+// "seal"/"unseal" (the SO's own barrier lifecycle) and "generate" (issuance and
+// credential minting) are NOT cryptographic use.
+var soDeniedCryptoVerbs = map[string]struct{}{
+	"sign":    {},
+	"encrypt": {},
+	"decrypt": {},
+	"wrap":    {},
+	"unwrap":  {},
+	"derive":  {},
+	"kdf":     {},
+	"mac":     {},
+	"hmac":    {},
+	"attest":  {},
+	"quote":   {},
+}
+
+// isSODenied reports whether the given resource+action combination is a
+// cryptographic operation denied to the SO role per FIPS 140-3 AS10.03. Both
+// halves are O(1) map lookups: the resource-independent verb set first, then the
+// resource-specific table.
 func isSODenied(resource, action string) bool {
+	if _, denied := soDeniedCryptoVerbs[action]; denied {
+		return true
+	}
 	if actions, ok := soDeniedActions[resource]; ok {
 		_, denied := actions[action]
 		return denied
@@ -229,6 +282,27 @@ func (a *RBACAuthorizer) effectiveRoles(identity *auth.Identity) []string {
 	return out
 }
 
+// IsSystemTenant reports whether identity is scoped to the structurally
+// privileged system tenant. A nil identity is treated as system-scoped:
+// the absence of an authenticated identity means the caller is an internal,
+// unauthenticated pipeline (platform boot, daemon-internal maintenance),
+// which by convention executes with system-tenant privilege — mirroring
+// tenant.FromContext's fallback for a context with no bound tenant. A
+// non-nil identity delegates to tenant.IsSystemTenant, the single source of
+// truth for the string-level comparison; this function does not re-derive
+// that comparison itself.
+//
+// It lives in this package (rather than pkg/auth, where Identity is
+// defined) because pkg/auth cannot import pkg/tenant without closing an
+// import cycle through pkg/ceremony; pkg/auth/rbac already depends on both
+// and is where the system-tenant rule this predicate encodes is enforced.
+func IsSystemTenant(identity *auth.Identity) bool {
+	if identity == nil {
+		return true
+	}
+	return tenant.IsSystemTenant(identity.TenantID)
+}
+
 // resolveScope returns the scope governing the given permission for the
 // identity's tenant. When a tenant-aware resolver is installed it is
 // consulted (fail safe on error); otherwise the built-in process-global
@@ -343,7 +417,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// resolved in the identity's own tenant when a tenant-aware resolver is
 	// installed; a resolver error (e.g. a sealed barrier tenant) fails safe.
 	targetTenantID := tenant.FromContext(ctx)
-	inSystem := identity.TenantID == tenant.SystemTenantID
+	inSystem := IsSystemTenant(identity)
 	scope, scopeErr := a.resolveScope(ctx, identity, required)
 	if scopeErr != nil {
 		return &PermissionDeniedError{

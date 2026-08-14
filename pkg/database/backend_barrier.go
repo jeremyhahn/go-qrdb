@@ -33,14 +33,18 @@ type BarrierEncryptor interface {
 }
 
 // BarrierBackend wraps a Backend with a BarrierEncryptor to provide
-// transparent value encryption/decryption. Keys remain in plaintext.
-// When the barrier is sealed, all operations return SealedError.
+// transparent value encryption/decryption. Keys remain in plaintext (so
+// range scans and prefix listing stay usable without exposing key barrier
+// material); values are AES-256-GCM sealed under the owning database's
+// barrier-derived DEK before they ever reach the underlying store. When the
+// barrier is sealed, all operations fail closed with SealedError.
 //
-// Deprecated: per-value encryption is retired in favour of FS-level
-// at-rest encryption via pkg/atrest.Encryptor (store-level AES-256-GCM).
-// BarrierBackend is no longer constructed by Manager; it is kept only for
-// backward compatibility of the exported SDK surface and test coverage.
-// New code must not use BarrierBackend to wrap production store backends.
+// This is Manager's at-rest encryption mechanism for every per-database
+// encryption barrier (see Manager.CreateWithCredentials / Manager.Open):
+// unlike the system/tenant barrier's FS-level pkg/atrest.Encryptor (which
+// wraps Pebble's vfs.FS and therefore only applies to Pebble-backed
+// stores), a per-database store may be memory-, file-, or Pebble-backed, so
+// encryption is applied uniformly at the value layer instead.
 type BarrierBackend struct {
 	inner   Backend
 	barrier BarrierEncryptor
@@ -84,6 +88,30 @@ func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
 		return &BarrierEncryptError{Key: string(key), Err: err}
 	}
 	return b.inner.Put(ctx, key, encrypted)
+}
+
+// PutIfAbsent encrypts value and stores it only when key is absent, forwarding
+// the conditional write to the inner backend so the atomicity guarantee is the
+// inner store's rather than something this wrapper invents.
+//
+// It satisfies AtomicBackend only when the inner backend does. A barrier around
+// a non-atomic store cannot manufacture atomicity — encrypting first and then
+// doing a check-then-write here would reintroduce exactly the window the
+// operation exists to close — so the capability is reported honestly by
+// returning ErrAtomicWriteUnsupported instead.
+func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
+	if b.barrier.IsSealed() {
+		return false, &SealedError{}
+	}
+	atomicInner, ok := b.inner.(AtomicBackend)
+	if !ok {
+		return false, ErrAtomicWriteUnsupported
+	}
+	encrypted, err := b.barrier.Encrypt(nil, value)
+	if err != nil {
+		return false, &BarrierEncryptError{Key: string(key), Err: err}
+	}
+	return atomicInner.PutIfAbsent(ctx, key, encrypted)
 }
 
 // Delete removes the key. No decryption is needed for deletion.

@@ -23,6 +23,30 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
+// protoRestoreActionMap converts service RestoreAction values to proto
+// RestoreAction values.
+var protoRestoreActionMap = map[service.RestoreAction]pb.RestoreAction{
+	service.RestoreActionRevert:   pb.RestoreAction_RESTORE_ACTION_REVERT,
+	service.RestoreActionRecreate: pb.RestoreAction_RESTORE_ACTION_RECREATE,
+	service.RestoreActionDelete:   pb.RestoreAction_RESTORE_ACTION_DELETE,
+}
+
+// restoreChangesToProto converts a slice of service RestoreKeyChange to
+// their protobuf representation.
+func restoreChangesToProto(changes []service.RestoreKeyChange) []*pb.RestoreKeyChange {
+	out := make([]*pb.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = &pb.RestoreKeyChange{
+			Key:          []byte(c.Key),
+			Action:       protoRestoreActionMap[c.Action],
+			FromRevision: c.FromRevision,
+			ToRevision:   c.ToRevision,
+			ValueBytes:   c.ValueBytes,
+		}
+	}
+	return out
+}
+
 // handlePutWithLease stores a key-value pair with an attached lease through
 // the MVCC service layer. When the request carries a non-UNSPECIFIED
 // WriteMode, PutWithLeaseAndMode is used; otherwise the plain PutWithLease
@@ -167,21 +191,22 @@ func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error
 	if req.GetKeysOnly() {
 		opts = append(opts, service.WithKeysOnly())
 	}
-	if req.GetSortOrder() != pb.SortOrder_SORT_NONE {
+	if req.GetSortOrder() != pb.SortOrder_SORT_NONE || req.GetSortTarget() != pb.SortTarget_SORT_BY_KEY {
 		order := protoSortOrderMap[req.GetSortOrder()]
 		target := protoSortTargetMap[req.GetSortTarget()]
 		opts = append(opts, service.WithSort(order, target))
 	}
 
 	var (
-		kvs   []*service.KeyValue
-		count int64
-		err   error
+		kvs      []*service.KeyValue
+		count    int64
+		revision int64
+		err      error
 	)
 	if ropts, ok := readOptsFromWire(req.GetConsistency()); ok {
-		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+		kvs, count, revision, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
 	} else {
-		kvs, count, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+		kvs, count, revision, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
 	}
 	if err != nil {
 		return nil, err
@@ -192,7 +217,7 @@ func (s *Server) handleRange(ctx context.Context, payload []byte) ([]byte, error
 		pbKvs[i] = kvToProto(k)
 	}
 
-	resp, err := proto.Marshal(&pb.RangeResponse{Kvs: pbKvs, Count: count})
+	resp, err := proto.Marshal(&pb.RangeResponse{Kvs: pbKvs, Count: count, Revision: revision})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}
@@ -234,6 +259,51 @@ func (s *Server) handleCurrentRevision(ctx context.Context, _ []byte) ([]byte, e
 	}
 
 	resp, err := proto.Marshal(&pb.CurrentRevisionResponse{Revision: rev})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleRestoreToRevision returns a bounded set of keys to the value they
+// held at an earlier MVCC revision by proposing new writes through the
+// service layer -- a logical undo, never a Raft rewind.
+func (s *Server) handleRestoreToRevision(ctx context.Context, payload []byte) ([]byte, error) {
+	mvccSvc, svcErr := s.mvccSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	var req pb.RestoreRevisionRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	keys := make([]string, len(req.GetKeys()))
+	for i, k := range req.GetKeys() {
+		keys[i] = string(k)
+	}
+
+	result, err := mvccSvc.RestoreToRevision(ctx, &service.RestoreRevisionRequest{
+		Revision: req.GetRevision(),
+		Prefix:   string(req.GetPrefix()),
+		Keys:     keys,
+		DryRun:   req.GetDryRun(),
+		Force:    req.GetForce(),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.RestoreRevisionResponse{
+		Revision:   result.Revision,
+		Changes:    restoreChangesToProto(result.Changes),
+		Conflicts:  restoreChangesToProto(result.Conflicts),
+		Applied:    int64(result.Applied),
+		Skipped:    int64(result.Skipped),
+		Conflicted: int64(result.Conflicted),
+		DryRun:     result.DryRun,
+	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

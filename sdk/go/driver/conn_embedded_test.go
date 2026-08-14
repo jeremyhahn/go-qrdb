@@ -255,8 +255,11 @@ func TestEmbeddedConn_BeginTxUnsupportedIsolation(t *testing.T) {
 		t.Skip("conn does not implement ConnBeginTx")
 	}
 
+	// The four standard SQL isolation levels are mapped onto SET TRANSACTION
+	// ISOLATION LEVEL rather than refused. Snapshot and Linearizable have no
+	// MySQL equivalent, so they remain unsupported and must be reported.
 	_, err = cb.BeginTx(context.Background(), sqld.TxOptions{
-		Isolation: sqld.IsolationLevel(sql.LevelReadUncommitted),
+		Isolation: sqld.IsolationLevel(sql.LevelSnapshot),
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported isolation level")
@@ -264,6 +267,40 @@ func TestEmbeddedConn_BeginTxUnsupportedIsolation(t *testing.T) {
 	var ie *UnsupportedIsolationError
 	if !errors.As(err, &ie) {
 		t.Errorf("expected *UnsupportedIsolationError, got %T: %v", err, err)
+	}
+}
+
+// TestEmbeddedConn_BeginTxAcceptsStandardIsolation verifies the isolation
+// levels MySQL implements are accepted rather than refused.
+func TestEmbeddedConn_BeginTxAcceptsStandardIsolation(t *testing.T) {
+	levels := []sql.IsolationLevel{
+		sql.LevelDefault,
+		sql.LevelReadUncommitted,
+		sql.LevelReadCommitted,
+		sql.LevelRepeatableRead,
+		sql.LevelSerializable,
+	}
+
+	for _, level := range levels {
+		t.Run(level.String(), func(t *testing.T) {
+			d := &Driver{}
+			conn, err := d.Open("embedded://memory?database=isolationtest")
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			cb := conn.(sqld.ConnBeginTx)
+			tx, err := cb.BeginTx(context.Background(), sqld.TxOptions{
+				Isolation: sqld.IsolationLevel(level),
+			})
+			if err != nil {
+				t.Fatalf("BeginTx(%v): %v", level, err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Errorf("Rollback: %v", err)
+			}
+		})
 	}
 }
 

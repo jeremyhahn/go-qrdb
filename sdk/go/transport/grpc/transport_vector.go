@@ -548,9 +548,18 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 		return nil, mapGRPCError("RebuildIndex", err)
 	}
 
+	// pb.VectorRebuildIndexRequest carries no Async field, so
+	// service_vector.go's VectorRebuildIndex handler always builds a
+	// service.RebuildIndexRequest with Async left at its zero value
+	// (false); vectorService.RebuildIndex therefore always runs
+	// performIndexRebuild synchronously and has already completed by the
+	// time this RPC returns -- report "completed", matching the REST
+	// transport's decoded response (which does forward the server's actual
+	// Status) instead of the "running" this client used to hardcode
+	// regardless of the true, always-synchronous outcome.
 	return &transport.RebuildIndexResponse{
 		JobID:     resp.GetJobId(),
-		Status:    "running",
+		Status:    "completed",
 		Timestamp: resp.GetTimestamp(),
 		Success:   resp.GetStarted(),
 	}, nil

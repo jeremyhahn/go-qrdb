@@ -240,3 +240,48 @@ func TestHandleTenantUpdateEntitlements_Success(t *testing.T) {
 		t.Errorf("expected id 'acme', got %q", tenantResp.GetId())
 	}
 }
+
+// TestHandleTenantUpdateEntitlements_BarrierModesAndWALRoundTrip is a
+// regression test for the QUIC entitlements round-trip bug: AllowedBarrierModes
+// and AllowDedicatedWal were dropped both on decode (handleTenantUpdateEntitlements)
+// and on encode (tenantInfoToProto), so a `tenant set-entitlement
+// --allowed-barrier-modes ...` call followed by `tenant get` over QUIC always
+// reported an empty list even though the value round-trips correctly on
+// REST/gRPC/Unix. mockTenantService.UpdateEntitlements echoes back exactly the
+// *quota.Entitlements it was handed, so this test exercises the full
+// decode -> service -> encode path.
+func TestHandleTenantUpdateEntitlements_BarrierModesAndWALRoundTrip(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+	payload, _ := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{
+		Id: "acme",
+		Entitlements: &pb.TenantEntitlements{
+			AllowedBarrierModes: []string{"none", "passphrase", "shamir"},
+			AllowDedicatedWal:   true,
+		},
+	})
+
+	resp, err := srv.handleTenantUpdateEntitlements(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var tenantResp pb.TenantResponse
+	if err := proto.Unmarshal(resp, &tenantResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tenantResp.GetEntitlements() == nil {
+		t.Fatal("expected non-nil entitlements in response")
+	}
+	got := tenantResp.GetEntitlements().GetAllowedBarrierModes()
+	want := []string{"none", "passphrase", "shamir"}
+	if len(got) != len(want) {
+		t.Fatalf("expected AllowedBarrierModes %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected AllowedBarrierModes %v, got %v", want, got)
+		}
+	}
+	if !tenantResp.GetEntitlements().GetAllowDedicatedWal() {
+		t.Error("expected AllowDedicatedWal true in response")
+	}
+}

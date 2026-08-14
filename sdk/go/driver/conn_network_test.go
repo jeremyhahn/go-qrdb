@@ -18,57 +18,50 @@ import (
 	"context"
 	"database/sql"
 	sqld "database/sql/driver"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// newMockSQLServer creates an httptest.Server that responds to POST /v1/sql/query.
-func newMockSQLServer(t *testing.T, handler func(req *sqlRequest, w http.ResponseWriter)) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/sql/query" {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		var req sqlRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		handler(&req, w)
-	}))
+// fakeSQLClient records the calls a network connection makes and returns a
+// canned result, standing in for a remote qrdb server.
+type fakeSQLClient struct {
+	result *transport.SQLQueryResult
+	err    error
+
+	calls    int
+	lastDB   string
+	lastStmt string
 }
 
-// newNetworkConnFromServer returns a networkConn pointed at the test server.
-func newNetworkConnFromServer(srv *httptest.Server, database string) *networkConn {
-	return &networkConn{
-		client:   srv.Client(),
-		baseURL:  srv.URL,
-		database: database,
+func (f *fakeSQLClient) Query(_ context.Context, database, query string) (*transport.SQLQueryResult, error) {
+	f.calls++
+	f.lastDB = database
+	f.lastStmt = query
+	if f.err != nil {
+		return nil, f.err
 	}
+	if f.result != nil {
+		return f.result, nil
+	}
+	return &transport.SQLQueryResult{}, nil
 }
 
-// TestNetworkConn_QueryContext_Success verifies QueryContext sends correct JSON and parses rows.
+// newFakeNetworkConn returns a network connection backed by the given client.
+func newFakeNetworkConn(client *fakeSQLClient, database string) *networkConn {
+	return &networkConn{sqlClient: client, database: database, scheme: SchemeREST}
+}
+
+// TestNetworkConn_QueryContext_Success verifies the statement and database
+// reach the transport and the result set is exposed.
 func TestNetworkConn_QueryContext_Success(t *testing.T) {
-	var receivedReq *sqlRequest
-
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		receivedReq = req
-		resp := sqlResponse{
-			Columns:  []string{"id", "name"},
-			Rows:     []map[string]interface{}{{"id": float64(1), "name": "alice"}},
-			RowCount: 1,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
+	client := &fakeSQLClient{result: &transport.SQLQueryResult{
+		Columns:  []string{"id", "name"},
+		Rows:     []map[string]any{{"id": "1", "name": "alice"}},
+		RowCount: 1,
+	}}
+	conn := newFakeNetworkConn(client, "testdb")
 
 	rows, err := conn.QueryContext(context.Background(), "SELECT id, name FROM users", nil)
 	if err != nil {
@@ -76,14 +69,11 @@ func TestNetworkConn_QueryContext_Success(t *testing.T) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	if receivedReq == nil {
-		t.Fatal("server did not receive a request")
+	if client.lastDB != "testdb" {
+		t.Errorf("database = %q, want testdb", client.lastDB)
 	}
-	if receivedReq.Database != "testdb" {
-		t.Errorf("Database = %q, want testdb", receivedReq.Database)
-	}
-	if receivedReq.Query != "SELECT id, name FROM users" {
-		t.Errorf("Query = %q, want SELECT ...", receivedReq.Query)
+	if client.lastStmt != "SELECT id, name FROM users" {
+		t.Errorf("query = %q, want the original statement", client.lastStmt)
 	}
 
 	cols := rows.Columns()
@@ -92,295 +82,139 @@ func TestNetworkConn_QueryContext_Success(t *testing.T) {
 	}
 }
 
-// TestNetworkConn_ExecContext_Success verifies ExecContext sends correct JSON and returns result.
-func TestNetworkConn_ExecContext_Success(t *testing.T) {
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		resp := sqlResponse{RowCount: 2}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
+// TestNetworkConn_ExecContext_MetadataUnsupported verifies the result declares
+// affected-row and insert-id metadata unavailable rather than fabricating it
+// from the row count.
+func TestNetworkConn_ExecContext_MetadataUnsupported(t *testing.T) {
+	client := &fakeSQLClient{result: &transport.SQLQueryResult{RowCount: 2}}
+	conn := newFakeNetworkConn(client, "testdb")
 
 	res, err := conn.ExecContext(context.Background(), "DELETE FROM t WHERE x = 1", nil)
 	if err != nil {
 		t.Fatalf("ExecContext: %v", err)
 	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		t.Fatalf("RowsAffected: %v", err)
+
+	var unsupported *ResultMetadataUnsupportedError
+	if _, err := res.RowsAffected(); !errors.As(err, &unsupported) {
+		t.Errorf("RowsAffected error = %v, want *ResultMetadataUnsupportedError", err)
 	}
-	if rows != 2 {
-		t.Errorf("RowsAffected = %d, want 2", rows)
+	if _, err := res.LastInsertId(); !errors.As(err, &unsupported) {
+		t.Errorf("LastInsertId error = %v, want *ResultMetadataUnsupportedError", err)
 	}
 }
 
-// TestNetworkConn_ErrorResponse_NonOK verifies non-200 response returns NetworkRequestError.
-func TestNetworkConn_ErrorResponse_NonOK(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
-	}))
-	defer srv.Close()
+// TestNetworkConn_RejectsParameters verifies bound arguments are refused
+// rather than spliced into the SQL text, and that nothing is sent.
+func TestNetworkConn_RejectsParameters(t *testing.T) {
+	client := &fakeSQLClient{}
+	conn := newFakeNetworkConn(client, "testdb")
 
-	conn := newNetworkConnFromServer(srv, "testdb")
+	args := []sqld.NamedValue{{Ordinal: 1, Value: int64(42)}}
+	ctx := context.Background()
+
+	var unsupported *ParameterizedQueryUnsupportedError
+
+	if _, err := conn.QueryContext(ctx, "SELECT * FROM t WHERE id = ?", args); !errors.As(err, &unsupported) {
+		t.Errorf("QueryContext error = %v, want *ParameterizedQueryUnsupportedError", err)
+	}
+	if _, err := conn.ExecContext(ctx, "DELETE FROM t WHERE id = ?", args); !errors.As(err, &unsupported) {
+		t.Errorf("ExecContext error = %v, want *ParameterizedQueryUnsupportedError", err)
+	}
+
+	// Nothing may reach the server: the value cannot leak into the SQL text.
+	if client.calls != 0 {
+		t.Errorf("transport received %d calls, want 0", client.calls)
+	}
+}
+
+// TestNetworkConn_TransportError verifies a transport failure is wrapped.
+func TestNetworkConn_TransportError(t *testing.T) {
+	sentinel := errors.New("transport unavailable")
+	conn := newFakeNetworkConn(&fakeSQLClient{err: sentinel}, "testdb")
 
 	_, err := conn.QueryContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error for non-200 response")
+	if !errors.Is(err, sentinel) {
+		t.Errorf("error = %v, want it to wrap %v", err, sentinel)
 	}
 
-	var nre *NetworkRequestError
-	if !errors.As(err, &nre) {
-		t.Errorf("expected *NetworkRequestError, got %T: %v", err, err)
-	}
-	if nre.StatusCode != http.StatusInternalServerError {
-		t.Errorf("StatusCode = %d, want %d", nre.StatusCode, http.StatusInternalServerError)
+	var execErr *QueryExecError
+	if !errors.As(err, &execErr) {
+		t.Errorf("error = %v, want *QueryExecError", err)
 	}
 }
 
-// TestNetworkConn_ErrorResponse_PlainText verifies non-JSON error body is wrapped.
-func TestNetworkConn_ErrorResponse_PlainText(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte("plain text error"))
-	}))
-	defer srv.Close()
+// TestNetworkConn_TransactionsUnsupported verifies a transaction is refused
+// rather than returning a handle whose Rollback silently does nothing.
+func TestNetworkConn_TransactionsUnsupported(t *testing.T) {
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "testdb")
 
-	conn := newNetworkConnFromServer(srv, "testdb")
+	_, err := conn.BeginTx(context.Background(), sqld.TxOptions{})
 
-	_, err := conn.ExecContext(context.Background(), "BAD SQL", nil)
-	if err == nil {
-		t.Fatal("expected error for non-200 response")
+	var unsupported *TransactionUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("BeginTx error = %v, want *TransactionUnsupportedError", err)
 	}
-
-	var nre *NetworkRequestError
-	if !errors.As(err, &nre) {
-		t.Errorf("expected *NetworkRequestError, got %T: %v", err, err)
+	if unsupported.Scheme != SchemeREST {
+		t.Errorf("Scheme = %q, want %q", unsupported.Scheme, SchemeREST)
 	}
 }
 
-// TestNetworkConn_Close verifies Close marks the connection as closed.
-func TestNetworkConn_Close(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
+// TestNetworkConn_BeginTxUnsupportedIsolation verifies a non-default isolation
+// level is reported before the transaction refusal.
+func TestNetworkConn_BeginTxUnsupportedIsolation(t *testing.T) {
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "testdb")
 
+	_, err := conn.BeginTx(context.Background(), sqld.TxOptions{
+		Isolation: sqld.IsolationLevel(sql.LevelSerializable),
+	})
+
+	var iso *UnsupportedIsolationError
+	if !errors.As(err, &iso) {
+		t.Errorf("error = %v, want *UnsupportedIsolationError", err)
+	}
+}
+
+// TestNetworkConn_ClosedRejectsEverything verifies a closed connection refuses
+// all work and reports itself invalid so the pool discards it.
+func TestNetworkConn_ClosedRejectsEverything(t *testing.T) {
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "testdb")
+
+	if !conn.IsValid() {
+		t.Fatal("fresh connection reported invalid")
+	}
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-
-	_, err := conn.QueryContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error after Close")
+	if conn.IsValid() {
+		t.Error("closed connection reported valid")
 	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
+
+	ctx := context.Background()
+	var closedErr *ConnClosedError
+
+	if _, err := conn.QueryContext(ctx, "SELECT 1", nil); !errors.As(err, &closedErr) {
+		t.Errorf("QueryContext error = %v, want *ConnClosedError", err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT 1", nil); !errors.As(err, &closedErr) {
+		t.Errorf("ExecContext error = %v, want *ConnClosedError", err)
+	}
+	if _, err := conn.Prepare("SELECT 1"); !errors.As(err, &closedErr) {
+		t.Errorf("Prepare error = %v, want *ConnClosedError", err)
+	}
+	if _, err := conn.BeginTx(ctx, sqld.TxOptions{}); !errors.As(err, &closedErr) {
+		t.Errorf("BeginTx error = %v, want *ConnClosedError", err)
 	}
 }
 
-// TestNetworkConn_PrepareOnClosed verifies Prepare on closed conn returns error.
-func TestNetworkConn_PrepareOnClosed(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-	_ = conn.Close()
-
-	_, err := conn.Prepare("SELECT 1")
-	if err == nil {
-		t.Fatal("expected error for closed conn")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkConn_ExecContextOnClosed verifies ExecContext on closed conn returns error.
-func TestNetworkConn_ExecContextOnClosed(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-	_ = conn.Close()
-
-	_, err := conn.ExecContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error for closed conn")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkConn_BeginTxUnsupportedIsolation verifies unsupported isolation returns error.
-func TestNetworkConn_BeginTxUnsupportedIsolation(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-
-	_, err := conn.BeginTx(context.Background(), sqld.TxOptions{
-		Isolation: sqld.IsolationLevel(sql.LevelReadCommitted),
-	})
-	if err == nil {
-		t.Fatal("expected error for unsupported isolation")
-	}
-	var ie *UnsupportedIsolationError
-	if !errors.As(err, &ie) {
-		t.Errorf("expected *UnsupportedIsolationError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkConn_BeginTxOnClosed verifies BeginTx on closed conn returns error.
-func TestNetworkConn_BeginTxOnClosed(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-	_ = conn.Close()
-
-	_, err := conn.BeginTx(context.Background(), sqld.TxOptions{})
-	if err == nil {
-		t.Fatal("expected error on closed conn")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkConn_Begin verifies Begin returns valid transaction.
+// TestNetworkConn_Begin verifies the legacy Begin path reports the same
+// refusal as BeginTx.
 func TestNetworkConn_Begin(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
+	conn := newFakeNetworkConn(&fakeSQLClient{}, "testdb")
 
-	tx, err := conn.Begin()
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	if tx == nil {
-		t.Fatal("expected non-nil transaction")
-	}
-	_ = tx.Rollback()
-}
+	_, err := conn.Begin()
 
-// TestNetworkConn_QueryContextWithArgs verifies arg substitution before sending.
-func TestNetworkConn_QueryContextWithArgs(t *testing.T) {
-	var receivedQuery string
-
-	srv := newMockSQLServer(t, func(req *sqlRequest, w http.ResponseWriter) {
-		receivedQuery = req.Query
-		resp := sqlResponse{
-			Columns:  []string{"id"},
-			Rows:     []map[string]interface{}{},
-			RowCount: 0,
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
-
-	args := []sqld.NamedValue{{Ordinal: 1, Value: int64(42)}}
-	_, err := conn.QueryContext(context.Background(), "SELECT * FROM t WHERE id = ?", args)
-	if err != nil {
-		t.Fatalf("QueryContext: %v", err)
+	var unsupported *TransactionUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("Begin error = %v, want *TransactionUnsupportedError", err)
 	}
-
-	if !strings.Contains(receivedQuery, "42") {
-		t.Errorf("query %q should contain substituted value 42", receivedQuery)
-	}
-}
-
-// TestNetworkConn_InvalidJSON verifies malformed JSON response is handled.
-func TestNetworkConn_InvalidJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("not-json"))
-	}))
-	defer srv.Close()
-
-	conn := newNetworkConnFromServer(srv, "testdb")
-
-	_, err := conn.QueryContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON response")
-	}
-}
-
-// TestNetworkConn_ClientDoError verifies network error from client.Do is wrapped.
-func TestNetworkConn_ClientDoError(t *testing.T) {
-	// Point at a server that immediately closes.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	url := srv.URL
-	srv.Close() // Close immediately so client.Do will fail.
-
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  url,
-		database: "testdb",
-	}
-
-	_, err := conn.QueryContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected network error")
-	}
-	var nre *NetworkRequestError
-	if !errors.As(err, &nre) {
-		t.Errorf("expected *NetworkRequestError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkConn_BeginTxDefaultIsolation verifies BeginTx with LevelDefault succeeds.
-func TestNetworkConn_BeginTxDefaultIsolation(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-	tx, err := conn.BeginTx(context.Background(), sqld.TxOptions{
-		Isolation: sqld.IsolationLevel(0), // LevelDefault
-	})
-	if err != nil {
-		t.Fatalf("BeginTx with default isolation: %v", err)
-	}
-	if tx == nil {
-		t.Fatal("expected non-nil tx")
-	}
-	_ = tx.Rollback()
-}
-
-// TestNetworkConn_BeginTxSerializableIsolation verifies serializable isolation is accepted.
-func TestNetworkConn_BeginTxSerializableIsolation(t *testing.T) {
-	conn := &networkConn{
-		client:   &http.Client{},
-		baseURL:  "http://localhost",
-		database: "db",
-	}
-	tx, err := conn.BeginTx(context.Background(), sqld.TxOptions{
-		Isolation: sqld.IsolationLevel(6), // LevelSerializable
-	})
-	if err != nil {
-		t.Fatalf("BeginTx with serializable: %v", err)
-	}
-	if tx == nil {
-		t.Fatal("expected non-nil tx")
-	}
-	_ = tx.Commit()
 }

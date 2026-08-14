@@ -29,6 +29,20 @@ import (
 // defaultWatchTimeout is the maximum duration to collect watch events
 // before returning a response. MCP is request/response, so watches are
 // bounded to this collection period.
+//
+// The qrdb_watch tool itself is stateless request/response: each call
+// creates a fresh watcher, collects for up to timeout_seconds, closes the
+// watcher, and returns a snapshot carrying the highest revision observed
+// (Revision in watchResult) — including the revision of the zero-event
+// "Created" response a start-revision watch gets on creation (see
+// pkg/watch.Hub.startReplay). The SDK client (sdk/go/transport/mcp) is what
+// makes repeated calls to this tool loss-free: it tracks that revision as a
+// cursor and always requests start_revision = cursor+1 on the next call, so
+// pkg/watch's replay-then-live-handoff redelivers anything committed in the
+// gap between one call ending and the next beginning. A single call to this
+// tool in isolation (start_revision omitted) is a plain live-only snapshot
+// with no such guarantee — the loss-free contract lives in the client's
+// polling loop, not in this handler.
 const defaultWatchTimeout = 5 * time.Second
 
 // watchTools returns the MCP tool registrations for watch operations.
@@ -139,6 +153,17 @@ func handleWatch(watchSvc service.WatchServicer) mcpserver.ToolHandlerFunc {
 				break collectLoop
 			case resp, ok := <-w.Events():
 				if !ok {
+					// The hub closes Events() without a final response when it
+					// evicts a watcher mid-collection (e.g. compaction races
+					// past an in-progress start-revision replay — see
+					// hub.startReplay). Surface that as a tool failure rather
+					// than silently returning a truncated snapshot as if
+					// nothing happened; the SDK client (transport_watch.go)
+					// classifies this the same way it classifies the
+					// synchronous watchSvc.Watch/WatchPrefix failure below.
+					if wErr := w.Err(); wErr != nil {
+						return nil, &ToolError{Tool: "qrdb_watch", Err: wErr}
+					}
 					break collectLoop
 				}
 				lastRevision = resp.Revision

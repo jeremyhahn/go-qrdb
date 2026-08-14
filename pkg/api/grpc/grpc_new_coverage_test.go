@@ -344,7 +344,7 @@ func TestGRPC_CeremonyInitialize_Error(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
 	ceremonySvc.initErr = errors.New("ceremony init error")
 	client, cleanup := startTestServerWithAll(t, newMockKVService(), newMockAdminService(),
-		WithCeremonyService(ceremonySvc))
+		WithCeremonyService(ceremonySvc), WithCeremonyCA(&stubCeremonyCA{}))
 	defer cleanup()
 
 	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
@@ -388,7 +388,7 @@ func TestGRPC_CeremonyClaimShare_Error(t *testing.T) {
 		WithCeremonyService(ceremonySvc))
 	defer cleanup()
 
-	_, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{
+	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{
 		Username: "alice",
 	})
 	if err == nil {

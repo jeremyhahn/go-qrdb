@@ -17,6 +17,7 @@ package rest
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -30,12 +31,18 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // apiRequestTimeout bounds every KV, admin, cert, role, and user endpoint so
@@ -363,7 +370,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 			kv, putErr = mvccSvc.PutWithLease(ctx, key, body, leaseID)
 		}
 		if putErr != nil {
-			if s.tryForwardWrite(w, r, key, body, putErr) {
+			if s.tryForwardWrite(w, r, body, putErr) {
 				return
 			}
 			writeErrorJSON(w, mapHTTPError(putErr), putErr)
@@ -390,7 +397,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 		putErr = kvSvc.Put(ctx, key, body)
 	}
 	if putErr != nil {
-		if s.tryForwardWrite(w, r, key, body, putErr) {
+		if s.tryForwardWrite(w, r, body, putErr) {
 			return
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: putErr})
@@ -544,7 +551,7 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 		err = kvSvc.Delete(ctx, key)
 	}
 	if err != nil {
-		if s.tryForwardWrite(w, r, key, nil, err) {
+		if s.tryForwardWrite(w, r, nil, err) {
 			return
 		}
 		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
@@ -635,10 +642,21 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 // Membership and snapshot handlers
 // ---------------------------------------------------------------------------
 
-// handleMembershipAdd handles POST /membership/add.
+// handleMembershipAdd handles POST /membership/add. When the local node is
+// not the shard's Raft leader and leader forwarding is configured, the
+// request is transparently proxied to the leader (see tryForwardWrite),
+// mirroring the KV PUT/DELETE and database-scale handlers. The body is
+// buffered up front (rather than decoded directly off r.Body) so the
+// original bytes remain available for forwarding.
 func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
 	var req membershipAddRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -647,6 +665,9 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := s.adminSvc.AddMember(ctx, req.ShardID, req.ReplicaID, req.Address); err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
 		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "add", Err: err})
 		return
 	}
@@ -654,10 +675,21 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, okResponse{Status: "ok"})
 }
 
-// handleMembershipRemove handles POST /membership/remove.
+// handleMembershipRemove handles POST /membership/remove. When the local
+// node is not the shard's Raft leader and leader forwarding is configured,
+// the request is transparently proxied to the leader (see tryForwardWrite),
+// mirroring the KV PUT/DELETE and database-scale handlers. The body is
+// buffered up front (rather than decoded directly off r.Body) so the
+// original bytes remain available for forwarding.
 func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
 	var req membershipRemoveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
@@ -666,6 +698,9 @@ func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	if err := s.adminSvc.RemoveMember(ctx, req.ShardID, req.ReplicaID); err != nil {
+		if s.tryForwardWrite(w, r, body, err) {
+			return
+		}
 		writeErrorJSON(w, http.StatusInternalServerError, &MembershipError{Op: "remove", Err: err})
 		return
 	}
@@ -700,8 +735,10 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 // leader address and forwards the write request to the leader's REST
 // server. Returns true if forwarding was attempted (regardless of whether
 // it succeeded), meaning the caller should not write any further response.
-// Returns false if forwarding is not applicable.
-func (s *Server) tryForwardWrite(w http.ResponseWriter, r *http.Request, key string, body []byte, err error) bool {
+// Returns false if forwarding is not applicable. body is the original
+// request body (already drained from r.Body by the caller); it is
+// forwarded as-is since it cannot be re-read from r.
+func (s *Server) tryForwardWrite(w http.ResponseWriter, r *http.Request, body []byte, err error) bool {
 	if s.resolver == nil {
 		return false
 	}
@@ -727,24 +764,29 @@ func (s *Server) tryForwardWrite(w http.ResponseWriter, r *http.Request, key str
 		return false
 	}
 
-	s.forwardToLeader(w, r, adminURL, key, body)
+	s.forwardToLeader(w, r, adminURL, body)
 	return true
 }
 
 // forwardToLeader proxies the original HTTP request to the leader's REST
-// server at the given base URL. It reconstructs the request path from the
-// original method and key, copies the response status and body back.
-// The X-Quicraft-Forwarded-By header is set to prevent infinite forwarding
-// loops.
-func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminURL, key string, body []byte) {
-	// Prevent forwarding loops: if we already forwarded this request, stop.
-	if r.Header.Get(headerForwardedBy) != "" {
+// server at the given base URL, preserving the original method, path, and
+// query string (so this works for any write endpoint -- /kv/{key}, database
+// scale, etc. -- not just KV), and copies the response status and body
+// back. The X-Quicraft-Forward-Hops header carries a bounded hop counter
+// (see maxForwardHops) so a genuine forwarding loop still terminates while
+// legitimate multi-hop chains (e.g. a non-member entry node forwarding to a
+// guessed shard member that is itself not the leader) can complete.
+func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminURL string, body []byte) {
+	// Bound forwarding chains: reject once the request has already taken
+	// maxForwardHops hops, rather than capping at a single hop.
+	hops := forwardHopCount(r)
+	if hops >= maxForwardHops {
 		writeErrorJSON(w, http.StatusLoopDetected,
 			&LeaderForwardLoopError{LeaderURL: adminURL})
 		return
 	}
 
-	targetURL := adminURL + "/kv/" + key
+	targetURL := adminURL + r.URL.RequestURI()
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -758,6 +800,27 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 		return
 	}
 
+	// Copy the original request headers so routing/content semantics survive
+	// the hop -- in particular the X-QRDB-Database scope header the leader's
+	// scope middleware reads to target the right database, plus Content-Type
+	// and any consistency/write-mode headers. Control headers set below
+	// (forwarded-by, on-behalf assertion) override any client-supplied value.
+	for k, vals := range r.Header {
+		for _, v := range vals {
+			fwdReq.Header.Add(k, v)
+		}
+	}
+
+	// Strip any client-supplied control headers so the forwarding node is the
+	// SOLE source of the loop guard and the on-behalf assertion. A client can
+	// never smuggle a forged assertion (or a signer's assertion) through the
+	// proxy; the leader additionally re-verifies the assertion against the mTLS
+	// peer, but stripping here keeps the forwarder the single trusted origin.
+	fwdReq.Header.Del(headerForwardedBy)
+	fwdReq.Header.Del(headerForwardHops)
+	fwdReq.Header.Del(forward.HeaderAssertion)
+	fwdReq.Header.Del(forward.HeaderSignature)
+
 	// Set the forwarded-by header using the host's Raft address when
 	// available, otherwise use a placeholder.
 	forwardedBy := "unknown"
@@ -765,6 +828,14 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 		forwardedBy = s.host.RaftAddress()
 	}
 	fwdReq.Header.Set(headerForwardedBy, forwardedBy)
+	fwdReq.Header.Set(headerForwardHops, strconv.Itoa(hops+1))
+
+	// Attach a signed on-behalf-of assertion carrying the ORIGINAL caller's
+	// identity so the leader re-authorizes as the caller rather than as this
+	// forwarding node (whose node certificate carries no user roles). Skipped
+	// when there is no authenticated caller in context (auth-disabled
+	// deployments) or when this node has no signing identity/node id.
+	s.attachOnBehalfAssertion(fwdReq, r, body)
 
 	resp, doErr := s.forwardClient.Do(fwdReq)
 	if doErr != nil {
@@ -788,6 +859,124 @@ func (s *Server) forwardToLeader(w http.ResponseWriter, r *http.Request, adminUR
 			"leader_url", targetURL,
 		)
 	}
+}
+
+// forwardHopCount returns the number of leader-forwarding hops already
+// applied to r, as carried by headerForwardHops. A missing, empty, or
+// malformed header is treated as zero hops -- i.e. this request has not yet
+// been forwarded.
+func forwardHopCount(r *http.Request) int {
+	v := r.Header.Get(headerForwardHops)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// attachOnBehalfAssertion signs a request-bound CallerAssertion for the
+// authenticated caller in r's context and sets the on-behalf headers on the
+// outbound forwarded request fwdReq. body is the exact request body being
+// forwarded (nil for bodyless requests). It is a no-op -- leaving the request
+// to be authenticated as the forwarding node -- when there is no authenticated
+// caller in context, when this node has no signing identity, or when signing
+// fails (the failure is logged; the request still forwards and will simply be
+// authorized as the node, preserving prior behavior for non-RBAC paths).
+func (s *Server) attachOnBehalfAssertion(fwdReq, r *http.Request, body []byte) {
+	if s.forwardSigner == nil || s.forwardNodeID == "" {
+		return
+	}
+	caller := auth.IdentityFromContext(r.Context())
+	if caller == nil || caller.Subject == "" {
+		return
+	}
+
+	assertion := forward.NewCallerAssertion(
+		caller.Subject,
+		caller.TenantID,
+		r.Method,
+		r.URL.RequestURI(),
+		forward.BodyDigest(body),
+		s.forwardNodeID,
+		time.Now(),
+		forward.DefaultTTL,
+	)
+
+	assertionB64, sigB64, err := forward.Sign(assertion, s.forwardSigner)
+	if err != nil {
+		slog.Error("leader forwarding: failed to sign on-behalf assertion",
+			"error", err,
+			"subject", caller.Subject,
+			"tenant", caller.TenantID,
+		)
+		return
+	}
+
+	fwdReq.Header.Set(forward.HeaderAssertion, assertionB64)
+	fwdReq.Header.Set(forward.HeaderSignature, sigB64)
+}
+
+// deriveForwardIdentity extracts the on-behalf signing key and this node's
+// SPIFFE node id from the node's own TLS identity certificate. It returns
+// (nil, "") when no usable identity is present so the caller falls back to
+// node-identity authorization on forwarded requests (unchanged behavior). Both
+// the static Certificates slice and a GetClientCertificate callback are probed
+// so the derivation works regardless of how the transport TLS was provisioned.
+func deriveForwardIdentity(tlsCfg *tls.Config) (crypto.Signer, string) {
+	if tlsCfg == nil {
+		return nil, ""
+	}
+
+	leaf := leafCertificate(tlsCfg)
+	if leaf == nil {
+		return nil, ""
+	}
+
+	signer, ok := leaf.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, ""
+	}
+
+	parsed := leaf.Leaf
+	if parsed == nil {
+		if len(leaf.Certificate) == 0 {
+			return nil, ""
+		}
+		var perr error
+		parsed, perr = x509.ParseCertificate(leaf.Certificate[0])
+		if perr != nil {
+			return nil, ""
+		}
+	}
+
+	// The node id is not trust-domain-pinned here: it merely stamps the
+	// assertion's ForwarderNodeID, which the leader re-checks against the
+	// mTLS peer certificate it actually verified against the cluster CA.
+	nodeID, err := spiffe.NodeFromCert(parsed, "")
+	if err != nil {
+		return signer, ""
+	}
+	return signer, nodeID.NodeID
+}
+
+// leafCertificate returns the node's own TLS identity certificate from cfg,
+// preferring the static Certificates slice and falling back to a
+// GetClientCertificate callback. It returns nil when neither yields a
+// certificate with a usable private key.
+func leafCertificate(cfg *tls.Config) *tls.Certificate {
+	if len(cfg.Certificates) > 0 && cfg.Certificates[0].PrivateKey != nil {
+		return &cfg.Certificates[0]
+	}
+	if cfg.GetClientCertificate != nil {
+		if cert, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); err == nil &&
+			cert != nil && cert.PrivateKey != nil {
+			return cert
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +1035,11 @@ func mapHTTPError(err error) int {
 	var ipe *service.ImportParseError
 	var iae *service.ImportArchiveError
 	var ita *service.ImportTransactionAbortedError
+	var iite *service.ImportInputTooLargeError
+	var iaete *service.ImportArchiveExpandedTooLargeError
+	var itme *service.ImportTooManyEntriesError
+	var itmr *service.ImportTooManyRowsError
+	var ipte *service.ImportProposalTooLargeError
 	var dbae *database.AlreadyExistsError
 	var dbnf *database.NotFoundError
 	var dbine *database.InvalidNameError
@@ -876,6 +1070,29 @@ func mapHTTPError(err error) int {
 	var sqleq *service.SQLEmptyQueryError
 	var sqled *service.SQLEmptyDatabaseError
 	var sqlex *service.SQLExecutionError
+	var itce *tenant.InvalidTenantIDCharError
+	var irt *service.InvalidRaftTopologyError
+	var rdu *service.RaftDistributedUnavailableError
+	var tqee *tenant.QuotaExceededError
+	var infe *placement.InsufficientNodesError
+	var rfe *service.ReplicaFloorError
+	var ndre *service.NotDedicatedRaftDatabaseError
+	var slte *service.ShardLeaderTimeoutError
+	var utoe *service.UnsupportedTransactionOpError
+	var cso *service.CompactSystemOnlyError
+	var tade *database.TenantAccessDeniedError
+	var mbr *service.MVCCBackendRequiredError
+	var rike *service.RestoreInternalKeyError
+	var rciu *service.RestoreChangeIndexUnavailableError
+	var rnre *service.RestoreNilRequestError
+	var rrie *service.RestoreRevisionInvalidError
+	var rrfe *service.RestoreRevisionFutureError
+	var rsee *service.RestoreScopeEmptyError
+	var rsae *service.RestoreScopeAmbiguousError
+	var reke *service.RestoreEmptyKeyError
+	var rste *service.RestoreScopeTooLargeError
+	var rupe *service.RestoreUnboundedPrefixError
+	var rae *service.RestoreApplyError
 
 	switch {
 	case errors.As(err, &knf):
@@ -930,6 +1147,16 @@ func mapHTTPError(err error) int {
 		return http.StatusBadRequest
 	case errors.As(err, &ita):
 		return http.StatusConflict
+	case errors.As(err, &iite):
+		return http.StatusRequestEntityTooLarge
+	case errors.As(err, &iaete):
+		return http.StatusRequestEntityTooLarge
+	case errors.As(err, &itme):
+		return http.StatusBadRequest
+	case errors.As(err, &itmr):
+		return http.StatusBadRequest
+	case errors.As(err, &ipte):
+		return http.StatusRequestEntityTooLarge
 	case errors.As(err, &dbae):
 		return http.StatusConflict
 	case errors.As(err, &dbnf):
@@ -976,6 +1203,13 @@ func mapHTTPError(err error) int {
 		return http.StatusNotFound
 	case errors.As(err, &bse):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, tenant.ErrTenantSealed):
+		// A barrier-isolated tenant's IAM (user/role) store resolved to a
+		// SEALED barrier. The StoreResolver fails closed rather than leaking
+		// the operation through the shared system store — surface 503 so the
+		// caller retries after the tenant's barrier is unsealed, matching the
+		// BarrierSealedError data-plane mapping.
+		return http.StatusServiceUnavailable
 	case errors.As(err, &ibu):
 		// Required isolation backend not wired — fail closed as 503 rather than
 		// silently serving the tenant from the shared store.
@@ -994,6 +1228,85 @@ func mapHTTPError(err error) int {
 		// SQL validation and engine failures are client errors — the
 		// query (or its target database selector) is malformed.
 		return http.StatusBadRequest
+	case errors.As(err, &itce):
+		// Forbidden tenant-scope character (e.g. '/' or '\') in the
+		// x-qrdb-tenant header is a malformed request, not a server fault.
+		return http.StatusBadRequest
+	case errors.As(err, &irt):
+		// Internally incoherent raft topology request (e.g. cluster mode
+		// "none" on a dedicated-raft backend) is a malformed request.
+		return http.StatusBadRequest
+	case errors.As(err, &rdu):
+		// Distributed raft topology requested but the placement subsystem is
+		// not wired on this node — fail closed as 503 rather than silently
+		// collapsing to a single local replica.
+		return http.StatusServiceUnavailable
+	case errors.As(err, &tqee):
+		// Tenant-wide replica-usage reservation lost a concurrency race —
+		// surface as 429 Too Many Requests, same as quota.ExceededError.
+		return http.StatusTooManyRequests
+	case errors.As(err, &infe):
+		// Tenant is within its own quota but the cluster has no free node —
+		// a distinct failure from quota-exceeded; 503 so a retry after
+		// cluster capacity changes can succeed (unlike a 429 retry against
+		// the same tenant quota, which never would).
+		return http.StatusServiceUnavailable
+	case errors.As(err, &rfe):
+		// Requested replica count is out of range (< 1) — malformed request.
+		return http.StatusBadRequest
+	case errors.As(err, &ndre):
+		// Target database has no dedicated-raft placement to scale.
+		return http.StatusBadRequest
+	case errors.As(err, &slte):
+		// The dedicated shard's leader was not stable within the wait bound
+		// (e.g. an in-flight election) — transient; 503 so the caller retries
+		// once the group settles rather than seeing an opaque 500.
+		return http.StatusServiceUnavailable
+	case errors.As(err, &utoe):
+		// A transaction branch (success/failure ops) contained a read
+		// (Get/Range) or other unsupported op type — malformed request.
+		return http.StatusBadRequest
+	case errors.As(err, &cso):
+		// A non-system tenant attempted a store-global MVCC compaction — the
+		// service layer fails closed. 403, matching the ScopeCross authz gate.
+		return http.StatusForbidden
+	case errors.As(err, &tade):
+		// A caller targeted a per-database control operation (seal/unseal/
+		// barrier-status, drop) on a database owned by a different tenant. The
+		// service layer fails closed independently of transport RBAC. 403.
+		return http.StatusForbidden
+	case errors.Is(err, watch.ErrCompacted):
+		// A watch requested a start revision at or below the compacted floor
+		// — the intervening history is gone. Same status family as
+		// service.RevisionCompactedError.
+		return http.StatusRequestedRangeNotSatisfiable
+	case errors.Is(err, watch.ErrStartRevisionUnsupported):
+		// A watch requested a start revision against a store with no change
+		// history attached (a non-MVCC store) — replay is impossible.
+		return http.StatusNotImplemented
+	case errors.As(err, &mbr):
+		// The shard's state machine keeps no MVCC revision history (the
+		// default raft.sm_type is "pebble", not "mvcc") — 501 so the caller
+		// learns the operation is unavailable on this deployment, not merely
+		// that this one call failed.
+		return http.StatusNotImplemented
+	case errors.As(err, &rike):
+		// A restore scope reached the internal key namespace — refused as an
+		// authority the caller does not have, not a malformed request.
+		return http.StatusForbidden
+	case errors.As(err, &rciu):
+		// A prefix-scoped restore needs the durable revision index and this
+		// backend maintains none — same family as MVCCBackendRequiredError.
+		return http.StatusNotImplemented
+	case errors.As(err, &rnre), errors.As(err, &rrie), errors.As(err, &rrfe),
+		errors.As(err, &rsee), errors.As(err, &rsae), errors.As(err, &reke),
+		errors.As(err, &rste), errors.As(err, &rupe):
+		// Request-shape guards: nil/malformed request, invalid or future
+		// revision, ambiguous/empty/too-large/unbounded scope.
+		return http.StatusBadRequest
+	case errors.As(err, &rae):
+		// A write in an already-validated plan failed part way through.
+		return http.StatusInternalServerError
 	default:
 		// Allow build-tagged packages to extend the error mapping.
 		if ragErrorMapperFn != nil {
@@ -1014,10 +1327,15 @@ var ragErrorMapperFn func(err error) (int, bool)
 // KeyValue JSON response
 // ---------------------------------------------------------------------------
 
-// kvResponse is the JSON representation of an MVCC key-value pair.
+// kvResponse is the JSON representation of an MVCC key-value pair. Key and
+// Value are []byte so encoding/json encodes them as base64 (RFC 4648),
+// preserving arbitrary binary content byte-for-byte. KV values are raw
+// bytes accepted from a PUT request body; encoding them as a JSON string
+// instead would replace invalid UTF-8 sequences with U+FFFD and corrupt
+// non-UTF-8 values on GET/scan/watch.
 type kvResponse struct {
-	Key            string `json:"key"`
-	Value          string `json:"value"`
+	Key            []byte `json:"key"`
+	Value          []byte `json:"value"`
 	CreateRevision int64  `json:"create_revision"`
 	ModRevision    int64  `json:"mod_revision"`
 	Version        int64  `json:"version"`
@@ -1032,8 +1350,8 @@ func kvToResponse(kv *kv.KeyValue) *kvResponse {
 		return nil
 	}
 	return &kvResponse{
-		Key:            string(kv.Key),
-		Value:          string(kv.Value),
+		Key:            kv.Key,
+		Value:          kv.Value,
 		CreateRevision: kv.CreateRevision,
 		ModRevision:    kv.ModRevision,
 		Version:        kv.Version,

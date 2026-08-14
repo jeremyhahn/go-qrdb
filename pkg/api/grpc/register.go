@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -89,6 +90,16 @@ func WithRegisterUserService(svc user.UserServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.userSvc = svc }
 }
 
+// WithRegisterUserAuthFactorService attaches the user-side auth factor
+// service. Unlike the other options, the service is not dispatched by a
+// QRDBService RPC: RegisterService registers it as the separate
+// qrdb.v1.UserAuthFactorService on the same *grpc.Server (see
+// RegisterUserAuthFactorService), so composers (e.g. go-quicbaas) can expose
+// the user-login factor surface with a single RegisterService call.
+func WithRegisterUserAuthFactorService(svc service.UserAuthFactorServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.userAuthFactorSvc = svc }
+}
+
 // WithRegisterRoleService attaches a role management service for the registered gRPC service.
 func WithRegisterRoleService(svc role.RoleServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.roleSvc = svc }
@@ -131,6 +142,15 @@ func WithRegisterCeremonyService(svc service.CeremonyServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.ceremonySvc = svc }
 }
 
+// WithRegisterCeremonyCA attaches the node's CeremonyCA for the registered
+// gRPC service, so the shared CeremonyInitialize handler can issue the TLS
+// and SO certificates. This is how the Unix domain socket transport (which
+// shares this package's QRDBServiceServer implementation via RegisterService)
+// supplies the same CA as the TCP gRPC server.
+func WithRegisterCeremonyCA(ca ceremony.CeremonyCA) RegisterOption {
+	return func(s *qrdbServiceServer) { s.ceremonyCA = ca }
+}
+
 // WithRegisterCredentialService attaches a credential management service for the registered gRPC service.
 func WithRegisterCredentialService(svc service.CredentialServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.credentialSvc = svc }
@@ -166,6 +186,11 @@ func WithRegisterRebalanceService(svc service.RebalanceServicer) RegisterOption 
 	return func(s *qrdbServiceServer) { s.rebalanceSvc = svc }
 }
 
+// WithRegisterSQLService attaches a SQL query service for the registered gRPC service.
+func WithRegisterSQLService(svc service.SQLServicer) RegisterOption {
+	return func(s *qrdbServiceServer) { s.sqlSvc = svc }
+}
+
 // WithRegisterServiceRegistry attaches a per-(tenant, database) service
 // registry for the registered gRPC service. When set, data-plane RPCs resolve
 // their servicer per scope; when nil the singleton service fields are used.
@@ -190,4 +215,9 @@ func RegisterService(srv *grpc.Server, kvSvc service.KVServicer, adminSvc servic
 		opt(svc)
 	}
 	pb.RegisterQRDBServiceServer(srv, svc)
+
+	// The user-side auth factor surface is a separate proto service; register
+	// it alongside QRDBService when supplied. RegisterUserAuthFactorService
+	// no-ops on a nil servicer.
+	RegisterUserAuthFactorService(srv, svc.userAuthFactorSvc, svc.userSvc)
 }

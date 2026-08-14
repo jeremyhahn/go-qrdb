@@ -21,12 +21,15 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
+	sqle "github.com/dolthub/go-mysql-server"
+	gmssql "github.com/dolthub/go-mysql-server/sql"
 	wire "github.com/jeroenrinzema/psql-wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -514,4 +518,171 @@ func (l *errorListener) Close() error {
 
 func (l *errorListener) Addr() net.Addr {
 	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9a: WithServiceRegistry / WithCollectionService / WithIndex option
+// tests, and Start()-based proof that they reach the provider serving real
+// sessions rather than merely being accepted and ignored.
+// ---------------------------------------------------------------------------
+
+func TestNewServer_WithServiceRegistry(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+	reg := sqltest.NewHarness().Registry
+
+	s := NewServer(kvSvc, adminSvc, ":5432", WithServiceRegistry(reg))
+
+	require.NotNil(t, s.registry)
+	assert.Same(t, reg, s.registry)
+}
+
+func TestNewServer_WithCollectionService(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+	collSvc := &sqltest.FakeCollectionService{}
+
+	s := NewServer(kvSvc, adminSvc, ":5432", WithCollectionService(collSvc))
+
+	require.NotNil(t, s.collectionSvc)
+	assert.Same(t, collSvc, s.collectionSvc)
+}
+
+func TestNewServer_WithIndex(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+	idxSvc := &mockIndexService{}
+
+	s := NewServer(kvSvc, adminSvc, ":5432", WithIndex(idxSvc))
+
+	require.NotNil(t, s.indexSvc)
+	assert.Same(t, idxSvc, s.indexSvc)
+}
+
+// mockIndexService is a minimal service.IndexServicer stand-in for option
+// assignment tests; no method on it is ever invoked.
+type mockIndexService struct {
+	service.IndexServicer
+}
+
+// runSQL executes query against eng using a QRDBSession carrying tenantID,
+// mirroring exactly what a real PostgreSQL session carries (see
+// buildSQLContext) and what pkg/sql/query's run() does for the ad-hoc
+// surface. It returns the result column names and materialized rows,
+// failing t immediately on error.
+func runSQL(t *testing.T, eng *sqle.Engine, dbName, tenantID, query string) ([]string, []gmssql.Row) {
+	t.Helper()
+	sess := provider.NewSession(gmssql.NewBaseSession(), &auth.Identity{Subject: "test", TenantID: tenantID})
+	sqlCtx := gmssql.NewContext(context.Background(), gmssql.WithSession(sess))
+	sqlCtx.SetCurrentDatabase(dbName)
+
+	schema, iter, _, err := eng.Query(sqlCtx, query)
+	require.NoError(t, err, "query %q", query)
+	defer func() { _ = iter.Close(sqlCtx) }()
+
+	columns := make([]string, len(schema))
+	for i, col := range schema {
+		columns[i] = col.Name
+	}
+
+	var rows []gmssql.Row
+	for {
+		row, rerr := iter.Next(sqlCtx)
+		if rerr == io.EOF {
+			break
+		}
+		require.NoError(t, rerr, "query %q", query)
+		rows = append(rows, row)
+	}
+	return columns, rows
+}
+
+// TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable proves
+// that WithServiceRegistry actually reaches the provider serving sessions
+// -- not just that the option is accepted -- by creating a relational
+// table through a REAL service.TableService and then reading it back
+// through a query run against the server's built engine exactly as a real
+// PostgreSQL client's SELECT would be.
+func TestServer_StartStop_WithServiceRegistry_ResolvesRelationalTable(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	dataDir := t.TempDir()
+	mgr := database.NewManager(slog.Default(), dataDir)
+	defer func() { _ = mgr.Close() }()
+
+	_, err := mgr.Create(database.DatabaseConfig{
+		Name:     "testdb",
+		Engine:   database.EngineKV,
+		Backend:  database.BackendPebble,
+		Protocol: database.ProtocolConfig{PostgreSQL: true},
+	})
+	require.NoError(t, err)
+
+	h := sqltest.NewHarness()
+	h.CreateTable(context.Background(), "testdb", "widgets", []service.ColumnDef{
+		{Name: "id", Type: "INT"},
+	})
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseManager(mgr),
+		WithServiceRegistry(h.Registry),
+	)
+
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	columns, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SELECT * FROM widgets")
+	assert.Equal(t, []string{"id"}, columns)
+	assert.Empty(t, rows)
+}
+
+// TestServer_StartStop_WithCollectionService_ListsCollection proves that
+// WithCollectionService reaches the provider serving sessions: a collection
+// registered on a FakeCollectionService is visible through SHOW TABLES
+// against the server's built engine.
+func TestServer_StartStop_WithCollectionService_ListsCollection(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	adminSvc := &mockAdminService{}
+
+	dataDir := t.TempDir()
+	mgr := database.NewManager(slog.Default(), dataDir)
+	defer func() { _ = mgr.Close() }()
+
+	_, err := mgr.Create(database.DatabaseConfig{
+		Name:     "testdb",
+		Engine:   database.EngineKV,
+		Backend:  database.BackendPebble,
+		Protocol: database.ProtocolConfig{PostgreSQL: true},
+	})
+	require.NoError(t, err)
+
+	collSvc := &sqltest.FakeCollectionService{
+		Infos: []service.CollectionInfo{{Name: "documents", Database: "testdb"}},
+	}
+
+	s := NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		WithDatabaseManager(mgr),
+		WithCollectionService(collSvc),
+	)
+
+	require.NoError(t, s.Start())
+	defer s.Stop()
+
+	_, rows := runSQL(t, s.sqlEngine, "testdb", "acme", "SHOW TABLES")
+	var names []string
+	for _, row := range rows {
+		names = append(names, gmssqlRowString(row))
+	}
+	assert.Contains(t, names, "documents")
+}
+
+// gmssqlRowString extracts the first (and only) column of a SHOW TABLES
+// result row as a string.
+func gmssqlRowString(row gmssql.Row) string {
+	if len(row) == 0 {
+		return ""
+	}
+	s, _ := row[0].(string)
+	return s
 }

@@ -1111,11 +1111,50 @@ func TestKVEngine_Update_InvalidCommand(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	// A single byte that's not a valid KV command and not a valid extended command.
+	// A single byte too short to be a base-KV command (header is 3 bytes),
+	// but long enough to decode as an extended-protocol command with an
+	// unrecognized op (0x00 is not registered in extHandlers). This is the
+	// sibling "unknown ext op" case, which correctly returns a Go error.
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0}}}
 	results := make([]sm.Result, 1)
-	// Should not panic; result value will be set to 1.
-	_ = eng.Update(context.Background(), entries, results)
+	err := eng.Update(context.Background(), entries, results)
+	if err == nil {
+		t.Fatal("expected error for unrecognized extended op")
+	}
+	var uoe *UnsupportedOperationError
+	if !errors.As(err, &uoe) {
+		t.Errorf("expected *UnsupportedOperationError, got %T: %v", err, err)
+	}
+}
+
+// TestKVEngine_Update_UndecodableByBothProtocols exercises the case where a
+// committed command cannot be decoded by EITHER the base KV wire protocol
+// (which requires a 3-byte header) or the extended protocol (which requires
+// at least a 1-byte op code) — e.g. an empty/corrupt entry. Regression test
+// for the silent-success bug: this must not be reported as applied
+// (Value:1) or stall consensus (a Go error); it must surface as an
+// application error in the result payload.
+func TestKVEngine_Update_UndecodableByBothProtocols(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+
+	eng := NewKVEngine(stg)
+
+	entries := []sm.Entry{{Index: 1, Cmd: []byte{}}}
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update should not return a Go error for an undecodable command, got: %v", err)
+	}
+	if results[0].Value == 1 {
+		t.Fatal("undecodable command must not be reported as success (Value:1)")
+	}
+	msg, ok := protocol.DecodeAppError(results[0].Data)
+	if !ok {
+		t.Fatalf("expected an application-error result, got %+v", results[0])
+	}
+	if msg == "" {
+		t.Error("expected a non-empty application-error message")
+	}
 }
 
 // ---------------------------------------------------------------------------

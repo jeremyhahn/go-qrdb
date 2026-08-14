@@ -55,7 +55,7 @@ func newOpenCredentialTransport(t *testing.T) *Transport {
 
 func TestTransport_CredentialSubmit_Closed(t *testing.T) {
 	tr := newClosedCredentialTransport(t)
-	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "k", Value: "v"})
+	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "k", Value: []byte("v")})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *ClosedError, got %T: %v", err, err)
@@ -91,7 +91,7 @@ func TestTransport_CredentialList_Closed(t *testing.T) {
 
 func TestTransport_CredentialRotate_Closed(t *testing.T) {
 	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: "v"})
+	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *ClosedError, got %T", err)

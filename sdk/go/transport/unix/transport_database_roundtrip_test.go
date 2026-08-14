@@ -139,7 +139,7 @@ func (m *mockDatabaseSvc) UnsealDatabase(ctx context.Context, name string, creds
 	return nil
 }
 
-func (m *mockDatabaseSvc) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseSvc) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if m.barrierStatusFn != nil {
 		return m.barrierStatusFn(name)
 	}
@@ -183,6 +183,10 @@ func (m *mockDatabaseSvc) UpdateBarrierForTenant(_ context.Context, name string,
 
 func (m *mockDatabaseSvc) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateConnection(name, c)
+}
+
+func (m *mockDatabaseSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +321,44 @@ func TestUnixRT_UpdateDatabaseBarrier(t *testing.T) {
 	}
 	if resp.Barrier == nil || !resp.Barrier.Enabled {
 		t.Errorf("got %+v, want Barrier.Enabled=true", resp.Barrier)
+	}
+}
+
+// TestUnixRT_UpdateDatabaseBarrier_MetadataFields is the MEDIUM #9 proof for
+// the Unix transport: Mode/SharesRequired/SharesTotal must survive the
+// gRPC-over-UDS round trip alongside Enabled, not be silently dropped.
+func TestUnixRT_UpdateDatabaseBarrier_MetadataFields(t *testing.T) {
+	var got *database.DatabaseBarrierConfig
+	svc := &mockDatabaseSvc{
+		updateBarrier: func(name string, b *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+			got = b
+			return &database.DatabaseInfo{Name: name, Barrier: b}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
+	defer cleanup()
+
+	resp, err := tr.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{
+		Name: "db1",
+		Barrier: &transport.DatabaseBarrierConfig{
+			Enabled:        true,
+			Mode:           "passphrase",
+			SharesRequired: 2,
+			SharesTotal:    3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseBarrier: %v", err)
+	}
+	if got == nil {
+		t.Fatal("server-side UpdateBarrier was not invoked with a barrier config")
+	}
+	if got.Mode != "passphrase" || got.SharesRequired != 2 || got.SharesTotal != 3 {
+		t.Errorf("server received %+v, want Mode=passphrase SharesRequired=2 SharesTotal=3", got)
+	}
+	if resp.Barrier == nil || resp.Barrier.Mode != "passphrase" ||
+		resp.Barrier.SharesRequired != 2 || resp.Barrier.SharesTotal != 3 {
+		t.Errorf("response Barrier = %+v, want Mode=passphrase SharesRequired=2 SharesTotal=3", resp.Barrier)
 	}
 }
 

@@ -32,13 +32,14 @@ import (
 // fakeShardLifecycle — test double for ShardLifecycle
 // ---------------------------------------------------------------------------
 
-// fakeShardLifecycle records Attach and Close calls and maintains a set of
-// "started" shards. It is goroutine-safe.
+// fakeShardLifecycle records Attach, Close, and CloseAndPurge calls and
+// maintains a set of "started" shards. It is goroutine-safe.
 type fakeShardLifecycle struct {
 	mu       sync.Mutex
 	started  map[raftShardKey]bool
 	attached []raftShardKey
 	closed   []raftShardKey
+	purged   []raftShardKey
 	attachFn func(tenantID, db string) error
 }
 
@@ -71,6 +72,19 @@ func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 	return nil
 }
 
+// CloseAndPurge mirrors RaftBackendFactory.CloseAndPurge: it stops the shard
+// (same bookkeeping as Close, so existing tests asserting closeCount() after
+// a demotion continue to hold) and additionally records the purge.
+func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	delete(f.started, key)
+	f.closed = append(f.closed, key)
+	f.purged = append(f.purged, key)
+	return nil
+}
+
 func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -97,6 +111,55 @@ func (f *fakeShardLifecycle) closeCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.closed)
+}
+
+func (f *fakeShardLifecycle) purgeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.purged)
+}
+
+func (f *fakeShardLifecycle) isPurged(tenantID, db string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	for _, k := range f.purged {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// fakeJoinObserver — test double for JoinObserver
+// ---------------------------------------------------------------------------
+
+// fakeJoinObserver reports a per-shard joining state controlled by the test.
+// Unset shard IDs default to "still joining" (true) so a test must
+// explicitly mark a shard caught-up.
+type fakeJoinObserver struct {
+	mu      sync.Mutex
+	joining map[uint64]bool
+}
+
+func newFakeJoinObserver() *fakeJoinObserver {
+	return &fakeJoinObserver{joining: make(map[uint64]bool)}
+}
+
+func (f *fakeJoinObserver) IsShardJoining(shardID uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.joining[shardID]; ok {
+		return v
+	}
+	return true
+}
+
+func (f *fakeJoinObserver) setCaughtUp(shardID uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.joining[shardID] = false
 }
 
 // ---------------------------------------------------------------------------
@@ -850,4 +913,430 @@ func TestTenantShardReconciler_ListStarted_Factory(t *testing.T) {
 		t.Fatalf("ListStarted after Close = %d entries, want 1", len(f.ListStarted()))
 	}
 	_ = strings.TrimSpace("") // satisfy import
+}
+
+// ---------------------------------------------------------------------------
+// CloseAndPurge / WithPurgeOnDemotion tests
+// ---------------------------------------------------------------------------
+
+// TestTenantShardReconciler_DemotionPurgesByDefault proves that, absent an
+// explicit WithPurgeOnDemotion option, a demoted shard is torn down via
+// CloseAndPurge (default true) rather than plain Close.
+func TestTenantShardReconciler_DemotionPurgesByDefault(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	demoted := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		Replicas: []placement.Replica{
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+		},
+	}
+	r, _ := newTestReconciler(t, factory, nil, demoted)
+	r.ReconcileOnce(context.Background())
+
+	if factory.purgeCount() != 1 {
+		t.Errorf("purgeCount() = %d, want 1 (CloseAndPurge is the default demotion path)", factory.purgeCount())
+	}
+	if !factory.isPurged("acme", "orders") {
+		t.Error("acme/orders should have been purged on demotion")
+	}
+}
+
+// TestTenantShardReconciler_WithPurgeOnDemotionFalse proves that
+// WithPurgeOnDemotion(false) opts a reconciler back into the plain Close
+// path (no data-dir purge) for demotion teardown.
+func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	demoted := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		Replicas: []placement.Replica{
+			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1", DataRoot: "/data"},
+		},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), demoted); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithPurgeOnDemotion(false))
+	r.ReconcileOnce(context.Background())
+
+	if factory.closeCount() != 1 {
+		t.Errorf("closeCount() = %d, want 1", factory.closeCount())
+	}
+	if factory.purgeCount() != 0 {
+		t.Errorf("purgeCount() = %d, want 0 (WithPurgeOnDemotion(false) must use plain Close)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_EventDelete_PurgesByDefault proves the
+// EventDelete (full DropForTenant) path also purges by default.
+func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+
+	r.handleEvent(context.Background(), placement.Event{
+		Type:     placement.EventDelete,
+		TenantID: "acme",
+		Database: "orders",
+	})
+
+	if factory.purgeCount() != 1 {
+		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JoinObserver / Observer→ObserverReady→Active promotion tests
+// ---------------------------------------------------------------------------
+
+// joiningPlacement1 is a test placement with a single OBSERVER replica on
+// "local:1".
+func joiningPlacement1(tenantID, db string, shardID uint64) *placement.Placement {
+	return &placement.Placement{
+		TenantID:        tenantID,
+		Database:        db,
+		ShardID:         shardID,
+		RF:              1,
+		LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/" + db, State: placement.ReplicaStateObserver},
+		},
+	}
+}
+
+// fakePromoter is a test double for Promoter. leaderID/leaderOK configure
+// LeaderReplicaID's return value; promoteErr, when non-nil, is returned by
+// every PromoteObserver call. promoted records every successfully promoted
+// (shardID, replicaID) pair.
+type fakePromoter struct {
+	mu          sync.Mutex
+	leaderID    uint64
+	leaderOK    bool
+	leaderErr   error
+	promoteErr  error
+	promoted    []promotedCall
+	promoteCall int
+}
+
+type promotedCall struct {
+	shardID   uint64
+	replicaID uint64
+	raftAddr  string
+}
+
+func (f *fakePromoter) LeaderReplicaID(_ context.Context, _ uint64) (uint64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.leaderID, f.leaderOK, f.leaderErr
+}
+
+func (f *fakePromoter) PromoteObserver(_ context.Context, shardID, replicaID uint64, raftAddr string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.promoteCall++
+	if f.promoteErr != nil {
+		return f.promoteErr
+	}
+	f.promoted = append(f.promoted, promotedCall{shardID: shardID, replicaID: replicaID, raftAddr: raftAddr})
+	return nil
+}
+
+func (f *fakePromoter) promotedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.promoted)
+}
+
+// TestTenantShardReconciler_ObserverPromotedToObserverReady proves that once
+// the JoinObserver reports the join bootstrap window closed, ReconcileOnce
+// promotes the local replica's placement State from Observer to
+// ObserverReady with exactly one placementStore.Put -- and, with no Promoter
+// wired, promotion stops there (never reaches Active): only the shard's
+// leader may perform that second transition (see
+// TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader).
+func TestTenantShardReconciler_ObserverPromotedToObserverReady(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := joiningPlacement1("acme", "orders", 1001)
+	observer := newFakeJoinObserver() // defaults to "still joining"
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithJoinObserver(observer))
+
+	// First pass: still joining, no promotion.
+	r.ReconcileOnce(context.Background())
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserver {
+		t.Fatalf("after first pass State = %v, want ReplicaStateObserver (still bootstrapping)", local.State)
+	}
+
+	// Join bootstrap window closes.
+	observer.setCaughtUp(1001)
+
+	// Second pass: promotion to ObserverReady happens.
+	r.ReconcileOnce(context.Background())
+	got, err = store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok = got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("after second pass State = %v, want ReplicaStateObserverReady", local.State)
+	}
+	if local.ReplicaID != 1 || local.NodeID != "local:1" {
+		t.Errorf("promotion mutated replica identity: got %+v", local)
+	}
+
+	// Third pass: already ObserverReady, no-op (must not error or re-promote
+	// a non-Observer replica, and -- with no Promoter wired -- must never
+	// reach Active).
+	r.ReconcileOnce(context.Background())
+	got, err = store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, _ = got.ReplicaForNode("local:1")
+	if local.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("third pass State = %v, want ReplicaStateObserverReady (stable, no Promoter wired)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader proves
+// that once a replica reaches ReplicaStateObserverReady, the reconciler
+// promotes it to ReplicaStateActive (a full voting member) exactly when this
+// node is confirmed the shard's current Raft leader, via Promoter.
+func TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders"},
+			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "", State: placement.ReplicaStateObserverReady},
+		},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+
+	// Local node ("local:1", replica 1) IS the confirmed leader.
+	promoter := &fakePromoter{leaderID: 1, leaderOK: true}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithPromoter(promoter))
+
+	r.ReconcileOnce(context.Background())
+
+	if promoter.promotedCount() != 1 {
+		t.Fatalf("PromoteObserver called %d times, want 1", promoter.promotedCount())
+	}
+	call := promoter.promoted[0]
+	if call.shardID != 1001 || call.replicaID != 2 || call.raftAddr != "remote:1" {
+		t.Errorf("PromoteObserver call = %+v, want shard=1001 replica=2 addr=remote:1", call)
+	}
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	remote, ok := got.ReplicaForNode("remote:1")
+	if !ok || remote.State != placement.ReplicaStateActive {
+		t.Fatalf("remote replica State = %v, want ReplicaStateActive", remote.State)
+	}
+
+	// Second pass: already Active, no-op (must not re-promote).
+	r.ReconcileOnce(context.Background())
+	if promoter.promotedCount() != 1 {
+		t.Errorf("PromoteObserver called %d times after second pass, want still 1 (no re-promotion)", promoter.promotedCount())
+	}
+}
+
+// TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader proves
+// that a node hosting (or merely seeing) an ObserverReady replica does NOT
+// attempt promotion when it is not confirmed as the shard's current leader
+// -- go-quicraft hard-rejects the underlying config change on a non-leader,
+// so attempting it would be pointless and is skipped instead.
+func TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 9,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
+			{ReplicaID: 9, NodeID: "remote:1", RaftAddr: "remote:1", DataRoot: "/data/orders"},
+		},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+
+	// The confirmed leader is replica 9 ("remote:1"), not the local node.
+	promoter := &fakePromoter{leaderID: 9, leaderOK: true}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithPromoter(promoter))
+
+	r.ReconcileOnce(context.Background())
+
+	if promoter.promotedCount() != 0 {
+		t.Errorf("PromoteObserver called %d times, want 0 (local node is not the leader)", promoter.promotedCount())
+	}
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("local replica State = %v, want ReplicaStateObserverReady (unchanged)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_NoPromoter_ObserverReadyNeverPromoted proves
+// that with no Promoter wired (the default), an ObserverReady replica is
+// never promoted to Active, even when the local node is the leader.
+func TestTenantShardReconciler_NoPromoter_ObserverReadyNeverPromoted(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
+		},
+	}
+	r, store := newTestReconciler(t, factory, nil, p)
+
+	r.ReconcileOnce(context.Background())
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("State = %v, want ReplicaStateObserverReady (no Promoter wired, must not promote)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_ObserverReadyPromotion_FailurePreservesState
+// proves that a failing PromoteObserver call leaves the replica
+// ObserverReady (not silently advanced to Active) so the next tick retries.
+func TestTenantShardReconciler_ObserverReadyPromotion_FailurePreservesState(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := &placement.Placement{
+		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{
+			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/data/orders", State: placement.ReplicaStateObserverReady},
+		},
+	}
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+
+	promoter := &fakePromoter{leaderID: 1, leaderOK: true, promoteErr: errors.New("config change rejected")}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithReconcilerPollInterval(10*time.Millisecond),
+		WithPromoter(promoter))
+
+	r.ReconcileOnce(context.Background())
+
+	if promoter.promoteCall != 1 {
+		t.Fatalf("PromoteObserver attempted %d times, want 1", promoter.promoteCall)
+	}
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserverReady {
+		t.Fatalf("State = %v, want ReplicaStateObserverReady (failed promotion must not advance state)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_JoiningStaysJoiningWhileBootstrapping proves
+// that while JoinObserver reports the shard still joining, ReconcileOnce
+// never promotes the placement entry.
+func TestTenantShardReconciler_JoiningStaysJoiningWhileBootstrapping(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := joiningPlacement1("acme", "orders", 1001)
+	observer := newFakeJoinObserver() // always "still joining"
+
+	store, err := placement.NewStore(newMemKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("store.Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil,
+		WithJoinObserver(observer))
+
+	for i := 0; i < 3; i++ {
+		r.ReconcileOnce(context.Background())
+	}
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserver {
+		t.Fatalf("State = %v, want ReplicaStateObserver (bootstrap window never closed)", local.State)
+	}
+}
+
+// TestTenantShardReconciler_NoJoinObserver_NoPromotion proves that with no
+// JoinObserver wired (the default), a Joining replica's state is never
+// touched.
+func TestTenantShardReconciler_NoJoinObserver_NoPromotion(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	p := joiningPlacement1("acme", "orders", 1001)
+	r, store := newTestReconciler(t, factory, nil, p)
+
+	r.ReconcileOnce(context.Background())
+
+	got, err := store.Get(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	local, ok := got.ReplicaForNode("local:1")
+	if !ok || local.State != placement.ReplicaStateObserver {
+		t.Fatalf("State = %v, want ReplicaStateObserver (no observer wired, must not promote)", local.State)
+	}
 }

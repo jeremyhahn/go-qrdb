@@ -13,13 +13,16 @@
 // limitations under the License.
 
 // Package unix implements a gRPC-over-Unix-socket transport for the QRDB
-// SDK. It uses the same protobuf client as the gRPC transport but connects
-// via a local Unix domain socket without TLS, providing efficient
-// inter-process communication.
+// SDK. It uses the same protobuf client as the gRPC transport, connecting
+// via a local Unix domain socket. The socket file mode is defense-in-depth;
+// the transport is "verified TLS 1.3 only" in production, presenting the
+// client certificate and verifying the server exactly like the TCP gRPC
+// transport (mirrored here via the same transport.Config TLS fields).
 package unix
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"strconv"
 	"sync/atomic"
@@ -27,6 +30,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -47,8 +51,13 @@ var (
 
 // Transport implements the QRDB SDK transport interface using gRPC over
 // a Unix domain socket. The Address field in the transport config is the
-// socket path (e.g., "/var/run/qrdb/qrdb.sock"). TLS is not used for
-// Unix socket communication.
+// socket path (e.g., "/var/run/qrdb/qrdb.sock"). When the config enables
+// TLS (transport.WithTLS / transport.WithMTLS / transport.WithTLSConfig),
+// the connection is secured with a verified TLS 1.3 handshake and the
+// client certificate presented as the mTLS identity, exactly like the
+// gRPC transport; when TLS is not configured, the connection falls back
+// to insecure credentials (kernel-level process isolation only), which
+// the server-side daemon rejects unless it too was started without TLS.
 type Transport struct {
 	config *transport.Config
 	conn   *grpc.ClientConn
@@ -62,19 +71,44 @@ type Transport struct {
 	activeDatabase string
 }
 
-// dialOptions builds the gRPC dial options for the Unix socket connection,
-// installing the database-scope metadata interceptors when a database is set.
-func (t *Transport) dialOptions() []grpc.DialOption {
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+// dialOptions builds the gRPC dial options for the Unix socket connection.
+// When the transport config enables TLS it dials with verified TLS 1.3
+// credentials (client certificate + CA verification), mirroring the gRPC
+// transport; otherwise it falls back to insecure credentials. It also
+// installs the database-scope metadata interceptors when a database is set.
+func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
+	var opts []grpc.DialOption
+
+	if t.config.TLSEnabled {
+		tlsCfg, err := t.buildTLSConfig()
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+
 	if t.activeDatabase != "" {
 		opts = append(opts,
 			grpc.WithChainUnaryInterceptor(transport.DatabaseUnaryClientInterceptor(t.activeDatabase)),
 			grpc.WithChainStreamInterceptor(transport.DatabaseStreamClientInterceptor(t.activeDatabase)),
 		)
 	}
-	return opts
+	return opts, nil
+}
+
+// buildTLSConfig constructs the TLS configuration from the transport
+// config. The TLSEnabled gate lives at the dialOptions call site, so the
+// builder is always invoked with TLS enabled.
+func (t *Transport) buildTLSConfig() (*tls.Config, error) {
+	return transport.BuildTLSConfig(transport.TLSBuildOptions{
+		Custom:   t.config.TLSConfig,
+		Enabled:  true,
+		CAFile:   t.config.TLSCAFile,
+		CertFile: t.config.TLSCertFile,
+		KeyFile:  t.config.TLSKeyFile,
+	})
 }
 
 // WithDatabase returns a database-scoped clone of the transport. When the
@@ -96,29 +130,45 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 		clone.client = t.client
 		return clone
 	}
-	conn, err := grpc.NewClient("unix://"+t.config.Address, clone.dialOptions()...)
-	if err != nil {
-		// The target derives solely from static config that the parent already
-		// dialed successfully, so this is unreachable in practice; share the
-		// parent's connection rather than return an unusable client.
-		clone.conn = t.conn
-		clone.client = t.client
-		return clone
+
+	dialOpts, err := clone.dialOptions()
+	if err == nil {
+		var conn *grpc.ClientConn
+		if conn, err = grpc.NewClient("unix://"+t.config.Address, dialOpts...); err == nil {
+			clone.conn = conn
+			clone.client = pb.NewQRDBServiceClient(conn)
+			return clone
+		}
 	}
-	clone.conn = conn
-	clone.client = pb.NewQRDBServiceClient(conn)
+	// dialOptions / NewClient derive solely from static config that the
+	// parent already dialed successfully, so this branch is unreachable in
+	// practice; share the parent's connection rather than return an
+	// unusable client.
+	clone.conn = t.conn
+	clone.client = t.client
 	return clone
 }
 
 // New creates a new Unix socket transport with the given options. The
-// Address option must be set to the socket file path. The transport is
-// not connected until Connect is called.
+// Address option must be set to the socket file path. TLS is optional
+// (transport.WithTLS / transport.WithMTLS / transport.WithTLSConfig); when
+// enabled its cert/key/CA options are validated the same way as the gRPC
+// transport. The transport is not connected until Connect is called.
 func New(opts ...transport.Option) (*Transport, error) {
 	cfg := transport.ApplyOptions(opts...)
 
-	// Unix transports require an address (the socket path) but not TLS.
+	// Unix transports require an address (the socket path).
 	if cfg.Address == "" {
 		return nil, &transport.ConfigError{Field: "Address", Reason: "socket path is required for Unix transports"}
+	}
+	if cfg.TLSEnabled && cfg.TLSConfig == nil && cfg.TLSCAFile == "" {
+		return nil, &transport.ConfigError{Field: "TLSCAFile", Reason: "CA file is required when TLS is enabled without custom TLSConfig"}
+	}
+	if cfg.TLSCertFile != "" && cfg.TLSKeyFile == "" {
+		return nil, &transport.ConfigError{Field: "TLSKeyFile", Reason: "key file is required when cert file is specified"}
+	}
+	if cfg.TLSKeyFile != "" && cfg.TLSCertFile == "" {
+		return nil, &transport.ConfigError{Field: "TLSCertFile", Reason: "cert file is required when key file is specified"}
 	}
 
 	return &Transport{config: cfg}, nil
@@ -134,7 +184,15 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	target := "unix://" + t.config.Address
 
-	conn, err := grpc.NewClient(target, t.dialOptions()...)
+	dialOpts, err := t.dialOptions()
+	if err != nil {
+		return &transport.ConnectionError{
+			Address: t.config.Address,
+			Err:     &dialError{Err: err},
+		}
+	}
+
+	conn, err := grpc.NewClient(target, dialOpts...)
 	if err != nil {
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -168,18 +226,45 @@ func (t *Transport) Close() error {
 }
 
 // Healthy returns true if the gRPC connection is active and the server
-// responds to a health check.
+// responds to a health check. An authenticated identity that is reachable
+// but not personally authorized to call Health (see
+// reachableButUnauthorized) still counts as healthy: authorization is a
+// per-RPC decision, not a connectivity signal -- a barrier officer's
+// short-lived claim-cert identity, for example, is never granted the
+// admin:health permission but must still be able to Connect() and drive
+// the share-claim RPCs it IS authorized for.
 func (t *Transport) Healthy(ctx context.Context) bool {
 	if t.closed.Load() || t.client == nil {
 		return false
 	}
 
 	resp, err := t.client.Health(ctx, &emptypb.Empty{})
-	if err != nil {
+	if err == nil {
+		return resp.GetStatus() != ""
+	}
+	return reachableButUnauthorized(err)
+}
+
+// reachableButUnauthorized reports whether err is a gRPC status error
+// indicating the server was reached, authenticated the caller's TLS client
+// certificate, and answered the Health RPC, but rejected it purely on
+// AUTHORIZATION grounds (PermissionDenied) rather than a connectivity
+// failure. codes.Unauthenticated is deliberately EXCLUDED -- see
+// TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated in pkg/server,
+// which pins Connect() failing closed for a caller with no/invalid client
+// certificate. See the identical helper in
+// sdk/go/transport/grpc/transport.go for the full rationale.
+func reachableButUnauthorized(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
 		return false
 	}
-
-	return resp.GetStatus() != ""
+	switch st.Code() {
+	case codes.PermissionDenied:
+		return true
+	default:
+		return false
+	}
 }
 
 // Request performs a generic gRPC request dispatch by method name.

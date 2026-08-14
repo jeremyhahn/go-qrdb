@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 )
 
@@ -561,3 +562,62 @@ type VolumeReattachError = server.VolumeReattachError
 // RaftReattachError is returned when an IsolationRaft tenant cannot be re-bound
 // to its on-disk state during daemon boot. Aliased from pkg/server.
 type RaftReattachError = server.RaftReattachError
+
+// RestoreBackupSourceRequiredError is returned when --restore-backup-id is
+// set without --backup-dir: there is no durable repository to read the
+// backup artifact from.
+type RestoreBackupSourceRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *RestoreBackupSourceRequiredError) Error() string {
+	return "cli: --restore-backup-id requires --backup-dir to locate the backup"
+}
+
+// RestoreBackupError is returned when a step of the offline, boot-time
+// backup restore sequence (see restore.go) fails.
+type RestoreBackupError struct {
+	Phase    string
+	BackupID string
+	ShardID  uint64
+	Err      error
+}
+
+// Error returns a human-readable description.
+func (e *RestoreBackupError) Error() string {
+	return "cli: offline restore of backup " + strconv.Quote(e.BackupID) +
+		" into shard " + strconv.FormatUint(e.ShardID, 10) +
+		" failed during " + strconv.Quote(e.Phase) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *RestoreBackupError) Unwrap() error {
+	return e.Err
+}
+
+// RestoreBackupVerifyError is returned when the backup targeted by
+// --restore-backup-id fails pre-restore checksum verification. The restore
+// aborts before the shard is touched.
+type RestoreBackupVerifyError struct {
+	BackupID string
+	Result   service.VerifyResult
+}
+
+// Error returns a human-readable description.
+func (e *RestoreBackupVerifyError) Error() string {
+	return "cli: backup " + strconv.Quote(e.BackupID) +
+		" failed pre-restore verification (checksum_match=" + strconv.FormatBool(e.Result.ChecksumMatch) +
+		"): refusing to restore"
+}
+
+// RestoreBackupShardNotInArtifactError is returned when the backup targeted
+// by --restore-backup-id has no payload for the shard being restored.
+type RestoreBackupShardNotInArtifactError struct {
+	BackupID string
+	ShardID  uint64
+}
+
+// Error returns a human-readable description.
+func (e *RestoreBackupShardNotInArtifactError) Error() string {
+	return "cli: backup " + strconv.Quote(e.BackupID) +
+		" contains no data for shard " + strconv.FormatUint(e.ShardID, 10)
+}

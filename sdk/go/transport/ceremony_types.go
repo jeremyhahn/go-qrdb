@@ -39,8 +39,6 @@ type CeremonyInitializeResponse struct {
 	SPKIPin    string `json:"spki_pin"`
 	CACertPEM  string `json:"ca_cert_pem"`
 	TLSCertPEM string `json:"tls_cert_pem"`
-	SOCertPEM  string `json:"so_cert_pem,omitempty"`
-	SOKeyPEM   string `json:"so_key_pem,omitempty"`
 	State      string `json:"state"`
 	ShareCount int    `json:"share_count"`
 }
@@ -79,15 +77,35 @@ type ClaimCertCompleteResponse struct {
 	CACertPEM string `json:"ca_cert_pem"`
 }
 
-// ClaimShareRequest requests the Shamir share for an officer who has
-// already claimed their certificate.
-type ClaimShareRequest struct {
+// BeginClaimShareRequest starts the Shamir share claim handshake for an
+// officer who has already claimed their certificate. No thumbprint travels on
+// the wire: the server derives the caller's certificate thumbprint from the
+// mTLS peer chain, so the client cannot assert an identity.
+type BeginClaimShareRequest struct {
 	Username string `json:"username"`
 }
 
-// ClaimShareResponse returns the officer's Shamir share.
-type ClaimShareResponse struct {
-	ShareJSON string `json:"share_json"`
+// BeginClaimShareResponse carries the challenge nonce the officer must sign
+// with the private key matching their enrolled certificate.
+type BeginClaimShareResponse struct {
+	NonceHex  string `json:"nonce_hex"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// CompleteClaimShareRequest carries the signed challenge nonce completing the
+// Shamir share claim handshake.
+type CompleteClaimShareRequest struct {
+	Username  string `json:"username"`
+	NonceHex  string `json:"nonce_hex"`
+	Signature []byte `json:"signature"`
+}
+
+// CompleteClaimShareResponse returns the officer's Shamir share. The share is
+// released exactly once, only to the officer whose certificate thumbprint
+// matches the enrolment record.
+type CompleteClaimShareResponse struct {
+	ShareIndex int    `json:"share_index"`
+	ShareJSON  string `json:"share_json"`
 }
 
 // SignCSRInitRequest submits a CSR for signing during or after the

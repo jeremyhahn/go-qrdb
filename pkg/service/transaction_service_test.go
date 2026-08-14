@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------
@@ -564,6 +565,127 @@ func TestTransactionService_Execute_OpWithLeaseAndRangeEnd(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Execute / ExecuteWithMode: fail-closed rejection of read ops in branches
+// ---------------------------------------------------------------------------
+
+// TestTransactionService_Execute_RejectsOpGetInSuccessOps verifies that a Get
+// op in the success branch is rejected with a typed error and never reaches
+// Raft (it must not be silently coerced into an empty-value Put).
+func TestTransactionService_Execute_RejectsOpGetInSuccessOps(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1, Data: []byte{1}}, nil
+		},
+	}
+
+	svc := NewTransactionService(host, 1)
+	successOps := []Op{
+		{Type: OpGet, Key: []byte("k")},
+	}
+
+	resp, err := svc.Execute(context.Background(), nil, successOps, nil)
+	if resp != nil {
+		t.Fatalf("expected nil response on rejection, got %+v", resp)
+	}
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if utoe.OpType != OpGet {
+		t.Fatalf("expected OpType OpGet in error, got %d", utoe.OpType)
+	}
+	if proposed {
+		t.Fatal("SyncPropose must not be called when a branch op is rejected")
+	}
+}
+
+// TestTransactionService_Execute_RejectsOpRangeInFailureOps verifies that an
+// OpRange in the failure branch is rejected the same way as OpGet, and that
+// the key targeted by an earlier, valid success op is not touched by the
+// rejected proposal (nothing is ever proposed).
+func TestTransactionService_Execute_RejectsOpRangeInFailureOps(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1, Data: []byte{0}}, nil
+		},
+	}
+
+	svc := NewTransactionService(host, 1)
+	failureOps := []Op{
+		{Type: OpRange, Key: []byte("a"), RangeEnd: []byte("z")},
+	}
+
+	_, err := svc.Execute(context.Background(), nil, nil, failureOps)
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if utoe.OpType != OpRange {
+		t.Fatalf("expected OpType OpRange in error, got %d", utoe.OpType)
+	}
+	if proposed {
+		t.Fatal("SyncPropose must not be called when a branch op is rejected")
+	}
+}
+
+// TestTransactionService_ExecuteWithMode_RejectsOpGet mirrors the Execute
+// rejection test for the ExecuteWithMode path.
+func TestTransactionService_ExecuteWithMode_RejectsOpGet(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		proposeWithModeFn: func(_ context.Context, _ uint64, _ []byte, _ writemode.Mode) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1, Data: []byte{1}}, nil
+		},
+	}
+
+	svc := NewTransactionService(host, 1)
+	successOps := []Op{
+		{Type: OpGet, Key: []byte("k")},
+	}
+
+	_, err := svc.ExecuteWithMode(context.Background(), nil, successOps, nil, writemode.WALDurable)
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if proposed {
+		t.Fatal("ProposeWithMode must not be called when a branch op is rejected")
+	}
+}
+
+// TestTransactionService_Execute_RejectsUnknownOpType verifies that an
+// OpType with no meaning at all (not one of the four defined constants)
+// also fails closed rather than silently becoming a write.
+func TestTransactionService_Execute_RejectsUnknownOpType(t *testing.T) {
+	proposed := false
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			proposed = true
+			return sm.Result{Value: 1, Data: []byte{1}}, nil
+		},
+	}
+
+	svc := NewTransactionService(host, 1)
+	successOps := []Op{
+		{Type: OpType(200), Key: []byte("k"), Value: []byte("v")},
+	}
+
+	_, err := svc.Execute(context.Background(), nil, successOps, nil)
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if proposed {
+		t.Fatal("SyncPropose must not be called when a branch op is rejected")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // translateProposeError
 // ---------------------------------------------------------------------------
 
@@ -638,7 +760,10 @@ func TestEncodeServiceOp_OpPut(t *testing.T) {
 		Value: []byte("myval"),
 	}
 
-	encoded := encodeServiceOp(op)
+	encoded, err := encodeServiceOp(op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("mykey"), []byte("myval"), nil, 0)
 
 	if !bytes.Equal(encoded, expected) {
@@ -652,7 +777,10 @@ func TestEncodeServiceOp_OpDelete(t *testing.T) {
 		Key:  []byte("delkey"),
 	}
 
-	encoded := encodeServiceOp(op)
+	encoded, err := encodeServiceOp(op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("delkey"), nil, nil, 0)
 
 	if !bytes.Equal(encoded, expected) {
@@ -667,28 +795,57 @@ func TestEncodeServiceOp_UnknownOpType(t *testing.T) {
 		Value: []byte("v"),
 	}
 
-	encoded := encodeServiceOp(op)
-	// Unknown types should fall back to OpMVCCPut.
-	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v"), nil, 0)
-
-	if !bytes.Equal(encoded, expected) {
-		t.Fatalf("unknown OpType encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
+	encoded, err := encodeServiceOp(op)
+	if encoded != nil {
+		t.Fatalf("expected nil encoding on error, got %v", encoded)
+	}
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if utoe.OpType != OpType(255) {
+		t.Fatalf("expected OpType 255 in error, got %d", utoe.OpType)
 	}
 }
 
-func TestEncodeServiceOp_OpGetFallsBackToPut(t *testing.T) {
-	// OpGet is not in the opTypeMap, so it should fall back to OpMVCCPut.
+func TestEncodeServiceOp_OpGetIsRejected(t *testing.T) {
+	// OpGet is a read: it must never be silently coerced into a write.
 	op := Op{
 		Type:  OpGet,
 		Key:   []byte("getkey"),
 		Value: []byte("getval"),
 	}
 
-	encoded := encodeServiceOp(op)
-	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("getkey"), []byte("getval"), nil, 0)
+	encoded, err := encodeServiceOp(op)
+	if encoded != nil {
+		t.Fatalf("expected nil encoding on error, got %v", encoded)
+	}
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if utoe.OpType != OpGet {
+		t.Fatalf("expected OpType OpGet in error, got %d", utoe.OpType)
+	}
+}
 
-	if !bytes.Equal(encoded, expected) {
-		t.Fatalf("OpGet fallback encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
+func TestEncodeServiceOp_OpRangeIsRejected(t *testing.T) {
+	op := Op{
+		Type:     OpRange,
+		Key:      []byte("a"),
+		RangeEnd: []byte("z"),
+	}
+
+	encoded, err := encodeServiceOp(op)
+	if encoded != nil {
+		t.Fatalf("expected nil encoding on error, got %v", encoded)
+	}
+	var utoe *UnsupportedTransactionOpError
+	if !errors.As(err, &utoe) {
+		t.Fatalf("expected *UnsupportedTransactionOpError, got %T: %v", err, err)
+	}
+	if utoe.OpType != OpRange {
+		t.Fatalf("expected OpType OpRange in error, got %d", utoe.OpType)
 	}
 }
 
@@ -701,7 +858,10 @@ func TestEncodeServiceOp_WithLeaseAndRangeEnd(t *testing.T) {
 		LeaseID:  999,
 	}
 
-	encoded := encodeServiceOp(op)
+	encoded, err := encodeServiceOp(op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v"), []byte("z"), 999)
 
 	if !bytes.Equal(encoded, expected) {
@@ -714,7 +874,10 @@ func TestEncodeServiceOp_EmptyKeyAndValue(t *testing.T) {
 		Type: OpPut,
 	}
 
-	encoded := encodeServiceOp(op)
+	encoded, err := encodeServiceOp(op)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	expected := protocol.EncodeOp(protocol.OpMVCCPut, nil, nil, nil, 0)
 
 	if !bytes.Equal(encoded, expected) {

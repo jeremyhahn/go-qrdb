@@ -16,6 +16,7 @@ package tenant
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -66,6 +67,45 @@ func TestWithTenantIDPreservesParentValues(t *testing.T) {
 	v, ok := ctx.Value(otherKey{}).(string)
 	if !ok || v != "preserved" {
 		t.Errorf("parent context value = %q, want %q", v, "preserved")
+	}
+}
+
+func TestEffectiveTenant(t *testing.T) {
+	tests := []struct {
+		name       string
+		identity   string
+		requested  string
+		want       string
+		wantDenied bool
+	}{
+		{"system caller empty request defaults to system", SystemTenantID, "", SystemTenantID, false},
+		{"system caller may target any tenant", SystemTenantID, "b", "b", false},
+		{"tenant caller empty request resolves to identity", "a", "", "a", false},
+		{"tenant caller matching request resolves to identity", "a", "a", "a", false},
+		{"tenant caller cross-tenant request denied", "a", "b", "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := WithTenantID(context.Background(), tc.identity)
+			got, err := EffectiveTenant(ctx, tc.requested, "op")
+			if tc.wantDenied {
+				var xt *CrossTenantDeniedError
+				if !errors.As(err, &xt) {
+					t.Fatalf("EffectiveTenant = (%q, %v), want CrossTenantDeniedError", got, err)
+				}
+				if xt.IdentityTenantID != tc.identity || xt.RequestedTenantID != tc.requested {
+					t.Fatalf("error tenants = (%q,%q), want (%q,%q)",
+						xt.IdentityTenantID, xt.RequestedTenantID, tc.identity, tc.requested)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("EffectiveTenant unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("EffectiveTenant = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -78,7 +78,7 @@ func TestEmbeddedCredential_Submit(t *testing.T) {
 
 	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
 		Name:  "db",
-		Value: "secret",
+		Value: []byte("secret"),
 	}); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestEmbeddedCredential_Submit_Dispatch(t *testing.T) {
 	svc := &mockCredentialService{}
 	tr := newExtTransport(t, WithCredentialService(svc))
 	if err := tr.Request(context.Background(), "CredentialSubmit",
-		&transport.CredentialSubmitRequest{Name: "k", Value: "v"}, nil); err != nil {
+		&transport.CredentialSubmitRequest{Name: "k", Value: []byte("v")}, nil); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 }
@@ -2090,7 +2090,7 @@ func (m *mockDatabaseService) SealDatabase(_ context.Context, _ string) error { 
 func (m *mockDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 
@@ -2121,6 +2121,9 @@ func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, name str
 }
 func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateConnection(name, c)
+}
+func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }
 
 func TestEmbeddedDatabase_Create(t *testing.T) {

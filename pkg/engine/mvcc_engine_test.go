@@ -369,6 +369,11 @@ func TestMVCCEngine_Lookup_MVCCRangeQuery(t *testing.T) {
 		mvccPutEntry(1, []byte("a"), []byte("1"), 0),
 		mvccPutEntry(2, []byte("b"), []byte("2"), 0),
 		mvccPutEntry(3, []byte("c"), []byte("3"), 0),
+		// A 4th write to an already-matched key advances the store's
+		// revision past the match count, so a regression that returns the
+		// revision in place of the count cannot pass this assertion by
+		// coincidence.
+		mvccPutEntry(4, []byte("a"), []byte("1b"), 0),
 	})
 
 	got, err := eng.Lookup(context.Background(), service.MVCCRangeQuery{
@@ -381,6 +386,12 @@ func TestMVCCEngine_Lookup_MVCCRangeQuery(t *testing.T) {
 	result := got.(*service.MVCCRangeResult)
 	if len(result.KeyValues) != 3 {
 		t.Errorf("expected 3 kvs, got %d", len(result.KeyValues))
+	}
+	if result.Count != 3 {
+		t.Errorf("Count: got %d, want 3 (match count, not revision)", result.Count)
+	}
+	if result.Revision != 4 {
+		t.Errorf("Revision: got %d, want 4 (store's current revision)", result.Revision)
 	}
 }
 
@@ -817,6 +828,67 @@ func TestMVCCEngine_IndexCreateDuplicate(t *testing.T) {
 	}
 	if names[0] != "by_name" {
 		t.Fatalf("expected index name by_name, got %s", names[0])
+	}
+}
+
+// TestMVCCEngine_IndexCreate_NotVisibleUntilBackfilled is a concurrency
+// regression test: handleIndexCreate must not publish the index into
+// e.indexes until the synchronous backfill has fully populated it, so a
+// concurrent Lookup can never observe a partially-built index. It races a
+// tight Lookup loop against a large index-create backfill (widened by -race
+// instrumentation) and asserts that whenever the index becomes visible, it
+// is already complete.
+func TestMVCCEngine_IndexCreate_NotVisibleUntilBackfilled(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	const total = 2000
+	putEntries := make([]sm.Entry, total)
+	for i := 0; i < total; i++ {
+		key := []byte{byte(i >> 8), byte(i)}
+		putEntries[i] = mvccPutEntry(uint64(i+1), key, []byte(`{"city":"nyc"}`), 0)
+	}
+	applyMVCCEntries(t, eng, putEntries)
+
+	stop := make(chan struct{})
+	finished := make(chan struct{})
+	var raced bool
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			got, err := eng.Lookup(context.Background(), service.IndexQueryRequest{
+				IndexName: "by_city",
+				Value:     []byte("nyc"),
+			})
+			if err != nil {
+				// Index not yet published — expected before backfill completes.
+				continue
+			}
+			ids := got.([][]byte)
+			if len(ids) != 0 && len(ids) != total {
+				raced = true
+				return
+			}
+		}
+	}()
+
+	idxCmd := protocol.EncodeIndexCreate("by_city", "city", false, false, false)
+	entries := []sm.Entry{{Index: total + 1, Cmd: idxCmd}}
+	results := make([]sm.Result, 1)
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("index create: %v", err)
+	}
+	close(stop)
+	<-finished
+
+	if raced {
+		t.Fatal("concurrent Lookup observed a partially-backfilled index")
 	}
 }
 
@@ -1771,8 +1843,52 @@ func TestMVCCEngine_Lookup_MVCCRangeQueryCountOnly(t *testing.T) {
 		t.Fatalf("Lookup: %v", err)
 	}
 	result := got.(*service.MVCCRangeResult)
-	// CountOnly should still return a result.
-	_ = result
+	if result.KeyValues != nil {
+		t.Errorf("KeyValues: got %v, want nil for CountOnly", result.KeyValues)
+	}
+	if result.Count != 2 {
+		t.Errorf("Count: got %d, want 2", result.Count)
+	}
+	if result.Revision != 2 {
+		t.Errorf("Revision: got %d, want 2", result.Revision)
+	}
+}
+
+// TestMVCCEngine_Lookup_MVCCRangeQuery_SortThreaded verifies the engine
+// threads MVCCRangeQuery.SortOrder/SortTarget into the store's range scan,
+// reproducing (as a regression guard) the bug where these fields existed on
+// neither the query type nor the engine's option translation, causing
+// --sort-order/--sort-by to be silently dropped.
+func TestMVCCEngine_Lookup_MVCCRangeQuery_SortThreaded(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	applyMVCCEntries(t, eng, []sm.Entry{
+		mvccPutEntry(1, []byte("a"), []byte("1"), 0),
+		mvccPutEntry(2, []byte("b"), []byte("2"), 0),
+		mvccPutEntry(3, []byte("c"), []byte("3"), 0),
+	})
+
+	got, err := eng.Lookup(context.Background(), service.MVCCRangeQuery{
+		Start:      []byte("a"),
+		End:        []byte("d"),
+		SortOrder:  service.SortDescend,
+		SortTarget: service.SortByKey,
+	})
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	result := got.(*service.MVCCRangeResult)
+	if len(result.KeyValues) != 3 {
+		t.Fatalf("expected 3 kvs, got %d", len(result.KeyValues))
+	}
+	wantOrder := []string{"c", "b", "a"}
+	for i, want := range wantOrder {
+		if got := string(result.KeyValues[i].Key); got != want {
+			t.Fatalf("KeyValues[%d]: got %q, want %q (descending key order)", i, got, want)
+		}
+	}
 }
 
 func TestMVCCEngine_Lookup_MVCCRangeQueryKeysOnly(t *testing.T) {

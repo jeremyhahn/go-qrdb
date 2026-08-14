@@ -39,6 +39,7 @@ const (
 	StatusUnimplemented    uint16 = 2
 	StatusUnauthenticated  uint16 = 3
 	StatusPermissionDenied uint16 = 4
+	StatusUnavailable      uint16 = 5
 )
 
 // MaxMethodLen is the maximum length of a method name in bytes.

@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
 	"net"
 	"os"
@@ -61,6 +62,15 @@ func newMockKVService() *mockKVService {
 func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	m.store[key] = value
 	return nil
+}
+
+// PutIfAbsent stores only when the key is absent, matching the real engines.
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
 }
 
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
@@ -395,7 +405,7 @@ func TestGRPCAddr_BeforeStart(t *testing.T) {
 
 func TestUnixAddr_BeforeStart(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{unix: true}, "/tmp/test.sock")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if addr := srv.UnixAddr(); addr != "" {
 		t.Fatalf("expected empty UnixAddr before start, got %q", addr)
 	}
@@ -403,7 +413,7 @@ func TestUnixAddr_BeforeStart(t *testing.T) {
 
 func TestMCPAddr_BeforeStart(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{mcp: true}, "")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if addr := srv.MCPAddr(); addr != "" {
 		t.Fatalf("expected empty MCPAddr before start, got %q", addr)
 	}
@@ -415,7 +425,7 @@ func TestMCPAddr_BeforeStart(t *testing.T) {
 
 func TestStart_RESTOnly(t *testing.T) {
 	cfg := testConfig(true, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -442,7 +452,7 @@ func TestStart_RESTOnly(t *testing.T) {
 
 func TestStart_GRPCOnly(t *testing.T) {
 	cfg := testConfig(false, true)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -470,7 +480,7 @@ func TestStart_GRPCOnly(t *testing.T) {
 func TestStart_UnixOnly(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
 	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -500,7 +510,7 @@ func TestStart_UnixOnly(t *testing.T) {
 
 func TestStart_MCPOnly(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{mcp: true}, "")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -533,7 +543,7 @@ func TestStart_MCPOnly(t *testing.T) {
 
 func TestStart_BothProtocols(t *testing.T) {
 	cfg := testConfig(true, true)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -568,7 +578,7 @@ func TestStart_AllProtocols(t *testing.T) {
 		unix: true,
 		mcp:  true,
 	}, socketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -617,7 +627,7 @@ func TestStart_AllProtocols(t *testing.T) {
 
 func TestStart_NeitherProtocol(t *testing.T) {
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start with no protocols should succeed, got: %v", err)
@@ -644,7 +654,7 @@ func TestStart_NeitherProtocol(t *testing.T) {
 
 func TestStop_Graceful(t *testing.T) {
 	cfg := testConfig(true, true)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -659,14 +669,14 @@ func TestStop_Graceful(t *testing.T) {
 
 func TestStop_BeforeStart(t *testing.T) {
 	cfg := testConfig(true, true)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	// Stop before Start should not panic.
 	srv.Stop()
 }
 
 func TestStop_CalledTwice(t *testing.T) {
 	cfg := testConfig(true, true)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -689,7 +699,7 @@ func TestStop_AllProtocols(t *testing.T) {
 		unix: true,
 		mcp:  true,
 	}, socketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -733,7 +743,7 @@ func TestStart_GRPCFail_RESTRollback(t *testing.T) {
 	cfg.Server.AdminPort = 0
 	cfg.Server.GRPCPort = blockedPort
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	startErr := srv.Start()
 	if startErr == nil {
 		srv.Stop()
@@ -766,7 +776,7 @@ func TestStart_UnixFail_Rollback(t *testing.T) {
 		grpc: true,
 		unix: true,
 	}, badSocketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	startErr := srv.Start()
 	if startErr == nil {
@@ -807,7 +817,7 @@ func TestStart_MCPFail_Rollback(t *testing.T) {
 	}, socketPath)
 	cfg.MCP.Port = blockedPort
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	startErr := srv.Start()
 	if startErr == nil {
 		srv.Stop()
@@ -835,7 +845,7 @@ func TestStart_RESTFail(t *testing.T) {
 	cfg.Server.Host = "invalid-no-resolve"
 	cfg.Server.AdminPort = 1 // privileged port
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	err := srv.Start()
 	if err == nil {
 		srv.Stop()
@@ -860,7 +870,7 @@ func TestStart_MCPFail_NoRollbackNeeded(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{mcp: true}, "")
 	cfg.MCP.Port = blockedPort
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	startErr := srv.Start()
 	if startErr == nil {
 		srv.Stop()
@@ -939,7 +949,7 @@ func TestWithCACertPool_Applied(t *testing.T) {
 func TestStart_WithGatherer_Propagated(t *testing.T) {
 	cfg := testConfig(true, false) // REST only so we can check gatherer propagation.
 	g := prometheus.NewRegistry()
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithGatherer(g))
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithGatherer(g), WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -954,7 +964,7 @@ func TestStart_WithGatherer_Propagated(t *testing.T) {
 func TestStart_WithLeaderForwarding_Propagated(t *testing.T) {
 	cfg := testConfig(true, false)
 	resolver := &mockLeaderAdminResolver{}
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithLeaderForwarding(resolver))
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithLeaderForwarding(resolver), WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -969,7 +979,7 @@ func TestStart_WithLeaderForwarding_Propagated(t *testing.T) {
 func TestStart_WithHost_Propagated(t *testing.T) {
 	cfg := testConfig(true, false)
 	h := &mockHost{}
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithHost(h))
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithHost(h), WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -988,7 +998,7 @@ func TestStart_WithHost_Propagated(t *testing.T) {
 func TestStart_UnixAddrResolved(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "test-resolved.sock")
 	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -1011,7 +1021,7 @@ func TestStart_UnixAddrResolved(t *testing.T) {
 
 func TestStart_MCPAddrResolved(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{mcp: true}, "")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -1278,7 +1288,7 @@ func selfSignedTLSConfig(t *testing.T) *tls.Config {
 
 func TestQUICAddr_BeforeStart(t *testing.T) {
 	cfg := testConfigFull(protocolFlags{quic: true}, "")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if addr := srv.QUICAddr(); addr != "" {
 		t.Fatalf("expected empty QUICAddr before start, got %q", addr)
 	}
@@ -1345,14 +1355,20 @@ func TestStart_QUICOnly(t *testing.T) {
 }
 
 func TestStart_QUICOnly_NoTLS(t *testing.T) {
-	// QUIC requires TLS; starting without it should fail.
+	// The QUIC transport is TLS-only. With neither an explicit TLS config nor a
+	// CeremonyCA to auto-provision one, Start fails closed with a
+	// *TLSUnavailableError rather than binding a plaintext QUIC listener.
 	cfg := testConfigFull(protocolFlags{quic: true}, "")
 	srv := New(cfg, newMockKVService(), &mockAdminService{})
 
 	err := srv.Start()
 	if err == nil {
 		srv.Stop()
-		t.Fatal("expected QUIC start to fail without TLS")
+		t.Fatal("expected QUIC start to fail closed without TLS or a CeremonyCA")
+	}
+	var unavailable *TLSUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("expected *TLSUnavailableError, got %T: %v", err, err)
 	}
 }
 
@@ -1391,19 +1407,21 @@ func TestStart_QUICOnly_WithAllOptions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStart_QUICFail_RESTAndGRPCRollback(t *testing.T) {
-	// QUIC requires TLS; enable REST + GRPC + QUIC without TLS.
-	// REST and GRPC start fine without TLS, but QUIC will fail.
+	// REST + GRPC + QUIC all auto-provision TLS from the CeremonyCA. REST and
+	// GRPC start fine, but QUIC is forced to fail by an out-of-range UDP port so
+	// the rollback of the earlier transports is exercised.
 	cfg := testConfigFull(protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
 	}, "")
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	cfg.Server.QUICPort = 70000 // out of the valid 0-65535 range: bind fails
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	startErr := srv.Start()
 	if startErr == nil {
 		srv.Stop()
-		t.Fatal("expected QUIC start to fail without TLS")
+		t.Fatal("expected QUIC start to fail on an out-of-range port")
 	}
 
 	// REST and GRPC should have been created before the QUIC failure.
@@ -1416,14 +1434,14 @@ func TestStart_QUICFail_RESTAndGRPCRollback(t *testing.T) {
 }
 
 func TestStart_QUICFail_NoOtherProtocols(t *testing.T) {
-	// QUIC only, no TLS -> fails, no rollback needed.
+	// QUIC only, no TLS and no CeremonyCA -> fails closed, no rollback needed.
 	cfg := testConfigFull(protocolFlags{quic: true}, "")
 	srv := New(cfg, newMockKVService(), &mockAdminService{})
 
 	startErr := srv.Start()
 	if startErr == nil {
 		srv.Stop()
-		t.Fatal("expected QUIC start to fail without TLS")
+		t.Fatal("expected QUIC start to fail closed without TLS or a CeremonyCA")
 	}
 
 	// No other servers should have been created.
@@ -2064,7 +2082,7 @@ func TestStartEtcd_NilFn(t *testing.T) {
 	startEtcdServerFn = nil
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// StartEtcd should return nil silently when startEtcdServerFn is nil.
 	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
@@ -2091,7 +2109,7 @@ func TestServerStartEtcd_Success(t *testing.T) {
 	}
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.StartEtcd("testdb", &database.EtcdConfig{}); err != nil {
 		t.Fatalf("StartEtcd failed: %v", err)
@@ -2110,7 +2128,7 @@ func TestStopEtcd_NilFn(t *testing.T) {
 	stopEtcdServerFn = nil
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// StopEtcd should not panic when stopEtcdServerFn is nil.
 	srv.StopEtcd("testdb")
@@ -2127,7 +2145,7 @@ func TestStopEtcd_NotRunning(t *testing.T) {
 	}
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// StopEtcd for a non-existent database should not call stopEtcdServerFn.
 	srv.StopEtcd("nonexistent")
@@ -2148,7 +2166,7 @@ func TestStopEtcd_Running(t *testing.T) {
 	}
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Manually inject a running etcd server into the map.
 	srv.etcdServers.Store("testdb", EtcdProtocolServer(mockSrv))
@@ -2188,7 +2206,7 @@ func TestStopAllEtcd_MultipleServers(t *testing.T) {
 	}
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Inject two etcd servers directly into the sync.Map.
 	srv.etcdServers.Store("db1", EtcdProtocolServer(mock1))
@@ -2221,7 +2239,7 @@ func TestStopAllEtcd_NilFn(t *testing.T) {
 	stopEtcdServerFn = nil
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// stopAllEtcd should not panic when stopEtcdServerFn is nil.
 	srv.stopAllEtcd()
@@ -2238,7 +2256,7 @@ func TestStopAllEtcd_EmptyMap(t *testing.T) {
 	}
 
 	cfg := testConfig(false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// No etcd servers in the map; Range body should never execute.
 	srv.stopAllEtcd()

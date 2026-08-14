@@ -16,6 +16,7 @@ package rest
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
@@ -104,15 +105,43 @@ func (t *Transport) CeremonyClaimCertComplete(ctx context.Context, req *transpor
 	return &resp, nil
 }
 
-// CeremonyClaimShare retrieves the Shamir share for an officer who has
-// already claimed their certificate. Maps to POST /v1/ceremony/claim-share.
-func (t *Transport) CeremonyClaimShare(ctx context.Context, req *transport.ClaimShareRequest) (*transport.ClaimShareResponse, error) {
+// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+// officer who has already claimed their certificate. Maps to
+// POST /v1/ceremony/officer-share/begin. The caller's certificate thumbprint
+// is derived server-side from the mTLS peer chain.
+func (t *Transport) CeremonyBeginClaimShare(ctx context.Context, req *transport.BeginClaimShareRequest) (*transport.BeginClaimShareResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	var resp transport.ClaimShareResponse
-	if err := t.postJSONDecode(ctx, "CeremonyClaimShare", "/v1/ceremony/claim-share", req, &resp); err != nil {
+	var resp transport.BeginClaimShareResponse
+	if err := t.postJSONDecode(ctx, "CeremonyBeginClaimShare", "/v1/ceremony/officer-share/begin", req, &resp); err != nil {
+		return nil, err
+	}
+
+	return &resp, nil
+}
+
+// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+// submitting the signed challenge nonce. Maps to
+// POST /v1/ceremony/officer-share/complete.
+func (t *Transport) CeremonyCompleteClaimShare(ctx context.Context, req *transport.CompleteClaimShareRequest) (*transport.CompleteClaimShareResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	wire := struct {
+		Username  string `json:"username"`
+		NonceHex  string `json:"nonce_hex"`
+		Signature string `json:"signature"`
+	}{
+		Username:  req.Username,
+		NonceHex:  req.NonceHex,
+		Signature: base64.StdEncoding.EncodeToString(req.Signature),
+	}
+
+	var resp transport.CompleteClaimShareResponse
+	if err := t.postJSONDecode(ctx, "CeremonyCompleteClaimShare", "/v1/ceremony/officer-share/complete", wire, &resp); err != nil {
 		return nil, err
 	}
 

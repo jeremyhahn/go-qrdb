@@ -86,6 +86,36 @@ type WatchResponse struct {
 
 	// CancelReason describes why the watcher was canceled, if applicable.
 	CancelReason string
+
+	// Created is true for the single synthetic response emitted when a watch
+	// with a start revision is established, before any change events. Its
+	// Revision carries the store's current revision at creation, which a client
+	// uses as the authoritative cursor origin for a later resume.
+	Created bool
+}
+
+// ---------------------------------------------------------------------------
+// History replay
+// ---------------------------------------------------------------------------
+
+// HistoryReplayer replays historical key changes so a watch created with a
+// start revision receives every change since that revision before it switches
+// to live delivery. It is implemented by an adapter over the MVCC store and
+// attached to a Hub with SetHistory; a Hub without one serves live-only watches
+// and rejects a start revision with ErrCompacted semantics via the hub.
+type HistoryReplayer interface {
+	// CurrentRevision returns the store's latest committed revision.
+	CurrentRevision() int64
+
+	// CompactedRevision returns the highest revision that has been compacted
+	// away; a start revision at or below it can no longer be replayed.
+	CompactedRevision() int64
+
+	// Replay invokes fn for each change with startRev <= revision <= endRev, in
+	// ascending revision order (and ascending key order within a revision),
+	// whose key satisfies keyMatch. When wantPrev is true, delete/update events
+	// carry the previous key-value state. fn returns false to stop early.
+	Replay(startRev, endRev int64, keyMatch func(key []byte) bool, wantPrev bool, fn func(*Event) bool) error
 }
 
 // ---------------------------------------------------------------------------

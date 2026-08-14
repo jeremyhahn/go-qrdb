@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -584,6 +585,24 @@ func certRecordToProto(rec *cert.CertRecord) *pb.CertRecord {
 func mapAuthServiceError(err error) error {
 	if err == nil {
 		return nil
+	}
+
+	// A barrier-isolated tenant's IAM (user/role) store resolved to a SEALED
+	// barrier. The StoreResolver fails closed rather than leaking the operation
+	// through the shared system store — surface Unavailable so the caller
+	// retries after the tenant's barrier is unsealed, matching the
+	// BarrierSealedError data-plane mapping. Checked first because the sentinel
+	// carries no typed detail the store-error cases below would match.
+	if errors.Is(err, tenant.ErrTenantSealed) {
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
+	// A normal tenant caller supplied a target tenant other than its own. The
+	// IAM routing layer refuses to act on a client-supplied tenant — surface
+	// PermissionDenied, matching the tenant-isolation posture across transports.
+	var xt *tenant.CrossTenantDeniedError
+	if errors.As(err, &xt) {
+		return status.Error(codes.PermissionDenied, err.Error())
 	}
 
 	// User errors

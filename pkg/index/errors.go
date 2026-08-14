@@ -64,6 +64,30 @@ func (e *UniqueViolationError) Error() string {
 		": value " + string(e.FieldValue) + " already exists"
 }
 
+// InvalidNumericBoundError is returned when a Scan boundary on a numeric
+// index cannot be parsed as a number. Unlike Put/Get/Delete — where an
+// unparseable field value is treated as "this entry has no representable
+// numeric value" and silently skipped — an unparseable Scan boundary is a
+// caller programming error (a malformed query bound) and must never be
+// reported as an empty-but-valid result set.
+type InvalidNumericBoundError struct {
+	IndexName string
+	Op        string
+	Value     []byte
+	Err       error
+}
+
+// Error returns a human-readable description of the invalid scan bound.
+func (e *InvalidNumericBoundError) Error() string {
+	return "index: invalid numeric scan bound for " + e.IndexName +
+		" (" + e.Op + "): " + string(e.Value) + ": " + e.Err.Error()
+}
+
+// Unwrap returns the underlying parse error for errors.Is/errors.As chains.
+func (e *InvalidNumericBoundError) Unwrap() error {
+	return e.Err
+}
+
 // KeyTooShortError is returned when an index key is too short to parse.
 type KeyTooShortError struct{}
 

@@ -33,21 +33,48 @@ import (
 //     separated only logically by the "...tenant/{tenantID}..." key
 //     segments the IAM stores already embed.
 //
-//   - barrier tenants resolve to a per-tenant store backed by that
-//     tenant's own TenantBarrier: every value is encrypted with the
-//     tenant's DEK and stored under the tenant's "{tenantID}/" namespace
-//     in an independent backend. A barrier tenant's IAM data is therefore
-//     cryptographically and physically isolated from the shared store and
-//     from every other tenant.
+//   - dedicated-isolation tenants (IsolationBarrier, IsolationVolume,
+//     IsolationRaft) resolve to a per-tenant store backed by that tenant's
+//     own TenantBarrier: every value is encrypted with the tenant's DEK and
+//     stored under the tenant's "{tenantID}/" namespace in an independent
+//     backend. Such a tenant's IAM data is therefore cryptographically and
+//     physically isolated from the shared store and from every other tenant.
+//     All three modes register their per-tenant barrier in the SAME
+//     BarrierRegistry (IsolationBarrier via registerDedicatedBarrier,
+//     IsolationVolume/IsolationRaft via RegisterVolumeTenant), so a
+//     volume/raft tenant's IAM is gated by the SAME seal that protects that
+//     tenant's data — closing the gap where volume/raft IAM previously fell
+//     through to the unsealed shared store.
 //
-// SECURITY: resolution fails closed for barrier tenants. When a barrier
-// tenant's barrier is sealed, Resolve returns ErrTenantSealed and NEVER
-// falls back to the shared system store.
+// SECURITY: resolution fails closed for every dedicated-isolation tenant.
+// When such a tenant's barrier is sealed, Resolve returns ErrTenantSealed
+// and NEVER falls back to the shared system store.
 type StoreResolver interface {
 	// Resolve returns the KVStore that backs the given tenant's IAM data.
-	// It returns ErrTenantSealed when the tenant is barrier-isolated and
-	// its barrier is sealed.
+	// It returns ErrTenantSealed when the tenant is dedicated-isolation
+	// (barrier/volume/raft) and its barrier is sealed.
 	Resolve(ctx context.Context, tenantID string) (kvstore.KVStore, error)
+}
+
+// barrierRoutedIsolation is the set of isolation types whose IAM data is
+// routed through the tenant's dedicated per-tenant barrier rather than the
+// shared system store. Every mode in the set registers a TenantBarrier in the
+// SAME BarrierRegistry the resolver consults, so resolveBarrier gates all
+// three identically and fails closed when the barrier is sealed:
+//
+//   - IsolationBarrier: keyspace-mode dedicated barrier.
+//   - IsolationVolume:  dedicated DataRoot with the IAM barrier at
+//     {DataRoot}/barrier.
+//   - IsolationRaft:    dedicated DataRoot + per-database raft shards, IAM
+//     barrier at {DataRoot}/barrier.
+//
+// IsolationPrefix (and the legacy empty isolation type, which
+// EffectiveIsolationType coerces to IsolationPrefix) is deliberately absent:
+// prefix tenants keep their IAM in the shared store.
+var barrierRoutedIsolation = map[IsolationType]struct{}{
+	IsolationBarrier: {},
+	IsolationVolume:  {},
+	IsolationRaft:    {},
 }
 
 // isolationLookup is the minimal slice of TenantServicer the resolver
@@ -107,7 +134,7 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 	// The system tenant and an empty/unset tenant always use the shared
 	// store. The system tenant is structurally a prefix tenant so the IAM
 	// stores work during bootstrap while tenant barriers are still sealed.
-	if tenantID == "" || tenantID == SystemTenantID {
+	if IsSystemTenant(tenantID) {
 		return r.shared, nil
 	}
 
@@ -124,9 +151,14 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 		return nil, err
 	}
 
-	// Migration / legacy: an empty IsolationType resolves to the shared
-	// store (logical prefix). Barrier isolation is strictly opt-in.
-	if info.IsolationType != IsolationBarrier {
+	// Only the dedicated-isolation modes route IAM through a per-tenant
+	// barrier. Prefix isolation — and the legacy empty IsolationType, which
+	// EffectiveIsolationType coerces to IsolationPrefix — resolves to the
+	// shared store. This routes IsolationVolume and IsolationRaft tenants
+	// through their own barrier too (not just IsolationBarrier), so a sealed
+	// volume/raft tenant's IAM fails closed instead of leaking to the shared
+	// store; all three register their barrier in the same registry.
+	if _, routed := barrierRoutedIsolation[info.EffectiveIsolationType()]; !routed {
 		return r.shared, nil
 	}
 

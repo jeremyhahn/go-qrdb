@@ -121,6 +121,35 @@ func TestHandleBarrierEnableEncryption_SystemStarts(t *testing.T) {
 	}
 }
 
+// TestHandleBarrierEnableEncryption_AcceptanceFailureSurfacesSynchronously
+// proves that a synchronously-knowable rejection from the migrator (e.g.
+// shared-barrier-immutable, entitlement denied, insufficient officers) is
+// returned to the caller as a proper error instead of the client seeing a
+// false "migration_started" while nothing actually happened (Codex #6).
+func TestHandleBarrierEnableEncryption_AcceptanceFailureSurfacesSynchronously(t *testing.T) {
+	mig := &captureMigrator{ch: make(chan migrateCall, 1), err: service.ErrSharedBarrierImmutable}
+	srv := newEnableEncTestServer(t, mig)
+	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
+		strings.NewReader(`{"tenant_id":"acme","strategy":"passphrase","passphrase":"pw"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (ErrSharedBarrierImmutable)", rec.Code)
+	}
+	var resp map[string]interface{}
+	decodeJSON(t, rec, &resp)
+	if resp["status"] == "migration_started" {
+		t.Fatal("must not report migration_started when acceptance failed synchronously")
+	}
+
+	select {
+	case <-mig.ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("migrator was not invoked")
+	}
+}
+
 func TestHandleBarrierEnableEncryption_TenantScope(t *testing.T) {
 	mig := &captureMigrator{ch: make(chan migrateCall, 1)}
 	srv := newEnableEncTestServer(t, mig)

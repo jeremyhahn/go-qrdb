@@ -216,7 +216,7 @@ func (m *mockDatabaseServiceQuic) UnsealDatabase(ctx context.Context, name strin
 	}
 	return nil
 }
-func (m *mockDatabaseServiceQuic) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseServiceQuic) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if m.barrierStatusFn != nil {
 		return m.barrierStatusFn(name)
 	}
@@ -248,6 +248,9 @@ func (m *mockDatabaseServiceQuic) UpdateBarrierForTenant(ctx context.Context, na
 }
 func (m *mockDatabaseServiceQuic) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateConnection(name, conn)
+}
+func (m *mockDatabaseServiceQuic) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }
 
 // ---------------------------------------------------------------------------

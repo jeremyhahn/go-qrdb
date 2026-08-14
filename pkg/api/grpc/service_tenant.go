@@ -38,8 +38,12 @@ func (s *qrdbServiceServer) TenantCreate(ctx context.Context, req *pb.TenantCrea
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant"}).Error())
 	}
 
-	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()),
-		tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal()))
+	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.GetBarrierAutoUnseal())}
+	if dataRoot := req.GetDataRoot(); dataRoot != "" {
+		opts = append(opts, tenant.WithDataRoot(dataRoot))
+	}
+
+	info, err := s.tenantSvc.CreateTenant(ctx, req.GetId(), req.GetName(), tenant.IsolationType(req.GetIsolationType()), opts...)
 	if err != nil {
 		return nil, mapTenantError(err)
 	}
@@ -191,6 +195,7 @@ func tenantToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		Id:            info.ID,
 		Name:          info.Name,
 		IsolationType: string(info.EffectiveIsolationType()),
+		DataRoot:      info.DataRoot,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
 	}
@@ -254,10 +259,21 @@ func mapTenantError(err error) error {
 	var ite *tenant.InvalidTenantIDError
 	var ise *tenant.InvalidStrategyError
 	var tse *tenant.TenantScopeError
+	var idre *tenant.InvalidDataRootError
+	var dne *tenant.DataRootNotEmptyError
+	var dite *tenant.DataRootIsolationTypeError
 
 	switch {
 	case errors.As(err, &tse):
 		return status.Error(codes.PermissionDenied, err.Error())
+	case errors.Is(err, tenant.ErrEmptyDataRoot):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &idre):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &dite):
+		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.As(err, &dne):
+		return status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, tenant.ErrEmptyTenantID):
 		return status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, tenant.ErrEmptyTenantName):

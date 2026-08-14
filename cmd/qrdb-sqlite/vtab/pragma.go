@@ -213,6 +213,17 @@ func (p *PragmaStore) SetConsistency(level string) error { return p.setConsisten
 // database.
 func (p *PragmaStore) SetWriteMode(mode string) error { return p.setWriteMode(mode) }
 
+// HandlePragma is the exported counterpart of handlePragma. It dispatches a
+// custom qrdb_* PRAGMA by name and returns the resulting key/value pairs: the
+// current value on a read, a confirmation on a write, or the full session
+// status snapshot for qrdb_status. Callers outside this package (the shell's
+// PRAGMA interceptor) use this to route qrdb_* pragmas here instead of
+// forwarding them to the underlying SQLite engine, which silently ignores
+// unrecognized pragma names.
+func (p *PragmaStore) HandlePragma(name, value string) (map[string]string, error) {
+	return p.handlePragma(name, value)
+}
+
 // isValidConsistency reports whether level is a recognized consistency string.
 func isValidConsistency(level string) bool {
 	for _, v := range validConsistencyLevels {

@@ -16,7 +16,13 @@ package sdk
 
 import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 
-// Backup returns a BackupClient for backup and restore operations.
+// Backup returns a BackupClient for backup and restore operations. Returns
+// nil when the active transport does not implement transport.BackupClient;
+// callers should nil-check the result and fall back appropriately (see
+// Client.UserAuthFactors for the established pattern).
 func (c *Client) Backup() transport.BackupClient {
-	return c.transport.(transport.BackupClient)
+	if bc, ok := c.transport.(transport.BackupClient); ok {
+		return bc
+	}
+	return nil
 }

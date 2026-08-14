@@ -104,9 +104,8 @@ func TestSealedWindow_Unary_SealedNonAllowlistRejected(t *testing.T) {
 
 func TestSealedWindow_Unary_SealedAllowlistPasses(t *testing.T) {
 	intercept := SealedWindowUnaryInterceptor(newProbe(true), nil)
-	for _, method := range SealedWindowAllowlist {
-		t.Run(method, func(t *testing.T) {
-			full := "/qrdb.v1.QRDBService/" + method
+	for _, full := range SealedWindowAllowlist {
+		t.Run(full, func(t *testing.T) {
 			res, err := intercept(context.Background(), nil,
 				&grpc.UnaryServerInfo{FullMethod: full}, dummyHandler)
 			if err != nil {
@@ -116,6 +115,43 @@ func TestSealedWindow_Unary_SealedAllowlistPasses(t *testing.T) {
 				t.Errorf("res = %v, want ok", res)
 			}
 		})
+	}
+}
+
+// TestSealedWindow_Unary_SameTailOtherServiceRejected is the L4 regression
+// guard: a method whose bare tail matches an allowlisted QRDBService verb but
+// which belongs to a DIFFERENT co-registered gRPC service must be rejected
+// while the barrier is sealed. Before the full-method match, tail-matching
+// admitted "/qrdb.v1.TenantBarrierService/Status" through the sealed window
+// because its tail "Status" collided with QRDBService/Status.
+func TestSealedWindow_Unary_SameTailOtherServiceRejected(t *testing.T) {
+	intercept := SealedWindowUnaryInterceptor(newProbe(true), nil)
+	for _, method := range []string{
+		"/qrdb.v1.TenantBarrierService/Status",
+		"/qrdb.v1.SomeOtherService/Health",
+		"/qrdb.v1.TenantBarrierService/Unseal",
+	} {
+		t.Run(method, func(t *testing.T) {
+			_, err := intercept(context.Background(), nil,
+				&grpc.UnaryServerInfo{FullMethod: method}, dummyHandler)
+			if err == nil {
+				t.Fatalf("expected %s to be rejected while sealed", method)
+			}
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatalf("err is not a status: %v", err)
+			}
+			if st.Code() != codes.Unavailable {
+				t.Errorf("code = %v, want Unavailable", st.Code())
+			}
+		})
+	}
+
+	// The real QRDBService/Status still passes while sealed.
+	if _, err := intercept(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Status"},
+		dummyHandler); err != nil {
+		t.Errorf("QRDBService/Status err = %v, want nil", err)
 	}
 }
 
@@ -142,7 +178,8 @@ func TestSealedWindow_Unary_DynamicSealUnseal(t *testing.T) {
 }
 
 func TestSealedWindow_Unary_CustomAllowlist(t *testing.T) {
-	intercept := SealedWindowUnaryInterceptor(newProbe(true), []string{"OnlyThis"})
+	intercept := SealedWindowUnaryInterceptor(newProbe(true),
+		[]string{"/qrdb.v1.QRDBService/OnlyThis"})
 	if _, err := intercept(context.Background(), nil,
 		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/OnlyThis"},
 		dummyHandler); err != nil {
@@ -152,6 +189,13 @@ func TestSealedWindow_Unary_CustomAllowlist(t *testing.T) {
 		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.QRDBService/Health"},
 		dummyHandler); err == nil {
 		t.Error("Health expected to be rejected with custom allowlist")
+	}
+	// The same bare tail on a different service must NOT be admitted by the
+	// custom (full-path) allowlist.
+	if _, err := intercept(context.Background(), nil,
+		&grpc.UnaryServerInfo{FullMethod: "/qrdb.v1.OtherService/OnlyThis"},
+		dummyHandler); err == nil {
+		t.Error("OtherService/OnlyThis expected to be rejected with full-path allowlist")
 	}
 }
 
@@ -187,17 +231,18 @@ func TestSealedWindow_Stream_SealedAllowlistPasses(t *testing.T) {
 	}
 }
 
-func TestMethodAllowed_TailMatch(t *testing.T) {
-	allowSet := map[string]struct{}{"Foo": {}}
+func TestMethodAllowed_FullMatch(t *testing.T) {
+	allowSet := map[string]struct{}{"/svc.v1.Service/Foo": {}}
 	cases := []struct {
 		full string
 		want bool
 	}{
-		{"/svc/Foo", true},
 		{"/svc.v1.Service/Foo", true},
-		{"Foo", true},
-		{"/svc/Bar", false},
-		{"/svc/foo", false}, // case-sensitive
+		{"/svc.v1.Other/Foo", false}, // same tail, different service
+		{"/svc/Foo", false},          // different service path
+		{"Foo", false},               // bare tail no longer matches
+		{"/svc.v1.Service/Bar", false},
+		{"/svc.v1.Service/foo", false}, // case-sensitive
 		{"", false},
 	}
 	for _, c := range cases {

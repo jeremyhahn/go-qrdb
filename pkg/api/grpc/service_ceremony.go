@@ -31,16 +31,20 @@ import (
 // Ceremony handlers
 // ---------------------------------------------------------------------------
 
-// CeremonyInitialize performs the initialization ceremony. The gRPC transport
-// does not carry a CeremonyCA reference; nil is passed to the service layer
-// which uses its internally configured CA. The per-request SO and user PINs
+// CeremonyInitialize performs the initialization ceremony, issuing TLS and
+// SO certificates from the server's configured CeremonyCA (WithCeremonyCA for
+// the TCP gRPC transport, WithRegisterCeremonyCA for the Unix domain socket
+// transport, which shares this handler). The per-request SO and user PINs
 // are forwarded so callers can supply credentials on the call itself.
 func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.CeremonyInitializeRequest) (*pb.CeremonyInitializeResponse, error) {
 	if s.ceremonySvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
 	}
+	if s.ceremonyCA == nil {
+		return nil, status.Error(codes.Unimplemented, (&CeremonyCANotConfiguredError{}).Error())
+	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil, &service.CeremonyInitializeOptions{
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, &service.CeremonyInitializeOptions{
 		SOPin:                  req.GetSoPin(),
 		UserPin:                req.GetUserPin(),
 		CredentialSealStrategy: req.GetCredentialSealStrategy(),
@@ -57,8 +61,6 @@ func (s *qrdbServiceServer) CeremonyInitialize(ctx context.Context, req *pb.Cere
 		SpkiPin:    result.SPKIPin,
 		CaCertPem:  string(result.CACertPEM),
 		TlsCertPem: string(result.TLSCertPEM),
-		SoCertPem:  string(result.SOCertPEM),
-		SoKeyPem:   string(result.SOKeyPEM),
 		State:      result.State,
 		ShareCount: int32(result.ShareCount),
 	}, nil
@@ -122,19 +124,53 @@ func (s *qrdbServiceServer) CeremonyClaimCertComplete(ctx context.Context, req *
 	}, nil
 }
 
-// CeremonyClaimShare retrieves the Shamir share assigned to the given officer.
-func (s *qrdbServiceServer) CeremonyClaimShare(ctx context.Context, req *pb.CeremonyClaimShareRequest) (*pb.CeremonyClaimShareResponse, error) {
+// CeremonyBeginClaimShare starts the Shamir share claim handshake for the given
+// officer. The caller MUST present an mTLS client certificate: its thumbprint
+// is derived from the verified TLS peer chain (never from the request) and must
+// match the thumbprint recorded for the officer at enrollment.
+func (s *qrdbServiceServer) CeremonyBeginClaimShare(ctx context.Context, req *pb.CeremonyBeginClaimShareRequest) (*pb.CeremonyBeginClaimShareResponse, error) {
 	if s.ceremonySvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
 	}
 
-	shareBytes, err := s.ceremonySvc.CeremonyClaimShare(ctx, req.GetUsername())
+	thumbprint, err := peerCertThumbprint(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+
+	challenge, err := s.ceremonySvc.CeremonyBeginClaimShare(ctx, req.GetUsername(), thumbprint)
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
 
-	return &pb.CeremonyClaimShareResponse{
-		Share: string(shareBytes),
+	return &pb.CeremonyBeginClaimShareResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
+	}, nil
+}
+
+// CeremonyCompleteClaimShare completes the Shamir share claim handshake. The
+// officer's signature over the challenge nonce and the caller's mTLS
+// certificate thumbprint are both verified before the share is released
+// exactly once.
+func (s *qrdbServiceServer) CeremonyCompleteClaimShare(ctx context.Context, req *pb.CeremonyCompleteClaimShareRequest) (*pb.CeremonyCompleteClaimShareResponse, error) {
+	if s.ceremonySvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "ceremony"}).Error())
+	}
+
+	thumbprint, err := peerCertThumbprint(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+
+	result, err := s.ceremonySvc.CeremonyCompleteClaimShare(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	return &pb.CeremonyCompleteClaimShareResponse{
+		ShareIndex: int32(result.ShareIndex), //nolint:gosec // share index is a small positive ordinal
+		Share:      string(result.ShareBytes),
 	}, nil
 }
 

@@ -480,7 +480,7 @@ func (s *Service) List(ctx context.Context, prefix string) ([]*Lock, error) {
 	start := []byte(lockKeyPrefix + prefix)
 	end := prefixEnd(start)
 
-	kvs, _, err := s.kvSvc.Range(ctx, start, end)
+	kvs, _, _, err := s.kvSvc.Range(ctx, start, end)
 	if err != nil {
 		return nil, err
 	}

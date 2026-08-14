@@ -26,12 +26,14 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // userAuthFactorTools returns the MCP tool registrations for the M14
 // user-side auth factor surface: add, list, get, remove, rotate, relabel,
-// login.
-func userAuthFactorTools(svc service.UserAuthFactorServicer) []mcpserver.ServerTool {
+// login. The userSvc is optional and enriches the login result with the
+// user's username, tenant, and roles; a nil userSvc leaves those empty.
+func userAuthFactorTools(svc service.UserAuthFactorServicer, userSvc user.UserServicer) []mcpserver.ServerTool {
 	return []mcpserver.ServerTool{
 		{Tool: toolUserAuthFactorAdd(), Handler: handleUserAuthFactorAddTool(svc)},
 		{Tool: toolUserAuthFactorList(), Handler: handleUserAuthFactorListTool(svc)},
@@ -39,7 +41,7 @@ func userAuthFactorTools(svc service.UserAuthFactorServicer) []mcpserver.ServerT
 		{Tool: toolUserAuthFactorRemove(), Handler: handleUserAuthFactorRemoveTool(svc)},
 		{Tool: toolUserAuthFactorRotate(), Handler: handleUserAuthFactorRotateTool(svc)},
 		{Tool: toolUserAuthFactorRelabel(), Handler: handleUserAuthFactorRelabelTool(svc)},
-		{Tool: toolUserAuthFactorLogin(), Handler: handleUserAuthFactorLoginTool(svc)},
+		{Tool: toolUserAuthFactorLogin(), Handler: handleUserAuthFactorLoginTool(svc, userSvc)},
 	}
 }
 
@@ -257,7 +259,7 @@ func handleUserAuthFactorRelabelTool(svc service.UserAuthFactorServicer) mcpserv
 	}
 }
 
-func handleUserAuthFactorLoginTool(svc service.UserAuthFactorServicer) mcpserver.ToolHandlerFunc {
+func handleUserAuthFactorLoginTool(svc service.UserAuthFactorServicer, userSvc user.UserServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		typ := mcp.ParseString(req, "type", "")
 		keyB64 := mcp.ParseString(req, "lookup_key_b64", "")
@@ -272,11 +274,24 @@ func handleUserAuthFactorLoginTool(svc service.UserAuthFactorServicer) mcpserver
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_authfactor_login", Err: err}
 		}
-		body, _ := json.Marshal(map[string]any{
+		result := map[string]any{
 			"user_id": factor.UserID,
 			"active":  true,
 			"factor":  factorToMCPMap(factor),
-		})
+		}
+		// Enrich from the user service, when wired. The factor login yields
+		// only the user ID; resolve the full record so username, tenant, and
+		// roles reach the client. Best-effort: a lookup failure leaves the
+		// base identifiers intact rather than failing an authenticated login.
+		if userSvc != nil && factor.UserID != 0 {
+			if u, uErr := userSvc.GetUser(ctx, factor.UserID); uErr == nil && u != nil {
+				result["username"] = u.Username
+				result["tenant_id"] = u.TenantID
+				result["roles"] = u.RoleIDs
+				result["active"] = u.Enabled
+			}
+		}
+		body, _ := json.Marshal(result)
 		return mcp.NewToolResultText(string(body)), nil
 	}
 }

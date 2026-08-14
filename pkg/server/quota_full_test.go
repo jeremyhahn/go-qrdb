@@ -276,10 +276,10 @@ func TestQuotaMVCCService_ReadPassthroughs(t *testing.T) {
 	if _, err := q.GetAtRevisionWithConsistency(ctx, "k", 1, consistency.ReadOptions{}); err != nil {
 		t.Fatalf("GetAtRevisionWithConsistency: %v", err)
 	}
-	if _, _, err := q.Range(ctx, []byte("a"), []byte("z")); err != nil {
+	if _, _, _, err := q.Range(ctx, []byte("a"), []byte("z")); err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	if _, _, err := q.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{}); err != nil {
+	if _, _, _, err := q.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{}); err != nil {
 		t.Fatalf("RangeWithConsistency: %v", err)
 	}
 	if err := q.Compact(ctx, 1); err != nil {

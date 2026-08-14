@@ -83,13 +83,24 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	smDir := filepath.Join(hostRoot, "nodehost", "snapshots", fmt.Sprintf("shard-%d", shard.ShardKV))
 
 	// Mint the keyed target over the tenant barrier's exact backend + config.
-	mintStrat, err := keyedTenantStrategy(opts)
-	if err != nil {
-		return err
-	}
-	target, err := source.MintKeyedSibling(ctx, migrateStagingSuffix, mintStrat, opts.Credentials)
-	if err != nil {
-		return &TenantHostError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+	var target *seal.StorageBarrier
+	if opts.TargetStrategy == seal.StrategyShamir {
+		// The Shamir target requires the direct-mode ceremony (mint + M-of-N
+		// split to enrolled Security Officers in one step); the generic
+		// MintKeyedSibling path cannot represent it — see its doc comment.
+		target, _, err = source.MintKeyedShamirSibling(ctx, migrateStagingSuffix, opts.ShamirThreshold, opts.ShamirTotal)
+		if err != nil {
+			return &TenantHostError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+		}
+	} else {
+		mintStrat, merr := keyedTenantStrategy(opts)
+		if merr != nil {
+			return merr
+		}
+		target, err = source.MintKeyedSibling(ctx, migrateStagingSuffix, mintStrat, opts.Credentials)
+		if err != nil {
+			return &TenantHostError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+		}
 	}
 	// Always remove the staging keyed root-key blob + zero its key enclave on
 	// return (success: redundant after adopt; failure: rollback). Mint is itself
@@ -214,7 +225,7 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 
 	// Replace the live (none) tenant barrier with a keyed one reopened from the
 	// now-keyed canonical root key, then drop the staging blob.
-	reopenStrat, serr := keyedTenantStrategy(opts)
+	reopenStrat, serr := reopenStrategyFor(opts)
 	if serr != nil {
 		err = serr
 		return err
@@ -238,6 +249,20 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	// barrier. (defer also deletes it; double-delete is harmless.)
 	r.migrating.Delete(tenantID)
 
+	// A Shamir target reopens SEALED (see ReopenKeyed): by design it never
+	// auto-unseals from disk, migration or not. The migration itself is
+	// complete and the keyed barrier is installed; the tenant Host stays
+	// detached until a Security Officer quorum unseals it via
+	// BarrierUnsealWithShare(s) (the same mechanism as a fresh Shamir init) —
+	// the next Services()/Attach call (request-driven or operator-driven)
+	// naturally retries and succeeds once unsealed. Skipping the eager Attach
+	// here is expected, not a failure.
+	if keyed.IsSealed() {
+		r.logger.Info("tenant encryption migration complete; barrier sealed pending Shamir quorum",
+			"tenant", tenantID, "strategy", string(opts.TargetStrategy))
+		return nil
+	}
+
 	// Reopen the tenant Host eagerly under the keyed barrier; this also verifies
 	// the WAL re-encryption by replaying it into the keyed state machine.
 	if aerr := r.Attach(ctx, tenantID); aerr != nil {
@@ -249,12 +274,26 @@ func (r *TenantHostRegistry) MigrateEncryption(ctx context.Context, tenantID str
 	return nil
 }
 
-// keyedTenantStrategy builds the keyed sealing strategy for a tenant migration,
-// using the same passphrase strategy the boot path registers so the sealed blob
-// is unsealable after a restart.
+// reopenStrategyFor builds the keyed sealing strategy ReopenKeyed uses to
+// reconstruct the live tenant barrier after a migration commits. A Shamir
+// target reuses the same threshold/total the mint step registered (ReopenKeyed
+// special-cases the Shamir ID and does not attempt to unseal); every other
+// keyed target uses keyedTenantStrategy's self-contained credential strategy.
+func reopenStrategyFor(opts seal.MigrationOptions) (seal.SealingStrategy, error) {
+	if opts.TargetStrategy == seal.StrategyShamir {
+		return seal.NewShamirStrategy(opts.ShamirThreshold, opts.ShamirTotal)
+	}
+	return keyedTenantStrategy(opts)
+}
+
+// keyedTenantStrategy builds the keyed sealing strategy for a PASSPHRASE-target
+// tenant migration, using the same passphrase strategy the boot path registers
+// so the sealed blob is unsealable after a restart. A Shamir target does not
+// go through this helper — see reopenStrategyFor and MigrateEncryption's
+// MintKeyedShamirSibling branch.
 func keyedTenantStrategy(opts seal.MigrationOptions) (seal.SealingStrategy, error) {
 	switch opts.TargetStrategy {
-	case seal.StrategyPassphrase, seal.StrategyShamir:
+	case seal.StrategyPassphrase:
 		return seal.NewDeferredSoftwareStrategy(), nil
 	default:
 		return nil, seal.ErrMigrationInvalidTarget

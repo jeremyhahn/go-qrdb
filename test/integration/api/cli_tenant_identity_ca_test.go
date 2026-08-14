@@ -21,12 +21,15 @@ import (
 )
 
 // identityTLSProtocols is the subset of AllProtocols() where mTLS client
-// identity is meaningful: unix (grpc-over-UDS) trusts the local socket peer
-// and never applies --cert-file/--key-file (see execCLIWithServer's
-// needsTLS gate in cli_multiprotocol_test.go), so it has nothing to prove
-// about OU-derived tenant identity and is intentionally excluded here.
+// identity is meaningful. This is now every remote protocol: unix
+// (grpc-over-UDS) is "verified TLS 1.3 only" with the same mTLS-derived
+// authentication and RBAC as TCP gRPC (see pkg/api/unix's WithTLS /
+// WithAuthMiddleware options and execCLIWithServer's needsTLS gate in
+// cli_multiprotocol_test.go, which now applies --cert-file/--key-file to
+// unix:// server URLs too), so it has exactly as much to prove about
+// OU-derived tenant identity as every other transport.
 func identityTLSProtocols() []ProtocolType {
-	return []ProtocolType{ProtocolREST, ProtocolGRPC, ProtocolQUIC, ProtocolMCP}
+	return []ProtocolType{ProtocolREST, ProtocolGRPC, ProtocolQUIC, ProtocolMCP, ProtocolUnix}
 }
 
 // execCLIWithProtocolAndCert runs the CLI against the given protocol's
@@ -44,10 +47,13 @@ func execCLIWithProtocolAndCert(t *testing.T, cfg *TestConfig, proto ProtocolTyp
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
+	// Unix (grpc-over-UDS) is "verified TLS 1.3 only", identical to TCP
+	// gRPC, so it needs the same CA/cert/key flags as the other transports.
 	needsTLS := strings.HasPrefix(serverURL, "https://") ||
 		strings.HasPrefix(serverURL, "grpcs://") ||
 		strings.HasPrefix(serverURL, "mcp://") ||
-		strings.HasPrefix(serverURL, "quics://")
+		strings.HasPrefix(serverURL, "quics://") ||
+		strings.HasPrefix(serverURL, "unix://")
 
 	if needsTLS {
 		if cfg.TLSCACert != "" {

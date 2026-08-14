@@ -38,7 +38,7 @@ func TestNewDatapointsTable(t *testing.T) {
 func TestDatapointsTable_Schema(t *testing.T) {
 	tbl := NewDatapointsTable()
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	require.Len(t, schema, 4)
 

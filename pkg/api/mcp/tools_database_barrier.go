@@ -97,7 +97,7 @@ func handleDatabaseBarrierStatus(dbSvc service.DatabaseServicer) mcpserver.ToolH
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		st, err := dbSvc.DatabaseBarrierStatus(name)
+		st, err := dbSvc.DatabaseBarrierStatus(ctx, name)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_barrier_status", Err: err}
 		}

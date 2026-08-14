@@ -28,7 +28,7 @@ func validClientConfig() gatewayConfig {
 		mode:        modeClient,
 		server:      "localhost:63003",
 		consistency: consistencyLinearizable,
-		writeMode:   writeModeLeader,
+		writeMode:   writeModeSync,
 		chunkSize:   defaultChunkSize,
 	}
 }
@@ -39,7 +39,7 @@ func validEmbeddedConfig() gatewayConfig {
 		mode:        modeEmbedded,
 		configFile:  "/etc/qrdb/qrdb.yaml",
 		consistency: consistencyLinearizable,
-		writeMode:   writeModeLeader,
+		writeMode:   writeModeSync,
 		chunkSize:   defaultChunkSize,
 	}
 }
@@ -81,7 +81,7 @@ func TestGatewayConfig_Validate_AllConsistencyLevels(t *testing.T) {
 }
 
 func TestGatewayConfig_Validate_AllWriteModes(t *testing.T) {
-	modes := []string{writeModeLeader, writeModeLocal}
+	modes := []string{writeModeSync, writeModeWALDurable, writeModeBatched}
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			cfg := validClientConfig()
@@ -341,8 +341,8 @@ func TestConstants_DefaultValues(t *testing.T) {
 	if defaultConsistency != consistencyLinearizable {
 		t.Errorf("defaultConsistency = %q, want %q", defaultConsistency, consistencyLinearizable)
 	}
-	if defaultWriteMode != writeModeLeader {
-		t.Errorf("defaultWriteMode = %q, want %q", defaultWriteMode, writeModeLeader)
+	if defaultWriteMode != writeModeSync {
+		t.Errorf("defaultWriteMode = %q, want %q", defaultWriteMode, writeModeSync)
 	}
 	if defaultChunkSize != 256 {
 		t.Errorf("defaultChunkSize = %d, want 256", defaultChunkSize)
@@ -395,7 +395,7 @@ func TestValidConsistencyLevels_ContainsExpectedKeys(t *testing.T) {
 }
 
 func TestValidWriteModes_ContainsExpectedKeys(t *testing.T) {
-	expected := []string{writeModeLeader, writeModeLocal}
+	expected := []string{writeModeSync, writeModeWALDurable, writeModeBatched}
 	for _, wm := range expected {
 		if _, ok := validWriteModes[wm]; !ok {
 			t.Errorf("validWriteModes missing expected key %q", wm)

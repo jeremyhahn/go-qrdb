@@ -197,12 +197,13 @@ func TestNewPebbleCreateFuncWith_CanOpenAndOperate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// pebble.go: getKeyNoLock - defensive copy verification (90%)
+// pebble.go: getKeyInBatch - defensive copy verification (90%)
 // ---------------------------------------------------------------------------
 
-// TestPebbleStateMachine_GetKeyNoLock_DefensiveCopy confirms that getKeyNoLock
-// returns a copy, not a slice pointing into pebble's internal buffer.
-func TestPebbleStateMachine_GetKeyNoLock_DefensiveCopy(t *testing.T) {
+// TestPebbleStateMachine_GetKeyInBatch_DefensiveCopy confirms that
+// getKeyInBatch returns a copy, not a slice pointing into pebble's internal
+// buffer.
+func TestPebbleStateMachine_GetKeyInBatch_DefensiveCopy(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
@@ -210,11 +211,11 @@ func TestPebbleStateMachine_GetKeyNoLock_DefensiveCopy(t *testing.T) {
 	})
 
 	s.mu.Lock()
-	val, err := s.getKeyNoLock([]byte("copy-key"))
+	val, err := s.getKeyInBatch(readBatch(t, s), []byte("copy-key"))
 	s.mu.Unlock()
 
 	if err != nil {
-		t.Fatalf("getKeyNoLock: %v", err)
+		t.Fatalf("getKeyInBatch: %v", err)
 	}
 	if !bytes.Equal(val, []byte("copy-val")) {
 		t.Fatalf("expected copy-val, got %q", val)
@@ -224,11 +225,11 @@ func TestPebbleStateMachine_GetKeyNoLock_DefensiveCopy(t *testing.T) {
 	val[0] = 'X'
 
 	s.mu.Lock()
-	val2, err := s.getKeyNoLock([]byte("copy-key"))
+	val2, err := s.getKeyInBatch(readBatch(t, s), []byte("copy-key"))
 	s.mu.Unlock()
 
 	if err != nil {
-		t.Fatalf("getKeyNoLock 2: %v", err)
+		t.Fatalf("getKeyInBatch 2: %v", err)
 	}
 	if !bytes.Equal(val2, []byte("copy-val")) {
 		t.Fatalf("defensive copy violated: got %q", val2)

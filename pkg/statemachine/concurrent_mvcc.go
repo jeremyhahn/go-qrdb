@@ -214,6 +214,20 @@ func (c *ConcurrentStateMachine) concurrentLookupMVCC(query interface{}) (interf
 		_, rev, err := c.mvccStore.Range(nil, nil, 0, 0, true, false)
 		return rev, true, err
 
+	case MVCCScanChangesQuery:
+		if c.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := c.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
+
+	case *MVCCScanChangesQuery:
+		if c.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := c.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
+
 	default:
 		return nil, false, nil
 	}

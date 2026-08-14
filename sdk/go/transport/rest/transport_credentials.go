@@ -253,26 +253,32 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 }
 
 // CredentialStore persists a credential value. Maps to POST /v1/credentials/store.
+// The value is carried as a []byte field so encoding/json renders it as base64
+// (RFC 4648), preserving arbitrary binary content byte-for-byte.
 func (t *Transport) CredentialStore(ctx context.Context, name string, value []byte) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	body := map[string]string{"name": name, "value": string(value)}
+	body := struct {
+		Name  string `json:"name"`
+		Value []byte `json:"value"`
+	}{Name: name, Value: value}
 	return t.postJSONDecode(ctx, "CredentialStore", "/v1/credentials/store", body, nil)
 }
 
 // CredentialRetrieve returns the credential value. Maps to
-// GET /v1/credentials/{name}/value.
+// GET /v1/credentials/{name}/value. The value is carried as a []byte field so
+// encoding/json decodes it from base64 (RFC 4648), preserving binary content.
 func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	var resp struct {
-		Value string `json:"value"`
+		Value []byte `json:"value"`
 	}
 	path := "/v1/credentials/" + url.PathEscape(name) + "/value"
 	if err := t.getJSONDecode(ctx, "CredentialRetrieve", path, &resp); err != nil {
 		return nil, err
 	}
-	return []byte(resp.Value), nil
+	return resp.Value, nil
 }

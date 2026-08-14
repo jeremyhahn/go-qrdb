@@ -16,6 +16,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,11 +32,19 @@ var _ KVServicer = (*BackendKVService)(nil)
 
 // BackendKVService implements KVServicer by delegating directly to a
 // database.Backend. It is intended for embedded (non-Raft) use where
-// all operations are local. Consistency and write mode parameters are
-// accepted for interface compatibility but are ignored because there
-// is no Raft layer to coordinate with.
+// all operations are local -- including a barrier-enabled dedicated-store
+// database's own encrypting Backend() (see database.BarrierBackend).
+// Consistency and write mode parameters are accepted for interface
+// compatibility but are ignored because there is no Raft layer to
+// coordinate with.
 type BackendKVService struct {
 	backend database.Backend
+
+	// name identifies the database this service is scoped to, used only to
+	// annotate a BarrierSealedError when the backend fails closed because its
+	// barrier is sealed. Empty for callers that do not care (e.g. the
+	// embedded SQL connector), which do not need error attribution.
+	name string
 }
 
 // NewBackendKVService creates a new BackendKVService wrapping the given
@@ -44,9 +53,56 @@ func NewBackendKVService(backend database.Backend) *BackendKVService {
 	return &BackendKVService{backend: backend}
 }
 
+// NewNamedBackendKVService creates a new BackendKVService wrapping the given
+// database.Backend instance, identified by name for error attribution. Use
+// this constructor when the backend may be barrier-wrapped (see
+// database.NewBarrierBackend) so a sealed-barrier failure surfaces as a
+// service.BarrierSealedError naming the database instead of the bare
+// database.SealedError, letting transports map it to their standard
+// sealed-barrier status instead of a generic internal error.
+func NewNamedBackendKVService(name string, backend database.Backend) *BackendKVService {
+	return &BackendKVService{backend: backend, name: name}
+}
+
+// translateSealed maps a database.SealedError (returned by a barrier-wrapped
+// Backend -- see database.BarrierBackend -- when its barrier is sealed) into
+// a BarrierSealedError, the typed error every transport already maps to its
+// standard sealed-barrier status (HTTP 503 / gRPC Unavailable). Any other
+// error, including nil, is returned unchanged.
+func (s *BackendKVService) translateSealed(err error) error {
+	var sealed *database.SealedError
+	if errors.As(err, &sealed) {
+		return &BarrierSealedError{TenantID: s.name}
+	}
+	return err
+}
+
 // Put stores a key-value pair via the underlying backend.
 func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) error {
-	return s.backend.Put(ctx, []byte(key), value)
+	return s.translateSealed(s.backend.Put(ctx, []byte(key), value))
+}
+
+// PutIfAbsent stores value under key only when the key is absent.
+//
+// The guarantee belongs to the backend, so this asserts for the capability and
+// refuses when it is missing rather than emulating it with a Get followed by a
+// Put. That emulation is the precise failure this operation exists to prevent:
+// two callers can both observe "absent" in the window between the two calls and
+// both write, so a single-use credential is issued twice.
+//
+// A backend that cannot do this is not broken — a RemoteBackend, for instance,
+// would need the operation added to its wire protocol first — so the refusal
+// names the limitation instead of failing obscurely.
+func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	atomicBackend, ok := s.backend.(database.AtomicBackend)
+	if !ok {
+		return false, database.ErrAtomicWriteUnsupported
+	}
+	stored, err := atomicBackend.PutIfAbsent(ctx, []byte(key), value)
+	if err != nil {
+		return false, s.translateSealed(err)
+	}
+	return stored, nil
 }
 
 // Get retrieves a value by key. Returns KeyNotFoundError when the key
@@ -54,7 +110,7 @@ func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) er
 func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	v, err := s.backend.Get(ctx, []byte(key))
 	if err != nil {
-		return nil, err
+		return nil, s.translateSealed(err)
 	}
 	if v == nil {
 		return nil, &KeyNotFoundError{Key: key}
@@ -64,14 +120,14 @@ func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) 
 
 // Delete removes a key via the underlying backend.
 func (s *BackendKVService) Delete(ctx context.Context, key string) error {
-	return s.backend.Delete(ctx, []byte(key))
+	return s.translateSealed(s.backend.Delete(ctx, []byte(key)))
 }
 
 // List returns sorted keys matching the given prefix.
 func (s *BackendKVService) List(ctx context.Context, prefix string) ([]string, error) {
 	keys, err := s.backend.List(ctx, prefix)
 	if err != nil {
-		return nil, err
+		return nil, s.translateSealed(err)
 	}
 	filtered := filterSystemKeys(keys, prefix)
 	sort.Strings(filtered)
@@ -88,7 +144,7 @@ func (s *BackendKVService) Scan(ctx context.Context, prefix string) (map[string]
 	for _, k := range keys {
 		v, err := s.backend.Get(ctx, []byte(k))
 		if err != nil {
-			return nil, err
+			return nil, s.translateSealed(err)
 		}
 		if v != nil {
 			result[k] = v
@@ -142,7 +198,7 @@ func (s *BackendKVService) ScanWithConsistency(ctx context.Context, prefix strin
 func (s *BackendKVService) ExistsWithConsistency(ctx context.Context, key string, _ consistency.ReadOptions) (bool, error) {
 	v, err := s.backend.Get(ctx, []byte(key))
 	if err != nil {
-		return false, err
+		return false, s.translateSealed(err)
 	}
 	return v != nil, nil
 }

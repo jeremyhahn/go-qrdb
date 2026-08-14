@@ -17,6 +17,7 @@ package provider
 import (
 	"io"
 	"sort"
+	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
@@ -24,7 +25,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // tableName is the fixed name of the KV table.
@@ -61,22 +61,30 @@ var (
 
 // KVTable implements sql.Table, sql.InsertableTable, sql.UpdatableTable,
 // sql.DeletableTable, sql.ReplaceableTable, sql.IndexAddressableTable, and
-// sql.IndexedTable for the QRDB KV store. Each instance is scoped to a
-// tenant via the session's TenantID. When indexSvc is non-nil, the query
-// planner may choose an index access path over a full table scan.
+// sql.IndexedTable for the QRDB KV store. Each instance is scoped to a key
+// namespace via prefix, which every key read or written through the table
+// is composed with (or, when kvSvc is already scoped to the caller's
+// namespace — e.g. resolved through service.Registry.KVService — an empty
+// prefix, so bare keys pass straight through). The caller (Database.
+// GetTableInsensitive) computes prefix once, typically as the composite
+// "<tenant>/<db>/" namespace every other protocol uses (see
+// tenant.ComposeNamespace). When indexSvc is non-nil, the query planner may
+// choose an index access path over a full table scan.
 type KVTable struct {
 	kvSvc    service.KVServicer
-	tenantID string
+	prefix   string
 	indexSvc index.IndexServicer // nil when index acceleration is not available
 }
 
-// NewKVTable creates a new KVTable backed by the given KV service and
-// scoped to the specified tenant namespace. The optional indexSvc enables
-// secondary index acceleration for WHERE clause evaluation.
-func NewKVTable(kvSvc service.KVServicer, tenantID string, indexSvc index.IndexServicer) *KVTable {
+// NewKVTable creates a new KVTable backed by the given KV service. Every
+// key the table reads or writes is composed with prefix; pass the empty
+// string when kvSvc is already scoped to the desired namespace. The
+// optional indexSvc enables secondary index acceleration for WHERE clause
+// evaluation.
+func NewKVTable(kvSvc service.KVServicer, prefix string, indexSvc index.IndexServicer) *KVTable {
 	return &KVTable{
 		kvSvc:    kvSvc,
-		tenantID: tenantID,
+		prefix:   prefix,
 		indexSvc: indexSvc,
 	}
 }
@@ -92,7 +100,7 @@ func (t *KVTable) String() string {
 }
 
 // Schema returns the table's column schema.
-func (t *KVTable) Schema() sqle.Schema {
+func (t *KVTable) Schema(_ *sqle.Context) sqle.Schema {
 	return kvSchema
 }
 
@@ -119,10 +127,10 @@ func (t *KVTable) PartitionRows(ctx *sqle.Context, part sqle.Partition) (sqle.Ro
 	return t.fullScanRows(ctx)
 }
 
-// fullScanRows performs a full KV store scan using the tenant prefix and
-// returns all rows sorted by key.
+// fullScanRows performs a full KV store scan using the table's namespace
+// prefix and returns all rows sorted by key.
 func (t *KVTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
-	prefix := tenant.TenantPrefix(t.tenantID)
+	prefix := t.prefix
 	data, err := t.kvSvc.Scan(ctx, prefix)
 	if err != nil {
 		return nil, err
@@ -137,7 +145,7 @@ func (t *KVTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
 
 	rows := make([]sqle.Row, 0, len(keys))
 	for _, k := range keys {
-		stripped := tenant.StripPrefix(t.tenantID, k)
+		stripped := strings.TrimPrefix(k, prefix)
 		rows = append(rows, sqle.Row{stripped, data[k]})
 	}
 
@@ -147,15 +155,16 @@ func (t *KVTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
 // indexedPartitionRows fetches only the entity keys held in the indexed
 // partition and builds rows from the KV service point lookups.
 func (t *KVTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartition) (sqle.RowIter, error) {
+	prefix := t.prefix
 	rows := make([]sqle.Row, 0, len(ip.keys))
 	for _, rawKey := range ip.keys {
-		key := tenant.PrefixKey(t.tenantID, string(rawKey))
+		key := prefix + string(rawKey)
 		val, err := t.kvSvc.Get(ctx, key)
 		if err != nil {
 			// Key may have been deleted after the index lookup; skip it.
 			continue
 		}
-		stripped := tenant.StripPrefix(t.tenantID, key)
+		stripped := strings.TrimPrefix(key, prefix)
 		rows = append(rows, sqle.Row{stripped, val})
 	}
 	return &indexedRowIter{rows: rows}, nil
@@ -163,22 +172,22 @@ func (t *KVTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartition) 
 
 // Inserter returns a RowInserter for this table.
 func (t *KVTable) Inserter(ctx *sqle.Context) sqle.RowInserter {
-	return &kvWriter{kvSvc: t.kvSvc, tenantID: t.tenantID}
+	return &kvWriter{kvSvc: t.kvSvc, prefix: t.prefix}
 }
 
 // Deleter returns a RowDeleter for this table.
 func (t *KVTable) Deleter(ctx *sqle.Context) sqle.RowDeleter {
-	return &kvWriter{kvSvc: t.kvSvc, tenantID: t.tenantID}
+	return &kvWriter{kvSvc: t.kvSvc, prefix: t.prefix}
 }
 
 // Updater returns a RowUpdater for this table.
 func (t *KVTable) Updater(ctx *sqle.Context) sqle.RowUpdater {
-	return &kvWriter{kvSvc: t.kvSvc, tenantID: t.tenantID}
+	return &kvWriter{kvSvc: t.kvSvc, prefix: t.prefix}
 }
 
 // Replacer returns a RowReplacer for this table.
 func (t *KVTable) Replacer(ctx *sqle.Context) sqle.RowReplacer {
-	return &kvWriter{kvSvc: t.kvSvc, tenantID: t.tenantID}
+	return &kvWriter{kvSvc: t.kvSvc, prefix: t.prefix}
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +245,7 @@ func (t *KVTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexLookup) (
 	}
 
 	ranges := lookup.Ranges.ToRanges()
-	keys, err := translateRanges(ctx, t.indexSvc, qIdx.column, ranges)
+	keys, err := translateRanges(ctx, t.indexSvc, qIdx.firstColumn(), ranges)
 	if err != nil {
 		return nil, &IndexLookupError{IndexName: qIdx.id, Err: err}
 	}
@@ -263,8 +272,8 @@ func (p *kvPartition) Key() []byte {
 // kvWriter implements sql.RowInserter, sql.RowDeleter, sql.RowUpdater,
 // and sql.RowReplacer by delegating to the KV service layer.
 type kvWriter struct {
-	kvSvc    service.KVServicer
-	tenantID string
+	kvSvc  service.KVServicer
+	prefix string
 }
 
 // Compile-time interface assertions.
@@ -295,22 +304,28 @@ func (w *kvWriter) StatementComplete(_ *sqle.Context) error {
 // Insert inserts a row into the KV store. The row must contain [key, value]
 // where key is a string and value is a []byte.
 func (w *kvWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, tableName); err != nil {
+		return err
+	}
 	key, value, err := extractKeyValue(row)
 	if err != nil {
 		return err
 	}
-	prefixed := tenant.PrefixKey(w.tenantID, key)
+	prefixed := w.prefix + key
 	return w.kvSvc.Put(ctx, prefixed, value)
 }
 
 // Delete deletes a row from the KV store. The row must contain at least
 // a key field.
 func (w *kvWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, tableName); err != nil {
+		return err
+	}
 	key, err := extractKey(row)
 	if err != nil {
 		return err
 	}
-	prefixed := tenant.PrefixKey(w.tenantID, key)
+	prefixed := w.prefix + key
 	return w.kvSvc.Delete(ctx, prefixed)
 }
 
@@ -318,6 +333,9 @@ func (w *kvWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 // deleted and the new key-value pair is inserted. Otherwise, the value is
 // overwritten in place.
 func (w *kvWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row) error {
+	if err := requireAutocommit(ctx, tableName); err != nil {
+		return err
+	}
 	oldKey, err := extractKey(old)
 	if err != nil {
 		return err
@@ -327,14 +345,14 @@ func (w *kvWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row) error {
 		return err
 	}
 
-	prefixedNew := tenant.PrefixKey(w.tenantID, newKey)
+	prefixedNew := w.prefix + newKey
 	if err := w.kvSvc.Put(ctx, prefixedNew, newValue); err != nil {
 		return err
 	}
 
 	// If the key changed, delete the old entry.
 	if oldKey != newKey {
-		prefixedOld := tenant.PrefixKey(w.tenantID, oldKey)
+		prefixedOld := w.prefix + oldKey
 		return w.kvSvc.Delete(ctx, prefixedOld)
 	}
 

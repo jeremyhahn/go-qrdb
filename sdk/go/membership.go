@@ -50,6 +50,24 @@ func (c *Client) NewMembershipManager(self cluster.Member, shardID uint64, cfg c
 	return cluster.NewMembershipManager(store, self, shardID, cfg, opts...)
 }
 
+// NewNodeAdvertiser wires a cluster.Advertiser onto this client's lease + MVCC
+// surface. The advertiser publishes the local node's descriptor — its Raft
+// address and the API endpoints it serves — into the cluster registry and keeps
+// the backing lease alive, so every peer can map a replica ID onto an address
+// it can actually dial.
+//
+// It is the advertisement half of NewMembershipManager without the Raft
+// reconfiguration half. Embedders that run a fixed-membership cluster (xkms
+// among them) want their API endpoints discoverable but must not be forced to
+// opt into automatic membership changes to get them.
+//
+// self.APIEndpoints must contain only known protocols with non-empty
+// addresses; the values come from the node's own configuration and are never
+// derived from the Raft address.
+func (c *Client) NewNodeAdvertiser(self cluster.Member, cfg cluster.AdvertiseConfig, opts ...cluster.AdvertiseOption) (*cluster.Advertiser, error) {
+	return cluster.NewAdvertiser(c.NewMembershipStore(), self, cfg, opts...)
+}
+
 // NewMembershipStore returns a cluster.MembershipStore backed by this client's
 // lease, MVCC (put-with-lease), and watch surfaces. Member entries are stored
 // under cluster.MembershipPrefix and attached to a lease so that node death

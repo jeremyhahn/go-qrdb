@@ -15,6 +15,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -616,6 +617,24 @@ func TestMultiplexShardsForBarrier(t *testing.T) {
 	}
 }
 
+// newInitializedEpochBarrier returns an initialized, unsealed
+// *seal.EpochBarrier using the no-encryption strategy. waldb.Open refuses a
+// sealed barrier — it cannot resolve a sealed barrier's context-binding
+// capability — so tests that hand a real barrier to a real WAL must initialize
+// it first.
+func newInitializedEpochBarrier(t *testing.T) *seal.EpochBarrier {
+	t.Helper()
+
+	b, err := seal.NewEpochBarrier(seal.DefaultEpochBarrierConfig(1))
+	if err != nil {
+		t.Fatalf("new epoch barrier: %v", err)
+	}
+	if err := b.Initialize(context.Background(), seal.NewNoneStrategy(), seal.Credentials{}); err != nil {
+		t.Fatalf("initialize epoch barrier: %v", err)
+	}
+	return b
+}
+
 // TestMultiplexMinLiveEpochForBarrier_DynamicWALIdentity exercises the EXACT
 // production identity path that a map-keyed mock cannot catch (HIGH-1): a real
 // waldb.DB is dynamically registered under a real *seal.EpochBarrier, and the
@@ -631,7 +650,13 @@ func TestMultiplexMinLiveEpochForBarrier_DynamicWALIdentity(t *testing.T) {
 	// A real *seal.EpochBarrier (= go-quicraft's Barrier). No encrypted writes
 	// occur, so MinLiveEpoch is 0; the test asserts the known bool and identity,
 	// not a particular epoch value.
-	b := &seal.EpochBarrier{}
+	//
+	// It must be initialized rather than left as a zero value: waldb.Open
+	// rejects a sealed barrier, because a sealed barrier cannot report whether
+	// it authenticates caller context. The none strategy keeps the WAL in
+	// plaintext, which is what this test wants — the assertion is about handle
+	// identity across conversions, not about encryption.
+	b := newInitializedEpochBarrier(t)
 
 	dedDB, err := waldb.Open(t.TempDir(), waldb.WithBarrier(b))
 	if err != nil {

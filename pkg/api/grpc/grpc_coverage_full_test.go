@@ -173,12 +173,13 @@ func (m *certThumbprintErrUserSvc) UserByCertThumbprint(_ context.Context, _ str
 // in grpc_coverage2_test.go but has no build tag restriction.
 func startServerWithUserAuthFactorFull(t *testing.T, svc service.UserAuthFactorServicer) (*grpc.ClientConn, func()) {
 	t.Helper()
+	tlsCfg := testServerTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithUserAuthFactorService(svc))
+		WithTLS(tlsCfg), WithUserAuthFactorService(svc))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("grpc.NewClient failed: %v", err)

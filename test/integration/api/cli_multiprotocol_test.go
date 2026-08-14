@@ -27,11 +27,14 @@ func execCLIWithServer(t *testing.T, cfg *TestConfig, serverURL string, args ...
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
-	// Add --ca-file for TLS-bearing protocols (HTTPS, gRPCs, MCP over TLS).
+	// Add --ca-file for TLS-bearing protocols (HTTPS, gRPCs, MCP over TLS,
+	// QUIC, and unix — the Unix socket transport is "verified TLS 1.3
+	// only", identical to TCP gRPC, so it needs the same CA/cert/key flags).
 	needsTLS := strings.HasPrefix(serverURL, "https://") ||
 		strings.HasPrefix(serverURL, "grpcs://") ||
 		strings.HasPrefix(serverURL, "mcp://") ||
-		strings.HasPrefix(serverURL, "quics://")
+		strings.HasPrefix(serverURL, "quics://") ||
+		strings.HasPrefix(serverURL, "unix://")
 
 	if needsTLS {
 		caFile := getEnv("QRDB_TLS_CA", "/data/raft/ca.pem")

@@ -138,7 +138,7 @@ func (m *mockDatabaseServiceWithBarrier) UnsealDatabase(ctx context.Context, nam
 	return m.unsealFn(ctx, name, creds)
 }
 
-func (m *mockDatabaseServiceWithBarrier) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseServiceWithBarrier) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	return m.barrierStatusFn(name)
 }
 
@@ -635,7 +635,7 @@ func TestHandleUnsealShare_Success(t *testing.T) {
 func TestHandleCredentialStore_NilService(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), ":0")
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/store",
-		strings.NewReader(`{"name":"mykey","value":"s3cr3t"}`))
+		strings.NewReader(`{"name":"mykey","value":"czNjcjN0"}`))
 	rec := httptest.NewRecorder()
 	srv.handleCredentialStore(rec, req)
 	assertStatus(t, rec, http.StatusNotImplemented)
@@ -657,7 +657,7 @@ func TestHandleCredentialStore_Success(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/store",
-		strings.NewReader(`{"name":"mykey","value":"s3cr3t"}`))
+		strings.NewReader(`{"name":"mykey","value":"czNjcjN0"}`))
 	rec := httptest.NewRecorder()
 	srv.handleCredentialStore(rec, req)
 	assertStatus(t, rec, http.StatusNoContent)
@@ -668,7 +668,7 @@ func TestHandleCredentialStore_ServiceError(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), ":0",
 		WithCredentialService(svc))
 	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/store",
-		strings.NewReader(`{"name":"k","value":"v"}`))
+		strings.NewReader(`{"name":"k","value":"dg=="}`))
 	rec := httptest.NewRecorder()
 	srv.handleCredentialStore(rec, req)
 	assertStatus(t, rec, http.StatusInternalServerError)
@@ -685,7 +685,7 @@ func TestHandleCredentialRetrieve_Success(t *testing.T) {
 
 	var resp credentialValueResponse
 	decodeJSON(t, rec, &resp)
-	if resp.Value != "my-value" {
+	if string(resp.Value) != "my-value" {
 		t.Errorf("value = %q, want my-value", resp.Value)
 	}
 }

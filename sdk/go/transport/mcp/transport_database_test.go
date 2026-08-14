@@ -44,8 +44,9 @@ type mockDatabaseSvc struct {
 	updBarrErr  error
 	updConnErr  error
 
-	lastCreate database.DatabaseConfig
-	lastName   string
+	lastCreate        database.DatabaseConfig
+	lastName          string
+	lastUpdateBarrier *database.DatabaseBarrierConfig
 
 	infoResp *database.DatabaseInfo
 }
@@ -119,7 +120,10 @@ func (m *mockDatabaseSvc) UpdateRaft(_ string, _ *database.DatabaseRaftConfig) (
 	return m.infoResp, nil
 }
 
-func (m *mockDatabaseSvc) UpdateBarrier(_ string, _ *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+func (m *mockDatabaseSvc) UpdateBarrier(_ string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+	m.mu.Lock()
+	m.lastUpdateBarrier = barrier
+	m.mu.Unlock()
 	if m.updBarrErr != nil {
 		return nil, m.updBarrErr
 	}
@@ -139,7 +143,7 @@ func (m *mockDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Cre
 	return nil
 }
 
-func (m *mockDatabaseSvc) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseSvc) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return &seal.BarrierStatus{}, nil
 }
 
@@ -177,6 +181,10 @@ func (m *mockDatabaseSvc) UpdateBarrierForTenant(_ context.Context, name string,
 
 func (m *mockDatabaseSvc) UpdateConnectionForTenant(_ context.Context, name string, c *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return m.UpdateConnection(name, c)
+}
+
+func (m *mockDatabaseSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }
 
 func connectDatabaseInProcess(t *testing.T, svc service.DatabaseServicer) (*Transport, func()) {
@@ -403,6 +411,45 @@ func TestUpdateDatabaseBarrier_Success(t *testing.T) {
 	}
 	if info == nil {
 		t.Fatal("expected non-nil info")
+	}
+}
+
+// TestUpdateDatabaseBarrier_MetadataFields is the MEDIUM #9 proof for the
+// MCP transport: Mode/SharesRequired/SharesTotal must survive the SDK ->
+// MCP tool call -> service round trip alongside Enabled.
+func TestUpdateDatabaseBarrier_MetadataFields(t *testing.T) {
+	svc := newMockDatabaseSvc()
+	tr, cleanup := connectDatabaseInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{
+		Name: "db1",
+		Barrier: &transport.DatabaseBarrierConfig{
+			Enabled:        true,
+			Mode:           "passphrase",
+			SharesRequired: 2,
+			SharesTotal:    3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseBarrier: %v", err)
+	}
+
+	svc.mu.Lock()
+	got := svc.lastUpdateBarrier
+	svc.mu.Unlock()
+
+	if got == nil {
+		t.Fatal("service was not invoked with a barrier config")
+	}
+	if got.Mode != "passphrase" {
+		t.Errorf("Mode = %q, want %q", got.Mode, "passphrase")
+	}
+	if got.SharesRequired != 2 {
+		t.Errorf("SharesRequired = %d, want 2", got.SharesRequired)
+	}
+	if got.SharesTotal != 3 {
+		t.Errorf("SharesTotal = %d, want 3", got.SharesTotal)
 	}
 }
 

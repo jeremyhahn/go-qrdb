@@ -22,6 +22,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -56,6 +57,10 @@ func databaseTools(dbSvc service.DatabaseServicer) []mcpserver.ServerTool {
 		{
 			Tool:    toolDatabaseUpdateRaft(),
 			Handler: handleDatabaseUpdateRaft(dbSvc),
+		},
+		{
+			Tool:    toolDatabaseScale(),
+			Handler: handleDatabaseScale(dbSvc),
 		},
 		{
 			Tool:    toolDatabaseUpdateBarrier(),
@@ -157,11 +162,28 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithNumber("token_cluster_size",
 			mcp.Description("Expected cluster size for token discovery (required for token)."),
 		),
+		mcp.WithBoolean("barrier_enabled",
+			mcp.Description("Bootstrap the database's encryption barrier at creation time."),
+		),
+		mcp.WithString("barrier_mode",
+			mcp.Description("Target keyed strategy for the barrier: \"passphrase\" or \"shamir\"."),
+		),
+		mcp.WithNumber("barrier_shares_required",
+			mcp.Description("Shamir threshold (M) when barrier_mode is \"shamir\"."),
+		),
+		mcp.WithNumber("barrier_shares_total",
+			mcp.Description("Shamir total share count (N) when barrier_mode is \"shamir\"."),
+		),
+		mcp.WithString("barrier_secret",
+			mcp.Description("Barrier passphrase/credential for the initial Initialize call. Never persisted or echoed back."),
+		),
 	)
 }
 
 // handleDatabaseCreate returns a tool handler that delegates to
-// dbSvc.Create.
+// dbSvc.Create. When barrier_enabled is set with a non-empty
+// barrier_secret, the database is created via the credentialed path,
+// mirroring the REST POST /v1/databases handler.
 func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
@@ -196,7 +218,18 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			cfg.Raft = raftCfg
 		}
 
-		info, err := dbSvc.CreateForTenant(ctx, cfg)
+		var creds seal.Credentials
+		if mcp.ParseBoolean(req, "barrier_enabled", false) {
+			cfg.Barrier = &database.DatabaseBarrierConfig{
+				Enabled:        true,
+				Mode:           mcp.ParseString(req, "barrier_mode", ""),
+				SharesRequired: mcp.ParseInt(req, "barrier_shares_required", 0),
+				SharesTotal:    mcp.ParseInt(req, "barrier_shares_total", 0),
+			}
+			creds = seal.Credentials{Secret: []byte(mcp.ParseString(req, "barrier_secret", ""))}
+		}
+
+		info, err := service.CreateDatabaseForTenantWithCredentials(ctx, dbSvc, cfg, creds)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_database_create", Err: err}
 		}
@@ -473,16 +506,70 @@ func handleDatabaseUpdateRaft(dbSvc service.DatabaseServicer) mcpserver.ToolHand
 	}
 }
 
+// toolDatabaseScale defines the qrdb_database_scale tool schema.
+func toolDatabaseScale() mcp.Tool {
+	return mcp.NewTool("qrdb_database_scale",
+		mcp.WithDescription("Change the replication factor of an existing dedicated-raft database, "+
+			"adding or removing voting replicas without recreating the database."),
+		mcp.WithString("name",
+			mcp.Required(),
+			mcp.Description("The database name to scale."),
+		),
+		mcp.WithNumber("target_replicas",
+			mcp.Required(),
+			mcp.Description("The desired replication factor (must be >= 1)."),
+		),
+	)
+}
+
+// handleDatabaseScale returns a tool handler that delegates to
+// dbSvc.ScaleForTenant.
+func handleDatabaseScale(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := mcp.ParseString(req, "name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+
+		targetReplicas := mcp.ParseInt(req, "target_replicas", 0)
+
+		info, err := dbSvc.ScaleForTenant(ctx, name, targetReplicas)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_database_scale", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(info)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_database_scale", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
 // toolDatabaseUpdateBarrier defines the qrdb_database_update_barrier tool schema.
 func toolDatabaseUpdateBarrier() mcp.Tool {
 	return mcp.NewTool("qrdb_database_update_barrier",
-		mcp.WithDescription("Update the encryption barrier configuration for a database."),
+		mcp.WithDescription("Update the encryption barrier configuration for a database. "+
+			"Enabling or disabling is not supported here (it requires re-encrypting or "+
+			"decrypting existing data, a migration this tool does not perform); the only "+
+			"effective call is re-affirming an already-active barrier's non-secret "+
+			"bookkeeping (mode/shares_required/shares_total)."),
 		mcp.WithString("name",
 			mcp.Required(),
 			mcp.Description("The database name to update."),
 		),
 		mcp.WithBoolean("enabled",
 			mcp.Description("Enable or disable the encryption barrier for this database."),
+		),
+		mcp.WithString("mode",
+			mcp.Description("Target keyed strategy: \"passphrase\" or \"shamir\"."),
+		),
+		mcp.WithNumber("shares_required",
+			mcp.Description("Shamir threshold (M) when mode is \"shamir\"."),
+		),
+		mcp.WithNumber("shares_total",
+			mcp.Description("Shamir total share count (N) when mode is \"shamir\"."),
 		),
 	)
 }
@@ -497,7 +584,10 @@ func handleDatabaseUpdateBarrier(dbSvc service.DatabaseServicer) mcpserver.ToolH
 		}
 
 		barrierCfg := &database.DatabaseBarrierConfig{
-			Enabled: mcp.ParseBoolean(req, "enabled", false),
+			Enabled:        mcp.ParseBoolean(req, "enabled", false),
+			Mode:           mcp.ParseString(req, "mode", ""),
+			SharesRequired: mcp.ParseInt(req, "shares_required", 0),
+			SharesTotal:    mcp.ParseInt(req, "shares_total", 0),
 		}
 
 		info, err := dbSvc.UpdateBarrierForTenant(ctx, name, barrierCfg)

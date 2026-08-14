@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -175,7 +176,7 @@ func TestNewEntityTable(t *testing.T) {
 	svc := &mockKVService{}
 	reg := testRegistration()
 
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	if tbl == nil {
 		t.Fatal("expected non-nil EntityTable")
@@ -184,7 +185,7 @@ func TestNewEntityTable(t *testing.T) {
 
 func TestEntityTable_Name(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	if got := tbl.Name(); got != "users" {
 		t.Errorf("Name() = %q, want %q", got, "users")
@@ -193,7 +194,7 @@ func TestEntityTable_Name(t *testing.T) {
 
 func TestEntityTable_String(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	if got := tbl.String(); got != "users" {
 		t.Errorf("String() = %q, want %q", got, "users")
@@ -202,7 +203,7 @@ func TestEntityTable_String(t *testing.T) {
 
 func TestEntityTable_Collation(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	if got := tbl.Collation(); got != sqle.Collation_Default {
 		t.Errorf("Collation() = %v, want %v", got, sqle.Collation_Default)
@@ -215,9 +216,9 @@ func TestEntityTable_Collation(t *testing.T) {
 
 func TestEntityTable_Schema_Columns(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	// _id + 5 non-PK fields = 6 columns
 	if len(schema) != 6 {
@@ -250,9 +251,9 @@ func TestEntityTable_Schema_Columns(t *testing.T) {
 
 func TestEntityTable_Schema_Source(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
-	for _, col := range tbl.Schema() {
+	for _, col := range tbl.Schema(newTestContext()) {
 		if col.Source != "users" {
 			t.Errorf("column %q: Source = %q, want %q", col.Name, col.Source, "users")
 		}
@@ -313,7 +314,7 @@ func TestBuildEntitySchema_OnlyPKField(t *testing.T) {
 
 func TestEntityTable_Partitions(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.Partitions(ctx)
@@ -346,7 +347,7 @@ func TestEntityTable_FullScanRows_Empty(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.PartitionRows(ctx, &collectionPartition{})
@@ -367,13 +368,13 @@ func TestEntityTable_FullScanRows_WithData(t *testing.T) {
 	svc := &mockKVService{
 		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
 			return map[string][]byte{
-				"tenant1/users/1": marshalTestEntity(alice),
-				"tenant1/users/2": marshalTestEntity(bob),
+				"tenant1/system/users/1": marshalTestEntity(alice),
+				"tenant1/system/users/2": marshalTestEntity(bob),
 			}, nil
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.PartitionRows(ctx, &collectionPartition{})
@@ -403,12 +404,12 @@ func TestEntityTable_FullScanRows_SkipsMalformed(t *testing.T) {
 	svc := &mockKVService{
 		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
 			return map[string][]byte{
-				"tenant1/users/1": []byte("not valid json {{{"),
+				"tenant1/system/users/1": []byte("not valid json {{{"),
 			}, nil
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.PartitionRows(ctx, &collectionPartition{})
@@ -430,7 +431,7 @@ func TestEntityTable_FullScanRows_ScanError(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	_, err := tbl.PartitionRows(ctx, &collectionPartition{})
@@ -448,14 +449,14 @@ func TestEntityTable_IndexedPartitionRows(t *testing.T) {
 
 	svc := &mockKVService{
 		getFn: func(_ context.Context, key string) ([]byte, error) {
-			if key == "tenant1/users/1" {
+			if key == "tenant1/system/users/1" {
 				return marshalTestEntity(alice), nil
 			}
 			return nil, fmt.Errorf("not found")
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	ip := &indexedPartition{keys: [][]byte{[]byte("users/1")}}
@@ -487,7 +488,7 @@ func TestEntityTable_IndexedPartitionRows_SkipsMissingEntities(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	ip := &indexedPartition{keys: [][]byte{[]byte("users/99")}}
@@ -508,7 +509,7 @@ func TestEntityTable_IndexedPartitionRows_SkipsMissingEntities(t *testing.T) {
 
 func TestEntityTable_EntityToRow(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	e := &testEntity{
 		ID:     42,
@@ -547,7 +548,7 @@ func TestEntityTable_EntityToRow(t *testing.T) {
 
 func TestEntityTable_EntityToRow_ZeroValues(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	e := &testEntity{ID: 1}
 	row := tbl.entityToRow(e)
@@ -581,7 +582,7 @@ func TestEntityTable_Insert(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -591,7 +592,7 @@ func TestEntityTable_Insert(t *testing.T) {
 		t.Fatalf("Insert() error = %v", err)
 	}
 
-	wantKey := "tenant1/users/10"
+	wantKey := "tenant1/system/users/10"
 	if putKey != wantKey {
 		t.Errorf("Put key = %q, want %q", putKey, wantKey)
 	}
@@ -626,7 +627,7 @@ func TestEntityTable_Insert(t *testing.T) {
 
 func TestEntityTable_Insert_InvalidID(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -638,7 +639,7 @@ func TestEntityTable_Insert_InvalidID(t *testing.T) {
 
 func TestEntityTable_Insert_NilID(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)
@@ -662,7 +663,7 @@ func TestEntityTable_Delete(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	deleter := tbl.Deleter(ctx)
@@ -672,7 +673,7 @@ func TestEntityTable_Delete(t *testing.T) {
 		t.Fatalf("Delete() error = %v", err)
 	}
 
-	wantKey := "tenant1/users/7"
+	wantKey := "tenant1/system/users/7"
 	if deletedKey != wantKey {
 		t.Errorf("Delete key = %q, want %q", deletedKey, wantKey)
 	}
@@ -680,7 +681,7 @@ func TestEntityTable_Delete(t *testing.T) {
 
 func TestEntityTable_Delete_EmptyRow(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	deleter := tbl.Deleter(ctx)
@@ -692,7 +693,7 @@ func TestEntityTable_Delete_EmptyRow(t *testing.T) {
 
 func TestEntityTable_Delete_NilID(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	deleter := tbl.Deleter(ctx)
@@ -723,7 +724,7 @@ func TestEntityTable_Update_SameID(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -740,7 +741,7 @@ func TestEntityTable_Update_SameID(t *testing.T) {
 		t.Error("Delete should not be called when ID is unchanged")
 	}
 
-	wantKey := "tenant1/users/5"
+	wantKey := "tenant1/system/users/5"
 	if putKey != wantKey {
 		t.Errorf("Put key = %q, want %q", putKey, wantKey)
 	}
@@ -769,7 +770,7 @@ func TestEntityTable_Update_IDChanged(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -781,17 +782,17 @@ func TestEntityTable_Update_IDChanged(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 
-	if deletedKey != "tenant1/users/3" {
+	if deletedKey != "tenant1/system/users/3" {
 		t.Errorf("deleted key = %q, want tenant1/users/3", deletedKey)
 	}
-	if putKey != "tenant1/users/4" {
+	if putKey != "tenant1/system/users/4" {
 		t.Errorf("put key = %q, want tenant1/users/4", putKey)
 	}
 }
 
 func TestEntityTable_Update_InvalidOldID(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -803,7 +804,7 @@ func TestEntityTable_Update_InvalidOldID(t *testing.T) {
 
 func TestEntityTable_Update_InvalidNewID(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	updater := tbl.Updater(ctx)
@@ -826,7 +827,7 @@ func TestEntityTable_Replacer(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	replacer := tbl.Replacer(ctx)
@@ -849,7 +850,7 @@ func TestEntityTable_Replacer(t *testing.T) {
 
 func TestEntityTable_GetIndexes(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -880,7 +881,7 @@ func TestEntityTable_GetIndexes(t *testing.T) {
 
 func TestEntityTable_GetIndexes_UniqueFlag(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -892,7 +893,7 @@ func TestEntityTable_GetIndexes_UniqueFlag(t *testing.T) {
 	uniqueByColumn := make(map[string]bool)
 	for _, idx := range indexes {
 		qi := idx.(*qrdbIndex)
-		uniqueByColumn[qi.column] = qi.IsUnique()
+		uniqueByColumn[qi.firstColumn()] = qi.IsUnique()
 	}
 
 	if !uniqueByColumn["id"] {
@@ -931,7 +932,7 @@ func TestEntityTable_GetIndexes_NoIndexedFields(t *testing.T) {
 		},
 	}
 
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -949,7 +950,7 @@ func TestEntityTable_GetIndexes_NoIndexedFields(t *testing.T) {
 
 func TestEntityTable_IndexedAccess(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	result := tbl.IndexedAccess(ctx, sqle.IndexLookup{})
@@ -960,7 +961,7 @@ func TestEntityTable_IndexedAccess(t *testing.T) {
 
 func TestEntityTable_PreciseMatch(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 
 	if !tbl.PreciseMatch() {
 		t.Error("PreciseMatch() = false, want true")
@@ -973,7 +974,7 @@ func TestEntityTable_PreciseMatch(t *testing.T) {
 
 func TestEntityTable_LookupPartitions_NilIndexSvc(t *testing.T) {
 	reg := testRegistration()
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, nil) // no indexSvc
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, nil) // no indexSvc
 	ctx := newTestContext()
 
 	iter, err := tbl.LookupPartitions(ctx, sqle.IndexLookup{})
@@ -994,7 +995,7 @@ func TestEntityTable_LookupPartitions_NilIndexSvc(t *testing.T) {
 func TestEntityTable_LookupPartitions_EmptyLookup(t *testing.T) {
 	reg := testRegistration()
 	idxSvc := &entityMockIndexServicer{}
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, idxSvc)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, idxSvc)
 	ctx := newTestContext()
 
 	iter, err := tbl.LookupPartitions(ctx, sqle.IndexLookup{})
@@ -1012,14 +1013,14 @@ func TestEntityTable_LookupPartitions_EmptyLookup(t *testing.T) {
 
 func TestEntityWriter_StatementBegin(t *testing.T) {
 	reg := testRegistration()
-	w := &entityWriter{kvSvc: &mockKVService{}, tenantID: "t1", reg: reg}
+	w := &entityWriter{kvSvc: &mockKVService{}, prefix: tenant.ComposeNamespace("t1", ""), reg: reg}
 	ctx := newTestContext()
 	w.StatementBegin(ctx) // must not panic
 }
 
 func TestEntityWriter_DiscardChanges(t *testing.T) {
 	reg := testRegistration()
-	w := &entityWriter{kvSvc: &mockKVService{}, tenantID: "t1", reg: reg}
+	w := &entityWriter{kvSvc: &mockKVService{}, prefix: tenant.ComposeNamespace("t1", ""), reg: reg}
 	ctx := newTestContext()
 	if err := w.DiscardChanges(ctx, nil); err != nil {
 		t.Errorf("DiscardChanges() error = %v, want nil", err)
@@ -1028,7 +1029,7 @@ func TestEntityWriter_DiscardChanges(t *testing.T) {
 
 func TestEntityWriter_StatementComplete(t *testing.T) {
 	reg := testRegistration()
-	w := &entityWriter{kvSvc: &mockKVService{}, tenantID: "t1", reg: reg}
+	w := &entityWriter{kvSvc: &mockKVService{}, prefix: tenant.ComposeNamespace("t1", ""), reg: reg}
 	ctx := newTestContext()
 	if err := w.StatementComplete(ctx); err != nil {
 		t.Errorf("StatementComplete() error = %v, want nil", err)
@@ -1037,7 +1038,7 @@ func TestEntityWriter_StatementComplete(t *testing.T) {
 
 func TestEntityWriter_Close(t *testing.T) {
 	reg := testRegistration()
-	w := &entityWriter{kvSvc: &mockKVService{}, tenantID: "t1", reg: reg}
+	w := &entityWriter{kvSvc: &mockKVService{}, prefix: tenant.ComposeNamespace("t1", ""), reg: reg}
 	ctx := newTestContext()
 	if err := w.Close(ctx); err != nil {
 		t.Errorf("Close() error = %v, want nil", err)
@@ -1393,7 +1394,7 @@ func TestCoerceReflectToSQL_Struct(t *testing.T) {
 func TestEntityTable_LookupPartitions_NonQRDBIndex(t *testing.T) {
 	reg := testRegistration()
 	idxSvc := &entityMockIndexServicer{}
-	tbl := NewEntityTable(&mockKVService{}, "tenant1", reg, idxSvc)
+	tbl := NewEntityTable(&mockKVService{}, tenant.ComposeNamespace("tenant1", ""), reg, idxSvc)
 	ctx := newTestContext()
 
 	// Use a lookup with a non-qrdbIndex; should fall through to Partitions().
@@ -1416,21 +1417,22 @@ func TestEntityTable_LookupPartitions_NonQRDBIndex(t *testing.T) {
 // fakeIndex is a non-qrdbIndex for testing the fallback path.
 type fakeIndex struct{}
 
-func (f *fakeIndex) ID() string                                         { return "fake" }
-func (f *fakeIndex) Database() string                                   { return "db" }
-func (f *fakeIndex) Table() string                                      { return "tbl" }
-func (f *fakeIndex) Expressions() []string                              { return nil }
-func (f *fakeIndex) IsUnique() bool                                     { return false }
-func (f *fakeIndex) IsSpatial() bool                                    { return false }
-func (f *fakeIndex) IsFullText() bool                                   { return false }
-func (f *fakeIndex) IsVector() bool                                     { return false }
-func (f *fakeIndex) Comment() string                                    { return "" }
-func (f *fakeIndex) IndexType() string                                  { return "" }
-func (f *fakeIndex) IsGenerated() bool                                  { return false }
-func (f *fakeIndex) ColumnExpressionTypes() []sqle.ColumnExpressionType { return nil }
-func (f *fakeIndex) CanSupport(_ *sqle.Context, _ ...sqle.Range) bool   { return false }
-func (f *fakeIndex) CanSupportOrderBy(_ sqle.Expression) bool           { return false }
-func (f *fakeIndex) PrefixLengths() []uint16                            { return nil }
+func (f *fakeIndex) ID() string                                                        { return "fake" }
+func (f *fakeIndex) Database() string                                                  { return "db" }
+func (f *fakeIndex) Table() string                                                     { return "tbl" }
+func (f *fakeIndex) Expressions() []string                                             { return nil }
+func (f *fakeIndex) IsUnique() bool                                                    { return false }
+func (f *fakeIndex) IsSpatial() bool                                                   { return false }
+func (f *fakeIndex) IsFullText() bool                                                  { return false }
+func (f *fakeIndex) IsVector() bool                                                    { return false }
+func (f *fakeIndex) Comment() string                                                   { return "" }
+func (f *fakeIndex) IndexType() string                                                 { return "" }
+func (f *fakeIndex) IsGenerated() bool                                                 { return false }
+func (f *fakeIndex) ColumnExpressionTypes(_ *sqle.Context) []sqle.ColumnExpressionType { return nil }
+func (f *fakeIndex) CoversColumns(_ []string) bool                                     { return false }
+func (f *fakeIndex) CanSupport(_ *sqle.Context, _ ...sqle.Range) bool                  { return false }
+func (f *fakeIndex) CanSupportOrderBy(_ sqle.Expression) bool                          { return false }
+func (f *fakeIndex) PrefixLengths() []uint16                                           { return nil }
 
 // ---------------------------------------------------------------------------
 // Additional indexedPartitionRows coverage: unmarshal error
@@ -1443,7 +1445,7 @@ func TestEntityTable_IndexedPartitionRows_SkipsMalformedData(t *testing.T) {
 		},
 	}
 	reg := testRegistration()
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	ip := &indexedPartition{keys: [][]byte{[]byte("users/1")}}
@@ -1485,7 +1487,7 @@ func TestEntityTable_Insert_MarshalError(t *testing.T) {
 	}
 
 	svc := &mockKVService{}
-	tbl := NewEntityTable(svc, "tenant1", reg, nil)
+	tbl := NewEntityTable(svc, tenant.ComposeNamespace("tenant1", ""), reg, nil)
 	ctx := newTestContext()
 
 	inserter := tbl.Inserter(ctx)

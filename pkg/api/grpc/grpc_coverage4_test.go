@@ -163,7 +163,7 @@ func newCeremonySvcMini() *ceremonySvcMini {
 	return &ceremonySvcMini{
 		initResult: &service.CeremonyInitResult{
 			SPKIPin: "pin", CACertPEM: []byte("ca"), TLSCertPEM: []byte("tls"),
-			SOCertPEM: []byte("so-cert"), SOKeyPEM: []byte("so-key"), State: "initialized", ShareCount: 3,
+			State: "initialized", ShareCount: 3,
 		},
 		statusResult:     &service.CeremonyStatusInfo{State: "initialized", SPKIPin: "pin"},
 		beginResult:      &service.CeremonyChallenge{NonceHex: "deadbeef", ExpiresAt: time.Now().Add(time.Minute)},
@@ -185,8 +185,17 @@ func (m *ceremonySvcMini) CeremonyBeginClaimCert(_ context.Context, _ string) (*
 func (m *ceremonySvcMini) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
 	return m.completeResult, m.completeErr
 }
-func (m *ceremonySvcMini) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
-	return m.claimShareResult, m.claimShareErr
+func (m *ceremonySvcMini) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (m *ceremonySvcMini) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
 }
 func (m *ceremonySvcMini) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	return m.signCSRResult, m.signCSRErr
@@ -261,7 +270,7 @@ func (m *databaseSvcMini) SealDatabase(_ context.Context, _ string) error { retu
 func (m *databaseSvcMini) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (m *databaseSvcMini) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *databaseSvcMini) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (m *databaseSvcMini) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -287,6 +296,9 @@ func (m *databaseSvcMini) UpdateBarrierForTenant(_ context.Context, _ string, _ 
 	return m.updateResult, m.updateErr
 }
 func (m *databaseSvcMini) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return m.updateResult, m.updateErr
+}
+func (m *databaseSvcMini) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
 
@@ -1026,7 +1038,7 @@ func TestVerifyBarrierSOPIN_VerifyError(t *testing.T) {
 
 func TestCeremony_Initialize_Success(t *testing.T) {
 	svc := newCeremonySvcMini()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
+	client, cleanup := startTestServerFull(t, WithCeremonyService(svc), WithCeremonyCA(&stubCeremonyCA{}))
 	defer cleanup()
 
 	resp, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
@@ -1058,7 +1070,7 @@ func TestCeremony_Initialize_NilService(t *testing.T) {
 func TestCeremony_Initialize_Error(t *testing.T) {
 	svc := newCeremonySvcMini()
 	svc.initErr = errors.New("ceremony init error")
-	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
+	client, cleanup := startTestServerFull(t, WithCeremonyService(svc), WithCeremonyCA(&stubCeremonyCA{}))
 	defer cleanup()
 
 	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
@@ -1202,17 +1214,14 @@ func TestCeremony_ClaimCertComplete_Error(t *testing.T) {
 	}
 }
 
-func TestCeremony_ClaimShare_Success(t *testing.T) {
+func TestCeremony_BeginClaimShare_NoClientCert(t *testing.T) {
 	svc := newCeremonySvcMini()
 	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
 	defer cleanup()
 
-	resp, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{Username: "alice"})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShare failed: %v", err)
-	}
-	if resp.GetShare() == "" {
-		t.Fatal("expected non-empty share")
+	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "alice"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
@@ -1220,21 +1229,24 @@ func TestCeremony_ClaimShare_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{Username: "alice"})
+	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-func TestCeremony_ClaimShare_Error(t *testing.T) {
+func TestCeremony_CompleteClaimShare_NoClientCert(t *testing.T) {
 	svc := newCeremonySvcMini()
 	svc.claimShareErr = errors.New("claim share error")
 	client, cleanup := startTestServerFull(t, WithCeremonyService(svc))
 	defer cleanup()
 
-	_, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{Username: "alice"})
+	resp, err := client.CeremonyCompleteClaimShare(context.Background(), &pb.CeremonyCompleteClaimShareRequest{Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	if resp.GetShare() != "" {
+		t.Fatalf("share bytes leaked on refusal: %q", resp.GetShare())
 	}
 }
 

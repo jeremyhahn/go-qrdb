@@ -32,11 +32,12 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockKVServicer struct {
-	putFn    func(ctx context.Context, key string, value []byte) error
-	getFn    func(ctx context.Context, key string) ([]byte, error)
-	deleteFn func(ctx context.Context, key string) error
-	scanFn   func(ctx context.Context, prefix string) (map[string][]byte, error)
-	listFn   func(ctx context.Context, prefix string) ([]string, error)
+	putFn         func(ctx context.Context, key string, value []byte) error
+	putIfAbsentFn func(ctx context.Context, key string, value []byte) (bool, error)
+	getFn         func(ctx context.Context, key string) ([]byte, error)
+	deleteFn      func(ctx context.Context, key string) error
+	scanFn        func(ctx context.Context, prefix string) (map[string][]byte, error)
+	listFn        func(ctx context.Context, prefix string) ([]string, error)
 }
 
 func (m *mockKVServicer) Put(ctx context.Context, key string, value []byte) error {
@@ -44,6 +45,16 @@ func (m *mockKVServicer) Put(ctx context.Context, key string, value []byte) erro
 		return m.putFn(ctx, key, value)
 	}
 	return nil
+}
+
+// PutIfAbsent reports a successful create by default. The adapter under test
+// only forwards the call, so the mock's job is to satisfy the interface and let
+// an individual test override the outcome it cares about.
+func (m *mockKVServicer) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if m.putIfAbsentFn != nil {
+		return m.putIfAbsentFn(ctx, key, value)
+	}
+	return true, nil
 }
 
 func (m *mockKVServicer) Get(ctx context.Context, key string) ([]byte, error) {

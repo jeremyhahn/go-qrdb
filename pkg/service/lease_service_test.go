@@ -35,11 +35,16 @@ func TestLeaseService_NewLeaseService_ReturnsNonNil(t *testing.T) {
 }
 
 func TestLeaseService_NewLeaseService_PreservesShardID(t *testing.T) {
-	var capturedShardID uint64
+	var capturedProposeShardID uint64
+	var capturedReadShardID uint64
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, shardID uint64, _ []byte) (sm.Result, error) {
-			capturedShardID = shardID
+			capturedProposeShardID = shardID
 			return sm.Result{Value: 42}, nil
+		},
+		syncReadFn: func(_ context.Context, shardID uint64, _ interface{}) (interface{}, error) {
+			capturedReadShardID = shardID
+			return &Lease{ID: 42, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
 		},
 	}
 
@@ -48,8 +53,11 @@ func TestLeaseService_NewLeaseService_PreservesShardID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedShardID != 77 {
-		t.Fatalf("expected shardID 77, got %d", capturedShardID)
+	if capturedProposeShardID != 77 {
+		t.Fatalf("expected propose shardID 77, got %d", capturedProposeShardID)
+	}
+	if capturedReadShardID != 77 {
+		t.Fatalf("expected read-back shardID 77, got %d", capturedReadShardID)
 	}
 }
 
@@ -58,9 +66,18 @@ func TestLeaseService_NewLeaseService_PreservesShardID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLeaseService_Grant_Success(t *testing.T) {
+	var capturedQuery LeaseTimeToLiveQuery
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
 			return sm.Result{Value: 100}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			q, ok := query.(LeaseTimeToLiveQuery)
+			if !ok {
+				t.Fatalf("expected LeaseTimeToLiveQuery, got %T", query)
+			}
+			capturedQuery = q
+			return &Lease{ID: q.ID, TTL: 60, GrantedTTL: 60, RemainingTTL: 60}, nil
 		},
 	}
 
@@ -80,6 +97,71 @@ func TestLeaseService_Grant_Success(t *testing.T) {
 	}
 	if lease.GrantedTTL != 60 {
 		t.Fatalf("expected GrantedTTL 60, got %d", lease.GrantedTTL)
+	}
+	// BUG 2 regression: RemainingTTL must reflect the live Lessor state,
+	// not stay at its zero value.
+	if lease.RemainingTTL != 60 {
+		t.Fatalf("expected RemainingTTL 60, got %d", lease.RemainingTTL)
+	}
+	// Grant must read back the lease it just created, by the ID the SM
+	// assigned (result.Value), not some other ID.
+	if capturedQuery.ID != 100 {
+		t.Fatalf("expected TimeToLive read-back for lease ID 100, got %d", capturedQuery.ID)
+	}
+}
+
+// TestLeaseService_Grant_PopulatesRemainingTTLFromReadBack pins the exact
+// fix for BUG 2: RemainingTTL comes from the Lessor's authoritative
+// read-back (via the same path KeepAlive uses), not from an assumption
+// that it always equals the client-requested ttl. Here the read-back
+// reports a RemainingTTL lower than the requested ttl (as would happen if
+// some time elapsed between grant and read-back), and Grant must surface
+// that real value rather than the originally requested one.
+func TestLeaseService_Grant_PopulatesRemainingTTLFromReadBack(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 7}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return &Lease{ID: 7, TTL: 60, GrantedTTL: 60, RemainingTTL: 59}, nil
+		},
+	}
+
+	svc := NewLeaseService(host, 1)
+	lease, err := svc.Grant(context.Background(), 60)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if lease.RemainingTTL != 59 {
+		t.Fatalf("expected RemainingTTL 59 (from read-back, not GrantedTTL), got %d", lease.RemainingTTL)
+	}
+}
+
+// TestLeaseService_Grant_ReadBackError verifies that a failure in the
+// post-grant TimeToLive read-back is surfaced (not masked as a successful
+// grant with a zero-value lease).
+func TestLeaseService_Grant_ReadBackError(t *testing.T) {
+	sentinel := errors.New("read failed")
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Value: 1}, nil
+		},
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, sentinel
+		},
+	}
+
+	svc := NewLeaseService(host, 1)
+	lease, err := svc.Grant(context.Background(), 60)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if lease != nil {
+		t.Fatalf("expected nil lease on error, got %+v", lease)
+	}
+	var re *ReadError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected *ReadError, got %T: %v", err, err)
 	}
 }
 

@@ -200,6 +200,37 @@ func (d *genericDAO[E]) Save(ctx context.Context, entity E) error {
 	return d.store.Put(ctx, key, data)
 }
 
+// SaveIfAbsent persists an entity only when its key is absent.
+//
+// The condition is delegated to the KVStore's atomic primitive rather than
+// evaluated here. Checking with Get and then calling Put would reintroduce the
+// window the operation exists to close: two callers would both observe the key
+// missing and both write, so a single-use record could be created twice.
+//
+// A store that cannot perform an atomic conditional write is refused rather
+// than emulated — see kvstore.AtomicKVStore for why that capability is optional
+// and why silently degrading would be worse than failing.
+func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error) {
+	atomicStore, ok := d.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, ErrAtomicWriteUnsupported
+	}
+
+	if entity.EntityID() == 0 {
+		entity.SetEntityID(d.idGen.NextID(entity))
+	}
+
+	data, err := d.codec.Marshal(entity)
+	if err != nil {
+		return false, SerializationFailedError{EntityType: d.entityType, Cause: err}
+	}
+
+	ctx, cancel := d.ensureTimeout(ctx)
+	defer cancel()
+
+	return atomicStore.PutIfAbsent(ctx, d.makeKey(entity.EntityID()), data)
+}
+
 // SaveWithCondition persists an entity only if the given condition is satisfied.
 // It wraps the operation in a single-operation transaction for atomicity.
 func (d *genericDAO[E]) SaveWithCondition(ctx context.Context, entity E, cond Condition) error {

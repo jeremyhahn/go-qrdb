@@ -248,6 +248,20 @@ func (f *FastStateMachine) lookupMVCC(query interface{}) (interface{}, bool, err
 		_, rev, err := f.mvccStore.Range(nil, nil, 0, 0, true, false)
 		return rev, true, err
 
+	case MVCCScanChangesQuery:
+		if f.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := f.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
+
+	case *MVCCScanChangesQuery:
+		if f.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := f.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
+
 	default:
 		return nil, false, nil
 	}

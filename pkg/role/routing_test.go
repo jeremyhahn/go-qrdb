@@ -319,6 +319,140 @@ func TestRoutingRoleService_DelegatesFullLifecycle(t *testing.T) {
 	}
 }
 
+// crossTenantSetup builds a router over two barrier tenants "a" and "b".
+func crossTenantSetup(t *testing.T) (RoleServicer, *fakeKVStore, *fakeKVStore) {
+	t.Helper()
+	storeA := newFakeKVStore()
+	storeB := newFakeKVStore()
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"a": storeA, "b": storeB},
+	}
+	svc, err := NewRoutingService(resolver)
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	return svc, storeA, storeB
+}
+
+// A non-system caller in tenant A supplying request tenant B is rejected with
+// CrossTenantDeniedError on every routing method that carries a request
+// tenant, and tenant B's store is never touched.
+func TestRoutingRoleService_CrossTenantDenied(t *testing.T) {
+	svc, _, storeB := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	assertDenied := func(name string, err error) {
+		t.Helper()
+		var xt *tenant.CrossTenantDeniedError
+		if !errors.As(err, &xt) {
+			t.Fatalf("%s cross-tenant = %v, want CrossTenantDeniedError", name, err)
+		}
+		if xt.IdentityTenantID != "a" || xt.RequestedTenantID != "b" {
+			t.Fatalf("%s error tenants = (%q,%q), want (a,b)", name, xt.IdentityTenantID, xt.RequestedTenantID)
+		}
+	}
+
+	_, err := svc.CreateRole(actx, &CreateRoleRequest{Name: "sneaky", TenantID: "b"})
+	assertDenied("CreateRole", err)
+
+	_, err = svc.ListRoles(actx, &ListRolesRequest{TenantID: "b"})
+	assertDenied("ListRoles", err)
+
+	_, err = svc.GetRoleByName(actx, "b", "admin")
+	assertDenied("GetRoleByName", err)
+
+	if n := len(storeB.m); n != 0 {
+		t.Fatalf("tenant B store unexpectedly holds %d records after denied cross-tenant access", n)
+	}
+}
+
+// A non-system caller in tenant A with a matching or empty request tenant is
+// routed to tenant A's own store, and the stored record's tenant is A.
+func TestRoutingRoleService_SameTenantRoutesToSelf(t *testing.T) {
+	svc, storeA, storeB := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	if _, err := svc.CreateRole(actx, &CreateRoleRequest{Name: "editor", TenantID: "a"}); err != nil {
+		t.Fatalf("CreateRole(match): %v", err)
+	}
+	created, err := svc.CreateRole(actx, &CreateRoleRequest{Name: "viewer", TenantID: ""})
+	if err != nil {
+		t.Fatalf("CreateRole(empty): %v", err)
+	}
+	if created.TenantID != "a" {
+		t.Fatalf("stored TenantID = %q, want a", created.TenantID)
+	}
+	if len(storeA.m) == 0 {
+		t.Fatal("same-tenant roles were not routed to tenant A's store")
+	}
+	if len(storeB.m) != 0 {
+		t.Fatalf("tenant B store unexpectedly holds %d records", len(storeB.m))
+	}
+
+	byName, err := svc.GetRoleByName(actx, "", "viewer")
+	if err != nil {
+		t.Fatalf("GetRoleByName(empty): %v", err)
+	}
+	if byName.TenantID != "a" {
+		t.Fatalf("GetRoleByName TenantID = %q, want a", byName.TenantID)
+	}
+}
+
+// A system-tenant caller MAY target another tenant.
+func TestRoutingRoleService_SystemCallerMayTargetTenant(t *testing.T) {
+	svc, _, storeB := crossTenantSetup(t)
+	sctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+
+	created, err := svc.CreateRole(sctx, &CreateRoleRequest{Name: "provisioned", TenantID: "b"})
+	if err != nil {
+		t.Fatalf("CreateRole(system→b): %v", err)
+	}
+	if created.TenantID != "b" {
+		t.Fatalf("stored TenantID = %q, want b", created.TenantID)
+	}
+	if len(storeB.m) == 0 {
+		t.Fatal("system-caller role was not routed to tenant B's store")
+	}
+	if _, err := svc.GetRoleByName(sctx, "b", "provisioned"); err != nil {
+		t.Fatalf("GetRoleByName(system→b): %v", err)
+	}
+	if _, err := svc.ListRoles(sctx, &ListRolesRequest{TenantID: "b"}); err != nil {
+		t.Fatalf("ListRoles(system→b): %v", err)
+	}
+}
+
+// Completeness guard: every routingRoleService method that accepts a
+// request-supplied tenant must reconcile it against the caller's identity.
+func TestRoutingRoleService_AllRequestTenantMethodsReconciled(t *testing.T) {
+	svc, _, _ := crossTenantSetup(t)
+	actx := tenant.WithTenantID(context.Background(), "a")
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"CreateRole", func() error {
+			_, err := svc.CreateRole(actx, &CreateRoleRequest{Name: "x", TenantID: "b"})
+			return err
+		}},
+		{"ListRoles", func() error {
+			_, err := svc.ListRoles(actx, &ListRolesRequest{TenantID: "b"})
+			return err
+		}},
+		{"GetRoleByName", func() error {
+			_, err := svc.GetRoleByName(actx, "b", "x")
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		var xt *tenant.CrossTenantDeniedError
+		if err := tc.call(); !errors.As(err, &xt) {
+			t.Errorf("%s: cross-tenant call = %v, want CrossTenantDeniedError", tc.name, err)
+		}
+	}
+}
+
 func TestNewRoutingRoleService_NilResolver(t *testing.T) {
 	if _, err := NewRoutingService(nil); err == nil {
 		t.Error("expected error for nil resolver")

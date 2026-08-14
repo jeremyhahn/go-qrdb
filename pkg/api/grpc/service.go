@@ -15,6 +15,7 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -292,6 +294,7 @@ type qrdbServiceServer struct {
 	encMigrator   service.EncryptionMigrator
 	pinBackend    pin.PINBackend
 	ceremonySvc   service.CeremonyServicer
+	ceremonyCA    ceremony.CeremonyCA
 	credentialSvc service.CredentialServicer
 	tenantSvc     tenant.TenantServicer
 	userSvc       user.UserServicer
@@ -300,6 +303,12 @@ type qrdbServiceServer struct {
 	collectionSvc service.CollectionServicer
 	backupSvc     service.BackupServicer
 	rebalanceSvc  service.RebalanceServicer
+	sqlSvc        service.SQLServicer
+
+	// userAuthFactorSvc is a registration carrier only: RegisterService
+	// registers it as the separate qrdb.v1.UserAuthFactorService (see
+	// RegisterUserAuthFactorService). No QRDBService RPC dispatches to it.
+	userAuthFactorSvc service.UserAuthFactorServicer
 
 	// registry, when set, resolves data-plane services per (tenant, database)
 	// scope. When nil the singleton service fields above are used (embedded /
@@ -415,9 +424,19 @@ func (s *qrdbServiceServer) Scan(ctx context.Context, req *pb.ScanRequest) (*pb.
 // ---------------------------------------------------------------------------
 
 // Health returns the node health status.
+//
+// admin.Health is on the sealed-window allowlist (pkg/api/sealedwindow.Table
+// VerbHealth), so this handler is reachable BEFORE adminSvc exists (adminSvc
+// is nil throughout the pre-host sealed window -- cmd/qrdbd/seal_subsystem.go's
+// awaitUnseal only wires the barrier/ceremony/credential services). Rather
+// than fail the RPC in that state, report the documented "sealed"
+// HealthStatus verdict directly: sdk/go/transport/grpc and .../unix's
+// Connect() require a successful Health RPC before returning, so erroring
+// here would make a perfectly reachable, correctly-sealed daemon look
+// unreachable to every gRPC and Unix-socket client.
 func (s *qrdbServiceServer) Health(ctx context.Context, _ *emptypb.Empty) (*pb.HealthResponse, error) {
 	if s.adminSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "admin"}).Error())
+		return &pb.HealthResponse{Status: service.HealthStatusSealed}, nil
 	}
 	info, err := s.adminSvc.Health(ctx)
 	if err != nil {
@@ -716,21 +735,22 @@ func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*p
 	if req.GetKeysOnly() {
 		opts = append(opts, service.WithKeysOnly())
 	}
-	if req.GetSortOrder() != pb.SortOrder_SORT_NONE {
+	if req.GetSortOrder() != pb.SortOrder_SORT_NONE || req.GetSortTarget() != pb.SortTarget_SORT_BY_KEY {
 		order := protoSortOrderMap[req.GetSortOrder()]
 		target := protoSortTargetMap[req.GetSortTarget()]
 		opts = append(opts, service.WithSort(order, target))
 	}
 
 	var (
-		kvs   []*service.KeyValue
-		count int64
-		err   error
+		kvs      []*service.KeyValue
+		count    int64
+		revision int64
+		err      error
 	)
 	if ropts, ok := readOptionsFromProto(req.GetConsistency()); ok {
-		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
+		kvs, count, revision, err = mvccSvc.RangeWithConsistency(ctx, req.GetStart(), req.GetEnd(), ropts, opts...)
 	} else {
-		kvs, count, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
+		kvs, count, revision, err = mvccSvc.Range(ctx, req.GetStart(), req.GetEnd(), opts...)
 	}
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -741,7 +761,7 @@ func (s *qrdbServiceServer) Range(ctx context.Context, req *pb.RangeRequest) (*p
 		pbKvs[i] = kvToProto(k)
 	}
 
-	return &pb.RangeResponse{Kvs: pbKvs, Count: count}, nil
+	return &pb.RangeResponse{Kvs: pbKvs, Count: count, Revision: revision}, nil
 }
 
 // Compact discards all MVCC revisions older than the specified revision.
@@ -841,6 +861,50 @@ func (s *qrdbServiceServer) Batch(ctx context.Context, req *pb.BatchRequest) (*p
 	}
 
 	return &pb.BatchResponse{Responses: responses}, nil
+}
+
+// BatchImport parses and imports key-value pairs from the file carried in
+// the request. It resolves the batch service through the SAME per-(tenant,
+// database) scope as Batch, so the namespaced wrapper's KeyPrefix is applied
+// to every imported key exactly as it is for every other write to the
+// database. The file must fit within the server's configured max receive
+// message size (see WithMaxImportMessageSize).
+func (s *qrdbServiceServer) BatchImport(ctx context.Context, req *pb.BatchImportRequest) (*pb.BatchImportResponse, error) {
+	batchSvc, svcErr := s.batchSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+
+	opts := service.ImportOptions{
+		Format:        req.GetFormat(),
+		Filename:      req.GetFilename(),
+		KeyField:      req.GetKeyField(),
+		ValueMode:     req.GetValueMode(),
+		ValueField:    req.GetValueField(),
+		SkipHeader:    req.GetSkipHeader(),
+		Transactional: req.GetTransactional(),
+	}
+
+	result, err := batchSvc.Import(ctx, bytes.NewReader(req.GetFile()), opts)
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+
+	errs := make([]*pb.BatchImportError, len(result.Errors))
+	for i, e := range result.Errors {
+		errs[i] = &pb.BatchImportError{
+			Row:     int32(e.Row),
+			Key:     e.Key,
+			Message: e.Message,
+		}
+	}
+
+	return &pb.BatchImportResponse{
+		Total:     int32(result.Total),
+		Succeeded: int32(result.Succeeded),
+		Failed:    int32(result.Failed),
+		Errors:    errs,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -63,6 +63,16 @@ func (m *captureKVService) Put(_ context.Context, key string, value []byte) erro
 	return nil
 }
 
+// PutIfAbsent stores only when the key is absent, matching the real
+// engines. The map lookup is the same check they perform.
+func (m *captureKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *captureKVService) PutWithMode(_ context.Context, key string, value []byte, mode writemode.Mode) error {
 	m.mu.Lock()
 	m.called = "PutWithMode"
@@ -225,19 +235,19 @@ func (m *captureMVCCSvc) GetAtRevisionWithConsistency(_ context.Context, key str
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("v"), ModRevision: revision, Version: 1}, nil
 }
 
-func (m *captureMVCCSvc) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *captureMVCCSvc) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.mu2.Lock()
 	m.calledMVCC = "Range"
 	m.mu2.Unlock()
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, nil
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, 1, nil
 }
 
-func (m *captureMVCCSvc) RangeWithConsistency(_ context.Context, start, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *captureMVCCSvc) RangeWithConsistency(_ context.Context, start, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.mu2.Lock()
 	m.calledMVCC = "RangeWithConsistency"
 	m.capturedMVCCROpts = opts
 	m.mu2.Unlock()
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, nil
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, 1, nil
 }
 
 func (m *captureMVCCSvc) Compact(_ context.Context, _ int64) error { return nil }
@@ -579,7 +589,7 @@ func TestHandlePut_PlainWhenNoMode(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":   "k",
-		"value": "v",
+		"value": "dg==",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -601,7 +611,7 @@ func TestHandlePut_WithWriteModeRoutes(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":        "k",
-		"value":      "v",
+		"value":      "dg==",
 		"write_mode": "wal_durable",
 	}))
 	if err != nil {
@@ -628,7 +638,7 @@ func TestHandlePut_InvalidWriteModeReturnsError(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":        "k",
-		"value":      "v",
+		"value":      "dg==",
 		"write_mode": "invalid",
 	}))
 	if err != nil {
@@ -714,7 +724,7 @@ func TestHandleMVCCPutWithLease_PlainWhenNoMode(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":      "k",
-		"value":    "v",
+		"value":    "dg==",
 		"lease_id": float64(42),
 	}))
 	if err != nil {
@@ -737,7 +747,7 @@ func TestHandleMVCCPutWithLease_WithWriteModeRoutes(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":        "k",
-		"value":      "v",
+		"value":      "dg==",
 		"lease_id":   float64(42),
 		"write_mode": "sync",
 	}))
@@ -765,7 +775,7 @@ func TestHandleMVCCPutWithLease_InvalidWriteModeReturnsError(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":        "k",
-		"value":      "v",
+		"value":      "dg==",
 		"lease_id":   float64(1),
 		"write_mode": "bad",
 	}))
@@ -971,4 +981,9 @@ func TestHandleMVCCRange_InvalidConsistencyReturnsError(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected IsError=true for invalid consistency")
 	}
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (c *captureMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, nil
 }

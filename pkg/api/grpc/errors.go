@@ -15,13 +15,19 @@
 package grpc
 
 import (
+	"crypto/tls"
 	"errors"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // mapServiceError translates service-layer errors into gRPC status errors
@@ -201,8 +207,73 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	}
 
+	var iif *service.ImportInvalidFormatError
+	if errors.As(err, &iif) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var imk *service.ImportMissingKeyFieldError
+	if errors.As(err, &imk) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var ivm *service.ImportInvalidValueModeError
+	if errors.As(err, &ivm) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var imv *service.ImportMissingValueFieldError
+	if errors.As(err, &imv) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var ipe *service.ImportParseError
+	if errors.As(err, &ipe) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var iae *service.ImportArchiveError
+	if errors.As(err, &iae) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var ita *service.ImportTransactionAbortedError
+	if errors.As(err, &ita) {
+		return status.Error(codes.Aborted, err.Error())
+	}
+
+	var iite *service.ImportInputTooLargeError
+	if errors.As(err, &iite) {
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+
+	var iaete *service.ImportArchiveExpandedTooLargeError
+	if errors.As(err, &iaete) {
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+
+	var itme *service.ImportTooManyEntriesError
+	if errors.As(err, &itme) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var itmr *service.ImportTooManyRowsError
+	if errors.As(err, &itmr) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var ipte *service.ImportProposalTooLargeError
+	if errors.As(err, &ipte) {
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+
 	var snc *ServiceNotConfiguredError
 	if errors.As(err, &snc) {
+		return status.Error(codes.Unimplemented, err.Error())
+	}
+
+	var ccnc *CeremonyCANotConfiguredError
+	if errors.As(err, &ccnc) {
 		return status.Error(codes.Unimplemented, err.Error())
 	}
 
@@ -221,6 +292,15 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 
+	if errors.Is(err, tenant.ErrTenantSealed) {
+		// A barrier-isolated tenant's IAM (user/role) store resolved to a
+		// SEALED barrier. The StoreResolver fails closed rather than leaking
+		// the operation through the shared system store — surface Unavailable
+		// so the caller retries after the tenant's barrier is unsealed,
+		// matching the BarrierSealedError data-plane mapping.
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
 	var lhe *lock.LockHeldError
 	if errors.As(err, &lhe) {
 		return status.Error(codes.Aborted, err.Error())
@@ -234,6 +314,141 @@ func mapServiceError(err error) error {
 	var lnfe *lock.LockNotFoundError
 	if errors.As(err, &lnfe) {
 		return status.Error(codes.NotFound, err.Error())
+	}
+
+	var tqee *tenant.QuotaExceededError
+	if errors.As(err, &tqee) {
+		// Tenant-wide replica-usage reservation lost a concurrency race —
+		// same status family as quota.ExceededError.
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
+
+	var infe *placement.InsufficientNodesError
+	if errors.As(err, &infe) {
+		// Tenant is within its own quota but the cluster has no free node —
+		// distinct from quota-exceeded, retryable once capacity changes.
+		return status.Error(codes.Unavailable, err.Error())
+	}
+
+	var rfe *service.ReplicaFloorError
+	if errors.As(err, &rfe) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var ndre *service.NotDedicatedRaftDatabaseError
+	if errors.As(err, &ndre) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var utoe *service.UnsupportedTransactionOpError
+	if errors.As(err, &utoe) {
+		// A transaction branch (success/failure ops) contained a read
+		// (Get/Range) or other unsupported op type — malformed request.
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var cso *service.CompactSystemOnlyError
+	if errors.As(err, &cso) {
+		// A non-system tenant attempted a store-global MVCC compaction — the
+		// service layer fails closed. PermissionDenied, matching the REST 403
+		// and the ScopeCross authz gate on the mvcc:compact permission.
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+
+	// -------------------------------------------------------------------
+	// Selective point-in-time restore (RestoreToRevision) guard errors.
+	// -------------------------------------------------------------------
+
+	var mbr *service.MVCCBackendRequiredError
+	if errors.As(err, &mbr) {
+		// The shard's state machine keeps no MVCC revision history (the
+		// default raft.sm_type is "pebble", not "mvcc") — Unimplemented so
+		// the caller learns the operation is unavailable on this deployment,
+		// not merely that this one call failed.
+		return status.Error(codes.Unimplemented, err.Error())
+	}
+
+	var rike *service.RestoreInternalKeyError
+	if errors.As(err, &rike) {
+		// A restore scope reached the internal key namespace — refused as an
+		// authority the caller does not have, not a malformed request.
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+
+	var rciu *service.RestoreChangeIndexUnavailableError
+	if errors.As(err, &rciu) {
+		// A prefix-scoped restore needs the durable revision index and this
+		// backend maintains none — same family as MVCCBackendRequiredError.
+		return status.Error(codes.Unimplemented, err.Error())
+	}
+
+	var rnre *service.RestoreNilRequestError
+	if errors.As(err, &rnre) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rrie *service.RestoreRevisionInvalidError
+	if errors.As(err, &rrie) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rrfe *service.RestoreRevisionFutureError
+	if errors.As(err, &rrfe) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rsee *service.RestoreScopeEmptyError
+	if errors.As(err, &rsee) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rsae *service.RestoreScopeAmbiguousError
+	if errors.As(err, &rsae) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var reke *service.RestoreEmptyKeyError
+	if errors.As(err, &reke) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rste *service.RestoreScopeTooLargeError
+	if errors.As(err, &rste) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rupe *service.RestoreUnboundedPrefixError
+	if errors.As(err, &rupe) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	var rae *service.RestoreApplyError
+	if errors.As(err, &rae) {
+		// A write in an already-validated plan failed part way through.
+		// Applied reports how many changes committed; re-issuing the
+		// identical request is safe (see RestoreApplyError doc comment).
+		return status.Error(codes.Internal, err.Error())
+	}
+
+	var tade *database.TenantAccessDeniedError
+	if errors.As(err, &tade) {
+		// A caller targeted a per-database control operation (seal/unseal/
+		// barrier-status, drop) on a database owned by a different tenant. The
+		// service layer fails closed independently of transport RBAC.
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+
+	if errors.Is(err, watch.ErrCompacted) {
+		// A watch requested a start revision at or below the compacted floor
+		// — the intervening history is gone. Same status family as
+		// service.RevisionCompactedError.
+		return status.Error(codes.OutOfRange, err.Error())
+	}
+
+	if errors.Is(err, watch.ErrStartRevisionUnsupported) {
+		// A watch requested a start revision against a store with no change
+		// history attached (a non-MVCC store) — replay is impossible.
+		return status.Error(codes.Unimplemented, err.Error())
 	}
 
 	return status.Error(codes.Internal, err.Error())
@@ -265,6 +480,18 @@ type ServiceNotConfiguredError struct {
 // Error returns a human-readable description.
 func (e *ServiceNotConfiguredError) Error() string {
 	return "grpc: " + e.Service + " service is not configured"
+}
+
+// CeremonyCANotConfiguredError is returned when CeremonyInitialize is
+// invoked but the server was not configured with a CeremonyCA (WithCeremonyCA
+// for the TCP gRPC transport, WithRegisterCeremonyCA for the Unix domain
+// socket transport). The ceremony service dereferences the CA to issue
+// certificates, so failing closed here avoids a nil-pointer panic.
+type CeremonyCANotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *CeremonyCANotConfiguredError) Error() string {
+	return "grpc: ceremony CA is not configured"
 }
 
 // MetadataMarshalError is returned when metadata cannot be serialized to JSON
@@ -339,4 +566,49 @@ type ClientCertRequiredError struct{}
 // Error returns a human-readable description.
 func (e *ClientCertRequiredError) Error() string {
 	return "grpc: client certificate required for share claim"
+}
+
+// TLSNotConfiguredError is returned by Start when no TLS configuration was
+// supplied via WithTLS. The gRPC transport is TLS-only — the mTLS client
+// certificate is the identity the auth middleware authenticates against — so
+// Start fails closed rather than bind an unauthenticated plaintext listener.
+// The orchestrator (pkg/server) auto-provisions a certificate from the node's
+// CeremonyCA, so a normal deployment supplies a config and never triggers this.
+type TLSNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *TLSNotConfiguredError) Error() string {
+	return "grpc: no TLS configured; the gRPC transport is TLS-only, call WithTLS with a TLS 1.3+ config"
+}
+
+// WeakTLSVersionError is returned by Start when WithTLS was given a
+// *tls.Config whose MinVersion is explicitly set below TLS 1.3. TLS 1.3 is
+// the minimum version this codebase supports for the client-certificate
+// identity model the auth middleware relies on.
+type WeakTLSVersionError struct {
+	MinVersion uint16
+}
+
+// Error returns a human-readable description.
+func (e *WeakTLSVersionError) Error() string {
+	return "grpc: TLS MinVersion " + tlsVersionName(e.MinVersion) + " is below the required TLS 1.3"
+}
+
+// tlsVersionName renders a crypto/tls version constant (or 0 for "unset")
+// as a human-readable string for error messages.
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	case 0:
+		return "unset"
+	default:
+		return fmt.Sprintf("0x%04x", v)
+	}
 }

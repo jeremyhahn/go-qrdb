@@ -477,12 +477,24 @@ func TestRESTCeremony_ClaimCertComplete_Closed(t *testing.T) {
 
 func TestRESTCeremony_ClaimShare_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodPost, "/v1/ceremony/claim-share"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, &transport.ClaimShareResponse{ShareJSON: "{}"})
+	rs.handle(pathPrefix(http.MethodPost, "/v1/ceremony/officer-share/begin"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.BeginClaimShareResponse{NonceHex: "abcd"})
 	})
-	resp, err := rt.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{})
+	rs.handle(pathPrefix(http.MethodPost, "/v1/ceremony/officer-share/complete"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, &transport.CompleteClaimShareResponse{ShareIndex: 1, ShareJSON: "{}"})
+	})
+
+	begun, err := rt.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{})
 	if err != nil {
-		t.Fatalf("CeremonyClaimShare: %v", err)
+		t.Fatalf("CeremonyBeginClaimShare: %v", err)
+	}
+	if begun.NonceHex != "abcd" {
+		t.Fatalf("NonceHex = %q", begun.NonceHex)
+	}
+
+	resp, err := rt.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{NonceHex: begun.NonceHex})
+	if err != nil {
+		t.Fatalf("CeremonyCompleteClaimShare: %v", err)
 	}
 	if resp.ShareJSON != "{}" {
 		t.Fatalf("ShareJSON = %q", resp.ShareJSON)
@@ -492,7 +504,7 @@ func TestRESTCeremony_ClaimShare_Success(t *testing.T) {
 func TestRESTCeremony_ClaimShare_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	_, err := rt.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{})
+	_, err := rt.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)

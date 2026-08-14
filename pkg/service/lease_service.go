@@ -46,7 +46,7 @@ func NewLeaseService(host Host, shardID uint64) LeaseServicer {
 
 // Grant creates a new lease with the specified TTL in seconds. The
 // server assigns a unique lease ID. Returns the lease including the
-// assigned ID and granted TTL.
+// assigned ID, granted TTL, and remaining TTL.
 func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 	cmd := protocol.EncodeLeaseGrant(ttl)
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
@@ -61,11 +61,13 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 		return nil, &ProposeError{Err: resultErr}
 	}
 
-	return &Lease{
-		ID:         int64(result.Value),
-		TTL:        ttl,
-		GrantedTTL: ttl,
-	}, nil
+	// The Grant proposal's Result carries only the assigned lease ID
+	// (Value); it has no field for the Lessor's granted/remaining TTL.
+	// Read the lease back from the authoritative Lessor state -- the same
+	// pattern KeepAlive uses -- rather than assuming RemainingTTL equals
+	// the just-requested ttl, so the response always reflects what the
+	// server actually granted.
+	return s.TimeToLive(ctx, int64(result.Value))
 }
 
 // Revoke immediately expires a lease and deletes all attached keys.

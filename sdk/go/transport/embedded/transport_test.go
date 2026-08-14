@@ -50,6 +50,16 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = append([]byte(nil), value...)
+	return true, nil
+}
+
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

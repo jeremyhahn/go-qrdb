@@ -209,6 +209,7 @@ func (r *RegularStateMachine) Update(_ context.Context, entries []sm.Entry, resu
 //   - MVCCGetQuery: MVCC point lookup
 //   - MVCCRangeQuery: MVCC range query
 //   - MVCCRevisionQuery: current MVCC revision
+//   - MVCCScanChangesQuery: keys changed in a revision window
 //   - timeseries.TSQueryRequest: time-series range query
 //   - timeseries.TSAggregateRequest: time-series aggregation
 //   - timeseries.TSRichQueryRequest: rich time-series query

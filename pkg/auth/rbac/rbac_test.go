@@ -918,6 +918,14 @@ func TestAuthorize_SO_CryptoActionsDenied(t *testing.T) {
 		{"keys", "verify"},
 		{"keys", "wrap"},
 		{"keys", "unwrap"},
+		// Key agreement / KDF is key use like the six above.
+		{"keys", "derive"},
+		// Hardware-token key use: keys:sign reached through a smart card.
+		{"piv", "use"},
+		// Contributed by a higher layer (go-quicbaas): extends a PCR on the
+		// host TPM and returns a signed quote. Denied by the
+		// resource-independent verb rule, without qrdb knowing the resource.
+		{"attestation", "attest"},
 	}
 
 	for _, tc := range deniedActions {
@@ -1161,10 +1169,35 @@ func TestIsSODenied_DeniedActions(t *testing.T) {
 		{"keys", "verify", true},
 		{"keys", "wrap", true},
 		{"keys", "unwrap", true},
+		{"keys", "derive", true},
+		{"piv", "use", true},
+		// Cryptographic primitives in any resource family, including ones
+		// contributed by a higher layer that this package cannot enumerate.
+		{"attestation", "attest", true},
+		{"tpm", "quote", true},
+		{"envelope", "wrap", true},
+		{"hkdf", "derive", true},
+		{"integrity", "hmac", true},
+		// Key lifecycle and inventory: governance, not key use.
 		{"keys", "create", false},
 		{"keys", "list", false},
 		{"keys", "get", false},
+		{"keys", "import", false},
+		{"keys", "export", false},
+		// PIV slot administration, as opposed to piv:use.
+		{"piv", "read", false},
+		{"piv", "write", false},
+		// The SO's own FIPS-assigned module lifecycle. Cryptographic by
+		// mechanism, governance by duty: denying these would break bootstrap.
 		{"seal", "bootstrap", false},
+		{"seal", "unseal", false},
+		{"seal", "seal", false},
+		{"seal", "rekey", false},
+		{"ceremony", "sign_csr", false},
+		{"certs", "generate", false},
+		// "verify" that is an integrity check over stored bytes, not key use.
+		{"backup", "verify", false},
+		{"objstore", "verify", false},
 		{"audit", "read", false},
 		{"kv", "put", false},
 	}
@@ -1373,5 +1406,69 @@ func TestAuthorize_TenantOnly_UnsealAndSeal(t *testing.T) {
 	// System tenant denied.
 	if err := authz.Authorize(ctxFor("acme"), sysAdmin, "tenant_barrier", "seal"); err == nil {
 		t.Error("system admin must not seal acme barrier")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cross-mechanism agreement (FIPS 140-3 AS10.03)
+//
+// The SO invariant is enforced twice, on purpose: pkg/permission refuses the
+// GRANT at registration time, and this package refuses the REQUEST at
+// authorization time. The two are independent implementations — this one
+// classifies the requested resource:action itself and never consults the duty
+// registry — so a defect in either does not disable the other. Independence is
+// only worth having if they agree, which is what these tests prove: neither
+// mechanism may be narrower than the other, in either direction.
+// ---------------------------------------------------------------------------
+
+// TestSODenyList_AgreesWithPermissionDutyRegistry verifies every permission the
+// registration-time guard treats as cryptographic use is also denied at
+// authorization time. A permission classified in pkg/permission but missing from
+// this layer's deny-list would leave an erroneous grant exploitable at runtime.
+func TestSODenyList_AgreesWithPermissionDutyRegistry(t *testing.T) {
+	var checked int
+	for _, p := range permission.All() {
+		if !permission.IsCryptoUse(p) {
+			continue
+		}
+		checked++
+		resource, action := permission.Resource(p), permission.Action(p)
+		if !isSODenied(resource, action) {
+			t.Errorf("%q is permission.IsCryptoUse but not in the runtime SO deny-list", p)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("precondition failed: no registered permission is classified as cryptographic use")
+	}
+}
+
+// TestSODenyList_NotBroaderThanDutyRegistry is the converse: every registered
+// permission this layer denies to the SO must also be classified as
+// cryptographic use by the registration-time guard. A permission denied here but
+// grantable there would ship a role whose grants silently do not work.
+func TestSODenyList_NotBroaderThanDutyRegistry(t *testing.T) {
+	for _, p := range permission.All() {
+		if !isSODenied(permission.Resource(p), permission.Action(p)) {
+			continue
+		}
+		if !permission.IsCryptoUse(p) {
+			t.Errorf("%q is in the runtime SO deny-list but is not permission.IsCryptoUse", p)
+		}
+	}
+}
+
+// TestSODenyList_CoversEverySOGrantsComplement asserts the two mechanisms do not
+// contradict each other on the materialized role: nothing the Security Officer
+// actually holds by default may be denied at authorization time, or the SO could
+// not perform its own duties.
+func TestSODenyList_CoversEverySOGrantsComplement(t *testing.T) {
+	soPerms := permission.RolePermissions(permission.RoleSO)
+	if len(soPerms) == 0 {
+		t.Fatal("precondition failed: the Security Officer role has no grants")
+	}
+	for _, p := range soPerms {
+		if isSODenied(permission.Resource(p), permission.Action(p)) {
+			t.Errorf("SO holds %q by default but the runtime deny-list rejects it", p)
+		}
 	}
 }

@@ -469,11 +469,14 @@ func TestHandleVectorCreateNamespace_WithAllOptions(t *testing.T) {
 	if captured == nil {
 		t.Fatal("service not called")
 	}
-	if captured.DistanceMetric != "L2" {
-		t.Errorf("expected distance metric L2, got %q", captured.DistanceMetric)
+	// MCP forwards the lowercase-normalized metric/index verbatim to the
+	// service, matching REST/gRPC/QUIC/Unix (transport parity): the input "l2"
+	// and "flat" reach the service as "l2"/"flat", not the uppercased "L2"/"FLAT".
+	if captured.DistanceMetric != "l2" {
+		t.Errorf("expected distance metric l2, got %q", captured.DistanceMetric)
 	}
-	if captured.IndexType != "FLAT" {
-		t.Errorf("expected index type FLAT, got %q", captured.IndexType)
+	if captured.IndexType != "flat" {
+		t.Errorf("expected index type flat, got %q", captured.IndexType)
 	}
 	if captured.Dimension != 256 {
 		t.Errorf("expected dimension 256, got %d", captured.Dimension)
@@ -2196,8 +2199,10 @@ func TestHandleScan_Success(t *testing.T) {
 		t.Fatalf("handleScan: %v", err)
 	}
 
+	// Values are base64-encoded (RFC 4648); map[string][]byte decodes them
+	// back to raw bytes automatically.
 	text := resultText(t, result)
-	var out map[string]string
+	var out map[string][]byte
 	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
 		t.Fatalf("unmarshal: %v", jsonErr)
 	}
@@ -2205,7 +2210,7 @@ func TestHandleScan_Success(t *testing.T) {
 	if len(out) != 2 {
 		t.Errorf("expected 2 pairs, got %d: %v", len(out), out)
 	}
-	if out["app/a"] != "1" {
+	if string(out["app/a"]) != "1" {
 		t.Errorf("expected app/a=1, got %q", out["app/a"])
 	}
 }

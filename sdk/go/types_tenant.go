@@ -75,6 +75,14 @@ const TenantIsolationBarrier = tenant.IsolationBarrier
 // SystemTenantID is the identifier of the reserved system tenant.
 const SystemTenantID = tenant.SystemTenantID
 
+// IsSystemTenant reports whether id denotes the structurally privileged
+// system tenant. It returns true for both SystemTenantID and the empty
+// string, since an unbound tenant resolves to the system tenant (see
+// TenantFromContext / ContextWithTenant). It is the canonical predicate for
+// "is this the system scope" and should be used instead of comparing
+// against SystemTenantID directly. (Aliases tenant.IsSystemTenant.)
+var IsSystemTenant = tenant.IsSystemTenant
+
 // ErrTenantExists is returned by the tenant store when creating a tenant whose
 // id already exists. (Aliases pkg/tenant.ErrTenantAlreadyExists; named
 // ErrTenantExists to avoid colliding with the seal package's
@@ -87,3 +95,13 @@ var ErrTenantExists = tenant.ErrTenantAlreadyExists
 // ErrTenantMissing to avoid colliding with the seal package's ErrTenantNotFound,
 // which is a distinct sentinel. A composing service should map it to 404.)
 var ErrTenantMissing = tenant.ErrTenantNotFound
+
+// ErrTenantBarrierNotEnabled is returned by the per-tenant barrier surface when
+// a barrier operation is attempted on a node whose seal subsystem is disabled
+// (no seal: configuration — SealBarrier == nil). Per-tenant barriers REQUIRE
+// the seal subsystem; the kv-backed tenant service fails closed with this
+// sentinel for every barrier verb. (Aliases pkg/tenant.ErrBarrierNotEnabled;
+// named with the Tenant prefix per the SDK convention for pkg/tenant sentinels.
+// A composing service should map it to 422 Unprocessable Entity on REST and
+// codes.FailedPrecondition on gRPC, matching qrdb's own transport canon.)
+var ErrTenantBarrierNotEnabled = tenant.ErrBarrierNotEnabled

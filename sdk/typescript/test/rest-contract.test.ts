@@ -609,6 +609,95 @@ describe('Inbound transform — kv.scan base64-decodes values to plaintext', () 
 });
 
 // ---------------------------------------------------------------------------
+// mvcc.restoreToRevision — request encodes prefix/keys as base64, response
+// decodes changes/conflicts keys back to plaintext.
+// ---------------------------------------------------------------------------
+
+describe('mvcc.restoreToRevision wire contract', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('POSTs /kv/restore with base64-encoded prefix and snake_case fields', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            revision: 5,
+            changes: [],
+            applied: 0,
+            skipped: 0,
+            conflicted: 0,
+            dry_run: false,
+        });
+
+        await client.mvcc.restoreToRevision({ revision: 5, prefix: 'prefix' });
+
+        expect(calls).toHaveLength(1);
+        const url = new URL(calls[0].url);
+        expect(url.pathname).toBe('/kv/restore');
+        expect(calls[0].method).toBe('POST');
+        // "cHJlZml4" === base64("prefix").
+        expect(calls[0].body).toEqual({ revision: 5, prefix: 'cHJlZml4' });
+    });
+
+    it('POSTs base64-encoded keys, dry_run, and force', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            revision: 5,
+            changes: [],
+            applied: 0,
+            skipped: 0,
+            conflicted: 0,
+            dry_run: true,
+        });
+
+        await client.mvcc.restoreToRevision({
+            revision: 5,
+            keys: ['a', 'b'],
+            dryRun: true,
+            force: true,
+        });
+
+        expect(calls).toHaveLength(1);
+        // "YQ==" === base64("a"), "Yg==" === base64("b").
+        expect(calls[0].body).toEqual({
+            revision: 5,
+            keys: ['YQ==', 'Yg=='],
+            dry_run: true,
+            force: true,
+        });
+    });
+
+    it('decodes response changes/conflicts key fields from base64 to plaintext', async () => {
+        const client = await connectedClient();
+        installMockFetch({
+            revision: 5,
+            changes: [
+                { key: 'aGVsbG8=', action: 'revert', from_revision: 9, to_revision: 5, value_bytes: 3 },
+            ],
+            conflicts: [
+                { key: 'd29ybGQ=', action: 'revert', from_revision: 9, to_revision: 5, value_bytes: 3 },
+            ],
+            applied: 1,
+            skipped: 0,
+            conflicted: 1,
+            dry_run: false,
+        });
+
+        const result = await client.mvcc.restoreToRevision({ revision: 5, prefix: 'p' });
+
+        expect(result.revision).toBe(5);
+        expect(result.applied).toBe(1);
+        expect(result.conflicted).toBe(1);
+        expect(result.changes[0].key).toBe('hello');
+        // snake_case → camelCase field transform applied automatically.
+        expect(result.changes[0].fromRevision).toBe(9);
+        expect(result.changes[0].toRevision).toBe(5);
+        expect(result.changes[0].valueBytes).toBe(3);
+        expect(result.conflicts?.[0]?.key).toBe('world');
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Active-database scope — a databaseScoped() client injects X-QRDB-Database on
 // data-plane requests, the unscoped client never sends it, and management/admin
 // requests never carry it even on a scoped client.

@@ -58,11 +58,14 @@ type SOPINVerifier interface {
 // authentication for SO-permissioned routes. It wraps the provided
 // base handler and:
 //
-//  1. Rejects requests over plain HTTP (no TLS state) with 401.
-//  2. For routes mapped to SO-only permissions, requires the
-//     X-QRDB-SO-PIN header to be present and valid.
-//  3. Emits an audit event on both success and failure.
-//  4. Delegates to the base handler on success.
+//  1. Passes through every route that is not mapped to an SO-only
+//     permission (SOPermissions) — behavior outside the SO surface is
+//     unchanged.
+//  2. Rejects SO-gated requests over plain HTTP (no TLS state) with 401
+//     so the PIN is never read off an unencrypted connection.
+//  3. Requires the X-QRDB-SO-PIN header to be present and valid.
+//  4. Emits an audit event on both success and failure.
+//  5. Delegates to the base handler on success.
 //
 // The identity's TenantID is used to look up the stored PIN commit.
 // If the identity has no tenant (cross-tenant/system identity), the
@@ -77,13 +80,6 @@ func SOMiddleware(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// SO PIN must only be transmitted over TLS. Reject plain HTTP requests
-		// before reading the header to prevent credential exposure.
-		if r.TLS == nil {
-			writeJSONError(w, http.StatusUnauthorized, "SO PIN requires TLS 1.3")
-			return
-		}
-
 		// Determine the required permission for this route.
 		path := normalizePath(r.URL.Path)
 		perm, hasPerm := LookupREST(r.Method, path)
@@ -96,6 +92,15 @@ func SOMiddleware(
 		// Check whether this permission requires SO dual-factor.
 		if _, requiresSO := SOPermissions[perm]; !requiresSO {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		// SO PIN must only be transmitted over TLS. Reject plain HTTP
+		// requests to SO-gated routes before reading the header to
+		// prevent credential exposure. Non-SO routes are unaffected so
+		// the middleware never changes behavior outside SOPermissions.
+		if r.TLS == nil {
+			writeJSONError(w, http.StatusUnauthorized, "SO PIN requires TLS 1.3")
 			return
 		}
 

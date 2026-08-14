@@ -131,3 +131,52 @@ func (e *AdminCertBindError) Error() string {
 func (e *AdminCertBindError) Unwrap() error {
 	return e.Cause
 }
+
+// ConflictingAdminCertInputsError is returned when Dependencies carries both
+// AdminCSRPEM and AdminCertPEM.
+//
+// The two select different enrollment paths for the same identity — Path B
+// signs a CSR the admin generated, Path C adopts a certificate the admin
+// already holds — and there is no defensible way to pick one on the operator's
+// behalf. Signing the CSR would leave the presented certificate unbound and
+// unusable for login; adopting the certificate would silently discard the CSR.
+type ConflictingAdminCertInputsError struct{}
+
+// Error implements error.
+func (e *ConflictingAdminCertInputsError) Error() string {
+	return "firstboot: AdminCSRPEM and AdminCertPEM are mutually exclusive: " +
+		"supply a CSR to have the CA issue a certificate, or a certificate to adopt one you already hold"
+}
+
+// MissingAdminCertPoolError is returned when AdminCertPEM is supplied without
+// AdminCertPool.
+//
+// A presented certificate is only an identity claim until it chains to
+// something the deployment trusts. Adopting one against an empty pool would
+// bind whatever the caller handed over, so the pool is required rather than
+// defaulted — the same rule the ceremony applies to an externally enrolled
+// officer.
+type MissingAdminCertPoolError struct{}
+
+// Error implements error.
+func (e *MissingAdminCertPoolError) Error() string {
+	return "firstboot: AdminCertPEM requires AdminCertPool: a presented certificate " +
+		"must chain to a trust anchor the deployment already accepts"
+}
+
+// AdminCertRejectedError wraps the reason a presented admin certificate was
+// not adopted: unparseable, outside its validity window, or not chaining to
+// AdminCertPool.
+type AdminCertRejectedError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *AdminCertRejectedError) Error() string {
+	return "firstboot: presented admin certificate rejected: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *AdminCertRejectedError) Unwrap() error {
+	return e.Cause
+}

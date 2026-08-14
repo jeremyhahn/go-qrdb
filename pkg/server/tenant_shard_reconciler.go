@@ -40,10 +40,56 @@ type ShardLifecycle interface {
 	// for an unknown (tenantID, db) pair.
 	Close(tenantID, db string) error
 
+	// CloseAndPurge stops the named shard (as Close does) and removes its
+	// on-disk dataDir subtree. It is a no-op for an unknown (tenantID, db)
+	// pair.
+	CloseAndPurge(tenantID, db string) error
+
 	// ListStarted returns the set of (TenantID, Database) pairs whose dedicated
 	// raft shards are currently started on this node. Used by ReconcileOnce to
 	// detect orphans.
 	ListStarted() []StartedShard
+}
+
+// JoinObserver reports whether a locally-started dynamically-added replica
+// has finished its join bootstrap (received its first snapshot). Satisfied
+// by *RaftBackendFactory, which delegates to *raftbackend.HostAdapter. The
+// reconciler uses this to promote a placement entry's local replica from
+// ReplicaStateObserver to ReplicaStateObserverReady once the join bootstrap
+// window has closed, so a LATER restart of that same replica starts with
+// join=false instead of re-entering the join bootstrap window (the exact
+// no-data-loss-restart bug this promotion prevents). Reaching
+// ReplicaStateObserverReady does NOT yet make the replica a voting member —
+// see Promoter for the ObserverReady -> Active (voter) transition, which
+// only the shard's current leader may perform.
+type JoinObserver interface {
+	// IsShardJoining reports whether shardID is still in its join bootstrap
+	// window on this host: started locally with join=true and not yet given
+	// its first snapshot.
+	IsShardJoining(shardID uint64) bool
+}
+
+// Promoter promotes a caught-up (ReplicaStateObserverReady) non-voting
+// observer replica to full voting membership, and reports which replica
+// currently leads a shard. Satisfied by a thin wrapper over the shared
+// quicraft.Host (see raftPromoter). PromoteObserver is a thin wrapper
+// around the same RequestAddNode config change used to admit a founding
+// follower -- go-quicraft treats RequestAddNode targeting an EXISTING
+// observer's replica ID as an observer -> voter promotion rather than a
+// fresh add (see go-quicraft host.go's requestConfigChange pre-registration
+// comment). Only the shard's current Raft leader may successfully call
+// PromoteObserver; go-quicraft hard-rejects the underlying config change on
+// any other member, so the reconciler always confirms local leadership via
+// LeaderReplicaID first.
+type Promoter interface {
+	// LeaderReplicaID reports whether a leader is known for shardID and, if
+	// so, its replica ID.
+	LeaderReplicaID(ctx context.Context, shardID uint64) (id uint64, ok bool, err error)
+
+	// PromoteObserver promotes replicaID (currently a non-voting observer of
+	// shardID, reachable at raftAddr) to a full voting member. Blocks until
+	// the config change commits or ctx is cancelled.
+	PromoteObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
 }
 
 // BarrierReadiness checks whether a tenant's barrier is registered and unsealed.
@@ -78,6 +124,39 @@ func WithBarrierReadiness(b BarrierReadiness) TenantShardReconcilerOption {
 	return func(r *TenantShardReconciler) { r.barriers = b }
 }
 
+// WithJoinObserver wires the JoinObserver the reconciler polls to promote a
+// locally hosted ReplicaStateObserver replica to ReplicaStateObserverReady
+// once its join bootstrap window has closed. When nil (the default),
+// promotion never happens and a dynamically added replica's placement entry
+// stays Observer forever — safe (every restart keeps retrying join=true)
+// but never converges to the cheaper join=false restart path, and never
+// becomes eligible for voter promotion (see WithPromoter).
+func WithJoinObserver(o JoinObserver) TenantShardReconcilerOption {
+	return func(r *TenantShardReconciler) { r.joinObserver = o }
+}
+
+// WithPromoter wires the Promoter the reconciler uses to promote a
+// caught-up (ReplicaStateObserverReady) non-voting observer to a full
+// voting member once THIS node confirms it is the shard's current Raft
+// leader. When nil (the default), a replica that has reached
+// ReplicaStateObserverReady is never promoted to ReplicaStateActive — it
+// remains a permanent, correctly-functioning non-voting observer (safe, but
+// it never contributes to quorum or leader elections).
+func WithPromoter(p Promoter) TenantShardReconcilerOption {
+	return func(r *TenantShardReconciler) { r.promoter = p }
+}
+
+// WithPurgeOnDemotion controls whether the reconciler purges a demoted or
+// deleted shard's on-disk dataDir (via ShardLifecycle.CloseAndPurge) instead
+// of merely stopping it (ShardLifecycle.Close). Defaults to true: closes a
+// pre-existing encrypted-at-rest retention gap where a removed replica's
+// ciphertext otherwise remains on disk indefinitely. This ONLY affects
+// demotion/delete teardown, never graceful process shutdown (CloseAll),
+// which must always leave data on disk for the next restart's re-attach.
+func WithPurgeOnDemotion(purge bool) TenantShardReconcilerOption {
+	return func(r *TenantShardReconciler) { r.purgeOnDemotion = purge }
+}
+
 // TenantShardReconciler watches the replicated placement table and ensures
 // every dedicated Raft shard assigned to this node is started, and every
 // locally started shard with no matching placement entry is stopped.
@@ -97,18 +176,22 @@ func WithBarrierReadiness(b BarrierReadiness) TenantShardReconcilerOption {
 //
 // TenantShardReconciler is safe for concurrent use.
 type TenantShardReconciler struct {
-	placement    *placement.Store
-	factory      ShardLifecycle
-	selfNodeID   string
-	barriers     BarrierReadiness
-	pollInterval time.Duration
-	logger       *slog.Logger
+	placement       *placement.Store
+	factory         ShardLifecycle
+	selfNodeID      string
+	barriers        BarrierReadiness
+	joinObserver    JoinObserver
+	promoter        Promoter
+	purgeOnDemotion bool
+	pollInterval    time.Duration
+	logger          *slog.Logger
 }
 
 // NewTenantShardReconciler creates a TenantShardReconciler. store and factory
 // must be non-nil; selfNodeID must match the NodeID values used in placement
 // entries (typically the Raft address string). logger defaults to slog.Default()
-// when nil. opts are applied in order.
+// when nil. purgeOnDemotion defaults to true (see WithPurgeOnDemotion). opts
+// are applied in order.
 func NewTenantShardReconciler(
 	store *placement.Store,
 	factory ShardLifecycle,
@@ -120,11 +203,12 @@ func NewTenantShardReconciler(
 		logger = slog.Default()
 	}
 	r := &TenantShardReconciler{
-		placement:    store,
-		factory:      factory,
-		selfNodeID:   selfNodeID,
-		pollInterval: defaultReconcilerPollInterval,
-		logger:       logger,
+		placement:       store,
+		factory:         factory,
+		selfNodeID:      selfNodeID,
+		pollInterval:    defaultReconcilerPollInterval,
+		purgeOnDemotion: true,
+		logger:          logger,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -161,6 +245,8 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 			continue
 		}
 		r.ensureStarted(ctx, p)
+		r.maybePromoteToObserverReady(ctx, p)
+		r.maybePromoteReadyObservers(ctx, p)
 	}
 
 	for _, s := range r.factory.ListStarted() {
@@ -179,13 +265,159 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		r.logger.Info("placement reconciler: stopping demoted shard",
 			slog.String("tenant", s.TenantID),
 			slog.String("database", s.Database))
-		if err := r.factory.Close(s.TenantID, s.Database); err != nil {
+		if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
 			r.logger.Warn("placement reconciler: demoted shard stop failed",
 				slog.String("tenant", s.TenantID),
 				slog.String("database", s.Database),
 				slog.Any("error", err))
 		}
 	}
+}
+
+// closeDemoted stops a demoted or deleted shard, purging its on-disk dataDir
+// when r.purgeOnDemotion is true (the default) via ShardLifecycle.
+// CloseAndPurge. Purging is correct here because a demotion or delete means
+// this node is no longer (and, for a delete, no node anywhere is) a replica
+// of the shard — unlike graceful process shutdown (CloseAll), which must
+// never purge because the data must survive for the next restart's
+// re-attach.
+func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
+	if r.purgeOnDemotion {
+		return r.factory.CloseAndPurge(tenantID, db)
+	}
+	return r.factory.Close(tenantID, db)
+}
+
+// maybePromoteToObserverReady flips the local node's replica from
+// ReplicaStateObserver to ReplicaStateObserverReady once its join bootstrap
+// window has closed, so a LATER restart of that same replica starts with
+// join=false instead of re-entering the join bootstrap window. It is a
+// no-op when no JoinObserver is wired, when the local replica is not
+// Observer, or while the join bootstrap window is still open (i.e.
+// IsShardJoining still reports true). This is self-reported by the node
+// that owns the replica using purely local state — no cross-node RPC.
+//
+// Reaching ReplicaStateObserverReady does NOT yet make the replica a voting
+// member of the Raft group — it remains the non-voting observer the leader
+// admitted via RaftHost.AddObserver. See maybePromoteReadyObservers for the
+// ObserverReady -> Active (voter) transition, which only the shard's
+// current leader may perform.
+//
+// A concurrent scale-down that has already dropped this replica from the
+// placement table is tolerated: p is the pre-mutation snapshot already used
+// to call ensureStarted, so a stale Put here lands harmlessly — the
+// reconciler's next tick re-lists the current placement and reconciles from
+// it (last-writer-wins, matching the existing convention elsewhere in this
+// package).
+func (r *TenantShardReconciler) maybePromoteToObserverReady(ctx context.Context, p *placement.Placement) {
+	if r.joinObserver == nil {
+		return
+	}
+	local, ok := p.ReplicaForNode(r.selfNodeID)
+	if !ok || local.State != placement.ReplicaStateObserver {
+		return
+	}
+	if r.joinObserver.IsShardJoining(p.ShardID) {
+		// Still mid-bootstrap; nothing to promote yet.
+		return
+	}
+
+	replicas := make([]placement.Replica, len(p.Replicas))
+	copy(replicas, p.Replicas)
+	for i := range replicas {
+		if replicas[i].NodeID == r.selfNodeID {
+			replicas[i].State = placement.ReplicaStateObserverReady
+			break
+		}
+	}
+	updated := *p
+	updated.Replicas = replicas
+
+	if err := r.placement.Put(ctx, &updated); err != nil {
+		r.logger.Warn("placement reconciler: failed to promote observer replica to observer-ready",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database),
+			slog.Any("error", err))
+		return
+	}
+	r.logger.Info("placement reconciler: observer replica caught up, awaiting leader voter promotion",
+		slog.String("tenant", p.TenantID),
+		slog.String("database", p.Database),
+		slog.Uint64("replica_id", local.ReplicaID))
+}
+
+// maybePromoteReadyObservers promotes every ReplicaStateObserverReady
+// replica of p to a full voting member (ReplicaStateActive), but ONLY when
+// this node is confirmed to be the shard's current Raft leader — go-quicraft
+// hard-rejects the underlying RequestAddNode config change on any other
+// member, so a non-leader attempt would simply fail every tick. It is a
+// no-op when no Promoter is wired, when the local node is not a member of
+// p at all, or when the local node is not (or cannot be confirmed as) the
+// current leader.
+//
+// Unlike maybePromoteToObserverReady (which only ever touches the LOCAL
+// replica, self-reported), this promotes ANY ObserverReady replica in p —
+// including ones hosted on other nodes — because only the leader can issue
+// the promotion, regardless of which node physically hosts the observer
+// being promoted. Every eligible replica is promoted in a single pass with
+// at most one placementStore.Put, so a scale-up of several replicas
+// converges to fully-voting within a few reconcile ticks rather than one
+// per replica.
+//
+// A promotion attempt that fails (e.g. the leadership check raced an
+// election) leaves that replica ObserverReady for the next tick to retry —
+// it is already a functioning non-voting observer in the meantime, so this
+// is safe to defer indefinitely.
+func (r *TenantShardReconciler) maybePromoteReadyObservers(ctx context.Context, p *placement.Placement) {
+	if r.promoter == nil {
+		return
+	}
+	local, ok := p.ReplicaForNode(r.selfNodeID)
+	if !ok {
+		return
+	}
+	leaderID, lok, lerr := r.promoter.LeaderReplicaID(ctx, p.ShardID)
+	if lerr != nil || !lok || leaderID != local.ReplicaID {
+		// Not the leader (or leadership cannot be confirmed right now) —
+		// only the leader may promote an observer.
+		return
+	}
+
+	replicas := make([]placement.Replica, len(p.Replicas))
+	copy(replicas, p.Replicas)
+	var promoted []uint64
+	for i := range replicas {
+		if replicas[i].State != placement.ReplicaStateObserverReady {
+			continue
+		}
+		if err := r.promoter.PromoteObserver(ctx, p.ShardID, replicas[i].ReplicaID, replicas[i].RaftAddr); err != nil {
+			r.logger.Warn("placement reconciler: observer promotion failed, will retry",
+				slog.String("tenant", p.TenantID),
+				slog.String("database", p.Database),
+				slog.Uint64("replica_id", replicas[i].ReplicaID),
+				slog.Any("error", err))
+			continue
+		}
+		replicas[i].State = placement.ReplicaStateActive
+		promoted = append(promoted, replicas[i].ReplicaID)
+	}
+	if len(promoted) == 0 {
+		return
+	}
+
+	updated := *p
+	updated.Replicas = replicas
+	if err := r.placement.Put(ctx, &updated); err != nil {
+		r.logger.Warn("placement reconciler: failed to persist observer voter promotion",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database),
+			slog.Any("error", err))
+		return
+	}
+	r.logger.Info("placement reconciler: promoted observer replica(s) to voting member",
+		slog.String("tenant", p.TenantID),
+		slog.String("database", p.Database),
+		slog.Any("replica_ids", promoted))
 }
 
 // ensureStarted starts the shard for the placement's locally assigned replica
@@ -274,17 +506,19 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 		}
 		if _, ok := ev.Placement.ReplicaForNode(r.selfNodeID); ok {
 			r.ensureStarted(ctx, ev.Placement)
+			r.maybePromoteToObserverReady(ctx, ev.Placement)
+			r.maybePromoteReadyObservers(ctx, ev.Placement)
 			break
 		}
 		// This node is no longer in the replica set — demotion (M1).
-		if err := r.factory.Close(ev.TenantID, ev.Database); err != nil {
+		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
 			r.logger.Warn("placement reconciler: shard close on demotion failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
-		if err := r.factory.Close(ev.TenantID, ev.Database); err != nil {
+		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),

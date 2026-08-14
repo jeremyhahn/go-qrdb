@@ -260,8 +260,6 @@ func TestCeremonyService_CeremonyInitialize_SingleAdmin(t *testing.T) {
 	assert.NotEmpty(t, result.SPKIPin, "SPKI pin should be set after init")
 	assert.NotEmpty(t, result.CACertPEM, "CA cert PEM should be set")
 	assert.NotEmpty(t, result.TLSCertPEM, "TLS cert PEM should be set")
-	assert.NotEmpty(t, result.SOCertPEM, "SO cert PEM should be set")
-	assert.NotEmpty(t, result.SOKeyPEM, "SO key PEM should be set")
 	assert.Equal(t, "operational", result.State, "single-admin should go straight to operational")
 	assert.Equal(t, 0, result.ShareCount, "single-admin should have zero shares")
 }
@@ -309,13 +307,22 @@ func TestCeremonyService_CeremonyCompleteClaimCert_NotEnrolling(t *testing.T) {
 	assert.ErrorIs(t, err, ceremony.ErrNotInEnrollingState)
 }
 
-func TestCeremonyService_CeremonyClaimShare_NotEnrolling(t *testing.T) {
+func TestCeremonyService_CeremonyBeginClaimShare_UnknownOfficer(t *testing.T) {
 	svc, _ := newTestCeremonyService(t)
 	ctx := context.Background()
 
-	_, err := svc.CeremonyClaimShare(ctx, "officer1")
+	_, err := svc.CeremonyBeginClaimShare(ctx, "officer1", "some-thumbprint")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ceremony.ErrNotInEnrollingState)
+	assert.ErrorIs(t, err, ceremony.ErrOfficerNotFound)
+}
+
+func TestCeremonyService_CeremonyCompleteClaimShare_NoChallenge(t *testing.T) {
+	svc, _ := newTestCeremonyService(t)
+	ctx := context.Background()
+
+	result, err := svc.CeremonyCompleteClaimShare(ctx, "officer1", "deadbeef", []byte("sig"), "some-thumbprint")
+	require.Error(t, err)
+	assert.Nil(t, result, "no share material may accompany a refusal")
 }
 
 func TestCeremonyService_CeremonySignCSR_NotInitialized(t *testing.T) {
@@ -472,8 +479,6 @@ func TestCeremonyService_CeremonyInitialize_MofN(t *testing.T) {
 	assert.NotEmpty(t, result.SPKIPin)
 	assert.NotEmpty(t, result.CACertPEM)
 	assert.NotEmpty(t, result.TLSCertPEM)
-	assert.NotEmpty(t, result.SOCertPEM)
-	assert.NotEmpty(t, result.SOKeyPEM)
 }
 
 func TestCeremonyService_MofN_BeginAndCompleteClaimCert(t *testing.T) {
@@ -551,15 +556,25 @@ func TestCeremonyService_MofN_BeginAndCompleteClaimCert(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestCeremonyService_MofN_ClaimShare(t *testing.T) {
-	type officerEntry struct {
-		key      *ecdsa.PrivateKey
-		username string
-	}
+// signCeremonyNonce signs nonce the way an officer's tooling does: ECDSA over
+// the SHA-256 digest of the raw nonce bytes, ASN.1 DER encoded.
+func signCeremonyNonce(t *testing.T, key *ecdsa.PrivateKey, nonce []byte) []byte {
+	t.Helper()
+	digest := sha256.Sum256(nonce)
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	require.NoError(t, err)
+	return sig
+}
 
-	entries := make([]officerEntry, 3)
+// mofnCeremonyOfficers builds a threshold-2 / 3-officer ceremony config and
+// returns it alongside the officer keys, in username order.
+func mofnCeremonyOfficers(t *testing.T) (*ceremony.CeremonyConfig, []*ecdsa.PrivateKey, []string) {
+	t.Helper()
+
+	keys := make([]*ecdsa.PrivateKey, 3)
+	usernames := make([]string, 3)
 	officers := make([]ceremony.OfficerConfig, 3)
-	for i := range entries {
+	for i := range keys {
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		require.NoError(t, err)
 
@@ -571,29 +586,189 @@ func TestCeremonyService_MofN_ClaimShare(t *testing.T) {
 		require.NoError(t, err)
 
 		csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-		entries[i] = officerEntry{key: key, username: username}
+		keys[i] = key
+		usernames[i] = username
 		officers[i] = ceremony.OfficerConfig{Username: username, CSRPEM: csrPEM}
 	}
 
-	config := &ceremony.CeremonyConfig{
+	return &ceremony.CeremonyConfig{
 		SOPin:     "test-so-pin",
 		UserPin:   "test-user-pin",
 		Hostname:  "localhost",
 		SANs:      []string{"localhost"},
 		Threshold: 2,
 		Officers:  officers,
-	}
+	}, keys, usernames
+}
 
+// claimOfficerCert runs the certificate claim handshake and returns the
+// thumbprint of the issued certificate — exactly what the officer's mTLS peer
+// certificate hashes to on the next request.
+func claimOfficerCert(t *testing.T, svc CeremonyServicer, username string, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	ctx := context.Background()
+
+	challenge, err := svc.CeremonyBeginClaimCert(ctx, username)
+	require.NoError(t, err)
+
+	nonce, err := hex.DecodeString(challenge.NonceHex)
+	require.NoError(t, err)
+
+	result, err := svc.CeremonyCompleteClaimCert(ctx, username, challenge.NonceHex, signCeremonyNonce(t, key, nonce))
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(result.CertPEM)
+	require.NotNil(t, block)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	return ceremony.CertThumbprint(cert.Raw)
+}
+
+// claimOfficerShare runs the two-round-trip share claim handshake.
+func claimOfficerShare(t *testing.T, svc CeremonyServicer, username string, key *ecdsa.PrivateKey, thumbprint string) (*CeremonyShareClaimResult, error) {
+	t.Helper()
+	ctx := context.Background()
+
+	challenge, err := svc.CeremonyBeginClaimShare(ctx, username, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	nonce, decErr := hex.DecodeString(challenge.NonceHex)
+	require.NoError(t, decErr)
+
+	return svc.CeremonyCompleteClaimShare(ctx, username, challenge.NonceHex, signCeremonyNonce(t, key, nonce), thumbprint)
+}
+
+func TestCeremonyService_MofN_ClaimShare(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
 	svc, ca := newTestCeremonyServiceWithConfig(t, config)
 	ctx := context.Background()
 
 	_, err := svc.CeremonyInitialize(ctx, ca, nil)
 	require.NoError(t, err)
 
-	// Claim share for the first officer.
-	share, err := svc.CeremonyClaimShare(ctx, entries[0].username)
+	thumb := claimOfficerCert(t, svc, usernames[0], keys[0])
+
+	result, err := claimOfficerShare(t, svc, usernames[0], keys[0], thumb)
 	require.NoError(t, err)
-	assert.NotEmpty(t, share, "share should not be empty")
+	assert.NotEmpty(t, result.ShareBytes, "share should not be empty")
+	assert.Equal(t, 1, result.ShareIndex)
+}
+
+// TestCeremonyService_MofN_ClaimShare_WrongOfficerCertRefused is the security
+// regression test for the username-only share release. officer2 names officer1
+// while presenting its own certificate; the service must refuse and must
+// return no share bytes at all.
+func TestCeremonyService_MofN_ClaimShare_WrongOfficerCertRefused(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
+	svc, ca := newTestCeremonyServiceWithConfig(t, config)
+	ctx := context.Background()
+
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	require.NoError(t, err)
+
+	victimThumb := claimOfficerCert(t, svc, usernames[0], keys[0])
+	attackerThumb := claimOfficerCert(t, svc, usernames[1], keys[1])
+	require.NotEqual(t, victimThumb, attackerThumb)
+
+	stolen, err := claimOfficerShare(t, svc, usernames[0], keys[1], attackerThumb)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ceremony.ErrCertThumbprintMismatch)
+	assert.Nil(t, stolen, "no share material may accompany a refusal")
+
+	// The victim's share is untouched and still claimable by the victim.
+	legit, err := claimOfficerShare(t, svc, usernames[0], keys[0], victimThumb)
+	require.NoError(t, err)
+	assert.NotEmpty(t, legit.ShareBytes)
+}
+
+// TestCeremonyService_MofN_ClaimShare_NoCertRefused proves an enrolled officer
+// presenting no certificate at all is refused with no share bytes.
+func TestCeremonyService_MofN_ClaimShare_NoCertRefused(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
+	svc, ca := newTestCeremonyServiceWithConfig(t, config)
+	ctx := context.Background()
+
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	require.NoError(t, err)
+
+	claimOfficerCert(t, svc, usernames[0], keys[0])
+
+	stolen, err := claimOfficerShare(t, svc, usernames[0], keys[0], "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ceremony.ErrCertThumbprintMismatch)
+	assert.Nil(t, stolen, "no share material may accompany a refusal")
+}
+
+// TestCeremonyService_MofN_ClaimShare_ReleasedOnce proves the share is handed
+// out exactly once even to the rightful officer.
+func TestCeremonyService_MofN_ClaimShare_ReleasedOnce(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
+	svc, ca := newTestCeremonyServiceWithConfig(t, config)
+	ctx := context.Background()
+
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	require.NoError(t, err)
+
+	thumb := claimOfficerCert(t, svc, usernames[0], keys[0])
+
+	first, err := claimOfficerShare(t, svc, usernames[0], keys[0], thumb)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.ShareBytes)
+
+	second, err := claimOfficerShare(t, svc, usernames[0], keys[0], thumb)
+	require.Error(t, err)
+	assert.Nil(t, second, "the share must never be released twice")
+}
+
+// TestCeremonyService_MofN_ClaimShare_NonceReplayRejected proves a nonce is
+// single-use.
+func TestCeremonyService_MofN_ClaimShare_NonceReplayRejected(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
+	svc, ca := newTestCeremonyServiceWithConfig(t, config)
+	ctx := context.Background()
+
+	_, err := svc.CeremonyInitialize(ctx, ca, nil)
+	require.NoError(t, err)
+
+	thumb := claimOfficerCert(t, svc, usernames[0], keys[0])
+
+	challenge, err := svc.CeremonyBeginClaimShare(ctx, usernames[0], thumb)
+	require.NoError(t, err)
+	nonce, err := hex.DecodeString(challenge.NonceHex)
+	require.NoError(t, err)
+	sig := signCeremonyNonce(t, keys[0], nonce)
+
+	_, err = svc.CeremonyCompleteClaimShare(ctx, usernames[0], challenge.NonceHex, sig, thumb)
+	require.NoError(t, err)
+
+	replayed, err := svc.CeremonyCompleteClaimShare(ctx, usernames[0], challenge.NonceHex, sig, thumb)
+	require.Error(t, err)
+	assert.Nil(t, replayed, "a replayed nonce must not release the share again")
+}
+
+// TestCeremonyService_MofN_CeremonyReachesOperational drives the whole M-of-N
+// ceremony through the strong claim flow and asserts it lands operational.
+func TestCeremonyService_MofN_CeremonyReachesOperational(t *testing.T) {
+	config, keys, usernames := mofnCeremonyOfficers(t)
+	svc, ca := newTestCeremonyServiceWithConfig(t, config)
+	ctx := context.Background()
+
+	initResult, err := svc.CeremonyInitialize(ctx, ca, nil)
+	require.NoError(t, err)
+	require.Equal(t, string(ceremony.StateEnrolling), initResult.State)
+
+	for i := range usernames {
+		thumb := claimOfficerCert(t, svc, usernames[i], keys[i])
+		result, claimErr := claimOfficerShare(t, svc, usernames[i], keys[i], thumb)
+		require.NoError(t, claimErr)
+		require.NotEmpty(t, result.ShareBytes)
+	}
+
+	status, err := svc.CeremonyStatus(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, string(ceremony.StateOperational), status.State)
 }
 
 func TestCeremonyService_CeremonyBeginClaimCert_EmptyUsername(t *testing.T) {

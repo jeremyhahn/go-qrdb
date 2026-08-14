@@ -48,3 +48,6 @@ const (
 // (SHA-256 over SubjectPublicKeyInfo, base64url). Consumers must not reimplement
 // it.
 var ComputeSPKIThumbprint = user.ComputeSPKIThumbprint
+
+// UserValidationError is returned when a user request fails validation.
+type UserValidationError = user.ValidationError

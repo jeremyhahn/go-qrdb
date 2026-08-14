@@ -16,6 +16,7 @@ package driver
 
 import (
 	"database/sql"
+	"reflect"
 	"strconv"
 )
 
@@ -70,6 +71,21 @@ func (e *BackendCreateError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *BackendCreateError) Unwrap() error {
 	return e.Err
+}
+
+// MissingServiceError is returned when a connector is constructed without a
+// service it cannot function without. It is reported at construction rather
+// than tolerated: a connector missing its registry degrades to a KV-only
+// database that fails every CREATE TABLE, which is far harder to diagnose
+// from the resulting error than from the missing argument itself.
+type MissingServiceError struct {
+	// Service names the missing dependency, e.g. "kv" or "registry".
+	Service string
+}
+
+// Error returns a human-readable description of the missing service.
+func (e *MissingServiceError) Error() string {
+	return "driver: connector requires a non-nil " + e.Service + " service"
 }
 
 // EngineInitError is returned when the SQL engine fails to initialize.
@@ -127,24 +143,44 @@ func (e *NetworkRequestError) Unwrap() error {
 	return e.Err
 }
 
-// ArgumentSubstitutionError is returned when a query argument cannot be substituted.
-type ArgumentSubstitutionError struct {
-	Index int
-	Err   error
+// UnsupportedArgumentTypeError is returned when a query argument has a Go type
+// the driver cannot bind. It is reported rather than coerced: a value bound as
+// the wrong type is a silently wrong query result, which is worse than a
+// failed one.
+type UnsupportedArgumentTypeError struct {
+	// Ordinal is the 1-based position of the offending argument.
+	Ordinal int
+
+	// Value is the argument that could not be bound.
+	Value any
 }
 
-// Error returns a human-readable description of the argument substitution failure.
-func (e *ArgumentSubstitutionError) Error() string {
-	msg := "driver: argument substitution failed at index " + strconv.Itoa(e.Index)
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
+// Error returns a human-readable description of the unbindable argument.
+func (e *UnsupportedArgumentTypeError) Error() string {
+	return "driver: cannot bind argument " + strconv.Itoa(e.Ordinal) +
+		" of type " + typeNameOf(e.Value)
+}
+
+// NamedParameterUnsupportedError is returned when a named parameter reaches
+// the driver. database/sql resolves sql.Named into positional arguments before
+// the driver is called, so a name arriving here means that resolution was
+// bypassed and the value cannot be positionally bound.
+type NamedParameterUnsupportedError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the unsupported named parameter.
+func (e *NamedParameterUnsupportedError) Error() string {
+	return "driver: named parameter " + strconv.Quote(e.Name) +
+		" is not supported; use positional ? placeholders"
+}
+
+// typeNameOf returns a readable Go type name for inclusion in error messages.
+func typeNameOf(v any) string {
+	if v == nil {
+		return "<nil>"
 	}
-	return msg
-}
-
-// Unwrap returns the underlying error for use with errors.Is and errors.As.
-func (e *ArgumentSubstitutionError) Unwrap() error {
-	return e.Err
+	return reflect.TypeOf(v).String()
 }
 
 // UnsupportedIsolationError is returned when an unsupported transaction
@@ -193,14 +229,69 @@ func (e *RowsClosedError) Error() string {
 	return "driver: rows are closed"
 }
 
-// NotEnoughArgumentsError is returned during positional argument substitution
-// when the query references more placeholders than the arguments supplied.
-type NotEnoughArgumentsError struct {
-	Expected int
-	Got      int
+// ParameterizedQueryUnsupportedError is returned when a query carrying bound
+// arguments is issued over a network connection.
+//
+// The REST and gRPC SQL surface accepts a statement and nothing else — it has
+// no field for arguments. The previous behaviour, splicing the values into the
+// SQL text, is exactly the injection surface this driver removed, so the
+// request is refused instead. Use an embedded connection, or qrdb's MySQL wire
+// protocol, when parameters are required.
+type ParameterizedQueryUnsupportedError struct {
+	Scheme string
+	Count  int
 }
 
-// Error returns a human-readable description of the argument-count shortfall.
-func (e *NotEnoughArgumentsError) Error() string {
-	return "not enough arguments: expected at least " + strconv.Itoa(e.Expected) + ", got " + strconv.Itoa(e.Got)
+// Error returns a human-readable description of the unsupported parameters.
+func (e *ParameterizedQueryUnsupportedError) Error() string {
+	return "driver: " + e.Scheme + " connections cannot bind query parameters (" +
+		strconv.Itoa(e.Count) + " supplied); the network SQL API accepts a statement only"
+}
+
+// ResultMetadataUnsupportedError is returned when a caller asks for result
+// metadata the connection's protocol does not carry.
+type ResultMetadataUnsupportedError struct {
+	Field string
+}
+
+// Error returns a human-readable description of the missing metadata.
+func (e *ResultMetadataUnsupportedError) Error() string {
+	return "driver: " + e.Field + " is not reported by the network SQL API"
+}
+
+// PrepareError is returned when the engine cannot prepare a statement.
+type PrepareError struct {
+	Query string
+	Err   error
+}
+
+// Error returns a human-readable description of the prepare failure.
+func (e *PrepareError) Error() string {
+	msg := "driver: failed to prepare query " + strconv.Quote(e.Query)
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *PrepareError) Unwrap() error {
+	return e.Err
+}
+
+// TransactionUnsupportedError is returned when a transaction is requested on a
+// connection whose transport cannot provide one.
+//
+// The REST and gRPC SQL API executes one statement per request with no session
+// affinity, so BEGIN has nothing to attach to. Returning a transaction handle
+// that discards COMMIT and ROLLBACK would make a rollback appear to succeed
+// while changing nothing, so the request is refused.
+type TransactionUnsupportedError struct {
+	Scheme string
+}
+
+// Error returns a human-readable description of the unsupported transaction.
+func (e *TransactionUnsupportedError) Error() string {
+	return "driver: " + e.Scheme + " connections do not support transactions; " +
+		"the network SQL API executes one statement per request"
 }

@@ -47,3 +47,29 @@ func (e *MkdirError) Error() string {
 func (e *MkdirError) Unwrap() error {
 	return e.Err
 }
+
+// TLSNotConfiguredError is returned by Start when no TLS configuration was
+// supplied via WithTLS. The Unix transport is TLS-only — the mTLS client
+// certificate is the identity the auth middleware authenticates against — so
+// Start fails closed rather than bind an unauthenticated plaintext listener.
+// The orchestrator (pkg/server) auto-provisions a certificate from the node's
+// CeremonyCA, so a normal deployment supplies a config and never triggers this.
+type TLSNotConfiguredError struct{}
+
+// Error returns a human-readable description.
+func (e *TLSNotConfiguredError) Error() string {
+	return "unix: no TLS configured; the Unix transport is TLS-only, call WithTLS with a TLS 1.3+ config"
+}
+
+// WeakTLSVersionError is returned by Start when WithTLS was given a
+// *tls.Config whose MinVersion is explicitly set below TLS 1.3. The Unix
+// transport requires TLS 1.3, the minimum version this codebase supports for
+// the client-certificate identity model the auth middleware relies on.
+type WeakTLSVersionError struct {
+	MinVersion uint16
+}
+
+// Error returns a human-readable description.
+func (e *WeakTLSVersionError) Error() string {
+	return "unix: TLS MinVersion " + tlsVersionName(e.MinVersion) + " is below the required TLS 1.3"
+}

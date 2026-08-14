@@ -19,23 +19,17 @@ import (
 	"strings"
 )
 
-// Supported DSN schemes.
+// DSN schemes built into this package. Additional schemes are contributed by
+// subpackages through RegisterScheme.
 const (
 	SchemeEmbedded = "embedded"
 	SchemeREST     = "rest"
 	SchemeGRPC     = "grpc"
 )
 
-// supportedSchemes is the set of recognized DSN schemes, used for O(1) lookup.
-var supportedSchemes = map[string]struct{}{
-	SchemeEmbedded: {},
-	SchemeREST:     {},
-	SchemeGRPC:     {},
-}
-
 // DSNConfig holds the parsed components of a driver DSN string.
 type DSNConfig struct {
-	// Scheme is the connection mode: "embedded", "rest", or "grpc".
+	// Scheme is the connection mode, e.g. "embedded", "rest", or "grpc".
 	Scheme string
 
 	// Host is the server address for network modes (e.g., "localhost:63001").
@@ -63,11 +57,25 @@ type DSNConfig struct {
 
 	// KeyFile is the path to the client key for mTLS in network mode.
 	KeyFile string
+
+	// Tenant scopes every statement on the connection to a tenant namespace.
+	// Empty means the session runs as the system tenant.
+	Tenant string
+
+	// User is the subject recorded on the session's identity. It is
+	// informational for embedded connections, which are not authenticated by
+	// the driver.
+	User string
+
+	// Location names the time zone used to render time.Time arguments as SQL
+	// datetime literals (an IANA name, or "Local"). Empty means UTC.
+	Location string
 }
 
-// ParseDSN parses a DSN string into a DSNConfig.
+// ParseDSN parses a DSN string into a DSNConfig, dispatching to the parser
+// the scheme was registered with (see RegisterScheme).
 //
-// Supported formats:
+// Formats served by the built-in schemes:
 //
 //	embedded://memory?database=mydb
 //	embedded:///path/to/data?backend=pebble&database=mydb&engine=kv
@@ -84,29 +92,27 @@ func ParseDSN(dsn string) (*DSNConfig, error) {
 	}
 
 	scheme := strings.ToLower(u.Scheme)
-	if _, ok := supportedSchemes[scheme]; !ok {
+	registered, ok := lookupScheme(scheme)
+	if !ok {
 		return nil, &UnsupportedSchemeError{Scheme: scheme}
 	}
 
 	cfg := &DSNConfig{Scheme: scheme}
-
-	parsers := map[string]func(*url.URL, *DSNConfig) error{
-		SchemeEmbedded: parseEmbeddedDSN,
-		SchemeREST:     parseNetworkDSN,
-		SchemeGRPC:     parseNetworkDSN,
-	}
-
-	if parse, ok := parsers[scheme]; ok {
-		if err := parse(u, cfg); err != nil {
-			return nil, &DSNParseError{DSN: dsn, Reason: err.Error()}
-		}
+	if err := registered.Parse(u, cfg); err != nil {
+		return nil, &DSNParseError{DSN: dsn, Reason: err.Error()}
 	}
 
 	return cfg, nil
 }
 
-// parseEmbeddedDSN extracts embedded-mode fields from the URL.
-func parseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
+// ParseEmbeddedDSN extracts in-process-mode fields (database, backend,
+// engine, data directory, tenant, user, location) from the URL.
+//
+// It is exported because it is the DSN grammar of an in-process connection,
+// not of one particular scheme: sdk/go/driver/node's "node" scheme accepts
+// exactly the same DSN and registers this function verbatim rather than
+// maintaining a second copy that could drift from it.
+func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	q := u.Query()
 	cfg.Database = q.Get("database")
 	if cfg.Database == "" {
@@ -115,6 +121,9 @@ func parseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 
 	cfg.Backend = q.Get("backend")
 	cfg.Engine = q.Get("engine")
+	cfg.Tenant = q.Get("tenant")
+	cfg.User = q.Get("user")
+	cfg.Location = q.Get("loc")
 
 	// The host component determines the backend when it is a known name
 	// (e.g., "memory"). Otherwise, the path is the data directory.

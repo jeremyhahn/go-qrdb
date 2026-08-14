@@ -350,7 +350,7 @@ func TestNewRootCmd_PersistentPreRunE_ValidationError_InvalidMode(t *testing.T) 
 	cmd.SetErr(&buf)
 	// Pass an invalid mode; PersistentPreRunE should fail at validate().
 	cmd.SetArgs([]string{"shell", "--mode=badmode", "--server=localhost:63003",
-		"--consistency=linearizable", "--write-mode=leader", "--chunk-size=256"})
+		"--consistency=linearizable", "--write-mode=sync", "--chunk-size=256"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute with invalid mode should return error")
@@ -367,7 +367,7 @@ func TestNewRootCmd_PersistentPreRunE_ValidationError_InvalidConsistency(t *test
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"shell", "--mode=client", "--server=localhost:63003",
-		"--consistency=bogus", "--write-mode=leader", "--chunk-size=256"})
+		"--consistency=bogus", "--write-mode=sync", "--chunk-size=256"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute with invalid consistency should return error")
@@ -390,7 +390,7 @@ func TestNewRootCmd_PersistentPreRunE_ClientMode_BuildClientFails(t *testing.T) 
 		"--server=localhost:63099", // valid for validate()
 		"--transport=grpc",
 		"--consistency=linearizable",
-		"--write-mode=leader",
+		"--write-mode=sync",
 		"--chunk-size=256",
 	})
 	// This will call buildClient which tries to connect; we expect an error.
@@ -406,7 +406,7 @@ func TestNewRootCmd_PersistentPreRunE_EmbeddedMode_NoConfigFile_Error(t *testing
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"shell", "--mode=embedded",
-		"--consistency=linearizable", "--write-mode=leader", "--chunk-size=256"})
+		"--consistency=linearizable", "--write-mode=sync", "--chunk-size=256"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute with embedded mode and no config should return error")
@@ -643,7 +643,7 @@ func TestNewRootCmd_PersistentPreRunE_ClientMode_Success(t *testing.T) {
 		"--server=localhost:63003",
 		"--transport=" + fakeTransport,
 		"--consistency=linearizable",
-		"--write-mode=leader",
+		"--write-mode=sync",
 		"--chunk-size=256",
 	}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)

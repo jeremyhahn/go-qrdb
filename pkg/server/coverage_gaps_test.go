@@ -76,35 +76,6 @@ func TestWithRaftBackendFactory_RESTOption_NonNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NamespacedImportUnsupportedError.Error
-// ---------------------------------------------------------------------------
-
-// TestNamespacedImportUnsupportedError_Error verifies the error message format.
-func TestNamespacedImportUnsupportedError_Error(t *testing.T) {
-	t.Parallel()
-	e := &NamespacedImportUnsupportedError{Prefix: "tenant1/mydb/"}
-	got := e.Error()
-	if got == "" {
-		t.Fatal("Error() must not return empty string")
-	}
-	expected := "server: bulk import into a namespaced database (tenant1/mydb/) is not supported"
-	if got != expected {
-		t.Errorf("Error() = %q, want %q", got, expected)
-	}
-}
-
-// TestNamespacedImportUnsupportedError_EmptyPrefix verifies that an empty
-// prefix is included correctly in the error message.
-func TestNamespacedImportUnsupportedError_EmptyPrefix(t *testing.T) {
-	t.Parallel()
-	e := &NamespacedImportUnsupportedError{Prefix: ""}
-	got := e.Error()
-	if got == "" {
-		t.Fatal("Error() must not return empty string")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // TenantHostRegistry — NewTenantHostRegistryFromServicer, Attach, Close
 // ---------------------------------------------------------------------------
 

@@ -96,7 +96,10 @@ func TestHandleSQLQuery_Success(t *testing.T) {
 
 func TestHandleSQLQuery_SelectSeededKVData(t *testing.T) {
 	kvSvc := newDefaultKVSvc()
-	prefix := tenant.TenantPrefix(tenant.SystemTenantID)
+	// The SQL data path is scoped to the composite "<tenant>/<db>/" namespace,
+	// identical to every other transport (pkg/tenant.ComposeNamespace) — the
+	// query names database "testdb" under the default system tenant.
+	prefix := tenant.ComposeNamespace(tenant.SystemTenantID, "testdb")
 	kvSvc.scanFn = func(_ context.Context, p string) (map[string][]byte, error) {
 		if p != prefix {
 			t.Fatalf("scan prefix = %q, want %q", p, prefix)

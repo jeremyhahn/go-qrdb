@@ -44,6 +44,17 @@ func (m *afMockKV) Put(_ context.Context, key string, val []byte) error {
 	return nil
 }
 
+// PutIfAbsent stores only when the key is absent, matching the real engines.
+// The map lookup is the same check they perform; this mock is single-threaded,
+// so it needs no further synchronisation.
+func (m *afMockKV) PutIfAbsent(_ context.Context, key string, val []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = val
+	return true, nil
+}
+
 func (m *afMockKV) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := m.store[key]
 	if !ok {

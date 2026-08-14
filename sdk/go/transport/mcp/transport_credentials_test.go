@@ -210,7 +210,7 @@ func TestCredentialSubmit_Success(t *testing.T) {
 
 	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
 		Name:  "db-password",
-		Value: "secret123",
+		Value: []byte("secret123"),
 	})
 	if err != nil {
 		t.Fatalf("CredentialSubmit: %v", err)
@@ -234,7 +234,7 @@ func TestCredentialSubmit_ServiceError(t *testing.T) {
 
 	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
 		Name:  "n",
-		Value: "v",
+		Value: []byte("v"),
 	})
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -262,7 +262,7 @@ func TestCredentialSubmit_Closed(t *testing.T) {
 	defer cleanup()
 
 	_ = tr.Close()
-	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "n", Value: "v"})
+	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "n", Value: []byte("v")})
 	if err == nil {
 		t.Fatal("expected error on closed transport")
 	}
@@ -437,7 +437,7 @@ func TestCredentialRotate_SuccessNoGrace(t *testing.T) {
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:     "db-password",
-		NewValue: "v2",
+		NewValue: []byte("v2"),
 	})
 	if err != nil {
 		t.Fatalf("CredentialRotate: %v", err)
@@ -472,7 +472,7 @@ func TestCredentialRotate_SuccessWithGrace(t *testing.T) {
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:               "db-password",
-		NewValue:           "v2",
+		NewValue:           []byte("v2"),
 		GracePeriodSeconds: 3600,
 	})
 	if err != nil {
@@ -497,7 +497,7 @@ func TestCredentialRotate_ServiceError(t *testing.T) {
 
 	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:     "n",
-		NewValue: "v",
+		NewValue: []byte("v"),
 	})
 	if err == nil {
 		t.Fatal("expected error from service")
@@ -525,7 +525,7 @@ func TestCredentialRotate_Closed(t *testing.T) {
 	defer cleanup()
 
 	_ = tr.Close()
-	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "n", NewValue: "v"})
+	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "n", NewValue: []byte("v")})
 	if err == nil {
 		t.Fatal("expected error on closed transport")
 	}
@@ -552,7 +552,7 @@ func TestCredentialRetrieveVersion_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialRetrieveVersion: %v", err)
 	}
-	if resp.Value != "specific-v2" {
+	if string(resp.Value) != "specific-v2" {
 		t.Errorf("value: got %q, want %q", resp.Value, "specific-v2")
 	}
 
@@ -780,5 +780,51 @@ func TestCredentialGCExpired_Closed(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Errorf("expected *transport.ClosedError, got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Binary (non-UTF-8) round-trip
+// ---------------------------------------------------------------------------
+
+// nonUTF8CredentialValue is a credential payload whose leading bytes
+// (0x00 0xff 0xfe 0x01) are invalid UTF-8. The MCP transport carries the value
+// as a base64 (RFC 4648) tool argument/result, so binary credential material
+// round-trips byte-for-byte through the SDK client end-to-end against a real
+// in-process MCP server.
+var nonUTF8CredentialValue = []byte{0x00, 0xff, 0xfe, 0x01, 'k', 'e', 'y'}
+
+// TestCredential_BinaryRoundTrip exercises both wire directions through the SDK
+// MCP client against an in-process server: CredentialSubmit base64-encodes the
+// value on send (the server base64-decodes it) and CredentialRetrieveVersion
+// base64-decodes the value on receive (the server base64-encodes it).
+func TestCredential_BinaryRoundTrip(t *testing.T) {
+	svc := newMockCredentialSvc()
+	svc.retrievedValue = nonUTF8CredentialValue
+	tr, cleanup := connectCredentialInProcess(t, svc)
+	defer cleanup()
+
+	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
+		Name:  "bin",
+		Value: nonUTF8CredentialValue,
+	}); err != nil {
+		t.Fatalf("CredentialSubmit: %v", err)
+	}
+	svc.mu.Lock()
+	got := append([]byte(nil), svc.lastSubmitValue...)
+	svc.mu.Unlock()
+	if string(got) != string(nonUTF8CredentialValue) {
+		t.Fatalf("server received submit value %#v, want %#v", got, nonUTF8CredentialValue)
+	}
+
+	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
+		Name:    "bin",
+		Version: 0,
+	})
+	if err != nil {
+		t.Fatalf("CredentialRetrieveVersion: %v", err)
+	}
+	if string(resp.Value) != string(nonUTF8CredentialValue) {
+		t.Errorf("round-tripped value = %#v, want %#v", resp.Value, nonUTF8CredentialValue)
 	}
 }

@@ -22,6 +22,18 @@ import "errors"
 // observes the watch ending with this error and may re-establish it.
 var ErrWatcherOverflow = errors.New("qrdb/watch: watcher event buffer overflow; consumer too slow")
 
+// ErrCompacted indicates a watch requested a start revision at or below the
+// store's compacted revision, so the intervening history is gone. The client's
+// remedy is a fresh range read followed by a watch from the current revision —
+// the same contract etcd surfaces as "mvcc: required revision has been
+// compacted".
+var ErrCompacted = errors.New("qrdb/watch: required start revision has been compacted")
+
+// ErrStartRevisionUnsupported indicates a watch requested a start revision on a
+// hub that has no history replayer attached (a non-MVCC store), so replay is
+// impossible.
+var ErrStartRevisionUnsupported = errors.New("qrdb/watch: start revision replay is not supported by this store")
+
 // HubClosedError is returned when an operation is attempted on a closed hub.
 type HubClosedError struct{}
 

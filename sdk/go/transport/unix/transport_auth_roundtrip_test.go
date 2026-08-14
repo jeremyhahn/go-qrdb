@@ -241,11 +241,12 @@ var _ cert.CertProvider = (*mockCertProvider)(nil)
 func startAuthServer(t *testing.T, opts ...unixserver.ServerOption) (*Transport, func()) {
 	t.Helper()
 	socketPath := tempSocketPath(t)
+	opts = append(opts, unixserver.WithTLS(testUnixServerTLS))
 	srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath, opts...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	tr, err := New(transport.WithAddress(socketPath))
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("New: %v", err)

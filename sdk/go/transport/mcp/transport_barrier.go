@@ -25,6 +25,24 @@ import (
 // Compile-time interface assertion.
 var _ transport.BarrierClient = (*Transport)(nil)
 
+// officerRegisterWireResponse mirrors the JSON shape
+// pkg/api/mcp/tools_barrier.go's handleBarrierOfficerRegister /
+// handleBarrierRecoveryOfficerRegister actually emit: cert_pem travels as
+// the plain PEM string (string(result.CertPEM) in a map), matching the REST
+// transport's identical convention (sdk/go/transport/rest/transport_barrier.go's
+// officerRegisterWireResponse: "cert_pem travels as a plain PEM string for
+// the other transports (byte marshaling would base64-encode it)"). Decoding
+// straight into transport.OfficerRegisterResponse (whose CertPEM field is
+// []byte, and therefore expects standard json base64 encoding per Go's
+// encoding/json convention for byte slices) fails with "illegal base64
+// data" on the very first officer registration, since the server never
+// base64-encodes the PEM text. This wire-shape struct plus the manual
+// []byte(...) conversion below restores parity with REST's handling.
+type officerRegisterWireResponse struct {
+	CertPEM    string `json:"cert_pem"`
+	ShareIndex int    `json:"share_index"`
+}
+
 // ---------------------------------------------------------------------------
 // BarrierClient implementation
 // ---------------------------------------------------------------------------
@@ -335,12 +353,15 @@ func (t *Transport) OfficerRegister(ctx context.Context, req *transport.OfficerR
 		return nil, &transport.RequestError{Method: "OfficerRegister", Err: err}
 	}
 
-	var resp transport.OfficerRegisterResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+	var wireResp officerRegisterWireResponse
+	if jsonErr := json.Unmarshal([]byte(text), &wireResp); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "OfficerRegister", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &resp, nil
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    []byte(wireResp.CertPEM),
+		ShareIndex: wireResp.ShareIndex,
+	}, nil
 }
 
 // OfficerList returns all enrolled Security Officers for the system barrier by
@@ -480,12 +501,15 @@ func (t *Transport) RecoveryOfficerRegister(ctx context.Context, req *transport.
 		return nil, &transport.RequestError{Method: "RecoveryOfficerRegister", Err: err}
 	}
 
-	var resp transport.OfficerRegisterResponse
-	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+	var wireResp officerRegisterWireResponse
+	if jsonErr := json.Unmarshal([]byte(text), &wireResp); jsonErr != nil {
 		return nil, &transport.RequestError{Method: "RecoveryOfficerRegister", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return &resp, nil
+	return &transport.OfficerRegisterResponse{
+		CertPEM:    []byte(wireResp.CertPEM),
+		ShareIndex: wireResp.ShareIndex,
+	}, nil
 }
 
 // RecoveryShareClaimBegin issues a challenge nonce to the named recovery

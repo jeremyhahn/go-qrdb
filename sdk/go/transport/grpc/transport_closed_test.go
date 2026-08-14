@@ -101,13 +101,10 @@ func TestGRPCExecuteBatch_AfterClose(t *testing.T) {
 	assertClosed(t, err)
 }
 
-func TestGRPCImportFile_NotImplemented(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
+func TestGRPCImportFile_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
 	_, err := tr.ImportFile(context.Background(), "csv", bytes.NewReader(nil), transport.ImportOptions{})
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T: %v", err, err)
-	}
+	assertClosed(t, err)
 }
 
 // ===========================================================================
@@ -351,6 +348,9 @@ func TestGRPCMVCC_AfterClose(t *testing.T) {
 	}
 	if _, err := tr.CurrentRevision(context.Background()); !errors.As(err, &ce) {
 		t.Errorf("CurrentRevision: %v", err)
+	}
+	if _, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1}); !errors.As(err, &ce) {
+		t.Errorf("RestoreToRevision: %v", err)
 	}
 }
 

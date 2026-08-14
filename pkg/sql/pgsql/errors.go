@@ -20,7 +20,10 @@
 // layer.
 package pgsql
 
-import "strconv"
+import (
+	"fmt"
+	"strconv"
+)
 
 // ServerStartError is returned when the PostgreSQL wire protocol server
 // fails to start.
@@ -128,4 +131,32 @@ func (e *TranslationError) Error() string {
 // Unwrap returns the underlying error.
 func (e *TranslationError) Unwrap() error {
 	return e.Err
+}
+
+// UnsupportedParameterTypeError is returned when a bind parameter decodes,
+// via its declared PostgreSQL OID, to a Go type that paramExpr has no
+// binding expression for. It should not occur for any OID
+// inferParamOIDs declares, since paramExpr covers all of them; it exists
+// as a defensive backstop so an unrecognized decoded value is reported
+// explicitly instead of guessed at.
+type UnsupportedParameterTypeError struct {
+	Value any
+}
+
+// Error returns a human-readable description.
+func (e *UnsupportedParameterTypeError) Error() string {
+	return fmt.Sprintf("sql/pgsql: unsupported parameter value type %T", e.Value)
+}
+
+// BarrierSealedError is returned when a PostgreSQL connection or query
+// is attempted while the storage barrier is sealed. The server is
+// fail-closed during the sealed window: only the unseal-flow endpoints
+// on the multi-protocol API surface accept requests until the barrier
+// is unsealed. It is delivered to clients with SQLSTATE 57P03
+// (cannot_connect_now).
+type BarrierSealedError struct{}
+
+// Error returns a human-readable description.
+func (e *BarrierSealedError) Error() string {
+	return "sql/pgsql: barrier sealed"
 }

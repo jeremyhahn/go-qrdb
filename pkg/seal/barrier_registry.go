@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -580,6 +581,57 @@ func containedTenantPath(root, tenantID string) (string, error) {
 	return joined, nil
 }
 
+// assertTenantStorePresent verifies a tenant's persisted barrier Pebble
+// directory exists and is non-empty before it is re-opened on the boot
+// re-attach path. A missing directory (dedicated mount not present) or an
+// existing-but-empty directory (mount present but never populated / wrong
+// path) both yield DataRootMountMissingError, so re-attach fails closed
+// instead of opening a fresh empty barrier over the missing store.
+func assertTenantStorePresent(tenantID, barrierPath string) error {
+	entries, err := os.ReadDir(barrierPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &DataRootMountMissingError{TenantID: tenantID, BarrierPath: barrierPath}
+		}
+		return &DataRootMountMissingError{TenantID: tenantID, BarrierPath: barrierPath, Err: err}
+	}
+	if len(entries) == 0 {
+		return &DataRootMountMissingError{TenantID: tenantID, BarrierPath: barrierPath}
+	}
+	return nil
+}
+
+// PoolBasePaths returns the local-filesystem base path of every candidate in
+// every configured volume pool. These are the roots under which pool-allocated
+// tenant DataRoots are realized ({poolBase}/{tenantID}); an operator-supplied
+// dedicated DataRoot must not overlap them, or a dedicated disk could nest
+// inside the pool and cause data-confusion. Returns an empty slice (nil error)
+// when no volume pool is configured, so callers can range over the result
+// unconditionally.
+func (r *BarrierRegistry) PoolBasePaths(ctx context.Context) ([]string, error) {
+	pool, _, _ := r.poolResources()
+	if pool == nil {
+		return nil, nil
+	}
+	pools, err := pool.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, p := range pools {
+		for _, cand := range p.Candidates {
+			accessor, ok := cand.(common.PathAccessor)
+			if !ok {
+				continue
+			}
+			if lp := accessor.LocalPath(); lp != "" {
+				out = append(out, lp)
+			}
+		}
+	}
+	return out, nil
+}
+
 // poolResources returns the configured volume-pool manager, default pool
 // name, and per-tenant Pebble registry under a read lock. It is the shared
 // accessor used by allocatePooledBackend and the IsolationVolume path.
@@ -745,9 +797,22 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 				slog.String("tenant", tenantID))
 			continue
 		}
-		if _, _, rerr := r.RegisterVolumeTenant(ctx, tenantID, rec.DataRoot, rec.AutoUnseal); rerr != nil {
+		if _, _, rerr := r.ReattachVolumeTenant(ctx, tenantID, rec.DataRoot, rec.AutoUnseal); rerr != nil {
 			if errors.Is(rerr, ErrTenantAlreadyExists) {
 				continue // registered concurrently
+			}
+			var mm *DataRootMountMissingError
+			if errors.As(rerr, &mm) {
+				// The dedicated disk/mount for this tenant is not present. Fail
+				// THIS tenant's restore closed (never open a fresh empty
+				// barrier) but do not crash the node; the reconciler retries on
+				// the next pass, by which point the operator may have mounted
+				// the volume.
+				r.logger.Error("registry: restore: tenant barrier store absent; dedicated mount likely not present — refusing fresh empty barrier",
+					slog.String("tenant", tenantID),
+					slog.String("data_root", rec.DataRoot),
+					slog.Any("error", rerr))
+				continue
 			}
 			r.logger.Warn("registry: restore: failed to register tenant",
 				slog.String("tenant", tenantID),
@@ -797,7 +862,35 @@ func (r *BarrierRegistry) RestoreVolumeTenants(ctx context.Context) error {
 // but NOT initialized or unsealed; the caller drives that (Initialize on create
 // for auto-unseal tenants, Unseal on re-attach; self-managed tenants are left
 // sealed for the tenant admin), mirroring the IsolationBarrier flow.
+//
+// RegisterVolumeTenant is the CREATE path: it never asserts the on-disk store
+// already exists, because both a pool-allocated tenant (dataRoot == "") and a
+// first-ever operator-pinned tenant (dataRoot supplied via CreateTenant's
+// WithDataRoot, whose directory may not exist yet) are legitimately fresh. The
+// boot RE-ATTACH path must instead REQUIRE the store to pre-exist; that is
+// ReattachVolumeTenant.
 func (r *BarrierRegistry) RegisterVolumeTenant(ctx context.Context, tenantID, dataRoot string, autoUnseal bool) (string, *TenantBarrier, error) {
+	return r.registerVolumeTenant(ctx, tenantID, dataRoot, autoUnseal, false)
+}
+
+// ReattachVolumeTenant re-registers an EXISTING IsolationVolume / IsolationRaft
+// tenant barrier at a persisted DataRoot during boot. It is identical to
+// RegisterVolumeTenant except that it REQUIRES the tenant's on-disk barrier
+// store to already be present: the DataRoot record was written on a prior run,
+// so {dataRoot}/barrier MUST exist. When it is absent — typically because the
+// operator's dedicated disk/mount is not mounted at boot — it returns
+// DataRootMountMissingError instead of letting perTenantReg.Open create a
+// fresh, empty barrier on the underlying root filesystem (a fail-open
+// availability and data-confusion hazard). dataRoot must be non-empty.
+func (r *BarrierRegistry) ReattachVolumeTenant(ctx context.Context, tenantID, dataRoot string, autoUnseal bool) (string, *TenantBarrier, error) {
+	return r.registerVolumeTenant(ctx, tenantID, dataRoot, autoUnseal, true)
+}
+
+// registerVolumeTenant is the shared implementation of RegisterVolumeTenant
+// (mustExist=false) and ReattachVolumeTenant (mustExist=true). When mustExist
+// is true the tenant's persisted barrier store must already be present on disk
+// before it is opened; see ReattachVolumeTenant.
+func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID, dataRoot string, autoUnseal, mustExist bool) (string, *TenantBarrier, error) {
 	if tenantID == "" {
 		return "", nil, ErrEmptyTenantID
 	}
@@ -828,6 +921,15 @@ func (r *BarrierRegistry) RegisterVolumeTenant(ctx context.Context, tenantID, da
 	}
 
 	barrierPath := filepath.Join(dataRoot, "barrier")
+	// Re-attach must not silently mint a fresh barrier when the dedicated mount
+	// is absent: the store was created on a prior run, so it MUST already be
+	// present. Assert BEFORE perTenantReg.Open (which would otherwise create an
+	// empty Pebble at the missing path).
+	if mustExist {
+		if err := assertTenantStorePresent(tenantID, barrierPath); err != nil {
+			return "", nil, err
+		}
+	}
 	storage, err := perTenantReg.Open(ctx, tenantID, barrierPath)
 	if err != nil {
 		return "", nil, err

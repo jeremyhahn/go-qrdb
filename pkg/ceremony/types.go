@@ -218,12 +218,6 @@ type InitResult struct {
 	// TLSCertPEM is the PEM-encoded TLS certificate issued for the server.
 	TLSCertPEM []byte
 
-	// SOCertPEM is the PEM-encoded Security Officer certificate.
-	SOCertPEM []byte
-
-	// SOKeyPEM is the PEM-encoded Security Officer private key.
-	SOKeyPEM []byte
-
 	// State is the ceremony state after initialization.
 	State CeremonyState
 

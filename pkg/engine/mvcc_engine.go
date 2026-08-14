@@ -41,7 +41,9 @@ import (
 
 // internalPrefixes lists key prefixes used by internal subsystems (e.g.
 // roles, users, indexes) that should be excluded from user-facing key lists.
-var internalPrefixes = []string{"__sys:", "ts:", "idx:metric:", "idx:tag:", "retention:"}
+// The canonical declaration lives in pkg/service; this is a view of it, not a
+// second copy, so a prefix added there is honoured here automatically.
+var internalPrefixes = service.InternalKeyPrefixes()
 
 // Notification captures a single change event for delivery to the watch hub
 // after the storage batch is committed.
@@ -135,6 +137,11 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 	}
 	for _, opt := range opts {
 		opt(e)
+	}
+	// Attach the revision-index replayer so watches created with a start
+	// revision replay durable history before switching to live delivery.
+	if e.hub != nil {
+		e.hub.SetHistory(newMVCCHistoryAdapter(e.store))
 	}
 	e.updateHandlers = e.buildUpdateHandlers()
 	return e, nil
@@ -244,6 +251,8 @@ func (e *MVCCEngine) DeliverNotifications(notifications []Notification) {
 //   - service.MVCCGetAtRevisionQuery: returns *service.KeyValue at a historical revision
 //   - service.MVCCRangeQuery: returns *service.MVCCRangeResult with key-values and revision
 //   - service.MVCCRevisionQuery: returns int64 current revision
+//   - service.MVCCScanChangesQuery: returns *service.MVCCScanChangesResult with
+//     the distinct keys mutated in a revision window, including deleted ones
 //   - service.LeaseTimeToLiveQuery: returns *lease.Lease
 //   - service.LeasesQuery: returns []*lease.Lease
 //   - service.IndexQueryRequest: returns []uint64 matching entity IDs
@@ -280,14 +289,20 @@ func (e *MVCCEngine) Lookup(_ context.Context, query interface{}) (interface{}, 
 		if q.KeysOnly {
 			opts = append(opts, service.WithKeysOnly())
 		}
-		kvs, rev, err := e.store.Range(q.Start, q.End, opts...)
+		if q.SortOrder != service.SortNone || q.SortTarget != service.SortByKey {
+			opts = append(opts, service.WithSort(q.SortOrder, q.SortTarget))
+		}
+		kvs, count, rev, err := e.store.Range(q.Start, q.End, opts...)
 		if err != nil {
 			return nil, err
 		}
-		return &service.MVCCRangeResult{KeyValues: kvs, Revision: rev}, nil
+		return &service.MVCCRangeResult{KeyValues: kvs, Count: count, Revision: rev}, nil
 
 	case service.MVCCRevisionQuery:
 		return e.store.CurrentRevision(), nil
+
+	case service.MVCCScanChangesQuery:
+		return e.scanChanges(q)
 
 	case service.LeaseTimeToLiveQuery:
 		if e.lessor == nil {
@@ -499,23 +514,25 @@ func (e *MVCCEngine) Close(_ context.Context) error {
 // buildUpdateHandlers constructs the op code to handler dispatch map.
 func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 	return map[byte]mvccHandler{
-		kv.OpPut:                  e.handleBaseKVPut,
-		kv.OpDelete:               e.handleBaseKVDelete,
-		protocol.OpMVCCPut:        e.handleMVCCPut,
-		protocol.OpMVCCDelete:     e.handleMVCCDelete,
-		protocol.OpMVCCCompact:    handleMVCCCompact,
-		protocol.OpTransaction:    e.handleTransaction,
-		protocol.OpBatch:          e.handleBatch,
-		protocol.OpLeaseGrant:     handleLeaseGrant,
-		protocol.OpLeaseRevoke:    handleLeaseRevoke,
-		protocol.OpLeaseKeepAlive: handleLeaseKeepAlive,
-		protocol.OpIndexCreate:    e.handleIndexCreate,
-		protocol.OpIndexDrop:      e.handleIndexDrop,
-		protocol.OpTSWrite:        e.handleTSWrite,
-		protocol.OpTSWriteBatch:   e.handleTSWriteBatch,
-		protocol.OpTSWritePoint:   e.handleTSWritePoint,
-		protocol.OpTSDeleteSeries: e.handleTSDeleteSeries,
-		protocol.OpTSSetRetention: e.handleTSSetRetention,
+		kv.OpPut:                   e.handleBaseKVPut,
+		kv.OpPutIfAbsent:           e.handleBaseKVPutIfAbsent,
+		kv.OpDelete:                e.handleBaseKVDelete,
+		protocol.OpMVCCPut:         e.handleMVCCPut,
+		protocol.OpMVCCPutIfAbsent: e.handleMVCCPutIfAbsent,
+		protocol.OpMVCCDelete:      e.handleMVCCDelete,
+		protocol.OpMVCCCompact:     handleMVCCCompact,
+		protocol.OpTransaction:     e.handleTransaction,
+		protocol.OpBatch:           e.handleBatch,
+		protocol.OpLeaseGrant:      handleLeaseGrant,
+		protocol.OpLeaseRevoke:     handleLeaseRevoke,
+		protocol.OpLeaseKeepAlive:  handleLeaseKeepAlive,
+		protocol.OpIndexCreate:     e.handleIndexCreate,
+		protocol.OpIndexDrop:       e.handleIndexDrop,
+		protocol.OpTSWrite:         e.handleTSWrite,
+		protocol.OpTSWriteBatch:    e.handleTSWriteBatch,
+		protocol.OpTSWritePoint:    e.handleTSWritePoint,
+		protocol.OpTSDeleteSeries:  e.handleTSDeleteSeries,
+		protocol.OpTSSetRetention:  e.handleTSSetRetention,
 	}
 }
 
@@ -577,21 +594,31 @@ func deleteKeysFromOps(ops []protocol.DecodedOp) [][]byte {
 // Base KV handlers
 // ---------------------------------------------------------------------------
 
+// decodeBaseKVPut splits a base KV put payload, [keyLen:2 LE][key][value],
+// into its key and value. kv.OpPut and kv.OpPutIfAbsent share this shape
+// exactly (see kv.EncodePutIfAbsent) -- only the opcode and the guard differ --
+// so both handlers decode through here.
+func decodeBaseKVPut(payload []byte) (key, value []byte, err error) {
+	if len(payload) < 2 {
+		return nil, nil, &protocol.InvalidCommandError{Reason: "base kv put: payload too short"}
+	}
+	keyLen := binary.LittleEndian.Uint16(payload[0:2])
+	if int(keyLen)+2 > len(payload) {
+		return nil, nil, &protocol.InvalidCommandError{Reason: "base kv put: key length exceeds payload"}
+	}
+	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
+}
+
 // handleBaseKVPut processes a base KV Put command (kv.OpPut) by decoding the
 // simple [keyLen:2 LE][key][value] payload and delegating to the MVCC store
 // with leaseID=0. After writing, registered secondary indexes are updated.
 func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	if len(payload) < 2 {
-		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "base kv put: payload too short"}
+	key, value, err := decodeBaseKVPut(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
 	}
-	keyLen := binary.LittleEndian.Uint16(payload[0:2])
-	if int(keyLen)+2 > len(payload) {
-		return sm.Result{}, nil, &protocol.InvalidCommandError{Reason: "base kv put: key length exceeds payload"}
-	}
-	key := payload[2 : 2+keyLen]
-	value := payload[2+keyLen:]
 
-	prevKv, _ := s.Get(key)
+	prevKv, _ := s.GetInBatch(batch, key)
 
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
@@ -622,6 +649,79 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 		PrevKV:    prevKv,
 	}}
 	return sm.Result{Value: uint64(kvResult.ModRevision)}, notifs, nil
+}
+
+// handleBaseKVPutIfAbsent processes a base KV conditional put
+// (kv.OpPutIfAbsent), storing only when the key is absent.
+//
+// The existence check runs here, inside the apply path, against the state this
+// replica has applied up to this entry's log position -- the same input on
+// every replica producing the same decision. Checking on the proposer and then
+// proposing a plain Put would be a different operation, with a window in which
+// two proposers both observe "absent" and both write.
+//
+// A declined write is a normal outcome reported through Result.Value
+// (kv.ResultNotStored), never an error: the caller that lost the race got a
+// correct answer, and an error here would stall consensus instead.
+//
+// It mirrors PebbleStateMachine's pebbleHandlePutIfAbsent, which is where this
+// opcode's semantics are defined; without a handler here, every conditional
+// write against an MVCC-engine-backed store -- including the metadata write
+// service.TableService.CreateTable performs, and therefore every CREATE TABLE --
+// failed the whole proposal with protocol.UnknownOpError.
+func (e *MVCCEngine) handleBaseKVPutIfAbsent(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	key, value, err := decodeBaseKVPut(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if _, getErr := s.GetInBatch(batch, key); getErr == nil {
+		return sm.Result{Value: kv.ResultNotStored}, nil, nil
+	}
+	return e.putIfAbsentInBatch(s, nil, batch, key, value, 0)
+}
+
+// putIfAbsentInBatch performs the write half of a conditional put whose
+// absence guard has already passed, shared by the base-KV and MVCC opcodes:
+// it pre-validates unique indexes, updates them, writes the value at a fresh
+// revision, attaches any lease, and returns the resulting PUT notification.
+//
+// The returned Result carries kv.ResultStored on success, or the non-fatal
+// application-error result of a unique-index violation (no state written) --
+// which the caller returns verbatim, exactly as the unconditional put handlers
+// do with theirs.
+func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, key, value []byte, leaseID int64) (sm.Result, []Notification, error) {
+	// Read-only pre-check: reject a unique-index violation as a non-fatal
+	// application error (no state written) rather than letting idx.Put return a
+	// fatal error from the apply path, which would stall consensus.
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+		if res, handled, err := asAppErrResult(verr); handled {
+			return res, nil, err
+		}
+		return sm.Result{}, nil, verr
+	}
+
+	// The guard established the key is absent, so there is no previous value
+	// for the index update to retire, and none to report on the notification.
+	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, nil); err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	kvResult, err := s.PutInBatch(batch, key, value, leaseID, s.CurrentRevision()+1)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+	s.SetRevision(kvResult.ModRevision)
+
+	if lr != nil && leaseID > 0 {
+		lr.AttachKey(leaseID, key)
+	}
+
+	return sm.Result{Value: kv.ResultStored}, []Notification{{
+		EventType: service.EventPut,
+		Key:       key,
+		KV:        kvResult,
+	}}, nil
 }
 
 // handleBaseKVDelete processes a base KV Delete command (kv.OpDelete) by
@@ -679,7 +779,7 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 		return sm.Result{}, nil, err
 	}
 
-	prevKv, _ := s.Get(key)
+	prevKv, _ := s.GetInBatch(batch, key)
 
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
@@ -715,6 +815,25 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	}}
 
 	return sm.Result{Value: uint64(kvResult.ModRevision)}, notifs, nil
+}
+
+// handleMVCCPutIfAbsent processes an MVCC conditional put
+// (protocol.OpMVCCPutIfAbsent), storing only when the key is absent.
+//
+// It shares protocol.DecodeMVCCPut with the unconditional handler because the
+// payload shape is identical; only the opcode and the guard differ. See
+// handleBaseKVPutIfAbsent for why the guard must run here, in the apply path,
+// and why a declined write is a result rather than an error.
+func (e *MVCCEngine) handleMVCCPutIfAbsent(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if _, getErr := s.GetInBatch(batch, key); getErr == nil {
+		return sm.Result{Value: kv.ResultNotStored}, nil, nil
+	}
+	return e.putIfAbsentInBatch(s, lr, batch, key, value, leaseID)
 }
 
 // handleMVCCDelete processes an MVCC Delete command. Allocates a new revision
@@ -755,16 +874,17 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 	return sm.Result{Value: uint64(rev)}, notifs, nil
 }
 
-// handleMVCCCompact processes an MVCC Compact command. Compaction runs
-// directly on the store (not in the batch) since it manages its own
-// iteration and deletion.
-func handleMVCCCompact(s *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+// handleMVCCCompact processes an MVCC Compact command. The compaction is
+// queued into the apply batch: it must see the revisions earlier entries in
+// the same batch wrote, and it must become durable in the same commit as they
+// do rather than one step ahead of them.
+func handleMVCCCompact(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	revision, err := protocol.DecodeMVCCCompact(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
 
-	if err := s.Compact(revision); err != nil {
+	if err := s.CompactInBatch(batch, revision); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -787,7 +907,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	succeeded := true
 	for _, dc := range txn.Compares {
 		cmp := decodedCompareToService(dc)
-		kvResult, _ := s.Get(cmp.Key)
+		kvResult, _ := s.GetInBatch(batch, cmp.Key)
 		if !mvcc.Evaluate(&cmp, kvResult) {
 			succeeded = false
 			break
@@ -887,7 +1007,7 @@ func decodedCompareToService(dc protocol.DecodedCompare) service.Compare {
 func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, op protocol.DecodedOp, rev int64) ([]Notification, error) {
 	switch op.Type {
 	case protocol.OpMVCCPut:
-		prevKv, _ := s.Get(op.Key)
+		prevKv, _ := s.GetInBatch(batch, op.Key)
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
 		if err := UpdateIndexes(e.indexes, e.indexFields, op.Key, op.Value, prevKv); err != nil {
@@ -1051,7 +1171,7 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 // handleIndexCreate creates a new secondary index. When a pebbleDB instance
 // is available, the index is backed by PebbleDB. Otherwise, an in-memory
 // index is used. After creation, existing data is backfilled into the index.
-func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	name, fieldName, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
@@ -1088,16 +1208,28 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, _ sto
 		idx = index.NewMemoryIndex(name, unique)
 	}
 
+	e.indexMu.Unlock()
+
+	// Backfill BEFORE publishing the index into e.indexes/e.indexFields, so a
+	// concurrent Lookup (which only takes indexMu.RLock() to fetch the *index.Index
+	// reference, then reads it unlocked) can never observe a partially-populated
+	// index. Update() entries are applied strictly sequentially by the single
+	// Raft apply goroutine, so no concurrent write can race this handler for the
+	// same index name; only concurrent reads via Lookup are possible, and those
+	// are safe once the index is only made visible in its fully-backfilled state.
+	// The backfill scan reads through the apply batch so the index includes the
+	// keys written by earlier entries of the same batch. Scanning committed
+	// storage would make the index's contents depend on how the apply loop
+	// happened to group the log.
+	BackfillIndex(func() ([]*service.KeyValue, error) {
+		kvs, _, _, err := store.RangeInBatch(batch, []byte{0x00}, []byte{0xFF})
+		return kvs, err
+	}, idx, fieldName)
+
+	e.indexMu.Lock()
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
 	e.indexMu.Unlock()
-
-	// Backfill: scan all existing keys and index values that contain
-	// the target field.
-	BackfillIndex(func() ([]*service.KeyValue, error) {
-		kvs, _, err := store.Range([]byte{0x00}, []byte{0xFF})
-		return kvs, err
-	}, idx, fieldName)
 
 	return sm.Result{Value: 1}, nil, nil
 }
@@ -1279,14 +1411,59 @@ func tsTimestampFromNano(ns int64) time.Time {
 	return time.Unix(0, ns)
 }
 
-// isInternalKey reports whether k starts with any internal prefix.
+// isInternalKey reports whether k starts with any internal prefix. It
+// delegates to the canonical predicate in pkg/service so this package and
+// every other layer decide the question identically.
 func isInternalKey(k string) bool {
-	for _, p := range internalPrefixes {
-		if strings.HasPrefix(k, p) {
+	return service.IsInternalKey(k)
+}
+
+// scanChanges returns the distinct keys mutated in the query's inclusive
+// revision window, restricted to the query's prefix and sorted ascending.
+//
+// A key mutated several times in the window appears once: the caller wants the
+// SET of affected keys, not the change log. Values are not returned (see
+// service.MVCCScanChangesQuery).
+//
+// No internal-key filtering happens here, matching the MVCCRangeQuery path,
+// which likewise returns whatever the requested range contains. The internal
+// namespace is excluded by the caller that needs it excluded — for selective
+// restore that is service.MVCCKVService, where the refusal is a security
+// guard with its own tests, rather than a property a general-purpose query
+// silently imposes on every future consumer.
+//
+// mvcc.Store.ScanChanges fails closed with a *mvcc.RevisionCompactedError when
+// a change's data entry has been compacted out from under the scan; that error
+// is propagated unchanged so the caller cannot mistake a truncated history for
+// a complete one.
+func (e *MVCCEngine) scanChanges(q service.MVCCScanChangesQuery) (*service.MVCCScanChangesResult, error) {
+	result := &service.MVCCScanChangesResult{Revision: e.store.CurrentRevision()}
+
+	prefix := string(q.Prefix)
+	seen := make(map[string]struct{})
+
+	err := e.store.ScanChanges(q.StartRevision, q.EndRevision, func(ch mvcc.Change) bool {
+		key := string(ch.Key)
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
 			return true
 		}
+		if _, dup := seen[key]; dup {
+			return true
+		}
+		if q.Limit > 0 && int64(len(result.Keys)) >= q.Limit {
+			result.Truncated = true
+			return false
+		}
+		seen[key] = struct{}{}
+		result.Keys = append(result.Keys, key)
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
-	return false
+
+	sort.Strings(result.Keys)
+	return result, nil
 }
 
 // Compile-time assertion.

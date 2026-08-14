@@ -381,8 +381,10 @@ func TestMVCCStateMachine_UnknownOpCode(t *testing.T) {
 func TestMVCCStateMachine_UnknownOpCodeDifferentValue(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	// Use another unknown op code (e.g., 0x04).
-	cmd := []byte{0x04, 0x00}
+	// Use another unknown op code (e.g., 0xFD). It deliberately is NOT 0x04:
+	// that is kv.OpPutIfAbsent, which this state machine now applies (see
+	// TestMVCCStateMachine_PutIfAbsent below).
+	cmd := []byte{0xFD, 0x00}
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -392,6 +394,84 @@ func TestMVCCStateMachine_UnknownOpCodeDifferentValue(t *testing.T) {
 	var uoe *protocol.UnknownOpError
 	if !errors.As(err, &uoe) {
 		t.Fatalf("expected *UnknownOpError, got %T: %v", err, err)
+	}
+}
+
+// TestMVCCStateMachine_PutIfAbsent pins that the MVCC state machine applies
+// the base KV conditional put: it stores when the key is absent and declines
+// -- reporting kv.ResultNotStored rather than an error, so consensus is never
+// stalled -- when it is present.
+//
+// Before this handler existed, op code 0x04 fell through to
+// protocol.UnknownOpError, which failed the whole proposal. That broke every
+// caller of service.KVServicer.PutIfAbsent on an MVCC-engine-backed store,
+// including service.TableService.CreateTable and therefore every CREATE TABLE.
+func TestMVCCStateMachine_PutIfAbsent(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+
+	first, err := kv.EncodePutIfAbsent([]byte("cond"), []byte("one"))
+	if err != nil {
+		t.Fatalf("EncodePutIfAbsent: %v", err)
+	}
+	results := make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: first}}, results); err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	if results[0].Value != kv.ResultStored {
+		t.Fatalf("first result = %d, want ResultStored (%d)", results[0].Value, kv.ResultStored)
+	}
+
+	second, err := kv.EncodePutIfAbsent([]byte("cond"), []byte("two"))
+	if err != nil {
+		t.Fatalf("EncodePutIfAbsent: %v", err)
+	}
+	results = make([]sm.Result, 1)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: second}}, results); err != nil {
+		t.Fatalf("second Update must not error on a declined conditional write: %v", err)
+	}
+	if results[0].Value != kv.ResultNotStored {
+		t.Errorf("second result = %d, want ResultNotStored (%d)", results[0].Value, kv.ResultNotStored)
+	}
+
+	got, err := s.engine.Store().Get([]byte("cond"))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got.Value) != "one" {
+		t.Errorf("value = %q, want %q (the declined write must not have overwritten it)", got.Value, "one")
+	}
+}
+
+// TestMVCCStateMachine_MVCCPutIfAbsent pins the MVCC-flavoured conditional put
+// (protocol.OpMVCCPutIfAbsent), which service.MVCCKVService.PutIfAbsent
+// proposes.
+func TestMVCCStateMachine_MVCCPutIfAbsent(t *testing.T) {
+	s := newTestMVCCStateMachine(t)
+
+	results := make([]sm.Result, 1)
+	cmd := protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("one"), 0)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	if results[0].Value != kv.ResultStored {
+		t.Fatalf("first result = %d, want ResultStored (%d)", results[0].Value, kv.ResultStored)
+	}
+
+	results = make([]sm.Result, 1)
+	cmd = protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("two"), 0)
+	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: cmd}}, results); err != nil {
+		t.Fatalf("second Update must not error on a declined conditional write: %v", err)
+	}
+	if results[0].Value != kv.ResultNotStored {
+		t.Errorf("second result = %d, want ResultNotStored (%d)", results[0].Value, kv.ResultNotStored)
+	}
+
+	got, err := s.engine.Store().Get([]byte("mcond"))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got.Value) != "one" {
+		t.Errorf("value = %q, want %q", got.Value, "one")
 	}
 }
 

@@ -73,6 +73,12 @@ func (r *recordingRegistry) TransactionService(t, db string) (service.Transactio
 func (r *recordingRegistry) BatchService(t, db string) (service.BatchServicer, error) {
 	return nil, r.err
 }
+func (r *recordingRegistry) TableService(t, db string) (service.TableServicer, error) {
+	return nil, r.err
+}
+func (r *recordingRegistry) SequenceService(t, db string) (service.SequenceServicer, error) {
+	return nil, r.err
+}
 
 func TestDatabaseScopeUnaryInterceptor_DefaultWhenAbsent(t *testing.T) {
 	var got string

@@ -321,7 +321,7 @@ func (s *kvTenantService) UpdateEntitlements(ctx context.Context, tenantID strin
 // defaults, so nil entitlements fall back to the conservative built-in
 // defaults (prefix-only). Implements quota.EntitlementChecker.
 func (s *kvTenantService) CheckIsolation(ctx context.Context, tenantID, mode string) error {
-	if tenantID == SystemTenantID {
+	if IsSystemTenant(tenantID) {
 		return nil
 	}
 	ents, err := s.effectiveEntitlements(ctx, tenantID)
@@ -338,7 +338,7 @@ func (s *kvTenantService) CheckIsolation(ctx context.Context, tenantID, mode str
 // *quota.EntitlementError otherwise. The system tenant is implicitly entitled
 // to every feature. Implements quota.EntitlementChecker.
 func (s *kvTenantService) CheckFeature(ctx context.Context, tenantID, feature string) error {
-	if tenantID == SystemTenantID {
+	if IsSystemTenant(tenantID) {
 		return nil
 	}
 	ents, err := s.effectiveEntitlements(ctx, tenantID)
@@ -356,7 +356,7 @@ func (s *kvTenantService) CheckFeature(ctx context.Context, tenantID, feature st
 // gated by the tenant's SystemBarrierQuota (0 ⇒ unavailable); every other
 // (dedicated) mode is gated by AllowedBarrierModes. The system tenant is exempt.
 func (s *kvTenantService) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
-	if tenantID == SystemTenantID {
+	if IsSystemTenant(tenantID) {
 		return nil
 	}
 	if mode == seal.StrategySystemBarrier {

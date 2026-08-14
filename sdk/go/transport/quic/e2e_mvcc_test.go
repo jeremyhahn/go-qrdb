@@ -16,7 +16,10 @@ package quic
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
@@ -124,6 +127,68 @@ func TestE2E_CurrentRevision_HappyPath(t *testing.T) {
 	}
 }
 
+func TestE2E_RestoreToRevision_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("mvcc.RestoreToRevision", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.RestoreRevisionResponse{
+			Revision: 5,
+			Changes: []*pb.RestoreKeyChange{
+				{Key: []byte("a"), Action: pb.RestoreAction_RESTORE_ACTION_REVERT, FromRevision: 9, ToRevision: 5, ValueBytes: 3},
+			},
+			Applied: 1,
+		})
+	})
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result.Revision != 5 || result.Applied != 1 {
+		t.Fatalf("RestoreToRevision result = %+v", result)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "a" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+}
+
+// TestE2E_RestoreToRevision_BinaryRoundTrip proves an arbitrary byte-valued
+// prefix and key round-trip byte-for-byte through the QUIC wire protocol's
+// proto `bytes` encoding, in both directions.
+func TestE2E_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryPrefix := []byte{0x00, 0xff, 0xfe, 'p'}
+	binaryRespKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("mvcc.RestoreToRevision", func(payload []byte) (uint16, []byte) {
+		var req pb.RestoreRevisionRequest
+		if err := proto.Unmarshal(payload, &req); err != nil {
+			t.Fatalf("server failed to unmarshal request: %v", err)
+		}
+		if string(req.GetPrefix()) != string(binaryPrefix) {
+			t.Fatalf("server received prefix %v, want %v", req.GetPrefix(), binaryPrefix)
+		}
+		return wire.StatusOK, mustMarshal(&pb.RestoreRevisionResponse{
+			Revision: 5,
+			Changes: []*pb.RestoreKeyChange{
+				{Key: binaryRespKey, Action: pb.RestoreAction_RESTORE_ACTION_DELETE},
+			},
+		})
+	})
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   binaryPrefix,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != string(binaryRespKey) {
+		t.Fatalf("expected round-tripped binary response key %v, got %+v", binaryRespKey, result.Changes)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Transaction
 // ---------------------------------------------------------------------------
@@ -178,6 +243,54 @@ func TestE2E_ExecuteBatch_HappyPath(t *testing.T) {
 	}
 	if len(resp.Responses) != 1 {
 		t.Fatalf("Responses = %+v", resp)
+	}
+}
+
+func TestE2E_ImportFile_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("batch.Import", func(req []byte) (uint16, []byte) {
+		var pbReq pb.BatchImportRequest
+		if err := proto.Unmarshal(req, &pbReq); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if string(pbReq.GetFile()) != "id,val\n1,a\n" {
+			t.Errorf("file = %q", pbReq.GetFile())
+		}
+		if pbReq.GetFormat() != "csv" || pbReq.GetKeyField() != "id" {
+			t.Errorf("request = %+v", &pbReq)
+		}
+		return wire.StatusOK, mustMarshal(&pb.BatchImportResponse{
+			Total:     1,
+			Succeeded: 1,
+			Errors: []*pb.BatchImportError{
+				{Row: 2, Key: "1", Message: "duplicate"},
+			},
+		})
+	})
+
+	result, err := tr.ImportFile(context.Background(), "data.csv",
+		strings.NewReader("id,val\n1,a\n"),
+		transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if result.Total != 1 || result.Succeeded != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].Message != "duplicate" {
+		t.Fatalf("errors = %+v", result.Errors)
+	}
+}
+
+func TestE2E_ImportFile_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("batch.Import", func(_ []byte) (uint16, []byte) {
+		return wire.StatusError, []byte("import failed")
+	})
+
+	_, err := tr.ImportFile(context.Background(), "data.csv", strings.NewReader("x"), transport.ImportOptions{Format: "csv"})
+	if err == nil {
+		t.Fatal("expected error from server")
 	}
 }
 

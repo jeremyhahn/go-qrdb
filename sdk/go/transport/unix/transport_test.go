@@ -57,6 +57,17 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
 	if m.getErr != nil {
 		return nil, m.getErr
@@ -345,7 +356,7 @@ func startUnixTestServer(t *testing.T, kvSvc service.KVServicer, adminSvc servic
 	t.Helper()
 
 	socketPath := tempSocketPath(t)
-	srv := unixserver.NewServer(kvSvc, adminSvc, socketPath)
+	srv := unixserver.NewServer(kvSvc, adminSvc, socketPath, unixserver.WithTLS(testUnixServerTLS))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("failed to start Unix server: %v", err)
 	}
@@ -360,7 +371,7 @@ func connectTransport(t *testing.T, kvSvc service.KVServicer, adminSvc service.A
 
 	socketPath, stopSrv := startUnixTestServer(t, kvSvc, adminSvc)
 
-	tr, err := New(transport.WithAddress(socketPath))
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
 	if err != nil {
 		stopSrv()
 		t.Fatalf("New: %v", err)

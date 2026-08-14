@@ -88,6 +88,23 @@ func (e *InvalidQueryError) Error() string {
 	return "pebbledb: invalid query: " + e.Reason
 }
 
+// UnsupportedQueryType reports whether this refusal is the fallback the Lookup
+// switch returns when the query's dynamic type has no case at all, as opposed
+// to a specific invalid-query refusal that names a resource (an unknown index,
+// a lessor that is not configured). Only the fallback is safe to reinterpret as
+// "this state machine has no MVCC revision index".
+//
+// PebbleStateMachine is the DEFAULT state machine (raft.sm_type: pebble) and it
+// keeps no revisions, so every MVCC-only query — as-of reads, current revision,
+// change-index scans, and the reads behind RestoreToRevision — lands here. This
+// mirrors the identical marker on pkg/engine's InvalidQueryError; pkg/service
+// duck-types both through one unexported interface, so without this method the
+// default backend surfaces a bare "unsupported query type" instead of the
+// actionable error naming raft.sm_type: mvcc.
+func (e *InvalidQueryError) UnsupportedQueryType() bool {
+	return e.Reason == "unsupported query type"
+}
+
 // NotOpenError is returned when operations are attempted on an unopened store.
 type NotOpenError struct{}
 

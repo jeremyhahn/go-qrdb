@@ -310,11 +310,11 @@ func TestHandleGetAtRevision_NilService(t *testing.T) {
 
 func TestHandleRange_Success(t *testing.T) {
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: start, Value: []byte("v1"), ModRevision: 1},
 				{Key: []byte("mid-key"), Value: []byte("v2"), ModRevision: 2},
-			}, 2, nil
+			}, 2, 2, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -351,9 +351,9 @@ func TestHandleRange_Success(t *testing.T) {
 func TestHandleRange_RejectsEmptyStart(t *testing.T) {
 	called := false
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			called = true
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -378,11 +378,11 @@ func TestHandleRange_RejectsEmptyStart(t *testing.T) {
 func TestHandleRange_WithOptions(t *testing.T) {
 	var capturedOpts bool
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			if len(opts) > 0 {
 				capturedOpts = true
 			}
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -411,8 +411,8 @@ func TestHandleRange_WithOptions(t *testing.T) {
 func TestHandleRange_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "range failed"}
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, svcErr
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, svcErr
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -597,9 +597,9 @@ func TestHandleCurrentRevision_NilService(t *testing.T) {
 func TestHandleRange_WithRevision(t *testing.T) {
 	var gotOpts int
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			gotOpts = len(opts)
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -626,9 +626,9 @@ func TestHandleRange_WithRevision(t *testing.T) {
 func TestHandleRange_WithKeysOnly(t *testing.T) {
 	var gotOpts int
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			gotOpts = len(opts)
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -655,9 +655,9 @@ func TestHandleRange_WithKeysOnly(t *testing.T) {
 func TestHandleRange_WithSort(t *testing.T) {
 	var gotOpts int
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			gotOpts = len(opts)
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -685,9 +685,9 @@ func TestHandleRange_WithSort(t *testing.T) {
 func TestHandleRange_AllOptions(t *testing.T) {
 	var gotOpts int
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			gotOpts = len(opts)
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))

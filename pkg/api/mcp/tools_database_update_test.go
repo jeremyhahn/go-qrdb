@@ -292,6 +292,44 @@ func TestHandleDatabaseUpdateBarrier_Success(t *testing.T) {
 	}
 }
 
+// TestHandleDatabaseUpdateBarrier_MetadataFields is the MEDIUM #9 proof for
+// the MCP tool: mode/shares_required/shares_total tool arguments must reach
+// UpdateBarrierForTenant's DatabaseBarrierConfig, not just enabled.
+func TestHandleDatabaseUpdateBarrier_MetadataFields(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	var got *database.DatabaseBarrierConfig
+	dbSvc.updateBarrierFn = func(_ string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
+		got = cfg
+		return &database.DatabaseInfo{Name: "mydb", Barrier: cfg}, nil
+	}
+	handler := handleDatabaseUpdateBarrier(dbSvc)
+
+	req := buildCallToolRequest(t, "qrdb_database_update_barrier", map[string]any{
+		"name":            "mydb",
+		"enabled":         true,
+		"mode":            "passphrase",
+		"shares_required": 2,
+		"shares_total":    3,
+	})
+
+	if _, err := handler(context.Background(), req); err != nil {
+		t.Fatalf("handleDatabaseUpdateBarrier: %v", err)
+	}
+
+	if got == nil {
+		t.Fatal("service was not invoked with a barrier config")
+	}
+	if got.Mode != "passphrase" {
+		t.Errorf("Mode = %q, want %q", got.Mode, "passphrase")
+	}
+	if got.SharesRequired != 2 {
+		t.Errorf("SharesRequired = %d, want 2", got.SharesRequired)
+	}
+	if got.SharesTotal != 3 {
+		t.Errorf("SharesTotal = %d, want 3", got.SharesTotal)
+	}
+}
+
 func TestHandleDatabaseUpdateBarrier_MissingName(t *testing.T) {
 	dbSvc := newMockDatabaseService()
 	handler := handleDatabaseUpdateBarrier(dbSvc)

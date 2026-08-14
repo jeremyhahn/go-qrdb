@@ -27,7 +27,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -181,6 +180,7 @@ type mockCeremonyService struct {
 	initResult       *service.CeremonyInitResult
 	initErr          error
 	capturedInitOpts *service.CeremonyInitializeOptions
+	capturedCA       ceremony.CeremonyCA
 	statusResult     *service.CeremonyStatusInfo
 	statusErr        error
 	beginResult      *service.CeremonyChallenge
@@ -199,8 +199,6 @@ func newMockCeremonyService() *mockCeremonyService {
 			SPKIPin:    "pin123",
 			CACertPEM:  []byte("ca-cert"),
 			TLSCertPEM: []byte("tls-cert"),
-			SOCertPEM:  []byte("so-cert"),
-			SOKeyPEM:   []byte("so-key"),
 			State:      "initialized",
 			ShareCount: 3,
 		},
@@ -215,8 +213,9 @@ func newMockCeremonyService() *mockCeremonyService {
 	}
 }
 
-func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, _ ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
+func (m *mockCeremonyService) CeremonyInitialize(_ context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	m.capturedInitOpts = opts
+	m.capturedCA = ca
 	if m.initErr != nil {
 		return nil, m.initErr
 	}
@@ -234,11 +233,17 @@ func (m *mockCeremonyService) CeremonyCompleteClaimCert(_ context.Context, _, _ 
 	}
 	return m.completeResult, nil
 }
-func (m *mockCeremonyService) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
+func (m *mockCeremonyService) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
 	if m.claimShareErr != nil {
 		return nil, m.claimShareErr
 	}
-	return m.claimShareResult, nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (m *mockCeremonyService) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: m.claimShareResult}, nil
 }
 func (m *mockCeremonyService) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRErr != nil {
@@ -355,7 +360,7 @@ func (m *mockDatabaseService) SealDatabase(_ context.Context, _ string) error { 
 func (m *mockDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (m *mockDatabaseService) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -381,6 +386,9 @@ func (m *mockDatabaseService) UpdateBarrierForTenant(_ context.Context, _ string
 	return m.updateResult, m.updateErr
 }
 func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return m.updateResult, m.updateErr
+}
+func (m *mockDatabaseService) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
 	return m.updateResult, m.updateErr
 }
 
@@ -489,11 +497,12 @@ func (m *mockCollectionService) ListDocuments(_ context.Context, _ *service.List
 
 func startTestServerWithAll(t *testing.T, kvSvc service.KVServicer, adminSvc service.AdminServicer, opts ...ServerOption) (pb.QRDBServiceClient, func()) {
 	t.Helper()
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", opts...)
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", append([]ServerOption{WithTLS(tlsCfg)}, opts...)...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("grpc.NewClient failed: %v", err)
@@ -1484,7 +1493,8 @@ func TestGRPC_BarrierRootToken_NilService(t *testing.T) {
 
 func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
+	ca := &stubCeremonyCA{}
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc), WithCeremonyCA(ca))
 	defer cleanup()
 
 	resp, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
@@ -1497,6 +1507,36 @@ func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 	if resp.GetShareCount() != 3 {
 		t.Fatalf("expected share_count=3, got %d", resp.GetShareCount())
 	}
+	if ceremonySvc.capturedCA != ca {
+		t.Errorf("expected the configured CeremonyCA to reach the service layer, got %#v", ceremonySvc.capturedCA)
+	}
+}
+
+// TestGRPC_CeremonyInitialize_NilCeremonyCA proves that a server with a
+// ceremony service but no CeremonyCA (WithCeremonyCA never applied) fails
+// closed with a typed *CeremonyCANotConfiguredError, mapped to
+// codes.Unimplemented, instead of forwarding a nil CA into the ceremony
+// service layer, which would otherwise nil-pointer panic when it calls
+// ca.IssueCertificate.
+func TestGRPC_CeremonyInitialize_NilCeremonyCA(t *testing.T) {
+	ceremonySvc := newMockCeremonyService()
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
+	defer cleanup()
+
+	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+	if !strings.Contains(st.Message(), "ceremony CA is not configured") {
+		t.Errorf("expected 'ceremony CA is not configured' in status message, got %q", st.Message())
+	}
+	if ceremonySvc.capturedCA != nil {
+		t.Fatal("ceremony service must not be reached when the CA is not configured")
+	}
 }
 
 // TestGRPC_CeremonyInitialize_ForwardsAllFields is the regression guard for
@@ -1506,7 +1546,7 @@ func TestGRPC_CeremonyInitialize_Success(t *testing.T) {
 // wire request.
 func TestGRPC_CeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
-	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc), WithCeremonyCA(&stubCeremonyCA{}))
 	defer cleanup()
 
 	_, err := client.CeremonyInitialize(context.Background(), &pb.CeremonyInitializeRequest{
@@ -1674,17 +1714,47 @@ func TestGRPC_CeremonyClaimCertComplete_NilService(t *testing.T) {
 	}
 }
 
-func TestGRPC_CeremonyClaimShare_Success(t *testing.T) {
+// TestGRPC_CeremonyBeginClaimShare_RefusesWithoutClientCert proves the share
+// claim is unreachable over a connection that carries no mTLS peer
+// certificate: the caller thumbprint cannot be derived, so the handler fails
+// closed before the ceremony service is consulted.
+func TestGRPC_CeremonyBeginClaimShare_RefusesWithoutClientCert(t *testing.T) {
 	ceremonySvc := newMockCeremonyService()
 	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
 	defer cleanup()
 
-	resp, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{Username: "officer1"})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShare failed: %v", err)
+	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "officer1"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
-	if resp.GetShare() != "share-value" {
-		t.Fatalf("expected share 'share-value', got %q", resp.GetShare())
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
+	}
+}
+
+// TestGRPC_CeremonyCompleteClaimShare_RefusesWithoutClientCert proves the
+// completing half is equally unreachable and, critically, that no share bytes
+// are returned on the refusal path.
+func TestGRPC_CeremonyCompleteClaimShare_RefusesWithoutClientCert(t *testing.T) {
+	ceremonySvc := newMockCeremonyService()
+	client, cleanup := startTestServerFull(t, WithCeremonyService(ceremonySvc))
+	defer cleanup()
+
+	resp, err := client.CeremonyCompleteClaimShare(context.Background(), &pb.CeremonyCompleteClaimShareRequest{
+		Username:  "officer1",
+		NonceHex:  "abcd",
+		Signature: []byte("sig"),
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if resp.GetShare() != "" {
+		t.Fatalf("share bytes leaked on refusal: %q", resp.GetShare())
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %s", st.Code())
 	}
 }
 
@@ -1692,7 +1762,7 @@ func TestGRPC_CeremonyClaimShare_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.CeremonyClaimShare(context.Background(), &pb.CeremonyClaimShareRequest{Username: "u"})
+	_, err := client.CeremonyBeginClaimShare(context.Background(), &pb.CeremonyBeginClaimShareRequest{Username: "u"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2591,12 +2661,15 @@ func TestCollectionInfoToProto(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestServer_Start_WithTLS_NilConfig(t *testing.T) {
-	// WithTLS(nil) sets tls=nil so no credentials are added — server starts normally.
+	// WithTLS(nil) leaves tls unset. The gRPC transport is TLS-only, so Start
+	// fails closed with a *TLSNotConfiguredError rather than serve plaintext.
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithTLS(nil))
-	if err := srv.Start(); err != nil {
-		t.Fatalf("expected start with nil TLS to succeed: %v", err)
+	err := srv.Start()
+	var tlsErr *TLSNotConfiguredError
+	if !errors.As(err, &tlsErr) {
+		srv.Stop()
+		t.Fatalf("expected *TLSNotConfiguredError, got %T: %v", err, err)
 	}
-	defer srv.Stop()
 }
 
 // ---------------------------------------------------------------------------

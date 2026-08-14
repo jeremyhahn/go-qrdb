@@ -400,3 +400,8 @@ func TestKVStateMachine_HandleBatch_DecodeFailed(t *testing.T) {
 		t.Fatalf("expected IncompleteDataError, got %T: %v", err, err)
 	}
 }
+
+// ScanChanges satisfies the MVCCStore interface.
+func (m *failedTransactionMVCCStore) ScanChanges(_, _ int64, _ []byte, _ int64) (interface{}, error) {
+	return nil, nil
+}

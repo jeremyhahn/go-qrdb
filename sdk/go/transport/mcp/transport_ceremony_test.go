@@ -89,14 +89,24 @@ func (m *mockCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, username,
 	}, nil
 }
 
-func (m *mockCeremonySvc) CeremonyClaimShare(_ context.Context, username string) ([]byte, error) {
+func (m *mockCeremonySvc) CeremonyBeginClaimShare(_ context.Context, username, _ string) (*service.CeremonyChallenge, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastUsername = username
 	if m.claimShareErr != nil {
 		return nil, m.claimShareErr
 	}
-	return []byte("share-data"), nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (m *mockCeremonySvc) CeremonyCompleteClaimShare(_ context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastUsername = username
+	if m.claimShareErr != nil {
+		return nil, m.claimShareErr
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("share-data")}, nil
 }
 
 func (m *mockCeremonySvc) CeremonySignCSR(_ context.Context, username, _, _, _ string) (*service.CeremonySignCSRResult, error) {
@@ -275,22 +285,31 @@ func TestCeremonyClaimCertComplete_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CeremonyClaimShare
+// CeremonyBeginClaimShare / CeremonyCompleteClaimShare
 // ---------------------------------------------------------------------------
 
-func TestCeremonyClaimShare_Success(t *testing.T) {
+// TestCeremonyClaimShare_RequiresClientCert proves the in-process MCP session
+// carries no mTLS peer certificate, so the server-side tool refuses the claim
+// and no share material comes back.
+func TestCeremonyClaimShare_RequiresClientCert(t *testing.T) {
 	svc := newMockCeremonySvc()
 	tr, cleanup := connectCeremonyInProcess(t, svc)
 	defer cleanup()
 
-	resp, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{
+	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{
 		Username: "officer1",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShare: %v", err)
+	}); err == nil {
+		t.Fatal("expected refusal without a client certificate")
 	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
+
+	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{
+		Username: "officer1", NonceHex: "abcd", Signature: []byte("sig"),
+	})
+	if err == nil {
+		t.Fatal("expected refusal without a client certificate")
+	}
+	if resp != nil {
+		t.Fatalf("share material leaked on refusal: %#v", resp)
 	}
 }
 
@@ -300,7 +319,7 @@ func TestCeremonyClaimShare_ServiceError(t *testing.T) {
 	tr, cleanup := connectCeremonyInProcess(t, svc)
 	defer cleanup()
 
-	if _, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{Username: "x"}); err == nil {
+	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "x"}); err == nil {
 		t.Fatal("expected error")
 	}
 }

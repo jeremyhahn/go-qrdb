@@ -31,6 +31,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -80,9 +81,10 @@ type Result struct {
 }
 
 // CertProvider is the minimal cert-issuance contract first-boot needs.
-// qrdb's pkg/cert/DefaultCertProvider satisfies this; xkms's TrustedCA
-// also satisfies it. Defined narrow here so firstboot doesn't pull in
-// either package as a dependency.
+// qrdb's pkg/cert/DefaultCertProvider satisfies this, and go-xkms's
+// CAAdapter (sdk/go NewCAAdapter) satisfies it, wiring the xkms CA into
+// first-boot admin enrollment. Defined narrow here so firstboot doesn't
+// pull in either package as a dependency.
 type CertProvider interface {
 	// GenerateAdminCert issues a client certificate for the platform
 	// admin user. tenantID identifies the OU; subject is the CN
@@ -91,8 +93,8 @@ type CertProvider interface {
 }
 
 // CertSigner is the admin-mTLS Path B seam: the admin (or tenant admin) supplies
-// a CSR and qrdb's CA signs it, so the private key never leaves the admin.
-// xkms's TrustedCA satisfies this (CSR signing).
+// a CSR and the CA signs it, so the private key never leaves the admin.
+// go-xkms's CAAdapter (sdk/go NewCAAdapter) satisfies this (CSR signing).
 type CertSigner interface {
 	// SignAdminCSR signs an admin-supplied CSR and returns the PEM cert.
 	SignAdminCSR(ctx context.Context, tenantID, subject string, csrPEM []byte) (certPEM []byte, err error)
@@ -153,6 +155,28 @@ type Dependencies struct {
 	// AdminCSRPEM, when non-empty, selects Path B: the admin's CSR is signed via
 	// Signer instead of generating a key+cert via CA. The admin keeps their key.
 	AdminCSRPEM []byte
+	// AdminCertPEM, when non-empty, selects Path C: the admin presents a
+	// certificate they already hold — typically one already resident on a PIV
+	// card or a security key — and first-boot adopts it rather than issuing
+	// anything. No CA and no Signer are consulted; the private key never exists
+	// outside the operator's token, so AdminKeyPEM stays nil as it does for
+	// Path B.
+	//
+	// The certificate is validated against AdminCertPool before adoption, and
+	// only its SPKI thumbprint is bound, which is the same identifier every
+	// other path binds. Mutually exclusive with AdminCSRPEM.
+	//
+	// This mirrors what the ceremony already offers a security officer through
+	// EnrollExternalOfficer: the admin and the SO enrol the same way.
+	AdminCertPEM []byte
+	// AdminCertPool holds the trust anchors a presented AdminCertPEM must chain
+	// to. Required whenever AdminCertPEM is set, and unused otherwise.
+	//
+	// It is separate from the platform CA on purpose: a certificate the operator
+	// already holds was, by definition, issued by something else — a corporate
+	// PKI or a card vendor — so validating it against the CA this deployment is
+	// about to create would reject every legitimate input.
+	AdminCertPool *x509.CertPool
 
 	// Binder pins the issued admin certificate's SPKI thumbprint to the admin
 	// user so mTLS handshakes authenticate as the admin. Optional: when nil, the
@@ -367,7 +391,21 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 // Path A (generate-and-distribute) via CA. Returns (nil, nil, nil) when neither
 // path is configured — cert issuance is optional.
 func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (certPEM, keyPEM []byte, err error) {
+	if len(deps.AdminCSRPEM) > 0 && len(deps.AdminCertPEM) > 0 {
+		return nil, nil, &ConflictingAdminCertInputsError{}
+	}
+
 	switch {
+	// Path C is tested first because it is the only path that issues nothing.
+	// A deployment that presents a certificate has already decided which
+	// identity the admin authenticates as, so falling through to a CA that
+	// happens to be configured would mint a second, unrelated credential.
+	case len(deps.AdminCertPEM) > 0:
+		adopted, adoptErr := adoptPresentedAdminCert(deps.AdminCertPEM, deps.AdminCertPool)
+		if adoptErr != nil {
+			return nil, nil, adoptErr
+		}
+		return adopted, nil, nil
 	case len(deps.AdminCSRPEM) > 0 && deps.Signer != nil:
 		signed, signErr := deps.Signer.SignAdminCSR(ctx, tenantID, adminUsername, deps.AdminCSRPEM)
 		if signErr != nil {
@@ -383,6 +421,56 @@ func issueAdminCert(ctx context.Context, deps Dependencies, tenantID string) (ce
 	default:
 		return nil, nil, nil
 	}
+}
+
+// adoptPresentedAdminCert validates a certificate the admin already holds and
+// returns it unchanged for binding (Path C).
+//
+// "Adopt" rather than "issue": nothing is signed and no key is generated. The
+// checks are the ones that decide whether this certificate may stand for the
+// platform administrator — it parses, it is inside its validity window, and it
+// chains to a trust anchor the deployment was configured with. That is the same
+// bar ceremony.parseAndValidateCert applies to an externally enrolled officer,
+// which is deliberate: the admin and the SO enrol against one rule, so an
+// operator who can bring their own credential to one role can bring it to the
+// other.
+//
+// A nil pool is refused rather than treated as "trust anything"; see
+// MissingAdminCertPoolError.
+func adoptPresentedAdminCert(certPEM []byte, pool *x509.CertPool) ([]byte, error) {
+	if pool == nil {
+		return nil, &MissingAdminCertPoolError{}
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, &AdminCertRejectedError{Cause: errors.New("no CERTIFICATE block in PEM input")}
+	}
+	cert, parseErr := x509.ParseCertificate(block.Bytes)
+	if parseErr != nil {
+		return nil, &AdminCertRejectedError{Cause: parseErr}
+	}
+
+	now := time.Now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return nil, &AdminCertRejectedError{Cause: errors.New("certificate is outside its validity window")}
+	}
+
+	// ExtKeyUsageAny, matching the ceremony's officer check: a certificate
+	// already resident on a PIV card carries whatever EKU its issuer chose, and
+	// demanding ClientAuth here would reject cards this deployment can still
+	// authenticate. Whether the certificate may be used for a given operation is
+	// an authorization question answered at login, not an adoption-time one.
+	if _, verifyErr := cert.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}); verifyErr != nil {
+		return nil, &AdminCertRejectedError{Cause: verifyErr}
+	}
+
+	adopted := make([]byte, len(certPEM))
+	copy(adopted, certPEM)
+	return adopted, nil
 }
 
 // spkiThumbprintFromCertPEM parses a PEM certificate and returns its canonical

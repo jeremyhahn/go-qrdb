@@ -58,17 +58,27 @@ func (m *DatabaseBarrierManager) EnsureBarrier(
 	if cfg == nil || !cfg.Enabled {
 		return nil
 	}
+	if cfg.Mode != "" && cfg.Mode != BarrierModePassphrase {
+		return &UnsupportedBarrierStrategyError{Mode: cfg.Mode}
+	}
 
 	barrierCfg := seal.BarrierConfig{
 		RootKeyPath: "db/" + dbName + "/root-key",
 	}
 
-	strategy, err := seal.NewSoftwareStrategy(creds.Secret)
-	if err != nil {
-		return &BarrierCreateError{Name: dbName, Err: err}
-	}
+	// NewDeferredSoftwareStrategy defers passphrase binding to each
+	// Seal/Unseal call (it reads Credentials.Secret at call time instead of
+	// baking a passphrase into the strategy at construction), matching the
+	// canonical software/passphrase factory in pkg/seal/strategy_registry.go.
+	// A bound strategy (seal.NewSoftwareStrategy(creds.Secret)) would ignore
+	// the creds argument passed to every later UnsealDatabase call in favor
+	// of whatever passphrase happened to be given here at create time, which
+	// would make wrong-secret unseal attempts succeed for the lifetime of the
+	// process and RegisterBarrier's re-open path unable to unseal at all
+	// (it has no real passphrase to bind at Open time).
+	strategy := seal.NewDeferredSoftwareStrategy()
 
-	_, err = m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
+	_, err := m.registry.RegisterTenant(ctx, dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}
@@ -102,17 +112,16 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 		RootKeyPath: "db/" + dbName + "/root-key",
 	}
 
-	// Use a zero-length secret strategy as a placeholder — the real
-	// credentials are provided during UnsealDatabase.
-	strategy, err := seal.NewSoftwareStrategy(make([]byte, 32))
-	if err != nil {
-		return &BarrierCreateError{Name: dbName, Err: err}
-	}
+	// Deferred strategy: RegisterBarrier never has the real passphrase (the
+	// database is only being re-opened, not created), so the strategy must
+	// read Credentials.Secret from the later UnsealDatabase call rather than
+	// binding a passphrase now. See the matching comment in EnsureBarrier.
+	strategy := seal.NewDeferredSoftwareStrategy()
 
 	// RegisterBarrier always supplies a real backend, so the pool path
 	// is never engaged here. context.Background is sufficient because
 	// RegisterTenant only consults ctx on the pool path.
-	_, err = m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
+	_, err := m.registry.RegisterTenant(context.Background(), dbName, storage, barrierCfg, strategy)
 	if err != nil {
 		return &BarrierCreateError{Name: dbName, Err: err}
 	}

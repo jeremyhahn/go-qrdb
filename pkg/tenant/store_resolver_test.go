@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -238,6 +239,112 @@ func TestStoreResolver_SealedBarrierTenantFailsClosed(t *testing.T) {
 	}
 	if store != nil {
 		t.Fatal("sealed barrier tenant must not return a store (no shared-store fallback)")
+	}
+}
+
+// newResolverFixtureFor builds a StoreResolver over a service whose default
+// entitlements permit the given dedicated-isolation mode, so volume- and
+// raft-isolated tenants can be created in-process. It mirrors
+// newResolverFixture but lets the caller pick the entitlement posture.
+func newResolverFixtureFor(t *testing.T, ents *quota.Entitlements) (*memKVStore, *TenantService, *seal.BarrierRegistry, StoreResolver) {
+	t.Helper()
+	store := seal.NewMemoryBackend()
+	reg := newTestBarrierRegistry(t)
+	svc, err := NewTenantService(store, reg, testLogger(), WithDefaultEntitlements(ents))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	shared := newMemKVStore()
+	resolver, err := NewStoreResolver(shared, reg, svc)
+	if err != nil {
+		t.Fatalf("NewStoreResolver: %v", err)
+	}
+	return shared, svc, reg, resolver
+}
+
+// A volume-isolated tenant routes IAM through its own barrier (NOT the shared
+// store), fails closed with ErrTenantSealed while sealed, and round-trips once
+// unsealed — proving volume IAM is gated by the tenant's data seal.
+func TestStoreResolver_VolumeTenantRoutesThroughBarrier(t *testing.T) {
+	shared, svc, reg, resolver := newResolverFixtureFor(t, volumeEntitlements())
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "vault-vol", "Volume", IsolationVolume); err != nil {
+		t.Fatalf("CreateTenant(volume): %v", err)
+	}
+
+	// Self-managed default: the barrier comes up SEALED. IAM must fail closed.
+	store, err := resolver.Resolve(ctx, "vault-vol")
+	if !errors.Is(err, ErrTenantSealed) {
+		t.Fatalf("Resolve(sealed volume) = (%v, %v), want ErrTenantSealed", store, err)
+	}
+	if store != nil {
+		t.Fatal("sealed volume tenant must not return a store (no shared-store fallback)")
+	}
+
+	// Initialize (tenant-admin step) so the barrier is unsealed.
+	if err := reg.InitializeTenant(ctx, "vault-vol", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(vault-vol): %v", err)
+	}
+
+	store, err = resolver.Resolve(ctx, "vault-vol")
+	if err != nil {
+		t.Fatalf("Resolve(unsealed volume): %v", err)
+	}
+	if store == kvstore.KVStore(shared) {
+		t.Fatal("volume tenant must NOT resolve to the shared store")
+	}
+
+	const key = "__sys:users/id/vol-record"
+	if err := store.Put(ctx, key, []byte("vol-secret")); err != nil {
+		t.Fatalf("Put through volume barrier store: %v", err)
+	}
+	sv, err := shared.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("shared.Get: %v", err)
+	}
+	if sv != nil {
+		t.Fatal("volume tenant record leaked into the shared store")
+	}
+
+	// A cached wrapper must not mask a subsequent seal: fail closed again.
+	if err := reg.SealTenant("vault-vol"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	store, err = resolver.Resolve(ctx, "vault-vol")
+	if !errors.Is(err, ErrTenantSealed) {
+		t.Fatalf("Resolve(re-sealed volume) = (%v, %v), want ErrTenantSealed", store, err)
+	}
+}
+
+// A raft-isolated tenant routes IAM through its own barrier and fails closed
+// while sealed, identical to volume/barrier isolation.
+func TestStoreResolver_RaftTenantRoutesThroughBarrier(t *testing.T) {
+	shared, svc, reg, resolver := newResolverFixtureFor(t, raftEntitlements())
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "vault-raft", "Raft", IsolationRaft); err != nil {
+		t.Fatalf("CreateTenant(raft): %v", err)
+	}
+
+	// Sealed by default: IAM fails closed.
+	store, err := resolver.Resolve(ctx, "vault-raft")
+	if !errors.Is(err, ErrTenantSealed) {
+		t.Fatalf("Resolve(sealed raft) = (%v, %v), want ErrTenantSealed", store, err)
+	}
+	if store != nil {
+		t.Fatal("sealed raft tenant must not return a store (no shared-store fallback)")
+	}
+
+	if err := reg.InitializeTenant(ctx, "vault-raft", seal.Credentials{}); err != nil {
+		t.Fatalf("InitializeTenant(vault-raft): %v", err)
+	}
+	store, err = resolver.Resolve(ctx, "vault-raft")
+	if err != nil {
+		t.Fatalf("Resolve(unsealed raft): %v", err)
+	}
+	if store == kvstore.KVStore(shared) {
+		t.Fatal("raft tenant must NOT resolve to the shared store")
 	}
 }
 

@@ -38,6 +38,12 @@ equivalent to selecting no database scope at all.
 use any dedicated isolation mode (`barrier`, `volume`, or `raft`) — it must stay
 reachable during bootstrap while tenant barriers are still sealed.
 
+To ask "is this the system tenant?" (which is also true for the empty string,
+since an unbound tenant resolves to `system`), use `tenant.IsSystemTenant(id)` —
+or `rbac.IsSystemTenant(identity)` when starting from an `*auth.Identity` — never
+re-derive the comparison against `SystemTenantID` inline. Both are re-exported
+through `sdk/go` as `IsSystemTenant` and `IdentityIsSystemTenant`.
+
 ---
 
 ## The isolation ladder

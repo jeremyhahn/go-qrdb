@@ -318,9 +318,9 @@ func TestTranslateRanges_NonMySQLRange_Error(t *testing.T) {
 // badRange is a test-only sqle.Range that is not a MySQLRange.
 type badRange struct{}
 
-func (b *badRange) String() string      { return "bad" }
-func (b *badRange) DebugString() string { return "bad" }
-func (b *badRange) Equals(other sqle.Range) (bool, error) {
+func (b *badRange) String() string                     { return "bad" }
+func (b *badRange) DebugString(_ *sqle.Context) string { return "bad" }
+func (b *badRange) Equals(_ context.Context, other sqle.Range) (bool, error) {
 	return false, nil
 }
 

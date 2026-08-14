@@ -16,10 +16,25 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
+
+// ErrEmptyCompareKey is returned when a transaction Compare carries an empty
+// key. A Compare targets exactly one existing key's metadata, so — unlike a
+// Put/Delete/Get, whose empty key can be usefully confined to the bare
+// namespace prefix via prefixKeyBytes — an empty compare key has no such
+// well-defined meaning: an un-namespaced request forwards it unchanged to the
+// state machine, whose own compare validation rejects it as malformed
+// (mvcc.RaftCompare.Validate: "compare key cannot be empty"). Namespacing it
+// to the bare "<tenant>/<db>/" prefix instead of rejecting it would silently
+// replace that clean rejection with a real (almost certainly nonexistent)
+// key comparison, changing what the client's malformed request means. The
+// namespace layer rejects it up front so the observed behavior matches the
+// un-namespaced case.
+var ErrEmptyCompareKey = errors.New("server: transaction compare key cannot be empty")
 
 // namespacedTransactionService wraps a TransactionServicer so that the keys of
 // every compare and operation are transparently prefixed with the composite
@@ -40,23 +55,32 @@ func newNamespacedTransactionService(inner service.TransactionServicer, prefix s
 	return &namespacedTransactionService{inner: inner, prefix: prefix}
 }
 
-// prefixCompares returns a copy of compares with each key namespaced. A compare
-// targets a single key, so an absent (nil/empty) key is confined to the
-// namespace prefix rather than the shared-store root, preventing a compare from
-// observing another tenant's keyspace.
-func (s *namespacedTransactionService) prefixCompares(compares []service.Compare) []service.Compare {
+// prefixCompares returns a copy of compares with each key namespaced. A
+// compare targets a single existing key's metadata, and an absent (nil or
+// empty) key has no well-defined target: the un-namespaced state machine
+// rejects it outright (see ErrEmptyCompareKey). Mapping it to the bare
+// namespace prefix instead — as a Put/Delete/Get empty key is confined via
+// prefixKeyBytes — would silently turn that rejection into a comparison
+// against a real (almost certainly nonexistent) literal key, so an empty
+// compare key is rejected here rather than confined.
+func (s *namespacedTransactionService) prefixCompares(compares []service.Compare) ([]service.Compare, error) {
 	out := make([]service.Compare, len(compares))
 	for i, c := range compares {
-		c.Key = prefixStartBytes(c.Key, s.prefix)
+		if len(c.Key) == 0 {
+			return nil, ErrEmptyCompareKey
+		}
+		c.Key = prefixBytes(c.Key, s.prefix)
 		out[i] = c
 	}
-	return out
+	return out, nil
 }
 
-// prefixOps returns a copy of ops with each key and range end namespaced. Range
-// ops have both bounds confined to the namespace (an absent bound stays within
-// it); single-key ops have their Key prefixed and a nil RangeEnd preserved. See
-// the batch service prefixOps for the rationale.
+// prefixOps returns a copy of ops with each key and range end namespaced.
+// Range ops have both bounds confined to the namespace (an absent bound stays
+// within it); single-key ops have their Key confined with prefixKeyBytes (an
+// absent key maps to the bare namespace prefix rather than escaping to the
+// shared store root) and a nil RangeEnd preserved with prefixBytes. See the
+// batch service prefixOps for the rationale.
 func (s *namespacedTransactionService) prefixOps(ops []service.Op) []service.Op {
 	out := make([]service.Op, len(ops))
 	for i, op := range ops {
@@ -64,7 +88,7 @@ func (s *namespacedTransactionService) prefixOps(ops []service.Op) []service.Op 
 			op.Key = prefixStartBytes(op.Key, s.prefix)
 			op.RangeEnd = prefixEndBytes(op.RangeEnd, s.prefix)
 		} else {
-			op.Key = prefixBytes(op.Key, s.prefix)
+			op.Key = prefixKeyBytes(op.Key, s.prefix)
 			op.RangeEnd = prefixBytes(op.RangeEnd, s.prefix)
 		}
 		out[i] = op
@@ -93,7 +117,11 @@ func (s *namespacedTransactionService) stripResponse(resp *service.TransactionRe
 // Execute evaluates the prefixed compares and applies the prefixed operations
 // atomically.
 func (s *namespacedTransactionService) Execute(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op) (*service.TransactionResponse, error) {
-	resp, err := s.inner.Execute(ctx, s.prefixCompares(compares), s.prefixOps(successOps), s.prefixOps(failureOps))
+	prefixedCompares, err := s.prefixCompares(compares)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.inner.Execute(ctx, prefixedCompares, s.prefixOps(successOps), s.prefixOps(failureOps))
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +131,11 @@ func (s *namespacedTransactionService) Execute(ctx context.Context, compares []s
 // ExecuteWithMode evaluates the prefixed compares and applies the prefixed
 // operations atomically with the specified write durability.
 func (s *namespacedTransactionService) ExecuteWithMode(ctx context.Context, compares []service.Compare, successOps, failureOps []service.Op, mode writemode.Mode) (*service.TransactionResponse, error) {
-	resp, err := s.inner.ExecuteWithMode(ctx, s.prefixCompares(compares), s.prefixOps(successOps), s.prefixOps(failureOps), mode)
+	prefixedCompares, err := s.prefixCompares(compares)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.inner.ExecuteWithMode(ctx, prefixedCompares, s.prefixOps(successOps), s.prefixOps(failureOps), mode)
 	if err != nil {
 		return nil, err
 	}

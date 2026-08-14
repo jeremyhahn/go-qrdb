@@ -68,6 +68,9 @@ type Provider struct {
 	engine        database.EngineType        // engine for single-database mode with scoping
 	collectionSvc service.CollectionServicer // nil when collections are not available
 	indexSvc      index.IndexServicer        // nil when index acceleration is not available
+	readOnly      bool                       // true strips write capability from every served table
+	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
+	registry      service.Registry           // nil when relational tables are not available
 }
 
 // WithProtocol returns a functional option that sets the protocol filter
@@ -94,6 +97,51 @@ func WithCollectionService(svc service.CollectionServicer) func(*Provider) {
 func WithIndexService(svc index.IndexServicer) func(*Provider) {
 	return func(prov *Provider) {
 		prov.indexSvc = svc
+	}
+}
+
+// WithReadOnly returns a functional option that makes every table served by
+// the Provider read-only: the InsertableTable, UpdatableTable,
+// DeletableTable, and ReplaceableTable capability interfaces are stripped
+// structurally (see readOnlyTable), regardless of what the underlying
+// concrete table implementation supports. DML statements (INSERT/UPDATE/
+// DELETE/REPLACE) therefore fail during analysis rather than reaching the
+// KV/entity writers, independent of the caller's granted permission.
+func WithReadOnly() func(*Provider) {
+	return func(prov *Provider) {
+		prov.readOnly = true
+	}
+}
+
+// WithPrescopedKV returns a functional option indicating that kvSvc is
+// already scoped to the caller's composite (tenant, database) namespace —
+// for example, resolved through service.Registry.KVService, which enforces
+// per-tenant barrier/quota/isolation and routes IsolationRaft/
+// IsolationVolume tenants to their dedicated backend. When set, KV and
+// entity table implementations use bare keys instead of composing their own
+// "<tenant>/<db>/" prefix, avoiding a second (incorrect) layer of
+// namespacing on top of the one the registry already applied.
+func WithPrescopedKV() func(*Provider) {
+	return func(prov *Provider) {
+		prov.prescopedKV = true
+	}
+}
+
+// WithRegistry returns a functional option that sets the service.Registry on
+// the Provider. When set, GetTableInsensitive additionally resolves
+// user-defined relational tables (the tables CREATE TABLE produces) through
+// reg.TableService/MVCCService/KVService, scoped to the SQL session's
+// tenant. Resolution happens lazily, per call to GetTableInsensitive, rather
+// than once at Provider/Database construction time: unlike the ad-hoc SQL
+// query service (pkg/sql/query), which builds one Provider per query and
+// therefore already knows its caller's tenant up front, a Provider serving
+// the MySQL/PostgreSQL wire-protocol listeners is long-lived and multiplexes
+// many connections -- and therefore many different tenants -- over its
+// lifetime, so the tenant is only known once a session (via *sqle.Context)
+// is available. See Database.relationalTable.
+func WithRegistry(reg service.Registry) func(*Provider) {
+	return func(prov *Provider) {
+		prov.registry = reg
 	}
 }
 
@@ -126,13 +174,20 @@ func NewManagerProvider(manager *database.Manager, kvSvc service.KVServicer, opt
 // NewProviderWithEngine creates a single-database Provider with engine
 // scoping. The database exposes only tables matching the given engine type.
 // This constructor does not require a database.Manager and is intended for
-// use by the Wails SQL binding and similar embedded contexts.
-func NewProviderWithEngine(name string, kvSvc service.KVServicer, engine database.EngineType) *Provider {
-	return &Provider{
+// use by the Wails SQL binding, the ad-hoc SQL query service, and similar
+// embedded contexts. Optional functional options (e.g. WithReadOnly,
+// WithPrescopedKV) configure the served tables' capabilities and namespace
+// scoping.
+func NewProviderWithEngine(name string, kvSvc service.KVServicer, engine database.EngineType, opts ...func(*Provider)) *Provider {
+	p := &Provider{
 		dbName: name,
 		kvSvc:  kvSvc,
 		engine: engine,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // isAllowed reports whether the given database is visible under the
@@ -150,6 +205,28 @@ func (p *Provider) isAllowed(db *database.Database) bool {
 	}
 }
 
+// newDatabase builds the sql.Database served for name over the given engine,
+// carrying the provider's service wiring and scoping flags. When the provider
+// is read-only the result is wrapped so that DDL-capability interfaces are
+// structurally unreachable (see readOnlyDatabase); this is the single place
+// that decision is made, so no construction site can forget it.
+func (p *Provider) newDatabase(name string, engine database.EngineType) sqle.Database {
+	db := &Database{
+		name:          name,
+		kvSvc:         p.kvSvc,
+		engine:        engine,
+		collectionSvc: p.collectionSvc,
+		indexSvc:      p.indexSvc,
+		readOnly:      p.readOnly,
+		prescopedKV:   p.prescopedKV,
+		registry:      p.registry,
+	}
+	if p.readOnly {
+		return newReadOnlyDatabase(db)
+	}
+	return db
+}
+
 // Database returns a sql.Database for the given name. When backed by a
 // manager, it looks up the database by name and applies protocol filtering;
 // otherwise it falls back to legacy single-database mode.
@@ -162,13 +239,13 @@ func (p *Provider) Database(_ *sqle.Context, name string) (sqle.Database, error)
 		if !p.isAllowed(db) {
 			return nil, &DatabaseNotFoundError{Name: name}
 		}
-		return &Database{name: name, kvSvc: p.kvSvc, engine: db.Engine(), collectionSvc: p.collectionSvc, indexSvc: p.indexSvc}, nil
+		return p.newDatabase(name, db.Engine()), nil
 	}
 	// Legacy single-database mode.
 	if !strings.EqualFold(name, p.dbName) {
 		return nil, &DatabaseNotFoundError{Name: name}
 	}
-	return &Database{name: p.dbName, kvSvc: p.kvSvc, engine: p.engine, collectionSvc: p.collectionSvc, indexSvc: p.indexSvc}, nil
+	return p.newDatabase(p.dbName, p.engine), nil
 }
 
 // HasDatabase reports whether the named database exists. When backed by
@@ -199,19 +276,11 @@ func (p *Provider) AllDatabases(_ *sqle.Context) []sqle.Database {
 					continue
 				}
 			}
-			dbs = append(dbs, &Database{
-				name:          info.Name,
-				kvSvc:         p.kvSvc,
-				engine:        info.Engine,
-				collectionSvc: p.collectionSvc,
-				indexSvc:      p.indexSvc,
-			})
+			dbs = append(dbs, p.newDatabase(info.Name, info.Engine))
 		}
 		return dbs
 	}
-	return []sqle.Database{
-		&Database{name: p.dbName, kvSvc: p.kvSvc, engine: p.engine, collectionSvc: p.collectionSvc, indexSvc: p.indexSvc},
-	}
+	return []sqle.Database{p.newDatabase(p.dbName, p.engine)}
 }
 
 // CreateDatabase creates a new database via the manager. The database
@@ -257,6 +326,9 @@ type Database struct {
 	engine        database.EngineType        // empty string = legacy KV-only
 	collectionSvc service.CollectionServicer // nil when collections are not available
 	indexSvc      index.IndexServicer        // nil when index acceleration is not available
+	readOnly      bool                       // true strips write capability from served tables
+	prescopedKV   bool                       // true when kvSvc is already scoped to the caller's namespace
+	registry      service.Registry           // nil when relational tables are not available
 }
 
 // Name returns the database name.
@@ -300,9 +372,21 @@ func (d *Database) hasTable(name string) bool {
 }
 
 // GetTableInsensitive returns the named table using case-insensitive
-// lookup. The KV table is scoped to the tenant from the session context.
-// When the database has an engine type set, only tables belonging to
-// that engine are accessible.
+// lookup. The KV and entity tables are scoped to namespacePrefix — normally
+// the composite (tenant, database) namespace derived from the session's
+// tenant and d.name, using the same physical key prefix every other
+// protocol uses (see tenant.ComposeNamespace); or the empty string when
+// d.kvSvc is already scoped to the caller's namespace (prescopedKV). When
+// the database has an engine type set, only tables belonging to that engine
+// are accessible. When d.readOnly is set, every returned table has its
+// write-capability interfaces stripped (see readOnlyTable).
+//
+// Resolution order is static engine tables, then DAO-registered entity
+// types, then the relational catalog (see relationalTable), then dynamic
+// collections. Relational tables take precedence over collections so that a
+// CREATE TABLE deterministically shadows a legacy same-named collection
+// rather than silently continuing to serve the collection's inferred
+// document schema.
 func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Table, bool, error) {
 	lower := strings.ToLower(name)
 
@@ -310,11 +394,8 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 	if d.hasTable(lower) {
 		switch lower {
 		case tableName:
-			tenantID := tenant.SystemTenantID
-			if sess, ok := ctx.Session.(*QRDBSession); ok {
-				tenantID = sess.TenantID()
-			}
-			return NewKVTable(d.kvSvc, tenantID, d.indexSvc), true, nil
+			tbl := NewKVTable(d.kvSvc, d.namespacePrefix(ctx), d.indexSvc)
+			return d.maybeReadOnly(tbl), true, nil
 		case datapointsTableName:
 			return NewDatapointsTable(), true, nil
 		case metricsTableName:
@@ -328,22 +409,65 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 
 	// Check entity registry for DAO-registered entity types.
 	if reg, ok := entity.Global().Get(lower); ok {
-		tenantID := tenant.SystemTenantID
-		if sess, ok := ctx.Session.(*QRDBSession); ok {
-			tenantID = sess.TenantID()
+		tbl := NewEntityTable(d.kvSvc, d.namespacePrefix(ctx), reg, d.indexSvc)
+		return d.maybeReadOnly(tbl), true, nil
+	}
+
+	// Check the relational catalog for a user-defined table.
+	if d.registry != nil {
+		tbl, found, err := d.relationalTable(ctx, lower)
+		if err != nil {
+			return nil, false, err
 		}
-		return NewEntityTable(d.kvSvc, tenantID, reg, d.indexSvc), true, nil
+		if found {
+			return d.maybeReadOnly(tbl), true, nil
+		}
 	}
 
 	// Fall back to dynamic collection lookup.
 	if d.collectionSvc != nil {
 		info, err := d.collectionSvc.GetCollectionInfo(ctx, d.name, lower)
 		if err == nil && info != nil {
-			return NewCollectionTable(d.collectionSvc, d.name, info.Name, info.Schema, d.indexSvc), true, nil
+			tbl := NewCollectionTable(d.collectionSvc, d.name, info.Name, info.Schema, d.indexSvc)
+			return d.maybeReadOnly(tbl), true, nil
 		}
 	}
 
 	return nil, false, nil
+}
+
+// sessionTenantID returns the tenant carried by the QRDBSession installed on
+// ctx, or tenant.SystemTenantID when no such session is present. It is the
+// single place that fallback is applied, so every tenant-scoped resolution
+// path (namespacePrefix, relationalTable) agrees on it.
+func (d *Database) sessionTenantID(ctx *sqle.Context) string {
+	if sess, ok := ctx.Session.(*QRDBSession); ok {
+		return sess.TenantID()
+	}
+	return tenant.SystemTenantID
+}
+
+// namespacePrefix returns the composite key prefix used to scope KV and
+// entity table access. When prescopedKV is set, d.kvSvc has already been
+// resolved to the caller's (tenant, database) namespace by the caller (e.g.
+// via service.Registry.KVService), so no additional prefix is applied and
+// bare keys pass straight through. Otherwise the prefix is derived from
+// sessionTenantID composed with this database's name.
+func (d *Database) namespacePrefix(ctx *sqle.Context) string {
+	if d.prescopedKV {
+		return ""
+	}
+	return tenant.ComposeNamespace(d.sessionTenantID(ctx), d.name)
+}
+
+// maybeReadOnly wraps t so that write-capability interfaces implemented by
+// the underlying concrete table are not reachable when the database is
+// configured read-only. Otherwise t is returned unchanged.
+func (d *Database) maybeReadOnly(t sqle.Table) sqle.Table {
+	if d.readOnly {
+		return newReadOnlyTable(t)
+	}
+	return t
 }
 
 // GetTableNames returns available table names. When the database has an
@@ -372,6 +496,16 @@ func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
 	if d.name != "" {
 		for _, reg := range entity.Global().ListForDatabase("") {
 			tables = append(tables, reg.EntityType)
+		}
+	}
+
+	// Append relational table names from the catalog, scoped to the
+	// session's tenant exactly as GetTableInsensitive scopes lookups.
+	if d.registry != nil {
+		if tableSvc, err := d.registry.TableService(d.sessionTenantID(ctx), d.name); err == nil {
+			if names, lerr := tableSvc.ListTables(ctx, d.name); lerr == nil {
+				tables = append(tables, names...)
+			}
 		}
 	}
 

@@ -17,6 +17,7 @@ package seal_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -94,6 +95,142 @@ func TestRegisterVolumeTenant_ExplicitDataRoot(t *testing.T) {
 	}
 	if tb.IsSealed() {
 		t.Error("barrier still sealed after Initialize")
+	}
+}
+
+// TestReattachVolumeTenant_PresentStoreSucceeds verifies the boot re-attach
+// path succeeds when the tenant's persisted barrier store is present on disk:
+// reg1 creates it, a fresh reg2 (same system barrier + pool) re-attaches it.
+func TestReattachVolumeTenant_PresentStoreSucceeds(t *testing.T) {
+	ctx := context.Background()
+	system, opts, _ := newShareableComponents(t)
+	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	reg1, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (reg1): %v", err)
+	}
+	dataRoot := t.TempDir()
+	if _, _, err := reg1.RegisterVolumeTenant(ctx, "present", dataRoot, false); err != nil {
+		t.Fatalf("RegisterVolumeTenant (create): %v", err)
+	}
+	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
+
+	reg2, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry (reg2): %v", err)
+	}
+	root, tb, err := reg2.ReattachVolumeTenant(ctx, "present", dataRoot, false)
+	if err != nil {
+		t.Fatalf("ReattachVolumeTenant (present store): %v", err)
+	}
+	if root != dataRoot {
+		t.Errorf("root = %q, want %q", root, dataRoot)
+	}
+	if tb == nil {
+		t.Fatal("expected non-nil TenantBarrier")
+	}
+}
+
+// TestReattachVolumeTenant_AbsentStoreReturnsMountMissing is the L3 regression
+// guard: re-attaching at a persisted DataRoot whose barrier store is NOT
+// present (dedicated mount absent, or an empty leftover dir) must fail closed
+// with DataRootMountMissingError and must NOT mint a fresh empty barrier.
+func TestReattachVolumeTenant_AbsentStoreReturnsMountMissing(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("missing directory", func(t *testing.T) {
+		reg, _, _ := newPooledRegistry(t)
+		dataRoot := filepath.Join(t.TempDir(), "unmounted", "vt") // never created
+		_, _, err := reg.ReattachVolumeTenant(ctx, "absent", dataRoot, false)
+		assertMountMissing(t, reg, "absent", dataRoot, err)
+	})
+
+	t.Run("empty barrier directory", func(t *testing.T) {
+		reg, _, _ := newPooledRegistry(t)
+		dataRoot := t.TempDir()
+		// Simulate the mount being present but the barrier store never
+		// populated (an empty {dataRoot}/barrier directory).
+		if err := os.MkdirAll(filepath.Join(dataRoot, "barrier"), 0o700); err != nil {
+			t.Fatalf("mkdir empty barrier: %v", err)
+		}
+		_, _, err := reg.ReattachVolumeTenant(ctx, "empty", dataRoot, false)
+		assertMountMissing(t, reg, "empty", dataRoot, err)
+	})
+}
+
+// assertMountMissing asserts the re-attach failed closed: a
+// DataRootMountMissingError was returned, the tenant is not registered, and no
+// fresh Pebble was created at {dataRoot}/barrier.
+func assertMountMissing(t *testing.T, reg *seal.BarrierRegistry, tenantID, dataRoot string, err error) {
+	t.Helper()
+	var mm *seal.DataRootMountMissingError
+	if !errors.As(err, &mm) {
+		t.Fatalf("ReattachVolumeTenant = %v, want *seal.DataRootMountMissingError", err)
+	}
+	if _, gerr := reg.GetTenant(tenantID); gerr == nil {
+		t.Error("tenant must NOT be registered after a missing-mount failure")
+	}
+	if exists, _ := pebbleExists(filepath.Join(dataRoot, "barrier")); exists {
+		t.Error("a fresh barrier Pebble was created at the missing mount; must fail closed")
+	}
+}
+
+// TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks verifies the CREATE
+// path (RegisterVolumeTenant, mustExist=false) is NOT broken by the re-attach
+// assertion: a first-ever WithDataRoot tenant whose directory does not exist
+// yet is created normally.
+func TestRegisterVolumeTenant_FreshCreateNonExistentDirWorks(t *testing.T) {
+	reg, _, _ := newPooledRegistry(t)
+	ctx := context.Background()
+	dataRoot := filepath.Join(t.TempDir(), "fresh", "vt") // does not exist yet
+
+	root, tb, err := reg.RegisterVolumeTenant(ctx, "fresh", dataRoot, false)
+	if err != nil {
+		t.Fatalf("RegisterVolumeTenant (fresh non-existent dir): %v", err)
+	}
+	if root != dataRoot {
+		t.Errorf("root = %q, want %q", root, dataRoot)
+	}
+	if tb == nil {
+		t.Fatal("expected non-nil TenantBarrier")
+	}
+	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
+}
+
+// TestRestoreVolumeTenants_MissingMountSkipped verifies that boot restore fails
+// a tenant whose dedicated mount is absent CLOSED (skips it, logs) instead of
+// silently opening a fresh empty barrier — and does not abort the whole node.
+func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
+	ctx := context.Background()
+	system, opts, _ := newShareableComponents(t)
+	if err := system.Initialize(ctx, seal.Credentials{Secret: []byte("pool-test-pass")}); err != nil {
+		t.Fatalf("system barrier Initialize: %v", err)
+	}
+
+	// Persist a tenant-root record pointing at a DataRoot that was never
+	// created (the dedicated disk is not mounted this boot).
+	missingRoot := filepath.Join(t.TempDir(), "unmounted-disk", "vt")
+	rec := `{"data_root":"` + missingRoot + `","auto_unseal":false}`
+	if err := system.Put(ctx, tenantRootKeyPrefix+"ghost", []byte(rec)); err != nil {
+		t.Fatalf("system.Put missing-mount record: %v", err)
+	}
+
+	reg, err := seal.NewBarrierRegistry(poolTestLogger(), system, opts...)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	// The whole node must not crash: restore returns nil, skipping the tenant.
+	if err := reg.RestoreVolumeTenants(ctx); err != nil {
+		t.Fatalf("RestoreVolumeTenants must not abort on a missing mount: %v", err)
+	}
+	if _, gerr := reg.GetTenant("ghost"); gerr == nil {
+		t.Error("tenant with a missing mount must NOT be registered after restore")
+	}
+	if exists, _ := pebbleExists(filepath.Join(missingRoot, "barrier")); exists {
+		t.Error("restore created a fresh empty barrier at the missing mount; must fail closed")
 	}
 }
 

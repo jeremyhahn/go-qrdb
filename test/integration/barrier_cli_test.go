@@ -125,6 +125,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -253,42 +254,11 @@ func loadDaemonCA(t *testing.T, dataDir string) *testCA {
 	keyPath := filepath.Join(dataDir, "ca-key.pem")
 	waitForNonEmptyFile(t, keyPath, 30*time.Second)
 
-	certPEM, err := os.ReadFile(certPath)
+	ca, err := qrdbdharness.LoadCA(certPath, keyPath)
 	if err != nil {
-		t.Fatalf("loadDaemonCA: read cert: %v", err)
+		t.Fatalf("loadDaemonCA: %v", err)
 	}
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatalf("loadDaemonCA: read key: %v", err)
-	}
-
-	certBlock, _ := pem.Decode(certPEM)
-	if certBlock == nil {
-		t.Fatalf("loadDaemonCA: no PEM block in %s", certPath)
-	}
-	cert, err := x509.ParseCertificate(certBlock.Bytes)
-	if err != nil {
-		t.Fatalf("loadDaemonCA: parse cert: %v", err)
-	}
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		t.Fatalf("loadDaemonCA: no PEM block in %s", keyPath)
-	}
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
-	if err != nil {
-		t.Fatalf("loadDaemonCA: parse key: %v", err)
-	}
-
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-
-	return &testCA{
-		CertPEM:  certPEM,
-		CertPath: certPath,
-		Pool:     pool,
-		cert:     cert,
-		key:      key,
-	}
+	return &testCA{CA: ca}
 }
 
 // waitForNonEmptyFile polls until path exists and is non-empty.

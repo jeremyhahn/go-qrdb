@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"time"
 
@@ -50,7 +51,7 @@ func toolCredentialStore() mcp.Tool {
 	return mcp.NewTool("qrdb_credential_store",
 		mcp.WithDescription("Persist a credential value under the given name."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("The credential name.")),
-		mcp.WithString("value", mcp.Required(), mcp.Description("The credential value to store.")),
+		mcp.WithString("value", mcp.Required(), mcp.Description("The credential value to store, base64-encoded (RFC 4648). Encoding as base64 preserves arbitrary binary content byte-for-byte; UTF-8 text must also be base64-encoded.")),
 	)
 }
 
@@ -61,11 +62,15 @@ func handleCredentialStore(svc service.CredentialServicer) mcpserver.ToolHandler
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
-		value := mcp.ParseString(req, "value", "")
-		if value == "" {
+		valueArg := mcp.ParseString(req, "value", "")
+		if valueArg == "" {
 			return mcp.NewToolResultError("value is required"), nil
 		}
-		if err := svc.CredentialStore(ctx, name, []byte(value)); err != nil {
+		value, decodeErr := base64.StdEncoding.DecodeString(valueArg)
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "value", Err: decodeErr}).Error()), nil
+		}
+		if err := svc.CredentialStore(ctx, name, value); err != nil {
 			return nil, &ToolError{Tool: "qrdb_credential_store", Err: err}
 		}
 		return mcp.NewToolResultText("credential stored"), nil
@@ -75,12 +80,14 @@ func handleCredentialStore(svc service.CredentialServicer) mcpserver.ToolHandler
 // toolCredentialRetrieve defines the qrdb_credential_retrieve tool schema.
 func toolCredentialRetrieve() mcp.Tool {
 	return mcp.NewTool("qrdb_credential_retrieve",
-		mcp.WithDescription("Retrieve the credential value for the given name."),
+		mcp.WithDescription("Retrieve the credential value for the given name. The returned value is base64-encoded (RFC 4648) to preserve arbitrary binary content byte-for-byte."),
 		mcp.WithString("name", mcp.Required(), mcp.Description("The credential name.")),
 	)
 }
 
-// handleCredentialRetrieve returns a tool handler that reads a credential value.
+// handleCredentialRetrieve returns a tool handler that reads a credential
+// value. The value is emitted base64-encoded so binary content round-trips
+// byte-for-byte.
 func handleCredentialRetrieve(svc service.CredentialServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := mcp.ParseString(req, "name", "")
@@ -91,7 +98,7 @@ func handleCredentialRetrieve(svc service.CredentialServicer) mcpserver.ToolHand
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_credential_retrieve", Err: err}
 		}
-		return mcp.NewToolResultText(string(value)), nil
+		return mcp.NewToolResultText(base64.StdEncoding.EncodeToString(value)), nil
 	}
 }
 
@@ -105,7 +112,7 @@ func toolCredentialSubmit() mcp.Tool {
 		),
 		mcp.WithString("value",
 			mcp.Required(),
-			mcp.Description("The credential value."),
+			mcp.Description("The credential value, base64-encoded (RFC 4648). Encoding as base64 preserves arbitrary binary content byte-for-byte; UTF-8 text must also be base64-encoded."),
 		),
 	)
 }
@@ -119,12 +126,16 @@ func handleCredentialSubmit(svc service.CredentialServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		value := mcp.ParseString(req, "value", "")
-		if value == "" {
+		valueArg := mcp.ParseString(req, "value", "")
+		if valueArg == "" {
 			return mcp.NewToolResultError("value is required"), nil
 		}
+		value, decodeErr := base64.StdEncoding.DecodeString(valueArg)
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "value", Err: decodeErr}).Error()), nil
+		}
 
-		if err := svc.CredentialSubmit(ctx, name, []byte(value)); err != nil {
+		if err := svc.CredentialSubmit(ctx, name, value); err != nil {
 			return nil, &ToolError{Tool: "qrdb_credential_submit", Err: err}
 		}
 
@@ -237,7 +248,7 @@ func toolCredentialRotate() mcp.Tool {
 		),
 		mcp.WithString("new_value",
 			mcp.Required(),
-			mcp.Description("The new credential value."),
+			mcp.Description("The new credential value, base64-encoded (RFC 4648). Encoding as base64 preserves arbitrary binary content byte-for-byte; UTF-8 text must also be base64-encoded."),
 		),
 		mcp.WithNumber("grace_period_seconds",
 			mcp.Description("How long (in seconds) the previous value remains retrievable by version number. Zero means immediate wipe."),
@@ -256,9 +267,13 @@ func handleCredentialRotate(svc service.CredentialServicer) mcpserver.ToolHandle
 			return mcp.NewToolResultError("name is required"), nil
 		}
 
-		newValue := mcp.ParseString(req, "new_value", "")
-		if newValue == "" {
+		newValueArg := mcp.ParseString(req, "new_value", "")
+		if newValueArg == "" {
 			return mcp.NewToolResultError("new_value is required"), nil
+		}
+		newValue, decodeErr := base64.StdEncoding.DecodeString(newValueArg)
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "new_value", Err: decodeErr}).Error()), nil
 		}
 
 		gracePeriodSeconds := mcp.ParseInt64(req, "grace_period_seconds", 0)
@@ -267,7 +282,7 @@ func handleCredentialRotate(svc service.CredentialServicer) mcpserver.ToolHandle
 		}
 
 		res, err := svc.CredentialRotate(ctx, name, credentials.RotateOptions{
-			NewValue:    []byte(newValue),
+			NewValue:    newValue,
 			GracePeriod: time.Duration(gracePeriodSeconds) * time.Second,
 		})
 		if err != nil {
@@ -300,7 +315,7 @@ func handleCredentialRotate(svc service.CredentialServicer) mcpserver.ToolHandle
 // tool schema.
 func toolCredentialRetrieveVersion() mcp.Tool {
 	return mcp.NewTool("qrdb_credential_retrieve_version",
-		mcp.WithDescription("Return the stored credential value for a specific version. Pass version=0 for the current version."),
+		mcp.WithDescription("Return the stored credential value for a specific version. Pass version=0 for the current version. The value field in the JSON response is base64-encoded (RFC 4648) to preserve arbitrary binary content byte-for-byte."),
 		mcp.WithString("name",
 			mcp.Required(),
 			mcp.Description("The credential name to retrieve."),
@@ -328,10 +343,13 @@ func handleCredentialRetrieveVersion(svc service.CredentialServicer) mcpserver.T
 			return nil, &ToolError{Tool: "qrdb_credential_retrieve_version", Err: err}
 		}
 
+		// encoding/json renders a []byte field as base64 (RFC 4648), so binary
+		// credential content round-trips byte-for-byte into the client's
+		// transport.CredentialRetrieveVersionResponse (also a []byte field).
 		result := struct {
-			Value string `json:"value"`
+			Value []byte `json:"value"`
 		}{
-			Value: string(value),
+			Value: value,
 		}
 
 		data, jsonErr := json.Marshal(result)

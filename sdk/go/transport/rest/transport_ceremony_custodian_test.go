@@ -30,10 +30,10 @@ import (
 // custodian ceremony + non-versioned credential store/retrieve routes.
 type custodianCeremonyServer struct {
 	storeName  string
-	storeValue string
+	storeValue []byte
 	failStore  bool
 
-	retrieveValue string
+	retrieveValue []byte
 	failRetrieve  bool
 }
 
@@ -45,7 +45,10 @@ func (s *custodianCeremonyServer) handler() http.Handler {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
-		var body struct{ Name, Value string }
+		var body struct {
+			Name  string `json:"name"`
+			Value []byte `json:"value"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		s.storeName, s.storeValue = body.Name, body.Value
 		w.WriteHeader(http.StatusOK)
@@ -56,7 +59,7 @@ func (s *custodianCeremonyServer) handler() http.Handler {
 			http.Error(w, "missing", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"value": s.retrieveValue})
+		_ = json.NewEncoder(w).Encode(map[string][]byte{"value": s.retrieveValue})
 	})
 
 	mux.HandleFunc("/v1/ceremony/claim-share/begin", func(w http.ResponseWriter, _ *http.Request) {
@@ -95,7 +98,7 @@ func TestRESTCredentialStore_RoundTrip(t *testing.T) {
 	if err := rt.CredentialStore(context.Background(), "db-cred", []byte("p@ss")); err != nil {
 		t.Fatalf("CredentialStore: %v", err)
 	}
-	if srv.storeName != "db-cred" || srv.storeValue != "p@ss" {
+	if srv.storeName != "db-cred" || string(srv.storeValue) != "p@ss" {
 		t.Errorf("server got name=%q value=%q", srv.storeName, srv.storeValue)
 	}
 }
@@ -120,7 +123,7 @@ func TestRESTCredentialStore_AfterClose(t *testing.T) {
 
 func TestRESTCredentialRetrieve_RoundTrip(t *testing.T) {
 	rt, srv := newCustodianCeremonyTestTransport(t)
-	srv.retrieveValue = "p@ss"
+	srv.retrieveValue = []byte("p@ss")
 	val, err := rt.CredentialRetrieve(context.Background(), "db-cred")
 	if err != nil {
 		t.Fatalf("CredentialRetrieve: %v", err)

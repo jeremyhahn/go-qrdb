@@ -136,6 +136,12 @@ type MVCCClient interface {
 
 	// CurrentRevision returns the latest committed MVCC revision.
 	CurrentRevision(ctx context.Context) (int64, error)
+
+	// RestoreToRevision returns a bounded set of keys to the value they
+	// held at an earlier MVCC revision by proposing new writes -- a
+	// logical undo, never a Raft rewind. Exactly one of req.Prefix and
+	// req.Keys must be set.
+	RestoreToRevision(ctx context.Context, req *RestoreRevisionRequest) (*RestoreRevisionResult, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -631,9 +637,16 @@ type CeremonyClient interface {
 	// submitting the signed nonce.
 	CeremonyClaimCertComplete(ctx context.Context, req *ClaimCertCompleteRequest) (*ClaimCertCompleteResponse, error)
 
-	// CeremonyClaimShare retrieves the Shamir share for an officer who
-	// has already claimed their certificate.
-	CeremonyClaimShare(ctx context.Context, req *ClaimShareRequest) (*ClaimShareResponse, error)
+	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+	// officer who has already claimed their certificate. The caller must
+	// present an mTLS client certificate whose thumbprint matches the
+	// officer's enrolment record; the server derives it from the peer chain.
+	CeremonyBeginClaimShare(ctx context.Context, req *BeginClaimShareRequest) (*BeginClaimShareResponse, error)
+
+	// CeremonyCompleteClaimShare completes the Shamir share claim handshake
+	// by submitting the signed challenge nonce. The share is released exactly
+	// once.
+	CeremonyCompleteClaimShare(ctx context.Context, req *CompleteClaimShareRequest) (*CompleteClaimShareResponse, error)
 
 	// CeremonySignCSR submits a CSR for signing during or after the
 	// ceremony.

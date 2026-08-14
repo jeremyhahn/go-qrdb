@@ -348,6 +348,45 @@ func DecodeFieldValue(encoded []byte, config IndexConfig) string {
 	return string(encoded)
 }
 
+// resolveNumericScanBound resolves a Scan boundary value for a numeric
+// index. Callers that translate SQL range predicates into index scans (see
+// pkg/sql/provider/range_translator.go) express an exclusive bound by
+// appending a trailing 0x00 byte to the bound's decimal text, which is the
+// correct way to advance a byte-comparable string key past its exact value.
+// That trick cannot be applied before parsing a numeric bound, because a
+// trailing NUL byte is not valid float syntax and strconv.ParseFloat would
+// simply fail — silently turning a valid exclusive-bound scan into an
+// invalid one.
+//
+// Instead the marker is resolved AFTER encoding: the decimal text (with the
+// marker stripped, if present) is parsed and encoded to its fixed-width
+// 8-byte big-endian form, and if the marker was present, the exact
+// successor of the encoded bytes is returned. Computing the successor in
+// the encoded byte domain (rather than the decimal-text domain) keeps
+// exclusivity correct across the sign-flip boundary used for negative
+// numbers and across fractional values.
+//
+// Returns an InvalidNumericBoundError when the bound cannot be parsed as a
+// number. This must be treated as a hard failure, never silently mapped to
+// an empty result: a malformed bound is a caller error, not "no matches".
+func resolveNumericScanBound(raw []byte, indexName, op string) ([]byte, error) {
+	base := raw
+	exclusive := false
+	if n := len(raw); n > 0 && raw[n-1] == 0x00 {
+		base = raw[:n-1]
+		exclusive = true
+	}
+
+	encoded, err := EncodeNumericValue(string(base))
+	if err != nil {
+		return nil, &InvalidNumericBoundError{IndexName: indexName, Op: op, Value: raw, Err: err}
+	}
+	if exclusive {
+		encoded = incrementBytes(encoded)
+	}
+	return encoded, nil
+}
+
 // EncodeNumericValue parses s as a float64 (to handle both integer and
 // floating-point JSON numbers) and encodes the result as an 8-byte
 // big-endian value with a sign-bit flip so that byte order matches

@@ -19,7 +19,13 @@ package sdk
 import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 
 // RAG returns a RAGClient for retrieval-augmented-generation operations.
-// Only available under the qrdb_vector build tag.
+// Only available under the qrdb_vector build tag. Returns nil when the
+// active transport does not implement transport.RAGClient; callers should
+// nil-check the result and fall back appropriately (see
+// Client.UserAuthFactors for the established pattern).
 func (c *Client) RAG() transport.RAGClient {
-	return c.transport.(transport.RAGClient)
+	if rc, ok := c.transport.(transport.RAGClient); ok {
+		return rc
+	}
+	return nil
 }

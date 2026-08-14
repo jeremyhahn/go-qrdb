@@ -36,10 +36,32 @@ import (
 )
 
 // KVServicer provides KV data-plane operations with linearizable reads
-// and writes through the Raft consensus layer.
+// and writes.
+//
+// Implementations exist for several engines — Raft consensus, MVCC, and a
+// direct storage backend — so the doc comments below describe the guarantee,
+// not the mechanism. Each implementation states how it achieves it.
 type KVServicer interface {
-	// Put stores a key-value pair through Raft consensus.
+	// Put stores a key-value pair.
 	Put(ctx context.Context, key string, value []byte) error
+
+	// PutIfAbsent atomically stores value under key only if key does not
+	// already exist. It reports stored=true when this call created the key and
+	// stored=false, with a nil error, when the key already existed — in which
+	// case the store is unchanged. A non-nil error means the outcome is
+	// unknown and the caller must not assume either way.
+	//
+	// This is the only write on this interface with a defined outcome under
+	// concurrency. Put always overwrites, and a caller performing Get-then-Put
+	// has a window between the two in which another caller can interleave, so
+	// both observe "absent" and both write. Anything that must happen exactly
+	// once — consuming a single-use token, claiming a name, electing one
+	// winner — requires this.
+	//
+	// Every engine implements it natively: Raft evaluates the condition inside
+	// the state machine so replicas cannot diverge, MVCC uses a transaction,
+	// and the backend-storage engine uses its own atomic primitive.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
 
 	// Get retrieves a value by key with a linearizable read.
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -169,6 +191,17 @@ type HealthStatus struct {
 	// Leader is true when the local replica is the leader for any shard.
 	Leader bool
 }
+
+// HealthStatusSealed is the canonical HealthStatus.Status verdict reported
+// by the gRPC, native QUIC, and Unix (grpc-over-UDS) Health handlers while
+// the daemon is in the pre-host sealed window -- i.e. before AdminServicer
+// exists (see cmd/qrdbd/seal_subsystem.go's awaitUnseal and
+// pkg/server.ServeSealedWindow). Health is on the sealed-window allowlist
+// (pkg/api/sealedwindow.Table VerbHealth) on every transport, so those
+// handlers report this verdict directly instead of erroring, letting SDK
+// Connect() (which requires a successful Health RPC) treat a reachable,
+// correctly-sealed daemon as connected rather than unreachable.
+const HealthStatusSealed = "sealed"
 
 // StatusInfo provides detailed host and shard status information.
 type StatusInfo struct {
@@ -355,6 +388,33 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 		return resultErr
 	}
 	return nil
+}
+
+// PutIfAbsent stores value under key only when the key is absent, through Raft
+// consensus.
+//
+// The condition is evaluated inside the state machine, at this entry's position
+// in the committed log, so every replica decides identically from identical
+// state. It deliberately does NOT read first and then propose a plain Put: that
+// is two operations with a window between them, and two proposers racing would
+// both observe "absent" and both write.
+//
+// A declined write is a successful application — the state machine reports
+// kv.ResultNotStored rather than an error — so consensus is never stalled by
+// losing the race.
+func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	cmd, err := kv.EncodePutIfAbsent([]byte(key), value)
+	if err != nil {
+		return false, &ProposeError{Err: err}
+	}
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == kv.ResultStored, nil
 }
 
 // Get retrieves a value by key with a linearizable read through the Raft
@@ -942,11 +1002,11 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr string) error {
 	rs, err := s.host.RequestAddNode(ctx, shardID, replicaID, raftAddr, 0)
 	if err != nil {
-		return &MembershipError{Op: "add", Err: err}
+		return s.translateMembershipError("add", err)
 	}
 
 	if _, err := rs.Result(); err != nil {
-		return &MembershipError{Op: "add", Err: err}
+		return s.translateMembershipError("add", err)
 	}
 
 	return nil
@@ -958,14 +1018,31 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 func (s *AdminService) RemoveMember(ctx context.Context, shardID, replicaID uint64) error {
 	rs, err := s.host.RequestRemoveNode(ctx, shardID, replicaID, 0)
 	if err != nil {
-		return &MembershipError{Op: "remove", Err: err}
+		return s.translateMembershipError("remove", err)
 	}
 
 	if _, err := rs.Result(); err != nil {
-		return &MembershipError{Op: "remove", Err: err}
+		return s.translateMembershipError("remove", err)
 	}
 
 	return nil
+}
+
+// translateMembershipError converts QuicRaft membership-change errors to
+// service-level typed errors. NotLeaderError is mapped to service.NotLeaderError
+// so callers (in particular the REST/gRPC leader-forwarding paths) can
+// redirect the request to the current leader instead of surfacing a generic
+// failure. All other errors are wrapped as MembershipError.
+func (s *AdminService) translateMembershipError(op string, err error) error {
+	var nle *quicraft.NotLeaderError
+	if errors.As(err, &nle) {
+		return &NotLeaderError{
+			ShardID:       nle.ShardID,
+			LeaderID:      nle.LeaderID,
+			LeaderAddress: nle.LeaderAddress,
+		}
+	}
+	return &MembershipError{Op: op, Err: err}
 }
 
 // RequestSnapshot triggers an asynchronous snapshot for the specified shard.
@@ -1070,7 +1147,7 @@ func (s *AdminService) GetTopology(_ context.Context) (*TopologyResponse, error)
 
 // systemKeyPrefix is the prefix used for internal system keys (roles, users,
 // indexes) that should be hidden from user-facing list/scan operations.
-const systemKeyPrefix = "__sys:"
+const systemKeyPrefix = InternalKeyPrefixSystem
 
 // isSystemPrefix returns true when the query prefix itself targets system
 // keys. Internal stores (users, roles, certs) intentionally scan system

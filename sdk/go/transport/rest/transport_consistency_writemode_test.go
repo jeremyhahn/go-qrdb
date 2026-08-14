@@ -287,7 +287,7 @@ func TestTransportPutWithLease_WriteModeBatched_EmitsQueryParam(t *testing.T) {
 	var capturedMode string
 	rs.handle(pathPrefix(http.MethodPut, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedMode = r.URL.Query().Get("write_mode")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("v")})
 	})
 
 	_, err := rt.PutWithLease(context.Background(), "k", []byte("v"), 1, transport.WithWriteMode(transport.WriteModeBatched))
@@ -305,7 +305,7 @@ func TestTransportPutWithLease_NoWriteMode_OmitsQueryParam(t *testing.T) {
 	var capturedMode string
 	rs.handle(pathPrefix(http.MethodPut, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedMode = r.URL.Query().Get("write_mode")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("v")})
 	})
 
 	_, err := rt.PutWithLease(context.Background(), "k", []byte("v"), 1)
@@ -327,7 +327,7 @@ func TestTransportGetRevision_ConsistencyStrong_EmitsQueryParam(t *testing.T) {
 	var capturedConsistency string
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedConsistency = r.URL.Query().Get("consistency")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "rev-v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("rev-v")})
 	})
 
 	_, err := rt.GetRevision(context.Background(), "k", transport.WithConsistency(transport.ConsistencyStrong))
@@ -345,7 +345,7 @@ func TestTransportGetRevision_NoConsistency_OmitsQueryParam(t *testing.T) {
 	var capturedConsistency string
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedConsistency = r.URL.Query().Get("consistency")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "rev-v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("rev-v")})
 	})
 
 	_, err := rt.GetRevision(context.Background(), "k")
@@ -367,7 +367,7 @@ func TestTransportGetAtRevision_ConsistencyEventual_EmitsQueryParam(t *testing.T
 	var capturedConsistency string
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedConsistency = r.URL.Query().Get("consistency")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "atrev-v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("atrev-v")})
 	})
 
 	_, err := rt.GetAtRevision(context.Background(), "k", 5, transport.WithConsistency(transport.ConsistencyEventual))
@@ -385,7 +385,7 @@ func TestTransportGetAtRevision_NoConsistency_OmitsQueryParam(t *testing.T) {
 	var capturedConsistency string
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
 		capturedConsistency = r.URL.Query().Get("consistency")
-		writeJSON(w, &mvccKVWireResponse{Key: "k", Value: "atrev-v"})
+		writeJSON(w, &mvccKVWireResponse{Key: []byte("k"), Value: []byte("atrev-v")})
 	})
 
 	_, err := rt.GetAtRevision(context.Background(), "k", 5)

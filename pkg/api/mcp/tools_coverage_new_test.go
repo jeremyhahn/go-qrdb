@@ -461,7 +461,7 @@ func (m *covMockAuditLogger) Close() error { return nil }
 
 func TestCovBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	tools := barrierTools(svc, nil)
+	tools := barrierTools(svc, nil, nil)
 	if len(tools) != 22 {
 		t.Fatalf("expected 22 tools, got %d", len(tools))
 	}
@@ -516,15 +516,34 @@ func TestCovHandleBarrierInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestCovHandleBarrierInitialize_MissingSecret proves an empty secret is
+// passed through to the service rather than rejected at the handler --
+// see tools_barrier_test.go's TestHandleBarrierInitialize_MissingSecret for
+// the full rationale (parity with REST/gRPC/QUIC, required for `barrier
+// init --barrier-strategy none` to work over MCP).
 func TestCovHandleBarrierInitialize_MissingSecret(t *testing.T) {
-	handler := handleBarrierInitialize(newCovMockBarrierSvc(), nil)
+	svc := newCovMockBarrierSvc()
+	var gotSecret string
+	gotCalled := false
+	svc.initializeFn = func(_ context.Context, secret string) error {
+		gotCalled = true
+		gotSecret = secret
+		return nil
+	}
+	handler := handleBarrierInitialize(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected error result for missing secret")
+	if result.IsError {
+		t.Errorf("expected success (empty secret passed through), got error result: %v", result)
+	}
+	if !gotCalled {
+		t.Fatal("expected the service's BarrierInitialize to be called with the empty secret")
+	}
+	if gotSecret != "" {
+		t.Errorf("expected the empty secret to reach the service unchanged, got %q", gotSecret)
 	}
 }
 
@@ -1930,7 +1949,7 @@ func TestCovHandleAuthFactorRevoke_ServiceError(t *testing.T) {
 
 func TestCovUserAuthFactorTools_Registration(t *testing.T) {
 	svc := newCovMockUserAuthFactorSvc()
-	tools := userAuthFactorTools(svc)
+	tools := userAuthFactorTools(svc, nil)
 	if len(tools) != 7 {
 		t.Fatalf("expected 7 tools, got %d", len(tools))
 	}
@@ -2233,7 +2252,7 @@ func TestCovHandleUserAuthFactorRelabel_GetError(t *testing.T) {
 }
 
 func TestCovHandleUserAuthFactorLogin_Success(t *testing.T) {
-	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc())
+	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc(), nil)
 	key := base64.StdEncoding.EncodeToString([]byte("lookupkey"))
 	req := buildCallToolRequest(t, "qrdb_user_authfactor_login", map[string]any{
 		"type": "mtls", "lookup_key_b64": key,
@@ -2255,7 +2274,7 @@ func TestCovHandleUserAuthFactorLogin_Success(t *testing.T) {
 }
 
 func TestCovHandleUserAuthFactorLogin_MissingFields(t *testing.T) {
-	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc())
+	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_user_authfactor_login", map[string]any{"type": "mtls"})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -2264,7 +2283,7 @@ func TestCovHandleUserAuthFactorLogin_MissingFields(t *testing.T) {
 }
 
 func TestCovHandleUserAuthFactorLogin_BadBase64(t *testing.T) {
-	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc())
+	handler := handleUserAuthFactorLoginTool(newCovMockUserAuthFactorSvc(), nil)
 	req := buildCallToolRequest(t, "qrdb_user_authfactor_login", map[string]any{
 		"type": "mtls", "lookup_key_b64": "!!!bad!!!",
 	})
@@ -2279,7 +2298,7 @@ func TestCovHandleUserAuthFactorLogin_ServiceError(t *testing.T) {
 	svc.lookupFn = func(_ context.Context, _ auth.AuthFactorType, _ []byte) (*auth.AuthFactor, error) {
 		return nil, errors.New("not found")
 	}
-	handler := handleUserAuthFactorLoginTool(svc)
+	handler := handleUserAuthFactorLoginTool(svc, nil)
 	key := base64.StdEncoding.EncodeToString([]byte("key"))
 	req := buildCallToolRequest(t, "qrdb_user_authfactor_login", map[string]any{
 		"type": "mtls", "lookup_key_b64": key,

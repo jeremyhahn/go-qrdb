@@ -43,19 +43,21 @@ var expectedMethods = []string{
 	"admin.GetShardState",
 	"admin.GetTopology",
 
-	// MVCC (6)
+	// MVCC (7)
 	"mvcc.PutWithLease",
 	"mvcc.GetRevision",
 	"mvcc.GetAtRevision",
 	"mvcc.Range",
 	"mvcc.Compact",
 	"mvcc.CurrentRevision",
+	"mvcc.RestoreToRevision",
 
 	// Transaction (1)
 	"tx.Transaction",
 
-	// Batch (1)
+	// Batch (2)
 	"batch.Batch",
+	"batch.Import",
 
 	// Watch is server-streaming (handleWatchStream); not in the unary table.
 
@@ -164,13 +166,17 @@ var expectedMethods = []string{
 	"db.UpdateProtocol",
 	"db.UpdateEtcd",
 	"db.UpdateRaft",
+	"db.Scale",
 	"db.UpdateBarrier",
 	"db.UpdateConnection",
 	"db.Seal",
 	"db.Unseal",
 	"db.BarrierStatus",
 
-	// Barrier (22)
+	// SQL (1)
+	"sql.Query",
+
+	// Barrier (23)
 	"barrier.Initialize",
 	"barrier.Unseal",
 	"barrier.Seal",
@@ -179,6 +185,7 @@ var expectedMethods = []string{
 	"barrier.ShamirUnsealShare",
 	"barrier.ShamirUnsealShares",
 	"barrier.Rekey",
+	"barrier.EnableEncryption",
 	"barrier.RecoveryGenerate",
 	"barrier.RecoveryRecover",
 	"barrier.RecoveryDelete",
@@ -199,7 +206,8 @@ var expectedMethods = []string{
 	"ceremony.Status",
 	"ceremony.ClaimCertBegin",
 	"ceremony.ClaimCertComplete",
-	"ceremony.ClaimShare",
+	"ceremony.BeginClaimShare",
+	"ceremony.CompleteClaimShare",
 	"ceremony.SignCSR",
 	"ceremony.ClaimShareBegin",
 	"ceremony.ClaimShareComplete",
@@ -230,12 +238,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 154 = 144 prior unary handlers + 9 barrier SO handlers
-	// (barrier.OfficerRegister/OfficerList/ShareClaimBegin/ShareClaimComplete/
-	// OfficerClaimStatus/RecoveryOfficerRegister/RecoveryShareClaimBegin/
-	// RecoveryShareClaimComplete/ShamirSealVote) + 1 tenant.UpdateEntitlements.
-	// The 2 watch methods remain on the streaming path, not the unary table.
-	const wantCount = 154
+	// 160 = 159 prior unary handlers + mvcc.RestoreToRevision (selective
+	// point-in-time restore). The 2 watch methods remain on the streaming
+	// path, not the unary table.
+	const wantCount = 160
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -309,6 +315,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"barrier":  0,
 		"ceremony": 0,
 		"tenant":   0,
+		"sql":      0,
 	}
 
 	for method := range srv.handlers {
@@ -326,9 +333,9 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 	expectedCounts := map[string]int{
 		"kv":       5,
 		"admin":    12,
-		"mvcc":     6,
+		"mvcc":     7,
 		"tx":       1,
-		"batch":    1,
+		"batch":    2,
 		"lease":    5,
 		"lock":     6,
 		"index":    5,
@@ -337,9 +344,10 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"user":     10,
 		"role":     10,
 		"cert":     4,
-		"barrier":  22,
-		"ceremony": 9,
+		"barrier":  23,
+		"ceremony": 10,
 		"tenant":   7,
+		"sql":      1,
 	}
 
 	for cat, want := range expectedCounts {

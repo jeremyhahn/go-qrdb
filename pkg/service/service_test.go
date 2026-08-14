@@ -1036,6 +1036,133 @@ func TestAdminService_RemoveMember_ResultError(t *testing.T) {
 	}
 }
 
+func TestAdminService_AddMember_NotLeaderError_RequestError(t *testing.T) {
+	host := &mockHost{
+		requestAddNodeFn: func(_ context.Context, _, _ uint64, _ string) (*quicraft.RequestState, error) {
+			return nil, &quicraft.NotLeaderError{
+				ShardID:       1,
+				LeaderID:      2,
+				LeaderAddress: "10.0.0.2:9100",
+			}
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T: %v", err, err)
+	}
+	if nle.ShardID != 1 {
+		t.Fatalf("expected ShardID 1, got %d", nle.ShardID)
+	}
+	if nle.LeaderID != 2 {
+		t.Fatalf("expected LeaderID 2, got %d", nle.LeaderID)
+	}
+	if nle.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("expected LeaderAddress 10.0.0.2:9100, got %s", nle.LeaderAddress)
+	}
+
+	var me *MembershipError
+	if errors.As(err, &me) {
+		t.Fatalf("expected NotLeaderError NOT to be wrapped as MembershipError, got %v", me)
+	}
+}
+
+func TestAdminService_AddMember_NotLeaderError_ResultError(t *testing.T) {
+	host := &mockHost{
+		requestAddNodeFn: func(_ context.Context, _, _ uint64, _ string) (*quicraft.RequestState, error) {
+			return newCompletedRequestState(quicraft.RequestResult{
+				Err: &quicraft.NotLeaderError{
+					ShardID:       1,
+					LeaderID:      2,
+					LeaderAddress: "10.0.0.2:9100",
+				},
+			}), nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.AddMember(context.Background(), 1, 4, "10.0.0.4:9100")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T: %v", err, err)
+	}
+	if nle.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("expected LeaderAddress 10.0.0.2:9100, got %s", nle.LeaderAddress)
+	}
+}
+
+func TestAdminService_RemoveMember_NotLeaderError_RequestError(t *testing.T) {
+	host := &mockHost{
+		requestRemoveNodeFn: func(_ context.Context, _, _ uint64) (*quicraft.RequestState, error) {
+			return nil, &quicraft.NotLeaderError{
+				ShardID:       1,
+				LeaderID:      2,
+				LeaderAddress: "10.0.0.2:9100",
+			}
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.RemoveMember(context.Background(), 1, 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T: %v", err, err)
+	}
+	if nle.ShardID != 1 {
+		t.Fatalf("expected ShardID 1, got %d", nle.ShardID)
+	}
+	if nle.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("expected LeaderAddress 10.0.0.2:9100, got %s", nle.LeaderAddress)
+	}
+
+	var me *MembershipError
+	if errors.As(err, &me) {
+		t.Fatalf("expected NotLeaderError NOT to be wrapped as MembershipError, got %v", me)
+	}
+}
+
+func TestAdminService_RemoveMember_NotLeaderError_ResultError(t *testing.T) {
+	host := &mockHost{
+		requestRemoveNodeFn: func(_ context.Context, _, _ uint64) (*quicraft.RequestState, error) {
+			return newCompletedRequestState(quicraft.RequestResult{
+				Err: &quicraft.NotLeaderError{
+					ShardID:       1,
+					LeaderID:      2,
+					LeaderAddress: "10.0.0.2:9100",
+				},
+			}), nil
+		},
+	}
+
+	svc := NewAdminService(host)
+	err := svc.RemoveMember(context.Background(), 1, 3)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected *NotLeaderError, got %T: %v", err, err)
+	}
+	if nle.LeaderAddress != "10.0.0.2:9100" {
+		t.Fatalf("expected LeaderAddress 10.0.0.2:9100, got %s", nle.LeaderAddress)
+	}
+}
+
 func TestAdminService_RequestSnapshot_Success(t *testing.T) {
 	host := &mockHost{
 		requestSnapshotFn: func(_ context.Context, shardID uint64) (*quicraft.RequestState, error) {

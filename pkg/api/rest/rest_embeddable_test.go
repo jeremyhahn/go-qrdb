@@ -355,7 +355,8 @@ func TestEmbeddable_Status_NilAdminService(t *testing.T) {
 // and admin services starts and stops without panicking. This covers the full
 // lifecycle of an embeddable deployment that only uses the barrier service.
 func TestEmbeddable_ServerStart_NilServices(t *testing.T) {
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithBarrierService(&embeddableBarrierService{}))
+	tlsCfg, _ := generateTestTLSConfig(t)
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithBarrierService(&embeddableBarrierService{}), WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() with nil KV/admin services returned error: %v", err)
@@ -373,7 +374,8 @@ func TestEmbeddable_ServerStart_NilServices(t *testing.T) {
 // nil services (no options) starts and stops without panicking. This is the
 // minimum viable embeddable configuration.
 func TestEmbeddable_ServerStart_AllNilServices(t *testing.T) {
-	srv := NewServer(nil, nil, "127.0.0.1:0")
+	tlsCfg, _ := generateTestTLSConfig(t)
+	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() with all nil services returned error: %v", err)

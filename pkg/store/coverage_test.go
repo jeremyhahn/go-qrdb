@@ -156,52 +156,77 @@ func TestEvaluateCompareInt_InvalidResult(t *testing.T) {
 // pebble.go: pebbleEvaluateCompare - additional target branches
 // ---------------------------------------------------------------------------
 
-func TestPebbleEvaluateCompare_CreateRevision(t *testing.T) {
+// TestPebbleEvaluateCompare_RevisionTargetsFailClosed pins the fail-closed half
+// of the non-MVCC compare contract. This state machine keeps no revisions, so a
+// create/mod-revision compare cannot be evaluated. It used to compare every key
+// against revision 0, which made the equal-to-0 case SUCCEED — the silent
+// lost-update path (a client reads revision 0 here, compares equal, and commits
+// on top of a concurrent writer). Both targets now fail closed at this layer;
+// pebbleHandleTransaction rejects them earlier with an actionable app error.
+func TestPebbleEvaluateCompare_RevisionTargetsFailClosed(t *testing.T) {
 	s := openExtendedStore(t)
 
-	// Put a key.
 	putCmd := protocol.EncodeMVCCPut([]byte("cr-key"), []byte("val"), 0)
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	// CompareCreateRevision == 0 (non-MVCC mode always returns 0).
-	dc := protocol.DecodedCompare{
-		Key:            []byte("cr-key"),
-		Target:         1, // CompareCreateRevision
-		Result:         0, // Equal
-		CreateRevision: 0,
-	}
-	if !pebbleEvaluateCompare(s, dc) {
-		t.Fatal("expected create revision compare to succeed (0 == 0)")
-	}
-
-	// CompareCreateRevision != 0 should fail.
-	dc.CreateRevision = 5
-	if pebbleEvaluateCompare(s, dc) {
-		t.Fatal("expected create revision compare to fail (0 != 5)")
+	for _, tc := range []struct {
+		name    string
+		compare protocol.DecodedCompare
+	}{
+		{"create revision equal 0", protocol.DecodedCompare{
+			Key: []byte("cr-key"), Target: compareTargetCreateRevision, Result: 0, CreateRevision: 0,
+		}},
+		{"create revision equal 5", protocol.DecodedCompare{
+			Key: []byte("cr-key"), Target: compareTargetCreateRevision, Result: 0, CreateRevision: 5,
+		}},
+		{"mod revision equal 0", protocol.DecodedCompare{
+			Key: []byte("cr-key"), Target: compareTargetModRevision, Result: 0, ModRevision: 0,
+		}},
+		{"mod revision equal 3", protocol.DecodedCompare{
+			Key: []byte("cr-key"), Target: compareTargetModRevision, Result: 0, ModRevision: 3,
+		}},
+	} {
+		if pebbleEvaluateCompare(s, readBatch(t, s), tc.compare) {
+			t.Errorf("%s: revision compare admitted on a non-MVCC state machine; it must fail closed", tc.name)
+		}
 	}
 }
 
-func TestPebbleEvaluateCompare_ModRevision(t *testing.T) {
+// TestPebbleEvaluateCompare_ValueAndVersionStillWork proves the fail-closed
+// change above is targeted: value and version compares degrade honestly on a
+// non-MVCC state machine and must keep working.
+func TestPebbleEvaluateCompare_ValueAndVersionStillWork(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("mr-key"), []byte("val"), 0)
+	putCmd := protocol.EncodeMVCCPut([]byte("vv-key"), []byte("val"), 0)
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	// CompareModRevision == 0 (non-MVCC mode always returns 0).
-	dc := protocol.DecodedCompare{
-		Key:         []byte("mr-key"),
-		Target:      2, // CompareModRevision
-		Result:      0, // Equal
-		ModRevision: 0,
+	// Version: 1 when the key exists, 0 when it does not.
+	present := protocol.DecodedCompare{
+		Key: []byte("vv-key"), Target: compareTargetVersion, Result: 0, Version: 1,
 	}
-	if !pebbleEvaluateCompare(s, dc) {
-		t.Fatal("expected mod revision compare to succeed (0 == 0)")
+	if !pebbleEvaluateCompare(s, readBatch(t, s), present) {
+		t.Error("version compare on an existing key should succeed (version 1)")
+	}
+	absent := protocol.DecodedCompare{
+		Key: []byte("vv-missing"), Target: compareTargetVersion, Result: 0, Version: 0,
+	}
+	if !pebbleEvaluateCompare(s, readBatch(t, s), absent) {
+		t.Error("version compare on a missing key should succeed (version 0)")
 	}
 
-	// CompareModRevision != 0 should fail.
-	dc.ModRevision = 3
-	if pebbleEvaluateCompare(s, dc) {
-		t.Fatal("expected mod revision compare to fail (0 != 3)")
+	// Value compares against the stored bytes.
+	match := protocol.DecodedCompare{
+		Key: []byte("vv-key"), Target: compareTargetValue, Result: 0, Value: []byte("val"),
+	}
+	if !pebbleEvaluateCompare(s, readBatch(t, s), match) {
+		t.Error("value compare should succeed for the stored value")
+	}
+	mismatch := protocol.DecodedCompare{
+		Key: []byte("vv-key"), Target: compareTargetValue, Result: 0, Value: []byte("other"),
+	}
+	if pebbleEvaluateCompare(s, readBatch(t, s), mismatch) {
+		t.Error("value compare should fail for a different value")
 	}
 }
 
@@ -217,7 +242,7 @@ func TestPebbleEvaluateCompare_DefaultTarget(t *testing.T) {
 		Target: 99, // unknown
 		Result: 0,
 	}
-	if pebbleEvaluateCompare(s, dc) {
+	if pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected false for unknown target")
 	}
 }
@@ -235,7 +260,7 @@ func TestPebbleEvaluateCompare_ValueGreater(t *testing.T) {
 		Result: 1, // Greater
 		Value:  []byte("aaa"),
 	}
-	if !pebbleEvaluateCompare(s, dc) {
+	if !pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected value greater compare to succeed")
 	}
 }
@@ -253,7 +278,7 @@ func TestPebbleEvaluateCompare_ValueLess(t *testing.T) {
 		Result: 2, // Less
 		Value:  []byte("bbb"),
 	}
-	if !pebbleEvaluateCompare(s, dc) {
+	if !pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected value less compare to succeed")
 	}
 }
@@ -270,7 +295,7 @@ func TestPebbleEvaluateCompare_ValueNotEqual(t *testing.T) {
 		Result: 3, // NotEqual
 		Value:  []byte("world"),
 	}
-	if !pebbleEvaluateCompare(s, dc) {
+	if !pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected value not-equal compare to succeed")
 	}
 }
@@ -285,7 +310,7 @@ func TestPebbleEvaluateCompare_NonexistentKeyValueNotEmpty(t *testing.T) {
 		Result: 0, // Equal
 		Value:  []byte("notempty"),
 	}
-	if pebbleEvaluateCompare(s, dc) {
+	if pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected false for nonexistent key with non-empty value compare")
 	}
 }
@@ -303,7 +328,7 @@ func TestPebbleEvaluateCompare_VersionGreater(t *testing.T) {
 		Result:  1, // Greater
 		Version: 0,
 	}
-	if !pebbleEvaluateCompare(s, dc) {
+	if !pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected version greater compare to succeed (1 > 0)")
 	}
 }
@@ -318,7 +343,7 @@ func TestPebbleEvaluateCompare_VersionNonexistent(t *testing.T) {
 		Result:  0, // Equal
 		Version: 0,
 	}
-	if !pebbleEvaluateCompare(s, dc) {
+	if !pebbleEvaluateCompare(s, readBatch(t, s), dc) {
 		t.Fatal("expected version equal compare to succeed for nonexistent key (0 == 0)")
 	}
 }
@@ -1031,49 +1056,77 @@ func TestPebbleStateMachine_Transaction_CompareNotEqual(t *testing.T) {
 // pebble.go: Transaction compare on CreateRevision / ModRevision targets
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_Transaction_CompareCreateRevision(t *testing.T) {
-	s := openExtendedStore(t)
+// TestPebbleStateMachine_Transaction_RevisionCompareRejected is the regression
+// guard for the silent lost-update hazard. A client written against the MVCC
+// engine does read-then-CAS; against this non-MVCC state machine its read
+// yields revision 0, so an equal-to-0 compare used to pass and the write
+// committed — two concurrent writers both "succeeded" and one update was lost
+// with no signal. The transaction must now be refused with an actionable
+// application error, and crucially the success operations must NOT run.
+//
+// The refusal is encoded into Result.Data as an app error rather than returned
+// as a Go error from Update(): a client-input outcome must never stall the Raft
+// apply loop.
+func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		target    byte
+		key       string
+		resultKey string
+	}{
+		{"create revision", compareTargetCreateRevision, "cr-txn-key", "cr-result"},
+		{"mod revision", compareTargetModRevision, "mr-txn-key", "mr-result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("cr-txn-key"), []byte("val"), 0)
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
+			putCmd := protocol.EncodeMVCCPut([]byte(tc.key), []byte("val"), 0)
+			applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	// Non-MVCC: createRevision is always 0. Compare 0 == 0 should succeed.
-	compare := protocol.EncodeCompare(
-		[]byte("cr-txn-key"),
-		1, // CompareCreateRevision
-		0, // Equal
-		nil,
-		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("cr-result"), []byte("ok"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
+			// Compare against revision 0 — the exact shape that used to pass.
+			compare := protocol.EncodeCompare([]byte(tc.key), tc.target, 0 /* Equal */, nil, 0, 0, 0)
+			successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte(tc.resultKey), []byte("ok"), nil, 0)
+			cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+			results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
-	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
-		t.Fatal("expected transaction to succeed for create revision == 0")
+			msg, ok := protocol.DecodeAppError(results[0].Data)
+			if !ok {
+				t.Fatalf("expected an application error for a revision compare on a non-MVCC state machine, got Data=%v", results[0].Data)
+			}
+			if !strings.Contains(msg, "sm_type") {
+				t.Errorf("app error should name the required configuration, got %q", msg)
+			}
+
+			// The success operation must not have run — this is the lost update.
+			if _, err := s.getKeyInBatch(readBatch(t, s), []byte(tc.resultKey)); err == nil {
+				t.Fatalf("success op executed despite the rejected compare: %q was written", tc.resultKey)
+			}
+		})
 	}
 }
 
-func TestPebbleStateMachine_Transaction_CompareModRevision(t *testing.T) {
+// TestPebbleStateMachine_Transaction_ValueCompareStillCommits proves the
+// rejection above is scoped to revision targets: a value compare still drives a
+// transaction to completion on this state machine.
+func TestPebbleStateMachine_Transaction_ValueCompareStillCommits(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("mr-txn-key"), []byte("val"), 0)
+	putCmd := protocol.EncodeMVCCPut([]byte("val-txn-key"), []byte("val"), 0)
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	// Non-MVCC: modRevision is always 0. Compare 0 == 0 should succeed.
-	compare := protocol.EncodeCompare(
-		[]byte("mr-txn-key"),
-		2, // CompareModRevision
-		0, // Equal
-		nil,
-		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("mr-result"), []byte("ok"), nil, 0)
+	compare := protocol.EncodeCompare([]byte("val-txn-key"), compareTargetValue, 0 /* Equal */, []byte("val"), 0, 0, 0)
+	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("val-result"), []byte("ok"), nil, 0)
 	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
+	if _, isAppErr := protocol.DecodeAppError(results[0].Data); isAppErr {
+		t.Fatal("value compare must not be rejected on a non-MVCC state machine")
+	}
 	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
-		t.Fatal("expected transaction to succeed for mod revision == 0")
+		t.Fatal("expected the value-compare transaction to take the success branch")
+	}
+	if _, err := s.getKeyInBatch(readBatch(t, s), []byte("val-result")); err != nil {
+		t.Fatalf("success op did not execute: %v", err)
 	}
 }
 

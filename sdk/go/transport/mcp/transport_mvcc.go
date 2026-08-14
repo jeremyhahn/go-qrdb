@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -45,12 +46,70 @@ type serverKeyValue struct {
 type serverRangeResponse struct {
 	KeyValues json.RawMessage `json:"key_values"`
 	Count     int64           `json:"count"`
+	Revision  int64           `json:"revision"`
+}
+
+// sortOrderArgMap converts transport SortOrder to the qrdb_mvcc_range tool's
+// sort_order argument string.
+var sortOrderArgMap = map[transport.SortOrder]string{
+	transport.SortNone:    "none",
+	transport.SortAscend:  "ascend",
+	transport.SortDescend: "descend",
+}
+
+// sortTargetArgMap converts transport SortTarget to the qrdb_mvcc_range
+// tool's sort_target argument string.
+var sortTargetArgMap = map[transport.SortTarget]string{
+	transport.SortByKey:            "key",
+	transport.SortByVersion:        "version",
+	transport.SortByCreateRevision: "create_revision",
+	transport.SortByModRevision:    "mod_revision",
+	transport.SortByValue:          "value",
 }
 
 // serverCurrentRevisionResponse mirrors the JSON envelope returned by
 // the qrdb_mvcc_current_revision tool.
 type serverCurrentRevisionResponse struct {
 	Revision int64 `json:"revision"`
+}
+
+// serverRestoreKeyChange mirrors one restore plan entry returned by the
+// qrdb_mvcc_restore_to_revision tool. Key is base64-encoded (RFC 4648) on
+// the wire, matching the server's mvccRestoreKeyChangeResponse.
+type serverRestoreKeyChange struct {
+	Key          []byte                  `json:"key"`
+	Action       transport.RestoreAction `json:"action"`
+	FromRevision int64                   `json:"from_revision"`
+	ToRevision   int64                   `json:"to_revision"`
+	ValueBytes   int64                   `json:"value_bytes"`
+}
+
+// serverRestoreResultResponse mirrors the JSON envelope returned by the
+// qrdb_mvcc_restore_to_revision tool.
+type serverRestoreResultResponse struct {
+	Revision   int64                    `json:"revision"`
+	Changes    []serverRestoreKeyChange `json:"changes"`
+	Conflicts  []serverRestoreKeyChange `json:"conflicts"`
+	Applied    int                      `json:"applied"`
+	Skipped    int                      `json:"skipped"`
+	Conflicted int                      `json:"conflicted"`
+	DryRun     bool                     `json:"dry_run"`
+}
+
+// serverRestoreChangesToTransport converts server restore plan entries to
+// the SDK transport representation.
+func serverRestoreChangesToTransport(changes []serverRestoreKeyChange) []*transport.RestoreKeyChange {
+	out := make([]*transport.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = &transport.RestoreKeyChange{
+			Key:          c.Key,
+			Action:       c.Action,
+			FromRevision: c.FromRevision,
+			ToRevision:   c.ToRevision,
+			ValueBytes:   c.ValueBytes,
+		}
+	}
+	return out
 }
 
 // serverKeyValueToTransport converts a server-side KeyValue to the SDK
@@ -72,7 +131,10 @@ func serverKeyValueToTransport(skv *serverKeyValue) *transport.MVCCKeyValue {
 
 // PutWithLease stores a key-value pair with an attached lease through
 // MVCC-aware Raft consensus. When the lease expires, the key is
-// automatically deleted. Calls the qrdb_mvcc_put_with_lease MCP tool.
+// automatically deleted. Calls the qrdb_mvcc_put_with_lease MCP tool. The
+// value is sent base64-encoded (RFC 4648), matching the server's
+// binary-safe wire contract, so arbitrary binary content round-trips
+// byte-for-byte.
 func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64, opts ...transport.WriteOption) (*transport.MVCCKeyValue, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -80,7 +142,7 @@ func (t *Transport) PutWithLease(ctx context.Context, key string, value []byte, 
 
 	args := map[string]any{
 		"key":      key,
-		"value":    string(value),
+		"value":    base64.StdEncoding.EncodeToString(value),
 		"lease_id": leaseID,
 	}
 
@@ -188,6 +250,12 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	if rangeOpts.KeysOnly {
 		args["keys_only"] = true
 	}
+	if rangeOpts.SortOrder != transport.SortNone {
+		args["sort_order"] = sortOrderArgMap[rangeOpts.SortOrder]
+	}
+	if rangeOpts.SortTarget != transport.SortByKey {
+		args["sort_target"] = sortTargetArgMap[rangeOpts.SortTarget]
+	}
 
 	applyReadArgs(args, opts...)
 
@@ -214,8 +282,9 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	}
 
 	return &transport.RangeResponse{
-		Kvs:   kvs,
-		Count: raw.Count,
+		Kvs:      kvs,
+		Count:    raw.Count,
+		Revision: raw.Revision,
 	}, nil
 }
 
@@ -250,4 +319,60 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 	}
 
 	return raw.Revision, nil
+}
+
+// RestoreToRevision returns a bounded set of keys to the value they held at
+// an earlier MVCC revision -- a logical undo, never a Raft rewind. Calls the
+// qrdb_mvcc_restore_to_revision MCP tool. req.Prefix and each element of
+// req.Keys are sent base64-encoded (RFC 4648), matching the server's
+// binary-safe wire contract, so an arbitrary byte-valued key or prefix
+// round-trips byte-for-byte. Exactly one of req.Prefix and req.Keys must be
+// set.
+func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
+	}
+
+	args := map[string]any{
+		"revision": req.Revision,
+	}
+	if len(req.Prefix) > 0 {
+		args["prefix"] = base64.StdEncoding.EncodeToString(req.Prefix)
+	}
+	if len(req.Keys) > 0 {
+		keys := make([]string, len(req.Keys))
+		for i, k := range req.Keys {
+			keys[i] = base64.StdEncoding.EncodeToString(k)
+		}
+		args["keys"] = keys
+	}
+	if req.DryRun {
+		args["dry_run"] = true
+	}
+	if req.Force {
+		args["force"] = true
+	}
+
+	text, err := t.callTool(ctx, "qrdb_mvcc_restore_to_revision", args)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverRestoreResultResponse
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.RestoreRevisionResult{
+		Revision:   raw.Revision,
+		Changes:    serverRestoreChangesToTransport(raw.Changes),
+		Conflicts:  serverRestoreChangesToTransport(raw.Conflicts),
+		Applied:    raw.Applied,
+		Skipped:    raw.Skipped,
+		Conflicted: raw.Conflicted,
+		DryRun:     raw.DryRun,
+	}, nil
 }

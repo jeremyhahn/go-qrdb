@@ -18,12 +18,40 @@ import (
 	"sync/atomic"
 )
 
+// backendHolder boxes a Backend so it can be swapped atomically via
+// atomic.Pointer even though the concrete type behind the Backend interface
+// changes (e.g. from a raw StandaloneBackend to a wrapping *BarrierBackend).
+// atomic.Value would panic on that type change; boxing behind a stable
+// struct type avoids it.
+type backendHolder struct {
+	backend Backend
+}
+
 // Database represents a named, isolated data store with its own engine,
 // backend, and storage lifecycle. The config field is stored as an
 // atomic pointer to support lock-free runtime updates (e.g., protocol config).
 type Database struct {
-	config         atomic.Pointer[DatabaseConfig]
-	backend        Backend
+	config atomic.Pointer[DatabaseConfig]
+
+	// activeBackend is the Backend actually used for data operations. It
+	// starts identical to rawBackend and is later replaced (never mutated
+	// in place) by Manager with a *BarrierBackend wrapping rawBackend once
+	// a per-database encryption barrier becomes available.
+	activeBackend atomic.Pointer[backendHolder]
+
+	// rawBackend is the original, unwrapped data-plane backend passed to
+	// NewDatabase. It is immutable for the lifetime of the Database and is
+	// always the base Manager wraps (or re-wraps) with barrier encryption,
+	// so repeated wrapping can never nest one BarrierBackend inside another.
+	rawBackend Backend
+
+	// barrierMetaBackend holds this database's dedicated barrier bootstrap
+	// key-material store (see Manager.openBarrierMetaBackend), kept
+	// entirely separate from rawBackend/activeBackend so the barrier's own
+	// root-key bytes never mix into the application data keyspace. nil when
+	// no barrier has ever been registered for this database.
+	barrierMetaBackend atomic.Pointer[backendHolder]
+
 	status         atomic.Value // stores StatusType
 	dataDir        string
 	barrierEnabled atomic.Bool
@@ -33,9 +61,10 @@ type Database struct {
 // The database starts in StatusOpen state.
 func NewDatabase(config DatabaseConfig, backend Backend, dataDir string) *Database {
 	db := &Database{
-		backend: backend,
-		dataDir: dataDir,
+		rawBackend: backend,
+		dataDir:    dataDir,
 	}
+	db.activeBackend.Store(&backendHolder{backend: backend})
 	db.config.Store(&config)
 	db.status.Store(StatusOpen)
 	return db
@@ -76,9 +105,56 @@ func (d *Database) Config() DatabaseConfig {
 	return *d.config.Load()
 }
 
-// Backend returns the database backend.
+// Backend returns the database backend actually used for data operations.
+// This is the barrier-encrypting wrapper once a per-database barrier has
+// been registered, or the raw backend otherwise.
 func (d *Database) Backend() Backend {
-	return d.backend
+	return d.activeBackend.Load().backend
+}
+
+// setActiveBackend replaces the Backend used for data operations without
+// altering the immutable raw (unwrapped) backend recorded at construction.
+// Manager calls this to layer barrier encryption over the raw backend once
+// a barrier becomes available (at Create/Open time, or later via
+// SetBarrierManager's re-registration).
+func (d *Database) setActiveBackend(b Backend) {
+	d.activeBackend.Store(&backendHolder{backend: b})
+}
+
+// rawDataBackend returns the original, unwrapped data-plane backend passed
+// to NewDatabase. Manager always (re)wraps this -- never the possibly
+// already-wrapped Backend() -- so repeated barrier (re)registration can
+// never nest one BarrierBackend inside another.
+func (d *Database) rawDataBackend() Backend {
+	return d.rawBackend
+}
+
+// barrierMetaBackendRef returns the database's dedicated barrier bootstrap
+// key-material backend, or nil if no barrier has ever been registered.
+func (d *Database) barrierMetaBackendRef() Backend {
+	h := d.barrierMetaBackend.Load()
+	if h == nil {
+		return nil
+	}
+	return h.backend
+}
+
+// setBarrierMetaBackend installs b as the database's barrier metadata
+// backend, closing and replacing any previously-installed one. This keeps
+// repeated barrier-manager (re)registration -- e.g. an in-process cluster
+// migration rebuilding the registry -- from leaking the file handles of an
+// orphaned prior metadata store.
+func (d *Database) setBarrierMetaBackend(b Backend) {
+	old := d.barrierMetaBackend.Swap(&backendHolder{backend: b})
+	if old != nil && old.backend != nil {
+		_ = old.backend.Close()
+	}
+}
+
+// DataDir returns the resolved storage directory used by this database's
+// data-plane backend.
+func (d *Database) DataDir() string {
+	return d.dataDir
 }
 
 // Status returns the current operational status.
@@ -142,6 +218,22 @@ func (d *Database) updateRaft(raft *DatabaseRaftConfig) {
 	}
 }
 
+// updateReplicas atomically replaces the replication factor recorded on the
+// database's config. It is meaningful only for a dedicated-raft database
+// whose replica count changed via DatabaseService.ScaleForTenant; the
+// replicated placement table (not this field) remains the authoritative
+// record of which nodes host which replicas.
+func (d *Database) updateReplicas(replicas int) {
+	for {
+		old := d.config.Load()
+		updated := *old
+		updated.Replicas = replicas
+		if d.config.CompareAndSwap(old, &updated) {
+			return
+		}
+	}
+}
+
 // updateBarrier atomically replaces the barrier configuration.
 func (d *Database) updateBarrier(barrier *DatabaseBarrierConfig) {
 	for {
@@ -191,16 +283,28 @@ func (d *Database) Info() DatabaseInfo {
 	return info
 }
 
-// Close shuts down the database by closing its backend and setting
-// the status to StatusClosed.
+// Close shuts down the database by closing its data-plane backend and (when
+// present) its dedicated barrier metadata backend, then sets the status to
+// StatusClosed. Closing the data-plane backend when it is barrier-wrapped
+// also closes the underlying raw backend (BarrierBackend.Close forwards to
+// its inner backend), so no separate close of rawDataBackend is needed.
 func (d *Database) Close() error {
 	status := d.Status()
 	if status != StatusOpen && status != StatusSealed {
 		return &NotOpenError{Name: d.config.Load().Name}
 	}
-	if err := d.backend.Close(); err != nil {
+	var closeErr error
+	if err := d.Backend().Close(); err != nil {
+		closeErr = err
+	}
+	if mb := d.barrierMetaBackendRef(); mb != nil {
+		if err := mb.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if closeErr != nil {
 		d.status.Store(StatusError)
-		return &CloseError{Name: d.config.Load().Name, Err: err}
+		return &CloseError{Name: d.config.Load().Name, Err: closeErr}
 	}
 	d.status.Store(StatusClosed)
 	return nil

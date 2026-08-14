@@ -38,11 +38,11 @@ func (t *Transport) UnsealDatabase(ctx context.Context, name, secret string) err
 }
 
 // DatabaseBarrierStatus returns a database barrier's status via the injected service.
-func (t *Transport) DatabaseBarrierStatus(_ context.Context, name string) (*transport.DatabaseBarrierStatus, error) {
+func (t *Transport) DatabaseBarrierStatus(ctx context.Context, name string) (*transport.DatabaseBarrierStatus, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
-	st, err := t.dbSvc.DatabaseBarrierStatus(name)
+	st, err := t.dbSvc.DatabaseBarrierStatus(ctx, name)
 	if err != nil {
 		return nil, err
 	}

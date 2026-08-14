@@ -17,6 +17,8 @@ package ceremony
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 var (
@@ -385,6 +387,25 @@ func (e *CABundleError) Unwrap() error {
 	return e.Err
 }
 
+// ServerTLSError wraps a failure to auto-provision a server TLS
+// configuration from the node's CeremonyCA (see ServerTLSConfig): either the
+// CA could not issue the leaf certificate or the issued PEM material could not
+// be assembled into a tls.Certificate.
+type ServerTLSError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the server TLS provisioning
+// failure.
+func (e *ServerTLSError) Error() string {
+	return fmt.Sprintf("ceremony: server TLS auto-provision failed: %v", e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *ServerTLSError) Unwrap() error {
+	return e.Err
+}
+
 // SPKIPinError wraps an error from SPKI pin computation.
 type SPKIPinError struct {
 	Err error
@@ -430,4 +451,81 @@ func (e *ShareServiceError) Error() string {
 // Unwrap returns the underlying error.
 func (e *ShareServiceError) Unwrap() error {
 	return e.Err
+}
+
+// ErrNilFactorRegistry indicates an enrollment plan was checked against a nil
+// auth-factor registry.
+var ErrNilFactorRegistry = errors.New("ceremony: factor registry is nil")
+
+// UnsupportedFactorError indicates an admin factor this binary cannot enroll:
+// either the name is not an enrollable factor, or no implementation of it is
+// registered. It is deliberately not a silent skip — an operator who asked for a
+// passkey and got only a certificate would not discover it until the passkey
+// failed to work.
+type UnsupportedFactorError struct {
+	Factor AdminFactor
+}
+
+// Error names the rejected factor alongside what is accepted, so an operator
+// who mistyped one can fix it without reading the source.
+func (e *UnsupportedFactorError) Error() string {
+	return fmt.Sprintf("ceremony: admin factor %q is not supported; accepted: %s",
+		e.Factor, strings.Join(AdminFactorNames(), ", "))
+}
+
+// FactorUnavailableError indicates a supported factor whose enrollment cannot
+// proceed right now — typically absent hardware. Reason carries the
+// operator-facing explanation.
+type FactorUnavailableError struct {
+	Factor AdminFactor
+	Reason string
+}
+
+// Error returns a human-readable description of why the factor is unavailable.
+func (e *FactorUnavailableError) Error() string {
+	if e.Reason == "" {
+		return fmt.Sprintf("ceremony: admin factor %q is unavailable", e.Factor)
+	}
+	return fmt.Sprintf("ceremony: admin factor %q is unavailable: %s", e.Factor, e.Reason)
+}
+
+// FactorEnrollmentError wraps a failure enrolling one admin factor, naming the
+// factor so an operator knows which credential is missing rather than that
+// "enrollment failed".
+type FactorEnrollmentError struct {
+	Factor AdminFactor
+	Err    error
+}
+
+// Error describes which factor failed to enroll.
+func (e *FactorEnrollmentError) Error() string {
+	return fmt.Sprintf("ceremony: enrolling admin factor %q failed: %v", e.Factor, e.Err)
+}
+
+// Unwrap returns the underlying error.
+func (e *FactorEnrollmentError) Unwrap() error { return e.Err }
+
+// InvalidEnrollmentSpecError is returned when an operator-supplied
+// "<username>:<kind>:<path>" argument cannot be parsed.
+type InvalidEnrollmentSpecError struct {
+	Arg    string
+	Reason string
+}
+
+// Error implements error.
+func (e *InvalidEnrollmentSpecError) Error() string {
+	return "ceremony: invalid enrollment spec " + strconv.Quote(e.Arg) + " (" + e.Reason +
+		"); kind is one of: " + strings.Join(EnrollmentKindNames(), ", ")
+}
+
+// DuplicateEnrollmentUsernameError is returned when the same username appears
+// in more than one enrollment argument.
+type DuplicateEnrollmentUsernameError struct {
+	Username string
+}
+
+// Error implements error.
+func (e *DuplicateEnrollmentUsernameError) Error() string {
+	return "ceremony: username " + strconv.Quote(e.Username) +
+		" appears more than once; each identity is enrolled exactly once"
 }

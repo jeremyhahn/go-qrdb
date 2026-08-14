@@ -17,6 +17,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -75,14 +76,14 @@ func (m *seededMVCC) scan(start, end []byte) []*service.KeyValue {
 	return out
 }
 
-func (m *seededMVCC) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (m *seededMVCC) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	out := m.scan(start, end)
-	return out, int64(len(out)), nil
+	return out, int64(len(out)), 0, nil
 }
 
-func (m *seededMVCC) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (m *seededMVCC) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	out := m.scan(start, end)
-	return out, int64(len(out)), nil
+	return out, int64(len(out)), 0, nil
 }
 
 func newTwoTenantStore() *seededMVCC {
@@ -131,14 +132,14 @@ func TestNamespacedMVCC_RangeNeverLeaksForeignNamespace(t *testing.T) {
 
 	for _, b := range bounds {
 		t.Run("Range/"+b.name, func(t *testing.T) {
-			kvs, _, err := wA.Range(ctx, b.start, b.end)
+			kvs, _, _, err := wA.Range(ctx, b.start, b.end)
 			if err != nil {
 				t.Fatal(err)
 			}
 			assertOnlyTenantA(t, kvs)
 		})
 		t.Run("RangeWithConsistency/"+b.name, func(t *testing.T) {
-			kvs, _, err := wA.RangeWithConsistency(ctx, b.start, b.end, consistency.ReadOptions{})
+			kvs, _, _, err := wA.RangeWithConsistency(ctx, b.start, b.end, consistency.ReadOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -214,25 +215,47 @@ func TestNamespacedBatch_SingleKeyOpNilEndPreserved(t *testing.T) {
 	}
 }
 
-func TestNamespacedTransaction_RangeOpAndNilCompareConfined(t *testing.T) {
+// TestNamespacedTransaction_RangeOpConfined proves a delete-range op with an
+// absent lower bound is confined to the namespace prefix, exactly like the
+// batch service (TestNamespacedBatch_RangeOpLowerBoundConfined).
+func TestNamespacedTransaction_RangeOpConfined(t *testing.T) {
 	rec := &opRec{}
 	w := newNamespacedTransactionService(txnAdapter{rec}, "tenantA/db/")
-	// A nil compare key and a delete-range op with an absent lower bound.
 	_, err := w.Execute(context.Background(),
-		[]service.Compare{{Key: nil}},
+		nil,
 		[]service.Op{{Type: service.OpDelete, RangeEnd: []byte("z")}},
 		nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if rec.cmpKeys[0] != "tenantA/db/" {
-		t.Errorf("nil compare key = %q, want confined to namespace prefix", rec.cmpKeys[0])
 	}
 	if rec.keys[0] != "tenantA/db/" {
 		t.Errorf("range-op lower bound = %q, want confined to namespace prefix", rec.keys[0])
 	}
 	if rec.rangeEnd[0] != "tenantA/db/z" {
 		t.Errorf("range-op upper bound = %q, want prefixed end", rec.rangeEnd[0])
+	}
+}
+
+// TestNamespacedTransaction_NilCompareKeyRejected proves a nil Compare key is
+// REJECTED rather than silently confined to the bare namespace-prefix literal
+// key (L4): unlike a Put/Delete/Get's empty key (which has a well-defined
+// "the namespace root key itself" meaning, see prefixKeyBytes), an absent
+// compare key has no such target and the un-namespaced state machine rejects
+// it outright — namespacing it to a real, almost-certainly-nonexistent key
+// would silently change what the malformed request means instead of
+// preserving that rejection. See ErrEmptyCompareKey.
+func TestNamespacedTransaction_NilCompareKeyRejected(t *testing.T) {
+	rec := &opRec{}
+	w := newNamespacedTransactionService(txnAdapter{rec}, "tenantA/db/")
+	_, err := w.Execute(context.Background(),
+		[]service.Compare{{Key: nil}},
+		[]service.Op{{Type: service.OpDelete, RangeEnd: []byte("z")}},
+		nil)
+	if !errors.Is(err, ErrEmptyCompareKey) {
+		t.Fatalf("err = %v, want ErrEmptyCompareKey", err)
+	}
+	if len(rec.cmpKeys) != 0 || len(rec.keys) != 0 {
+		t.Fatalf("inner Execute must not be called on a rejected compare, got cmpKeys=%v keys=%v", rec.cmpKeys, rec.keys)
 	}
 }
 

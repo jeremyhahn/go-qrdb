@@ -56,13 +56,26 @@ func newTestManager(t *testing.T) *Manager {
 }
 
 // validMemoryConfig returns a DatabaseConfig with the given name using the
-// in-memory backend and the KV engine.
+// in-memory backend and the KV engine. This config has NO dedicated store
+// (empty DataDir, non-Raft backend): HasDedicatedStore() is false, so it must
+// not be used with Barrier.Enabled -- use validDedicatedMemoryConfig instead.
 func validMemoryConfig(name string) DatabaseConfig {
 	return DatabaseConfig{
 		Name:    name,
 		Engine:  EngineKV,
 		Backend: BackendMemory,
 	}
+}
+
+// validDedicatedMemoryConfig returns a DatabaseConfig identical to
+// validMemoryConfig but with an explicit DataDir, so HasDedicatedStore()
+// reports true and the config is eligible to enable a per-database
+// encryption barrier.
+func validDedicatedMemoryConfig(t *testing.T, name string) DatabaseConfig {
+	t.Helper()
+	cfg := validMemoryConfig(name)
+	cfg.DataDir = t.TempDir()
+	return cfg
 }
 
 func TestManager_Create(t *testing.T) {
@@ -1142,30 +1155,110 @@ func TestManager_UpdateBarrier_NotFound(t *testing.T) {
 	}
 }
 
-func TestManager_UpdateBarrier_Success(t *testing.T) {
+// TestManager_UpdateBarrier_Enable_RejectedNotMigrated verifies that
+// enabling a barrier via UpdateBarrier on a database that was created
+// WITHOUT one active is rejected: this API never re-encrypts existing data,
+// so a barrier's Enabled state is fixed at creation time.
+func TestManager_UpdateBarrier_Enable_RejectedNotMigrated(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
-	cfg := validMemoryConfig("barrier-update-db")
+	cfg := validDedicatedMemoryConfig(t, "barrier-update-db")
 	if _, err := mgr.Create(cfg); err != nil {
 		t.Fatalf("Create() returned unexpected error: %v", err)
 	}
 
 	barrierCfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.UpdateBarrier("barrier-update-db", barrierCfg); err != nil {
-		t.Fatalf("UpdateBarrier() returned unexpected error: %v", err)
+	err := mgr.UpdateBarrier("barrier-update-db", barrierCfg)
+	if err == nil {
+		t.Fatal("UpdateBarrier() enabling a never-active barrier = nil, want *BarrierMigrationNotSupportedError")
+	}
+	var migErr *BarrierMigrationNotSupportedError
+	if !errors.As(err, &migErr) {
+		t.Fatalf("error type = %T, want *BarrierMigrationNotSupportedError", err)
+	}
+	if migErr.Direction != "enable" {
+		t.Errorf("BarrierMigrationNotSupportedError.Direction = %q, want %q", migErr.Direction, "enable")
 	}
 
-	db, err := mgr.Get("barrier-update-db")
+	// The rejected update must not have been persisted.
+	db, getErr := mgr.Get("barrier-update-db")
+	if getErr != nil {
+		t.Fatalf("Get() returned unexpected error: %v", getErr)
+	}
+	if db.BarrierEnabled() {
+		t.Error("BarrierEnabled() = true after a rejected UpdateBarrier, want false")
+	}
+}
+
+// TestManager_UpdateBarrier_Disable_RejectedWhenActive verifies that
+// disabling an ACTIVELY barrier-wrapped database via UpdateBarrier is
+// rejected: doing so without decrypting the existing ciphertext would
+// corrupt (not remove) protection, since subsequent reads would stop
+// decrypting data that is still encrypted on disk.
+func TestManager_UpdateBarrier_Disable_RejectedWhenActive(t *testing.T) {
+	bm := newTestBarrierManager(t)
+	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	defer func() { _ = mgr.Close() }()
+
+	cfg := validDedicatedMemoryConfig(t, "barrier-active-disable-db")
+	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
+		t.Fatalf("CreateWithCredentials() error = %v", err)
+	}
+
+	err := mgr.UpdateBarrier("barrier-active-disable-db", &DatabaseBarrierConfig{Enabled: false})
+	if err == nil {
+		t.Fatal("UpdateBarrier() disabling an active barrier = nil, want *BarrierMigrationNotSupportedError")
+	}
+	var migErr *BarrierMigrationNotSupportedError
+	if !errors.As(err, &migErr) {
+		t.Fatalf("error type = %T, want *BarrierMigrationNotSupportedError", err)
+	}
+	if migErr.Direction != "disable" {
+		t.Errorf("BarrierMigrationNotSupportedError.Direction = %q, want %q", migErr.Direction, "disable")
+	}
+
+	db, getErr := mgr.Get("barrier-active-disable-db")
+	if getErr != nil {
+		t.Fatalf("Get() returned unexpected error: %v", getErr)
+	}
+	if !db.BarrierEnabled() {
+		t.Error("BarrierEnabled() = false after a rejected UpdateBarrier(disable), want true")
+	}
+}
+
+// TestManager_UpdateBarrier_IdempotentRefresh_Allowed verifies that
+// UpdateBarrier still performs the one safe transition: re-affirming
+// Enabled=true on a database whose barrier is already active, which
+// refreshes non-secret bookkeeping (Mode/SharesRequired/SharesTotal)
+// without changing the active encryption state.
+func TestManager_UpdateBarrier_IdempotentRefresh_Allowed(t *testing.T) {
+	bm := newTestBarrierManager(t)
+	mgr := NewManager(nil, t.TempDir(), WithBarrierManager(bm))
+	defer func() { _ = mgr.Close() }()
+
+	cfg := validDedicatedMemoryConfig(t, "barrier-idempotent-db")
+	cfg.Barrier = &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	if _, err := mgr.CreateWithCredentials(context.Background(), cfg, testCreds()); err != nil {
+		t.Fatalf("CreateWithCredentials() error = %v", err)
+	}
+
+	barrierCfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	if err := mgr.UpdateBarrier("barrier-idempotent-db", barrierCfg); err != nil {
+		t.Fatalf("UpdateBarrier() re-affirming an active barrier returned unexpected error: %v", err)
+	}
+
+	db, err := mgr.Get("barrier-idempotent-db")
 	if err != nil {
 		t.Fatalf("Get() returned unexpected error: %v", err)
 	}
-	info := db.Info()
-	if info.Barrier == nil {
-		t.Fatal("Info().Barrier = nil, want non-nil after UpdateBarrier")
+	if !db.BarrierEnabled() {
+		t.Error("BarrierEnabled() = false after idempotent UpdateBarrier, want true")
 	}
-	if !info.Barrier.Enabled {
-		t.Error("Info().Barrier.Enabled = false, want true")
+	info := db.Info()
+	if info.Barrier == nil || !info.Barrier.Enabled {
+		t.Error("Info().Barrier.Enabled = false after idempotent UpdateBarrier, want true")
 	}
 }
 
@@ -1273,6 +1366,85 @@ func TestManager_UpdateConnection_NilConfig(t *testing.T) {
 	// nil connection config should be accepted.
 	if err := mgr.UpdateConnection("conn-nil-db", nil); err != nil {
 		t.Fatalf("UpdateConnection(nil) returned unexpected error: %v", err)
+	}
+}
+
+// TestManager_UpdateReplicas_NotFound verifies UpdateReplicas returns
+// *NotFoundError for a database that does not exist, mirroring UpdateRaft's
+// not-found behavior.
+func TestManager_UpdateReplicas_NotFound(t *testing.T) {
+	mgr := newTestManager(t)
+	defer func() { _ = mgr.Close() }()
+
+	err := mgr.UpdateReplicas("nonexistent", 3)
+	if err == nil {
+		t.Fatal("UpdateReplicas() returned nil, want *NotFoundError")
+	}
+	var notFoundErr *NotFoundError
+	if !errors.As(err, &notFoundErr) {
+		t.Fatalf("UpdateReplicas() error type = %T, want *NotFoundError", err)
+	}
+}
+
+// TestManager_UpdateReplicas_UpdatesInMemoryConfig verifies UpdateReplicas
+// updates the in-memory Database config immediately (reflected by Info() and
+// Get() without a reopen).
+func TestManager_UpdateReplicas_UpdatesInMemoryConfig(t *testing.T) {
+	mgr := newTestManager(t)
+	defer func() { _ = mgr.Close() }()
+
+	cfg := validMemoryConfig("replicas-mem-db")
+	cfg.Replicas = 1
+	if _, err := mgr.Create(cfg); err != nil {
+		t.Fatalf("Create() returned unexpected error: %v", err)
+	}
+
+	if err := mgr.UpdateReplicas("replicas-mem-db", 3); err != nil {
+		t.Fatalf("UpdateReplicas() returned unexpected error: %v", err)
+	}
+
+	db, err := mgr.Get("replicas-mem-db")
+	if err != nil {
+		t.Fatalf("Get() returned unexpected error: %v", err)
+	}
+	if got := db.Info().Replicas; got != 3 {
+		t.Errorf("Info().Replicas = %d, want 3", got)
+	}
+	if got := db.Config().Replicas; got != 3 {
+		t.Errorf("Config().Replicas = %d, want 3", got)
+	}
+}
+
+// TestManager_UpdateReplicas_PersistsToMetaJSON verifies UpdateReplicas
+// round-trips through meta.json: a manager reopened against the same data
+// directory after UpdateReplicas observes the new replica count, exactly like
+// UpdateRaft's persisted DatabaseRaftConfig does.
+func TestManager_UpdateReplicas_PersistsToMetaJSON(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	mgr1 := NewManager(logger, dataDir)
+	cfg := validMemoryConfig("replicas-persist-db")
+	cfg.Replicas = 1
+	if _, err := mgr1.Create(cfg); err != nil {
+		t.Fatalf("Create() returned unexpected error: %v", err)
+	}
+	if err := mgr1.UpdateReplicas("replicas-persist-db", 5); err != nil {
+		t.Fatalf("UpdateReplicas() returned unexpected error: %v", err)
+	}
+	if err := mgr1.Close(); err != nil {
+		t.Fatalf("Close() returned unexpected error: %v", err)
+	}
+
+	mgr2 := NewManager(logger, dataDir)
+	defer func() { _ = mgr2.Close() }()
+
+	db, err := mgr2.Open("replicas-persist-db")
+	if err != nil {
+		t.Fatalf("Open() returned unexpected error: %v", err)
+	}
+	if got := db.Info().Replicas; got != 5 {
+		t.Errorf("reopened Info().Replicas = %d, want 5 (persisted via meta.json)", got)
 	}
 }
 

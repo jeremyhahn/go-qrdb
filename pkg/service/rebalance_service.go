@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"math"
 	"sort"
 	"time"
@@ -23,7 +25,6 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 )
 
@@ -162,22 +163,27 @@ const hotspotThreshold = 1.5
 
 // RebalanceService implements RebalanceServicer backed by a QuicRaft host.
 // The optional placementStore, keyDeliverer, barrierLookup, and selfNodeID
-// fields enable Phase 4c-2 dedicated-tenant Raft group MOVE operations.
-// When nil, ExecuteRebalance falls back to the generic system-shard path
-// (RequestAddNode only), leaving existing non-IsolationRaft behavior intact.
+// fields enable Phase 4c-2 dedicated-tenant Raft group MOVE operations. The
+// optional raftHost field enables the observer-first membership change and
+// live-leader routing moveTenantGroupShard performs for that MOVE -- see
+// SetRaftHost. When placementStore is nil, ExecuteRebalance falls back to
+// the generic system-shard path (RequestAddNode only), leaving existing
+// non-IsolationRaft behavior intact.
 type RebalanceService struct {
 	host           Host
 	placementStore *placement.Store
 	keyDeliverer   RebalanceKeyDeliverer
 	barrierLookup  RebalanceBarrierLookup
 	selfNodeID     string
+	raftHost       RaftHost
+	logger         *slog.Logger
 }
 
 // NewRebalanceService creates a new RebalanceServicer backed by the given host.
 // Functional opts configure Phase 4c-2 dedicated-tenant move capabilities;
 // an empty opts list produces the same generic-shard-only behaviour as before.
 func NewRebalanceService(host Host, opts ...RebalanceServiceOption) RebalanceServicer {
-	s := &RebalanceService{host: host}
+	s := &RebalanceService{host: host, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -203,6 +209,19 @@ func (s *RebalanceService) SetRebalanceDeps(
 	s.barrierLookup = lookup
 	s.selfNodeID = selfNodeID
 }
+
+// SetRaftHost injects the Raft membership-change handle used by
+// moveTenantGroupShard to admit a MOVE's destination replica as a
+// non-voting observer (RaftHost.AddObserver) and evict its source replica
+// (RaftHost.RemoveFollowerNode), and by resolveMoveLeader to route a MOVE to
+// the dedicated group's current Raft leader. Mirrors
+// DatabaseService.SetRaftHost -- the daemon wires the SAME adapter instance
+// into both services wherever IsolationRaft is configured (see start.go).
+// When nil, moveTenantGroupShard updates placement only and relies on
+// TenantShardReconciler to converge the Raft membership change
+// asynchronously, exactly like DatabaseService.scaleUp/scaleDown when their
+// RaftHost is unset.
+func (s *RebalanceService) SetRaftHost(h RaftHost) { s.raftHost = h }
 
 // GetShardStats returns statistics for a single shard. It queries the
 // state machine for key count and byte count, and retrieves leader and
@@ -381,16 +400,34 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 // consults the placement table (when available) to determine whether the shard
 // belongs to a dedicated-tenant Raft group:
 //
-//   - Dedicated-tenant shard: routes through moveTenantGroupShard which
-//     delivers the barrier key, calls RequestAddNode, updates the placement,
-//     and calls RequestRemoveNode to evict the source. The placement update
-//     drives orphan teardown on the source node via TenantShardReconciler.
+//   - Dedicated-tenant shard: routes through moveTenantGroupShard, which
+//     routes to the group's current Raft leader, admits the destination
+//     observer-first, delivers the barrier key, updates the placement, and
+//     evicts the source. The placement update drives orphan teardown on the
+//     source node via TenantShardReconciler. See moveTenantGroupShard's doc
+//     comment for the full step sequence.
 //
 //   - Generic (system) shard: unchanged path — calls RequestAddNode only, as
 //     system shards share the cluster-wide barrier key and need no key delivery.
 //
 // When placementStore is nil all moves are treated as generic shards, so
 // existing deployments without Phase 4c-2 wiring are unaffected.
+//
+// A *NotLeaderError from moveTenantGroupShard (the local node is not the
+// dedicated group's current Raft leader) aborts the ENTIRE call immediately
+// and is returned as-is (not wrapped, not counted as a failed move) rather
+// than continuing to the plan's remaining moves: moveTenantGroupShard
+// guarantees no mutation occurred before returning it, so the whole request
+// is safe to retry in full, and returning it unwrapped lets the REST layer's
+// tryForwardWrite (the same mechanism DatabaseService.ScaleForTenant relies
+// on) proxy the ENTIRE rebalance-execute request to the leader via
+// errors.As. Any moves already completed earlier in this same call are NOT
+// rolled back -- they already committed -- so a forwarded retry that
+// re-executes the full plan on the leader is idempotent for a plan whose
+// moves are independent of one another (the common case; a plan mixing
+// multiple dedicated groups with DIFFERENT leaders can still require more
+// than one forwarding hop, which the loop-detection guard in
+// forwardToLeader bounds to a single hop).
 func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *RebalancePlanResult) (*RebalanceExecutionResult, error) {
 	if plan == nil {
 		return nil, &RebalanceExecuteError{Err: &nilPlanError{}}
@@ -410,6 +447,10 @@ func (s *RebalanceService) ExecuteRebalance(ctx context.Context, plan *Rebalance
 		// Dedicated-tenant path.
 		if p, ok := placementIndex[move.ShardID]; ok {
 			if err := s.moveTenantGroupShard(ctx, move, p); err != nil {
+				var nle *NotLeaderError
+				if errors.As(err, &nle) {
+					return nil, err
+				}
 				failed++
 				continue
 			}
@@ -488,29 +529,79 @@ func (s *RebalanceService) buildShardPlacementIndex(ctx context.Context) map[uin
 	return idx
 }
 
-// moveTenantGroupShard executes a single MOVE for a dedicated-tenant Raft group:
+// moveTenantGroupShard executes a single MOVE for a dedicated-tenant Raft
+// group by composing the SAME observer-first primitives
+// DatabaseService.ScaleForTenant uses (addObserverReplica /
+// removeReplicaFromGroup / resolveGroupLeader, all defined in
+// database_service.go) rather than duplicating scale-up/scale-down's
+// ordering, quorum-safety, and leader-routing logic: a MOVE is exactly a
+// scale-up of the destination followed by a scale-down of the source.
 //
-//  a. Locate the source replica in the placement entry.
-//  b. Assign a new replica ID (max existing ID + 1).
-//  c. Deliver the tenant barrier key to the destination node (when configured).
-//  d. Call RequestAddNode to admit the destination into the Raft group.
-//  e. Update the placement to include the destination and exclude the source.
-//  f. Call RequestRemoveNode to evict the source from Raft consensus.
+//  0. Resolve the dedicated group's CURRENT Raft leader (resolveMoveLeader)
+//     and, when the local node is not it, fail with *NotLeaderError so the
+//     REST layer's tryForwardWrite can proxy the whole rebalance-execute
+//     request there -- go-quicraft hard-rejects AddObserver/
+//     RemoveFollowerNode on any non-leader member.
+//  1. Wait for the shard to report a known Raft leader (mirrors
+//     DatabaseService.scaleUp/scaleDown's identical wait; AddObserver/
+//     RemoveFollowerNode are hard-rejected until it is known).
+//  2. Locate the source replica in the placement entry.
+//  3. Assign the destination a new replica ID (max existing + 1) and build
+//     it as a NON-VOTING OBSERVER (placement.ReplicaStateObserver): admitting
+//     it directly as a voter can transiently break the group's existing
+//     quorum before it has caught up -- see addObserverReplica's doc comment.
+//  4. addObserverReplica: persist placement (dst added) -> best-effort key
+//     delivery -> RaftHost.AddObserver. Placement MUST be persisted before
+//     key delivery -- see addObserverReplica.
+//  5. removeReplicaFromGroup: persist placement (src removed) ->
+//     RaftHost.RemoveFollowerNode.
+//
+// The destination is promoted from observer to a full voting member
+// asynchronously, off this request path, by TenantShardReconciler's
+// Observer -> ObserverReady -> Active state machine -- exactly as for a
+// scale-up replica.
 //
 // Failure semantics:
-//   - Steps a–d fail: no placement change has been made; the move is counted
-//     as failed and the cluster is left in its pre-move state.
-//   - Step e (placement-update) fails: RequestAddNode has committed the
-//     destination as a Raft member. The function returns a RebalanceMoveError
-//     so the caller counts the move as failed, but does NOT attempt to remove
-//     the newly added destination — doing so would require another Raft
-//     config-change and could leave the group in a worse state on error.
-//   - Step f (remove-node) fails: the placement already reflects the intended
-//     post-move state (dst in, src out). TenantShardReconciler will eventually
-//     stop the src shard when it reconciles the updated placement. The move is
-//     counted as failed so the caller can alert or retry.
+//   - Step 0 (leader-routing): no mutation has occurred; safe to forward
+//     and retry in full.
+//   - Steps 1–3 fail: no placement change has been made; the move is
+//     counted as failed and the cluster is left in its pre-move state.
+//   - Step 4 (add-placement/add-observer) fails: see addObserverReplica.
+//     An add-observer failure leaves the just-persisted placement in place
+//     (dst added) for a retry to pick up; the source is never touched.
+//   - Step 5 (remove-placement/remove-node) fails: the placement already
+//     reflects the intended post-move state (dst in, src out).
+//     TenantShardReconciler will eventually stop the src shard when it
+//     reconciles the updated placement. The move is counted as failed so
+//     the caller can alert or retry.
 func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move RebalanceMovePlan, p *placement.Placement) error {
-	// Step a: locate the source replica.
+	// Step 0: route to the dedicated group's current Raft leader. When the
+	// source is ALSO the local node, resolveMoveLeader additionally
+	// transfers leadership away before reporting itself as not-the-leader
+	// -- see its doc comment.
+	if isLeader, leaderAddr := s.resolveMoveLeader(ctx, move, p); !isLeader {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "leader-routing",
+			Err:      &NotLeaderError{ShardID: p.ShardID, LeaderAddress: leaderAddr},
+		}
+	}
+
+	// Step 1: fail closed before any mutation rather than racing an
+	// election that has not yet settled.
+	if s.raftHost != nil {
+		if err := waitForShardLeaderKnown(ctx, s.raftHost, p.ShardID, defaultScaleLeaderWaitTimeout, defaultScaleLeaderWaitInterval); err != nil {
+			return &RebalanceMoveError{
+				ShardID:  move.ShardID,
+				TenantID: p.TenantID,
+				Step:     "wait-leader",
+				Err:      err,
+			}
+		}
+	}
+
+	// Step 2: locate the source replica.
 	srcReplica, ok := findReplicaByAddr(p, move.FromNode)
 	if !ok {
 		return &RebalanceMoveError{
@@ -521,105 +612,137 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 		}
 	}
 
-	// Step b: assign destination replica ID.
+	// Step 3: assign the destination replica ID and build it as an
+	// observer. NodeID == RaftAddr by cluster convention. DataRoot is left
+	// empty (never copied from an existing replica) so the destination
+	// resolves its OWN local volume-pool root via LocalRootResolver when the
+	// reconciler materializes it -- exactly like PlaceAdditional's scale-up
+	// replicas (placement/scheduler.go). A Placement's replicas do NOT share
+	// a single DataRoot: persistPlacement records a real absolute path only
+	// for the replica local to the node that created the database, and ""
+	// for every other replica (BUG 1 fix; see
+	// placementRaftInfoSource.databaseAndPlacementInfo's doc comment).
+	// Reusing another replica's DataRoot here (the bug this comment
+	// replaces) planted the destination's on-disk shard under that OTHER
+	// replica's node-local path instead of the destination's own volume
+	// pool.
 	newReplicaID := placementMaxReplicaID(p) + 1
-
-	// Build the destination Replica. NodeID == RaftAddr by cluster convention.
 	dstReplica := placement.Replica{
 		ReplicaID: newReplicaID,
 		NodeID:    move.ToNode,
 		RaftAddr:  move.ToNode,
-		DataRoot:  placementSharedDataRoot(p),
+		DataRoot:  "",
+		State:     placement.ReplicaStateObserver,
 	}
 
-	// Step c: deliver the tenant barrier key to the destination.
-	if s.keyDeliverer != nil && s.barrierLookup != nil {
-		if err := s.deliverKeyToDst(ctx, p, dstReplica); err != nil {
-			return &RebalanceMoveError{
-				ShardID:  move.ShardID,
-				TenantID: p.TenantID,
-				Step:     "key-delivery",
-				Err:      err,
-			}
-		}
+	// Step 4: admit the destination, observer-first.
+	updated, kerr, placementFailed, err := addObserverReplica(
+		ctx, s.raftHost, s.placementStore, s.keyDeliverer, s.barrierLookup, p, dstReplica, s.selfNodeID)
+	if kerr != nil {
+		s.logger.Warn("clusterkeys: key distribution failed for rebalance MOVE destination, follower will reconcile",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database),
+			slog.Uint64("shard_id", move.ShardID),
+			slog.String("dst_node", move.ToNode),
+			slog.Any("error", kerr))
 	}
-
-	// Step d: admit the destination into the Raft group.
-	rs, err := s.host.RequestAddNode(ctx, move.ShardID, newReplicaID, move.ToNode, 0)
 	if err != nil {
-		return &RebalanceMoveError{
-			ShardID:  move.ShardID,
-			TenantID: p.TenantID,
-			Step:     "add-node",
-			Err:      err,
+		step := "add-observer"
+		if placementFailed {
+			step = "add-placement"
 		}
-	}
-	if _, err := rs.Result(); err != nil {
-		return &RebalanceMoveError{
-			ShardID:  move.ShardID,
-			TenantID: p.TenantID,
-			Step:     "add-node-result",
-			Err:      err,
-		}
+		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: step, Err: err}
 	}
 
-	// Step e: update the placement — add dst, remove src.
-	updated := clonePlacementWithReplica(p, dstReplica)
-	updated = dropReplicaFromPlacement(updated, srcReplica.ReplicaID)
-	if err := s.placementStore.Put(ctx, updated); err != nil {
-		return &RebalanceMoveError{
-			ShardID:  move.ShardID,
-			TenantID: p.TenantID,
-			Step:     "placement-update",
-			Err:      err,
+	// Step 5: evict the source.
+	if _, placementFailed, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, updated, srcReplica.ReplicaID); err != nil {
+		step := "remove-node"
+		if placementFailed {
+			step = "remove-placement"
 		}
-	}
-
-	// Step f: evict the source from Raft consensus.
-	rsRm, err := s.host.RequestRemoveNode(ctx, move.ShardID, srcReplica.ReplicaID, 0)
-	if err != nil {
-		return &RebalanceMoveError{
-			ShardID:  move.ShardID,
-			TenantID: p.TenantID,
-			Step:     "remove-node",
-			Err:      err,
-		}
-	}
-	if _, err := rsRm.Result(); err != nil {
-		return &RebalanceMoveError{
-			ShardID:  move.ShardID,
-			TenantID: p.TenantID,
-			Step:     "remove-node-result",
-			Err:      err,
-		}
+		return &RebalanceMoveError{ShardID: move.ShardID, TenantID: p.TenantID, Step: step, Err: err}
 	}
 
 	return nil
 }
 
-// deliverKeyToDst ships the tenant barrier key to dstReplica. It constructs a
-// single-replica Placement containing only the destination so that
-// DistributeTenantKey delivers the key to exactly that one recipient (it skips
-// the local node, identified by selfNodeID, which already holds the key as the
-// current leader). autoUnseal is true when the tenant barrier runs under the
-// system barrier strategy (system-managed); false for self-managed strategies.
-func (s *RebalanceService) deliverKeyToDst(ctx context.Context, p *placement.Placement, dst placement.Replica) error {
-	tb, err := s.barrierLookup.GetTenant(p.TenantID)
-	if err != nil {
-		return err
+// resolveMoveLeader determines whether the local node can safely execute
+// this MOVE locally, so moveTenantGroupShard can either proceed or report
+// the address of a node the caller should forward the whole
+// rebalance-execute request to instead.
+//
+// The ordinary case delegates to resolveGroupLeader (database_service.go),
+// the same routing logic DatabaseService.resolveScaleLeader uses, so a
+// scale and a MOVE membership change are routed identically; see
+// resolveScaleLeader's doc comment for the full return-value rationale,
+// which applies unchanged here.
+//
+// A MOVE has one additional case resolveScaleLeader never needs to handle:
+// the source replica (move.FromNode) may be the LOCAL node itself, which
+// may ALSO be the group's current leader. Removing the current leader via
+// RemoveFollowerNode without first transferring leadership away is unsafe
+// (see transferLeadershipAwayFromRemoved's doc comment) -- but RaftHost only
+// ever exposes the LOCAL node's Raft state, so once this node transfers
+// leadership away from itself it can no longer complete the removal
+// itself; go-quicraft would reject a RemoveFollowerNode call from a node
+// that is no longer the leader. So when the source IS this node AND this
+// node IS the leader, resolveMoveLeader proactively transfers leadership to
+// another voting replica right here -- BEFORE any placement mutation, so
+// it is always safe to retry the whole request -- and reports itself as
+// NOT the leader, with the address of the NEW leader. The REST layer's
+// tryForwardWrite then retries the ENTIRE MOVE there, where the source is
+// a different (non-executing) replica and this case can never recur for
+// the same request.
+//
+// KNOWN LIMITATION: the REST layer's forwardToLeader tolerates at most ONE
+// forwarding hop per client request (a deliberate, deployment-wide loop
+// guard shared by every forwarded write -- KV PUT/DELETE, database scale,
+// and this MOVE alike). A MOVE request that originates from a node that is
+// NOT a member of the dedicated group at all first takes resolveGroupLeader's
+// "guess any member" hop; if that guessed member happens to ALSO be both the
+// live leader AND the MOVE's source, resolveMoveLeader's own transfer-and-
+// forward above would need a SECOND hop, which forwardToLeader rejects with
+// *LeaderForwardLoopError even though this is not a genuine loop. This was
+// observed directly in practice (not merely theorized) while developing this
+// fix. Until resolved, callers SHOULD target the MOVE's source or another
+// existing member of the dedicated group directly (never an arbitrary node)
+// to stay within resolveMoveLeader's own worst case of exactly one hop --
+// see the integration test isolation_raft_rebalance_test.go for the
+// concrete pattern. Fixing this generally would mean either teaching
+// forwardToLeader to tolerate a small BOUNDED number of hops (a
+// deployment-wide behavior change affecting every forwarded write, not
+// merely rebalance) or giving the "guess any member" fallback a way to
+// guess the actual current leader instead of an arbitrary member -- both
+// are non-trivial, deployment-wide changes intentionally left out of this
+// fix's scope pending an explicit decision.
+func (s *RebalanceService) resolveMoveLeader(ctx context.Context, move RebalanceMovePlan, p *placement.Placement) (isLocalLeader bool, leaderAddr string) {
+	isLocalLeader, leaderAddr, _ = resolveGroupLeader(ctx, s.raftHost, s.selfNodeID, p)
+	if !isLocalLeader || s.raftHost == nil {
+		return isLocalLeader, leaderAddr
 	}
-	autoUnseal := tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier
 
-	// A single-replica placement ensures DistributeTenantKey delivers to
-	// exactly dst (selfNodeID != dst.NodeID, so the skip check passes).
-	singleReplica := &placement.Placement{
-		TenantID: p.TenantID,
-		Database: p.Database,
-		ShardID:  p.ShardID,
-		RF:       1,
-		Replicas: []placement.Replica{dst},
+	srcReplica, ok := findReplicaByAddr(p, move.FromNode)
+	if !ok || (srcReplica.NodeID != s.selfNodeID && srcReplica.RaftAddr != s.selfNodeID) {
+		// The source is not this node -- the ordinary case.
+		return true, ""
 	}
-	return s.keyDeliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), s.selfNodeID, autoUnseal)
+
+	if terr := transferLeadershipAwayFromRemoved(ctx, s.raftHost, p, p.ShardID, srcReplica.ReplicaID); terr != nil {
+		// Transfer failed or timed out -- degrade to executing locally so
+		// the ordinary AddObserver/RemoveFollowerNode error paths surface
+		// the definitive failure, mirroring resolveGroupLeader's own
+		// degrade-to-local behavior when the leader cannot be resolved.
+		return true, ""
+	}
+
+	newIsLocalLeader, newLeaderAddr, _ := resolveGroupLeader(ctx, s.raftHost, s.selfNodeID, p)
+	if newIsLocalLeader {
+		// Should not happen (the transfer reported success), but degrade to
+		// local execution rather than forward to an address that is
+		// actually still this node.
+		return true, ""
+	}
+	return false, newLeaderAddr
 }
 
 // findReplicaByAddr returns the Replica whose NodeID or RaftAddr matches addr
@@ -633,26 +756,12 @@ func findReplicaByAddr(p *placement.Placement, addr string) (placement.Replica, 
 	return placement.Replica{}, false
 }
 
-// placementMaxReplicaID returns the largest ReplicaID across all replicas in p.
-// Returns 0 for an empty placement (the first replica will get ID 1).
+// placementMaxReplicaID returns the largest ReplicaID across all replicas in
+// p. Returns 0 for an empty placement (the first replica will get ID 1). It
+// delegates to placement.MaxReplicaID, which also backs
+// DatabaseService.ScaleForTenant's replica-ID assignment.
 func placementMaxReplicaID(p *placement.Placement) uint64 {
-	var max uint64
-	for _, r := range p.Replicas {
-		if r.ReplicaID > max {
-			max = r.ReplicaID
-		}
-	}
-	return max
-}
-
-// placementSharedDataRoot returns the DataRoot from the first replica in p.
-// By cluster convention all replicas in a Placement share the same DataRoot
-// value (set to the node's configured data directory by the scheduler).
-func placementSharedDataRoot(p *placement.Placement) string {
-	if len(p.Replicas) > 0 {
-		return p.Replicas[0].DataRoot
-	}
-	return ""
+	return placement.MaxReplicaID(p)
 }
 
 // clonePlacementWithReplica returns a copy of p with r appended to Replicas.

@@ -12,6 +12,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ChangePassword re-wraps the root key with a new password-derived wrapping
@@ -35,16 +37,21 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// Verify that a passphrase (software) strategy is registered under
 	// StrategyPassphrase.
 	strategyKey := StrategyPassphrase
-	oldStrat, ok := b.strategies[strategyKey]
+	oldStrat, ok := b.strategyByID(strategyKey)
 	if !ok {
 		return ErrStrategyNotFound
 	}
 
-	// Get the current root key from the unsealed barrier.
+	// Get the current root key from the unsealed barrier. RootKey() returns a
+	// fresh heap copy the caller owns; it must be wiped before this function
+	// returns (mirrors MintKeyedShamirSibling's defer secure.Wipe(rootKey)) —
+	// otherwise a 32-byte plaintext root key, which derives every DEK, is left
+	// resident in memory after every password change.
 	rootKey, err := b.barrier.RootKey()
 	if err != nil {
 		return err
 	}
+	defer secure.Wipe(rootKey)
 
 	// Capture the current epoch state before re-sealing so we can
 	// carry it forward into the new sealed blob.
@@ -98,7 +105,7 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// Close the old strategy to release its enclave, then swap under the same
 	// registry key it was found under.
 	_ = oldStrat.Close()
-	b.strategies[strategyKey] = newStrat
+	b.setStrategy(strategyKey, newStrat)
 
 	emitAudit(b.config.AuditLogger, "change_password", "barrier",
 		b.config.RootKeyPath, "allow", nil)

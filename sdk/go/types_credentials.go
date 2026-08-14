@@ -42,6 +42,11 @@ type CredentialConfig = credentials.Config
 // identifier. (Aliases pkg/credentials.StrategyManual.)
 const CredentialStrategyManual = credentials.StrategyManual
 
+// CredentialStrategyBarrier is the barrier-sealed credential strategy
+// identifier: credentials are stored encrypted through the seal
+// StorageBarrier. (Aliases pkg/credentials.StrategyBarrier.)
+const CredentialStrategyBarrier = credentials.StrategyBarrier
+
 // ---------------------------------------------------------------------------
 // Sentinel errors
 // ---------------------------------------------------------------------------

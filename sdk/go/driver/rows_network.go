@@ -16,28 +16,37 @@ package driver
 
 import (
 	"database/sql/driver"
-	"fmt"
 	"io"
+	"reflect"
 	"sync/atomic"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// Compile-time interface assertion.
-var _ driver.Rows = (*networkRows)(nil)
+// Compile-time interface assertions.
+var (
+	_ driver.Rows                           = (*networkRows)(nil)
+	_ driver.RowsColumnTypeScanType         = (*networkRows)(nil)
+	_ driver.RowsColumnTypeDatabaseTypeName = (*networkRows)(nil)
+	_ driver.RowsColumnTypeNullable         = (*networkRows)(nil)
+)
 
-// networkRows wraps a JSON response from the REST API to implement the
-// database/sql/driver.Rows interface.
+// networkRows adapts a remote SQL result set to database/sql/driver.Rows.
 type networkRows struct {
 	columns []string
-	rows    []map[string]interface{}
+	rows    []map[string]any
 	pos     int
 	closed  atomic.Bool
 }
 
-// newNetworkRows creates a networkRows from an SQL query response.
-func newNetworkRows(resp *sqlResponse) *networkRows {
+// newNetworkRows creates a networkRows from a transport SQL result.
+func newNetworkRows(result *transport.SQLQueryResult) *networkRows {
+	if result == nil {
+		return &networkRows{}
+	}
 	return &networkRows{
-		columns: resp.Columns,
-		rows:    resp.Rows,
+		columns: result.Columns,
+		rows:    result.Rows,
 	}
 }
 
@@ -66,22 +75,55 @@ func (r *networkRows) Next(dest []driver.Value) error {
 	r.pos++
 
 	for i, col := range r.columns {
+		if i >= len(dest) {
+			break
+		}
 		v, ok := row[col]
 		if !ok {
 			dest[i] = nil
 			continue
 		}
-		dest[i] = normalizeNetworkValue(v)
+		dest[i] = toDriverValue(v)
 	}
 	return nil
 }
 
-// normalizeNetworkValue converts JSON-decoded values to driver.Value types.
-func normalizeNetworkValue(v interface{}) driver.Value {
-	if v == nil {
-		return nil
-	}
+// ColumnTypeScanType reports the Go type a column scans into.
+//
+// The remote SQL API pre-formats every cell as text before serializing, so the
+// only honest answer is string. Guessing a narrower type from a sampled value
+// — which this driver previously did — makes the reported type depend on the
+// data rather than the schema, so the same column can claim different types
+// between two queries. Callers needing real column types should use an
+// embedded connection or qrdb's MySQL wire protocol.
+func (r *networkRows) ColumnTypeScanType(_ int) reflect.Type {
+	return reflect.TypeOf("")
+}
+
+// ColumnTypeDatabaseTypeName reports the database type name for a column.
+// It is TEXT for the same reason ColumnTypeScanType reports string.
+func (r *networkRows) ColumnTypeDatabaseTypeName(_ int) string {
+	return "TEXT"
+}
+
+// ColumnTypeNullable reports whether a column may be NULL. The remote API does
+// not carry nullability, so ok is false — the contract's way of saying
+// unknown, rather than asserting a value that may be wrong.
+func (r *networkRows) ColumnTypeNullable(_ int) (nullable, ok bool) {
+	return false, false
+}
+
+// toDriverValue converts a decoded wire value into a driver.Value.
+//
+// Values that are already driver.Value types pass through unchanged. Anything
+// else is rejected as nil rather than being stringified: the wire format
+// stringifies cells server-side, so an unexpected Go type here means the
+// response did not match the contract, and inventing a rendering for it would
+// hide that.
+func toDriverValue(v any) driver.Value {
 	switch val := v.(type) {
+	case nil:
+		return nil
 	case string:
 		return val
 	case float64:
@@ -90,7 +132,9 @@ func normalizeNetworkValue(v interface{}) driver.Value {
 		return val
 	case []byte:
 		return val
+	case int64:
+		return val
 	default:
-		return fmt.Sprintf("%v", val)
+		return nil
 	}
 }

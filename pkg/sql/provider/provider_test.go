@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -239,7 +240,7 @@ func TestDatabase_GetTableInsensitive_WithSession(t *testing.T) {
 
 	kvTbl, ok := tbl.(*KVTable)
 	require.True(t, ok)
-	assert.Equal(t, "acme", kvTbl.tenantID)
+	assert.Equal(t, tenant.ComposeNamespace("acme", "qrdb"), kvTbl.prefix)
 }
 
 func TestDatabase_GetTableInsensitive_WithoutSession(t *testing.T) {
@@ -252,7 +253,7 @@ func TestDatabase_GetTableInsensitive_WithoutSession(t *testing.T) {
 
 	kvTbl, ok := tbl.(*KVTable)
 	require.True(t, ok)
-	assert.Equal(t, "system", kvTbl.tenantID)
+	assert.Equal(t, tenant.ComposeNamespace("system", "qrdb"), kvTbl.prefix)
 }
 
 func TestDatabase_GetTableNames(t *testing.T) {
@@ -301,7 +302,78 @@ func TestProvider_Database_WithSession_TenantScoping(t *testing.T) {
 
 	kvTbl, ok := tbl.(*KVTable)
 	require.True(t, ok)
-	assert.Equal(t, "corp", kvTbl.tenantID)
+	assert.Equal(t, tenant.ComposeNamespace("corp", "qrdb"), kvTbl.prefix)
+}
+
+// ---------------------------------------------------------------------------
+// WithReadOnly / WithPrescopedKV tests
+// ---------------------------------------------------------------------------
+
+// TestProvider_WithReadOnly_StripsWriteCapability verifies that a Provider
+// constructed with WithReadOnly serves tables with no write-capability
+// interfaces reachable, regardless of what the underlying concrete table
+// implements.
+func TestProvider_WithReadOnly_StripsWriteCapability(t *testing.T) {
+	svc := &mockKVService{}
+	p := NewProviderWithEngine("qrdb", svc, "", WithReadOnly())
+	ctx := newTestContext()
+
+	db, err := p.Database(ctx, "qrdb")
+	require.NoError(t, err)
+
+	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
+	require.NoError(t, err)
+	assert.True(t, found)
+
+	_, ok := tbl.(sqle.InsertableTable)
+	assert.False(t, ok, "read-only provider must not serve an InsertableTable")
+	_, ok = tbl.(sqle.DeletableTable)
+	assert.False(t, ok, "read-only provider must not serve a DeletableTable")
+}
+
+// TestProvider_WithoutReadOnly_PreservesWriteCapability verifies the
+// default (no WithReadOnly) behavior is unchanged: served tables keep
+// their write-capability interfaces.
+func TestProvider_WithoutReadOnly_PreservesWriteCapability(t *testing.T) {
+	svc := &mockKVService{}
+	p := NewProviderWithEngine("qrdb", svc, "")
+	ctx := newTestContext()
+
+	db, err := p.Database(ctx, "qrdb")
+	require.NoError(t, err)
+
+	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
+	require.NoError(t, err)
+	assert.True(t, found)
+
+	_, ok := tbl.(sqle.InsertableTable)
+	assert.True(t, ok, "default provider must serve an InsertableTable")
+}
+
+// TestProvider_WithPrescopedKV_UsesBareKeys verifies that a Provider
+// constructed with WithPrescopedKV composes no additional namespace prefix
+// on top of kvSvc, even when the session carries a non-default tenant —
+// the caller (e.g. the ad-hoc SQL query service backed by
+// service.Registry.KVService) is responsible for having already scoped
+// kvSvc to the correct (tenant, database) namespace.
+func TestProvider_WithPrescopedKV_UsesBareKeys(t *testing.T) {
+	svc := &mockKVService{}
+	p := NewProviderWithEngine("qrdb", svc, "", WithPrescopedKV())
+
+	base := sqle.NewBaseSession()
+	sess := NewSession(base, &auth.Identity{Subject: "bob", TenantID: "corp"})
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+
+	db, err := p.Database(ctx, "qrdb")
+	require.NoError(t, err)
+
+	tbl, found, err := db.GetTableInsensitive(ctx, "kv")
+	require.NoError(t, err)
+	assert.True(t, found)
+
+	kvTbl, ok := tbl.(*KVTable)
+	require.True(t, ok)
+	assert.Equal(t, "", kvTbl.prefix, "prescoped provider must not add a namespace prefix")
 }
 
 // ---------------------------------------------------------------------------
@@ -763,7 +835,7 @@ func TestManagerProvider_Database_WithSession_TenantScoping(t *testing.T) {
 
 	kvTbl, ok := tbl.(*KVTable)
 	require.True(t, ok)
-	assert.Equal(t, "acme", kvTbl.tenantID)
+	assert.Equal(t, tenant.ComposeNamespace("acme", "tenantdb"), kvTbl.prefix)
 }
 
 // ---------------------------------------------------------------------------

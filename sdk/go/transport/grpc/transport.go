@@ -138,7 +138,43 @@ func (t *Transport) connectHealthy(ctx context.Context) bool {
 	cctx, cancel := context.WithTimeout(ctx, connectWaitBudget)
 	defer cancel()
 	resp, err := t.client.Health(cctx, &emptypb.Empty{}, grpc.WaitForReady(true))
-	return err == nil && resp.GetStatus() != ""
+	if err == nil {
+		return resp.GetStatus() != ""
+	}
+	return reachableButUnauthorized(err)
+}
+
+// reachableButUnauthorized reports whether err is a gRPC status error
+// indicating the server was reached, authenticated the caller's TLS client
+// certificate, and answered the Health RPC, but rejected it purely on
+// AUTHORIZATION grounds (PermissionDenied) rather than a connectivity
+// failure. Some legitimate, authenticated identities are intentionally
+// never granted the admin:health permission -- e.g. a barrier officer's
+// short-lived claim-cert identity, which exists solely to drive the
+// barrier share-claim handshake -- and must still be able to Connect()
+// and use the RPCs they ARE authorized for. Treating this as "connected"
+// keeps Connect() failing closed for genuine unreachability (dial
+// failure, TLS handshake failure, timeout, ...) while no longer
+// conflating "can't reach the server" with "not personally allowed to
+// call Health".
+//
+// codes.Unauthenticated is deliberately EXCLUDED: it means the caller
+// never authenticated at all (no / invalid TLS client certificate), which
+// is a genuine "you are not a recognized identity" rejection that
+// Connect() must continue to fail closed on -- see
+// pkg/server's TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated,
+// which pins exactly this behavior for the sibling Unix transport.
+func reachableButUnauthorized(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	switch st.Code() {
+	case codes.PermissionDenied:
+		return true
+	default:
+		return false
+	}
 }
 
 // Close shuts down the gRPC connection and releases all resources.
@@ -153,18 +189,20 @@ func (t *Transport) Close() error {
 }
 
 // Healthy returns true if the gRPC connection is active and the server
-// responds to a health check.
+// responds to a health check. An authenticated identity that is reachable
+// but not personally authorized to call Health (see
+// reachableButUnauthorized) still counts as healthy: authorization is a
+// per-RPC decision, not a connectivity signal.
 func (t *Transport) Healthy(ctx context.Context) bool {
 	if t.closed.Load() || t.client == nil {
 		return false
 	}
 
 	resp, err := t.client.Health(ctx, &emptypb.Empty{})
-	if err != nil {
-		return false
+	if err == nil {
+		return resp.GetStatus() != ""
 	}
-
-	return resp.GetStatus() != ""
+	return reachableButUnauthorized(err)
 }
 
 // Request performs a generic gRPC request dispatch by method name. This

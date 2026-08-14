@@ -410,19 +410,28 @@ func TestManager_UpdateRaftForTenant_CrossTenantDenied(t *testing.T) {
 	}
 }
 
+// TestManager_UpdateBarrierForTenant verifies that enabling a barrier via
+// UpdateBarrierForTenant on a database that was created WITHOUT one active
+// is rejected: enabling after creation is a re-encryption migration this
+// method does not perform (see Manager.UpdateBarrier).
 func TestManager_UpdateBarrierForTenant(t *testing.T) {
 	mgr := newTestManager(t)
 	defer func() { _ = mgr.Close() }()
 
 	ctx := tenantContext("tenant-a")
-	cfg := validMemoryConfig("barrier-tenant-db")
+	cfg := validDedicatedMemoryConfig(t, "barrier-tenant-db")
 	if _, err := mgr.CreateForTenant(ctx, cfg); err != nil {
 		t.Fatalf("CreateForTenant() error = %v", err)
 	}
 
 	barrier := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
-	if err := mgr.UpdateBarrierForTenant(ctx, "barrier-tenant-db", barrier); err != nil {
-		t.Fatalf("UpdateBarrierForTenant() error = %v", err)
+	err := mgr.UpdateBarrierForTenant(ctx, "barrier-tenant-db", barrier)
+	if err == nil {
+		t.Fatal("UpdateBarrierForTenant() enabling a never-active barrier = nil, want *BarrierMigrationNotSupportedError")
+	}
+	var migErr *BarrierMigrationNotSupportedError
+	if !errors.As(err, &migErr) {
+		t.Fatalf("error type = %T, want *BarrierMigrationNotSupportedError", err)
 	}
 }
 

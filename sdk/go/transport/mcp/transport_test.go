@@ -52,6 +52,19 @@ func newMockKVService() *mockKVService {
 	return &mockKVService{store: make(map[string][]byte)}
 }
 
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	if m.putErr != nil {
 		return m.putErr
@@ -1146,10 +1159,12 @@ func TestRequest_WithMapArgs(t *testing.T) {
 	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
 	defer cleanup()
 
-	// Put via Request with map args.
+	// Put via Request with map args. Request passes tool arguments through
+	// verbatim (no automatic encoding), so the value is base64-encoded
+	// (RFC 4648) here to match the server's binary-safe wire contract.
 	err := tr.Request(context.Background(), "qrdb_put", map[string]any{
 		"key":   "rkey",
-		"value": "rval",
+		"value": "cnZhbA==", // base64("rval")
 	}, nil)
 	if err != nil {
 		t.Fatalf("Request put: %v", err)

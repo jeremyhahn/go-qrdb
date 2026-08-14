@@ -1076,6 +1076,8 @@ type mvccRec struct {
 	lastKey            string
 	lastStart, lastEnd []byte
 	compactRev         int64
+	restoreReq         *service.RestoreRevisionRequest
+	conflictKeys       []string
 	err                error
 }
 
@@ -1106,19 +1108,19 @@ func (m *mvccRec) GetAtRevision(_ context.Context, key string, _ int64) (*kvKV, 
 func (m *mvccRec) GetAtRevisionWithConsistency(_ context.Context, key string, _ int64, _ consistency.ReadOptions) (*kvKV, error) {
 	return m.kvOrErr(key)
 }
-func (m *mvccRec) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kvKV, int64, error) {
+func (m *mvccRec) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kvKV, int64, int64, error) {
 	m.lastStart, m.lastEnd = start, end
 	if m.err != nil {
-		return nil, 0, m.err
+		return nil, 0, 0, m.err
 	}
-	return []*kvKV{{Key: []byte("p/x")}}, 1, nil
+	return []*kvKV{{Key: []byte("p/x")}}, 1, 1, nil
 }
-func (m *mvccRec) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kvKV, int64, error) {
+func (m *mvccRec) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kvKV, int64, int64, error) {
 	m.lastStart, m.lastEnd = start, end
 	if m.err != nil {
-		return nil, 0, m.err
+		return nil, 0, 0, m.err
 	}
-	return []*kvKV{{Key: []byte("p/x")}}, 1, nil
+	return []*kvKV{{Key: []byte("p/x")}}, 1, 1, nil
 }
 func (m *mvccRec) Compact(_ context.Context, rev int64) error {
 	m.compactRev = rev
@@ -1129,6 +1131,38 @@ func (m *mvccRec) CurrentRevision(_ context.Context) (int64, error) {
 		return 0, m.err
 	}
 	return 42, nil
+}
+
+// RestoreToRevision records the request the wrapper forwarded and echoes the
+// scoped keys back as a plan, so a test can assert both that the request was
+// namespaced on the way in and that the plan was stripped on the way out.
+func (m *mvccRec) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	m.restoreReq = req
+	if m.err != nil {
+		return nil, m.err
+	}
+	result := &service.RestoreRevisionResult{Revision: req.Revision, DryRun: req.DryRun}
+	for _, k := range req.Keys {
+		result.Changes = append(result.Changes, service.RestoreKeyChange{
+			Key:    k,
+			Action: service.RestoreActionRevert,
+		})
+	}
+	if req.Prefix != "" {
+		result.Changes = append(result.Changes, service.RestoreKeyChange{
+			Key:    req.Prefix + "x",
+			Action: service.RestoreActionRevert,
+		})
+	}
+	result.Applied = len(result.Changes)
+	for _, k := range m.conflictKeys {
+		result.Conflicts = append(result.Conflicts, service.RestoreKeyChange{
+			Key:    k,
+			Action: service.RestoreActionRevert,
+		})
+	}
+	result.Conflicted = len(result.Conflicts)
+	return result, nil
 }
 
 func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
@@ -1167,7 +1201,7 @@ func TestNamespacedMVCC_FullRevisionSurface(t *testing.T) {
 	}
 
 	// RangeWithConsistency prefixes bounds and strips returned keys.
-	kvs, _, err := w.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{})
+	kvs, _, _, err := w.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1213,9 +1247,9 @@ func TestNamespacedMVCC_ErrorPassthrough(t *testing.T) {
 			_, e := w.GetAtRevisionWithConsistency(ctx, "k", 1, consistency.ReadOptions{})
 			return e
 		}},
-		{"Range", func() error { _, _, e := w.Range(ctx, []byte("a"), []byte("z")); return e }},
+		{"Range", func() error { _, _, _, e := w.Range(ctx, []byte("a"), []byte("z")); return e }},
 		{"RangeWithConsistency", func() error {
-			_, _, e := w.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{})
+			_, _, _, e := w.RangeWithConsistency(ctx, []byte("a"), []byte("z"), consistency.ReadOptions{})
 			return e
 		}},
 		{"Compact", func() error { return w.Compact(ctx, 1) }},

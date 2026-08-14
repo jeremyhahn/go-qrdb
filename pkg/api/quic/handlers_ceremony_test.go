@@ -45,6 +45,28 @@ func TestHandleCeremonyInitialize_NilService(t *testing.T) {
 	}
 }
 
+// TestHandleCeremonyInitialize_NilCeremonyCA proves that a server with a
+// ceremony service but no CeremonyCA (WithCeremonyCA never applied) fails
+// closed with a typed *CeremonyCANotConfiguredError instead of forwarding a
+// nil CA into the ceremony service layer, which would otherwise nil-pointer
+// panic when it calls ca.IssueCertificate.
+func TestHandleCeremonyInitialize_NilCeremonyCA(t *testing.T) {
+	ceremonySvc := &mockCeremonyService{}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+
+	_, err := srv.handleCeremonyInitialize(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected CeremonyCANotConfiguredError, got nil")
+	}
+	var ccnc *CeremonyCANotConfiguredError
+	if !errors.As(err, &ccnc) {
+		t.Fatalf("expected *CeremonyCANotConfiguredError, got %T", err)
+	}
+	if ceremonySvc.capturedCA != nil {
+		t.Fatal("ceremony service must not be reached when the CA is not configured")
+	}
+}
+
 func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{
 		ceremonyInitializeFn: func(_ context.Context, _ ceremony.CeremonyCA) (*service.CeremonyInitResult, error) {
@@ -52,14 +74,13 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 				SPKIPin:    "sha256/testpin",
 				CACertPEM:  []byte("ca-cert"),
 				TLSCertPEM: []byte("tls-cert"),
-				SOCertPEM:  []byte("so-cert"),
-				SOKeyPEM:   []byte("so-key"),
 				State:      "active",
 				ShareCount: 5,
 			}, nil
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+	ca := stubCeremonyCA{}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc), WithCeremonyCA(ca))
 
 	resp, err := srv.handleCeremonyInitialize(context.Background(), nil)
 	if err != nil {
@@ -82,6 +103,9 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 	if initResp.GetShareCount() != 5 {
 		t.Errorf("expected share_count 5, got %d", initResp.GetShareCount())
 	}
+	if ceremonySvc.capturedCA != ca {
+		t.Errorf("expected the configured CeremonyCA to reach the service layer, got %#v", ceremonySvc.capturedCA)
+	}
 }
 
 // TestHandleCeremonyInitialize_ForwardsAllFields is the regression guard for
@@ -91,7 +115,7 @@ func TestHandleCeremonyInitialize_Success(t *testing.T) {
 // wire request.
 func TestHandleCeremonyInitialize_ForwardsAllFields(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc), WithCeremonyCA(stubCeremonyCA{}))
 
 	payload, err := proto.Marshal(&pb.CeremonyInitializeRequest{
 		SoPin:                  "pin",
@@ -144,7 +168,7 @@ func TestHandleCeremonyInitialize_ServiceError(t *testing.T) {
 			return nil, svcErr
 		},
 	}
-	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc), WithCeremonyCA(stubCeremonyCA{}))
 	_, err := srv.handleCeremonyInitialize(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error")
@@ -350,19 +374,63 @@ func TestHandleCeremonyClaimCertComplete_UnmarshalError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleCeremonyClaimShare
+// handleCeremonyBeginClaimShare / handleCeremonyCompleteClaimShare
 // ---------------------------------------------------------------------------
 
-func TestHandleCeremonyClaimShare_NilService(t *testing.T) {
+func TestHandleCeremonyBeginClaimShare_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := proto.Marshal(&pb.CeremonyClaimShareRequest{Username: "officer1"})
-	_, err := srv.handleCeremonyClaimShare(context.Background(), payload)
+	payload, _ := proto.Marshal(&pb.CeremonyBeginClaimShareRequest{Username: "officer1"})
+	_, err := srv.handleCeremonyBeginClaimShare(ctxWithFakeTLSQuic(), payload)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestHandleCeremonyClaimShare_Success(t *testing.T) {
+// TestHandleCeremonyBeginClaimShare_RequiresClientCert proves an officer who
+// presents no mTLS certificate cannot even start the handshake: there is no
+// thumbprint to bind the challenge to, so the handler fails closed.
+func TestHandleCeremonyBeginClaimShare_RequiresClientCert(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(&mockCeremonyService{}))
+	payload, _ := proto.Marshal(&pb.CeremonyBeginClaimShareRequest{Username: "officer1"})
+	_, err := srv.handleCeremonyBeginClaimShare(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleCeremonyBeginClaimShare_Success(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(&mockCeremonyService{}))
+	payload, _ := proto.Marshal(&pb.CeremonyBeginClaimShareRequest{Username: "officer1"})
+	resp, err := srv.handleCeremonyBeginClaimShare(ctxWithFakeTLSQuic(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var beginResp pb.CeremonyBeginClaimShareResponse
+	if err := proto.Unmarshal(resp, &beginResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if beginResp.GetNonceHex() == "" {
+		t.Fatal("expected a challenge nonce")
+	}
+}
+
+func TestHandleCeremonyBeginClaimShare_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(&mockCeremonyService{}))
+	_, err := srv.handleCeremonyBeginClaimShare(ctxWithFakeTLSQuic(), []byte{0xff, 0xfe})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
 	ceremonySvc := &mockCeremonyService{
 		ceremonyClaimShareFn: func(_ context.Context, username string) ([]byte, error) {
 			if username != "officer1" {
@@ -373,13 +441,17 @@ func TestHandleCeremonyClaimShare_Success(t *testing.T) {
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
 
-	payload, _ := proto.Marshal(&pb.CeremonyClaimShareRequest{Username: "officer1"})
-	resp, err := srv.handleCeremonyClaimShare(context.Background(), payload)
+	payload, _ := proto.Marshal(&pb.CeremonyCompleteClaimShareRequest{
+		Username:  "officer1",
+		NonceHex:  "abcd",
+		Signature: []byte("sig"),
+	})
+	resp, err := srv.handleCeremonyCompleteClaimShare(ctxWithFakeTLSQuic(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var shareResp pb.CeremonyClaimShareResponse
+	var shareResp pb.CeremonyCompleteClaimShareResponse
 	if err := proto.Unmarshal(resp, &shareResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -388,22 +460,55 @@ func TestHandleCeremonyClaimShare_Success(t *testing.T) {
 	}
 }
 
-func TestHandleCeremonyClaimShare_ServiceError(t *testing.T) {
+// TestHandleCeremonyCompleteClaimShare_RequiresClientCert proves the completing
+// half refuses a certificate-less caller AND returns no share bytes.
+func TestHandleCeremonyCompleteClaimShare_RequiresClientCert(t *testing.T) {
+	ceremonySvc := &mockCeremonyService{
+		ceremonyClaimShareFn: func(_ context.Context, _ string) ([]byte, error) {
+			t.Fatal("ceremony service must not be reached without a client certificate")
+			return nil, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
+	payload, _ := proto.Marshal(&pb.CeremonyCompleteClaimShareRequest{Username: "officer1"})
+	resp, err := srv.handleCeremonyCompleteClaimShare(context.Background(), payload)
+	if err == nil {
+		t.Fatal("expected ClientCertRequiredError")
+	}
+	if len(resp) != 0 {
+		t.Fatalf("share payload leaked on refusal: %q", resp)
+	}
+	var ce *ClientCertRequiredError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ClientCertRequiredError, got %T", err)
+	}
+}
+
+func TestHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "share error"}
 	ceremonySvc := &mockCeremonyService{
 		ceremonyClaimShareFn: func(_ context.Context, _ string) ([]byte, error) { return nil, svcErr },
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(ceremonySvc))
-	payload, _ := proto.Marshal(&pb.CeremonyClaimShareRequest{Username: "u"})
-	_, err := srv.handleCeremonyClaimShare(context.Background(), payload)
+	payload, _ := proto.Marshal(&pb.CeremonyCompleteClaimShareRequest{Username: "u"})
+	_, err := srv.handleCeremonyCompleteClaimShare(ctxWithFakeTLSQuic(), payload)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestHandleCeremonyClaimShare_UnmarshalError(t *testing.T) {
+func TestHandleCeremonyCompleteClaimShare_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.CeremonyCompleteClaimShareRequest{Username: "officer1"})
+	_, err := srv.handleCeremonyCompleteClaimShare(ctxWithFakeTLSQuic(), payload)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestHandleCeremonyCompleteClaimShare_UnmarshalError(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithCeremonyService(&mockCeremonyService{}))
-	_, err := srv.handleCeremonyClaimShare(context.Background(), []byte{0xff, 0xfe})
+	_, err := srv.handleCeremonyCompleteClaimShare(ctxWithFakeTLSQuic(), []byte{0xff, 0xfe})
 	if err == nil {
 		t.Fatal("expected error")
 	}

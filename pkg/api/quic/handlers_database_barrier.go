@@ -71,7 +71,7 @@ func (s *Server) handleDatabaseBarrierStatus(ctx context.Context, payload []byte
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	st, err := s.databaseSvc.DatabaseBarrierStatus(req.GetName())
+	st, err := s.databaseSvc.DatabaseBarrierStatus(ctx, req.GetName())
 	if err != nil {
 		return nil, err
 	}

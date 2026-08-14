@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"net"
 	"testing"
@@ -53,8 +54,12 @@ func (f *fakeCeremonyServicer) CeremonyCompleteClaimCert(_ context.Context, _, _
 	return &service.CeremonyClaimCertResult{CertPEM: []byte("CERT"), CACertPEM: []byte("CA")}, nil
 }
 
-func (f *fakeCeremonyServicer) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
-	return []byte(`{"x":1}`), nil
+func (f *fakeCeremonyServicer) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (f *fakeCeremonyServicer) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte(`{"x":1}`)}, nil
 }
 
 func (f *fakeCeremonyServicer) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
@@ -179,14 +184,30 @@ func (f *fakeUserAuthFactorServicer) MarkUsed(_ context.Context, _ string, _ tim
 // Server setup
 // ===========================================================================
 
+// stubCeremonyCA is a non-nil CeremonyCA placeholder. The ceremony handler
+// requires a configured CA (fail-closed since #54's nil-guard) before it
+// delegates to the servicer; the fake servicer ignores the CA argument, so
+// these stub methods are never actually invoked.
+type stubCeremonyCA struct{}
+
+func (stubCeremonyCA) SignCSR(context.Context, []byte, *ceremony.SignCSROptions) (*x509.Certificate, error) {
+	return nil, nil
+}
+func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
+func (stubCeremonyCA) CABundle() ([]byte, error)                 { return nil, nil }
+func (stubCeremonyCA) IssueCertificate(context.Context, *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+	return nil, nil
+}
+
 func startMiscServer(t *testing.T) (string, func()) {
 	t.Helper()
 	srv := googlegrpc.NewServer()
 	grpc.RegisterService(srv, nil, nil,
 		grpc.WithRegisterCeremonyService(&fakeCeremonyServicer{}),
+		grpc.WithRegisterCeremonyCA(stubCeremonyCA{}),
 		grpc.WithRegisterCollectionService(&fakeCollectionServicer{}),
 	)
-	grpc.RegisterUserAuthFactorService(srv, &fakeUserAuthFactorServicer{})
+	grpc.RegisterUserAuthFactorService(srv, &fakeUserAuthFactorServicer{}, nil)
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -246,8 +267,8 @@ func TestGRPCCeremony_AllMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("ClaimShare", func(t *testing.T) {
-		if _, err := tr.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{Username: "alice"}); err != nil {
-			t.Fatalf("CeremonyClaimShare: %v", err)
+		if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{Username: "alice"}); err == nil {
+			t.Fatal("CeremonyBeginClaimShare: expected refusal without a client certificate")
 		}
 	})
 	t.Run("SignCSR", func(t *testing.T) {

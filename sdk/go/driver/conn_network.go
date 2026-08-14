@@ -15,14 +15,12 @@
 package driver
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	sqld "database/sql/driver"
-	"encoding/json"
-	"io"
-	"net/http"
 	"sync/atomic"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // Compile-time interface assertions.
@@ -31,30 +29,21 @@ var (
 	_ sqld.ConnBeginTx    = (*networkConn)(nil)
 	_ sqld.ExecerContext  = (*networkConn)(nil)
 	_ sqld.QueryerContext = (*networkConn)(nil)
+	_ sqld.Validator      = (*networkConn)(nil)
 )
 
-// networkConn implements database/sql/driver.Conn by forwarding SQL
-// queries to a remote qrdb server via HTTP REST API.
+// networkConn implements database/sql/driver.Conn by forwarding statements to
+// a remote qrdb server through an SDK transport.
+//
+// The remote SQL surface accepts a statement and returns a result set. It
+// carries no bind parameters, no affected-row count, no insert id, and no
+// session handle, so this connection supports fewer capabilities than the
+// embedded one and says so explicitly rather than approximating them.
 type networkConn struct {
-	client   *http.Client
-	baseURL  string
-	database string
-	closed   atomic.Bool
-}
-
-// sqlRequest is the JSON payload sent to POST /v1/sql/query.
-type sqlRequest struct {
-	Query    string `json:"query"`
-	Database string `json:"database"`
-}
-
-// sqlResponse is the JSON payload returned by POST /v1/sql/query.
-type sqlResponse struct {
-	Columns  []string                 `json:"columns"`
-	Rows     []map[string]interface{} `json:"rows"`
-	RowCount int                      `json:"rowCount"`
-	Duration string                   `json:"duration"`
-	Error    string                   `json:"error,omitempty"`
+	sqlClient transport.SQLClient
+	database  string
+	scheme    string
+	closed    atomic.Bool
 }
 
 // Prepare returns a prepared statement for the given query.
@@ -65,119 +54,72 @@ func (c *networkConn) Prepare(query string) (sqld.Stmt, error) {
 	return &networkStmt{conn: c, query: query}, nil
 }
 
-// Close marks the connection as closed.
+// Close marks the connection as closed. The transport is owned by the
+// connector and outlives individual connections.
 func (c *networkConn) Close() error {
 	c.closed.Store(true)
 	return nil
 }
 
-// Begin starts a transaction with default options.
+// IsValid reports whether the connection may be reused from the pool.
+func (c *networkConn) IsValid() bool {
+	return !c.closed.Load()
+}
+
+// Begin starts a new transaction with default options.
 func (c *networkConn) Begin() (sqld.Tx, error) {
 	return c.BeginTx(context.Background(), sqld.TxOptions{})
 }
 
-// BeginTx returns a no-op transaction. Network mode uses auto-commit
-// semantics; only default and serializable isolation levels are accepted.
+// BeginTx reports that transactions are unavailable over this transport.
+//
+// The remote SQL API executes one statement per request with no session
+// affinity, so there is nothing for BEGIN to attach to. Returning a handle
+// that silently discards COMMIT and ROLLBACK — which this connection
+// previously did — makes a rollback look like it succeeded while changing
+// nothing, so the request is refused instead.
 func (c *networkConn) BeginTx(_ context.Context, opts sqld.TxOptions) (sqld.Tx, error) {
 	if c.closed.Load() {
 		return nil, &ConnClosedError{}
 	}
-	if sql.IsolationLevel(opts.Isolation) != sql.LevelDefault &&
-		sql.IsolationLevel(opts.Isolation) != sql.LevelSerializable {
-		return nil, &UnsupportedIsolationError{Level: sql.IsolationLevel(opts.Isolation)}
+	if level := sql.IsolationLevel(opts.Isolation); level != sql.LevelDefault {
+		return nil, &UnsupportedIsolationError{Level: level}
 	}
-	return &networkTx{}, nil
+	return nil, &TransactionUnsupportedError{Scheme: c.scheme}
 }
 
-// QueryContext executes a SQL query and returns the result rows.
+// QueryContext executes a query and returns the result rows.
 func (c *networkConn) QueryContext(ctx context.Context, query string, args []sqld.NamedValue) (sqld.Rows, error) {
 	if c.closed.Load() {
 		return nil, &ConnClosedError{}
 	}
-
-	substituted, err := substituteArgs(query, args)
-	if err != nil {
-		return nil, err
+	if len(args) > 0 {
+		return nil, &ParameterizedQueryUnsupportedError{Scheme: c.scheme, Count: len(args)}
 	}
 
-	resp, err := c.executeSQL(ctx, substituted)
-	if err != nil {
-		return nil, err
-	}
-
-	return newNetworkRows(resp), nil
-}
-
-// ExecContext executes a SQL statement and returns the result.
-func (c *networkConn) ExecContext(ctx context.Context, query string, args []sqld.NamedValue) (sqld.Result, error) {
-	if c.closed.Load() {
-		return nil, &ConnClosedError{}
-	}
-
-	substituted, err := substituteArgs(query, args)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := c.executeSQL(ctx, substituted)
-	if err != nil {
-		return nil, err
-	}
-
-	return &result{rowsAffected: int64(resp.RowCount)}, nil
-}
-
-// executeSQL sends a SQL query to the remote server via POST /v1/sql/query.
-func (c *networkConn) executeSQL(ctx context.Context, query string) (*sqlResponse, error) {
-	url := c.baseURL + "/v1/sql/query"
-
-	payload, err := json.Marshal(&sqlRequest{
-		Query:    query,
-		Database: c.database,
-	})
+	result, err := c.sqlClient.Query(ctx, c.database, query)
 	if err != nil {
 		return nil, &QueryExecError{Query: query, Err: err}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return nil, &NetworkRequestError{URL: url, Err: err}
-	}
-	req.Header.Set("Content-Type", "application/json")
+	return newNetworkRows(result), nil
+}
 
-	httpResp, err := c.client.Do(req)
-	if err != nil {
-		return nil, &NetworkRequestError{URL: url, Err: err}
+// ExecContext executes a statement that does not return rows.
+func (c *networkConn) ExecContext(ctx context.Context, query string, args []sqld.NamedValue) (sqld.Result, error) {
+	if c.closed.Load() {
+		return nil, &ConnClosedError{}
 	}
-	defer func() { _ = httpResp.Body.Close() }()
-
-	body, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, &NetworkRequestError{URL: url, StatusCode: httpResp.StatusCode, Err: err}
+	if len(args) > 0 {
+		return nil, &ParameterizedQueryUnsupportedError{Scheme: c.scheme, Count: len(args)}
 	}
 
-	if httpResp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-			return nil, &NetworkRequestError{
-				URL:        url,
-				StatusCode: httpResp.StatusCode,
-				Err:        &NetworkResponseError{Message: errResp.Error},
-			}
-		}
-		return nil, &NetworkRequestError{
-			URL:        url,
-			StatusCode: httpResp.StatusCode,
-			Err:        &NetworkResponseError{Message: string(body)},
-		}
+	if _, err := c.sqlClient.Query(ctx, c.database, query); err != nil {
+		return nil, &QueryExecError{Query: query, Err: err}
 	}
 
-	var resp sqlResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, &NetworkRequestError{URL: url, StatusCode: httpResp.StatusCode, Err: err}
-	}
-
-	return &resp, nil
+	// The wire response carries a row count, not an affected-row count, and no
+	// insert id. Reporting the row count as RowsAffected would be wrong for
+	// every DML statement, so the result declares the metadata unavailable.
+	return &result{unsupported: true}, nil
 }

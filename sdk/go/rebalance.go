@@ -17,7 +17,13 @@ package sdk
 import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 
 // Rebalance returns a RebalanceClient for shard statistics and cluster
-// rebalancing operations.
+// rebalancing operations. Returns nil when the active transport does not
+// implement transport.RebalanceClient; callers should nil-check the result
+// and fall back appropriately (see Client.UserAuthFactors for the
+// established pattern).
 func (c *Client) Rebalance() transport.RebalanceClient {
-	return c.transport.(transport.RebalanceClient)
+	if rc, ok := c.transport.(transport.RebalanceClient); ok {
+		return rc
+	}
+	return nil
 }

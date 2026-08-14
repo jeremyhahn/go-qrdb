@@ -495,30 +495,24 @@ func TestCLIMultiProtocolDatabaseUpdateBarrier(t *testing.T) {
 			assertContains(t, stdout, "Name:",
 				fmt.Sprintf("[%s] database create should contain 'Name:'", proto))
 
-			// Step 2: Enable barrier.
+			// Step 2: Enabling a barrier on a SHARED-store database fails
+			// closed. This database was created with the default backend on
+			// the shared system store, where a per-database barrier would be
+			// crypto theater (data stays under the shared store's DEK), so
+			// the server rejects it with a typed "requires a dedicated store"
+			// error. The happy path (barrier on a dedicated-store database)
+			// is covered by the cluster-lane TestDatabaseBarrier* tests.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"database", "update-barrier", dbName, "--enabled")
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database update-barrier --enabled failed: %v", proto, err)
+			if err == nil {
+				t.Fatalf("[%s] update-barrier --enabled on a shared-store database must fail closed, got success (stdout: %s)",
+					proto, stdout)
 			}
+			assertContains(t, strings.ToLower(stdout+stderr+err.Error()), "dedicated store",
+				fmt.Sprintf("[%s] shared-store barrier rejection should name the dedicated-store requirement", proto))
 
-			output := stdout + stderr
-			assertNotEmpty(t, output,
-				fmt.Sprintf("[%s] database update-barrier --enabled produced no output", proto))
-
-			// Step 3: Verify barrier configuration is reflected in database info.
-			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] database info after update-barrier failed: %v", proto, err)
-			}
-			assertContains(t, stdout, "Barrier:",
-				fmt.Sprintf("[%s] database info should contain 'Barrier:' after update-barrier", proto))
-
-			// Step 4: Disable barrier.
+			// Step 3: Disabling a barrier is always allowed (idempotent no-op
+			// on a database that never had one).
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"database", "update-barrier", dbName, "--disabled")
 			if err != nil {
@@ -526,12 +520,10 @@ func TestCLIMultiProtocolDatabaseUpdateBarrier(t *testing.T) {
 				t.Logf("stderr: %s", stderr)
 				t.Fatalf("[%s] database update-barrier --disabled failed: %v", proto, err)
 			}
-
-			output = stdout + stderr
-			assertNotEmpty(t, output,
+			assertNotEmpty(t, stdout+stderr,
 				fmt.Sprintf("[%s] database update-barrier --disabled produced no output", proto))
 
-			// Step 5: Drop the database.
+			// Step 4: Drop the database.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)

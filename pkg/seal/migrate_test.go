@@ -61,6 +61,183 @@ func TestMintKeyedSibling_Idempotent(t *testing.T) {
 	_ = second.Close()
 }
 
+// ---------------------------------------------------------------------------
+// Shamir-target migration: MintKeyedShamirSibling / AdoptMigratedRootKey /
+// ReopenKeyed.
+// ---------------------------------------------------------------------------
+
+// TestMintKeyedShamirSibling_Success proves the sibling is minted via the
+// real direct-mode Shamir ceremony (not the generic Initialize path, which
+// cannot represent Shamir — see the method's doc comment): the returned
+// sibling is unsealed, the params report the requested M-of-N, and the
+// distributor captured exactly `total` sealed shares.
+func TestMintKeyedShamirSibling_Success(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	dist := newCaptureDistributor()
+	src.SetCeremonyDistributor(dist)
+
+	sib, params, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
+	if err != nil {
+		t.Fatalf("MintKeyedShamirSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+
+	if params.Threshold != 2 || params.TotalShares != 3 || params.ShareCount != 3 {
+		t.Fatalf("params = %+v, want threshold=2 total=3 shareCount=3", params)
+	}
+	if len(dist.Shares()) != 3 {
+		t.Fatalf("captured %d shares, want 3", len(dist.Shares()))
+	}
+	if sib.IsSealed() {
+		t.Fatal("minted shamir sibling must be unsealed (direct-mode Initialize unseals it)")
+	}
+	if got := sib.Status().Strategy; got != StrategyShamir {
+		t.Fatalf("sibling strategy = %q, want shamir", got)
+	}
+}
+
+// TestMintKeyedShamirSibling_NoDistributor proves the operational precondition
+// is enforced with the same typed error a fresh BarrierShamirInitialize would
+// give: enabling encryption to Shamir requires a CeremonyDistributor already
+// wired on the source barrier, exactly like initializing a new Shamir barrier.
+func TestMintKeyedShamirSibling_NoDistributor(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	// No SetCeremonyDistributor call.
+	if _, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3); !errors.Is(err, ErrCeremonyDistributorNotConfigured) {
+		t.Fatalf("MintKeyedShamirSibling without a distributor = %v, want ErrCeremonyDistributorNotConfigured", err)
+	}
+}
+
+// TestMintKeyedShamirSibling_InvalidThreshold proves an out-of-range M-of-N is
+// rejected before any ceremony work happens.
+func TestMintKeyedShamirSibling_InvalidThreshold(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	src.SetCeremonyDistributor(newCaptureDistributor())
+	if _, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 1, 3); !errors.Is(err, ErrShamirThresholdInvalid) {
+		t.Fatalf("MintKeyedShamirSibling(threshold=1) = %v, want ErrShamirThresholdInvalid", err)
+	}
+}
+
+// TestAdoptMigratedRootKey_Shamir_AdoptsWrappedKeyAndScheme proves adopting a
+// Shamir target does more than the generic passphrase-shaped copy: it also
+// copies the wrapped-root-key blob the Shamir indirection depends on (without
+// it, the migrated barrier could never again be unsealed — see the method's
+// doc comment) and registers the M-of-N scheme so Status() reports it
+// immediately.
+func TestAdoptMigratedRootKey_Shamir_AdoptsWrappedKeyAndScheme(t *testing.T) {
+	ctx := context.Background()
+	src, backend := newNoneBarrier(t)
+	dist := newCaptureDistributor()
+	src.SetCeremonyDistributor(dist)
+
+	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
+	if err != nil {
+		t.Fatalf("MintKeyedShamirSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+
+	if err := src.AdoptMigratedRootKey(ctx, sib); err != nil {
+		t.Fatalf("AdoptMigratedRootKey: %v", err)
+	}
+
+	status := src.Status()
+	if status.Strategy != StrategyShamir {
+		t.Fatalf("adopted strategy = %q, want shamir", status.Strategy)
+	}
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Fatalf("adopted scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
+	}
+
+	// The wrapped-root-key blob must have been copied onto the CANONICAL path
+	// (not left stranded at the staging sibling's path) — this is exactly what
+	// UnsealWithShare(s) reads on a future unseal.
+	canonicalWrapped, gerr := backend.Get(ctx, src.wrappedRootKeyPath())
+	if gerr != nil || len(canonicalWrapped) == 0 {
+		t.Fatalf("canonical wrapped-root-key blob missing after adopt: %v", gerr)
+	}
+	stagingWrapped, _ := backend.Get(ctx, sib.wrappedRootKeyPath())
+	if string(canonicalWrapped) != string(stagingWrapped) {
+		t.Fatal("adopted wrapped-root-key blob does not match the staging sibling's")
+	}
+}
+
+// TestAdoptMigratedRootKey_InvalidTargetStrategy proves a target whose active
+// strategy is neither passphrase nor shamir is rejected (defense in depth: the
+// caller's opts.Validate should already have rejected this earlier).
+func TestAdoptMigratedRootKey_InvalidTargetStrategy(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	none, _ := newNoneBarrier(t)
+	if err := src.AdoptMigratedRootKey(ctx, none); !errors.Is(err, ErrMigrationInvalidTarget) {
+		t.Fatalf("AdoptMigratedRootKey(none target) = %v, want ErrMigrationInvalidTarget", err)
+	}
+}
+
+// TestReopenKeyed_Shamir_StaysSealedPendingQuorum proves ReopenKeyed does NOT
+// attempt to auto-unseal a Shamir target (ShamirStrategy.UnsealRootKey always
+// fails closed by design): it returns a sealed barrier with the M-of-N scheme
+// + distributor already registered, ready for the normal
+// UnsealWithShare(s)/Status() flow, rather than propagating the doomed unseal
+// error.
+func TestReopenKeyed_Shamir_StaysSealedPendingQuorum(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	dist := newCaptureDistributor()
+	src.SetCeremonyDistributor(dist)
+
+	sib, _, err := src.MintKeyedShamirSibling(ctx, ".migrating", 2, 3)
+	if err != nil {
+		t.Fatalf("MintKeyedShamirSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+	if err := src.AdoptMigratedRootKey(ctx, sib); err != nil {
+		t.Fatalf("AdoptMigratedRootKey: %v", err)
+	}
+
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatalf("NewShamirStrategy: %v", err)
+	}
+	keyed, err := src.ReopenKeyed(ctx, shamirStrat, Credentials{})
+	if err != nil {
+		t.Fatalf("ReopenKeyed(shamir) must not error (it must not attempt unseal): %v", err)
+	}
+	if !keyed.IsSealed() {
+		t.Fatal("a reopened Shamir barrier must stay SEALED pending Security Officer quorum")
+	}
+	status := keyed.Status()
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Fatalf("reopened sealed barrier scheme = %d/%d, want 2/3 (from config, since sealed)", status.ShamirThreshold, status.ShamirTotal)
+	}
+}
+
+// TestReopenKeyed_Passphrase_Unseals proves the pre-existing (non-Shamir)
+// behavior is unchanged: ReopenKeyed still unseals a passphrase target with
+// the supplied credential.
+func TestReopenKeyed_Passphrase_Unseals(t *testing.T) {
+	ctx := context.Background()
+	src, _ := newNoneBarrier(t)
+	sib, err := src.MintKeyedSibling(ctx, ".migrating", NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	if err != nil {
+		t.Fatalf("MintKeyedSibling: %v", err)
+	}
+	defer func() { _ = sib.Close() }()
+	if err := src.AdoptMigratedRootKey(ctx, sib); err != nil {
+		t.Fatalf("AdoptMigratedRootKey: %v", err)
+	}
+
+	keyed, err := src.ReopenKeyed(ctx, NewDeferredSoftwareStrategy(), Credentials{Secret: []byte("pw")})
+	if err != nil {
+		t.Fatalf("ReopenKeyed(passphrase): %v", err)
+	}
+	if keyed.IsSealed() {
+		t.Fatal("a reopened passphrase barrier must unseal immediately with the correct credential")
+	}
+}
+
 func TestMigrationOptions_Validate(t *testing.T) {
 	tests := []struct {
 		name string

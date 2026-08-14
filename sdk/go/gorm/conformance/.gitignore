@@ -1,0 +1,3 @@
+# Upstream GORM suite, materialized by `make gorm-suite-sync`. Never committed.
+*_test.go
+!qrdb_*_test.go

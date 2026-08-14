@@ -17,9 +17,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 )
@@ -123,7 +126,15 @@ func main() {
 	}
 
 	rootCmd := newRootCmd()
-	if err := rootCmd.Execute(); err != nil {
+
+	// Cancel the root command context on SIGINT/SIGTERM so long-running
+	// commands (notably `qrdb watch`, whose loop selects on ctx.Done() for
+	// every transport) stop promptly on Ctrl-C instead of relying on the
+	// default OS signal disposition to kill the process mid-operation.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

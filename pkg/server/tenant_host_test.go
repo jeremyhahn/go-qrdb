@@ -342,7 +342,7 @@ func TestResolver_RoutesVolumeTenantToTenantHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostReg.Services: %v", err)
 	}
-	prefix := composeNamespace("vt", "", "system", "system")
+	prefix := tenant.ComposeNamespace("vt", "")
 	raw, err := base.KV.Get(ctx, prefix+"routed")
 	if err != nil {
 		t.Fatalf("tenant host base KV.Get(%q): %v", prefix+"routed", err)

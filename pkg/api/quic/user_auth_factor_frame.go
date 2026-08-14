@@ -232,9 +232,22 @@ func (s *Server) handleUserAuthFactorLogin(ctx context.Context, payload []byte) 
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{
+	resp := map[string]any{
 		"user_id": factor.UserID,
 		"active":  true,
 		"factor":  userFactorToQUIC(factor),
-	})
+	}
+	// Enrich from the user service, when wired. The factor login yields only
+	// the user ID; resolve the full record so username, tenant, and roles
+	// reach the client. Best-effort: a lookup failure leaves the base
+	// identifiers intact rather than failing an authenticated login.
+	if s.userSvc != nil && factor.UserID != 0 {
+		if u, uErr := s.userSvc.GetUser(ctx, factor.UserID); uErr == nil && u != nil {
+			resp["username"] = u.Username
+			resp["tenant_id"] = u.TenantID
+			resp["roles"] = u.RoleIDs
+			resp["active"] = u.Enabled
+		}
+	}
+	return json.Marshal(resp)
 }

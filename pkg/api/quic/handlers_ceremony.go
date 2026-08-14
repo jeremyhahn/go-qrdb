@@ -25,14 +25,16 @@ import (
 )
 
 // handleCeremonyInitialize performs the initialization ceremony by delegating
-// to the ceremony service layer. The QUIC transport passes nil for the
-// CeremonyCA parameter since it does not have access to the CA instance
-// directly, matching the gRPC transport behavior. The per-request SO and
-// user PINs are decoded from the request payload and forwarded to the
-// service layer.
+// to the ceremony service layer, issuing TLS and SO certificates from the
+// server's configured CeremonyCA (WithCeremonyCA), mirroring the gRPC, REST,
+// and MCP transports. The per-request SO and user PINs are decoded from the
+// request payload and forwarded to the service layer.
 func (s *Server) handleCeremonyInitialize(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.ceremonySvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "ceremony"}
+	}
+	if s.ceremonyCA == nil {
+		return nil, &CeremonyCANotConfiguredError{}
 	}
 
 	var req pb.CeremonyInitializeRequest
@@ -40,7 +42,7 @@ func (s *Server) handleCeremonyInitialize(ctx context.Context, payload []byte) (
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	result, err := s.ceremonySvc.CeremonyInitialize(ctx, nil, &service.CeremonyInitializeOptions{
+	result, err := s.ceremonySvc.CeremonyInitialize(ctx, s.ceremonyCA, &service.CeremonyInitializeOptions{
 		SOPin:                  req.GetSoPin(),
 		UserPin:                req.GetUserPin(),
 		CredentialSealStrategy: req.GetCredentialSealStrategy(),
@@ -57,8 +59,6 @@ func (s *Server) handleCeremonyInitialize(ctx context.Context, payload []byte) (
 		SpkiPin:    result.SPKIPin,
 		CaCertPem:  string(result.CACertPEM),
 		TlsCertPem: string(result.TLSCertPEM),
-		SoCertPem:  string(result.SOCertPEM),
-		SoKeyPem:   string(result.SOKeyPEM),
 		State:      result.State,
 		ShareCount: int32(result.ShareCount),
 	})
@@ -159,25 +159,66 @@ func (s *Server) handleCeremonyClaimCertComplete(ctx context.Context, payload []
 	return resp, nil
 }
 
-// handleCeremonyClaimShare retrieves the Shamir share for the given officer
-// username and returns it as a string.
-func (s *Server) handleCeremonyClaimShare(ctx context.Context, payload []byte) ([]byte, error) {
+// handleCeremonyBeginClaimShare starts the Shamir share claim handshake for the
+// given officer. The caller MUST present an mTLS client certificate: its
+// thumbprint is derived from the verified TLS peer chain (never from the
+// request payload) and must match the enrolled officer record.
+func (s *Server) handleCeremonyBeginClaimShare(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.ceremonySvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "ceremony"}
 	}
 
-	var req pb.CeremonyClaimShareRequest
-	if err := proto.Unmarshal(payload, &req); err != nil {
-		return nil, &UnmarshalError{Err: err}
-	}
-
-	shareBytes, err := s.ceremonySvc.CeremonyClaimShare(ctx, req.GetUsername())
+	thumbprint, err := quicCertThumbprint(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := proto.Marshal(&pb.CeremonyClaimShareResponse{
-		Share: string(shareBytes),
+	var req pb.CeremonyBeginClaimShareRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	challenge, err := s.ceremonySvc.CeremonyBeginClaimShare(ctx, req.GetUsername(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.CeremonyBeginClaimShareResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleCeremonyCompleteClaimShare completes the Shamir share claim handshake.
+// The officer's nonce signature and the caller's mTLS certificate thumbprint
+// are both verified before the share is released exactly once.
+func (s *Server) handleCeremonyCompleteClaimShare(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.ceremonySvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "ceremony"}
+	}
+
+	thumbprint, err := quicCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var req pb.CeremonyCompleteClaimShareRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	result, err := s.ceremonySvc.CeremonyCompleteClaimShare(ctx, req.GetUsername(), req.GetNonceHex(), req.GetSignature(), thumbprint)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.CeremonyCompleteClaimShareResponse{
+		ShareIndex: int32(result.ShareIndex), //nolint:gosec // share index is a small positive ordinal
+		Share:      string(result.ShareBytes),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

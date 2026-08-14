@@ -31,9 +31,23 @@ func (s *Server) buildHandlers() {
 		s.handlers["kv.Scan"] = s.handleKVScan
 	}
 
-	// Admin handlers are registered only when an admin service is provided.
+	// admin.Health is registered unconditionally: it is on the sealed-window
+	// allowlist (pkg/api/sealedwindow.Table VerbHealth) and reachable BEFORE
+	// adminSvc exists (adminSvc is nil throughout the pre-host sealed
+	// window -- see handleHealth's doc comment), so it must be present in
+	// the dispatch map even then. handleHealth itself reports the "sealed"
+	// verdict when s.adminSvc is nil rather than erroring; gating its
+	// registration on s.adminSvc != nil like the other admin handlers below
+	// would make every request for it fall through to the dispatch loop's
+	// StatusUnimplemented default before handleHealth's nil-safe logic ever
+	// runs, defeating that fix and leaving sdk/go/transport/quic's Connect()
+	// (which requires a successful Health RPC) unable to reach a
+	// correctly-sealed, perfectly healthy daemon.
+	s.handlers["admin.Health"] = s.handleHealth
+
+	// The remaining admin handlers are registered only when an admin
+	// service is provided.
 	if s.adminSvc != nil {
-		s.handlers["admin.Health"] = s.handleHealth
 		s.handlers["admin.Status"] = s.handleStatus
 		s.handlers["admin.Peers"] = s.handlePeers
 		s.handlers["admin.AddMember"] = s.handleAddMember
@@ -54,12 +68,14 @@ func (s *Server) buildHandlers() {
 	s.handlers["mvcc.Range"] = s.handleRange
 	s.handlers["mvcc.Compact"] = s.handleCompact
 	s.handlers["mvcc.CurrentRevision"] = s.handleCurrentRevision
+	s.handlers["mvcc.RestoreToRevision"] = s.handleRestoreToRevision
 
 	// Transaction
 	s.handlers["tx.Transaction"] = s.handleTransaction
 
 	// Batch
 	s.handlers["batch.Batch"] = s.handleBatch
+	s.handlers["batch.Import"] = s.handleBatchImport
 
 	// Watch is server-streaming: handled by handleWatchStream in the stream
 	// dispatch path (see handleStream + isWatchMethod), NOT registered here as
@@ -171,11 +187,15 @@ func (s *Server) buildHandlers() {
 	s.handlers["db.UpdateProtocol"] = s.handleDatabaseUpdateProtocol
 	s.handlers["db.UpdateEtcd"] = s.handleDatabaseUpdateEtcd
 	s.handlers["db.UpdateRaft"] = s.handleDatabaseUpdateRaft
+	s.handlers["db.Scale"] = s.handleDatabaseScale
 	s.handlers["db.UpdateBarrier"] = s.handleDatabaseUpdateBarrier
 	s.handlers["db.UpdateConnection"] = s.handleDatabaseUpdateConnection
 	s.handlers["db.Seal"] = s.handleDatabaseSeal
 	s.handlers["db.Unseal"] = s.handleDatabaseUnseal
 	s.handlers["db.BarrierStatus"] = s.handleDatabaseBarrierStatus
+
+	// SQL
+	s.handlers["sql.Query"] = s.handleSQLQuery
 
 	// Barrier
 	s.handlers["barrier.Initialize"] = s.handleBarrierInitialize
@@ -201,13 +221,15 @@ func (s *Server) buildHandlers() {
 	s.handlers["barrier.RecoveryOfficerRegister"] = s.handleBarrierRecoveryOfficerRegister
 	s.handlers["barrier.RecoveryShareClaimBegin"] = s.handleBarrierRecoveryShareClaimBegin
 	s.handlers["barrier.RecoveryShareClaimComplete"] = s.handleBarrierRecoveryShareClaimComplete
+	s.handlers["barrier.EnableEncryption"] = s.handleBarrierEnableEncryption
 
 	// Ceremony
 	s.handlers["ceremony.Initialize"] = s.handleCeremonyInitialize
 	s.handlers["ceremony.Status"] = s.handleCeremonyStatus
 	s.handlers["ceremony.ClaimCertBegin"] = s.handleCeremonyClaimCertBegin
 	s.handlers["ceremony.ClaimCertComplete"] = s.handleCeremonyClaimCertComplete
-	s.handlers["ceremony.ClaimShare"] = s.handleCeremonyClaimShare
+	s.handlers["ceremony.BeginClaimShare"] = s.handleCeremonyBeginClaimShare
+	s.handlers["ceremony.CompleteClaimShare"] = s.handleCeremonyCompleteClaimShare
 	s.handlers["ceremony.SignCSR"] = s.handleCeremonySignCSR
 	s.handlers["ceremony.ClaimShareBegin"] = s.handleCeremonyClaimShareBegin
 	s.handlers["ceremony.ClaimShareComplete"] = s.handleCeremonyClaimShareComplete

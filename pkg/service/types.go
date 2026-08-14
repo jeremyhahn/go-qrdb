@@ -282,9 +282,33 @@ type MVCCRangeQuery = statemachine.MVCCRangeQuery
 // MVCCRevisionQuery queries the current global MVCC revision.
 type MVCCRevisionQuery = statemachine.MVCCRevisionQuery
 
-// MVCCRangeResult holds the result of an MVCC range query.
+// MVCCScanChangesQuery enumerates the distinct keys mutated in a revision
+// window from the durable revision index, including keys that have since
+// been deleted.
+type MVCCScanChangesQuery = statemachine.MVCCScanChangesQuery
+
+// MVCCScanChangesResult holds the keys an MVCCScanChangesQuery matched.
+// Values are deliberately absent — see MVCCScanChangesQuery.
+type MVCCScanChangesResult struct {
+	// Keys are the distinct changed keys, sorted ascending.
+	Keys []string
+
+	// Revision is the store's current MVCC revision at the time of the scan.
+	Revision int64
+
+	// Truncated reports that the query's Limit was reached and Keys is
+	// therefore an incomplete view of the window. A caller that needs a
+	// complete set must treat this as a refusal, not as a short answer.
+	Truncated bool
+}
+
+// MVCCRangeResult holds the result of an MVCC range query. Count and
+// Revision are distinct: Count is the number of matched keys (see
+// statemachine.MVCCRangeQuery.CountOnly for how Limit interacts with it),
+// while Revision is the MVCC revision the read was performed at.
 type MVCCRangeResult struct {
 	KeyValues []*KeyValue
+	Count     int64
 	Revision  int64
 }
 

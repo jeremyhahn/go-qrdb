@@ -111,12 +111,25 @@ var NewBarrier = NewStorageBarrier
 //  2. Unseal: load sealed root key, unseal, obtain encryptor
 //  3. Seal: release encryptor, block further operations
 type StorageBarrier struct {
-	logger     *slog.Logger
-	base       StorageBackend
-	barrier    *quicraftseal.Barrier
-	config     BarrierConfig
-	strategies map[StrategyID]SealingStrategy
-	prefOrder  []StrategyID
+	logger    *slog.Logger
+	base      StorageBackend
+	barrier   *quicraftseal.Barrier
+	config    BarrierConfig
+	prefOrder []StrategyID
+
+	// strategiesMu guards strategies. The map is mutated after construction by
+	// ChangePassword, Rekey, updateSealedShamirParams, and
+	// AdoptMigratedRootKey, while Status/Unseal/bestStrategy/Strategies/
+	// ShamirStrategy used to read it with no lock of their own — a Status()
+	// poll concurrent with any of those mutating operations is a genuine
+	// concurrent map read/write (fatal, not just a race). All access to
+	// strategies MUST go through the strategyByID/setStrategy accessors below,
+	// or take strategiesMu directly (as Strategies() and bestStrategy() do for
+	// a whole-map read); the field itself must never be read or written
+	// directly outside of NewStorageBarrier (which owns it exclusively before
+	// the barrier is published to any other goroutine).
+	strategiesMu sync.RWMutex
+	strategies   map[StrategyID]SealingStrategy
 
 	// state: 0 = sealed, 1 = unsealed
 	state atomic.Int32
@@ -203,7 +216,38 @@ func NewStorageBarrier(
 	if config.AEADProvider != nil {
 		epochConfig.AEADProvider = config.AEADProvider
 	}
-	epochBarrier := quicraftseal.NewBarrier(epochConfig)
+
+	// Epoch rotation must be durable BEFORE it takes effect. quicraft
+	// activates a new epoch only after this persister returns nil, and
+	// fails closed with ErrNoStatePersister when none is configured —
+	// without it, every write made under the new epoch would be
+	// permanently undecryptable after a restart, because the reloaded
+	// blob would still name the old epoch and derive only its DEK.
+	//
+	// Custody of the blob is ours, not the consensus layer's: this writes
+	// the canonical root-key record through the RAW base store, exactly as
+	// Rekey and Migrate do. It must never route through the StorageBarrier
+	// itself — the persister runs with the quicraft barrier lock held and
+	// must not re-enter it, and the root-key blob is by definition the one
+	// value that cannot be barrier-encrypted.
+	epochConfig.StatePersister = func(sealed *quicraftseal.SealedRootKey) error {
+		if sealed == nil {
+			return ErrNilSealedData
+		}
+		blob, err := json.Marshal(sealed)
+		if err != nil {
+			return err
+		}
+		return base.Put(context.Background(), config.RootKeyPath, blob)
+	}
+
+	// The epoch config is assembled at runtime from the caller's BarrierConfig,
+	// so an invalid algorithm (or a non-FIPS cipher under FIPS mode) is an
+	// operator error to report, not a programmer error to panic on.
+	epochBarrier, err := quicraftseal.NewBarrier(epochConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	b := &StorageBarrier{
 		logger:     logger,
@@ -319,7 +363,7 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 		return ErrCorruptRootKey
 	}
 
-	strategy, ok := b.strategies[sealed.Strategy]
+	strategy, ok := b.strategyByID(sealed.Strategy)
 	if !ok {
 		emitAudit(b.config.AuditLogger, "unseal", "barrier", b.config.RootKeyPath,
 			"deny", map[string]string{"error": ErrStrategyNotFound.Error(), "strategy": string(sealed.Strategy)})
@@ -379,7 +423,7 @@ func (b *StorageBarrier) Unseal(ctx context.Context, creds Credentials) error {
 // Used by StrategyShamir where shares reconstruct the unseal key (or, on
 // legacy barriers, the root key itself).
 func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error {
-	shamirStrat, ok := b.strategies[StrategyShamir]
+	shamirStrat, ok := b.strategyByID(StrategyShamir)
 	if !ok {
 		return ErrShamirNotConfigured
 	}
@@ -445,11 +489,28 @@ func (b *StorageBarrier) restoreInitializedAt(ctx context.Context) {
 	b.initializedAt.Store(persisted)
 }
 
+// strategyByID returns the registered strategy for id and whether it was
+// found. Safe for concurrent use with setStrategy and any other reader.
+func (b *StorageBarrier) strategyByID(id StrategyID) (SealingStrategy, bool) {
+	b.strategiesMu.RLock()
+	defer b.strategiesMu.RUnlock()
+	s, ok := b.strategies[id]
+	return s, ok
+}
+
+// setStrategy registers (or replaces) the strategy under id. Safe for
+// concurrent use with strategyByID and any other reader.
+func (b *StorageBarrier) setStrategy(id StrategyID, s SealingStrategy) {
+	b.strategiesMu.Lock()
+	defer b.strategiesMu.Unlock()
+	b.strategies[id] = s
+}
+
 // ShamirStrategy returns the registered ShamirStrategy or nil if not
 // registered. This accessor allows callers to inspect the Shamir
 // configuration and manage shares.
 func (b *StorageBarrier) ShamirStrategy() *ShamirStrategy {
-	s, ok := b.strategies[StrategyShamir]
+	s, ok := b.strategyByID(StrategyShamir)
 	if !ok {
 		return nil
 	}
@@ -533,7 +594,7 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 	}
 	if id := b.strategyOrPersisted(); id != "" {
 		status.Strategy = id
-		if s, exists := b.strategies[id]; exists {
+		if s, exists := b.strategyByID(id); exists {
 			status.HardwareBacked = s.HardwareBacked()
 		}
 	}
@@ -671,6 +732,8 @@ func (b *StorageBarrier) NonceTracker() NonceTrackerProvider {
 
 // Strategies returns a copy of the registered sealing strategies.
 func (b *StorageBarrier) Strategies() map[StrategyID]SealingStrategy {
+	b.strategiesMu.RLock()
+	defer b.strategiesMu.RUnlock()
 	cp := make(map[StrategyID]SealingStrategy, len(b.strategies))
 	for id, s := range b.strategies {
 		cp[id] = s
@@ -808,6 +871,8 @@ func (b *StorageBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 //   - If multiple strategies are registered with no PreferenceOrder, refuse to
 //     guess: return ErrNoStrategySpecified. The caller must specify the order.
 func (b *StorageBarrier) bestStrategy() (SealingStrategy, error) {
+	b.strategiesMu.RLock()
+	defer b.strategiesMu.RUnlock()
 	if len(b.prefOrder) > 0 {
 		for _, id := range b.prefOrder {
 			if s, ok := b.strategies[id]; ok && s.Available() {

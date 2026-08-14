@@ -106,26 +106,37 @@ func (e *Engine) Batch() storage.Batch {
 // are adjusted to include the namespace prefix, and returned keys have the
 // prefix stripped.
 func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
-	// Always scope the iterator to the namespace prefix range.
-	upper := make([]byte, len(e.prefix))
-	copy(upper, e.prefix)
+	return &namespacedIterator{
+		inner:  e.inner.NewIterator(scopeIterOptions(e.prefix, opts)),
+		prefix: e.prefix,
+	}
+}
+
+// scopeIterOptions rewrites iterator options into the namespace's key range,
+// so an unbounded request scans only this namespace and a bounded one is
+// translated into prefixed bounds.
+func scopeIterOptions(prefix []byte, opts *storage.IteratorOptions) *storage.IteratorOptions {
+	upper := make([]byte, len(prefix))
+	copy(upper, prefix)
 	upper[len(upper)-1]++
 
 	nsOpts := &storage.IteratorOptions{
-		LowerBound: e.prefix,
+		LowerBound: prefix,
 		UpperBound: upper,
 	}
-	if opts != nil {
-		nsOpts.Reverse = opts.Reverse
-		nsOpts.OnlyKeys = opts.OnlyKeys
-		if len(opts.LowerBound) > 0 {
-			nsOpts.LowerBound = append(e.prefix, opts.LowerBound...)
-		}
-		if len(opts.UpperBound) > 0 {
-			nsOpts.UpperBound = append(e.prefix, opts.UpperBound...)
-		}
+	if opts == nil {
+		return nsOpts
 	}
-	return &namespacedIterator{inner: e.inner.NewIterator(nsOpts), prefix: e.prefix}
+
+	nsOpts.Reverse = opts.Reverse
+	nsOpts.OnlyKeys = opts.OnlyKeys
+	if len(opts.LowerBound) > 0 {
+		nsOpts.LowerBound = append(prefix, opts.LowerBound...)
+	}
+	if len(opts.UpperBound) > 0 {
+		nsOpts.UpperBound = append(prefix, opts.UpperBound...)
+	}
+	return nsOpts
 }
 
 // Snapshot creates a point-in-time snapshot scoped to the namespace.
@@ -142,6 +153,9 @@ func (e *Engine) Close() error {
 	return e.inner.Close()
 }
 
+// Compile-time interface assertion.
+var _ storage.Batch = (*namespacedBatch)(nil)
+
 // namespacedBatch wraps a batch with namespace prefix.
 type namespacedBatch struct {
 	inner  storage.Batch
@@ -156,6 +170,24 @@ func (b *namespacedBatch) Set(key, value []byte) error {
 // Delete removes a key in the batch with the namespace prefix.
 func (b *namespacedBatch) Delete(key []byte) error {
 	return b.inner.Delete(append(b.prefix, key...))
+}
+
+// Get reads through the batch's own pending writes, then the namespaced
+// committed state.
+func (b *namespacedBatch) Get(key []byte) ([]byte, error) {
+	if len(key) == 0 {
+		return nil, storage.ErrEmptyKey
+	}
+	return b.inner.Get(append(b.prefix, key...))
+}
+
+// NewIterator scans the namespace through the batch's pending writes, with the
+// namespace prefix stripped from returned keys.
+func (b *namespacedBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return &namespacedIterator{
+		inner:  b.inner.NewIterator(scopeIterOptions(b.prefix, opts)),
+		prefix: b.prefix,
+	}
 }
 
 // Commit applies all batched operations atomically.

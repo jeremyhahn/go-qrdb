@@ -76,6 +76,24 @@ type GenericDAO[E Entity] interface {
 	// Existing entities with the same ID are overwritten.
 	Save(ctx context.Context, entity E) error
 
+	// SaveIfAbsent persists an entity only when no entity with its ID exists,
+	// reporting whether this call created it.
+	//
+	// stored=false with a nil error means the entity already existed and
+	// storage is unchanged. A non-nil error means the outcome is unknown.
+	//
+	// This is the only write on this interface with a defined outcome under
+	// concurrency, and it is not interchangeable with Get-then-Save:
+	// SaveWithCondition evaluates its condition with a read followed by a
+	// write, so two callers can both pass and both save. Anything that must
+	// happen exactly once — consuming a single-use token, claiming a unique
+	// name — requires this.
+	//
+	// It requires the underlying KVStore to implement kvstore.AtomicKVStore
+	// and returns ErrAtomicWriteUnsupported when it does not, rather than
+	// silently degrading to a racy read-then-write.
+	SaveIfAbsent(ctx context.Context, entity E) (stored bool, err error)
+
 	// SaveWithCondition persists an entity only if the given condition is satisfied.
 	// This enables optimistic locking patterns at the GenericDAO level without
 	// requiring callers to manage transactions directly for single-operation cases.

@@ -220,6 +220,7 @@ func TestManager_CreateWithCredentials_BarrierConfigNoManager(t *testing.T) {
 		Name:    "barrier-db",
 		Engine:  EngineKV,
 		Backend: BackendMemory,
+		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{
 			Enabled: true,
 		},
@@ -332,6 +333,7 @@ func TestManager_CreateWithCredentials_WithBarrierManager(t *testing.T) {
 		Name:    "enc-db",
 		Engine:  EngineKV,
 		Backend: BackendMemory,
+		DataDir: t.TempDir(),
 		Barrier: &DatabaseBarrierConfig{
 			Enabled: true,
 		},

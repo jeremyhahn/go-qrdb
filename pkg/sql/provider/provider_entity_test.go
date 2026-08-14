@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -311,8 +312,9 @@ func TestGetTableInsensitive_EntityTable_TenantFromSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("table is %T, want *EntityTable", tbl)
 	}
-	if et.tenantID != "tenant42" {
-		t.Errorf("EntityTable tenantID = %q, want %q", et.tenantID, "tenant42")
+	wantPrefix := tenant.ComposeNamespace("tenant42", "qrdb")
+	if et.prefix != wantPrefix {
+		t.Errorf("EntityTable prefix = %q, want %q", et.prefix, wantPrefix)
 	}
 }
 
@@ -348,7 +350,8 @@ func TestGetTableInsensitive_EntityTable_SystemTenant(t *testing.T) {
 	if !ok {
 		t.Fatalf("table is %T, want *EntityTable", tbl)
 	}
-	if et.tenantID != "system" {
-		t.Errorf("EntityTable tenantID = %q, want %q", et.tenantID, "system")
+	wantPrefix := tenant.ComposeNamespace("system", "qrdb")
+	if et.prefix != wantPrefix {
+		t.Errorf("EntityTable prefix = %q, want %q", et.prefix, wantPrefix)
 	}
 }

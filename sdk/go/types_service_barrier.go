@@ -86,6 +86,13 @@ type BarrierShareClaimResult = service.BarrierShareClaimResult
 // NewBarrierService creates a new BarrierServicer backed by the given barrier.
 var NewBarrierService = service.NewBarrierService
 
+// NewBarrierServiceWithCeremony creates a new BarrierServicer backed by the
+// given barrier and wired to the ceremony service for Security Officer share
+// distribution. The ceremony service is installed as the barrier's
+// CeremonyDistributor and RecoveryDistributor, enabling the officer / share /
+// recovery verbs that NewBarrierService alone leaves unconfigured.
+var NewBarrierServiceWithCeremony = service.NewBarrierServiceWithCeremony
+
 // ---------------------------------------------------------------------------
 // Ceremony service (additional service-layer types)
 // ---------------------------------------------------------------------------

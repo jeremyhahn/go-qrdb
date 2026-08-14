@@ -71,3 +71,28 @@ type Backend interface {
 	// Close releases all resources held by the backend.
 	Close() error
 }
+
+// AtomicBackend is the optional capability of performing a write whose outcome
+// is defined under concurrency.
+//
+// It is discovered by type assertion rather than being part of Backend because
+// the implementations do not all sit somewhere that can honour it. A
+// storage-backed or barrier-wrapped backend has the primitive one call away; a
+// RemoteBackend would need a new operation on the wire protocol first. Widening
+// Backend would force those to ship a method that either lies about atomicity
+// or always fails — and a caller cannot tell that apart from a real refusal.
+//
+// Callers assert for it and fail closed when it is absent:
+//
+//	atomic, ok := backend.(database.AtomicBackend)
+//	if !ok {
+//	    return ErrAtomicWriteUnsupported
+//	}
+type AtomicBackend interface {
+	Backend
+
+	// PutIfAbsent atomically stores value under key only if key is absent,
+	// reporting whether this call created it. stored=false with a nil error
+	// means the key already existed and the store is unchanged.
+	PutIfAbsent(ctx context.Context, key, value []byte) (stored bool, err error)
+}

@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -65,8 +66,6 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		SPKIPin:    result.SPKIPin,
 		CACertPEM:  string(result.CACertPEM),
 		TLSCertPEM: string(result.TLSCertPEM),
-		SOCertPEM:  string(result.SOCertPEM),
-		SOKeyPEM:   string(result.SOKeyPEM),
 		State:      result.State,
 		ShareCount: result.ShareCount,
 	}, nil
@@ -149,23 +148,71 @@ func (t *Transport) CeremonyClaimCertComplete(ctx context.Context, req *transpor
 	}, nil
 }
 
-// CeremonyClaimShare retrieves the Shamir share for an officer who has
-// already claimed their certificate by delegating to the injected
-// CeremonyServicer.
-func (t *Transport) CeremonyClaimShare(ctx context.Context, req *transport.ClaimShareRequest) (*transport.ClaimShareResponse, error) {
+// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+// officer by delegating to the injected CeremonyServicer.
+//
+// The embedded transport carries no network connection, so the caller's
+// certificate thumbprint is taken from the TLS connection state on the
+// context — the same canonical seam the MCP transport uses. An in-process
+// caller that cannot supply the officer's verified peer certificate is
+// refused: there is no path that releases a share without a thumbprint.
+func (t *Transport) CeremonyBeginClaimShare(ctx context.Context, req *transport.BeginClaimShareRequest) (*transport.BeginClaimShareResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.ceremonySvc == nil {
 		return nil, &NilServiceError{Service: "CeremonyServicer"}
 	}
-	shareBytes, err := t.ceremonySvc.CeremonyClaimShare(ctx, req.Username)
+	thumbprint, err := contextCertThumbprint(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &transport.ClaimShareResponse{
-		ShareJSON: string(shareBytes),
+	challenge, err := t.ceremonySvc.CeremonyBeginClaimShare(ctx, req.Username, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.BeginClaimShareResponse{
+		NonceHex:  challenge.NonceHex,
+		ExpiresAt: challenge.ExpiresAt.Format(time.RFC3339),
 	}, nil
+}
+
+// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+// delegating to the injected CeremonyServicer. The caller's certificate
+// thumbprint is re-verified before the share is released exactly once.
+func (t *Transport) CeremonyCompleteClaimShare(ctx context.Context, req *transport.CompleteClaimShareRequest) (*transport.CompleteClaimShareResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.ceremonySvc == nil {
+		return nil, &NilServiceError{Service: "CeremonyServicer"}
+	}
+	thumbprint, err := contextCertThumbprint(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, err := t.ceremonySvc.CeremonyCompleteClaimShare(ctx, req.Username, req.NonceHex, req.Signature, thumbprint)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.CompleteClaimShareResponse{
+		ShareIndex: result.ShareIndex,
+		ShareJSON:  string(result.ShareBytes),
+	}, nil
+}
+
+// contextCertThumbprint derives the caller's certificate thumbprint from the
+// TLS connection state carried on ctx. It fails closed with
+// ClientCertRequiredError when no verified peer certificate is present.
+func contextCertThumbprint(ctx context.Context) (string, error) {
+	if ctx == nil {
+		return "", &ClientCertRequiredError{}
+	}
+	state := auth.TLSStateFromContext(ctx)
+	if state == nil || len(state.PeerCertificates) == 0 {
+		return "", &ClientCertRequiredError{}
+	}
+	return ceremony.CertThumbprint(state.PeerCertificates[0].Raw), nil
 }
 
 // CeremonySignCSR submits a CSR for signing during or after the ceremony
@@ -246,16 +293,31 @@ func handleCeremonyClaimCertComplete(ctx context.Context, t *Transport, req, res
 	return nil
 }
 
-func handleCeremonyClaimShare(ctx context.Context, t *Transport, req, resp any) error {
-	r, ok := req.(*transport.ClaimShareRequest)
+func handleCeremonyBeginClaimShare(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.BeginClaimShareRequest)
 	if !ok {
-		return &InvalidRequestError{Method: "CeremonyClaimShare"}
+		return &InvalidRequestError{Method: "CeremonyBeginClaimShare"}
 	}
-	result, err := t.CeremonyClaimShare(ctx, r)
+	result, err := t.CeremonyBeginClaimShare(ctx, r)
 	if err != nil {
 		return err
 	}
-	if out, ok := resp.(**transport.ClaimShareResponse); ok {
+	if out, ok := resp.(**transport.BeginClaimShareResponse); ok {
+		*out = result
+	}
+	return nil
+}
+
+func handleCeremonyCompleteClaimShare(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.CompleteClaimShareRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "CeremonyCompleteClaimShare"}
+	}
+	result, err := t.CeremonyCompleteClaimShare(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.CompleteClaimShareResponse); ok {
 		*out = result
 	}
 	return nil

@@ -16,8 +16,15 @@ package unix
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"io"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +33,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -63,6 +71,16 @@ func newMockKVService() *mockKVService {
 func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	m.store[key] = value
 	return nil
+}
+
+// PutIfAbsent stores only when the key is absent, matching the real
+// engines. The map lookup is the same check they perform.
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
 }
 
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
@@ -259,6 +277,27 @@ func dialUnix(t *testing.T, socketPath string) *grpc.ClientConn {
 	return conn
 }
 
+// dialUnixTLS dials the unix socket over TLS, trusting the server certificate
+// in serverCfg and verifying it under the "localhost" server name. It is the
+// TLS-only counterpart of dialUnix used by the round-trip tests now that the
+// Unix transport refuses plaintext connections.
+func dialUnixTLS(t *testing.T, socketPath string, serverCfg *tls.Config) *grpc.ClientConn {
+	t.Helper()
+
+	clientTLS := &tls.Config{
+		RootCAs:    serverCfg.RootCAs,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+	}
+	conn, err := grpc.NewClient("unix://"+socketPath,
+		grpc.WithTransportCredentials(grpccredentials.NewTLS(clientTLS)),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial unix socket %s over TLS: %v", socketPath, err)
+	}
+	return conn
+}
+
 // ---------------------------------------------------------------------------
 // NewServer tests
 // ---------------------------------------------------------------------------
@@ -268,7 +307,7 @@ func TestNewServer_CreatesServer(t *testing.T) {
 	adminSvc := &mockAdminService{}
 	socketPath := "/tmp/test-qrdb.sock"
 
-	srv := NewServer(kvSvc, adminSvc, socketPath)
+	srv := NewServer(kvSvc, adminSvc, socketPath, WithTLS(selfSignedTLSConfig(t)))
 	if srv == nil {
 		t.Fatal("NewServer returned nil")
 	}
@@ -289,7 +328,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 		called = true
 	}
 
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock", opt)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock", opt, WithTLS(selfSignedTLSConfig(t)))
 	if !called {
 		t.Fatal("option function was not called")
 	}
@@ -304,7 +343,7 @@ func TestNewServer_WithOptions(t *testing.T) {
 
 func TestAddr_BeforeStart(t *testing.T) {
 	socketPath := "/tmp/test-qrdb-addr.sock"
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 	if addr := srv.Addr(); addr != socketPath {
 		t.Fatalf("expected Addr() = %q before start, got %q", socketPath, addr)
 	}
@@ -312,7 +351,7 @@ func TestAddr_BeforeStart(t *testing.T) {
 
 func TestAddr_AfterStart(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -331,7 +370,7 @@ func TestAddr_AfterStart(t *testing.T) {
 
 func TestStart_CreatesSocketFile(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -350,7 +389,7 @@ func TestStart_CreatesSocketFile(t *testing.T) {
 
 func TestStop_RemovesSocketFile(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -365,14 +404,14 @@ func TestStop_RemovesSocketFile(t *testing.T) {
 }
 
 func TestStop_BeforeStart(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-never.sock")
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-never.sock", WithTLS(selfSignedTLSConfig(t)))
 	// Stop before Start should not panic.
 	srv.Stop()
 }
 
 func TestStop_CalledTwice(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -387,7 +426,7 @@ func TestMultipleStartStopCycles(t *testing.T) {
 	socketPath := tempSocketPath(t)
 
 	for i := range 3 {
-		srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+		srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 		if err := srv.Start(); err != nil {
 			t.Fatalf("cycle %d: Start failed: %v", i, err)
@@ -424,7 +463,7 @@ func TestStart_CleansUpStaleSocket(t *testing.T) {
 	// Socket file still exists after close.
 
 	// Start should succeed despite the stale socket.
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed with stale socket: %v", err)
 	}
@@ -438,7 +477,7 @@ func TestStart_CleansUpStaleSocket(t *testing.T) {
 func TestStart_InvalidPath_ReturnsError(t *testing.T) {
 	// Use a path under /proc which is not writable.
 	socketPath := "/proc/nonexistent/deep/nested/qrdb.sock"
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 
 	err := srv.Start()
 	if err == nil {
@@ -457,7 +496,7 @@ func TestStart_ParentDirCreated(t *testing.T) {
 	nested := filepath.Join(dir, "sub", "deep")
 	socketPath := filepath.Join(nested, "qrdb.sock")
 
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(selfSignedTLSConfig(t)))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
@@ -510,14 +549,15 @@ func TestMkdirError_Format(t *testing.T) {
 func TestGRPC_PutGetDeleteList(t *testing.T) {
 	socketPath := tempSocketPath(t)
 	kvSvc := newMockKVService()
-	srv := NewServer(kvSvc, &mockAdminService{}, socketPath)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(kvSvc, &mockAdminService{}, socketPath, WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn := dialUnix(t, socketPath)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
 	defer func() { _ = conn.Close() }()
 
 	client := pb.NewQRDBServiceClient(conn)
@@ -562,14 +602,15 @@ func TestGRPC_PutGetDeleteList(t *testing.T) {
 
 func TestGRPC_GetNonExistentKey(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn := dialUnix(t, socketPath)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
 	defer func() { _ = conn.Close() }()
 
 	client := pb.NewQRDBServiceClient(conn)
@@ -582,14 +623,15 @@ func TestGRPC_GetNonExistentKey(t *testing.T) {
 func TestGRPC_ListWithPrefix(t *testing.T) {
 	socketPath := tempSocketPath(t)
 	kvSvc := newMockKVService()
-	srv := NewServer(kvSvc, &mockAdminService{}, socketPath)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(kvSvc, &mockAdminService{}, socketPath, WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn := dialUnix(t, socketPath)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
 	defer func() { _ = conn.Close() }()
 
 	client := pb.NewQRDBServiceClient(conn)
@@ -621,14 +663,15 @@ func TestGRPC_ListWithPrefix(t *testing.T) {
 
 func TestGRPC_Health(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn := dialUnix(t, socketPath)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
 	defer func() { _ = conn.Close() }()
 
 	client := pb.NewQRDBServiceClient(conn)
@@ -646,14 +689,15 @@ func TestGRPC_Health(t *testing.T) {
 
 func TestGRPC_Status(t *testing.T) {
 	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath, WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn := dialUnix(t, socketPath)
+	conn := dialUnixTLS(t, socketPath, tlsCfg)
 	defer func() { _ = conn.Close() }()
 
 	client := pb.NewQRDBServiceClient(conn)
@@ -676,7 +720,7 @@ func TestGRPC_Status(t *testing.T) {
 func TestWithUserService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithUserService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.userSvc != nil {
 		t.Fatal("expected nil userSvc")
 	}
@@ -685,7 +729,7 @@ func TestWithUserService_Applied(t *testing.T) {
 func TestWithRoleService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithRoleService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.roleSvc != nil {
 		t.Fatal("expected nil roleSvc")
 	}
@@ -694,7 +738,7 @@ func TestWithRoleService_Applied(t *testing.T) {
 func TestWithCertProvider_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithCertProvider(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.certProv != nil {
 		t.Fatal("expected nil certProv")
 	}
@@ -774,7 +818,7 @@ func TestStart_WithAllOptionalServices(t *testing.T) {
 		WithUserService(&stubUserSvc{}),
 		WithRoleService(&stubRoleSvc{}),
 		WithCertProvider(&stubCertProv{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -783,6 +827,209 @@ func TestStart_WithAllOptionalServices(t *testing.T) {
 
 	if srv.Addr() == "" {
 		t.Fatal("expected non-empty Addr")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WithTLS / WithAuthMiddleware: option propagation and TLS enforcement
+// ---------------------------------------------------------------------------
+
+// selfSignedTLSConfig generates a self-signed ECDSA P-256 TLS config valid
+// for "localhost", mirroring pkg/server's test helper of the same name.
+func selfSignedTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA key: %v", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+	}
+
+	certDER, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+
+	parsedCert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		t.Fatalf("parse certificate: %v", err)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(parsedCert)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{
+			{
+				Certificate: [][]byte{certDER},
+				PrivateKey:  key,
+			},
+		},
+		RootCAs:    pool,
+		MinVersion: tls.VersionTLS13,
+	}
+}
+
+// TestWithTLS_Applied verifies the WithTLS option accepts nil as a no-op
+// (identical to omitting WithTLS entirely). A nil config leaves s.tls unset;
+// Start then fails closed with a *TLSNotConfiguredError (see
+// TestStart_NoTLS_FailsClosed) because the Unix transport is TLS-only.
+func TestWithTLS_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tls.sock",
+		WithTLS(nil),
+	)
+	if srv.tls != nil {
+		t.Fatal("expected nil tls")
+	}
+}
+
+// TestWithTLS_NonNil verifies the WithTLS option propagates a cloned,
+// non-nil *tls.Config through to the Server struct. The clone is a distinct
+// pointer from the caller's config (WithTLS never mutates or retains the
+// caller's copy), so the fields are compared instead of pointer identity.
+func TestWithTLS_NonNil(t *testing.T) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tls-nn.sock",
+		WithTLS(cfg),
+	)
+	if srv.tls == nil {
+		t.Fatal("expected tls field to be set")
+	}
+	if srv.tls == cfg {
+		t.Fatal("expected WithTLS to clone the config, not retain the caller's pointer")
+	}
+	if srv.tls.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %#x, want TLS 1.3", srv.tls.MinVersion)
+	}
+}
+
+// TestWithTLS_DefaultsUnsetMinVersionToTLS13 verifies WithTLS upgrades an
+// unset MinVersion to TLS 1.3 rather than leaving the config's default
+// (which permits TLS 1.0+) in place.
+func TestWithTLS_DefaultsUnsetMinVersionToTLS13(t *testing.T) {
+	cfg := &tls.Config{}
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tls-default.sock",
+		WithTLS(cfg),
+	)
+	if srv.tls == nil || srv.tls.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("expected MinVersion upgraded to TLS 1.3, got %+v", srv.tls)
+	}
+}
+
+// TestWithTLS_RejectsWeakExplicitMinVersion verifies WithTLS records a
+// *WeakTLSVersionError (surfaced by Start) when the caller explicitly
+// configures a MinVersion below TLS 1.3.
+func TestWithTLS_RejectsWeakExplicitMinVersion(t *testing.T) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tls-weak.sock",
+		WithTLS(cfg),
+	)
+	err := srv.Start()
+	var weakErr *WeakTLSVersionError
+	if !errors.As(err, &weakErr) {
+		t.Fatalf("expected *WeakTLSVersionError, got %T: %v", err, err)
+	}
+}
+
+// TestStart_NoTLS_FailsClosed proves the Unix transport is TLS-only: when no
+// TLS config is supplied via WithTLS, Start fails closed with a
+// *TLSNotConfiguredError rather than bind an unauthenticated plaintext
+// listener. In production the orchestrator (pkg/server) auto-provisions a
+// certificate from the node's CeremonyCA, so a normal deployment never reaches
+// this path.
+func TestStart_NoTLS_FailsClosed(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath)
+	err := srv.Start()
+	var tlsErr *TLSNotConfiguredError
+	if !errors.As(err, &tlsErr) {
+		t.Fatalf("expected *TLSNotConfiguredError, got %T: %v", err, err)
+	}
+}
+
+// TestWithAuthMiddleware_Applied verifies the WithAuthMiddleware option
+// accepts nil (no RBAC enforcement, matching embedded/test deployments that
+// do not configure auth).
+func TestWithAuthMiddleware_Applied(t *testing.T) {
+	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-authmw.sock",
+		WithAuthMiddleware(nil),
+		WithTLS(selfSignedTLSConfig(t)))
+	if srv.authMW != nil {
+		t.Fatal("expected nil authMW")
+	}
+}
+
+// TestStart_WithTLS_InsecureClientRejected proves that once WithTLS is
+// configured, a plaintext (insecure-credentials) client can no longer reach
+// the unix listener -- the "verified TLS 1.3 only" posture required by
+// cmd/qrdb and cmd/qrdbd's CLAUDE.md.
+func TestStart_WithTLS_InsecureClientRejected(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithTLS(tlsCfg),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	conn := dialUnix(t, socketPath)
+	defer func() { _ = conn.Close() }()
+
+	client := pb.NewQRDBServiceClient(conn)
+	_, err := client.Health(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected Health to fail over a plaintext connection to a TLS-configured unix listener")
+	}
+}
+
+// TestStart_WithTLS_ClientAccepted proves a client that dials with matching
+// TLS credentials (trusting the server's certificate) can complete the
+// handshake and reach the KV service over the unix socket.
+func TestStart_WithTLS_ClientAccepted(t *testing.T) {
+	socketPath := tempSocketPath(t)
+	tlsCfg := selfSignedTLSConfig(t)
+	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
+		WithTLS(tlsCfg),
+	)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer srv.Stop()
+
+	clientTLS := &tls.Config{
+		RootCAs:    tlsCfg.RootCAs,
+		ServerName: "localhost",
+		MinVersion: tls.VersionTLS13,
+	}
+	conn, err := grpc.NewClient("unix://"+socketPath,
+		grpc.WithTransportCredentials(grpccredentials.NewTLS(clientTLS)),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial unix socket with TLS: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	client := pb.NewQRDBServiceClient(conn)
+	resp, err := client.Health(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Health over TLS unix socket failed: %v", err)
+	}
+	if resp.GetStatus() != "ok" {
+		t.Fatalf("expected status %q, got %q", "ok", resp.GetStatus())
 	}
 }
 
@@ -892,7 +1139,10 @@ func (s *stubCeremonySvc) CeremonyBeginClaimCert(_ context.Context, _ string) (*
 func (s *stubCeremonySvc) CeremonyCompleteClaimCert(_ context.Context, _, _ string, _ []byte) (*service.CeremonyClaimCertResult, error) {
 	return nil, nil
 }
-func (s *stubCeremonySvc) CeremonyClaimShare(_ context.Context, _ string) ([]byte, error) {
+func (s *stubCeremonySvc) CeremonyBeginClaimShare(_ context.Context, _, _ string) (*service.CeremonyChallenge, error) {
+	return nil, nil
+}
+func (s *stubCeremonySvc) CeremonyCompleteClaimShare(_ context.Context, _, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
 	return nil, nil
 }
 func (s *stubCeremonySvc) CeremonySignCSR(_ context.Context, _, _, _, _ string) (*service.CeremonySignCSRResult, error) {
@@ -1120,7 +1370,7 @@ func (s *stubDatabaseSvc) SealDatabase(_ context.Context, _ string) error { retu
 func (s *stubDatabaseSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (s *stubDatabaseSvc) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (s *stubDatabaseSvc) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (s *stubDatabaseSvc) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -1148,6 +1398,9 @@ func (s *stubDatabaseSvc) UpdateBarrierForTenant(_ context.Context, _ string, _ 
 func (s *stubDatabaseSvc) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return nil, nil
 }
+func (s *stubDatabaseSvc) ScaleForTenant(_ context.Context, _ string, _ int) (*database.DatabaseInfo, error) {
+	return nil, nil
+}
 
 // ---------------------------------------------------------------------------
 // ServerOption tests: With* option functions that were previously uncovered
@@ -1156,7 +1409,7 @@ func (s *stubDatabaseSvc) UpdateConnectionForTenant(_ context.Context, _ string,
 func TestWithBarrierService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithBarrierService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.barrierSvc != nil {
 		t.Fatal("expected nil barrierSvc")
 	}
@@ -1165,7 +1418,7 @@ func TestWithBarrierService_Applied(t *testing.T) {
 func TestWithCeremonyService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithCeremonyService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.ceremonySvc != nil {
 		t.Fatal("expected nil ceremonySvc")
 	}
@@ -1174,7 +1427,7 @@ func TestWithCeremonyService_Applied(t *testing.T) {
 func TestWithCredentialService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithCredentialService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.credentialSvc != nil {
 		t.Fatal("expected nil credentialSvc")
 	}
@@ -1183,7 +1436,7 @@ func TestWithCredentialService_Applied(t *testing.T) {
 func TestWithCollectionService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithCollectionService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.collectionSvc != nil {
 		t.Fatal("expected nil collectionSvc")
 	}
@@ -1192,7 +1445,7 @@ func TestWithCollectionService_Applied(t *testing.T) {
 func TestWithMVCC_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithMVCC(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.mvccSvc != nil {
 		t.Fatal("expected nil mvccSvc")
 	}
@@ -1201,7 +1454,7 @@ func TestWithMVCC_Applied(t *testing.T) {
 func TestWithTransaction_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithTransaction(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.txSvc != nil {
 		t.Fatal("expected nil txSvc")
 	}
@@ -1210,7 +1463,7 @@ func TestWithTransaction_Applied(t *testing.T) {
 func TestWithBatch_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithBatch(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.batchSvc != nil {
 		t.Fatal("expected nil batchSvc")
 	}
@@ -1219,7 +1472,7 @@ func TestWithBatch_Applied(t *testing.T) {
 func TestWithWatch_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithWatch(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.watchSvc != nil {
 		t.Fatal("expected nil watchSvc")
 	}
@@ -1228,7 +1481,7 @@ func TestWithWatch_Applied(t *testing.T) {
 func TestWithLease_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithLease(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.leaseSvc != nil {
 		t.Fatal("expected nil leaseSvc")
 	}
@@ -1237,7 +1490,7 @@ func TestWithLease_Applied(t *testing.T) {
 func TestWithIndex_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithIndex(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.indexSvc != nil {
 		t.Fatal("expected nil indexSvc")
 	}
@@ -1246,7 +1499,7 @@ func TestWithIndex_Applied(t *testing.T) {
 func TestWithTimeSeries_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithTimeSeries(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.tsSvc != nil {
 		t.Fatal("expected nil tsSvc")
 	}
@@ -1255,7 +1508,7 @@ func TestWithTimeSeries_Applied(t *testing.T) {
 func TestWithVector_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithVector(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.vectorSvc != nil {
 		t.Fatal("expected nil vectorSvc")
 	}
@@ -1264,7 +1517,7 @@ func TestWithVector_Applied(t *testing.T) {
 func TestWithDatabaseService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
 		WithDatabaseService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.databaseSvc != nil {
 		t.Fatal("expected nil databaseSvc")
 	}
@@ -1293,11 +1546,11 @@ func (s *stubMVCCSvc) GetAtRevision(_ context.Context, _ string, _ int64) (*serv
 func (s *stubMVCCSvc) GetAtRevisionWithConsistency(_ context.Context, _ string, _ int64, _ consistency.ReadOptions) (*service.KeyValue, error) {
 	return nil, nil
 }
-func (s *stubMVCCSvc) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
-	return nil, 0, nil
+func (s *stubMVCCSvc) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return nil, 0, 0, nil
 }
-func (s *stubMVCCSvc) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
-	return nil, 0, nil
+func (s *stubMVCCSvc) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
+	return nil, 0, 0, nil
 }
 func (s *stubMVCCSvc) Compact(_ context.Context, _ int64) error         { return nil }
 func (s *stubMVCCSvc) CurrentRevision(_ context.Context) (int64, error) { return 0, nil }
@@ -1384,7 +1637,7 @@ func TestStart_WithNonNilOptionalServices(t *testing.T) {
 		WithTimeSeries(&stubTimeSeriesSvc{}),
 		WithVector(&stubVectorSvc{}),
 		WithDatabaseService(&stubDatabaseSvc{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start with full optional services failed: %v", err)
@@ -1419,3 +1672,8 @@ var _ index.IndexServicer = (*stubIndexSvc)(nil)
 var _ timeseries.TimeSeriesServicer = (*stubTimeSeriesSvc)(nil)
 var _ service.VectorServicer = (*stubVectorSvc)(nil)
 var _ service.DatabaseServicer = (*stubDatabaseSvc)(nil)
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (s *stubMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, nil
+}

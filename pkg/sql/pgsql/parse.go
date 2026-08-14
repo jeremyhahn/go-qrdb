@@ -21,26 +21,62 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	sqle "github.com/dolthub/go-mysql-server"
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/vt/sqlparser"
+	"github.com/jackc/pgx/v5/pgtype"
 	wire "github.com/jeroenrinzema/psql-wire"
+	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
+// paramTimeLayout is the textual form a decoded time.Time bind parameter is
+// re-encoded as. It mirrors timeBindLayout in sdk/go/driver/bindings.go: the
+// MySQL DATETIME literal format at microsecond precision, the widest
+// precision MySQL DATETIME supports, so no in-range timestamp loses
+// fidelity on the way in. The two packages sit in different architectural
+// layers (SDK vs. core) and deliberately do not import one another, so the
+// constant is duplicated rather than shared.
+const paramTimeLayout = "2006-01-02 15:04:05.999999"
+
 // noopStatements are SQL statements that are handled as no-ops because they
 // are PG session management commands that have no equivalent in GMS.
-var noopStatements = map[string]bool{
-	"BEGIN":    true,
-	"COMMIT":   true,
-	"ROLLBACK": true,
-	"END":      true,
+//
+// BEGIN/COMMIT/ROLLBACK/END are deliberately NOT here: go-mysql-server's
+// vitess-derived parser natively accepts BEGIN, COMMIT, and ROLLBACK; END
+// (and END WORK / END TRANSACTION), the one PG spelling it does not accept,
+// is rewritten to COMMIT before it ever reaches the parser -- see
+// rewriteEndAsCommit below. QRDBSession now implements
+// sql.TransactionSession (see pkg/sql/provider/session.go), so routing
+// these statements through to the engine instead of swallowing them here is
+// what makes interactive transactions actually take effect over the
+// PostgreSQL wire protocol.
+var noopStatements = map[string]bool{}
+
+// endStatementRe matches PostgreSQL's END, END WORK, and END TRANSACTION --
+// all aliases for COMMIT that MySQL's (and therefore go-mysql-server's)
+// parser does not accept as a bare statement. rewriteEndAsCommit uses this
+// to translate the statement text itself before it ever reaches the
+// engine, rather than teaching the engine a new spelling of COMMIT.
+var endStatementRe = regexp.MustCompile(`(?i)^END(\s+(WORK|TRANSACTION))?\s*;?\s*$`)
+
+// rewriteEndAsCommit rewrites trimmed to "COMMIT" when it is exactly
+// PostgreSQL's END/END WORK/END TRANSACTION alias for COMMIT, and returns
+// trimmed unchanged otherwise.
+func rewriteEndAsCommit(trimmed string) string {
+	if endStatementRe.MatchString(trimmed) {
+		return "COMMIT"
+	}
+	return trimmed
 }
 
 // noopPrefixes are SQL statement prefixes that are handled as no-ops because
@@ -63,6 +99,9 @@ type ParseHandler struct {
 	sqlEngine  *sqle.Engine
 	translator *engine.Translator
 	dbName     string
+	// sealedProbe gates query execution while the storage barrier is
+	// sealed. Nil disables the gate.
+	sealedProbe sealedWindowProbe
 }
 
 // NewParseHandler creates a new ParseHandler.
@@ -78,18 +117,38 @@ func NewParseHandler(sqlEngine *sqle.Engine, translator *engine.Translator, dbNa
 // SQL from the PG client, translates PG syntax to GMS, executes through
 // the shared engine, and returns results as PreparedStatements.
 //
-// Parameterized queries (containing ? placeholders after translation) are
+// Parameterized queries (the original PG text contains $N placeholders) are
 // deferred: the translated SQL is captured at PARSE time but execution is
 // delayed until the BIND/EXECUTE phase when parameter values arrive.
 // Non-parameterized queries are executed eagerly during PARSE for lower
-// latency.
+// latency. Parameterization is detected from the original query text via
+// wire.ParseParameters rather than by scanning the translated SQL for a
+// literal "?": the latter also matches a "?" that appears inside a string
+// literal with zero real parameters (e.g. "WHERE msg = 'what?'"), which
+// would incorrectly defer a query that has no bind variables at all.
 func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.PreparedStatements, error) {
+	// Fail closed while the storage barrier is sealed: every query is
+	// rejected with SQLSTATE 57P03 until the operator drives the unseal
+	// API, mirroring the 503 / Unavailable envelope on the other
+	// protocol transports.
+	if h.sealedProbe != nil && h.sealedProbe.IsSealed() {
+		return nil, sealedWireError(psqlerr.LevelError)
+	}
+
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return h.emptyResult()
 	}
 
-	// Handle transaction control and session commands as no-ops.
+	// PostgreSQL's END/END WORK/END TRANSACTION are aliases for COMMIT that
+	// go-mysql-server's parser does not itself accept; rewrite the
+	// statement text before anything else touches it.
+	trimmed = rewriteEndAsCommit(trimmed)
+
+	// Handle session configuration commands (SET, SHOW, ...) as no-ops.
+	// BEGIN/COMMIT/ROLLBACK are NOT no-ops -- see the noopStatements doc
+	// comment -- so they fall through to translation/execution below like
+	// any other statement.
 	upper := strings.ToUpper(trimmed)
 	if h.isNoopStatement(upper) {
 		return h.emptyResult()
@@ -104,8 +163,9 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// Parameterized queries must defer execution until BIND/EXECUTE
 	// when the wire protocol delivers parameter values. Non-parameterized
 	// queries execute eagerly for lower latency.
-	if strings.Contains(translated, "?") {
-		return h.executeDeferred(ctx, trimmed, translated)
+	paramOIDs := wire.ParseParameters(trimmed)
+	if len(paramOIDs) > 0 {
+		return h.executeDeferred(ctx, trimmed, translated, paramOIDs)
 	}
 
 	return h.executeEager(ctx, trimmed, translated)
@@ -129,7 +189,7 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 
 	// Collect all rows from the iterator so we can serve them
 	// from the PreparedStatementFn callback.
-	result, err := collectRows(sqlCtx, rowIter)
+	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
 		return nil, &QueryError{Query: trimmed, Err: err}
 	}
@@ -150,11 +210,26 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 // execution until the BIND/EXECUTE phase. This is required for parameterized
 // queries because the PostgreSQL wire protocol sends parameter values in
 // the BIND message, after PARSE has already completed.
-func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string) (wire.PreparedStatements, error) {
-	// Parse the original PG query for $N parameters so psql-wire sends the
-	// correct ParameterDescription back to the client. Without this, pgx
-	// sees 0 expected params but N supplied args and rejects the statement.
-	params := wire.ParseParameters(trimmed)
+//
+// paramOIDs holds the parameter OID for each $N position, as returned by
+// wire.ParseParameters — every entry starts unspecified (0). translated is
+// parsed once here (rather than deferred to BIND/EXECUTE) so that its AST
+// can be reused for two things: resolving real, non-zero OIDs for
+// parameters that target a known column (see inferParamOIDs), and passing
+// the already-parsed statement straight into QueryWithBindings at EXECUTE
+// time instead of asking go-mysql-server to parse the same text again.
+func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32) (wire.PreparedStatements, error) {
+	sqlCtx := h.buildSQLContext(ctx)
+
+	parsedStmt, parseErr := sqlparser.Parse(translated)
+	if parseErr == nil {
+		resolved := inferParamOIDs(sqlCtx, h.sqlEngine.Analyzer.Catalog, sqlCtx.GetCurrentDatabase(), parsedStmt)
+		for ordinal, oid := range resolved {
+			if ordinal >= 1 && ordinal <= len(paramOIDs) {
+				paramOIDs[ordinal-1] = oid
+			}
+		}
+	}
 
 	// Determine result columns at PARSE time so pgx can negotiate proper
 	// format codes during BIND. Without this, pgx receives NoData from
@@ -171,10 +246,9 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 	upper := strings.ToUpper(strings.TrimSpace(translated))
 	if strings.HasPrefix(upper, "SELECT") {
 		schemaQuery := strings.ReplaceAll(translated, "?", "''")
-		sqlCtx := h.buildSQLContext(ctx)
 		node, err := h.sqlEngine.PrepareQuery(sqlCtx, schemaQuery)
 		if err == nil && node != nil {
-			schema := node.Schema()
+			schema := node.Schema(sqlCtx)
 			if len(schema) > 0 {
 				columns = schemaToColumns(schema)
 			}
@@ -183,10 +257,10 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 
 	stmt := wire.NewStatement(
 		func(execCtx context.Context, writer wire.DataWriter, parameters []wire.Parameter) error {
-			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated)
+			return h.executeDeferredCallback(execCtx, writer, parameters, trimmed, translated, parsedStmt, paramOIDs)
 		},
 		wire.WithColumns(columns),
-		wire.WithParameters(params),
+		wire.WithParameters(paramOIDs),
 	)
 
 	return wire.Prepared(stmt), nil
@@ -196,14 +270,22 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 // callback. It converts wire parameters to GMS bindings, executes the query,
 // and writes the result set. Extracted as a method to enable direct unit
 // testing without needing to invoke the psql-wire callback machinery.
+//
+// parsedStmt is the AST produced by parsing translated at PARSE time (nil if
+// that parse failed); passing it through to QueryWithBindings lets the
+// engine execute directly against it instead of re-parsing translated from
+// scratch. paramOIDs is the same slice executeDeferred declared in
+// ParameterDescription, positionally aligned with parameters.
 func (h *ParseHandler) executeDeferredCallback(
 	ctx context.Context,
 	writer wire.DataWriter,
 	parameters []wire.Parameter,
 	trimmed, translated string,
+	parsedStmt sqlparser.Statement,
+	paramOIDs []uint32,
 ) error {
 	// Convert wire parameters to GMS binding expressions.
-	bindings, err := parametersToBindings(parameters)
+	bindings, err := parametersToBindings(parameters, paramOIDs)
 	if err != nil {
 		return err
 	}
@@ -211,8 +293,11 @@ func (h *ParseHandler) executeDeferredCallback(
 	// Build a fresh sql.Context for execution.
 	sqlCtx := h.buildSQLContext(ctx)
 
-	// Execute the query with parameter bindings.
-	_, rowIter, _, err := h.sqlEngine.QueryWithBindings(sqlCtx, translated, nil, bindings, nil)
+	// Execute the query with parameter bindings. The schema is needed to
+	// resolve ENUM/SET cells against their declared column types before
+	// they are written to the wire; it is not sent as a RowDescription
+	// here (see the note below).
+	schema, rowIter, _, err := h.sqlEngine.QueryWithBindings(sqlCtx, translated, parsedStmt, bindings, nil)
 	if err != nil {
 		return &QueryError{Query: trimmed, Err: err}
 	}
@@ -224,7 +309,7 @@ func (h *ParseHandler) executeDeferredCallback(
 	// misinterpret row data.
 
 	// Collect and write result.
-	result, err := collectRows(sqlCtx, rowIter)
+	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
 		return &QueryError{Query: trimmed, Err: err}
 	}
@@ -234,15 +319,21 @@ func (h *ParseHandler) executeDeferredCallback(
 
 // parametersToBindings converts PostgreSQL wire protocol parameters to
 // go-mysql-server binding expressions. GMS names positional ? placeholders
-// as "v1", "v2", etc. (1-indexed). NULL parameter values produce a
-// sqlparser.NullVal; non-nil values produce a string literal that GMS
-// will coerce to the appropriate type during query analysis.
+// "v1", "v2", ... (1-indexed). NULL parameter values produce a
+// sqlparser.NullVal regardless of OID.
 //
-// When the server returns unspecified parameter OIDs, pgx sends []byte
-// values as PostgreSQL bytea hex format (\x followed by hex pairs).
-// This function detects and decodes that format to recover the original
-// binary data.
-func parametersToBindings(parameters []wire.Parameter) (map[string]sqlparser.Expr, error) {
+// oids holds the PostgreSQL OID declared for each parameter position at
+// PARSE time (see inferParamOIDs); a zero entry, or a shorter oids slice
+// than parameters, means the position's target type could not be resolved
+// statically. A resolved parameter is decoded through pgtype's own codec
+// for that OID — which handles both the text and binary wire formats pgx
+// may have chosen — and the resulting native Go value is dispatched to a
+// bind expression by paramExpr, mirroring bindArg in
+// sdk/go/driver/bindings.go. An unresolved parameter falls back to a plain
+// string literal: safe for every scalar type, since GMS coerces a string
+// literal to the target column's type during analysis, but not for binary
+// columns, which is exactly the case inferParamOIDs exists to resolve.
+func parametersToBindings(parameters []wire.Parameter, oids []uint32) (map[string]sqlparser.Expr, error) {
 	bindings := make(map[string]sqlparser.Expr, len(parameters))
 	for i, p := range parameters {
 		// GMS uses 1-indexed names: v1, v2, v3, ...
@@ -253,24 +344,266 @@ func parametersToBindings(parameters []wire.Parameter) (map[string]sqlparser.Exp
 			continue
 		}
 
-		bindings[name] = sqlparser.NewStrVal(decodeBytea(p.Value()))
+		var oid uint32
+		if i < len(oids) {
+			oid = oids[i]
+		}
+		if oid == 0 {
+			bindings[name] = sqlparser.NewStrVal(p.Value())
+			continue
+		}
+
+		native, err := p.Scan(oid)
+		if err != nil {
+			return nil, &ParameterBindingError{Index: i, Err: err}
+		}
+
+		expr, err := paramExpr(native)
+		if err != nil {
+			return nil, &ParameterBindingError{Index: i, Err: err}
+		}
+		bindings[name] = expr
 	}
 
 	return bindings, nil
 }
 
-// decodeBytea detects PostgreSQL bytea hex format (\x followed by hex
-// pairs) and decodes it to raw bytes. Non-bytea values are returned
-// unchanged. This is needed because pgx sends []byte parameters as
-// bytea hex when the server returns unspecified (0) parameter OIDs.
-func decodeBytea(val []byte) []byte {
-	if len(val) >= 2 && val[0] == '\\' && val[1] == 'x' {
-		decoded, err := hex.DecodeString(string(val[2:]))
-		if err == nil {
-			return decoded
+// paramExpr converts a pgtype-decoded native Go value into the matching
+// sqlparser bind expression, mirroring bindArg in
+// sdk/go/driver/bindings.go. []byte is bound as a hex literal rather than a
+// string literal so the engine types it as binary rather than
+// reinterpreting it under the connection charset — the corruption
+// decodeBytea used to paper over after the fact by guessing at the wire
+// text's shape instead of knowing the parameter's real type.
+func paramExpr(v any) (sqlparser.Expr, error) {
+	switch val := v.(type) {
+	case bool:
+		if val {
+			return sqlparser.NewIntVal([]byte("1")), nil
+		}
+		return sqlparser.NewIntVal([]byte("0")), nil
+
+	case int16:
+		return sqlparser.NewIntVal(strconv.AppendInt(nil, int64(val), 10)), nil
+
+	case int32:
+		return sqlparser.NewIntVal(strconv.AppendInt(nil, int64(val), 10)), nil
+
+	case int64:
+		return sqlparser.NewIntVal(strconv.AppendInt(nil, val, 10)), nil
+
+	case float32:
+		return sqlparser.NewFloatVal(strconv.AppendFloat(nil, float64(val), 'g', -1, 32)), nil
+
+	case float64:
+		return sqlparser.NewFloatVal(strconv.AppendFloat(nil, val, 'g', -1, 64)), nil
+
+	case string:
+		return sqlparser.NewStrVal([]byte(val)), nil
+
+	case []byte:
+		return sqlparser.NewHexVal([]byte(hex.EncodeToString(val))), nil
+
+	case time.Time:
+		return sqlparser.NewStrVal([]byte(val.UTC().Format(paramTimeLayout))), nil
+
+	default:
+		return nil, &UnsupportedParameterTypeError{Value: v}
+	}
+}
+
+// paramOIDForColumn returns the PostgreSQL OID to declare for a bind
+// parameter targeting a column of type t, so pgx encodes — and this server
+// decodes — the value through a real typed codec instead of a string
+// literal. It returns 0 (unspecified) for any GMS type it does not
+// recognize, which parametersToBindings treats as "fall back to the
+// pre-existing string-literal binding".
+//
+// This intentionally diverges from LookupOID, which maps BLOB/VARBINARY
+// output columns to TextOID so the read path can serialize arbitrary bytes
+// as PG text without negotiating a binary codec pgx may not support. For a
+// bind parameter the direction is reversed and the risk is opposite: a
+// binary column bound as a string literal has its raw bytes reinterpreted
+// under the connection charset, corrupting anything that is not valid
+// UTF-8. Declaring ByteaOID here instead lets the value round-trip as true
+// binary end to end — the actual fix for the corruption decodeBytea used
+// to paper over.
+//
+// Integer and float columns are all mapped to the widest OID in their
+// family (Int8OID, Float8OID) regardless of the column's declared width,
+// so a single consistently-used OID drives both the encode (pgx) and
+// decode (Scan) side without a width-mismatch risk from picking one OID to
+// declare and assuming a narrower one to decode.
+func paramOIDForColumn(t sql.Type) uint32 {
+	switch {
+	case types.IsJSON(t), types.IsGeometry(t):
+		// Left unresolved (falls back to a string-literal bind). GMS's own
+		// IsBinaryType classifies JSON and spatial columns as "binary"
+		// because of how they're framed on the MySQL wire protocol, but
+		// they are not PostgreSQL bytea; declaring ByteaOID for them would
+		// be wrong. Both are text-representable and GMS coerces a string
+		// literal to them without loss, so the safe fallback is correct
+		// here, unlike for a genuine binary column.
+		return 0
+	case types.IsBinaryType(t):
+		return pgtype.ByteaOID
+	case types.IsBoolean(t):
+		return pgtype.BoolOID
+	case types.IsInteger(t):
+		return pgtype.Int8OID
+	case types.IsFloat(t), types.IsDecimal(t):
+		return pgtype.Float8OID
+	case types.IsDatetimeType(t), types.IsTimestampType(t):
+		return pgtype.TimestamptzOID
+	case types.IsTextOnly(t):
+		return pgtype.TextOID
+	default:
+		return 0
+	}
+}
+
+// inferParamOIDs performs a best-effort, single-table resolution of each
+// bind parameter's target column type, returning the PostgreSQL OID to
+// declare for it, keyed by 1-indexed parameter ordinal.
+//
+// Only two statement shapes are resolved: an INSERT with an explicit
+// column list, and an UPDATE SET clause — the shapes GORM's Create and
+// Save/Updates paths generate, and the only ones where an unresolved
+// binary column corrupts data on write (see paramOIDForColumn's doc
+// comment). Every other parameter position — including WHERE-clause
+// parameters, multi-table statements, and anything this walk cannot
+// uniquely resolve — is left unmapped and falls back to the pre-existing
+// string-literal binding in parametersToBindings, exactly as before this
+// change for every type except an unresolved binary column.
+func inferParamOIDs(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, stmt sqlparser.Statement) map[int]uint32 {
+	oids := make(map[int]uint32)
+
+	switch node := stmt.(type) {
+	case *sqlparser.Insert:
+		table, ok := lookupTable(sqlCtx, catalog, dbName, node.Table.Name.String())
+		if !ok {
+			return oids
+		}
+		values, ok := insertValues(node.Rows)
+		if !ok {
+			return oids
+		}
+		schema := table.Schema(sqlCtx)
+		for _, tuple := range values {
+			for i, expr := range tuple {
+				if i >= len(node.Columns) {
+					continue
+				}
+				ordinal, ok := valArgOrdinal(expr)
+				if !ok {
+					continue
+				}
+				colType, ok := columnType(schema, node.Columns[i])
+				if !ok {
+					continue
+				}
+				oids[ordinal] = paramOIDForColumn(colType)
+			}
+		}
+
+	case *sqlparser.Update:
+		if len(node.TableExprs) != 1 {
+			return oids
+		}
+		tableName, ok := singleTableName(node.TableExprs[0])
+		if !ok {
+			return oids
+		}
+		table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+		if !ok {
+			return oids
+		}
+		schema := table.Schema(sqlCtx)
+		for _, assign := range node.Exprs {
+			ordinal, ok := valArgOrdinal(assign.Expr)
+			if !ok {
+				continue
+			}
+			colType, ok := columnType(schema, assign.Name.Name)
+			if !ok {
+				continue
+			}
+			oids[ordinal] = paramOIDForColumn(colType)
 		}
 	}
-	return val
+
+	return oids
+}
+
+// lookupTable resolves tableName in dbName through catalog, reporting false
+// if the table does not exist or the lookup errors — either way, the
+// caller's safe response is to leave the affected parameters unmapped.
+func lookupTable(sqlCtx *sql.Context, catalog sql.Catalog, dbName, tableName string) (sql.Table, bool) {
+	table, _, err := catalog.Table(sqlCtx, dbName, tableName)
+	if err != nil || table == nil {
+		return nil, false
+	}
+	return table, true
+}
+
+// insertValues extracts the row tuples from an INSERT statement's Rows
+// field, or false if rows is anything other than a literal VALUES list
+// (e.g. INSERT ... SELECT). Vitess represents a plain VALUES clause as
+// sqlparser.Values, and a VALUES clause carrying an "AS alias(cols)" row
+// alias (MySQL 8.0.19+ syntax) as *sqlparser.AliasedValues, which embeds
+// Values; both are handled so a query using the alias form still resolves.
+func insertValues(rows sqlparser.InsertRows) (sqlparser.Values, bool) {
+	switch v := rows.(type) {
+	case sqlparser.Values:
+		return v, true
+	case *sqlparser.AliasedValues:
+		return v.Values, true
+	default:
+		return nil, false
+	}
+}
+
+// singleTableName returns the unqualified table name referenced by a plain
+// single-table expression, or false if expr is a join, subquery, or
+// anything else that does not name exactly one table.
+func singleTableName(expr sqlparser.TableExpr) (string, bool) {
+	aliased, ok := expr.(*sqlparser.AliasedTableExpr)
+	if !ok {
+		return "", false
+	}
+	name, ok := aliased.Expr.(sqlparser.TableName)
+	if !ok {
+		return "", false
+	}
+	return name.Name.String(), true
+}
+
+// columnType returns the GMS type of the column named col in schema,
+// comparing case-insensitively as SQL identifiers are.
+func columnType(schema sql.Schema, col sqlparser.ColIdent) (sql.Type, bool) {
+	for _, c := range schema {
+		if col.EqualString(c.Name) {
+			return c.Type, true
+		}
+	}
+	return nil, false
+}
+
+// valArgOrdinal reports the 1-indexed bind variable ordinal of expr, if
+// expr is a positional placeholder produced by translating a PostgreSQL $N
+// parameter. Vitess rewrites each "?" token in the query text to a
+// *sqlparser.SQLVal of type ValArg whose Val is ":vN" (1-indexed); this
+// recovers N.
+func valArgOrdinal(expr sqlparser.Expr) (int, bool) {
+	val, ok := expr.(*sqlparser.SQLVal)
+	if !ok || val.Type != sqlparser.ValArg {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(string(val.Val), ":v"))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // isNoopStatement returns true if the given upper-cased SQL statement
@@ -311,12 +644,92 @@ func emptyResultFn(_ context.Context, writer wire.DataWriter, _ []wire.Parameter
 // context. If an auth identity is present, it is carried through via a
 // QRDBSession for tenant-scoped operations.
 func (h *ParseHandler) buildSQLContext(ctx context.Context) *sql.Context {
-	identity := IdentityFromContext(ctx)
-	base := sql.NewBaseSession()
-	session := provider.NewSession(base, identity)
+	session := connectionSessionFromContext(ctx)
+	if session == nil {
+		// Defensive fallback for a caller that bypasses the connection-level
+		// SessionMiddleware registered in server.go (e.g. HandleParse
+		// invoked directly, as this package's own unit tests do) -- see
+		// newConnectionSessionHandler's doc comment. A session built this
+		// way is a fresh, throwaway one exactly like every ParseFn call got
+		// before interactive transactions were supported, so BEGIN/COMMIT/
+		// ROLLBACK state cannot persist across statements through it; every
+		// real connection accepted by Server always goes through
+		// newConnectionSessionHandler instead.
+		identity := IdentityFromContext(ctx)
+		session = provider.NewSession(sql.NewBaseSession(), identity)
+	}
 	sqlCtx := sql.NewContext(ctx, sql.WithSession(session))
-	sqlCtx.SetCurrentDatabase(h.dbName)
+	sqlCtx.SetCurrentDatabase(sessionDatabase(wire.ClientParameters(ctx), h.dbName))
 	return sqlCtx
+}
+
+// sessionDatabase returns the database a connection selected in its PostgreSQL
+// startup message, falling back to the server-wide default when the client
+// named none.
+//
+// Honouring the startup parameter is what makes `dbname=` mean anything: the
+// server-wide default is only a default. Serving it regardless would silently
+// route a client that asked for database A against database B for every
+// statement -- succeeding against the wrong keyspace, or, when the default is
+// not one the connection's tenant owns, failing every statement with
+// "service: database not found: <default>". The MySQL wire server has always
+// carried its own per-connection database; this is the PostgreSQL side of the
+// same contract.
+//
+// It takes the parameter map rather than the context because psql-wire's
+// context key for it is unexported, so a context carrying client parameters
+// cannot be constructed outside that package -- and this decision is worth a
+// unit test.
+func sessionDatabase(params wire.Parameters, fallback string) string {
+	if requested := params[wire.ParamDatabase]; requested != "" {
+		return requested
+	}
+	return fallback
+}
+
+// ---------------------------------------------------------------------------
+// Per-connection session (interactive transactions)
+//
+// go-mysql-server stores an interactive transaction's state (see
+// provider.QRDBSession's sql.TransactionSession implementation) on the
+// session, not the query context, so BEGIN/COMMIT/ROLLBACK/SAVEPOINT can
+// only take effect across the statements of a PostgreSQL wire connection if
+// every statement on that connection shares the SAME *provider.QRDBSession
+// -- exactly as sdk/go/driver's embeddedConn holds one session for its
+// whole lifetime (see that package's newEmbeddedSession doc comment).
+// psql-wire's ParseFn (HandleParse) is called once per statement with no
+// connection handle of its own, so the session is instead created once, by
+// a wire.SessionHandler registered via wire.SessionMiddleware (see
+// Server.Start), and threaded through every subsequent statement's context
+// -- the same mechanism auth.go's identityContextKey already uses to carry
+// the authenticated identity across a connection's statements.
+// ---------------------------------------------------------------------------
+
+// qrdbSessionContextKey is the context key newConnectionSessionHandler
+// stores the connection's *provider.QRDBSession under.
+type qrdbSessionContextKey struct{}
+
+// newConnectionSessionHandler returns a wire.SessionHandler that creates
+// exactly one *provider.QRDBSession for the lifetime of a PostgreSQL wire
+// connection. It must be registered (see server.go) AFTER any auth
+// wire.SessionMiddleware, so IdentityFromContext already reflects whatever
+// identity authentication established by the time the session is built --
+// the identity determines the session's tenant scoping for every statement
+// issued on the connection.
+func newConnectionSessionHandler() wire.SessionHandler {
+	return func(ctx context.Context) (context.Context, error) {
+		identity := IdentityFromContext(ctx)
+		session := provider.NewSession(sql.NewBaseSession(), identity)
+		return context.WithValue(ctx, qrdbSessionContextKey{}, session), nil
+	}
+}
+
+// connectionSessionFromContext retrieves the connection's QRDBSession
+// stored by newConnectionSessionHandler, or nil if none is present (see
+// buildSQLContext's fallback).
+func connectionSessionFromContext(ctx context.Context) *provider.QRDBSession {
+	session, _ := ctx.Value(qrdbSessionContextKey{}).(*provider.QRDBSession)
+	return session
 }
 
 // schemaToColumns converts a GMS sql.Schema to psql-wire Columns with
@@ -343,7 +756,14 @@ type queryResult struct {
 	rows         [][]any
 }
 
-func collectRows(ctx *sql.Context, iter sql.RowIter) (*queryResult, error) {
+// collectRows materializes every row of iter. schema describes iter's
+// columns and is what lets each cell be resolved against its declared type
+// before it reaches the wire -- without it an ENUM cell would be written as
+// its ordinal and a SET cell as its bitmask (see
+// catalog.ResolveColumnValue). A nil or short schema leaves the
+// corresponding cells unresolved, which is the correct behaviour for the
+// single-cell OkResult rows DML produces.
+func collectRows(ctx *sql.Context, schema sql.Schema, iter sql.RowIter) (*queryResult, error) {
 	result := &queryResult{}
 	for {
 		row, err := iter.Next(ctx)
@@ -367,6 +787,14 @@ func collectRows(ctx *sql.Context, iter sql.RowIter) (*queryResult, error) {
 		// Convert sql.Row ([]interface{}) to []any for the wire writer.
 		anyRow := make([]any, len(row))
 		for j, v := range row {
+			if j < len(schema) && schema[j] != nil {
+				resolved, resolveErr := catalog.ResolveColumnValue(ctx, schema[j].Type, v)
+				if resolveErr != nil {
+					_ = iter.Close(ctx)
+					return nil, resolveErr
+				}
+				v = resolved
+			}
 			anyRow[j] = formatValue(v)
 		}
 		result.rows = append(result.rows, anyRow)

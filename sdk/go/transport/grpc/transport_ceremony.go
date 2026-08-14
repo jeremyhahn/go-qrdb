@@ -58,8 +58,6 @@ func (t *Transport) CeremonyInitialize(ctx context.Context, req *transport.Cerem
 		SPKIPin:    resp.GetSpkiPin(),
 		CACertPEM:  resp.GetCaCertPem(),
 		TLSCertPEM: resp.GetTlsCertPem(),
-		SOCertPEM:  resp.GetSoCertPem(),
-		SOKeyPEM:   resp.GetSoKeyPem(),
 		State:      resp.GetState(),
 		ShareCount: int(resp.GetShareCount()),
 	}, nil
@@ -118,19 +116,42 @@ func (t *Transport) CeremonyClaimCertComplete(ctx context.Context, req *transpor
 	}, nil
 }
 
-// CeremonyClaimShare retrieves the Shamir share for an officer.
-func (t *Transport) CeremonyClaimShare(ctx context.Context, req *transport.ClaimShareRequest) (*transport.ClaimShareResponse, error) {
+// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+// officer. The caller's certificate thumbprint is derived server-side from the
+// mTLS peer chain, so the connection MUST carry a client certificate.
+func (t *Transport) CeremonyBeginClaimShare(ctx context.Context, req *transport.BeginClaimShareRequest) (*transport.BeginClaimShareResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	resp, err := t.client.CeremonyClaimShare(ctx, &pb.CeremonyClaimShareRequest{
+	resp, err := t.client.CeremonyBeginClaimShare(ctx, &pb.CeremonyBeginClaimShareRequest{
 		Username: req.Username,
 	})
 	if err != nil {
-		return nil, mapGRPCError("CeremonyClaimShare", err)
+		return nil, mapGRPCError("CeremonyBeginClaimShare", err)
 	}
-	return &transport.ClaimShareResponse{
-		ShareJSON: resp.GetShare(),
+	return &transport.BeginClaimShareResponse{
+		NonceHex:  resp.GetNonceHex(),
+		ExpiresAt: resp.GetExpiresAt(),
+	}, nil
+}
+
+// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+// submitting the signed challenge nonce.
+func (t *Transport) CeremonyCompleteClaimShare(ctx context.Context, req *transport.CompleteClaimShareRequest) (*transport.CompleteClaimShareResponse, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	resp, err := t.client.CeremonyCompleteClaimShare(ctx, &pb.CeremonyCompleteClaimShareRequest{
+		Username:  req.Username,
+		NonceHex:  req.NonceHex,
+		Signature: req.Signature,
+	})
+	if err != nil {
+		return nil, mapGRPCError("CeremonyCompleteClaimShare", err)
+	}
+	return &transport.CompleteClaimShareResponse{
+		ShareIndex: int(resp.GetShareIndex()),
+		ShareJSON:  resp.GetShare(),
 	}, nil
 }
 

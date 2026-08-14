@@ -743,7 +743,7 @@ func TestEmbedded_DispatchNilService_ErrorPaths(t *testing.T) {
 	}{
 		// Credential handlers (nil credential service)
 		{"CredentialList", &transport.CredentialListRequest{}},
-		{"CredentialRotate", &transport.CredentialRotateRequest{Name: "k", NewValue: "v"}},
+		{"CredentialRotate", &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")}},
 		{"CredentialRetrieveVersion", &transport.CredentialRetrieveVersionRequest{Name: "k"}},
 		{"CredentialListVersions", &transport.CredentialListVersionsRequest{Name: "k"}},
 		{"CredentialGCExpired", &transport.CredentialGCRequest{Name: "k"}},

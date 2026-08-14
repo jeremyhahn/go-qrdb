@@ -20,26 +20,29 @@ membership from qrdb via the SDK.
 - **Users** (`pkg/user`) — passwordless principals scoped to a tenant.
 - **Roles** (`pkg/role`) — name + permission list, scoped to a tenant.
 - **Role memberships** — `User.RoleIDs` is the assignment edge.
-- **Permission registry** (`pkg/permission/constants.go`) — identity-domain
-  permissions only:
-  - tenant CRUD (create, read, update, delete, list:cross, approve)
-  - user CRUD
-  - role CRUD
-  - permission listing
-  - audit log access (read, read:cross)
-  - KV / MVCC database operations (kv:get, kv:put, mvcc:read, mvcc:txn, ...)
+- **Permission registry** (`pkg/permission/constants.go`) — comprehensive permission
+  set including:
+  - tenant CRUD (create, read, update, delete, list:cross, approve) and tenant barriers
+  - user CRUD and authentication factors
+  - role CRUD and permission listing
+  - audit log access (read, query, stream)
+  - KV / MVCC / transaction / batch / watch / lease / index / time-series / vector / lock operations
+  - cryptographic keys (sign, verify, encrypt, decrypt, wrap, unwrap, create, rotate, delete, derive)
+  - certificate management (generate, export, revoke, list, read)
+  - certificate authority (CA) and ACME operations
+  - seal/barrier operations and recovery
+  - ceremony and custodian operations
 - **System-tenant rule** — an identity rooted in the `system` tenant gets
   cross-tenant scope; everything else is bound to its own tenant.
 
 ## What does NOT live in qrdb
 
-- Cryptographic / KMS permissions (sign, encrypt, issue-cert, generate-key).
-- Application-specific resource models (xkms's `keys`, `certificates`,
-  `secrets`, `barrier`; quicbaas's static-password / team domain).
-- Per-key or per-resource policies.
+- Hardware-specific authentication factor implementations (FIDO2, PIV, PKCS#11, TPM2). These live in go-xkms and are adapted to the `authfactors.FactorRegistry` interface.
+- Hardware seal strategy implementations (TPM2, PKCS#11, cloud KMS, Vault). These live in go-xkms and register into qrdb's `seal.StrategyRegistry`.
+- Application-specific resource models beyond the core qrdb / go-xkms domains (e.g., quicbaas's static-password / team domain).
+- Per-resource policies (e.g., per-key restrictions beyond role-based access). qrdb implements role-based access control; fine-grained per-resource policies belong to downstream applications.
 
-These belong to the consuming application. xkms maintains them in
-`pkg/keyrbac` and `pkg/keypolicy`; quicbaas maintains its own equivalents.
+The split respects module boundaries: qrdb owns core identity, cryptographic operations, and seal/barrier lifecycle. go-xkms and go-quicbaas inject hardware backends and application-specific domains via composition.
 
 ## Pattern for downstream applications
 

@@ -174,6 +174,31 @@ func (b *testMemBatch) Rollback() error {
 	return nil
 }
 
+// Get reads through the batch's pending operations, honouring storage.Batch's
+// read-your-own-writes contract.
+func (b *testMemBatch) Get(key []byte) ([]byte, error) {
+	return b.overlay().Get(key)
+}
+
+func (b *testMemBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return b.overlay().NewIterator(opts)
+}
+
+// overlay materializes the committed state with this batch's pending
+// operations applied.
+func (b *testMemBatch) overlay() *testMemStorage {
+	b.store.mu.RLock()
+	view := &testMemStorage{data: make(map[string][]byte, len(b.store.data))}
+	for k, v := range b.store.data {
+		view.data[k] = v
+	}
+	b.store.mu.RUnlock()
+
+	shadow := &testMemBatch{store: view, ops: b.ops}
+	_ = shadow.Commit()
+	return view
+}
+
 func (b *testMemBatch) Close() error {
 	b.ops = nil
 	return nil

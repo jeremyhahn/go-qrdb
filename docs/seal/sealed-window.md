@@ -17,60 +17,92 @@ protocol servers via the per-protocol options
 When `barrier.enabled: false` the option is not threaded and the
 middleware is not installed; deployments remain plaintext as before.
 
-## REST allowlist
+## Canonical allowlist (all transports)
 
-The canonical allowlist lives in
-`pkg/api/rest/middleware_sealed.go:SealedWindowAllowlist`. Entries
-ending in `/` match by prefix; everything else is an exact match:
+The allowlist is defined ONCE, transport-neutrally, in
+`pkg/api/sealedwindow` (`Table` keyed by canonical `Verb`). Each protocol
+transport derives its own list from that table, so the four lists cannot
+drift apart:
 
-- `/v1/health`
-- `/v1/barrier/status`
-- `/v1/barrier/initialize`
-- `/v1/barrier/unseal`
-- `/v1/barrier/shamir/initialize`
-- `/v1/barrier/shamir/unseal-share`
-- `/v1/barrier/shamir/unseal-shares`
-- `/v1/barrier/shamir/verify`
-- `/v1/barrier/recovery/generate`
-- `/v1/barrier/recovery/recover`
-- `/v1/barrier/recovery/status`
-- `/v1/barrier/officers` (exact) and `/v1/barrier/officers/` (prefix —
-  covers claim-status and `{username}/claim/begin|complete`)
-- `/v1/barrier/recovery/officers` (exact) and
-  `/v1/barrier/recovery/officers/` (prefix)
-- `/v1/init/` (prefix)
-- `/v1/bootstrap/` (prefix)
+| Transport | Derived var | Derivation |
+|---|---|---|
+| REST | `pkg/api/rest.SealedWindowAllowlist` | `sealedwindow.RESTAllowlist()` |
+| gRPC | `pkg/api/grpc.SealedWindowAllowlist` | `sealedwindow.GRPCAllowlist()` |
+| QUIC | `pkg/api/quic.SealedWindowAllowlist` | `sealedwindow.QUICAllowlist()` |
+| MCP | `pkg/api/mcp.SealedWindowAllowlist` | `sealedwindow.MCPAllowlist()` |
+
+The canonical verb set (union of the historical per-transport lists,
+minus the deliberate exclusions below):
+
+- `health`, `status` — liveness probes.
+- Barrier lifecycle: `barrier-status`, `barrier-initialize`,
+  `barrier-unseal`.
+- Shamir: `shamir-initialize`, `shamir-unseal-share`,
+  `shamir-unseal-shares`, `shamir-verify` (REST + QUIC only — no gRPC
+  RPC or MCP tool exists), `rekey`, `root-token`.
+- Recovery: `recovery-generate`, `recovery-recover`, `recovery-delete`,
+  `recovery-status`.
+- Security Officers: `officer-register`, `officer-list`,
+  `officer-claim-status`, `share-claim-begin`, `share-claim-complete`,
+  `recovery-officer-register`, `recovery-share-claim-begin`,
+  `recovery-share-claim-complete`.
+- Ceremony: `ceremony-initialize`, `ceremony-status`,
+  `ceremony-claim-cert-begin`, `ceremony-claim-cert-complete`,
+  `ceremony-claim-share`, `ceremony-sign-csr`,
+  `ceremony-claim-share-begin`, `ceremony-claim-share-complete`,
+  `ceremony-submit-unseal-share`, `ceremony-enroll-external-officer`
+  (gRPC method; on REST the same operation lives at
+  `/v1/init/enroll-external-officer`, covered by the `/v1/init/`
+  prefix).
+
+REST additionally allowlists three transport-specific prefixes with no
+transport-neutral verb (`sealedwindow.RESTExtra`): `/v1/init/`,
+`/v1/bootstrap/`, and `/v1/cluster/` (cluster peer key-transport; the
+receiver self-authorises via node-cert + placement check, and the auth
+middleware also pre-exempts `/v1/cluster/` unconditionally). REST path
+entries ending in `/` match by prefix; everything else is an exact
+match. gRPC entries are method tails (the suffix after the last `/` in
+`info.FullMethod`).
 
 The Security Officer registration and share-claim routes are
 allowlisted because first-boot Shamir initialization is reachable
 only through the sealed-window listener: officers must be registered
 (and able to claim their shares) before and immediately after
-`InitializeShamir` runs, while the barrier is still sealed. The
-seal-vote endpoint (`/v1/barrier/shamir/seal-vote`) is deliberately
-**not** allowlisted — sealing is only meaningful while unsealed.
+`InitializeShamir` runs, while the barrier is still sealed.
 
-## gRPC allowlist
+### Deliberate exclusions
 
-The canonical allowlist lives in
-`pkg/api/grpc/sealed_window_interceptor.go:SealedWindowAllowlist`.
-Entries are method tail components — the suffix after the last `/`
-in `info.FullMethod`:
+Never allowlisted, on any transport:
 
-- `Health`, `Status`
-- `BarrierStatus`, `BarrierInitialize`, `BarrierUnseal`
-- `BarrierShamir{Initialize,UnsealShare,UnsealShares}`
-- `BarrierRekey`
-- `BarrierRecovery{Generate,Recover,Delete,Status}`
-- `BarrierRootToken`
-- `BarrierOfficer{Register,List,ClaimStatus}`
-- `BarrierShareClaim{Begin,Complete}`
-- `BarrierRecoveryOfficerRegister`,
-  `BarrierRecoveryShareClaim{Begin,Complete}`
-- `Ceremony{Initialize,Status,ClaimCertBegin,ClaimCertComplete,ClaimShare,SignCSR,EnrollExternalOfficer}`
+- **seal** (`/v1/barrier/seal`, `BarrierSeal`, `barrier.Seal`,
+  `qrdb_barrier_seal`) and **Shamir seal-vote** — sealing is only
+  meaningful while the barrier is unsealed, so these are served by the
+  regular (post-unseal) listener.
+- **enable-encryption** — the migration requires an unsealed data
+  plane.
+- **Shamir share management** (`barrier.ShamirListShares` /
+  `ShamirDeleteShare` / `ShamirDeleteAllShares`) — post-unseal
+  administration.
+- **custodian enroll/revoke** (`/v1/ceremony/enroll-custodian`,
+  `/v1/ceremony/revoke-custodian`) — SO-gated governance operations
+  served post-unseal.
 
-`BarrierShamirSealVote` is deliberately **not** allowlisted — sealing
-is only meaningful while the barrier is unsealed, so seal votes are
-served by the regular (post-unseal) listener.
+## MySQL / PostgreSQL wire protocols
+
+The SQL wire protocols carry no barrier/ceremony verbs, so nothing is
+allowlisted there; they are fail-closed for the whole sealed window.
+When `server.WithSealedWindowProbe` is threaded (the same option that
+drives the other transports):
+
+- **MySQL** refuses every new connection during the handshake with the
+  typed `sql/mysql: barrier sealed` error.
+- **PostgreSQL** refuses new sessions (FATAL) and rejects every query
+  on surviving sessions (ERROR), both with SQLSTATE `57P03`
+  (`cannot_connect_now`) and message `sql/pgsql: barrier sealed`.
+
+Once the barrier is unsealed both gates are passthrough; on re-seal
+they engage again (MySQL for new connections; established MySQL
+sessions fail at the storage layer with `seal.ErrSealed`).
 
 ## Response envelope
 
@@ -152,13 +184,20 @@ restructures the boot sequence as follows:
    `store.WithEncryptingFS(barrier)` as its first pebble option, so
    when `initializeNode` later opens the data-plane Pebble it does
    so on top of the encfs `vfs.FS`.
-3. While `barrier.IsSealed()` is true, `awaitUnseal` brings up an
+3. While `barrier.IsSealed()` is true, `awaitUnseal` brings up the
+   sealed-window listener via the shared
+   `pkg/server.ServeSealedWindow(ctx, cfg, probe, opts...)`: an
    API-only `server.New(...)` configured with TLS, the seal-only
    service set produced by
    `pkg/server/lifecycle.BuildSealServicesOnly`, and the
-   `server.WithSealedWindowProbe(barrier)` middleware. The probe
-   keeps the canonical allowlist active so only the unseal-related
-   endpoints accept requests.
+   `server.WithSealedWindowProbe(barrier)` middleware (appended
+   automatically). The probe keeps the canonical allowlist active so
+   only the unseal-related endpoints accept requests. SDK embedders
+   get the same listener for nodes returned in the sealed state via
+   `sdk/go/node.ServeSealedWindow(ctx, n, extraOpts...)`, which serves
+   the node's own seal-service instances and returns once the operator
+   drives the unseal (the caller then completes the boot with
+   `n.Unseal`).
 
    When the daemon manages its own TLS material (auto-generated or
    config-provided CA cert **and** key), `cmd/qrdbd` constructs a
@@ -173,11 +212,11 @@ restructures the boot sequence as follows:
    the full initialization ceremony (`ErrCANotInitialized`).
    `SetCA` never overwrites a CA established by `Initialize`; the
    ceremony-established CA stays authoritative.
-4. The listener loop polls `barrier.IsSealed()` on a 250ms ticker
-   (channel-based; no `time.Sleep`) and either (a) tears the
-   listener down and continues the boot when the operator drives
-   unseal, or (b) tears the listener down and exits cleanly on
-   `SIGINT`/`SIGTERM`.
+4. `ServeSealedWindow` polls the probe on a 250ms ticker
+   (channel-based; no `time.Sleep`) and either (a) tears the listener
+   down and returns nil when the operator drives unseal, or (b) tears
+   the listener down and returns `*server.SealedWindowCanceledError`
+   on `SIGINT`/`SIGTERM`, which the daemon treats as a clean exit.
 5. After unseal, the regular boot resumes: `initializeNode` opens
    the host on top of the encfs-wrapped Pebble,
    `lifecycle.BuildServices` constructs the full service graph,

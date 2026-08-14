@@ -77,10 +77,14 @@ type TenantInfo struct {
 	ID            string              `json:"id"`
 	Name          string              `json:"name"`
 	IsolationType TenantIsolationType `json:"isolation_type,omitempty"`
-	Quotas        *TenantQuotas       `json:"quotas,omitempty"`
-	Entitlements  *TenantEntitlements `json:"entitlements,omitempty"`
-	CreatedAt     time.Time           `json:"created_at"`
-	UpdatedAt     time.Time           `json:"updated_at"`
+	// DataRoot is the dedicated filesystem root for an IsolationVolume /
+	// IsolationRaft tenant, whether pool-allocated or pinned via
+	// CreateTenantRequest.DataRoot. Empty for prefix/barrier tenants.
+	DataRoot     string              `json:"data_root,omitempty"`
+	Quotas       *TenantQuotas       `json:"quotas,omitempty"`
+	Entitlements *TenantEntitlements `json:"entitlements,omitempty"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
 // CreateTenantRequest contains parameters for creating a tenant.
@@ -92,6 +96,11 @@ type CreateTenantRequest struct {
 	// the system-managed auto-unseal key-management mode (entitlement-gated).
 	// The default (false) is the secure self-managed mode.
 	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
+	// DataRoot pins an IsolationVolume/IsolationRaft tenant's dedicated
+	// filesystem DataRoot to this operator-supplied absolute path instead of
+	// pool allocation. Empty (the default) allocates from the configured
+	// volume pool. Rejected for prefix/barrier isolation.
+	DataRoot string `json:"data_root,omitempty"`
 }
 
 // UpdateTenantRequest contains the mutable fields for updating a tenant.

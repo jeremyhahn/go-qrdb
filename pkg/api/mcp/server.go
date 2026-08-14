@@ -62,6 +62,8 @@ type Server struct {
 	collectionSvc     service.CollectionServicer
 	dbSvc             service.DatabaseServicer
 	barrierSvc        service.BarrierServicer
+	encMigrator       service.EncryptionMigrator
+	sqlSvc            service.SQLServicer
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
 	credentialSvc     service.CredentialServicer
@@ -80,19 +82,44 @@ type Server struct {
 	registry  service.Registry
 	addr      string
 	tlsConfig *tls.Config
+	tlsErr    error
 	authMW    *authmw.AuthMiddleware
 	mcpSrv    *mcpserver.MCPServer
 	httpSrv   *http.Server
 	listener  net.Listener
+
+	// sealedWindowProbe controls the sealed-window tool-handler middleware.
+	// While the probe reports sealed, every tool call not on
+	// SealedWindowAllowlist is rejected. Wired identically to the REST,
+	// gRPC, and native-QUIC sealed-window gates so operators see the same
+	// envelope on every transport.
+	sealedWindowProbe sealedWindowProbe
 }
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
 
-// WithTLS configures the server with TLS.
+// WithTLS configures the server with TLS. The config is cloned and pinned to
+// a TLS 1.3 floor: an unset MinVersion is raised to TLS 1.3, and an explicitly
+// weaker MinVersion is rejected (surfaced by Start as *WeakTLSVersionError)
+// rather than silently negotiating a weaker handshake. This mirrors the gRPC
+// and unix transports so the "TLS 1.3 only" posture holds on every transport.
+// A nil cfg leaves TLS unconfigured; because the transport is TLS-only, Start
+// then fails closed with *TLSNotConfiguredError.
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
-		s.tlsConfig = cfg
+		if cfg == nil {
+			return
+		}
+		clone := cfg.Clone()
+		switch {
+		case clone.MinVersion == 0:
+			clone.MinVersion = tls.VersionTLS13
+		case clone.MinVersion < tls.VersionTLS13:
+			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+			return
+		}
+		s.tlsConfig = clone
 	}
 }
 
@@ -228,6 +255,23 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	}
 }
 
+// WithEncryptionMigrator registers the qrdb_barrier_enable_encryption tool
+// on the MCP server, exposing BarrierEnableEncryption the same way it is
+// exposed over REST, gRPC, QUIC, and Unix.
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(s *Server) {
+		s.encMigrator = m
+	}
+}
+
+// WithSQLService registers the qrdb_sql_query tool on the MCP server for
+// ad-hoc SQL execution against a named database.
+func WithSQLService(svc service.SQLServicer) ServerOption {
+	return func(s *Server) {
+		s.sqlSvc = svc
+	}
+}
+
 // WithPINBackend attaches the canonical pin.PINBackend used for the
 // optional SO PIN / User PIN compliance-gating layer on barrier
 // administrative operations.
@@ -292,6 +336,15 @@ func WithAuditLogger(l audit.AuditLogger) ServerOption {
 	return func(s *Server) { s.auditLogger = l }
 }
 
+// WithSealedWindowProbe installs the sealed-window tool-handler middleware
+// on the MCP server. While probe.IsSealed() returns true, every tool call
+// not on SealedWindowAllowlist is rejected with a tool-result error, giving
+// operators the same sealed-window envelope on MCP as on REST, gRPC, and
+// native QUIC.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) { s.sealedWindowProbe = probe }
+}
+
 // WithServiceRegistry configures the MCP server with a per-(tenant, database)
 // service registry. When set, data-plane tool handlers resolve their servicer
 // from the registry using the authenticated tenant and the optional "database"
@@ -339,6 +392,9 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.authMW != nil {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))
+	}
+	if s.sealedWindowProbe != nil {
+		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.sealedWindowMiddleware()))
 	}
 	if s.registry != nil {
 		// Bind the registry and the request's database scope into the per-call
@@ -409,7 +465,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.mcpSrv.AddTools(databaseTools(s.dbSvc)...)
 	}
 	if s.barrierSvc != nil {
-		s.mcpSrv.AddTools(barrierTools(s.barrierSvc, s.pinBackend)...)
+		s.mcpSrv.AddTools(barrierTools(s.barrierSvc, s.pinBackend, s.encMigrator)...)
 	}
 	if s.ceremonySvc != nil {
 		s.mcpSrv.AddTools(ceremonyTools(s.ceremonySvc, s.ceremonyCA)...)
@@ -431,13 +487,16 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.mcpSrv.AddTools(authFactorTools(s.authFactorSvc)...)
 	}
 	if s.userAuthFactorSvc != nil {
-		s.mcpSrv.AddTools(userAuthFactorTools(s.userAuthFactorSvc)...)
+		s.mcpSrv.AddTools(userAuthFactorTools(s.userAuthFactorSvc, s.userSvc)...)
 	}
 	// Audit query tool.
 	// Authorization: requires "audit:query" permission.
 	// TODO: switch to permission.AuditQuery constant once Phase 2 lands.
 	if s.auditLogger != nil {
 		s.mcpSrv.AddTools(auditTools(s.auditLogger)...)
+	}
+	if s.sqlSvc != nil {
+		s.mcpSrv.AddTools(sqlTools(s.sqlSvc)...)
 	}
 
 	return s
@@ -447,14 +506,25 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // Streamable HTTP handler is mounted at /mcp. When TLS is configured,
 // the listener is wrapped with tls.NewListener.
 func (s *Server) Start() error {
+	// A WithTLS config with an explicitly weak MinVersion was rejected at
+	// option-application time; surface it now.
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
+	// TLS-only: fail closed rather than bind a plaintext listener. The
+	// orchestrator always supplies a config (operator-provided or
+	// auto-provisioned from the node CA); a nil here means a direct caller
+	// tried to start the raw server without TLS.
+	if s.tlsConfig == nil {
+		return &TLSNotConfiguredError{}
+	}
+
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
 	}
 
-	if s.tlsConfig != nil {
-		ln = tls.NewListener(ln, s.tlsConfig)
-	}
+	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 
 	// Create the Streamable HTTP handler from the MCP server. When auth is

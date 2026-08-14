@@ -120,7 +120,7 @@ func TestWithEmbedding_Applied(t *testing.T) {
 	embSvc := &stubEmbeddingSvc{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-emb.sock",
 		WithEmbedding(embSvc),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.embeddingSvc == nil {
 		t.Fatal("embeddingSvc not set")
 	}
@@ -129,7 +129,7 @@ func TestWithEmbedding_Applied(t *testing.T) {
 func TestWithEmbedding_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-emb-nil.sock",
 		WithEmbedding(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.embeddingSvc != nil {
 		t.Fatal("expected nil embeddingSvc")
 	}
@@ -142,7 +142,7 @@ func TestWithEmbedding_Nil(t *testing.T) {
 func TestWithRAGService_Applied(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-rag.sock",
 		WithRAGService(&stubRAGSvc{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.ragSvc == nil {
 		t.Fatal("ragSvc not set")
 	}
@@ -151,7 +151,7 @@ func TestWithRAGService_Applied(t *testing.T) {
 func TestWithRAGService_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-rag-nil.sock",
 		WithRAGService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.ragSvc != nil {
 		t.Fatal("expected nil ragSvc")
 	}
@@ -165,7 +165,7 @@ func TestWithBackupService_Applied(t *testing.T) {
 	bkpSvc := &stubBackupSvcUnix{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-bkp.sock",
 		WithBackupService(bkpSvc),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.backupSvc != bkpSvc {
 		t.Fatal("backupSvc not set")
 	}
@@ -174,7 +174,7 @@ func TestWithBackupService_Applied(t *testing.T) {
 func TestWithBackupService_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-bkp-nil.sock",
 		WithBackupService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.backupSvc != nil {
 		t.Fatal("expected nil backupSvc")
 	}
@@ -188,7 +188,7 @@ func TestWithRebalanceService_Applied(t *testing.T) {
 	rbSvc := &stubRebalanceSvcUnix{}
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-rb.sock",
 		WithRebalanceService(rbSvc),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.rebalanceSvc != rbSvc {
 		t.Fatal("rebalanceSvc not set")
 	}
@@ -197,7 +197,7 @@ func TestWithRebalanceService_Applied(t *testing.T) {
 func TestWithRebalanceService_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-rb-nil.sock",
 		WithRebalanceService(nil),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 	if srv.rebalanceSvc != nil {
 		t.Fatal("expected nil rebalanceSvc")
 	}
@@ -214,7 +214,7 @@ func TestStart_WithEmbeddingAndRAGAndBackupAndRebalance(t *testing.T) {
 		WithRAGService(&stubRAGSvc{}),
 		WithBackupService(&stubBackupSvcUnix{}),
 		WithRebalanceService(&stubRebalanceSvcUnix{}),
-	)
+		WithTLS(selfSignedTLSConfig(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)

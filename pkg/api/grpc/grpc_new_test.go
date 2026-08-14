@@ -17,6 +17,7 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"io"
 	"strings"
@@ -25,11 +26,11 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
@@ -39,6 +40,29 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
+
+// ---------------------------------------------------------------------------
+// stubCeremonyCA
+// ---------------------------------------------------------------------------
+
+// stubCeremonyCA is a minimal ceremony.CeremonyCA implementation for tests
+// that need to prove a real (non-nil) CA reference reaches the ceremony
+// service layer, without exercising actual certificate issuance. Defined in
+// this untagged file (rather than one of the qrdb_ts-gated coverage files)
+// so it is available under both the "!qrdb_ts" and "qrdb_ts" test build
+// universes, which never compile together.
+type stubCeremonyCA struct{}
+
+var _ ceremony.CeremonyCA = (*stubCeremonyCA)(nil)
+
+func (*stubCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
+	return nil, nil
+}
+func (*stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
+func (*stubCeremonyCA) CABundle() ([]byte, error)                 { return []byte("ca-bundle"), nil }
+func (*stubCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+	return &ceremony.IssuedCert{CertPEM: []byte("cert-pem"), KeyPEM: []byte("key-pem")}, nil
+}
 
 // ---------------------------------------------------------------------------
 // Mock services
@@ -55,10 +79,14 @@ type mockMVCCService struct {
 	getAtRevErr        error
 	rangeResult        []*kv.KeyValue
 	rangeCount         int64
+	rangeRevision      int64
 	rangeErr           error
 	compactErr         error
 	currentRev         int64
 	currentRevErr      error
+	restoreResult      *service.RestoreRevisionResult
+	restoreErr         error
+	lastRestoreReq     *service.RestoreRevisionRequest
 }
 
 func (m *mockMVCCService) PutWithLease(_ context.Context, _ string, _ []byte, _ int64) (*kv.KeyValue, error) {
@@ -82,11 +110,11 @@ func (m *mockMVCCService) GetAtRevision(_ context.Context, _ string, _ int64) (*
 	return m.getAtRevResult, nil
 }
 
-func (m *mockMVCCService) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) Range(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeErr != nil {
-		return nil, 0, m.rangeErr
+		return nil, 0, 0, m.rangeErr
 	}
-	return m.rangeResult, m.rangeCount, nil
+	return m.rangeResult, m.rangeCount, m.rangeRevision, nil
 }
 
 func (m *mockMVCCService) Compact(_ context.Context, _ int64) error {
@@ -121,11 +149,19 @@ func (m *mockMVCCService) GetAtRevisionWithConsistency(_ context.Context, _ stri
 	return m.getAtRevResult, nil
 }
 
-func (m *mockMVCCService) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) RangeWithConsistency(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeErr != nil {
-		return nil, 0, m.rangeErr
+		return nil, 0, 0, m.rangeErr
 	}
-	return m.rangeResult, m.rangeCount, nil
+	return m.rangeResult, m.rangeCount, m.rangeRevision, nil
+}
+
+func (m *mockMVCCService) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	m.lastRestoreReq = req
+	if m.restoreErr != nil {
+		return nil, m.restoreErr
+	}
+	return m.restoreResult, nil
 }
 
 // mockTransactionService implements service.TransactionServicer for testing.
@@ -413,14 +449,15 @@ func startTestServerFull(t *testing.T, opts ...ServerOption) (pb.QRDBServiceClie
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", opts...)
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", append([]ServerOption{WithTLS(tlsCfg)}, opts...)...)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 
 	conn, err := grpc.NewClient(
 		srv.Addr(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)),
 	)
 	if err != nil {
 		srv.Stop()
@@ -1062,6 +1099,34 @@ func TestMapServiceError_WatchCanceledError(t *testing.T) {
 	}
 	if st.Code() != codes.Canceled {
 		t.Fatalf("expected Canceled, got %s", st.Code())
+	}
+}
+
+func TestMapServiceError_ImportErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want codes.Code
+	}{
+		{"InvalidFormat", &service.ImportInvalidFormatError{Format: "bogus"}, codes.InvalidArgument},
+		{"MissingKeyField", &service.ImportMissingKeyFieldError{}, codes.InvalidArgument},
+		{"InvalidValueMode", &service.ImportInvalidValueModeError{Mode: "bogus"}, codes.InvalidArgument},
+		{"MissingValueField", &service.ImportMissingValueFieldError{}, codes.InvalidArgument},
+		{"ParseError", &service.ImportParseError{Err: errors.New("boom")}, codes.InvalidArgument},
+		{"ArchiveError", &service.ImportArchiveError{Err: errors.New("boom")}, codes.InvalidArgument},
+		{"TransactionAborted", &service.ImportTransactionAbortedError{Row: 3, Key: "k", Message: "failed"}, codes.Aborted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := mapServiceError(tt.err)
+			st, ok := status.FromError(err)
+			if !ok {
+				t.Fatal("expected gRPC status error")
+			}
+			if st.Code() != tt.want {
+				t.Fatalf("expected %s, got %s", tt.want, st.Code())
+			}
+		})
 	}
 }
 

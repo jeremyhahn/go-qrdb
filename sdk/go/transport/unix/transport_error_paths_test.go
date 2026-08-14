@@ -702,11 +702,11 @@ func TestUnixRT_Get_WithConsistency(t *testing.T) {
 func startServer(t *testing.T, kvsvc service.KVServicer) (*Transport, func()) {
 	t.Helper()
 	socketPath := tempSocketPath(t)
-	srv := unixserver.NewServer(kvsvc, newMockAdminService(), socketPath)
+	srv := unixserver.NewServer(kvsvc, newMockAdminService(), socketPath, unixserver.WithTLS(testUnixServerTLS))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	tr, err := New(transport.WithAddress(socketPath))
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("New: %v", err)

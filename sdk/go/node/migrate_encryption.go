@@ -17,12 +17,12 @@ package node
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -115,7 +115,15 @@ type nodeMigrationProvider struct {
 	node *Node
 	// creds carries the target keyed credentials from MintKeyedTarget to Reopen
 	// so Reopen can re-establish the keyed barrier from the committed root key.
+	// Left zero for a Shamir target: ReopenKeyed never attempts Unseal for
+	// Shamir (see its doc comment) and instead reopens sealed, pending a
+	// Security Officer quorum.
 	creds seal.Credentials
+	// shamirThreshold / shamirTotal carry the M-of-N scheme from MintKeyedTarget
+	// to Reopen (via reopenStrategy) so the reopened Shamir barrier reports the
+	// correct scheme before the first UnsealWithShare(s) quorum.
+	shamirThreshold int
+	shamirTotal     int
 }
 
 // StoreDirs returns the encfs-wrapped store directories owned by the scoped
@@ -148,11 +156,34 @@ func (p *nodeMigrationProvider) StoreDirs(_ context.Context, scope service.Barri
 // MintKeyedTarget creates an initialized+unsealed keyed barrier over the seal
 // store at a staging root-key path, for the system scope. Tenant scope is
 // routed by the scoped router to TenantHostRegistry before reaching here.
+//
+// A Shamir target cannot go through the generic MintKeyedSibling path below
+// (see its doc comment): a plain Initialize against a ShamirStrategy persists
+// no key material by design, so it would silently "succeed" while leaving the
+// root key unrecoverable. It requires the direct-mode ceremony —
+// MintKeyedShamirSibling — which mints the sibling AND splits its root key
+// M-of-N to the enrolled Security Officers in one step. This mirrors
+// cmd/qrdbd/system_migrate.go's recodeSystemBarrier and
+// pkg/server/tenant_migrate.go's MigrateEncryption, the daemon-side twins of
+// this method: routing a Shamir target through the generic passphrase-shaped
+// path there (as this method previously did) mints a mislabeled sealed root
+// key with no officer shares — the exact security downgrade this closes.
 func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
 		return nil, &MigrationNotSupportedError{Reason: "tenant scope is handled by TenantHostRegistry via the scoped router; nodeMigrationProvider is system-only"}
 	}
+
+	if opts.TargetStrategy == seal.StrategyShamir {
+		target, _, err := n.barrier.MintKeyedShamirSibling(ctx, stagingRootKeySuffix, opts.ShamirThreshold, opts.ShamirTotal)
+		if err != nil {
+			return nil, err
+		}
+		p.shamirThreshold = opts.ShamirThreshold
+		p.shamirTotal = opts.ShamirTotal
+		return target, nil
+	}
+
 	strat, err := keyedStrategyFor(opts)
 	if err != nil {
 		return nil, err
@@ -182,6 +213,18 @@ func (p *nodeMigrationProvider) Quiesce(_ context.Context, _ service.BarrierScop
 // none barrier is replaced with a freshly-unsealed keyed barrier before the
 // rebuild; if it is still none (migration failed pre-commit), the data plane is
 // rebuilt under the original barrier, which was never modified.
+//
+// A committed Shamir target is special-cased: ReopenKeyed never attempts
+// Unseal for Shamir (by design, a Shamir barrier never auto-unseals from
+// disk — see its doc comment), so the reopened barrier comes back SEALED,
+// pending a Security Officer quorum. In that case the data plane cannot be
+// rebuilt yet: only the seal-window services (Barrier/Ceremony/Credential)
+// are reconstructed — mirroring the sealed branch of NewStandaloneNode — and
+// n.pendingStandalone is left set so Node.Unseal's "already unsealed
+// externally" fallthrough (see its doc comment) completes the boot once the
+// operator drives the barrier unsealed via UnsealWithShare(s). This mirrors
+// pkg/server/tenant_migrate.go's MigrateEncryption, which likewise skips its
+// eager Host re-Attach when the reopened barrier is still sealed.
 func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.BarrierScope) error {
 	n := p.node
 	if scope.Kind != service.ScopeSystem {
@@ -191,27 +234,48 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 	if err != nil {
 		return err
 	}
+
+	pending := n.retainedStandalone
+	if pending == nil {
+		return &MigrationNotSupportedError{Reason: "retained boot params lost during migration"}
+	}
+
 	switch committedStrategy {
 	case seal.StrategyPassphrase, seal.StrategyShamir:
-		// Committed: replace the live none barrier with the keyed one unsealed
-		// from the committed canonical root key.
-		strat, serr := keyedStrategyForStrategy(committedStrategy, p.creds)
+		// Committed: replace the live none barrier with the keyed one.
+		// ReopenKeyed mints a fresh barrier over n.barrier's exact backend +
+		// config (same RootKeyPath, same DeploymentID) and unseals it — except
+		// for Shamir, which it deliberately leaves sealed (see the doc comment
+		// above).
+		reopenStrat, serr := p.reopenStrategy(committedStrategy)
 		if serr != nil {
 			return serr
 		}
-		backend := seal.NewStorageAdapter(n.sealStore)
-		keyed, berr := seal.NewStorageBarrier(n.logger, backend,
-			seal.BarrierConfig{RootKeyPath: canonicalRootKeyPath(n)}, strat)
-		if berr != nil {
-			return berr
-		}
-		if uerr := keyed.Unseal(ctx, p.creds); uerr != nil && !errors.Is(uerr, seal.ErrAlreadyUnsealed) {
-			return uerr
+		keyed, rerr := n.barrier.ReopenKeyed(ctx, reopenStrat, p.creds)
+		if rerr != nil {
+			return rerr
 		}
 		n.barrier = keyed
 		n.barrierRegistry.SetSystemBarrier(keyed)
 		// Drop the now-redundant staging root-key blob (best effort).
-		_ = backend.Delete(ctx, canonicalRootKeyPath(n)+stagingRootKeySuffix)
+		_ = seal.NewStorageAdapter(n.sealStore).Delete(ctx, canonicalRootKeyPath(n)+stagingRootKeySuffix)
+
+		if keyed.IsSealed() {
+			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
+				DataDir:           pending.dataDir,
+				SealBarrier:       keyed,
+				BarrierRegistry:   n.barrierRegistry,
+				CredentialCoreSvc: n.credCoreSvc,
+				CeremonyDataDir:   filepath.Join(pending.dataDir, "seal"),
+				Logger:            n.logger,
+			})
+			if serr != nil {
+				return &MigrationNotSupportedError{Reason: "rebuild seal-window services after shamir migration: " + serr.Error()}
+			}
+			n.svcNode = sealNode
+			n.pendingStandalone = pending
+			return nil
+		}
 	default:
 		// Not committed: the original barrier is still valid and unsealed.
 	}
@@ -219,11 +283,20 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 	// Rebuild the data plane (storage, engine, services, server) under the
 	// now-current barrier. retainedStandalone is re-consumed by
 	// completeStandaloneBoot, which re-sets it.
-	pending := n.retainedStandalone
-	if pending == nil {
-		return &MigrationNotSupportedError{Reason: "retained boot params lost during migration"}
-	}
 	return n.completeStandaloneBoot(ctx, pending)
+}
+
+// reopenStrategy builds the keyed sealing strategy ReopenKeyed uses to
+// reconstruct the live system barrier after a migration commits. A Shamir
+// target reuses the threshold/total MintKeyedTarget recorded (ReopenKeyed
+// special-cases the Shamir ID and does not attempt to unseal); every other
+// keyed target uses keyedStrategyForStrategy's self-contained credential
+// strategy. Mirrors pkg/server/tenant_migrate.go's reopenStrategyFor.
+func (p *nodeMigrationProvider) reopenStrategy(id seal.StrategyID) (seal.SealingStrategy, error) {
+	if id == seal.StrategyShamir {
+		return seal.NewShamirStrategy(p.shamirThreshold, p.shamirTotal)
+	}
+	return keyedStrategyForStrategy(id, p.creds)
 }
 
 // teardownDataPlane closes the server, services, host, and data-plane store,
@@ -311,14 +384,22 @@ func strategyRegistered(strategies []seal.SealingStrategy, id seal.StrategyID) b
 	return false
 }
 
-// keyedStrategyFor builds the keyed sealing strategy for the migration options.
+// keyedStrategyFor builds the keyed sealing strategy for the migration
+// options. A Shamir target never reaches here: MintKeyedTarget special-cases
+// it into the MintKeyedShamirSibling ceremony before this is called (see its
+// doc comment) — routing it through this generic passphrase-shaped helper
+// instead is exactly the security downgrade that fix closes.
 func keyedStrategyFor(opts seal.MigrationOptions) (seal.SealingStrategy, error) {
 	return keyedStrategyForStrategy(opts.TargetStrategy, opts.Credentials)
 }
 
+// keyedStrategyForStrategy builds the keyed sealing strategy for id. Like
+// keyedStrategyFor, a Shamir id never reaches here: reopenStrategy
+// special-cases StrategyShamir into seal.NewShamirStrategy before falling
+// back to this helper, so only StrategyPassphrase is ever a valid input.
 func keyedStrategyForStrategy(id seal.StrategyID, _ seal.Credentials) (seal.SealingStrategy, error) {
 	switch id {
-	case seal.StrategyPassphrase, seal.StrategyShamir:
+	case seal.StrategyPassphrase:
 		// Use the SAME passphrase strategy the boot path uses for software
 		// barriers (NewDeferredSoftwareStrategy). The sealed root-key blob must
 		// be unsealable by the strategy the node registers on a subsequent boot;

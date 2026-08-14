@@ -76,7 +76,7 @@ func (t *NamespacesTable) String() string {
 }
 
 // Schema returns the table's column schema.
-func (t *NamespacesTable) Schema() sqle.Schema {
+func (t *NamespacesTable) Schema(_ *sqle.Context) sqle.Schema {
 	return namespacesSchema
 }
 

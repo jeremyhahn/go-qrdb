@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -52,6 +54,33 @@ var validOutputModes = map[string]outputMode{
 	"column": modeColumn,
 }
 
+// pragmaHandler is the narrow interface the shell needs to intercept custom
+// qrdb_* PRAGMA statements before they reach the underlying SQLite engine.
+// *vtab.PragmaStore satisfies this via its exported HandlePragma method. It
+// is declared here (rather than imported from vtab) so shell.go stays
+// testable with lightweight fakes.
+type pragmaHandler interface {
+	HandlePragma(name, value string) (map[string]string, error)
+}
+
+// qrdbPragmaNames is the set of custom PRAGMA names owned by the qrdb
+// PragmaStore rather than the underlying SQLite engine. Real SQLite pragmas
+// (journal_mode, table_info, cache_size, ...) are not in this set and always
+// pass through to the database unchanged. Names are lower-cased canonical
+// forms; lookups normalize the incoming name before matching.
+var qrdbPragmaNames = map[string]bool{
+	"qrdb_consistency": true,
+	"qrdb_write_mode":  true,
+	"qrdb_status":      true,
+}
+
+// qrdbPragmaStmtRe recognizes a single bare SQL PRAGMA statement of the form
+// "PRAGMA name" or "PRAGMA name = value", optionally terminated with a
+// semicolon. It deliberately does not attempt to parse the full SQLite
+// grammar (e.g. "PRAGMA name(value)" or PRAGMA statements combined with other
+// SQL); anything it does not recognize falls through to the real engine.
+var qrdbPragmaStmtRe = regexp.MustCompile(`(?is)^\s*PRAGMA\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*(.*?))?\s*;?\s*$`)
+
 // shell provides an interactive SQL REPL backed by a *sql.DB. Query results
 // are formatted according to the current outputMode. Multi-line SQL is
 // accumulated until a statement-terminating semicolon is found.
@@ -61,11 +90,18 @@ type shell struct {
 	mode     outputMode
 	headers  bool   // whether column headers are printed
 	nullText string // text substituted for NULL values in output
+	pragma   pragmaHandler
 }
 
 // newShell constructs a shell with sensible defaults: table output mode,
 // headers enabled, and an empty NULL display string. out defaults to
 // os.Stdout when nil.
+//
+// The returned shell has no pragma handler attached; qrdb_* custom PRAGMAs
+// will report that the session is not configured until the caller sets the
+// pragma field to the session's shared *vtab.PragmaStore (see runShell in
+// root.go). Passing a nil pragma is safe: qrdb_* pragmas return a typed
+// error and every other PRAGMA continues to pass through to SQLite normally.
 func newShell(db *sql.DB, out io.Writer) *shell {
 	if out == nil {
 		out = os.Stdout
@@ -242,7 +278,26 @@ func (s *shell) executeDotCommand(line string) (quit bool, err error) {
 
 // executeSQL runs query against the database and prints results. SQL errors
 // are returned so the caller can display them without terminating the session.
+//
+// Custom qrdb_* PRAGMA statements (qrdb_consistency, qrdb_write_mode,
+// qrdb_status) are intercepted here before reaching SQLite: real SQLite has
+// no knowledge of these names and silently no-ops on unknown pragmas (zero
+// columns, zero rows, no error), which is why routing them through this
+// method instead of the pragma store previously produced no output at all.
+// Any other PRAGMA, and every other SQL statement, is unaffected.
+//
+// The mattn/go-sqlite3 driver's Query path only prepares and binds a
+// statement; it does not call sqlite3_step (and therefore never invokes a
+// virtual table's xUpdate callback for INSERT/UPDATE/DELETE) until Rows.Next
+// is called at least once. Rows.Close alone only resets an unstepped
+// statement, it does not execute it. Since column-less statements (DDL/DML)
+// would otherwise never be stepped, they must be drained explicitly here so
+// they actually run.
 func (s *shell) executeSQL(query string) error {
+	if name, value, ok := parseQRDBPragmaStatement(query); ok {
+		return s.execQRDBPragma(name, value)
+	}
+
 	rows, err := s.db.Query(query)
 	if err != nil {
 		return err
@@ -254,8 +309,11 @@ func (s *shell) executeSQL(query string) error {
 		return err
 	}
 
-	// SELECT-style queries return columns; DDL / DML may return none.
+	// SELECT-style queries return columns and are formatted for display.
+	// DDL / DML statements return none; drain them to force execution.
 	if len(cols) == 0 {
+		for rows.Next() {
+		}
 		return rows.Err()
 	}
 
@@ -462,6 +520,11 @@ func (s *shell) dotDatabases() error {
 // dotPragma executes a PRAGMA statement from the .pragma dot-command.
 // args contains the tokens following ".pragma", e.g. ["qrdb_consistency"] or
 // ["qrdb_consistency", "linearizable"] or ["journal_mode", "=", "wal"].
+//
+// The custom qrdb_consistency, qrdb_write_mode, and qrdb_status pragmas are
+// intercepted and routed to the session's pragma store instead of being sent
+// to SQLite, which does not recognize them. Every other pragma name is
+// forwarded to SQLite unchanged, exactly as before.
 func (s *shell) dotPragma(args []string) error {
 	if len(args) == 0 {
 		return &ShellError{Err: &ConfigError{
@@ -471,8 +534,14 @@ func (s *shell) dotPragma(args []string) error {
 	}
 
 	name := args[0]
-	var query string
+	if qrdbPragmaNames[strings.ToLower(name)] {
+		value := strings.Join(args[1:], " ")
+		value = strings.TrimPrefix(value, "=")
+		value = trimPragmaQuotes(strings.TrimSpace(value))
+		return s.execQRDBPragma(strings.ToLower(name), value)
+	}
 
+	var query string
 	if len(args) == 1 {
 		query = "PRAGMA " + name
 	} else {
@@ -484,6 +553,74 @@ func (s *shell) dotPragma(args []string) error {
 	}
 
 	return s.executeSQL(query)
+}
+
+// parseQRDBPragmaStatement reports whether query is a single bare SQL PRAGMA
+// statement targeting one of the custom qrdb_* pragma names. On a match it
+// returns the lower-cased pragma name and the unquoted value (empty for a
+// read-only invocation such as "PRAGMA qrdb_status;").
+func parseQRDBPragmaStatement(query string) (name, value string, ok bool) {
+	m := qrdbPragmaStmtRe.FindStringSubmatch(query)
+	if m == nil {
+		return "", "", false
+	}
+	name = strings.ToLower(m[1])
+	if !qrdbPragmaNames[name] {
+		return "", "", false
+	}
+	value = trimPragmaQuotes(strings.TrimSpace(m[2]))
+	return name, value, true
+}
+
+// execQRDBPragma dispatches a custom qrdb_* pragma to the shell's pragma
+// store and prints the result as a key/value table. If no pragma store is
+// attached (e.g. a shell constructed without one), a typed ConfigError is
+// returned instead of silently doing nothing.
+func (s *shell) execQRDBPragma(name, value string) error {
+	if s.pragma == nil {
+		return &ShellError{Err: &ConfigError{
+			Field:  name,
+			Reason: "qrdb pragma store is not configured for this session",
+		}}
+	}
+
+	result, err := s.pragma.HandlePragma(name, value)
+	if err != nil {
+		return err
+	}
+
+	s.printPragmaResult(result)
+	return nil
+}
+
+// printPragmaResult writes a qrdb_* pragma result map as a two-column
+// key/value table, sorted by key for deterministic output. qrdb_status
+// returns multiple keys (mode, server, database, consistency, write_mode);
+// qrdb_consistency and qrdb_write_mode return a single key.
+func (s *shell) printPragmaResult(result map[string]string) {
+	keys := make([]string, 0, len(result))
+	for k := range result {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	rows := make([][]cell, 0, len(keys))
+	for _, k := range keys {
+		rows = append(rows, []cell{{s: k}, {s: result[k]}})
+	}
+	_ = s.printTable([]string{"key", "value"}, rows)
+}
+
+// trimPragmaQuotes strips a single layer of matching single- or double-quotes
+// from s, if present, mirroring how SQLite unquotes PRAGMA value literals
+// (e.g. PRAGMA qrdb_write_mode = 'batched').
+func trimPragmaQuotes(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '\'' && s[len(s)-1] == '\'') || (s[0] == '"' && s[len(s)-1] == '"') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
 
 // printHelp writes the available dot-commands to s.out.

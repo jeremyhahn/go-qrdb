@@ -917,3 +917,99 @@ func TestBuildServices_ReusesCeremonyCoreSvc(t *testing.T) {
 		t.Errorf("ceremony CA = %v, want the sealed-window CA preserved", got)
 	}
 }
+
+// stubBackupSink is a minimal in-memory service.BackupSink whose List call is
+// independently observable from BackupService's own in-memory registry, so a
+// test can prove which one a given Node.Backup actually reads from.
+type stubBackupSink struct {
+	listCalls int
+	listOut   []service.BackupInfo
+}
+
+func (s *stubBackupSink) Write(_ context.Context, _ service.BackupInfo, _ map[uint64][]byte) error {
+	return nil
+}
+
+func (s *stubBackupSink) ReadInfo(_ context.Context, id string) (*service.BackupInfo, error) {
+	return nil, &service.BackupNotFoundError{ID: id}
+}
+
+func (s *stubBackupSink) ReadShards(_ context.Context, id string) (map[uint64][]byte, error) {
+	return nil, &service.BackupNotFoundError{ID: id}
+}
+
+func (s *stubBackupSink) List(_ context.Context) ([]service.BackupInfo, error) {
+	s.listCalls++
+	return s.listOut, nil
+}
+
+func (s *stubBackupSink) Delete(_ context.Context, _ string) error { return nil }
+
+var _ service.BackupSink = (*stubBackupSink)(nil)
+
+// TestBuildServices_BackupSink_Wired verifies that an Infra.BackupSink is
+// wired into Node.Backup: ListBackups must read through the supplied sink
+// (proven by the sink's own sentinel output) rather than BackupService's
+// private in-memory registry, so backup artifacts survive a daemon restart
+// when the caller configures a durable sink.
+func TestBuildServices_BackupSink_Wired(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	sink := &stubBackupSink{listOut: []service.BackupInfo{{ID: "sentinel-from-sink"}}}
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:       host,
+		WatchHub:   hub,
+		DataDir:    t.TempDir(),
+		BackupSink: sink,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	got, err := node.Backup.ListBackups(context.Background())
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if sink.listCalls != 1 {
+		t.Fatalf("sink.List calls = %d, want 1 (Node.Backup did not route through the supplied sink)", sink.listCalls)
+	}
+	if len(got) != 1 || got[0].ID != "sentinel-from-sink" {
+		t.Fatalf("ListBackups = %+v, want the sink's sentinel entry", got)
+	}
+}
+
+// TestBuildServices_BackupSink_NilKeepsInMemory verifies that omitting
+// Infra.BackupSink (the zero value) preserves the prior in-memory-only
+// behavior: ListBackups succeeds against an empty registry without ever
+// touching a sink.
+func TestBuildServices_BackupSink_NilKeepsInMemory(t *testing.T) {
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+
+	hub := watch.NewHub()
+	defer hub.Close()
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	defer func() { _ = node.Stop(context.Background()) }()
+
+	got, err := node.Backup.ListBackups(context.Background())
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListBackups on a fresh in-memory registry = %+v, want empty", got)
+	}
+}

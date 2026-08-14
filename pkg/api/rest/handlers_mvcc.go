@@ -43,6 +43,41 @@ type compactRequest struct {
 	Revision int64 `json:"revision"`
 }
 
+// restoreRevisionRequest is the JSON payload for POST /kv/restore. Prefix
+// and Keys are []byte / [][]byte, not string, so an arbitrary byte-valued
+// key or prefix round-trips byte-for-byte through the base64 (RFC 4648)
+// encoding encoding/json applies to []byte -- the same convention kvResponse
+// uses for Key/Value.
+type restoreRevisionRequest struct {
+	Revision int64    `json:"revision"`
+	Prefix   []byte   `json:"prefix,omitempty"`
+	Keys     [][]byte `json:"keys,omitempty"`
+	DryRun   bool     `json:"dry_run,omitempty"`
+	Force    bool     `json:"force,omitempty"`
+}
+
+// restoreKeyChangeResponse is the JSON representation of one restore plan
+// entry. Key is []byte for the same binary-safety reason as
+// restoreRevisionRequest.
+type restoreKeyChangeResponse struct {
+	Key          []byte                `json:"key"`
+	Action       service.RestoreAction `json:"action"`
+	FromRevision int64                 `json:"from_revision,omitempty"`
+	ToRevision   int64                 `json:"to_revision,omitempty"`
+	ValueBytes   int64                 `json:"value_bytes,omitempty"`
+}
+
+// restoreRevisionResponse is the JSON payload returned by POST /kv/restore.
+type restoreRevisionResponse struct {
+	Revision   int64                      `json:"revision"`
+	Changes    []restoreKeyChangeResponse `json:"changes"`
+	Conflicts  []restoreKeyChangeResponse `json:"conflicts,omitempty"`
+	Applied    int                        `json:"applied"`
+	Skipped    int                        `json:"skipped"`
+	Conflicted int                        `json:"conflicted"`
+	DryRun     bool                       `json:"dry_run"`
+}
+
 // ---------------------------------------------------------------------------
 // Range handler
 // ---------------------------------------------------------------------------
@@ -122,12 +157,12 @@ func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var kvs []*service.KeyValue
-	var count int64
+	var count, revision int64
 	var err error
 	if consistSpecified {
-		kvs, count, err = mvccSvc.RangeWithConsistency(ctx, start, end, consistOpts, opts...)
+		kvs, count, revision, err = mvccSvc.RangeWithConsistency(ctx, start, end, consistOpts, opts...)
 	} else {
-		kvs, count, err = mvccSvc.Range(ctx, start, end, opts...)
+		kvs, count, revision, err = mvccSvc.Range(ctx, start, end, opts...)
 	}
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
@@ -135,8 +170,9 @@ func (s *Server) handleRange(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, rangeResponse{
-		Kvs:   kvsToResponse(kvs),
-		Count: count,
+		Kvs:      kvsToResponse(kvs),
+		Count:    count,
+		Revision: revision,
 	})
 }
 
@@ -192,6 +228,86 @@ func (s *Server) handleCurrentRevision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, revisionResponse{Revision: rev})
+}
+
+// ---------------------------------------------------------------------------
+// Restore handler
+// ---------------------------------------------------------------------------
+
+// handleRestoreToRevision handles POST /kv/restore -- returns a bounded set
+// of keys to the value they held at an earlier MVCC revision by proposing
+// new writes (a logical undo, never a Raft rewind). Exactly one of the
+// request's prefix and keys must be set.
+func (s *Server) handleRestoreToRevision(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	mvccSvc := s.mvccSvcFor(w, ctx)
+	if mvccSvc == nil {
+		if s.serviceRegistry == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "mvcc"})
+		}
+		return
+	}
+
+	var req restoreRevisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+
+	keys := make([]string, len(req.Keys))
+	for i, k := range req.Keys {
+		keys[i] = string(k)
+	}
+
+	result, err := mvccSvc.RestoreToRevision(ctx, &service.RestoreRevisionRequest{
+		Revision: req.Revision,
+		Prefix:   string(req.Prefix),
+		Keys:     keys,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	})
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	writeJSON(w, restoreResultToResponse(result))
+}
+
+// restoreChangeToResponse converts a service RestoreKeyChange to its JSON
+// response representation.
+func restoreChangeToResponse(c service.RestoreKeyChange) restoreKeyChangeResponse {
+	return restoreKeyChangeResponse{
+		Key:          []byte(c.Key),
+		Action:       c.Action,
+		FromRevision: c.FromRevision,
+		ToRevision:   c.ToRevision,
+		ValueBytes:   c.ValueBytes,
+	}
+}
+
+// restoreChangesToResponse converts a slice of service RestoreKeyChange to
+// their JSON response representation.
+func restoreChangesToResponse(changes []service.RestoreKeyChange) []restoreKeyChangeResponse {
+	out := make([]restoreKeyChangeResponse, len(changes))
+	for i, c := range changes {
+		out[i] = restoreChangeToResponse(c)
+	}
+	return out
+}
+
+// restoreResultToResponse converts a service RestoreRevisionResult to its
+// JSON response representation.
+func restoreResultToResponse(result *service.RestoreRevisionResult) restoreRevisionResponse {
+	return restoreRevisionResponse{
+		Revision:   result.Revision,
+		Changes:    restoreChangesToResponse(result.Changes),
+		Conflicts:  restoreChangesToResponse(result.Conflicts),
+		Applied:    result.Applied,
+		Skipped:    result.Skipped,
+		Conflicted: result.Conflicted,
+		DryRun:     result.DryRun,
+	}
 }
 
 // ---------------------------------------------------------------------------

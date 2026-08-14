@@ -40,7 +40,7 @@ func TestStartMySQL_Success(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startMySQL(srv); err != nil {
 		t.Fatalf("startMySQL failed: %v", err)
@@ -82,7 +82,7 @@ func TestStartMySQL_Failure_PortOccupied(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startMySQL(srv); err == nil {
 		stopMySQL(srv)
@@ -128,7 +128,7 @@ func TestStartMySQL_EmptyDefaultDatabase(t *testing.T) {
 	// SQL.DefaultDatabase is empty, so WithDatabaseName should not be called.
 	cfg.SQL = config.SQLConfig{}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startMySQL(srv); err != nil {
 		t.Fatalf("startMySQL failed: %v", err)
@@ -164,7 +164,7 @@ func TestStopMySQL_ActiveServer(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startMySQL(srv); err != nil {
 		t.Fatalf("startMySQL failed: %v", err)
@@ -229,7 +229,7 @@ func TestStartMySQL_WithoutDatabaseManager(t *testing.T) {
 	}
 
 	// No WithDatabaseManager: legacy single-database mode.
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := startMySQL(srv); err != nil {
 		t.Fatalf("startMySQL without dbManager failed: %v", err)
@@ -248,6 +248,54 @@ func TestStartMySQL_WithoutDatabaseManager(t *testing.T) {
 // Full orchestration: Start() with MySQL through function pointer
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// startMySQL: registry / collection / index wiring (Phase 9a)
+//
+// These pin the isolation-closing wiring at the orchestration layer: when
+// the server has a database service registry, a CollectionServicer, and/or
+// an IndexServicer configured, startMySQL must thread all three into the
+// mysql.Server it builds (mysqlapi.WithServiceRegistry/WithCollectionService/
+// WithIndex) rather than only wiring kvSvc/adminSvc as before. The deeper
+// proof that the registry/collection/index options actually reach the
+// served provider lives in pkg/sql/mysql's own test suite; this is the
+// orchestration-layer plumbing check.
+// ---------------------------------------------------------------------------
+
+func TestStartMySQL_WithServiceRegistryCollectionIndex(t *testing.T) {
+	cfg := testConfig(false, false)
+	cfg.Protocols.MySQL = true
+	cfg.Server.MySQLPort = 0
+	cfg.SQL = config.SQLConfig{
+		DefaultDatabase: "testdb",
+		MaxConnections:  10,
+		QueryTimeout:    "5s",
+	}
+
+	dbRegistry := &DatabaseServiceRegistry{}
+	collectionSvc := &stubCollectionService{}
+	indexSvc := &stubIndexService{}
+
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithCeremonyCA(testServerCA),
+		WithDatabaseServiceRegistry(dbRegistry),
+		WithCollectionService(collectionSvc),
+		WithIndex(indexSvc),
+	)
+
+	if err := startMySQL(srv); err != nil {
+		t.Fatalf("startMySQL with registry/collection/index failed: %v", err)
+	}
+	defer stopMySQL(srv)
+
+	if srv.mysqlSrv == nil {
+		t.Fatal("expected mysqlSrv to be set")
+	}
+	addr := srv.mysqlSrv.Addr()
+	if addr == "" {
+		t.Fatal("expected non-empty Addr from MySQL server")
+	}
+}
+
 func TestStart_MySQLViaOrchestrator(t *testing.T) {
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = true
@@ -258,7 +306,7 @@ func TestStart_MySQLViaOrchestrator(t *testing.T) {
 		QueryTimeout:    "5s",
 	}
 
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)

@@ -20,6 +20,7 @@ package unix
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"testing"
 	"time"
@@ -53,8 +54,6 @@ func (m *mockCeremonySvc) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		SPKIPin:    "spki-pin",
 		CACertPEM:  []byte("ca-pem"),
 		TLSCertPEM: []byte("tls-pem"),
-		SOCertPEM:  []byte("so-pem"),
-		SOKeyPEM:   []byte("so-key-pem"),
 		State:      "initialized",
 		ShareCount: 3,
 	}, nil
@@ -74,11 +73,24 @@ func (m *mockCeremonySvc) CeremonyCompleteClaimCert(ctx context.Context, usernam
 	return &service.CeremonyClaimCertResult{CertPEM: []byte("officer-cert-pem")}, nil
 }
 
-func (m *mockCeremonySvc) CeremonyClaimShare(ctx context.Context, username string) ([]byte, error) {
+func (m *mockCeremonySvc) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
 	if m.claimShareFn != nil {
-		return m.claimShareFn(ctx, username)
+		if _, err := m.claimShareFn(ctx, username); err != nil {
+			return nil, err
+		}
 	}
-	return []byte("share-bytes"), nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (m *mockCeremonySvc) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareFn != nil {
+		share, err := m.claimShareFn(ctx, username)
+		if err != nil {
+			return nil, err
+		}
+		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("share-bytes")}, nil
 }
 
 func (m *mockCeremonySvc) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
@@ -120,9 +132,24 @@ var _ service.CeremonyServicer = (*mockCeremonySvc)(nil)
 // Ceremony round-trips
 // ---------------------------------------------------------------------------
 
+// stubCeremonyCA is a non-nil CeremonyCA placeholder. CeremonyInitialize's
+// handler requires a configured CA (fail-closed since #54's nil-guard) before
+// delegating to the servicer; the mock servicer ignores the CA argument, so
+// these stub methods are never invoked.
+type stubCeremonyCA struct{}
+
+func (stubCeremonyCA) SignCSR(context.Context, []byte, *ceremony.SignCSROptions) (*x509.Certificate, error) {
+	return nil, nil
+}
+func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
+func (stubCeremonyCA) CABundle() ([]byte, error)                 { return nil, nil }
+func (stubCeremonyCA) IssueCertificate(context.Context, *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+	return nil, nil
+}
+
 func TestUnixRT_CeremonyInitialize(t *testing.T) {
 	svc := &mockCeremonySvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
+	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc), unixserver.WithCeremonyCA(stubCeremonyCA{}))
 	defer cleanup()
 
 	resp, err := tr.CeremonyInitialize(context.Background(), &transport.CeremonyInitializeRequest{
@@ -191,19 +218,28 @@ func TestUnixRT_CeremonyClaimCertComplete(t *testing.T) {
 	}
 }
 
-func TestUnixRT_CeremonyClaimShare(t *testing.T) {
+// TestUnixRT_CeremonyClaimShare_RequiresClientCert proves the share claim is
+// refused over a unix-socket session that carries no mTLS peer certificate,
+// and that the refusal carries no share material.
+func TestUnixRT_CeremonyClaimShare_RequiresClientCert(t *testing.T) {
 	svc := &mockCeremonySvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithCeremonyService(svc))
 	defer cleanup()
 
-	resp, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{
+	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{
 		Username: "officer1",
-	})
-	if err != nil {
-		t.Fatalf("CeremonyClaimShare: %v", err)
+	}); err == nil {
+		t.Fatal("expected refusal without a client certificate")
 	}
-	if resp.ShareJSON != "share-bytes" {
-		t.Errorf("got ShareJSON=%q", resp.ShareJSON)
+
+	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{
+		Username: "officer1", NonceHex: "abcd", Signature: []byte("sig"),
+	})
+	if err == nil {
+		t.Fatal("expected refusal without a client certificate")
+	}
+	if resp != nil {
+		t.Fatalf("share material leaked on refusal: %#v", resp)
 	}
 }
 

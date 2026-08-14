@@ -79,7 +79,7 @@ func (it *fileIterator) load(e *Engine) {
 		if relErr != nil {
 			return nil
 		}
-		key := []byte(filepath.ToSlash(rel))
+		key := decodePathToKey(filepath.ToSlash(rel))
 		if len(it.opts.LowerBound) > 0 && bytes.Compare(key, it.opts.LowerBound) < 0 {
 			return nil
 		}

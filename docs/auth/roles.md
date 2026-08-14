@@ -45,9 +45,9 @@ The SO performs all module initialization, administrative lifecycle operations, 
 - Access audit logs for operational oversight
 - Emergency unlock via root token (reconstruction)
 
-**Key constraint:** The SO role **cannot** call `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, or `keys:wrap`. This is enforced at the RBAC layer with explicit deny-list checks per FIPS 140-3 AS10.03. Even if an SO role is erroneously granted crypto permissions, the authorizer rejects the request (defense-in-depth).
+**Key constraint:** The SO role **cannot** perform a cryptographic operation. That is not a `keys:*` rule: it covers every permission declared `DutyCryptoUse` (`keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`) and every resource whose action names a cryptographic primitive (`sign`, `encrypt`, `decrypt`, `wrap`, `unwrap`, `derive`, `kdf`, `mac`, `hmac`, `attest`, `quote`) -- including resources contributed by a higher layer, such as go-quicbaas's `attestation:attest`, which extends a PCR on the host TPM and returns a signed quote. Enforcement is dual-layer per FIPS 140-3 AS10.03: `permission.RegisterRoleGrant` refuses the **grant** at registration time, and the RBAC deny-list refuses the **request** at authorization time even if a grant reached a role by some other path (defense-in-depth). See [../permissions/README.md](../permissions/README.md#structural-separation-of-duties-enforcement-fips-140-3-as1003).
 
-**Authorization:** Permission prefix `so:*` and explicit `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` for management. **Denied** prefixes: `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`.
+**Authorization:** SO is granted seal:* (all seal operations including bootstrap, unseal, seal, status, rotate_root_key, rekey, generate recovery keys, recover_with_keys, initialize_shamir, officer_register, officer_list, submit_seal_vote), certs:* (generate, export, revoke, list, read), roles:* (create, read, update, delete, list, assign, unassign), users:* (create, read, update, delete, list, enable, disable), ceremony:* (initialize, enroll_custodian, revoke_custodian, claim_cert, sign_csr, status), ca:* (create, read, list, update), acme:* (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), audit:read, audit:query, admin:* (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), backends:* (list, read), pin:* (read, write), piv:* (read, write, delete), authfactor:* (enroll, list, revoke). **Denied**: every cryptographic operation -- `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any `resource:action` whose action is a cryptographic primitive. Note that `seal:unseal`, `seal:seal`, `seal:rekey`, `ceremony:sign_csr` and `certs:generate` are cryptographic by mechanism but are granted to the SO on purpose: they are module lifecycle and issuance governance, the duties FIPS 140-3 assigns to the Security Officer, not use of a key on a requester's behalf.
 
 ### Admin
 
@@ -63,7 +63,7 @@ Admins manage operational keys and certificates but cannot initialize or re-init
 - Perform backups and replication
 - Access audit logs for operational oversight
 
-**Authorization:** `keys:*` (except `keys:delete` on infrastructure keys), `certificate:*`, `tenant:*`, `backup:*`, `audit:read`.
+**Authorization:** `keys:*` (create, rotate, delete, wrap, unwrap, import, export, list, get), `certs:*` (generate, export, revoke, list, read), `tenants:*` (create, read, update, delete, list, set_isolation, set_entitlements), `admin:* ` (health, status, peers, add_member, remove_member, snapshot, drain, capabilities), `audit:read`, `audit:query`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*` (init, unseal, seal, officer_register, officer_list), `backends:*` (list, read), `pin:*` (read, write), `piv:*` (read, write, delete), `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:*` (create, read, update, delete, list, enable, disable), `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `mvcc:restore`, `ca:*` (create, read, list, update), `acme:*` (accounts_read, accounts_list, accounts_disable, orders_read, orders_list, eab_read, eab_list, eab_create, eab_delete), `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `credentials:*`.
 
 ### Operator
 
@@ -78,7 +78,7 @@ Operators perform routine key operations and maintenance. They can use keys and 
 - Query key metadata
 - Access audit logs
 
-**Authorization:** `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read`.
+**Authorization:** `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*` (put, get, delete, list, exists, range), `mvcc:*` (put_with_lease, get_revision, get_at_revision, range, compact, current_revision, restore), `transaction:execute`, `batch:execute`, `watch:*` (watch, watch_prefix), `lease:*` (grant, revoke, keepalive, ttl, list), `index:*` (create, drop, query, scan), `timeseries:*` (write, write_batch, query, aggregate), `vector:*` (namespace_create, namespace_delete, namespace_list, namespace_info, upsert, get, delete, batch_upsert, batch_delete, list, update_metadata, search_similar, search_by_metadata, hybrid_search, search_by_id, rebuild_index, get_rebuild_progress, get_index_stats, compact, get_compaction_progress), `admin:health`, `admin:status`, `backends:*` (list, read), `pin:read`, `piv:read`, `piv:use`, `passwords:*` (read, write, delete, generate, lock, unlock), `ssh:*` (read, write, delete), `users:list`, `roles:list`, `permissions:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, broker data-plane families (objstore, orchestrator, scheduler, messaging, parameters, dynamic_secrets, project, ollama).
 
 ### User
 
@@ -106,7 +106,7 @@ Auditors have read-only access to audit logs, system state, and configuration. T
 - Query system health and metrics
 - List users, roles, keys, certificates (metadata only)
 
-**Authorization:** `audit:read`, `system:read`, with no write/delete permissions.
+**Authorization:** `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, and orchestrator read-only verbs (status, list, task_read, task_list, job_read, job_list, workflow_read, agent_read, agent_list, backend_list, health). No write/delete permissions.
 
 **Guarantee:** Auditor role has no capability to delete or modify audit events. Audit trail integrity is enforced at the storage layer.
 
@@ -143,7 +143,7 @@ BARRIER OPERATIONS
   Rekey shares                          YES   --     --        --    --       --
   Generate recovery keys                YES   --     --        --    --       --
   Recover with recovery keys            YES   YES    --        --    --       --
-  Barrier status                        YES   YES    YES       --    YES      --
+  Barrier status                        YES   YES    YES       --    --       --
 
 CEREMONY OPERATIONS
   Initialize ceremony                   YES   --     --        --    --       --
@@ -173,14 +173,14 @@ CRYPTO OPERATIONS (SO explicitly denied)
   Verify signature                      ✗✗   --     YES       YES   --       --
   Encrypt data                          ✗✗   --     YES       YES   --       --
   Decrypt data                          ✗✗   --     YES       YES   --       --
-  Wrap/unwrap keys                      ✗✗   YES    YES       --    --       --
+  Wrap/unwrap keys                      ✗✗   YES    --        --    --       --
 
 CERTIFICATE MANAGEMENT
   Create CA                             YES   --     --        --    --       --
   Issue certificates                    YES   YES    --        --    --       --
   Revoke certificates                   YES   YES    --        --    --       --
-  Store/delete certificates             YES   YES    YES       --    --       --
-  List certificates                     --    YES    YES       YES   YES      --
+  Store/delete certificates             YES   YES    --        --    --       --
+  List certificates                     YES   YES    --        --    YES      --
 
 TENANT MANAGEMENT
   Create/delete tenants                 YES   YES    --        --    --       --
@@ -199,7 +199,7 @@ ROLE & USER MANAGEMENT
   List roles                            YES   YES    YES       --    YES      --
 
 AUDIT & MONITORING
-  Query audit events                    --    --     --        --    YES      --
+  Query audit events                    YES   YES    --        --    YES      --
   View system health                    YES   YES    YES       YES   YES      --
   View metrics                          YES   YES    YES       --    YES      --
 
@@ -263,7 +263,10 @@ This is the fundamental constraint. The SO manages the module lifecycle and key 
 - A compromised SO credential from being used for unauthorized cryptographic operations
 - Accidental misuse of administrative credentials for user-level operations
 
-Enforcement is **dual-layer**: RBAC denies the permission at request-time, and the service layer re-validates with an explicit deny-list check.
+Enforcement is **dual-layer**, and both layers are structural:
+
+1. **Registration time** -- `permission.RegisterRoleGrant` panics if the `so` role is granted a cryptographic permission (`SoDViolationError`), a permission whose separated duty nobody declared (`UndeclaredDutyError`), or a whole-segment wildcard (`WildcardGrantError`). The invariant cannot be violated by adding a bad grant, and cannot be side-stepped by adding an unclassified one -- from qrdb or from a higher layer through the `sdk/go` re-export.
+2. **Request time** -- the RBAC deny-list (`soDeniedActions` + `soDeniedCryptoVerbs` in `pkg/auth/rbac/rbac.go`) rejects the request before permissions are resolved, so a grant that reached a role by another path (a hand-authored custom role named `so`, or a role store written by an earlier build) is still denied. The two mechanisms are independent implementations -- the request-time one classifies the `resource:action` itself and never consults the duty registry -- and a test proves they agree in both directions.
 
 ### Custodians Have Minimal Access (FIPS 140-3 AS10.06)
 
@@ -275,11 +278,15 @@ Custodians can only submit Shamir shares during unseal. They cannot view keys, c
 
 ### Auditors Are Read-Only (FIPS 140-3 AS10.10)
 
-Auditors can observe but not modify. This ensures audit trail integrity — an auditor cannot cover their tracks by deleting logs or modifying system state. Enforced via permission grants and RBAC deny-all-writes policy.
+Auditors can observe but not modify. This ensures audit trail integrity — an auditor cannot cover their tracks by deleting logs or modifying system state.
+
+**Enforcement:** by the composition of the auditor grant list only (`registerAuditorGrants` in `pkg/permission/builtin_role_grants.go` lists read-only verbs, and the golden-set drift guard in `pkg/role/builtin_grants_equivalence_test.go` fails if it changes). There is **no** structural deny-all-writes rule for the auditor role: unlike the SO constraint above, nothing panics if a future contributor adds a write permission to the auditor role — the drift guard turns it into a deliberate review item rather than an impossibility. Add a structural guard here before relying on AS10.10 as an enforced invariant rather than a maintained one.
 
 ### Key Deletion Requires SO (FIPS 140-3 AS10.03)
 
-Only the SO can delete arbitrary keys (infrastructure keys). Admins and Operators can delete keys they created. This prevents accidental or malicious destruction of critical keys by lower-privilege users.
+`keys:delete` is granted to the SO and to Admin, and to no other built-in role — an Operator can rotate a key but not destroy one, and User and Auditor cannot either. This limits destruction of critical keys to the two governance roles.
+
+**Enforcement:** by the grant alone. `keys:delete` is a coarse permission: qrdb has no per-key ownership model, so there is no "delete only keys you created" check anywhere in this repo, and the key service that consumes the `keys:*` vocabulary lives in go-xkms. Treat this as a role-level constraint, not an object-level one.
 
 ### Split Knowledge for Unseal (FIPS 140-3 AS10.05, AS10.06)
 
@@ -308,11 +315,11 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 
 | Role | RBAC Permissions | Key Differences |
 |------|------------------|-----------------|
-| SO | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` | Explicitly **denied** `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`. Dual-factor auth. |
-| Admin | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | No barrier init, no SO PIN reset. |
-| Operator | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | No key creation/deletion, no SO operations. |
-| User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Minimal: crypto-only. No key metadata beyond public fields. |
-| Auditor | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere. |
+| SO | `seal:*`, `certs:*`, `roles:*`, `users:*`, `ceremony:*`, `ca:*`, `acme:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:read/write/delete`, `authfactor:enroll/list/revoke`, `keys:create/rotate/delete/list/get/import/export` | Explicitly **denied** every cryptographic operation: `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `keys:wrap`, `keys:unwrap`, `keys:derive`, `piv:use`, and any action naming a cryptographic primitive. Dual-factor auth. |
+| Admin | `keys:*`, `certs:*`, `tenants:*`, `seal:unseal`, `seal:seal`, `seal:status`, `seal:recover_with_keys`, `ceremony:status`, `tenant_barrier:*`, `audit:read`, `audit:query`, `admin:*`, `backends:*`, `pin:*`, `piv:*`, `passwords:*`, `ssh:*`, `users:*`, `roles:read`, `roles:list`, `roles:assign`, `roles:unassign`, `permissions:list`, `ca:*`, `acme:*`, `credentials:*`, `secrets:*`, `trust:*`, `volumepool:*`, `registrationconfig:*`, `mvcc:restore` | No barrier init, no SO PIN reset. No `backup:*` (cluster backup/restore is granted to no built-in role). `mvcc:restore` — selective point-in-time restore of a bounded key set — is Admin's only data-plane verb; it holds no other `kv:*`/`mvcc:*` permission. |
+| Operator | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:rotate`, `keys:derive`, `keys:list`, `keys:get`, `seal:unseal`, `seal:seal`, `seal:status`, `ceremony:status`, `audit:read`, `kv:*`, `mvcc:*`, `transaction:execute`, `batch:execute`, `watch:*`, `lease:*`, `index:*`, `timeseries:*`, `vector:*`, `admin:health`, `admin:status`, `backends:*`, `pin:read`, `piv:read`, `piv:use`, `passwords:*`, `ssh:*`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list` | No key creation/deletion, no SO operations. No wrap/unwrap. No certs operations. No admin/governance verbs. |
+| User | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt`, `keys:derive`, `keys:list`, `keys:get`, `admin:health`, `admin:status` | Minimal: crypto-only. No key creation/deletion/rotation. No administrative operations. |
+| Auditor | `audit:read`, `audit:query`, `audit:stream`, `admin:health`, `admin:status`, `admin:peers`, `users:list`, `users:read`, `roles:list`, `roles:read`, `permissions:list`, `certs:list`, `certs:read`, `backends:list`, `backends:read`, `pin:read`, `piv:read`, `passwords:read`, `tenants:list`, `tenants:read`, `keys:list`, `keys:get`, `ceremony:status`, `authfactor:list`, `ca:read`, `ca:list`, `acme:accounts_read`, `acme:accounts_list`, `acme:orders_read`, `acme:orders_list`, `acme:eab_read`, `acme:eab_list`, orchestrator read-only perms | Read-only everywhere. No seal:status. No write/delete permissions. |
 | Custodian | `barrier:unseal-share` | Single permission. Everything else denied. |
 
 ## Bootstrap and Role Lifecycle
@@ -330,7 +337,7 @@ See [bootstrap.md](../bootstrap.md) for the full bootstrap sequence.
 
 ### Role Assignment and Revocation
 
-Roles are assigned to users via `pkg/auth/user.go` role assignment (many-to-many: a user can hold multiple roles). Only SO and Admin can create/delete/modify roles and user-role assignments.
+Roles are assigned to users via `pkg/user/` role assignment (many-to-many: a user can hold multiple roles). Only SO and Admin can create/delete/modify roles and user-role assignments.
 
 ## Compliance Mapping
 

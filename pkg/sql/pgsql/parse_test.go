@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dolthub/go-mysql-server/sql"
 	sqltypes "github.com/dolthub/go-mysql-server/sql/types"
@@ -276,13 +278,16 @@ func TestFormatValue(t *testing.T) {
 func TestIsNoopStatement(t *testing.T) {
 	h := newTestParseHandler(t)
 
-	t.Run("exact matches", func(t *testing.T) {
-		assert.True(t, h.isNoopStatement("BEGIN"))
-		assert.True(t, h.isNoopStatement("COMMIT"))
-		assert.True(t, h.isNoopStatement("ROLLBACK"))
-		assert.True(t, h.isNoopStatement("END"))
-		assert.True(t, h.isNoopStatement("BEGIN;"))
-		assert.True(t, h.isNoopStatement("COMMIT; "))
+	t.Run("transaction control is NOT a no-op", func(t *testing.T) {
+		// BEGIN/COMMIT/ROLLBACK/END now route through to the engine (see
+		// QRDBSession's sql.TransactionSession implementation) instead of
+		// being silently swallowed as no-ops.
+		assert.False(t, h.isNoopStatement("BEGIN"))
+		assert.False(t, h.isNoopStatement("COMMIT"))
+		assert.False(t, h.isNoopStatement("ROLLBACK"))
+		assert.False(t, h.isNoopStatement("END"))
+		assert.False(t, h.isNoopStatement("BEGIN;"))
+		assert.False(t, h.isNoopStatement("COMMIT; "))
 	})
 
 	t.Run("prefix matches", func(t *testing.T) {
@@ -324,6 +329,20 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 		m.scanData[key] = value
 	}
 	return nil
+}
+
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	if m.scanData == nil {
+		return true, nil
+	}
+	if _, exists := m.scanData[key]; exists {
+		return false, nil
+	}
+	m.scanData[key] = value
+	return true, nil
 }
 
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
@@ -422,7 +441,7 @@ func TestCollectRows_IterNextError(t *testing.T) {
 	}
 	sqlCtx := sql.NewContext(context.Background())
 
-	rows, err := collectRows(sqlCtx, iter)
+	rows, err := collectRows(sqlCtx, nil, iter)
 	require.Error(t, err)
 	assert.Equal(t, iterErr, err)
 	assert.Nil(t, rows)
@@ -438,7 +457,7 @@ func TestCollectRows_IterNextErrorImmediate(t *testing.T) {
 	}
 	sqlCtx := sql.NewContext(context.Background())
 
-	rows, err := collectRows(sqlCtx, iter)
+	rows, err := collectRows(sqlCtx, nil, iter)
 	require.Error(t, err)
 	assert.Equal(t, iterErr, err)
 	assert.Nil(t, rows)
@@ -475,7 +494,7 @@ func (m *mockRowIter) Close(_ *sql.Context) error {
 func TestCollectRows_Empty(t *testing.T) {
 	sqlCtx := sql.NewContext(context.Background())
 	iter := sql.RowsToRowIter()
-	result, err := collectRows(sqlCtx, iter)
+	result, err := collectRows(sqlCtx, nil, iter)
 	require.NoError(t, err)
 	assert.False(t, result.isDML)
 	assert.Empty(t, result.rows)
@@ -487,7 +506,7 @@ func TestCollectRows_WithData(t *testing.T) {
 		sql.Row{"key1", []byte("value1")},
 		sql.Row{"key2", []byte("value2")},
 	)
-	result, err := collectRows(sqlCtx, iter)
+	result, err := collectRows(sqlCtx, nil, iter)
 	require.NoError(t, err)
 	assert.False(t, result.isDML)
 	assert.Len(t, result.rows, 2)
@@ -502,7 +521,7 @@ func TestCollectRows_NilValues(t *testing.T) {
 	iter := sql.RowsToRowIter(
 		sql.Row{"key1", nil},
 	)
-	result, err := collectRows(sqlCtx, iter)
+	result, err := collectRows(sqlCtx, nil, iter)
 	require.NoError(t, err)
 	assert.Len(t, result.rows, 1)
 	assert.Nil(t, result.rows[0][1])
@@ -513,7 +532,7 @@ func TestCollectRows_OkResult(t *testing.T) {
 	iter := sql.RowsToRowIter(
 		sql.Row{sqltypes.OkResult{RowsAffected: 5}},
 	)
-	result, err := collectRows(sqlCtx, iter)
+	result, err := collectRows(sqlCtx, nil, iter)
 	require.NoError(t, err)
 	assert.True(t, result.isDML)
 	assert.Equal(t, uint64(5), result.rowsAffected)
@@ -663,7 +682,7 @@ func TestParametersToBindings_Success(t *testing.T) {
 		params := []wire.Parameter{
 			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("hello")),
 		}
-		bindings, err := parametersToBindings(params)
+		bindings, err := parametersToBindings(params, nil)
 		require.NoError(t, err)
 		require.Len(t, bindings, 1)
 		assert.NotNil(t, bindings["v1"])
@@ -674,7 +693,7 @@ func TestParametersToBindings_Success(t *testing.T) {
 			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("hello")),
 			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("world")),
 		}
-		bindings, err := parametersToBindings(params)
+		bindings, err := parametersToBindings(params, nil)
 		require.NoError(t, err)
 		require.Len(t, bindings, 2)
 		assert.NotNil(t, bindings["v1"])
@@ -686,7 +705,7 @@ func TestParametersToBindings_NilValue(t *testing.T) {
 	params := []wire.Parameter{
 		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, nil),
 	}
-	bindings, err := parametersToBindings(params)
+	bindings, err := parametersToBindings(params, nil)
 	require.NoError(t, err)
 	require.Len(t, bindings, 1)
 
@@ -694,10 +713,239 @@ func TestParametersToBindings_NilValue(t *testing.T) {
 	assert.True(t, ok, "nil parameter value should produce *sqlparser.NullVal")
 }
 
+// TestParametersToBindings_NilValue_ResolvedOIDIgnored verifies the NULL
+// check happens before a resolved OID is ever used to call Scan: a NULL
+// wire value must always bind to NullVal, even when the position has a
+// real, non-zero declared OID.
+func TestParametersToBindings_NilValue_ResolvedOIDIgnored(t *testing.T) {
+	params := []wire.Parameter{
+		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, nil),
+	}
+	bindings, err := parametersToBindings(params, []uint32{pgtype.Int8OID})
+	require.NoError(t, err)
+	_, ok := bindings["v1"].(*sqlparser.NullVal)
+	assert.True(t, ok)
+}
+
 func TestParametersToBindings_Empty(t *testing.T) {
-	bindings, err := parametersToBindings([]wire.Parameter{})
+	bindings, err := parametersToBindings([]wire.Parameter{}, nil)
 	require.NoError(t, err)
 	assert.Empty(t, bindings)
+}
+
+// TestParametersToBindings_TypeAware covers the resolved-OID decode path
+// for every PostgreSQL type paramOIDForColumn can declare. Each value is
+// decoded through pgtype's own codec for the given OID and dispatched to
+// the matching sqlparser bind expression by paramExpr -- in particular
+// bytea, which must round-trip as a hex literal (binary) rather than a
+// string literal, the corruption decodeBytea used to work around after
+// the fact instead of preventing.
+func TestParametersToBindings_TypeAware(t *testing.T) {
+	tests := []struct {
+		name   string
+		oid    uint32
+		value  []byte
+		assert func(t *testing.T, expr sqlparser.Expr)
+	}{
+		{
+			name:  "int8",
+			oid:   pgtype.Int8OID,
+			value: []byte("42"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.IntVal, v.Type)
+				assert.Equal(t, "42", string(v.Val))
+			},
+		},
+		{
+			name:  "float8",
+			oid:   pgtype.Float8OID,
+			value: []byte("3.14"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.FloatVal, v.Type)
+				assert.Equal(t, "3.14", string(v.Val))
+			},
+		},
+		{
+			name:  "bool_true",
+			oid:   pgtype.BoolOID,
+			value: []byte("t"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.IntVal, v.Type)
+				assert.Equal(t, "1", string(v.Val))
+			},
+		},
+		{
+			name:  "bool_false",
+			oid:   pgtype.BoolOID,
+			value: []byte("f"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.IntVal, v.Type)
+				assert.Equal(t, "0", string(v.Val))
+			},
+		},
+		{
+			name:  "text",
+			oid:   pgtype.TextOID,
+			value: []byte("hello"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.StrVal, v.Type)
+				assert.Equal(t, "hello", string(v.Val))
+			},
+		},
+		{
+			// Non-UTF-8 binary content, which is exactly what corrupted
+			// under the old decodeBytea + string-literal path: a string
+			// literal is reinterpreted under the connection charset, but a
+			// hex literal is typed as binary and passes through untouched.
+			name:  "bytea_non_utf8",
+			oid:   pgtype.ByteaOID,
+			value: []byte("\\x00ff8041"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.HexVal, v.Type)
+				decoded, err := v.HexDecode()
+				require.NoError(t, err)
+				assert.Equal(t, []byte{0x00, 0xff, 0x80, 0x41}, decoded)
+			},
+		},
+		{
+			name:  "timestamptz",
+			oid:   pgtype.TimestamptzOID,
+			value: []byte("2024-01-02 15:04:05+00"),
+			assert: func(t *testing.T, expr sqlparser.Expr) {
+				v, ok := expr.(*sqlparser.SQLVal)
+				require.True(t, ok)
+				assert.Equal(t, sqlparser.StrVal, v.Type)
+				assert.Equal(t, "2024-01-02 15:04:05", string(v.Val))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := []wire.Parameter{
+				wire.NewParameter(pgtype.NewMap(), wire.TextFormat, tt.value),
+			}
+			bindings, err := parametersToBindings(params, []uint32{tt.oid})
+			require.NoError(t, err)
+			tt.assert(t, bindings["v1"])
+		})
+	}
+}
+
+// TestParametersToBindings_UnresolvedOIDFallsBackToStringLiteral verifies
+// that a parameter position with no resolved OID (oid 0, or the oids
+// slice shorter than the parameter list) falls back to the pre-existing
+// string-literal binding, exactly as it did before OID-based type
+// awareness was added.
+func TestParametersToBindings_UnresolvedOIDFallsBackToStringLiteral(t *testing.T) {
+	t.Run("zero OID", func(t *testing.T) {
+		params := []wire.Parameter{
+			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("42")),
+		}
+		bindings, err := parametersToBindings(params, []uint32{0})
+		require.NoError(t, err)
+		v, ok := bindings["v1"].(*sqlparser.SQLVal)
+		require.True(t, ok)
+		assert.Equal(t, sqlparser.StrVal, v.Type)
+		assert.Equal(t, "42", string(v.Val))
+	})
+
+	t.Run("oids shorter than parameters", func(t *testing.T) {
+		params := []wire.Parameter{
+			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("a")),
+			wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("b")),
+		}
+		bindings, err := parametersToBindings(params, []uint32{pgtype.TextOID})
+		require.NoError(t, err)
+		_, ok := bindings["v2"].(*sqlparser.SQLVal)
+		require.True(t, ok)
+		assert.Equal(t, sqlparser.StrVal, bindings["v2"].(*sqlparser.SQLVal).Type)
+	})
+}
+
+// TestParametersToBindings_ScanError verifies a value that cannot be
+// decoded under its declared OID produces a typed *ParameterBindingError
+// instead of silently falling back or panicking.
+func TestParametersToBindings_ScanError(t *testing.T) {
+	params := []wire.Parameter{
+		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("not-a-number")),
+	}
+	bindings, err := parametersToBindings(params, []uint32{pgtype.Int8OID})
+	require.Error(t, err)
+	assert.Nil(t, bindings)
+
+	var pbe *ParameterBindingError
+	require.ErrorAs(t, err, &pbe)
+	assert.Equal(t, 0, pbe.Index)
+}
+
+func TestParamExpr(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  func(t *testing.T, expr sqlparser.Expr)
+	}{
+		{"bool true", true, func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "1", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"bool false", false, func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "0", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"int16", int16(7), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "7", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"int32", int32(8), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "8", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"int64", int64(9), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "9", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"float32", float32(1.5), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "1.5", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"float64", float64(2.5), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "2.5", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"string", "hi", func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "hi", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+		{"bytes", []byte{0xde, 0xad}, func(t *testing.T, expr sqlparser.Expr) {
+			decoded, err := expr.(*sqlparser.SQLVal).HexDecode()
+			require.NoError(t, err)
+			assert.Equal(t, []byte{0xde, 0xad}, decoded)
+		}},
+		{"time", time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC), func(t *testing.T, expr sqlparser.Expr) {
+			assert.Equal(t, "2024-01-02 03:04:05", string(expr.(*sqlparser.SQLVal).Val))
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expr, err := paramExpr(tt.value)
+			require.NoError(t, err)
+			tt.want(t, expr)
+		})
+	}
+}
+
+func TestParamExpr_UnsupportedType(t *testing.T) {
+	_, err := paramExpr(struct{}{})
+	require.Error(t, err)
+
+	var upte *UnsupportedParameterTypeError
+	assert.ErrorAs(t, err, &upte)
 }
 
 func TestHandleParse_ParameterizedInsert(t *testing.T) {
@@ -796,6 +1044,8 @@ func TestExecuteDeferredCallback_InsertAndSelect(t *testing.T) {
 			params,
 			`INSERT INTO kv ("key", "value") VALUES ($1, $2)`,
 			"INSERT INTO kv (`key`, `value`) VALUES (?, ?)",
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, "INSERT 0 1", writer.completeTag)
@@ -816,11 +1066,49 @@ func TestExecuteDeferredCallback_InsertAndSelect(t *testing.T) {
 			params,
 			`SELECT * FROM kv WHERE "key" = $1`,
 			"SELECT * FROM kv WHERE `key` = ?",
+			nil,
+			nil,
 		)
 		require.NoError(t, err)
 		assert.Equal(t, 1, writer.rowCount)
 		assert.Contains(t, writer.completeTag, "SELECT 1")
 	})
+}
+
+// TestExecuteDeferredCallback_WithParsedStatement verifies the callback
+// executes correctly when handed the AST executeDeferred already parsed
+// from the translated text, rather than nil -- the "real bindings" path
+// that lets QueryWithBindings execute directly against a structured
+// statement instead of re-parsing the query string itself.
+func TestExecuteDeferredCallback_WithParsedStatement(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	translator := engine.NewTranslator()
+	h := NewParseHandler(sqlEngine, translator, "qrdb")
+
+	writer := &mockDataWriter{}
+	params := []wire.Parameter{
+		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("parsed-key")),
+		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("parsed-val")),
+	}
+
+	translated := "INSERT INTO kv (`key`, `value`) VALUES (?, ?)"
+	parsedStmt, err := sqlparser.Parse(translated)
+	require.NoError(t, err)
+
+	err = h.executeDeferredCallback(
+		context.Background(),
+		writer,
+		params,
+		`INSERT INTO kv ("key", "value") VALUES ($1, $2)`,
+		translated,
+		parsedStmt,
+		nil,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "INSERT 0 1", writer.completeTag)
+	assert.NotEmpty(t, kvSvc.scanData)
 }
 
 func TestExecuteDeferredCallback_QueryError(t *testing.T) {
@@ -842,6 +1130,8 @@ func TestExecuteDeferredCallback_QueryError(t *testing.T) {
 		params,
 		"SELECT * FROM nonexistent WHERE id = $1",
 		"SELECT * FROM nonexistent WHERE id = ?",
+		nil,
+		nil,
 	)
 	require.Error(t, err)
 
@@ -872,6 +1162,8 @@ func TestExecuteDeferredCallback_EmptyParams(t *testing.T) {
 		nil,
 		"SELECT * FROM kv",
 		"SELECT * FROM kv",
+		nil,
+		nil,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 1, writer.rowCount)
@@ -901,66 +1193,389 @@ func TestExecuteDeferredCallback_WriteRowError(t *testing.T) {
 		params,
 		`SELECT * FROM kv WHERE "key" = $1`,
 		"SELECT * FROM kv WHERE `key` = ?",
+		nil,
+		nil,
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write row failed")
 }
 
-func TestDecodeBytea_HexFormat(t *testing.T) {
-	// PostgreSQL bytea hex format: \x followed by hex pairs.
-	input := []byte("\\x68656c6c6f20776f726c64")
-	got := decodeBytea(input)
-	assert.Equal(t, []byte("hello world"), got)
-}
-
-func TestDecodeBytea_PlainText(t *testing.T) {
-	// Plain text values should pass through unchanged.
-	input := []byte("hello world")
-	got := decodeBytea(input)
-	assert.Equal(t, []byte("hello world"), got)
-}
-
-func TestDecodeBytea_Nil(t *testing.T) {
-	got := decodeBytea(nil)
-	assert.Nil(t, got)
-}
-
-func TestDecodeBytea_Empty(t *testing.T) {
-	got := decodeBytea([]byte{})
-	assert.Equal(t, []byte{}, got)
-}
-
-func TestDecodeBytea_InvalidHex(t *testing.T) {
-	// If \x prefix is followed by invalid hex, return as-is.
-	input := []byte("\\xZZZZ")
-	got := decodeBytea(input)
-	assert.Equal(t, input, got)
-}
-
-func TestDecodeBytea_ShortPrefix(t *testing.T) {
-	// A single-byte value should pass through.
-	got := decodeBytea([]byte("\\"))
-	assert.Equal(t, []byte("\\"), got)
-}
-
-func TestParametersToBindings_ByteaHex(t *testing.T) {
-	// Verify that bytea hex format parameters are properly decoded
-	// before being passed to GMS as binding expressions.
+// TestParametersToBindings_UnresolvedByteaBoundAsStringLiteral pins the
+// documented, accepted limitation left after removing decodeBytea: a
+// binary parameter this package cannot statically resolve a column type
+// for (see inferParamOIDs) is bound as a plain string literal, exactly
+// like every other unresolved scalar. This is a narrower, more honest
+// failure mode than the old heuristic, which guessed a value was bytea
+// purely from its wire-text shape (a "\x..." prefix) and could
+// misinterpret an ordinary string that happened to start with it.
+func TestParametersToBindings_UnresolvedByteaBoundAsStringLiteral(t *testing.T) {
 	params := []wire.Parameter{
-		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("greeting")),
 		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("\\x68656c6c6f")),
 	}
-	bindings, err := parametersToBindings(params)
+	bindings, err := parametersToBindings(params, nil)
 	require.NoError(t, err)
-	require.Len(t, bindings, 2)
 
-	// First param is plain text.
-	v1, ok := bindings["v1"].(*sqlparser.SQLVal)
+	v, ok := bindings["v1"].(*sqlparser.SQLVal)
 	require.True(t, ok)
-	assert.Equal(t, "greeting", string(v1.Val))
+	assert.Equal(t, sqlparser.StrVal, v.Type)
+	assert.Equal(t, "\\x68656c6c6f", string(v.Val))
+}
 
-	// Second param should be decoded from bytea hex.
-	v2, ok := bindings["v2"].(*sqlparser.SQLVal)
-	require.True(t, ok)
-	assert.Equal(t, "hello", string(v2.Val))
+func TestParamOIDForColumn(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  sql.Type
+		want uint32
+	}{
+		{"blob is bytea", sqltypes.Blob, pgtype.ByteaOID},
+		{"medium blob is bytea", sqltypes.MediumBlob, pgtype.ByteaOID},
+		{"boolean", sqltypes.Boolean, pgtype.BoolOID},
+		{"int64", sqltypes.Int64, pgtype.Int8OID},
+		{"float64", sqltypes.Float64, pgtype.Float8OID},
+		{"decimal", sqltypes.MustCreateDecimalType(10, 2), pgtype.Float8OID},
+		{"datetime", sqltypes.Datetime, pgtype.TimestamptzOID},
+		{"timestamp", sqltypes.Timestamp, pgtype.TimestamptzOID},
+		{"text", sqltypes.Text, pgtype.TextOID},
+		{"json has no mapping", sqltypes.JSON, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, paramOIDForColumn(tt.typ))
+		})
+	}
+}
+
+func TestValArgOrdinal(t *testing.T) {
+	t.Run("valid ValArg", func(t *testing.T) {
+		n, ok := valArgOrdinal(sqlparser.NewValArg([]byte(":v3")))
+		require.True(t, ok)
+		assert.Equal(t, 3, n)
+	})
+
+	t.Run("not a ValArg SQLVal", func(t *testing.T) {
+		_, ok := valArgOrdinal(sqlparser.NewStrVal([]byte("literal")))
+		assert.False(t, ok)
+	})
+
+	t.Run("not a SQLVal at all", func(t *testing.T) {
+		_, ok := valArgOrdinal(sqlparser.NewColName("col"))
+		assert.False(t, ok)
+	})
+
+	t.Run("malformed ordinal", func(t *testing.T) {
+		_, ok := valArgOrdinal(sqlparser.NewValArg([]byte(":vNaN")))
+		assert.False(t, ok)
+	})
+}
+
+func TestColumnType(t *testing.T) {
+	schema := sql.Schema{
+		{Name: "id", Type: sqltypes.Int64},
+		{Name: "Name", Type: sqltypes.Text},
+	}
+
+	t.Run("exact match", func(t *testing.T) {
+		typ, ok := columnType(schema, sqlparser.NewColIdent("id"))
+		require.True(t, ok)
+		assert.Equal(t, sqltypes.Int64, typ)
+	})
+
+	t.Run("case insensitive match", func(t *testing.T) {
+		typ, ok := columnType(schema, sqlparser.NewColIdent("name"))
+		require.True(t, ok)
+		assert.Equal(t, sqltypes.Text, typ)
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		_, ok := columnType(schema, sqlparser.NewColIdent("missing"))
+		assert.False(t, ok)
+	})
+}
+
+func TestSingleTableName(t *testing.T) {
+	t.Run("plain table", func(t *testing.T) {
+		expr := &sqlparser.AliasedTableExpr{Expr: sqlparser.TableName{Name: sqlparser.NewTableIdent("kv")}}
+		name, ok := singleTableName(expr)
+		require.True(t, ok)
+		assert.Equal(t, "kv", name)
+	})
+
+	t.Run("not an AliasedTableExpr", func(t *testing.T) {
+		_, ok := singleTableName(&sqlparser.JoinTableExpr{})
+		assert.False(t, ok)
+	})
+
+	t.Run("subquery, not a plain table", func(t *testing.T) {
+		expr := &sqlparser.AliasedTableExpr{Expr: &sqlparser.Subquery{}}
+		_, ok := singleTableName(expr)
+		assert.False(t, ok)
+	})
+}
+
+func TestLookupTable(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	t.Run("existing table", func(t *testing.T) {
+		table, ok := lookupTable(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", "kv")
+		require.True(t, ok)
+		assert.Equal(t, "kv", table.Name())
+	})
+
+	t.Run("nonexistent table", func(t *testing.T) {
+		_, ok := lookupTable(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", "nonexistent")
+		assert.False(t, ok)
+	})
+
+	t.Run("nonexistent database", func(t *testing.T) {
+		_, ok := lookupTable(sqlCtx, sqlEngine.Analyzer.Catalog, "nonexistent-db", "kv")
+		assert.False(t, ok)
+	})
+}
+
+// TestInferParamOIDs_Insert exercises the shape GORM's Create() generates
+// against the real qrdb `kv` table, whose "value" column is a genuine
+// GMS BLOB type -- the exact case that used to require decodeBytea's
+// after-the-fact guess. It verifies inferParamOIDs statically resolves
+// "key" to TextOID and "value" to ByteaOID from the table's real schema.
+func TestInferParamOIDs_Insert(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse("INSERT INTO kv (`key`, `value`) VALUES (:v1, :v2)")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+	assert.Equal(t, uint32(pgtype.TextOID), oids[1])
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2])
+}
+
+// TestInferParamOIDs_InsertMultiRow verifies every row of a multi-row
+// VALUES list maps its positional parameters to the same target column,
+// the shape GORM's batched Create() generates.
+func TestInferParamOIDs_InsertMultiRow(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse("INSERT INTO kv (`key`, `value`) VALUES (:v1, :v2), (:v3, :v4)")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+	assert.Equal(t, uint32(pgtype.TextOID), oids[1])
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2])
+	assert.Equal(t, uint32(pgtype.TextOID), oids[3])
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[4])
+}
+
+// TestInferParamOIDs_InsertRowAlias verifies the MySQL 8.0.19+
+// "VALUES (...) AS alias" row-alias form -- which vitess represents as
+// *sqlparser.AliasedValues rather than a bare sqlparser.Values -- resolves
+// the same as a plain VALUES clause.
+func TestInferParamOIDs_InsertRowAlias(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse("INSERT INTO kv (`key`, `value`) VALUES (:v1, :v2) AS new_values")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+	assert.Equal(t, uint32(pgtype.TextOID), oids[1])
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2])
+}
+
+// TestInferParamOIDs_Update exercises the shape GORM's Save()/Updates()
+// generates: a single-table UPDATE SET clause.
+func TestInferParamOIDs_Update(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	stmt, err := sqlparser.Parse("UPDATE kv SET `value` = :v1 WHERE `key` = :v2")
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+	// The SET target resolves; the WHERE-clause parameter is out of scope
+	// for inferParamOIDs (see its doc comment) and is left unmapped.
+	assert.Equal(t, uint32(pgtype.ByteaOID), oids[1])
+	assert.NotContains(t, oids, 2)
+}
+
+// TestInferParamOIDs_UnresolvedCases verifies every case inferParamOIDs
+// intentionally leaves unmapped, falling back to the pre-existing
+// string-literal binding rather than guessing.
+func TestInferParamOIDs_UnresolvedCases(t *testing.T) {
+	kvSvc := &mockKVService{}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	sqlCtx := sql.NewContext(context.Background())
+	sqlCtx.SetCurrentDatabase("qrdb")
+
+	t.Run("select statement", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("SELECT * FROM kv WHERE `key` = :v1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("delete statement", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("DELETE FROM kv WHERE `key` = :v1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("unknown table", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("INSERT INTO nonexistent (`a`) VALUES (:v1)")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("unknown column", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("UPDATE kv SET `nonexistent` = :v1 WHERE `key` = 'k'")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("literal value, not a bind parameter", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("INSERT INTO kv (`key`, `value`) VALUES ('literal-key', :v1)")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Equal(t, uint32(pgtype.ByteaOID), oids[1])
+		assert.Len(t, oids, 1)
+	})
+
+	t.Run("multi-table update", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("UPDATE kv, kv AS other SET kv.`value` = :v1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("insert ... select has no VALUES tuple", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("INSERT INTO kv (`key`, `value`) SELECT `key`, `value` FROM kv")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("statement kind with no ON CONFLICT/UPDATE handling", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("SET @x = 1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+}
+
+// TestHandleParse_BinaryParameterRoundTripsWithoutCorruption is the
+// regression test for the actual bug this phase fixes: a genuine binary
+// bytea parameter -- non-UTF-8 bytes a string-literal bind would corrupt
+// under the connection charset -- written to a real BLOB column and read
+// back byte for byte, driven end to end through inferParamOIDs,
+// parametersToBindings, and paramExpr exactly as the deferred BIND/EXECUTE
+// callback does.
+func TestHandleParse_BinaryParameterRoundTripsWithoutCorruption(t *testing.T) {
+	kvSvc := &mockKVService{scanData: map[string][]byte{}}
+	dbProvider := provider.NewProvider("qrdb", kvSvc)
+	sqlEngine := engine.New(engine.Config{Provider: dbProvider})
+	translator := engine.NewTranslator()
+	h := NewParseHandler(sqlEngine, translator, "qrdb")
+
+	trimmed := `INSERT INTO kv ("key", "value") VALUES ($1, $2)`
+	translated, err := translator.Translate(trimmed)
+	require.NoError(t, err)
+
+	sqlCtx := h.buildSQLContext(context.Background())
+	parsedStmt, err := sqlparser.Parse(translated)
+	require.NoError(t, err)
+
+	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", parsedStmt)
+	require.Equal(t, uint32(pgtype.ByteaOID), oids[2])
+	paramOIDs := []uint32{oids[1], oids[2]}
+
+	// Non-UTF-8 raw bytes, exactly what a string-literal bind would mangle
+	// once GMS reinterprets it under the connection charset. Sent in
+	// binary wire format, which is what pgx sends once the server has
+	// declared a real (non-unspecified) OID for the parameter.
+	rawValue := []byte{0x00, 0xff, 0x80, 0xfe, 0x41, 0x00, 0x9c}
+	params := []wire.Parameter{
+		wire.NewParameter(pgtype.NewMap(), wire.TextFormat, []byte("bin-key")),
+		wire.NewParameter(pgtype.NewMap(), wire.BinaryFormat, rawValue),
+	}
+
+	writer := &mockDataWriter{}
+	err = h.executeDeferredCallback(context.Background(), writer, params, trimmed, translated, parsedStmt, paramOIDs)
+	require.NoError(t, err)
+
+	// The stored key carries a tenant/database namespace prefix applied by
+	// the KV table writer, so look up by the "bin-key" suffix rather than
+	// an exact key match.
+	var stored []byte
+	var found bool
+	for k, v := range kvSvc.scanData {
+		if strings.HasSuffix(k, "bin-key") {
+			stored, found = v, true
+			break
+		}
+	}
+	require.True(t, found, "expected a stored entry ending in bin-key, got keys %v", kvSvc.scanData)
+	assert.Equal(t, rawValue, stored, "binary parameter must round-trip byte for byte")
+}
+
+// ---------------------------------------------------------------------------
+// rewriteEndAsCommit
+// ---------------------------------------------------------------------------
+
+func TestRewriteEndAsCommit(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"bare END", "END", "COMMIT"},
+		{"lowercase end", "end", "COMMIT"},
+		{"END with semicolon", "END;", "COMMIT"},
+		{"END WORK", "END WORK", "COMMIT"},
+		{"END TRANSACTION", "END TRANSACTION", "COMMIT"},
+		{"end work mixed case", "End Work;", "COMMIT"},
+		{"not END: SELECT", "SELECT * FROM widgets", "SELECT * FROM widgets"},
+		{"not END: END used as identifier prefix", "ENDPOINT", "ENDPOINT"},
+		{"BEGIN untouched", "BEGIN", "BEGIN"},
+		{"COMMIT untouched", "COMMIT", "COMMIT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, rewriteEndAsCommit(tc.input))
+		})
+	}
+}
+
+// TestHandleParse_EndCommitsRealTransaction verifies PostgreSQL's END alias
+// reaches go-mysql-server as a real COMMIT rather than being swallowed as a
+// no-op (the pre-Phase-8 behavior) or rejected as invalid MySQL syntax.
+func TestHandleParse_EndCommitsRealTransaction(t *testing.T) {
+	h := newTestParseHandler(t)
+	connCtx, err := newConnectionSessionHandler()(context.Background())
+	require.NoError(t, err)
+
+	_, err = h.HandleParse(connCtx, "BEGIN")
+	require.NoError(t, err)
+	_, err = h.HandleParse(connCtx, "END")
+	require.NoError(t, err, "END must be accepted as a real COMMIT, not rejected as invalid syntax")
 }

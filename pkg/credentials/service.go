@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -45,6 +47,26 @@ type CredentialService struct {
 	// credentials remain in manualCreds with no entry here.
 	manualVersions map[string]map[uint64]*secure.Secret
 	manualMeta     map[string]*credentialMeta
+
+	// audit is an optional compliance-grade audit logger. When set, every
+	// credential mutation (store, submit, rotate, delete, gc) emits an
+	// audit event capturing the acting identity from context. A nil logger
+	// disables emission. It is read via auditLogger()/SetAuditLogger under
+	// mu so the daemon can attach it after construction (the seal subsystem
+	// builds the service before the compliance logger exists).
+	audit audit.AuditLogger
+}
+
+// Option configures a CredentialService at construction time.
+type Option func(*CredentialService)
+
+// WithAuditLogger attaches a compliance-grade audit logger so credential
+// mutations leave an audit trail. A nil logger disables emission, so the
+// option is safe to apply unconditionally.
+func WithAuditLogger(logger audit.AuditLogger) Option {
+	return func(s *CredentialService) {
+		s.audit = logger
+	}
 }
 
 // NewCredentialService creates a new CredentialService with the given
@@ -53,7 +75,7 @@ type CredentialService struct {
 // If cfg is nil or cfg.Strategy is empty, the manual strategy is used.
 // The barrier parameter is required when using the barrier strategy and
 // may be nil for the manual strategy. The logger must not be nil.
-func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slog.Logger) (*CredentialService, error) {
+func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slog.Logger, opts ...Option) (*CredentialService, error) {
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
@@ -71,13 +93,64 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 		return nil, ErrNilBarrier
 	}
 
-	return &CredentialService{
+	s := &CredentialService{
 		barrier:     barrier,
 		strategy:    strategy,
 		logger:      logger,
 		manualCreds: make(map[string]*secure.Secret),
 		waiters:     make(map[string][]chan []byte),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+// SetAuditLogger attaches (or replaces) the compliance audit logger after
+// construction. It exists for wiring paths where the service is built before
+// the daemon's compliance logger is available (e.g. the seal subsystem). A
+// nil logger disables emission. Safe to call once during boot before the
+// service handles requests.
+func (s *CredentialService) SetAuditLogger(logger audit.AuditLogger) {
+	s.mu.Lock()
+	s.audit = logger
+	s.mu.Unlock()
+}
+
+// auditLogger returns the configured audit logger under mu.
+func (s *CredentialService) auditLogger() audit.AuditLogger {
+	s.mu.RLock()
+	l := s.audit
+	s.mu.RUnlock()
+	return l
+}
+
+// emitAudit records a successful credential mutation. It captures the acting
+// identity (Subject + TenantID) from the request context and is a no-op when
+// no audit logger is configured. Emission is best-effort per the AuditLogger
+// contract and never affects the mutation outcome.
+func (s *CredentialService) emitAudit(ctx context.Context, action, name string, attrs map[string]any) {
+	logger := s.auditLogger()
+	if logger == nil {
+		return
+	}
+	if attrs == nil {
+		attrs = map[string]any{}
+	}
+	attrs["strategy"] = s.strategy
+	var actor, tenantID string
+	if id := auth.IdentityFromContext(ctx); id != nil {
+		actor = id.Subject
+		tenantID = id.TenantID
+	}
+	logger.Emit(ctx, audit.AuditEvent{
+		Actor:      actor,
+		TenantID:   tenantID,
+		Resource:   "credential:" + name,
+		Action:     action,
+		Outcome:    audit.OutcomeSuccess,
+		Attributes: attrs,
+	})
 }
 
 // StoreCredential persists a credential under the given name.
@@ -93,12 +166,19 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 
 	switch s.strategy {
 	case StrategyManual:
-		return s.storeManual(name, value)
+		if err := s.storeManual(name, value); err != nil {
+			return err
+		}
 	case StrategyBarrier:
-		return s.barrier.Put(ctx, credentialPrefix+name, value)
+		if err := s.barrier.Put(ctx, credentialPrefix+name, value); err != nil {
+			return err
+		}
 	default:
 		return ErrInvalidStrategy
 	}
+
+	s.emitAudit(ctx, "store", name, nil)
+	return nil
 }
 
 // RetrieveCredential returns the credential value for the given name.
@@ -135,7 +215,11 @@ func (s *CredentialService) SubmitCredential(ctx context.Context, name string, v
 		return s.StoreCredential(ctx, name, value)
 	}
 
-	return s.submitManual(name, value)
+	if err := s.submitManual(name, value); err != nil {
+		return err
+	}
+	s.emitAudit(ctx, "submit", name, nil)
+	return nil
 }
 
 // DeleteCredential removes the credential with the given name.
@@ -149,12 +233,19 @@ func (s *CredentialService) DeleteCredential(ctx context.Context, name string) e
 
 	switch s.strategy {
 	case StrategyManual:
-		return s.deleteManual(name)
+		if err := s.deleteManual(name); err != nil {
+			return err
+		}
 	case StrategyBarrier:
-		return s.barrier.Delete(ctx, credentialPrefix+name)
+		if err := s.barrier.Delete(ctx, credentialPrefix+name); err != nil {
+			return err
+		}
 	default:
 		return ErrInvalidStrategy
 	}
+
+	s.emitAudit(ctx, "delete", name, nil)
+	return nil
 }
 
 // Strategy returns the active credential strategy name.

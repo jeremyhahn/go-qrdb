@@ -130,6 +130,22 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			return
 		case resp, open := <-watcher.Events():
 			if !open {
+				// The hub closes Events() without a final Canceled response
+				// when it evicts a watcher mid-stream (e.g. compaction races
+				// past an in-progress start-revision replay — see
+				// hub.startReplay). Synthesize one here so the SSE client
+				// always observes a terminal frame with a reason, the same
+				// contract as the normal in-band Canceled path below.
+				if wErr := watcher.Err(); wErr != nil {
+					if !writeWatchSSEFrame(w, enc, watchEventJSON{
+						WatchID:      watcher.WatchID(),
+						Canceled:     true,
+						CancelReason: wErr.Error(),
+					}) {
+						return
+					}
+					flusher.Flush()
+				}
 				return
 			}
 
@@ -151,17 +167,7 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 				CancelReason:    resp.CancelReason,
 			}
 
-			// Write SSE data frame: "data: {json}\n\n"
-			if _, writeErr := w.Write([]byte("data: ")); writeErr != nil {
-				slog.Debug("rest: SSE write error", "error", writeErr)
-				return
-			}
-			if encErr := enc.Encode(payload); encErr != nil {
-				slog.Debug("rest: SSE encode error", "error", encErr)
-				return
-			}
-			if _, writeErr := w.Write([]byte("\n")); writeErr != nil {
-				slog.Debug("rest: SSE write error", "error", writeErr)
+			if !writeWatchSSEFrame(w, enc, payload) {
 				return
 			}
 			flusher.Flush()
@@ -172,6 +178,25 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// writeWatchSSEFrame writes a single SSE "data: {json}\n\n" frame carrying
+// payload. Returns false (and logs) on any write/encode failure, signaling
+// the caller to give up on the connection.
+func writeWatchSSEFrame(w http.ResponseWriter, enc *json.Encoder, payload watchEventJSON) bool {
+	if _, writeErr := w.Write([]byte("data: ")); writeErr != nil {
+		slog.Debug("rest: SSE write error", "error", writeErr)
+		return false
+	}
+	if encErr := enc.Encode(payload); encErr != nil {
+		slog.Debug("rest: SSE encode error", "error", encErr)
+		return false
+	}
+	if _, writeErr := w.Write([]byte("\n")); writeErr != nil {
+		slog.Debug("rest: SSE write error", "error", writeErr)
+		return false
+	}
+	return true
 }
 
 // eventTypeToString converts a watch.EventType to its string representation.

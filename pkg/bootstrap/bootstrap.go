@@ -450,8 +450,18 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strat seal.St
 		config := seal.BarrierConfig{
 			RootKeyPath: "tenant/" + tenantID + "/root-key",
 		}
-		base := seal.NewMemoryBackend()
-		if _, regErr := deps.Barriers.RegisterTenant(ctx, tenantID, base, config, strategyImpl); regErr != nil {
+		// base is intentionally nil, NOT seal.NewMemoryBackend(): a memory
+		// backend loses the tenant's wrapped-root-key/epoch bookkeeping on
+		// restart, making the tenant's barrier-encrypted IAM unrecoverable.
+		// Passing nil defers to BarrierRegistry's configured durable
+		// volume-pool / per-tenant Pebble allocation — the same mechanism
+		// RegisterTenantPooledWithStrategy uses — so embedders get
+		// persistence by default. If the registry was not constructed with
+		// a volume pool (see seal.WithVolumePool / WithPerTenantRegistry),
+		// RegisterTenant fails closed with ErrPoolNotConfigured /
+		// ErrPerTenantRegistryNotConfigured rather than silently degrading
+		// to a non-durable backend.
+		if _, regErr := deps.Barriers.RegisterTenant(ctx, tenantID, nil, config, strategyImpl); regErr != nil {
 			return &TenantBarrierRegistrationError{Cause: regErr}
 		}
 		deps.Logger.Info("bootstrap: tenant barrier registered",

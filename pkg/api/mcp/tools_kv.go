@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -60,7 +61,7 @@ func toolPut() mcp.Tool {
 		),
 		mcp.WithString("value",
 			mcp.Required(),
-			mcp.Description("The value to store (UTF-8 text)."),
+			mcp.Description("The value to store, base64-encoded (RFC 4648). Encoding as base64 preserves arbitrary binary content byte-for-byte; a UTF-8 text value must also be base64-encoded before calling this tool."),
 		),
 		mcp.WithString("write_mode",
 			mcp.Description("Write durability mode: sync, wal_durable, or batched. Absent or empty uses sync."),
@@ -80,9 +81,13 @@ func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
 		}
-		value := mcp.ParseString(req, "value", "")
-		if value == "" {
+		valueArg := mcp.ParseString(req, "value", "")
+		if valueArg == "" {
 			return mcp.NewToolResultError("value is required"), nil
+		}
+		value, decodeErr := base64.StdEncoding.DecodeString(valueArg)
+		if decodeErr != nil {
+			return mcp.NewToolResultError((&ValueDecodeError{Field: "value", Err: decodeErr}).Error()), nil
 		}
 
 		mode, modeSet, modeErr := writeModeFromArg(req)
@@ -92,9 +97,9 @@ func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 
 		var err error
 		if modeSet {
-			err = kvSvc.PutWithMode(ctx, key, []byte(value), mode)
+			err = kvSvc.PutWithMode(ctx, key, value, mode)
 		} else {
-			err = kvSvc.Put(ctx, key, []byte(value))
+			err = kvSvc.Put(ctx, key, value)
 		}
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_put", Err: err}
@@ -107,7 +112,7 @@ func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 // toolGet defines the qrdb_get tool schema.
 func toolGet() mcp.Tool {
 	return mcp.NewTool("qrdb_get",
-		mcp.WithDescription("Retrieve a value by key with a linearizable read."),
+		mcp.WithDescription("Retrieve a value by key with a linearizable read. The returned value is base64-encoded (RFC 4648) to preserve arbitrary binary content byte-for-byte."),
 		mcp.WithString("key",
 			mcp.Required(),
 			mcp.Description("The key to retrieve."),
@@ -149,7 +154,7 @@ func handleGet(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_get", Err: err}
 		}
 
-		return mcp.NewToolResultText(string(data)), nil
+		return mcp.NewToolResultText(base64.StdEncoding.EncodeToString(data)), nil
 	}
 }
 
@@ -252,7 +257,7 @@ func handleList(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 // toolScan defines the qrdb_scan tool schema.
 func toolScan() mcp.Tool {
 	return mcp.NewTool("qrdb_scan",
-		mcp.WithDescription("Scan key-value pairs matching a prefix. Returns a JSON map of key to value."),
+		mcp.WithDescription("Scan key-value pairs matching a prefix. Returns a JSON map of key to base64-encoded value (RFC 4648)."),
 		mcp.WithString("prefix",
 			mcp.Description("Optional key prefix filter."),
 		),
@@ -290,13 +295,10 @@ func handleScan(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 			return nil, &ToolError{Tool: "qrdb_scan", Err: err}
 		}
 
-		// Convert []byte values to strings for JSON readability.
-		out := make(map[string]string, len(pairs))
-		for k, v := range pairs {
-			out[k] = string(v)
-		}
-
-		data, jsonErr := json.Marshal(out)
+		// pairs is map[string][]byte; encoding/json base64-encodes []byte map
+		// values automatically, preserving arbitrary binary content
+		// byte-for-byte (matching the REST /kv/scan wire representation).
+		data, jsonErr := json.Marshal(pairs)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_scan", Err: jsonErr}
 		}

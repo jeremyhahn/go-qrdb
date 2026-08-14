@@ -29,26 +29,117 @@ import (
 )
 
 // fakeRaftHost implements RaftHost for unit tests. It records every
-// AddFollowerNode call and optionally returns a configured error.
+// AddFollowerNode / AddObserver / RemoveFollowerNode call and optionally
+// returns a configured error for each. leaderID/leaderOK configure
+// LeaderReplicaID's return value (used by ScaleForTenant's scale-down
+// tests).
 type fakeRaftHost struct {
-	calls []followerNodeCall
-	err   error
+	calls         []followerNodeCall
+	err           error
+	observerCalls []followerNodeCall
+	observerErr   error
+	removeCalls   []removeFollowerNodeCall
+	removeErr     error
+	leaderID      uint64
+	leaderOK      bool
+	leaderErr     error
+
+	// transferCalls records every RequestLeaderTransfer invocation.
+	// transferErr, when non-nil, is returned by RequestLeaderTransfer
+	// itself. transferNoop, when true, records the call but does NOT
+	// update leaderID -- simulates a transfer request that never
+	// completes, exercising transferLeadershipAwayFromRemoved's timeout
+	// path. Otherwise RequestLeaderTransfer sets leaderID to the
+	// requested target, simulating an instantaneous, successful transfer
+	// (sufficient for unit tests, since the real transfer is asynchronous
+	// in production and transferLeadershipAwayFromRemoved polls for it).
+	transferCalls []leaderTransferCall
+	transferErr   error
+	transferNoop  bool
+
+	// onAdd/onObserver/onRemove, when non-nil, are invoked before recording
+	// each call -- used by ordering tests to interleave a shared step log
+	// with the key-distributor and placement-store fakes.
+	onAdd      func()
+	onObserver func()
+	onRemove   func()
 }
 
-// followerNodeCall captures the arguments of one AddFollowerNode invocation.
+// leaderTransferCall captures the arguments of one RequestLeaderTransfer
+// invocation.
+type leaderTransferCall struct {
+	shardID         uint64
+	targetReplicaID uint64
+}
+
+// RequestLeaderTransfer records the call and, unless transferNoop is set,
+// simulates an immediate successful transfer by updating leaderID to
+// targetReplicaID. See the fakeRaftHost.transferNoop field doc for the
+// timeout-path testing rationale.
+func (f *fakeRaftHost) RequestLeaderTransfer(_ context.Context, shardID, targetReplicaID uint64) error {
+	f.transferCalls = append(f.transferCalls, leaderTransferCall{shardID: shardID, targetReplicaID: targetReplicaID})
+	if f.transferErr != nil {
+		return f.transferErr
+	}
+	if !f.transferNoop {
+		f.leaderID = targetReplicaID
+	}
+	return nil
+}
+
+// followerNodeCall captures the arguments of one AddFollowerNode or
+// AddObserver invocation.
 type followerNodeCall struct {
 	shardID   uint64
 	replicaID uint64
 	raftAddr  string
 }
 
+// removeFollowerNodeCall captures the arguments of one RemoveFollowerNode
+// invocation.
+type removeFollowerNodeCall struct {
+	shardID   uint64
+	replicaID uint64
+}
+
+func (f *fakeRaftHost) RemoveFollowerNode(_ context.Context, shardID, replicaID uint64) error {
+	if f.onRemove != nil {
+		f.onRemove()
+	}
+	f.removeCalls = append(f.removeCalls, removeFollowerNodeCall{shardID: shardID, replicaID: replicaID})
+	return f.removeErr
+}
+
+func (f *fakeRaftHost) LeaderReplicaID(_ context.Context, _ uint64) (uint64, bool, error) {
+	return f.leaderID, f.leaderOK, f.leaderErr
+}
+
 func (f *fakeRaftHost) AddFollowerNode(_ context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if f.onAdd != nil {
+		f.onAdd()
+	}
 	f.calls = append(f.calls, followerNodeCall{
 		shardID:   shardID,
 		replicaID: replicaID,
 		raftAddr:  raftAddr,
 	})
 	return f.err
+}
+
+// AddObserver records a non-voting observer admission. scaleUp calls this
+// (never AddFollowerNode) to add a replica to an already-running group; see
+// database_service_scale_test.go for the scale-up assertions that exercise
+// it.
+func (f *fakeRaftHost) AddObserver(_ context.Context, shardID, replicaID uint64, raftAddr string) error {
+	if f.onObserver != nil {
+		f.onObserver()
+	}
+	f.observerCalls = append(f.observerCalls, followerNodeCall{
+		shardID:   shardID,
+		replicaID: replicaID,
+		raftAddr:  raftAddr,
+	})
+	return f.observerErr
 }
 
 // newNodeAddDatabaseService builds a DatabaseService for an IsolationRaft

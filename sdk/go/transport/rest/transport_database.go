@@ -182,6 +182,20 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	return &info, nil
 }
 
+// ScaleDatabase changes the replication factor of a dedicated-raft database.
+// Maps to PATCH /v1/databases/{name}/scale.
+func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	var info transport.DatabaseInfo
+	if err := t.patchJSONDecode(ctx, "ScaleDatabase", "/v1/databases/"+url.PathEscape(req.Name)+"/scale", req, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseBarrier updates the encryption barrier configuration for a
 // database. Maps to PATCH /v1/databases/{name}/barrier.
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {

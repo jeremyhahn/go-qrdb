@@ -20,11 +20,24 @@
 //	MetaKey:      [0x02][keyLen:8 BE][key]
 //	RevisionKey:  [0x03]
 //	CompactedKey: [0x04]
+//	RevIndexKey:  [0x05][revision:8 BE ASCENDING][key]
 //	Metadata:     [createRev:8][modRev:8][version:8][leaseID:8]  (32 bytes fixed)
 //	Entry:        [flag:flagLive|flagTombstone][value]
+//	ChangeRecord: [eventType:1][createRev:8][version:8][leaseID:8]  (25 bytes fixed)
 //
 // The complement (math.MaxUint64 - revision) ensures descending revision sort
 // in byte order, making the latest revision the first result in a prefix scan.
+//
+// The RevIndex keyspace is the inverse: revision is encoded ASCENDING (plain BE,
+// not complemented) so a forward iteration yields changes in revision order —
+// the scan a watch replay performs from a start revision. A single Raft entry
+// (transaction) assigns ONE revision to every key it mutates, so the user key is
+// appended to disambiguate the multiple changes that share that revision; within
+// a revision they sort by key. The user key is recovered as everything after the
+// 9-byte [prefix][revision] header, so no length prefix is needed. The change
+// record deliberately omits the value: the value (or tombstone) for a change is
+// already the data entry at (key, revision), so replay reads it from there rather
+// than duplicating it in the index.
 
 package mvcc
 
@@ -40,7 +53,20 @@ const (
 	prefixMeta     = byte(0x02)
 	prefixRevision = byte(0x03)
 	prefixCompact  = byte(0x04)
+	prefixRevIndex = byte(0x05)
 )
+
+// Change event types recorded in the revision index. These mirror the watch
+// package's put/delete distinction without importing it (the mvcc layer must
+// not depend on watch).
+const (
+	changePut    = byte(0x00)
+	changeDelete = byte(0x01)
+)
+
+// changeRecordSize is the fixed size of a serialized ChangeRecord in bytes.
+// Layout: [eventType:1][createRevision:8][version:8][leaseID:8]
+const changeRecordSize = 25
 
 // Entry flags distinguish live values from tombstones in data entries.
 const (
@@ -202,6 +228,112 @@ func DecodeRevision(data []byte) (int64, error) {
 	}
 	//nolint:gosec // G115: uint64 to int64 conversion from storage - original value was int64
 	return int64(binary.BigEndian.Uint64(data)), nil
+}
+
+// ---------------------------------------------------------------------------
+// Revision-index key encoding
+// ---------------------------------------------------------------------------
+
+// ChangeRecord is the value stored in the revision index for one key change.
+// The revision itself is the ModRevision and is encoded in the index key, not
+// here; the changed value (or tombstone) is the data entry at (Key, revision),
+// not duplicated here.
+type ChangeRecord struct {
+	Key            []byte
+	EventType      byte // changePut or changeDelete
+	CreateRevision int64
+	Version        int64
+	LeaseID        int64
+}
+
+// EncodeRevIndexKey creates a revision-index key for a change to key at the
+// given revision. Format: [0x05][revision:8 BE ascending][key]. Revision is
+// ascending (not complemented) so forward iteration replays in revision order.
+func EncodeRevIndexKey(revision int64, key []byte) []byte {
+	buf := make([]byte, 1+8+len(key))
+	buf[0] = prefixRevIndex
+	//nolint:gosec // G115: revisions are always positive
+	binary.BigEndian.PutUint64(buf[1:9], uint64(revision))
+	copy(buf[9:], key)
+	return buf
+}
+
+// DecodeRevIndexKey extracts the revision and user key from a revision-index key.
+func DecodeRevIndexKey(encoded []byte) (revision int64, key []byte, err error) {
+	if len(encoded) < 9 { // 1 prefix + 8 revision minimum
+		return 0, nil, &EncodingError{Reason: "rev index key too short"}
+	}
+	if encoded[0] != prefixRevIndex {
+		return 0, nil, &EncodingError{Reason: "invalid rev index key prefix"}
+	}
+	//nolint:gosec // G115: uint64 to int64 from storage - original value was int64
+	revision = int64(binary.BigEndian.Uint64(encoded[1:9]))
+	key = make([]byte, len(encoded)-9)
+	copy(key, encoded[9:])
+	return revision, key, nil
+}
+
+// RevIndexLowerBound returns the inclusive lower bound for iterating the
+// revision index at or after startRevision.
+func RevIndexLowerBound(startRevision int64) []byte {
+	buf := make([]byte, 9)
+	buf[0] = prefixRevIndex
+	//nolint:gosec // G115: revisions are always positive
+	binary.BigEndian.PutUint64(buf[1:9], uint64(startRevision))
+	return buf
+}
+
+// RevIndexUpperBound returns the EXCLUSIVE upper bound for iterating the
+// revision index up to and including endRevision. Encoding endRevision+1 as the
+// bound makes every change at endRevision (regardless of its trailing key) fall
+// below it.
+func RevIndexUpperBound(endRevision int64) []byte {
+	buf := make([]byte, 9)
+	buf[0] = prefixRevIndex
+	//nolint:gosec // G115: revisions are always positive
+	binary.BigEndian.PutUint64(buf[1:9], uint64(endRevision)+1)
+	return buf
+}
+
+// RevIndexKeyspaceEnd returns the exclusive upper bound for the entire revision
+// index keyspace (used to drop the whole index).
+func RevIndexKeyspaceEnd() []byte {
+	return []byte{prefixRevIndex + 1}
+}
+
+// EncodeChangeRecord serializes a ChangeRecord's fixed fields (25 bytes). The
+// key is carried in the index key, not the record body.
+func EncodeChangeRecord(r *ChangeRecord) []byte {
+	buf := make([]byte, changeRecordSize)
+	buf[0] = r.EventType
+	//nolint:gosec // G115: revisions/versions/lease IDs are always positive
+	binary.BigEndian.PutUint64(buf[1:9], uint64(r.CreateRevision))
+	//nolint:gosec // G115
+	binary.BigEndian.PutUint64(buf[9:17], uint64(r.Version))
+	//nolint:gosec // G115
+	binary.BigEndian.PutUint64(buf[17:25], uint64(r.LeaseID))
+	return buf
+}
+
+// DecodeChangeRecord deserializes a ChangeRecord body. Key is filled in by the
+// caller from the index key.
+func DecodeChangeRecord(data []byte) (*ChangeRecord, error) {
+	if len(data) != changeRecordSize {
+		return nil, &EncodingError{Reason: "change record must be 25 bytes"}
+	}
+	et := data[0]
+	if et != changePut && et != changeDelete {
+		return nil, &EncodingError{Reason: "unknown change record event type"}
+	}
+	return &ChangeRecord{
+		EventType: et,
+		//nolint:gosec // G115: uint64 to int64 from storage - original values were int64
+		CreateRevision: int64(binary.BigEndian.Uint64(data[1:9])),
+		//nolint:gosec // G115
+		Version: int64(binary.BigEndian.Uint64(data[9:17])),
+		//nolint:gosec // G115
+		LeaseID: int64(binary.BigEndian.Uint64(data[17:25])),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

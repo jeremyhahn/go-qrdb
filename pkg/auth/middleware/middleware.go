@@ -141,7 +141,21 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 		return ctx, nil, &AuthChainError{Err: lastErr}
 	}
 
-	// Enrich identity from user store when configured.
+	return m.finalizeIdentity(ctx, identity)
+}
+
+// finalizeIdentity enriches a base identity with its persistent role
+// assignments from the user store, enforces the user-enabled check, then binds
+// the identity and its tenant into the returned context. The base identity's
+// Roles are overwritten with the store's RoleIDs: roles are ALWAYS resolved
+// from the authorization store, never trusted from the identity's origin (a
+// certificate, a token, or -- critically -- a forwarded on-behalf assertion).
+//
+// When no user store is configured the base identity is used as-is. A missing
+// user proceeds without enrichment (empty roles -> default-deny at authorize);
+// a transient store failure returns StoreUnavailableError so clients retry
+// rather than being denied with stale/empty roles.
+func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity) (context.Context, *auth.Identity, error) {
 	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {

@@ -120,7 +120,7 @@ func TestStart_MySQL_Success(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -161,7 +161,7 @@ func TestStart_MySQL_Failure_Rollback(t *testing.T) {
 		mcp:  true,
 	}, socketPath)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	err := srv.Start()
 	if err == nil {
@@ -205,7 +205,7 @@ func TestStart_PgSQL_Success(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -256,7 +256,7 @@ func TestStart_PgSQL_Failure_Rollback(t *testing.T) {
 	cfg := testConfig(true, false)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	err := srv.Start()
 	if err == nil {
@@ -296,7 +296,7 @@ func TestStart_MySQL_Disabled(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = false
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -321,7 +321,7 @@ func TestStart_MySQL_NilFn(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Should not panic and should succeed (silently skipped).
 	if err := srv.Start(); err != nil {
@@ -350,7 +350,7 @@ func TestStart_PgSQL_Disabled(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = false
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -375,7 +375,7 @@ func TestStart_PgSQL_NilFn(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	// Should not panic and should succeed (silently skipped).
 	if err := srv.Start(); err != nil {
@@ -857,7 +857,7 @@ func TestStart_SQLOnly(t *testing.T) {
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -910,7 +910,7 @@ func TestStop_MySQL_ActiveServer(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -945,7 +945,7 @@ func TestStop_PgSQL_ActiveServer(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -974,7 +974,7 @@ func TestStart_MySQL_Failure_RESTOnlyRollback(t *testing.T) {
 	// Only REST + MySQL enabled; MySQL failure should roll back REST.
 	cfg := testConfig(true, false)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	err := srv.Start()
 	if err == nil {
@@ -1005,7 +1005,7 @@ func TestStart_PgSQL_Failure_NoRollbackNeeded(t *testing.T) {
 
 	cfg := testConfig(false, false)
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	err := srv.Start()
 	if err == nil {
@@ -1041,7 +1041,7 @@ func TestStart_MySQL_Failure_GRPCRollback(t *testing.T) {
 	// Occupy a known port to verify gRPC started (port 0 auto-assigns).
 	cfg := testConfig(false, true)
 	cfg.Protocols.MySQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	err := srv.Start()
 	if err == nil {
@@ -1095,7 +1095,7 @@ func TestStart_PgSQL_Failure_VerifyAllStopsCalled(t *testing.T) {
 	cfg := testConfig(true, true)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
-	srv := New(cfg, newMockKVService(), &mockAdminService{})
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	startErr := srv.Start()
 	if startErr == nil {

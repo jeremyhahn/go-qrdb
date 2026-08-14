@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Go 1.26.4+ is required: the go-objstore dependency declares `go 1.26.4`
-# in its go.mod, and the official golang images pin GOTOOLCHAIN=local so a
-# 1.26.3 base cannot satisfy that requirement (and cannot auto-upgrade).
+# Go 1.26.5+ is required: the go-quicraft dependency declares `go 1.26.5`
+# in its go.mod, and the official golang images pin GOTOOLCHAIN=local so an
+# older base cannot satisfy that requirement (and cannot auto-upgrade).
 # This must stay >= the highest `go` directive across the workspace modules.
-FROM golang:1.26.4-bookworm
+FROM golang:1.26.5-bookworm
 
 # Install build, test, and debugging dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -18,6 +18,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -72,11 +73,23 @@ func (m *covMockCeremonySvc) CeremonyCompleteClaimCert(ctx context.Context, user
 	}
 	return &service.CeremonyClaimCertResult{CertPEM: []byte("-----BEGIN CERTIFICATE-----")}, nil
 }
-func (m *covMockCeremonySvc) CeremonyClaimShare(ctx context.Context, username string) ([]byte, error) {
+func (m *covMockCeremonySvc) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
 	if m.claimShareFn != nil {
-		return m.claimShareFn(ctx, username)
+		if _, err := m.claimShareFn(ctx, username); err != nil {
+			return nil, err
+		}
 	}
-	return []byte("share-data"), nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+func (m *covMockCeremonySvc) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.claimShareFn != nil {
+		share, err := m.claimShareFn(ctx, username)
+		if err != nil {
+			return nil, err
+		}
+		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("share-data")}, nil
 }
 func (m *covMockCeremonySvc) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
 	if m.signCSRFn != nil {
@@ -304,8 +317,8 @@ func (m *covMockPINBackend) VerifyUserPIN(userPin string) error {
 func TestCovCeremonyTools_Registration(t *testing.T) {
 	svc := newCovMockCeremonySvc()
 	tools := ceremonyTools(svc, nil)
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %d", len(tools))
 	}
 }
 
@@ -341,6 +354,11 @@ func TestCovHandleCeremonyInitialize_ServiceError(t *testing.T) {
 	}
 }
 
+// TestCovHandleCeremonyStatus_Success decodes the canonical snake_case wire
+// shape handleCeremonyStatus emits (a {"state":...,"spki_pin":...} map --
+// see tools_ceremony.go's handleCeremonyStatus), NOT the raw
+// service.CeremonyStatusInfo's PascalCase Go field names the handler used
+// to marshal directly before that was fixed for MCP/SDK-client parity.
 func TestCovHandleCeremonyStatus_Success(t *testing.T) {
 	handler := handleCeremonyStatus(newCovMockCeremonySvc())
 	req := buildCallToolRequest(t, "qrdb_ceremony_status", map[string]any{})
@@ -351,7 +369,10 @@ func TestCovHandleCeremonyStatus_Success(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var status service.CeremonyStatusInfo
+	var status struct {
+		State   string `json:"state"`
+		SPKIPin string `json:"spki_pin"`
+	}
 	if jerr := json.Unmarshal([]byte(resultText(t, result)), &status); jerr != nil {
 		t.Fatalf("unmarshal: %v", jerr)
 	}
@@ -484,10 +505,42 @@ func TestCovHandleCeremonyClaimCertComplete_ServiceError(t *testing.T) {
 	}
 }
 
-func TestCovHandleCeremonyClaimShare_Success(t *testing.T) {
-	handler := handleCeremonyClaimShare(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share", map[string]any{"username": "alice"})
-	result, err := handler(context.Background(), req)
+func TestCovHandleCeremonyBeginClaimShare_Success(t *testing.T) {
+	handler := handleCeremonyBeginClaimShare(newCovMockCeremonySvc())
+	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{"username": "alice"})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result")
+	}
+	var resp struct {
+		NonceHex string `json:"nonce_hex"`
+	}
+	if jerr := json.Unmarshal([]byte(resultText(t, result)), &resp); jerr != nil {
+		t.Fatalf("unmarshal: %v", jerr)
+	}
+	if resp.NonceHex == "" {
+		t.Error("expected non-empty nonce")
+	}
+}
+
+func TestCovHandleCeremonyBeginClaimShare_MissingUsername(t *testing.T) {
+	handler := handleCeremonyBeginClaimShare(newCovMockCeremonySvc())
+	req := buildCallToolRequest(t, "qrdb_ceremony_begin_claim_share", map[string]any{})
+	result, err := handler(ctxWithFakeTLS(), req)
+	if err != nil || !result.IsError {
+		t.Errorf("expected error result")
+	}
+}
+
+func TestCovHandleCeremonyCompleteClaimShare_Success(t *testing.T) {
+	handler := handleCeremonyCompleteClaimShare(newCovMockCeremonySvc())
+	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
+		"username": "alice", "nonce_hex": "abcd", "signature": "c2ln",
+	})
+	result, err := handler(ctxWithFakeTLS(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -505,23 +558,16 @@ func TestCovHandleCeremonyClaimShare_Success(t *testing.T) {
 	}
 }
 
-func TestCovHandleCeremonyClaimShare_MissingUsername(t *testing.T) {
-	handler := handleCeremonyClaimShare(newCovMockCeremonySvc())
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share", map[string]any{})
-	result, err := handler(context.Background(), req)
-	if err != nil || !result.IsError {
-		t.Errorf("expected error result")
-	}
-}
-
-func TestCovHandleCeremonyClaimShare_ServiceError(t *testing.T) {
+func TestCovHandleCeremonyCompleteClaimShare_ServiceError(t *testing.T) {
 	svc := newCovMockCeremonySvc()
 	svc.claimShareFn = func(_ context.Context, _ string) ([]byte, error) {
 		return nil, errors.New("not found")
 	}
-	handler := handleCeremonyClaimShare(svc)
-	req := buildCallToolRequest(t, "qrdb_ceremony_claim_share", map[string]any{"username": "alice"})
-	_, err := handler(context.Background(), req)
+	handler := handleCeremonyCompleteClaimShare(svc)
+	req := buildCallToolRequest(t, "qrdb_ceremony_complete_claim_share", map[string]any{
+		"username": "alice", "nonce_hex": "abcd", "signature": "c2ln",
+	})
+	_, err := handler(ctxWithFakeTLS(), req)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -706,7 +752,7 @@ func TestCovHandleCredentialList_ServiceError(t *testing.T) {
 func TestCovHandleCredentialRotate_Success(t *testing.T) {
 	handler := handleCredentialRotate(newCovMockCredentialSvc())
 	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
-		"name": "my-cred", "new_value": "newpass", "grace_period_seconds": float64(60),
+		"name": "my-cred", "new_value": base64.StdEncoding.EncodeToString([]byte("newpass")), "grace_period_seconds": float64(60),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -729,7 +775,7 @@ func TestCovHandleCredentialRotate_WithGraceUntil(t *testing.T) {
 	}
 	handler := handleCredentialRotate(svc)
 	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
-		"name": "cred", "new_value": "v2",
+		"name": "cred", "new_value": base64.StdEncoding.EncodeToString([]byte("v2")),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -751,7 +797,7 @@ func TestCovHandleCredentialRotate_WithGraceUntil(t *testing.T) {
 
 func TestCovHandleCredentialRotate_MissingName(t *testing.T) {
 	handler := handleCredentialRotate(newCovMockCredentialSvc())
-	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{"new_value": "v"})
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{"new_value": base64.StdEncoding.EncodeToString([]byte("v"))})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
 		t.Errorf("expected error result")
@@ -770,7 +816,7 @@ func TestCovHandleCredentialRotate_MissingNewValue(t *testing.T) {
 func TestCovHandleCredentialRotate_NegativeGrace(t *testing.T) {
 	handler := handleCredentialRotate(newCovMockCredentialSvc())
 	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{
-		"name": "c", "new_value": "v", "grace_period_seconds": float64(-1),
+		"name": "c", "new_value": base64.StdEncoding.EncodeToString([]byte("v")), "grace_period_seconds": float64(-1),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -784,7 +830,7 @@ func TestCovHandleCredentialRotate_ServiceError(t *testing.T) {
 		return nil, errors.New("rotate err")
 	}
 	handler := handleCredentialRotate(svc)
-	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{"name": "c", "new_value": "v"})
+	req := buildCallToolRequest(t, "qrdb_credential_rotate", map[string]any{"name": "c", "new_value": base64.StdEncoding.EncodeToString([]byte("v"))})
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")
@@ -1393,7 +1439,7 @@ func TestCovHandleGetTopology_ServiceError(t *testing.T) {
 func TestCovHandleCredentialSubmit_Success(t *testing.T) {
 	handler := handleCredentialSubmit(newCovMockCredentialSvc())
 	req := buildCallToolRequest(t, "qrdb_credential_submit", map[string]any{
-		"name": "my-cred", "value": "secret",
+		"name": "my-cred", "value": base64.StdEncoding.EncodeToString([]byte("secret")),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -1409,7 +1455,7 @@ func TestCovHandleCredentialSubmit_Success(t *testing.T) {
 
 func TestCovHandleCredentialSubmit_MissingName(t *testing.T) {
 	handler := handleCredentialSubmit(newCovMockCredentialSvc())
-	req := buildCallToolRequest(t, "qrdb_credential_submit", map[string]any{"value": "v"})
+	req := buildCallToolRequest(t, "qrdb_credential_submit", map[string]any{"value": base64.StdEncoding.EncodeToString([]byte("v"))})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
 		t.Errorf("expected error result")
@@ -1429,7 +1475,7 @@ func TestCovHandleCredentialSubmit_ServiceError(t *testing.T) {
 	svc := newCovMockCredentialSvc()
 	svc.submitFn = func(_ context.Context, _ string, _ []byte) error { return errors.New("err") }
 	handler := handleCredentialSubmit(svc)
-	req := buildCallToolRequest(t, "qrdb_credential_submit", map[string]any{"name": "n", "value": "v"})
+	req := buildCallToolRequest(t, "qrdb_credential_submit", map[string]any{"name": "n", "value": base64.StdEncoding.EncodeToString([]byte("v"))})
 	_, err := handler(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")

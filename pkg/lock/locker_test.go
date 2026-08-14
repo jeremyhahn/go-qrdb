@@ -103,7 +103,7 @@ func (w *mockWatcher) Close() error {
 // mockMVCCKVService implements MVCCKVServicer.
 type mockMVCCKVService struct {
 	getRevisionFn func(ctx context.Context, key string) (*kv.KeyValue, error)
-	rangeFn       func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeFn       func(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, int64, error)
 }
 
 func (m *mockMVCCKVService) GetRevision(ctx context.Context, key string) (*kv.KeyValue, error) {
@@ -113,11 +113,11 @@ func (m *mockMVCCKVService) GetRevision(ctx context.Context, key string) (*kv.Ke
 	return nil, errors.New("key not found")
 }
 
-func (m *mockMVCCKVService) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCKVService) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeFn != nil {
 		return m.rangeFn(ctx, start, end, opts...)
 	}
-	return nil, 0, nil
+	return nil, 0, 0, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -780,11 +780,11 @@ func TestList_MultipleLocks(t *testing.T) {
 	b2 := encodeLockValue(t, lv2)
 
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte(lockKeyPrefix + "res1"), Value: b1, ModRevision: 10},
 				{Key: []byte(lockKeyPrefix + "res2"), Value: b2, ModRevision: 20},
-			}, 2, nil
+			}, 2, 20, nil
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
@@ -804,12 +804,12 @@ func TestList_PrefixFilter(t *testing.T) {
 
 	var capturedStart, capturedEnd []byte
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, start, end []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, start, end []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			capturedStart = start
 			capturedEnd = end
 			return []*kv.KeyValue{
 				{Key: []byte(lockKeyPrefix + "db/table"), Value: b, ModRevision: 5},
-			}, 1, nil
+			}, 1, 5, nil
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
@@ -837,8 +837,8 @@ func TestList_PrefixFilter(t *testing.T) {
 
 func TestList_EmptyResult(t *testing.T) {
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, nil
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, nil
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
@@ -1121,8 +1121,8 @@ func TestExtend_KeepAliveError(t *testing.T) {
 func TestList_RangeError(t *testing.T) {
 	rangeErr := errors.New("range failed")
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
-			return nil, 0, rangeErr
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+			return nil, 0, 0, rangeErr
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
@@ -1135,10 +1135,10 @@ func TestList_RangeError(t *testing.T) {
 
 func TestList_MalformedEntrySkipped(t *testing.T) {
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte(lockKeyPrefix + "bad"), Value: []byte("not-json"), ModRevision: 1},
-			}, 1, nil
+			}, 1, 1, nil
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
@@ -1670,10 +1670,10 @@ func TestList_PreservesAllFields(t *testing.T) {
 	b := encodeLockValue(t, lv)
 
 	kvs := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			return []*kv.KeyValue{
 				{Key: []byte(lockKeyPrefix + "myres"), Value: b, ModRevision: 88},
-			}, 1, nil
+			}, 1, 88, nil
 		},
 	}
 	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)

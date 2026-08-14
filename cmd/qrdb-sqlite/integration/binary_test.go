@@ -39,10 +39,12 @@ import (
 // by building the real CGo binary (mattn/go-sqlite3 requires CGO_ENABLED=1)
 // and driving it exactly as an operator would from a shell.
 //
-// Mirrors the buildQRDBd pattern in helpers_test.go: sync.Once + os.MkdirTemp
-// rather than t.TempDir(), because sync.Once only ever captures the first
-// caller's *testing.T and a t.TempDir() directory is removed when that first
-// test completes, which would break every subsequent test in this file.
+// Mirrors qrdbdharness.BuildBinary: sync.Once + os.MkdirTemp rather than
+// t.TempDir(), because sync.Once only ever captures the first caller's
+// *testing.T and a t.TempDir() directory is removed when that first test
+// completes, which would break every subsequent test in this file. The build
+// itself stays local rather than moving to the harness because it compiles
+// this CGo module (CGO_ENABLED=1, mattn/go-sqlite3), not qrdbd.
 // ---------------------------------------------------------------------------
 
 var (
@@ -57,27 +59,43 @@ var (
 // build-sqlite-gateway Makefile target.
 func buildQRDBSQLite(t *testing.T) string {
 	t.Helper()
-	buildSQLiteOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "qrdb-sqlite-bin-test-*")
-		if err != nil {
-			buildSQLiteErr = fmt.Errorf("MkdirTemp: %w", err)
-			return
-		}
-		builtSQLiteBinary = filepath.Join(dir, "qrdb-sqlite")
-
-		cmd := exec.Command("go", "build", "-buildvcs=false",
-			"-tags", "sqlite_vtable",
-			"-o", builtSQLiteBinary, ".")
-		cmd.Dir = qrdbSQLiteModuleRoot()
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
-
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			buildSQLiteErr = fmt.Errorf("go build (qrdb-sqlite) failed: %w\n%s", err, out)
-		}
-	})
+	buildSQLiteOnce.Do(doBuildQRDBSQLite)
 	require.NoError(t, buildSQLiteErr, "build qrdb-sqlite binary")
 	return builtSQLiteBinary
+}
+
+// doBuildQRDBSQLite performs the one-shot CGO build. It is invoked through
+// buildSQLiteOnce from either buildQRDBSQLite (per-test) or TestMain's
+// pre-warm (ensureQRDBSQLiteBuilt). Pre-warming in TestMain matters: the
+// CGO+race build can take tens of seconds on a loaded machine, and the
+// per-test contexts are bounded (30s); if the first test triggered the build
+// inside its own timeout window, that command's deadline would be consumed by
+// build time and expire before the binary even ran.
+func doBuildQRDBSQLite() {
+	dir, err := os.MkdirTemp("", "qrdb-sqlite-bin-test-*")
+	if err != nil {
+		buildSQLiteErr = fmt.Errorf("MkdirTemp: %w", err)
+		return
+	}
+	builtSQLiteBinary = filepath.Join(dir, "qrdb-sqlite")
+
+	cmd := exec.Command("go", "build", "-buildvcs=false",
+		"-tags", "sqlite_vtable",
+		"-o", builtSQLiteBinary, ".")
+	cmd.Dir = qrdbSQLiteModuleRoot()
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		buildSQLiteErr = fmt.Errorf("go build (qrdb-sqlite) failed: %w\n%s", err, out)
+	}
+}
+
+// ensureQRDBSQLiteBuilt pre-warms the binary build from TestMain so no
+// per-test timeout ever includes build time. Returns the build error, if any.
+func ensureQRDBSQLiteBuilt() error {
+	buildSQLiteOnce.Do(doBuildQRDBSQLite)
+	return buildSQLiteErr
 }
 
 // qrdbSQLiteModuleRoot walks up from the current working directory to find
@@ -225,7 +243,7 @@ func TestBinary_FlagValidation_Errors(t *testing.T) {
 			name:       "invalid write-mode",
 			args:       []string{"shell", "--mode=client", "--server=localhost:63099", "--write-mode=bogus"},
 			wantExit:   1,
-			wantStderr: "qrdb-sqlite: invalid configuration for write-mode: must be one of: leader, local",
+			wantStderr: "qrdb-sqlite: invalid configuration for write-mode: must be one of: sync, wal_durable, batched",
 		},
 		{
 			name:       "non-positive chunk-size",
@@ -255,12 +273,27 @@ func TestBinary_FlagValidation_Errors(t *testing.T) {
 // shell — real subprocess round-trip against the shared qrdbd server
 // ---------------------------------------------------------------------------
 
+// unixTLSArgs returns the qrdb-sqlite CLI flags needed to authenticate over
+// the Unix-socket transport against the shared qrdbd server. Unix
+// (grpc-over-UDS) is "verified TLS 1.3 only", identical to gRPC/REST/QUIC/
+// MCP: the CLI must present the shared admin client certificate and trust
+// the shared CA exactly as it would for any other transport.
+func unixTLSArgs() []string {
+	return []string{
+		"--transport=unix",
+		"--server=" + shared.unixSocket,
+		"--ca-file=" + shared.ca.CertPath,
+		"--cert-file=" + shared.clientCertPath,
+		"--key-file=" + shared.clientKeyPath,
+	}
+}
+
 // TestBinary_Shell_UnixTransport_KVRoundTrip drives the qrdb-sqlite binary as
-// a real subprocess, in client mode over the Unix-socket transport (no TLS
-// setup required), against the shared qrdbd server started by TestMain. SQL
-// is piped over stdin exactly as an interactive operator would type it,
-// exercising discovery, virtual-table registration, INSERT, SELECT, and the
-// .quit dot-command end to end.
+// a real subprocess, in client mode over the Unix-socket transport
+// (verified TLS 1.3 with the shared admin identity), against the shared
+// qrdbd server started by TestMain. SQL is piped over stdin exactly as an
+// interactive operator would type it, exercising discovery, virtual-table
+// registration, INSERT, SELECT, and the .quit dot-command end to end.
 func TestBinary_Shell_UnixTransport_KVRoundTrip(t *testing.T) {
 	if shared == nil {
 		t.Fatal("shared server is nil — TestMain did not start it")
@@ -278,13 +311,8 @@ func TestBinary_Shell_UnixTransport_KVRoundTrip(t *testing.T) {
 		key, val, key,
 	)
 
-	out, code := runQRDBSQLite(t, ctx, stdin,
-		"shell",
-		"--mode=client",
-		"--transport=unix",
-		"--server="+shared.unixSocket,
-		"--database=default",
-	)
+	args := append([]string{"shell", "--mode=client"}, unixTLSArgs()...)
+	out, code := runQRDBSQLite(t, ctx, stdin, args...)
 	require.Equal(t, 0, code, "shell subprocess exit code; output:\n%s", out)
 	require.Contains(t, out, key, "output should echo the inserted key:\n%s", out)
 	require.Contains(t, out, val, "output should echo the inserted value:\n%s", out)
@@ -302,15 +330,50 @@ func TestBinary_Shell_UnixTransport_TablesDotCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	out, code := runQRDBSQLite(t, ctx, ".tables\n.quit\n",
-		"shell",
-		"--mode=client",
-		"--transport=unix",
-		"--server="+shared.unixSocket,
-		"--database=default",
-	)
+	args := append([]string{"shell", "--mode=client"}, unixTLSArgs()...)
+	out, code := runQRDBSQLite(t, ctx, ".tables\n.quit\n", args...)
 	require.Equal(t, 0, code, "shell subprocess exit code; output:\n%s", out)
 	require.Contains(t, out, "kv", ".tables output should list the discovered kv table:\n%s", out)
+}
+
+// TestBinary_Shell_UnixTransport_QRDBStatusPragma verifies that the custom
+// ".pragma qrdb_status" dot-command, run through the real subprocess REPL
+// against the shared qrdbd server, prints the live session settings instead
+// of silently producing no output (real SQLite has no knowledge of qrdb_*
+// pragma names and used to no-op on them before the shell intercepted them).
+func TestBinary_Shell_UnixTransport_QRDBStatusPragma(t *testing.T) {
+	if shared == nil {
+		t.Fatal("shared server is nil — TestMain did not start it")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	args := append([]string{"shell", "--mode=client"}, unixTLSArgs()...)
+	out, code := runQRDBSQLite(t, ctx, ".pragma qrdb_status\n.quit\n", args...)
+	require.Equal(t, 0, code, "shell subprocess exit code; output:\n%s", out)
+	require.Contains(t, out, "consistency", "qrdb_status output should include the consistency setting:\n%s", out)
+	require.Contains(t, out, "write_mode", "qrdb_status output should include the write_mode setting:\n%s", out)
+	require.Contains(t, out, "client", "qrdb_status output should report client mode:\n%s", out)
+}
+
+// TestBinary_Shell_UnixTransport_QRDBWriteModePragma verifies that
+// ".pragma qrdb_write_mode wal_durable" actually changes the session's write
+// mode (round-tripped through .pragma qrdb_status), rather than being a
+// silent no-op against the real SQLite engine.
+func TestBinary_Shell_UnixTransport_QRDBWriteModePragma(t *testing.T) {
+	if shared == nil {
+		t.Fatal("shared server is nil — TestMain did not start it")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	args := append([]string{"shell", "--mode=client"}, unixTLSArgs()...)
+	stdin := ".pragma qrdb_write_mode wal_durable\n.pragma qrdb_status\n.quit\n"
+	out, code := runQRDBSQLite(t, ctx, stdin, args...)
+	require.Equal(t, 0, code, "shell subprocess exit code; output:\n%s", out)
+	require.Contains(t, out, "wal_durable", "qrdb_status output should reflect the new write mode:\n%s", out)
 }
 
 // TestBinary_Shell_ClientMode_UnreachableServer_ExitsNonZero drives the

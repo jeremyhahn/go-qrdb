@@ -36,6 +36,7 @@ type restTenant struct {
 	ID            string                        `json:"id"`
 	Name          string                        `json:"name"`
 	IsolationType transport.TenantIsolationType `json:"isolation_type,omitempty"`
+	DataRoot      string                        `json:"data_root,omitempty"`
 	Quotas        *transport.TenantQuotas       `json:"quotas,omitempty"`
 	Entitlements  *transport.TenantEntitlements `json:"entitlements,omitempty"`
 	CreatedAtStr  string                        `json:"createdAt"`
@@ -108,6 +109,7 @@ func (r *restTenant) toTenantInfo() transport.TenantInfo {
 		ID:            r.ID,
 		Name:          r.Name,
 		IsolationType: r.IsolationType,
+		DataRoot:      r.DataRoot,
 		Quotas:        r.Quotas,
 		Entitlements:  r.Entitlements,
 	}

@@ -46,7 +46,10 @@ func newNamespacedBatchService(inner service.BatchServicer, prefix string) *name
 // the inclusive lower bound and RangeEnd the exclusive upper bound, so both are
 // confined to the namespace — an absent bound stays within the namespace
 // instead of escaping to the shared store. For a single-key op the Key is
-// prefixed and the (nil) RangeEnd is preserved so it is not misread as a range.
+// confined to the namespace with prefixKeyBytes (an absent key maps to the
+// bare namespace prefix rather than escaping to the shared store root — see
+// prefixKeyBytes) and the (nil) RangeEnd is preserved with prefixBytes so it
+// is not misread as a range.
 func (s *namespacedBatchService) prefixOps(ops []service.Op) []service.Op {
 	out := make([]service.Op, len(ops))
 	for i, op := range ops {
@@ -54,7 +57,7 @@ func (s *namespacedBatchService) prefixOps(ops []service.Op) []service.Op {
 			op.Key = prefixStartBytes(op.Key, s.prefix)
 			op.RangeEnd = prefixEndBytes(op.RangeEnd, s.prefix)
 		} else {
-			op.Key = prefixBytes(op.Key, s.prefix)
+			op.Key = prefixKeyBytes(op.Key, s.prefix)
 			op.RangeEnd = prefixBytes(op.RangeEnd, s.prefix)
 		}
 		out[i] = op
@@ -106,8 +109,12 @@ func (s *namespacedBatchService) ExecuteEntity(ctx context.Context, req *service
 	return s.inner.ExecuteEntity(ctx, &cp)
 }
 
-// Import is not supported for a namespaced database scope because ImportOptions
-// carries no key-prefix hook. See NamespacedImportUnsupportedError.
+// Import scopes a bulk import to the composite namespace by setting the
+// KeyPrefix on the options, so imported keys land in this database's
+// keyspace exactly like every other write. The inner service prefixes each
+// stored key and still reports the original user-supplied key in any error
+// rows.
 func (s *namespacedBatchService) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
-	return nil, &NamespacedImportUnsupportedError{Prefix: s.prefix}
+	opts.KeyPrefix = s.prefix + opts.KeyPrefix
+	return s.inner.Import(ctx, file, opts)
 }

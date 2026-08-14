@@ -593,11 +593,15 @@ func TestRouting_AddCertBinding_Success(t *testing.T) {
 	}
 }
 
-// requestTenant with explicit non-empty tenant.
-func TestRequestTenant_Explicit(t *testing.T) {
-	got := requestTenant("my-tenant")
+// EffectiveTenant honors an explicit tenant for a system-tenant caller.
+func TestEffectiveTenant_SystemExplicit(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
+	got, err := tenant.EffectiveTenant(ctx, "my-tenant", "create user")
+	if err != nil {
+		t.Fatalf("EffectiveTenant: %v", err)
+	}
 	if got != "my-tenant" {
-		t.Errorf("requestTenant(%q) = %q, want my-tenant", "my-tenant", got)
+		t.Errorf("EffectiveTenant(system, %q) = %q, want my-tenant", "my-tenant", got)
 	}
 }
 

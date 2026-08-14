@@ -91,6 +91,34 @@ func (p *PebbleIndex) encodeValue(raw []byte) ([]byte, bool) {
 	return encoded, true
 }
 
+// resolveScanBound encodes a Scan boundary value produced by the query
+// planner. For string indexes (including case-insensitive ones, which are
+// normalized upstream) the raw bytes are used unchanged: this also covers
+// the exclusivity marker convention used by pkg/sql/provider/range_translator.go,
+// where a trailing 0x00 byte is appended to a bound to advance it past the
+// exact value it was derived from — lexicographic byte comparison already
+// makes this correct for raw string keys.
+//
+// For numeric indexes that same trailing-0x00 marker cannot be applied to
+// the decimal text before encoding, because encoding re-parses the text as
+// a float and a trailing NUL byte is not valid float syntax. Instead the
+// marker is resolved AFTER encoding: the decimal text (with the marker
+// stripped, if present) is parsed and encoded to its fixed-width 8-byte
+// form, and if the marker was present, the exact successor of the encoded
+// bytes is returned so exclusivity is expressed correctly in the encoded
+// numeric byte domain — including across the sign-flip boundary used for
+// negative numbers — rather than being corrupted by re-parsing mangled text.
+//
+// Returns an InvalidNumericBoundError when a numeric bound cannot be parsed.
+// This must be treated as a hard failure by callers, never silently mapped
+// to an empty result: a malformed bound is a caller error, not "no matches".
+func (p *PebbleIndex) resolveScanBound(raw []byte, op string) ([]byte, error) {
+	if p.valueType != IndexValueTypeNumeric {
+		return raw, nil
+	}
+	return resolveNumericScanBound(raw, p.name, op)
+}
+
 // decodeValue reverses the encoding applied by encodeValue. For numeric
 // indexes it converts the 8-byte representation back to a decimal string.
 func (p *PebbleIndex) decodeValue(encoded []byte) string {
@@ -205,29 +233,36 @@ func (p *PebbleIndex) Delete(entityKey []byte, fieldValue []byte) error {
 // interval [start, end). Returns a map of field value strings to entity
 // key slices. For numeric indexes, start and end are encoded before use
 // so that the byte-range comparison is numerically correct; the result
-// map keys are decoded back to decimal strings.
+// map keys are decoded back to decimal strings. A nil start or end means
+// unbounded on that side (matching the [start, end) semantics used by
+// pkg/sql/provider/range_translator.go for open-ended range predicates
+// such as "> x" or "< x"). Returns an InvalidNumericBoundError if a
+// non-nil bound cannot be parsed as a number on a numeric index.
 func (p *PebbleIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 	if p.closed.Load() {
 		return nil, &ClosedError{Name: p.name}
 	}
-	if start == nil {
-		return nil, &NilFieldValueError{Op: "scan start"}
-	}
-	if end == nil {
-		return nil, &NilFieldValueError{Op: "scan end"}
+
+	var lower, upper []byte
+	if start != nil {
+		encodedStart, err := p.resolveScanBound(start, "scan start")
+		if err != nil {
+			return nil, err
+		}
+		lower = p.buildScanBound(encodedStart)
+	} else {
+		lower = p.buildIndexPrefix()
 	}
 
-	encodedStart, ok := p.encodeValue(start)
-	if !ok {
-		return map[string][][]byte{}, nil
+	if end != nil {
+		encodedEnd, err := p.resolveScanBound(end, "scan end")
+		if err != nil {
+			return nil, err
+		}
+		upper = p.buildScanBound(encodedEnd)
+	} else {
+		upper = incrementBytes(p.buildIndexPrefix())
 	}
-	encodedEnd, ok := p.encodeValue(end)
-	if !ok {
-		return map[string][][]byte{}, nil
-	}
-
-	lower := p.buildScanBound(encodedStart)
-	upper := p.buildScanBound(encodedEnd)
 
 	iter, err := p.db.NewIter(&pebble.IterOptions{
 		LowerBound: lower,

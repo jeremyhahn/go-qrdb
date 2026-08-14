@@ -61,9 +61,9 @@ type RBACAuthorizer struct {
 ### Behavior
 
 - Loads the user's assigned roles from the `RoleStore`
-- Collects all permissions across all assigned roles
-- Checks whether the requested `resource:action` pair is present
-- **Superadmin bypass**: users with the `superadmin` role skip permission checks entirely
+- Collects all permissions across the assigned roles (built-in roles use concrete `resource:action` grants; whole-segment wildcards like `resource:*` also match)
+- Allows the request only when the requested `resource:action` is present, and denies otherwise (`PermissionDeniedError`). There is no superadmin role that skips the check — an unknown role simply grants nothing
+- **SO deny-list (FIPS 140-3 AS10.03)**: an identity holding the `so` role is denied cryptographic operations regardless of any grant, and this runs before permissions are resolved. It covers the `keys:*` crypto verbs (`sign`, `encrypt`, `decrypt`, `verify`, `wrap`, `unwrap`, `derive`), hardware-token key use (`piv:use`), and any resource whose action names a cryptographic primitive (`attest`, `quote`, `mac`, `kdf`, ...) -- including permissions contributed by a higher layer. Barrier lifecycle (`seal:unseal`, `seal:seal`) and issuance (`ceremony:sign_csr`, `certs:generate`) are the SO's own duties and are not denied
 - **Permission cache**: a `sync.Map` caches resolved permissions per user with a configurable TTL (default 30 seconds) to avoid repeated store lookups on every request
 
 ## Auth Middleware

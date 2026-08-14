@@ -18,11 +18,15 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"math"
 	"reflect"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	gmssql "github.com/dolthub/go-mysql-server/sql"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/catalog"
 )
 
 // Compile-time interface assertions.
@@ -74,20 +78,46 @@ func (r *embeddedRows) Next(dest []driver.Value) error {
 	}
 
 	for i, v := range row {
-		dest[i] = convertValue(v)
+		resolved, err := r.resolve(i, v)
+		if err != nil {
+			return err
+		}
+		dest[i] = convertValue(resolved)
 	}
 	return nil
 }
 
+// resolve returns the externally visible value of cell i, consulting the
+// column's declared type through catalog.ResolveColumnValue rather than
+// inferring meaning from the cell's Go type. This is what keeps ENUM and SET
+// columns -- whose cells are an ordinal and a bitmask, not a label and a
+// label list -- reading the same here as they do over the MySQL wire, where
+// go-mysql-server performs the identical resolution itself.
+//
+// Cells with no corresponding schema entry are returned unchanged: the
+// schema is the only authority on a cell's meaning, and inventing one for a
+// column the engine did not describe would be the very guess this function
+// exists to remove.
+func (r *embeddedRows) resolve(i int, v any) (any, error) {
+	if i >= len(r.schema) || r.schema[i] == nil {
+		return v, nil
+	}
+	return catalog.ResolveColumnValue(r.ctx, r.schema[i].Type, v)
+}
+
 // ColumnTypeScanType returns the Go type suitable for scanning into for
 // the column at the given index.
+//
+// It reports the type Next actually produces (catalog.ResolvedValueType),
+// not the engine's storage type: an ENUM column stores a uint16 ordinal but
+// yields its label, so uint16 is a scan type no row of this result set could
+// ever satisfy.
 func (r *embeddedRows) ColumnTypeScanType(index int) reflect.Type {
 	if index < 0 || index >= len(r.schema) {
 		return reflect.TypeOf("")
 	}
 
-	col := r.schema[index]
-	goType := col.Type.ValueType()
+	goType := catalog.ResolvedValueType(r.schema[index].Type)
 	if goType == nil {
 		return reflect.TypeOf("")
 	}
@@ -105,6 +135,18 @@ func (r *embeddedRows) ColumnTypeDatabaseTypeName(index int) string {
 
 // convertValue normalizes a GMS row value into a type that database/sql
 // can handle.
+//
+// Every integer width widens to int64 with one exception. driver.Value admits
+// no unsigned integer, so a BIGINT UNSIGNED above math.MaxInt64 -- the upper
+// half of the range the column exists to hold -- has no int64 that represents
+// it: 18446744073709551615 reinterpreted as an int64 is -1, which is not an
+// approximation of the stored row but a different row, delivered without an
+// error. Such a value is handed over as its decimal text instead, exactly as
+// go-sql-driver/mysql does for the same case on the binary protocol (see its
+// uint64ToString call in packets.go), so that database/sql's own conversion
+// scans it into a uint64 with its exact value, into a string as the digits
+// that were stored, and into an int64 as the range error it is -- the same
+// three outcomes the MySQL wire produces for the same row.
 func convertValue(v interface{}) driver.Value {
 	if v == nil {
 		return nil
@@ -127,8 +169,10 @@ func convertValue(v interface{}) driver.Value {
 		return int64(val)
 	case uint32:
 		return int64(val)
+	case uint:
+		return convertUint64(uint64(val))
 	case uint64:
-		return int64(val)
+		return convertUint64(val)
 	case float32:
 		return float64(val)
 	case float64:
@@ -144,4 +188,14 @@ func convertValue(v interface{}) driver.Value {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// convertUint64 renders an unsigned 64-bit value as the widest driver.Value
+// that holds it exactly: an int64 while one exists, and the decimal text of
+// the value once none does.
+func convertUint64(val uint64) driver.Value {
+	if val > math.MaxInt64 {
+		return []byte(strconv.FormatUint(val, 10))
+	}
+	return int64(val)
 }

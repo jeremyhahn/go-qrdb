@@ -17,6 +17,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -132,13 +133,24 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		return &RaftBackendError{TenantID: tenantID, Op: "migrate", Err: ErrRaftDatabaseUnknown}
 	}
 
-	mintStrat, err := keyedTenantStrategy(opts)
-	if err != nil {
-		return err
-	}
-	target, err := source.MintKeyedSibling(ctx, migrateStagingSuffix, mintStrat, opts.Credentials)
-	if err != nil {
-		return &RaftBackendError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+	var target *seal.StorageBarrier
+	if opts.TargetStrategy == seal.StrategyShamir {
+		// The Shamir target requires the direct-mode ceremony (mint + M-of-N
+		// split to enrolled Security Officers in one step); the generic
+		// MintKeyedSibling path cannot represent it — see its doc comment.
+		target, _, err = source.MintKeyedShamirSibling(ctx, migrateStagingSuffix, opts.ShamirThreshold, opts.ShamirTotal)
+		if err != nil {
+			return &RaftBackendError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+		}
+	} else {
+		mintStrat, merr := keyedTenantStrategy(opts)
+		if merr != nil {
+			return merr
+		}
+		target, err = source.MintKeyedSibling(ctx, migrateStagingSuffix, mintStrat, opts.Credentials)
+		if err != nil {
+			return &RaftBackendError{TenantID: tenantID, Op: "migrate-mint", Err: err}
+		}
 	}
 	// Always remove the staging keyed root-key blob and zero its key enclave on
 	// return — on success (the keyed root key is adopted to the canonical path, so
@@ -163,6 +175,12 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 	}
 
 	quiesced := false
+	// keyedSealed is set true once a Shamir-target reopen installs a SEALED
+	// keyed barrier (see the ReopenKeyed call below): it tells the deferred
+	// re-attach that a seal.ErrSealed from f.Attach is the expected, non-fatal
+	// post-migration state (pending Security Officer quorum), not a migration
+	// failure.
+	keyedSealed := false
 	// stagedSnaps accumulates re-encrypted snapshot data files staged beside their
 	// originals in the shared host snapshot tree, which the per-shard dir swaps
 	// below do NOT move (unlike IsolationVolume, whose snapshots ride the smDir
@@ -193,6 +211,12 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		if quiesced {
 			for _, s := range shards {
 				if aerr := f.Attach(ctx, s.key.tenantID, s.key.database); aerr != nil && err == nil {
+					if keyedSealed && errors.Is(aerr, seal.ErrSealed) {
+						// Expected: a Shamir target reopens sealed, pending quorum. The
+						// shard stays detached; a later Attach (request-driven or
+						// operator-driven) retries and succeeds once unsealed.
+						continue
+					}
 					err = &RaftBackendError{TenantID: s.key.tenantID, Database: s.key.database, Op: "migrate-reattach", Err: aerr}
 				}
 			}
@@ -322,7 +346,7 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 	// Install the keyed barrier: reopen from the now-keyed canonical root key and
 	// replace the live (none) tenant barrier so re-attach and any concurrent
 	// resolve use the keyed barrier.
-	reopenStrat, serr := keyedTenantStrategy(opts)
+	reopenStrat, serr := reopenStrategyFor(opts)
 	if serr != nil {
 		err = serr
 		return err
@@ -345,6 +369,15 @@ func (f *RaftBackendFactory) MigrateTenantEncryption(ctx context.Context, tenant
 		slog.String("tenant", tenantID),
 		slog.String("strategy", string(opts.TargetStrategy)),
 		slog.Int("shards", len(shards)))
+	// A Shamir target reopens SEALED (see ReopenKeyed): by design it never
+	// auto-unseals from disk. The migration itself is complete and the keyed
+	// barrier is installed; the deferred re-attach below would otherwise
+	// report the shards' expected seal.ErrSealed as a migration FAILURE.
+	// keyedSealed tells that defer to tolerate it — the shards stay detached
+	// until a Security Officer quorum unseals the barrier via
+	// UnsealWithShare(s), at which point the normal Services()/Attach retry
+	// (request-driven or operator-driven) succeeds.
+	keyedSealed = keyed.IsSealed()
 	// The deferred re-attach reopens every shard under the keyed barrier.
 	return nil
 }

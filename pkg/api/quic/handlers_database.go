@@ -19,10 +19,16 @@ import (
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // handleDatabaseCreate unmarshals a JSON database creation request, creates
-// the database via the service layer, and returns the serialized database info.
+// the database via the service layer, and returns the serialized database
+// info. When the request carries a barrier config with a non-empty secret,
+// the database is created via the credentialed path (routing to
+// CreateForTenantWithCredentials when the resolved DatabaseServicer
+// supports it), mirroring the REST POST /v1/databases handler.
 func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.databaseSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "database"}
@@ -43,13 +49,23 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 		Replicas: req.Replicas,
 		Protocol: req.Protocol.toDomain(),
 		Raft:     req.Raft,
-		Barrier:  req.Barrier,
 	}
 	if req.Connection != nil {
 		cfg.Connection = req.Connection
 	}
 
-	info, err := s.databaseSvc.CreateForTenant(ctx, cfg)
+	var creds seal.Credentials
+	if req.Barrier != nil {
+		cfg.Barrier = &database.DatabaseBarrierConfig{
+			Enabled:        req.Barrier.Enabled,
+			Mode:           req.Barrier.Mode,
+			SharesRequired: req.Barrier.SharesRequired,
+			SharesTotal:    req.Barrier.SharesTotal,
+		}
+		creds = seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+	}
+
+	info, err := service.CreateDatabaseForTenantWithCredentials(ctx, s.databaseSvc, cfg, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +235,33 @@ func (s *Server) handleDatabaseUpdateRaft(ctx context.Context, payload []byte) (
 	return resp, nil
 }
 
+// handleDatabaseScale unmarshals a JSON replica-count scale request, applies
+// it via the service layer, and returns the updated database info.
+func (s *Server) handleDatabaseScale(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.databaseSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "database"}
+	}
+
+	var req databaseScaleRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if req.Name == "" {
+		return nil, &InvalidArgumentError{Reason: "database name is required"}
+	}
+
+	info, err := s.databaseSvc.ScaleForTenant(ctx, req.Name, req.TargetReplicas)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := json.Marshal(info)
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
 // handleDatabaseUpdateBarrier unmarshals a JSON barrier configuration update
 // request, applies it via the service layer, and returns the updated info.
 func (s *Server) handleDatabaseUpdateBarrier(ctx context.Context, payload []byte) ([]byte, error) {
@@ -297,8 +340,21 @@ type databaseCreateRequest struct {
 	Replicas   int                                `json:"replicas,omitempty"`
 	Protocol   databaseCreateProtocolConfig       `json:"protocol,omitempty"`
 	Raft       *database.DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier    *database.DatabaseBarrierConfig    `json:"barrier,omitempty"`
+	Barrier    *databaseCreateBarrierConfig       `json:"barrier,omitempty"`
 	Connection *database.DatabaseConnectionConfig `json:"connection,omitempty"`
+}
+
+// databaseCreateBarrierConfig is the JSON wire format for the barrier
+// section of a database creation request. Secret carries the barrier
+// passphrase for the initial Initialize call; it is never persisted (the
+// domain database.DatabaseBarrierConfig has no secret field) and is only
+// used to build the seal.Credentials passed to EnsureBarrier.
+type databaseCreateBarrierConfig struct {
+	Enabled        bool   `json:"enabled"`
+	Mode           string `json:"mode,omitempty"`
+	SharesRequired int    `json:"sharesRequired,omitempty"`
+	SharesTotal    int    `json:"sharesTotal,omitempty"`
+	Secret         string `json:"secret,omitempty"`
 }
 
 // databaseCreateProtocolConfig matches the SDK's camelCase JSON format.
@@ -357,6 +413,13 @@ type databaseUpdateEtcdRequest struct {
 type databaseUpdateRaftRequest struct {
 	Name string                       `json:"name"`
 	Raft *database.DatabaseRaftConfig `json:"raft"`
+}
+
+// databaseScaleRequest is the JSON wire format for changing the replication
+// factor of a dedicated-raft database.
+type databaseScaleRequest struct {
+	Name           string `json:"name"`
+	TargetReplicas int    `json:"targetReplicas"`
 }
 
 // databaseUpdateBarrierRequest is the JSON wire format for updating the

@@ -87,7 +87,7 @@ func (t *CollectionTable) String() string {
 }
 
 // Schema returns the SQL schema for this collection table.
-func (t *CollectionTable) Schema() sqle.Schema {
+func (t *CollectionTable) Schema(_ *sqle.Context) sqle.Schema {
 	return t.schema
 }
 
@@ -272,7 +272,7 @@ func (t *CollectionTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexL
 	}
 
 	ranges := lookup.Ranges.ToRanges()
-	keys, err := translateRanges(ctx, t.indexSvc, qIdx.column, ranges)
+	keys, err := translateRanges(ctx, t.indexSvc, qIdx.firstColumn(), ranges)
 	if err != nil {
 		return nil, &IndexLookupError{IndexName: qIdx.id, Err: err}
 	}
@@ -420,6 +420,9 @@ func (w *collectionWriter) Close(_ *sqle.Context) error {
 // Insert inserts a document from a SQL row. Column 0 is _id (may be nil
 // for auto-generation), remaining columns map to fieldOrder.
 func (w *collectionWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, w.collection); err != nil {
+		return err
+	}
 	doc := w.rowToDocument(row)
 	_, err := w.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
 		Collection: w.collection,
@@ -431,6 +434,9 @@ func (w *collectionWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 
 // Delete deletes a document by _id from column 0.
 func (w *collectionWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, w.collection); err != nil {
+		return err
+	}
 	id, err := extractDocID(row)
 	if err != nil {
 		return err
@@ -446,6 +452,9 @@ func (w *collectionWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 // Update updates a document. Deletes the old ID if it changed, then
 // inserts the new document.
 func (w *collectionWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row) error {
+	if err := requireAutocommit(ctx, w.collection); err != nil {
+		return err
+	}
 	oldID, err := extractDocID(old)
 	if err != nil {
 		return err

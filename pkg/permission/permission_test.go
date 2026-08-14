@@ -524,7 +524,12 @@ func TestAll_TotalCount(t *testing.T) {
 	//   databases:create_volume) = 340 total.
 	// + 1 enable-encryption migration perm (seal:enable_encryption) = 341 total.
 	// + 1 tenant barrier enable-encryption perm (tenant_barrier:enable_encryption) = 342 total.
-	const expectedTotal = 342
+	// + 13 ACME-administration / CA-hierarchy perms (3 acme_accounts + 2
+	//   acme_orders + 4 acme_eab + 4 ca) = 355 total.
+	// + 3 SSH key vault perms (ssh:read/write/delete) = 358 total.
+	// + 1 elastic-scaling perm (databases:scale) = 359 total.
+	// + 1 selective point-in-time restore perm (mvcc:restore) = 360 total.
+	const expectedTotal = 360
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

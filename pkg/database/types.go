@@ -330,6 +330,19 @@ func (r *DatabaseRaftConfig) Validate() error {
 	return nil
 }
 
+const (
+	// BarrierModePassphrase selects a single-passphrase (software KDF)
+	// sealing strategy for a per-database encryption barrier. This is the
+	// only strategy EnsureBarrier currently implements.
+	BarrierModePassphrase = "passphrase"
+
+	// BarrierModeShamir selects M-of-N Shamir quorum sealing for a
+	// per-database encryption barrier. Accepted as a configuration value but
+	// not yet implemented by EnsureBarrier, which rejects it with
+	// UnsupportedBarrierStrategyError.
+	BarrierModeShamir = "shamir"
+)
+
 // DatabaseBarrierConfig holds encryption barrier settings for a single database.
 type DatabaseBarrierConfig struct {
 	Enabled        bool   `yaml:"enabled"        json:"enabled"`
@@ -503,6 +516,27 @@ func (c *DatabaseConfig) Validate() error {
 	}
 
 	return nil
+}
+
+// HasDedicatedStore reports whether this database's storage is physically
+// dedicated to it, as opposed to sharing the system's default store keyspace
+// with every other prefix-isolated database on the node. A database gets a
+// dedicated store when it is routed to its own directory -- an
+// IsolationVolume tenant's DataRoot, an IsolationRaft tenant's dedicated
+// shard directory, or an explicit operator-supplied DataDir -- or when it is
+// backed by a dedicated Raft group (BackendRaft). A database left at the
+// package-computed default path ({dataDir}/databases/{name}/data) shares the
+// same physical store class as every other database created the same way and
+// is not dedicated.
+//
+// Only a database with a dedicated store can host a cryptographically
+// meaningful per-database encryption barrier: EnsureBarrier rejects enabling
+// one on a non-dedicated database with SharedStoreBarrierUnsupportedError,
+// since a barrier layered over shared storage would be inert state with no
+// real isolation effect (the shared store's own at-rest encryption already
+// governs the underlying bytes).
+func (c *DatabaseConfig) HasDedicatedStore() bool {
+	return c.Backend == BackendRaft || strings.TrimSpace(c.DataDir) != ""
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // MVCCKVServicer extends KVServicer with MVCC-aware operations that expose
@@ -71,13 +72,16 @@ type MVCCKVServicer interface {
 	// Range returns key-value pairs in the half-open interval
 	// [start, end). When end is nil, only the key matching start is
 	// returned. The total count of matching keys (before any limit)
-	// is returned alongside the results.
-	Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, error)
+	// and the MVCC revision the read was performed at are returned
+	// alongside the results.
+	Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error)
 
 	// RangeWithConsistency returns key-value pairs in the half-open
 	// interval [start, end) with the specified consistency level.
-	// When end is nil, only the key matching start is returned.
-	RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, error)
+	// When end is nil, only the key matching start is returned. The
+	// total count of matching keys and the MVCC revision the read was
+	// performed at are returned alongside the results.
+	RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, int64, error)
 
 	// Compact discards all MVCC revisions older than the specified
 	// revision, reclaiming storage. Compacted revisions can no longer
@@ -86,6 +90,20 @@ type MVCCKVServicer interface {
 
 	// CurrentRevision returns the latest committed MVCC revision.
 	CurrentRevision(ctx context.Context) (int64, error)
+
+	// RestoreToRevision returns a bounded set of user keys to the value they
+	// held at an earlier revision by proposing new writes (a logical undo).
+	// Committed history is never discarded. Exactly one of the request's
+	// Prefix and Keys must be set — an unscoped request is refused — and the
+	// internal key namespace is never restorable.
+	//
+	// It is part of this interface, rather than a capability reachable only
+	// on the concrete service, so that every wrapper in the write path is
+	// forced by the compile-time interface check to implement it: a
+	// tenant/database-namespaced or quota-accounted view that inherited a
+	// restore it did not confine to its own keyspace would be a cross-tenant
+	// write primitive.
+	RestoreToRevision(ctx context.Context, req *RestoreRevisionRequest) (*RestoreRevisionResult, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +133,15 @@ type revisionNotFoundErr interface {
 	error
 	// RevisionNotFound returns the key and missing revision.
 	RevisionNotFound() (key string, revision int64)
+}
+
+// changeIndexUnsupportedErr matches the refusal a backend returns when it
+// maintains no durable revision index and therefore cannot report which keys
+// changed in a revision window (see mvccadapter.ScanChangesUnsupportedError).
+type changeIndexUnsupportedErr interface {
+	error
+	// ScanChangesUnsupported marks the error as that refusal.
+	ScanChangesUnsupported()
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +181,27 @@ func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error
 		return resultErr
 	}
 	return nil
+}
+
+// PutIfAbsent stores value under key only when the key is absent, through the
+// MVCC state machine.
+//
+// Like the base KV engine, the condition is evaluated inside the state machine
+// at this entry's log position rather than on the proposer, so replicas cannot
+// disagree and two racing proposers cannot both create the key.
+//
+// A declined write is a successful application reporting kv.ResultNotStored, so
+// losing the race never stalls consensus.
+func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	cmd := protocol.EncodeMVCCPutIfAbsent([]byte(key), value, 0)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == kv.ResultStored, nil
 }
 
 // Get retrieves the latest value for a key with a linearizable read.
@@ -592,58 +640,62 @@ func (s *MVCCKVService) GetAtRevisionWithConsistency(ctx context.Context, key st
 
 // Range returns key-value pairs in the half-open interval [start, end)
 // using a linearizable read.
-func (s *MVCCKVService) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, error) {
+func (s *MVCCKVService) Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	// Apply functional options to build flat query fields.
 	var ro RangeOptions
 	for _, o := range opts {
 		o(&ro)
 	}
 	result, err := s.host.SyncRead(ctx, s.shardID, MVCCRangeQuery{
-		Start:     start,
-		End:       end,
-		Revision:  ro.Revision,
-		Limit:     ro.Limit,
-		CountOnly: ro.CountOnly,
-		KeysOnly:  ro.KeysOnly,
+		Start:      start,
+		End:        end,
+		Revision:   ro.Revision,
+		Limit:      ro.Limit,
+		CountOnly:  ro.CountOnly,
+		KeysOnly:   ro.KeysOnly,
+		SortOrder:  ro.SortOrder,
+		SortTarget: ro.SortTarget,
 	})
 	if err != nil {
-		return nil, 0, s.translateReadError(err)
+		return nil, 0, 0, s.translateReadError(err)
 	}
 
 	rr, ok := result.(*MVCCRangeResult)
 	if !ok {
-		return nil, 0, &ReadError{Err: &unexpectedResultTypeError{}}
+		return nil, 0, 0, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return rr.KeyValues, rr.Revision, nil
+	return rr.KeyValues, rr.Count, rr.Revision, nil
 }
 
 // RangeWithConsistency returns key-value pairs in the half-open interval
 // [start, end) with the specified consistency level.
-func (s *MVCCKVService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, error) {
+func (s *MVCCKVService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...RangeOption) ([]*KeyValue, int64, int64, error) {
 	// Apply functional options to build flat query fields.
 	var ro RangeOptions
 	for _, o := range rangeOpts {
 		o(&ro)
 	}
 	result, err := s.host.ReadWithConsistency(ctx, s.shardID, MVCCRangeQuery{
-		Start:     start,
-		End:       end,
-		Revision:  ro.Revision,
-		Limit:     ro.Limit,
-		CountOnly: ro.CountOnly,
-		KeysOnly:  ro.KeysOnly,
+		Start:      start,
+		End:        end,
+		Revision:   ro.Revision,
+		Limit:      ro.Limit,
+		CountOnly:  ro.CountOnly,
+		KeysOnly:   ro.KeysOnly,
+		SortOrder:  ro.SortOrder,
+		SortTarget: ro.SortTarget,
 	}, opts)
 	if err != nil {
-		return nil, 0, s.translateReadError(err)
+		return nil, 0, 0, s.translateReadError(err)
 	}
 
 	rr, ok := result.(*MVCCRangeResult)
 	if !ok {
-		return nil, 0, &ReadError{Err: &unexpectedResultTypeError{}}
+		return nil, 0, 0, &ReadError{Err: &unexpectedResultTypeError{}}
 	}
 
-	return rr.KeyValues, rr.Revision, nil
+	return rr.KeyValues, rr.Count, rr.Revision, nil
 }
 
 // Compact discards all MVCC revisions older than the specified revision
@@ -815,6 +867,16 @@ func (s *MVCCKVService) translateProposeError(err error) error {
 // to service-level typed errors. Uses error interfaces to avoid importing
 // the mvcc package directly, preventing import cycles.
 func (s *MVCCKVService) translateReadError(err error) error {
+	// The state machine had no case at all for the query's dynamic type —
+	// every MVCC-only query takes this shape when the shard is not running
+	// raft.sm_type: mvcc. Checked first so this actionable refusal is never
+	// shadowed by the generic *ReadError every other unmatched error falls
+	// through to.
+	var uqe unsupportedQueryTypeErr
+	if errors.As(err, &uqe) && uqe.UnsupportedQueryType() {
+		return &MVCCBackendRequiredError{Err: err}
+	}
+
 	// MVCC key not found.
 	var knf keyNotFoundErr
 	if errors.As(err, &knf) {

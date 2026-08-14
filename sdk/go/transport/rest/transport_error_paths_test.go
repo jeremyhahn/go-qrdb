@@ -203,8 +203,11 @@ func TestRESTCeremony_AllMethods_ServerError(t *testing.T) {
 	if _, err := rt.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
 		t.Fatal("CeremonyClaimCertComplete: expected error")
 	}
-	if _, err := rt.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyClaimShare: expected error")
+	if _, err := rt.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
+		t.Fatal("CeremonyBeginClaimShare: expected error")
+	}
+	if _, err := rt.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); err == nil {
+		t.Fatal("CeremonyCompleteClaimShare: expected error")
 	}
 	if _, err := rt.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
 		t.Fatal("CeremonySignCSR: expected error")
@@ -457,8 +460,11 @@ func TestRESTCeremony_AllMethods_BadJSON(t *testing.T) {
 	if _, err := rt.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
 		t.Fatal("CeremonyClaimCertComplete: expected JSON error")
 	}
-	if _, err := rt.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{}); err == nil {
-		t.Fatal("CeremonyClaimShare: expected JSON error")
+	if _, err := rt.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
+		t.Fatal("CeremonyBeginClaimShare: expected JSON error")
+	}
+	if _, err := rt.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); err == nil {
+		t.Fatal("CeremonyCompleteClaimShare: expected JSON error")
 	}
 	if _, err := rt.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
 		t.Fatal("CeremonySignCSR: expected JSON error")
@@ -856,8 +862,8 @@ func TestRESTWatch_SSE_Success(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		// Send a couple of SSE frames then a canceled frame.
-		_, _ = w.Write([]byte(`data: {"watch_id":1,"events":[{"type":"PUT","kv":{"key":"a","value":"dg==","mod_revision":1}}],"revision":1}` + "\n"))
-		_, _ = w.Write([]byte(`data: {"watch_id":1,"events":[{"type":"DELETE","kv":{"key":"a"}}],"revision":2}` + "\n"))
+		_, _ = w.Write([]byte(`data: {"watch_id":1,"events":[{"type":"PUT","kv":{"key":"YQ==","value":"dg==","mod_revision":1}}],"revision":1}` + "\n"))
+		_, _ = w.Write([]byte(`data: {"watch_id":1,"events":[{"type":"DELETE","kv":{"key":"YQ=="}}],"revision":2}` + "\n"))
 		_, _ = w.Write([]byte(`data: {"watch_id":1,"canceled":true,"cancel_reason":"done"}` + "\n"))
 	})
 	ch, err := rt.Watch(context.Background(), "k", transport.WatchOptions{StartRevision: 1, PrevKV: true})

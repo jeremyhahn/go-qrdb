@@ -936,6 +936,28 @@ func TestMVCCKVService_GetAtRevision_GenericReadError(t *testing.T) {
 	}
 }
 
+func TestMVCCKVService_GetAtRevision_MVCCBackendRequired(t *testing.T) {
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
+			return nil, &fakeUnsupportedQueryTypeError{unsupported: true}
+		},
+	}
+
+	svc := NewMVCCKVService(host, 1)
+	kv, err := svc.GetAtRevision(context.Background(), "key", 1)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if kv != nil {
+		t.Fatalf("expected nil kv, got %v", kv)
+	}
+
+	var mbr *MVCCBackendRequiredError
+	if !errors.As(err, &mbr) {
+		t.Fatalf("expected *MVCCBackendRequiredError, got %T: %v", err, err)
+	}
+}
+
 func TestMVCCKVService_GetAtRevision_UnexpectedType(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
@@ -984,21 +1006,32 @@ func TestMVCCKVService_Range_Success(t *testing.T) {
 					{Key: []byte("b"), Value: []byte("bval")},
 					{Key: []byte("c"), Value: []byte("cval")},
 				},
+				// Count and Revision are deliberately different values so
+				// this test cannot pass by coincidence if Range regresses
+				// to returning the revision in the count's place.
+				Count:    2,
 				Revision: 50,
 			}, nil
 		},
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
+	kvs, count, revision, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if len(kvs) != 2 {
 		t.Fatalf("expected 2 kvs, got %d", len(kvs))
 	}
-	if rev != 50 {
-		t.Fatalf("expected revision 50, got %d", rev)
+	// Range's second return value is documented as the match count, not the
+	// MVCC revision (see MVCCKVServicer.Range's doc comment).
+	if count != 2 {
+		t.Fatalf("expected count 2, got %d", count)
+	}
+	// The third return value is the MVCC revision the read was performed at,
+	// which must be threaded through distinctly from the count.
+	if revision != 50 {
+		t.Fatalf("expected revision 50, got %d", revision)
 	}
 	if string(kvs[0].Key) != "b" {
 		t.Fatalf("expected first key b, got %s", string(kvs[0].Key))
@@ -1013,21 +1046,25 @@ func TestMVCCKVService_Range_WithOptions(t *testing.T) {
 			capturedQuery = query
 			return &MVCCRangeResult{
 				KeyValues: []*KeyValue{},
+				Count:     0,
 				Revision:  20,
 			}, nil
 		},
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.Range(context.Background(), []byte("x"), []byte("y"), WithLimit(10), WithKeysOnly())
+	kvs, count, revision, err := svc.Range(context.Background(), []byte("x"), []byte("y"), WithLimit(10), WithKeysOnly())
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 	if len(kvs) != 0 {
 		t.Fatalf("expected 0 kvs, got %d", len(kvs))
 	}
-	if rev != 20 {
-		t.Fatalf("expected revision 20, got %d", rev)
+	if count != 0 {
+		t.Fatalf("expected count 0, got %d", count)
+	}
+	if revision != 20 {
+		t.Fatalf("expected revision 20, got %d", revision)
 	}
 
 	rq, ok := capturedQuery.(MVCCRangeQuery)
@@ -1042,6 +1079,38 @@ func TestMVCCKVService_Range_WithOptions(t *testing.T) {
 	}
 }
 
+// TestMVCCKVService_Range_ThreadsSortOptions verifies WithSort's SortOrder
+// and SortTarget are copied onto the MVCCRangeQuery built by Range,
+// reproducing (as a regression guard) the bug where these fields were
+// silently dropped before ever reaching the query.
+func TestMVCCKVService_Range_ThreadsSortOptions(t *testing.T) {
+	var capturedQuery interface{}
+
+	host := &mockHost{
+		syncReadFn: func(_ context.Context, _ uint64, query interface{}) (interface{}, error) {
+			capturedQuery = query
+			return &MVCCRangeResult{KeyValues: []*KeyValue{}}, nil
+		},
+	}
+
+	svc := NewMVCCKVService(host, 1)
+	_, _, _, err := svc.Range(context.Background(), []byte("a"), []byte("z"), WithSort(SortDescend, SortByModRevision))
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	rq, ok := capturedQuery.(MVCCRangeQuery)
+	if !ok {
+		t.Fatalf("expected MVCCRangeQuery, got %T", capturedQuery)
+	}
+	if rq.SortOrder != SortDescend {
+		t.Fatalf("expected SortOrder=SortDescend, got %v", rq.SortOrder)
+	}
+	if rq.SortTarget != SortByModRevision {
+		t.Fatalf("expected SortTarget=SortByModRevision, got %v", rq.SortTarget)
+	}
+}
+
 func TestMVCCKVService_Range_ReadError(t *testing.T) {
 	sentinel := errors.New("range failure")
 	host := &mockHost{
@@ -1051,12 +1120,15 @@ func TestMVCCKVService_Range_ReadError(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
+	kvs, count, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if kvs != nil {
 		t.Fatalf("expected nil kvs, got %v", kvs)
+	}
+	if count != 0 {
+		t.Fatalf("expected count 0, got %d", count)
 	}
 	if rev != 0 {
 		t.Fatalf("expected revision 0, got %d", rev)
@@ -1076,12 +1148,15 @@ func TestMVCCKVService_Range_UnexpectedType(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
+	kvs, count, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if kvs != nil {
 		t.Fatalf("expected nil kvs, got %v", kvs)
+	}
+	if count != 0 {
+		t.Fatalf("expected count 0, got %d", count)
 	}
 	if rev != 0 {
 		t.Fatalf("expected revision 0, got %d", rev)
@@ -1504,12 +1579,15 @@ func TestMVCCKVService_Range_NotLeaderError(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
+	kvs, count, rev, err := svc.Range(context.Background(), []byte("a"), []byte("z"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if kvs != nil {
 		t.Fatalf("expected nil kvs, got %v", kvs)
+	}
+	if count != 0 {
+		t.Fatalf("expected count 0, got %d", count)
 	}
 	if rev != 0 {
 		t.Fatalf("expected revision 0, got %d", rev)

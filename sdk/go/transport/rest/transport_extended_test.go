@@ -102,11 +102,11 @@ func TestRESTCredentialSubmit_Success(t *testing.T) {
 
 	if err := rt.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
 		Name:  "db",
-		Value: "secret",
+		Value: []byte("secret"),
 	}); err != nil {
 		t.Fatalf("CredentialSubmit: %v", err)
 	}
-	if captured.Name != "db" || captured.Value != "secret" {
+	if captured.Name != "db" || string(captured.Value) != "secret" {
 		t.Errorf("captured = %+v", captured)
 	}
 }

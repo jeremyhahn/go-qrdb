@@ -55,6 +55,30 @@ type Hub struct {
 	idSeq      atomic.Uint64
 	watchCount atomic.Uint64
 	closed     atomic.Bool
+
+	// history replays committed changes for start-revision catch-up. Attached
+	// via SetHistory at construction (nil on a non-MVCC hub, which then serves
+	// live-only watches). Stored atomically so a late attach never races a Watch.
+	history atomic.Pointer[HistoryReplayer]
+}
+
+// SetHistory attaches (or clears, with nil) the replayer that serves
+// start-revision catch-up. Call it once during construction, before the hub
+// serves watches.
+func (h *Hub) SetHistory(r HistoryReplayer) {
+	if r == nil {
+		h.history.Store(nil)
+		return
+	}
+	h.history.Store(&r)
+}
+
+// historyReplayer returns the attached replayer, or nil.
+func (h *Hub) historyReplayer() HistoryReplayer {
+	if p := h.history.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // shard holds a subset of watchers to reduce lock contention. Each
@@ -85,8 +109,19 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 	}
 
 	wo := ApplyWatchOptions(opts)
+
+	// Validate a start revision BEFORE creating any state, so a compacted or
+	// unsupported request fails cleanly with nothing registered.
+	replay, err := h.prepareReplay(wo.StartRevision)
+	if err != nil {
+		return nil, err
+	}
+
 	id := h.idSeq.Add(1)
 	w := newWatcher(id, []byte(key), nil, wo, ctx)
+	if replay {
+		w.beginReplay()
+	}
 
 	sh := h.getShard([]byte(key))
 	sh.mu.Lock()
@@ -99,6 +134,11 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 	// Start cleanup goroutine to remove watcher when cancelled.
 	go h.cleanupOnCancel(w)
 
+	// Registration is complete: replay historical changes and hand off to live.
+	if replay {
+		h.startReplay(w, wo)
+	}
+
 	return w, nil
 }
 
@@ -110,9 +150,18 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 	}
 
 	wo := ApplyWatchOptions(opts)
+
+	replay, err := h.prepareReplay(wo.StartRevision)
+	if err != nil {
+		return nil, err
+	}
+
 	id := h.idSeq.Add(1)
 	rangeEnd := prefixEnd([]byte(prefix))
 	w := newWatcher(id, []byte(prefix), rangeEnd, wo, ctx)
+	if replay {
+		w.beginReplay()
+	}
 
 	// Prefix watchers are stored in the shard for the prefix key itself.
 	sh := h.getShard([]byte(prefix))
@@ -124,7 +173,98 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 
 	go h.cleanupOnCancel(w)
 
+	if replay {
+		h.startReplay(w, wo)
+	}
+
 	return w, nil
+}
+
+// prepareReplay validates a requested start revision and reports whether a
+// historical replay is required. A zero/negative start revision is a live-only
+// watch (false, nil). A positive start revision needs a history replayer and a
+// revision above the compaction floor, else it fails closed.
+func (h *Hub) prepareReplay(startRev int64) (bool, error) {
+	if startRev <= 0 {
+		return false, nil
+	}
+	hr := h.historyReplayer()
+	if hr == nil {
+		return false, ErrStartRevisionUnsupported
+	}
+	if startRev <= hr.CompactedRevision() {
+		return false, ErrCompacted
+	}
+	return true, nil
+}
+
+// startReplay streams the historical change range to a freshly registered,
+// unsynced watcher, then hands off to live delivery. The boundary (used only as
+// the scan's upper bound and the Created cursor origin) is captured AFTER
+// registration. Delivery dedup is driven by the watcher's deliver floor — the
+// last revision the replay ACTUALLY delivered — not the boundary, so a revision
+// the in-memory counter had already advanced to but that was not yet durable at
+// scan time is delivered by the staged-live path rather than dropped.
+func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
+	hr := h.historyReplayer()
+	if hr == nil {
+		// Raced a SetHistory(nil); nothing to replay from. Fail closed rather
+		// than leave the watcher wedged unsynced.
+		w.setErr(ErrStartRevisionUnsupported)
+		go func() {
+			defer w.markReplayDone()
+			w.finishReplay()
+			w.cancel()
+		}()
+		return
+	}
+	boundary := hr.CurrentRevision()
+
+	go func() {
+		defer w.markReplayDone()
+
+		// Created response first: its Revision is the client's cursor origin.
+		w.deliver(WatchResponse{WatchID: int64(w.id), Created: true, Revision: boundary})
+
+		var replayErr error
+		if w.ctx.Err() == nil && wo.StartRevision <= boundary {
+			replayErr = hr.Replay(wo.StartRevision, boundary, w.matches, w.prevKV, func(ev *Event) bool {
+				if w.ctx.Err() != nil {
+					return false
+				}
+				if ev.Type == EventPut && w.hasFilter(WatchFilterNoPut) {
+					return true
+				}
+				if ev.Type == EventDelete && w.hasFilter(WatchFilterNoDelete) {
+					return true
+				}
+				if !w.prevKV {
+					ev.PrevKv = nil
+				}
+				var rev int64
+				if ev.Kv != nil {
+					rev = ev.Kv.ModRevision
+				}
+				w.deliver(WatchResponse{WatchID: int64(w.id), Events: []*Event{ev}, Revision: rev})
+				w.advanceDeliverFloor(rev)
+				return true
+			})
+		}
+
+		// Fail closed rather than hand off a silently incomplete stream when the
+		// history could not be replayed intact: either compaction advanced past
+		// our start revision WHILE replaying, or the scan hit a value that had
+		// been compacted out from under it (Replay returns an error). finishReplay
+		// first so no live event is left stranded in staging.
+		if replayErr != nil || hr.CompactedRevision() >= wo.StartRevision {
+			w.setErr(ErrCompacted)
+			w.finishReplay()
+			w.cancel()
+			return
+		}
+
+		w.finishReplay()
+	}()
 }
 
 // NotifyPut dispatches a put event to all watchers matching the key.
@@ -234,9 +374,15 @@ func (h *Hub) sendEvent(w *watcher, eventType EventType, kvVal, prevKv *kv.KeyVa
 		event.PrevKv = prevKv
 	}
 
+	var rev int64
+	if kvVal != nil {
+		rev = kvVal.ModRevision
+	}
+
 	w.send(WatchResponse{
-		WatchID: int64(w.id),
-		Events:  []*Event{event},
+		WatchID:  int64(w.id),
+		Events:   []*Event{event},
+		Revision: rev,
 	})
 }
 
@@ -245,8 +391,24 @@ func (h *Hub) sendEvent(w *watcher, eventType EventType, kvVal, prevKv *kv.KeyVa
 func (h *Hub) cleanupOnCancel(w *watcher) {
 	<-w.ctx.Done()
 
+	// Wait until the replay goroutine has stopped touching the event channel
+	// before closing it, so a replay in flight can never send on a closed
+	// channel. For a live-only watcher replayDone is pre-closed, so this is a
+	// no-op. removeWatcher (shard write lock) then blocks new notify sends, and
+	// live sends already in flight hold the shard read lock it waits on.
+	<-w.replayDone
+
 	h.removeWatcher(w)
 	close(w.events)
+}
+
+// matches reports whether key falls within this watcher's scope: exact-key
+// equality for a key watch, range containment for a prefix watch.
+func (w *watcher) matches(key []byte) bool {
+	if w.rangeEnd == nil {
+		return bytes.Equal(key, w.key)
+	}
+	return matchesRange(key, w.key, w.rangeEnd)
 }
 
 // removeWatcher removes a watcher from the shard registry.

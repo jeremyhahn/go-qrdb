@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -248,6 +249,9 @@ func TestMCPMVCC_AfterClose(t *testing.T) {
 	if _, err := tr.CurrentRevision(context.Background()); !errors.As(err, &ce) {
 		t.Errorf("CurrentRevision: %v", err)
 	}
+	if _, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1}); !errors.As(err, &ce) {
+		t.Errorf("RestoreToRevision: %v", err)
+	}
 }
 
 // ===========================================================================
@@ -428,6 +432,12 @@ func TestMCPCeremony_AfterClose(t *testing.T) {
 func TestMCPBatch_AfterClose(t *testing.T) {
 	tr := newClosedTransport()
 	_, err := tr.ExecuteBatch(context.Background(), nil)
+	assertClosed(t, err)
+}
+
+func TestMCPImportFile_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	_, err := tr.ImportFile(context.Background(), "file.csv", strings.NewReader(""), transport.ImportOptions{})
 	assertClosed(t, err)
 }
 

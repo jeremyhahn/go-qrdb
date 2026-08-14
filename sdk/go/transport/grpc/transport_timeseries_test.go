@@ -147,12 +147,13 @@ func connectTSTransport(t *testing.T, tsSvc timeseries.TimeSeriesServicer) (*Tra
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 
-	srv := grpcserver.NewServer(kvSvc, adminSvc, "127.0.0.1:0", grpcserver.WithTimeSeries(tsSvc))
+	srv := grpcserver.NewServer(kvSvc, adminSvc, "127.0.0.1:0",
+		grpcserver.WithTimeSeries(tsSvc), grpcserver.WithTLS(sharedGRPCServerTLS))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("failed to start gRPC server: %v", err)
 	}
 
-	tr, err := New(transport.WithAddress(srv.Addr()))
+	tr, err := New(transport.WithAddress(srv.Addr()), sharedGRPCClientTLSOption())
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("New: %v", err)

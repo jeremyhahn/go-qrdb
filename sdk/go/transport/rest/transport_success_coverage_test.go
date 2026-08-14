@@ -15,7 +15,10 @@
 package rest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -105,7 +108,7 @@ func TestRESTVector_AllMethods_Success(t *testing.T) {
 func TestRESTMVCC_PutWithLease_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(pathPrefix(http.MethodPut, "/kv/"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "k", "value": "dg==", "mod_revision": 1}})
+		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "aw==", "value": "dg==", "mod_revision": 1}})
 	})
 	if _, err := rt.PutWithLease(context.Background(), "k", []byte("v"), 1); err != nil {
 		t.Fatalf("PutWithLease: %v", err)
@@ -115,7 +118,7 @@ func TestRESTMVCC_PutWithLease_Success(t *testing.T) {
 func TestRESTMVCC_GetRevision_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "k", "value": "dg==", "mod_revision": 1}})
+		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "aw==", "value": "dg==", "mod_revision": 1}})
 	})
 	if _, err := rt.GetRevision(context.Background(), "k"); err != nil {
 		t.Fatalf("GetRevision: %v", err)
@@ -125,7 +128,7 @@ func TestRESTMVCC_GetRevision_Success(t *testing.T) {
 func TestRESTMVCC_GetAtRevision_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "k", "value": "dg=="}})
+		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "aw==", "value": "dg=="}})
 	})
 	if _, err := rt.GetAtRevision(context.Background(), "k", 1); err != nil {
 		t.Fatalf("GetAtRevision: %v", err)
@@ -135,7 +138,7 @@ func TestRESTMVCC_GetAtRevision_Success(t *testing.T) {
 func TestRESTMVCC_Range_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodGet, "/kv/range"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kvs": []interface{}{map[string]interface{}{"key": "a", "value": "dg=="}}, "count": 1})
+		writeJSON(w, map[string]interface{}{"kvs": []interface{}{map[string]interface{}{"key": "YQ==", "value": "dg=="}}, "count": 1})
 	})
 	if _, err := rt.Range(context.Background(), []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10}); err != nil {
 		t.Fatalf("Range: %v", err)
@@ -163,6 +166,101 @@ func TestRESTMVCC_CurrentRevision_Success(t *testing.T) {
 	}
 	if rev != 42 {
 		t.Fatalf("rev = %d", rev)
+	}
+}
+
+func TestRESTMVCC_RestoreToRevision_Success(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/kv/restore"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]interface{}{
+			"revision": 5,
+			"changes": []interface{}{
+				map[string]interface{}{"key": "YQ==", "action": "revert", "from_revision": 9, "to_revision": 5, "value_bytes": 3},
+			},
+			"applied": 1,
+		})
+	})
+	result, err := rt.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result.Revision != 5 || result.Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "a" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+}
+
+// TestRESTMVCC_RestoreToRevision_BinaryRoundTrip proves an arbitrary
+// byte-valued prefix, key, and response key round-trip byte-for-byte
+// through the base64 (RFC 4648) JSON encoding the REST wire uses for []byte
+// fields.
+func TestRESTMVCC_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryPrefix := []byte{0x00, 0xff, 0xfe, 'p'}
+	binaryRespKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/kv/restore"), func(w http.ResponseWriter, r *http.Request) {
+		var req mvccRestoreWireRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !bytes.Equal(req.Prefix, binaryPrefix) {
+			t.Fatalf("server received prefix %v, want %v (binary corruption)", req.Prefix, binaryPrefix)
+		}
+		writeJSON(w, mvccRestoreWireResponse{
+			Revision: 5,
+			Changes: []*mvccRestoreKeyChangeWireResponse{
+				{Key: binaryRespKey, Action: transport.RestoreActionRevert, ToRevision: 5},
+			},
+			Applied: 1,
+		})
+	})
+
+	result, err := rt.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   binaryPrefix,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if len(result.Changes) != 1 || !bytes.Equal(result.Changes[0].Key, binaryRespKey) {
+		t.Fatalf("expected round-tripped binary response key %v, got %+v", binaryRespKey, result.Changes)
+	}
+}
+
+func TestRESTMVCC_RestoreToRevision_NilRequest(t *testing.T) {
+	rt, _, _ := newExtTransport(t)
+	if _, err := rt.RestoreToRevision(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil request")
+	}
+}
+
+// TestRESTMVCC_RestoreToRevision_GuardErrorStatus proves the client surfaces
+// the server's HTTP status through transport.RequestError.StatusCode.
+func TestRESTMVCC_RestoreToRevision_GuardErrorStatus(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/kv/restore"), func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+		writeJSON(w, map[string]string{"error": "requires raft.sm_type: mvcc"})
+	})
+
+	_, err := rt.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5, Prefix: []byte("k"),
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+	if reqErr.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("StatusCode = %d, want %d", reqErr.StatusCode, http.StatusNotImplemented)
 	}
 }
 

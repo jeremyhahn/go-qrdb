@@ -77,7 +77,7 @@ func (t *DatapointsTable) String() string {
 }
 
 // Schema returns the table's column schema.
-func (t *DatapointsTable) Schema() sqle.Schema {
+func (t *DatapointsTable) Schema(_ *sqle.Context) sqle.Schema {
 	return datapointsSchema
 }
 

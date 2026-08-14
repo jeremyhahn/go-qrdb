@@ -1257,7 +1257,7 @@ func TestCredentialStore_Success_Proto(t *testing.T) {
 	}
 	s := &qrdbServiceServer{credentialSvc: svc}
 
-	_, err := s.CredentialStore(context.Background(), &pb.CredentialStoreRequest{Name: "db-pass", Value: "s3cret"})
+	_, err := s.CredentialStore(context.Background(), &pb.CredentialStoreRequest{Name: "db-pass", Value: []byte("s3cret")})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1284,7 +1284,7 @@ func TestCredentialStore_Error_Proto(t *testing.T) {
 		},
 	}
 	s := &qrdbServiceServer{credentialSvc: svc}
-	_, err := s.CredentialStore(context.Background(), &pb.CredentialStoreRequest{Name: "n", Value: "v"})
+	_, err := s.CredentialStore(context.Background(), &pb.CredentialStoreRequest{Name: "n", Value: []byte("v")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1305,7 +1305,7 @@ func TestCredentialRetrieve_Success_Proto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.GetValue() != "s3cret" {
+	if string(resp.GetValue()) != "s3cret" {
 		t.Errorf("expected value 's3cret', got %q", resp.GetValue())
 	}
 }

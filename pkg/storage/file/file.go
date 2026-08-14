@@ -48,7 +48,7 @@ func New(dir string) (*Engine, error) {
 }
 
 func (e *Engine) keyPath(key []byte) string {
-	return filepath.Join(e.dir, filepath.FromSlash(string(key)))
+	return filepath.Join(e.dir, filepath.FromSlash(encodeKeyToPath(key)))
 }
 
 // Get retrieves the value for the given key. Returns nil, nil when the

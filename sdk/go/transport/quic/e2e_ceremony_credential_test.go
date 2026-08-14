@@ -31,7 +31,7 @@ func TestE2E_CeremonyInitialize_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("ceremony.Initialize", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, mustMarshal(&pb.CeremonyInitializeResponse{
-			SpkiPin: "pin1", CaCertPem: "ca", TlsCertPem: "tls", SoCertPem: "so", SoKeyPem: "sk",
+			SpkiPin: "pin1", CaCertPem: "ca", TlsCertPem: "tls",
 			State: "complete", ShareCount: 3,
 		})
 	})
@@ -101,12 +101,26 @@ func TestE2E_CeremonyClaimCertComplete_HappyPath(t *testing.T) {
 
 func TestE2E_CeremonyClaimShare_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShare", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CeremonyClaimShareResponse{Share: "{\"share\":1}"})
+	srv.SetResponder("ceremony.BeginClaimShare", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.CeremonyBeginClaimShareResponse{NonceHex: "abcd"})
 	})
-	resp, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{Username: "alice"})
+	srv.SetResponder("ceremony.CompleteClaimShare", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.CeremonyCompleteClaimShareResponse{ShareIndex: 1, Share: "{\"share\":1}"})
+	})
+
+	begun, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{Username: "alice"})
 	if err != nil {
-		t.Fatalf("CeremonyClaimShare: %v", err)
+		t.Fatalf("CeremonyBeginClaimShare: %v", err)
+	}
+	if begun.NonceHex != "abcd" {
+		t.Fatalf("begun = %+v", begun)
+	}
+
+	resp, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{
+		Username: "alice", NonceHex: begun.NonceHex, Signature: []byte("sig"),
+	})
+	if err != nil {
+		t.Fatalf("CeremonyCompleteClaimShare: %v", err)
 	}
 	if resp.ShareJSON == "" {
 		t.Fatalf("resp = %+v", resp)
@@ -155,7 +169,7 @@ func TestE2E_CredentialSubmit_RoundTrip(t *testing.T) {
 		return wire.StatusOK, nil
 	})
 	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
-		Name: "db-cred", Value: "p@ss",
+		Name: "db-cred", Value: []byte("p@ss"),
 	}); err != nil {
 		t.Fatalf("CredentialSubmit: %v", err)
 	}
@@ -207,7 +221,7 @@ func TestE2E_CredentialRotate_RoundTrip(t *testing.T) {
 		})
 	})
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
-		Name: "db-cred", NewValue: "v2", GracePeriodSeconds: 60,
+		Name: "db-cred", NewValue: []byte("v2"), GracePeriodSeconds: 60,
 	})
 	if err != nil {
 		t.Fatalf("CredentialRotate: %v", err)
@@ -220,7 +234,7 @@ func TestE2E_CredentialRotate_RoundTrip(t *testing.T) {
 func TestE2E_CredentialRetrieveVersion_RoundTrip(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("credential.RetrieveVersion", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveVersionResponse{Value: "secret-v2"})
+		return wire.StatusOK, mustMarshal(&pb.CredentialRetrieveVersionResponse{Value: []byte("secret-v2")})
 	})
 	resp, err := tr.CredentialRetrieveVersion(context.Background(), &transport.CredentialRetrieveVersionRequest{
 		Name: "db", Version: 2,
@@ -228,7 +242,7 @@ func TestE2E_CredentialRetrieveVersion_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CredentialRetrieveVersion: %v", err)
 	}
-	if resp.Value != "secret-v2" {
+	if string(resp.Value) != "secret-v2" {
 		t.Fatalf("Value = %q", resp.Value)
 	}
 }

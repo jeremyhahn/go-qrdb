@@ -25,8 +25,19 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// Compile-time interface assertion.
-var _ transport.AuditClient = (*Transport)(nil)
+// Compile-time interface assertions.
+var (
+	_ transport.AuditClient   = (*Transport)(nil)
+	_ transport.AuditProvider = (*Transport)(nil)
+)
+
+// AuditClient returns the REST transport's own AuditClient projection.
+// Implements transport.AuditProvider so the SDK's Client.Audit() accessor
+// resolves to a working client over REST (EmitAudit/QueryAudit are
+// implemented directly on *Transport below).
+func (t *Transport) AuditClient() transport.AuditClient {
+	return t
+}
 
 // EmitAudit is not supported over the REST transport: audit events are
 // emitted server-side by the request handlers themselves, and the REST API

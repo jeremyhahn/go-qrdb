@@ -17,6 +17,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -194,14 +195,22 @@ func (s *qrdbServiceServer) BarrierRekey(ctx context.Context, req *pb.BarrierRek
 	}, nil
 }
 
-// grpcMigrationStartGrace gives the response time to flush before a
-// system-scope migration recycles the data-plane server it was served on.
-const grpcMigrationStartGrace = 750 * time.Millisecond
+// grpcMigrationAcceptWindow bounds how long the handler waits for
+// EncryptionMigrator.EnableEncryption to return before giving up on
+// delivering its outcome synchronously. Mirrors migrationAcceptWindow in
+// pkg/api/rest/handlers_barrier.go — see its doc comment for the full
+// rationale: every synchronously-knowable rejection returns well within this
+// window, before the destructive Quiesce phase (which for a system-scope
+// migration recycles the serving gRPC server) ever runs.
+const grpcMigrationAcceptWindow = 750 * time.Millisecond
 
 // BarrierEnableEncryption migrates a previously-unencrypted barrier to a keyed
-// strategy. Like the REST endpoint it validates synchronously then runs the
-// migration asynchronously (a system migration recycles the serving server),
-// returning a "migration_started" acknowledgement; clients poll BarrierStatus.
+// strategy. It validates synchronously, then invokes the migrator and races
+// its result against grpcMigrationAcceptWindow: a synchronous rejection (bad
+// target, shared-barrier-immutable, insufficient officers, entitlement
+// denied, provider unavailable) is returned to the caller as a proper gRPC
+// status error, while a migration still running once the window elapses is
+// acknowledged with "migration_started"; clients poll BarrierStatus.
 func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.BarrierEnableEncryptionRequest) (*pb.BarrierEnableEncryptionResponse, error) {
 	if s.encMigrator == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "encryption-migration"}).Error())
@@ -233,11 +242,37 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// A background context is used because the request context is cancelled
+	// once the response returns, and the migration must continue independent
+	// of this request's lifetime.
 	migrator := s.encMigrator
+	resultCh := make(chan error, 1)
 	go func() {
-		time.Sleep(grpcMigrationStartGrace)
-		_ = migrator.EnableEncryption(context.Background(), scope, opts)
+		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			return nil, mapBarrierCeremonyError(err)
+		}
+		// Completed within the window with no error: an unusually fast
+		// migration (e.g. an empty barrier) already finished. Fall through
+		// and report "migration_started" — BarrierStatus already reflects
+		// the committed strategy, so the wording is accurate either way.
+	case <-time.After(grpcMigrationAcceptWindow):
+		// Still running past acceptance: no client is left to deliver the
+		// eventual outcome to, so only log it.
+		go func() {
+			if err := <-resultCh; err != nil {
+				slog.Error("enable-encryption migration failed",
+					slog.String("scope", string(scope.Kind)),
+					slog.String("tenant", scope.TenantID),
+					slog.String("strategy", string(opts.TargetStrategy)),
+					slog.Any("error", err))
+			}
+		}()
+	}
 
 	return &pb.BarrierEnableEncryptionResponse{
 		Status: "migration_started",
@@ -598,6 +633,23 @@ func mapBarrierCeremonyError(err error) error {
 	}
 	if errors.Is(err, ceremony.ErrInvalidAuthenticatorType) {
 		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	// Enable-encryption migration validation + scoping errors. Mirrors
+	// mapBarrierCeremonyHTTPError in pkg/api/rest/handlers_barrier.go.
+	if errors.Is(err, seal.ErrMigrationInvalidTarget) ||
+		errors.Is(err, seal.ErrMigrationInvalidMechanism) ||
+		errors.Is(err, seal.ErrMigrationInvalidAvailability) ||
+		errors.Is(err, seal.ErrShamirThresholdInvalid) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	if errors.Is(err, seal.ErrMigrationSourceNotNone) || errors.Is(err, seal.ErrMigrationInProgress) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	if errors.Is(err, service.ErrSharedBarrierImmutable) {
+		return status.Error(codes.PermissionDenied, err.Error())
+	}
+	if errors.Is(err, service.ErrMigrationProviderUnavailable) {
+		return status.Error(codes.Unimplemented, err.Error())
 	}
 
 	return mapServiceError(err)

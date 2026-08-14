@@ -86,8 +86,11 @@ func newTestPlacement(tenantID, database string, shardID uint64) *placement.Plac
 	}
 }
 
-// hostForMove returns a mockHost configured for a successful dedicated-tenant
-// MOVE: RequestAddNode and RequestRemoveNode both return success.
+// hostForMove returns a mockHost configured for a successful GENERIC
+// (system-shard) rebalance move: RequestAddNode returns success. Dedicated-
+// tenant MOVE tests instead construct a *fakeRaftHost directly --
+// moveTenantGroupShard no longer calls RequestAddNode/RequestRemoveNode on
+// the generic Host.
 func hostForMove(t *testing.T) *mockHost {
 	t.Helper()
 	return &mockHost{
@@ -253,20 +256,6 @@ func TestPlacementMaxReplicaID_EmptyPlacement(t *testing.T) {
 	}
 }
 
-func TestPlacementSharedDataRoot_ReturnsFirstReplica(t *testing.T) {
-	p := newTestPlacement("t", "db", 1)
-	if dr := placementSharedDataRoot(p); dr != "/data" {
-		t.Fatalf("expected /data, got %q", dr)
-	}
-}
-
-func TestPlacementSharedDataRoot_EmptyPlacement(t *testing.T) {
-	p := &placement.Placement{}
-	if dr := placementSharedDataRoot(p); dr != "" {
-		t.Fatalf("expected empty string, got %q", dr)
-	}
-}
-
 func TestClonePlacementWithReplica_AddsReplicaAndUpdatesRF(t *testing.T) {
 	p := newTestPlacement("t", "db", 1)
 	newR := placement.Replica{ReplicaID: 3, NodeID: "node-c:9100", RaftAddr: "node-c:9100", DataRoot: "/data"}
@@ -347,13 +336,17 @@ func TestSourceReplicaNotFoundError_Error(t *testing.T) {
 // moveTenantGroupShard: source not found
 // ---------------------------------------------------------------------------
 
+// TestMoveTenantGroupShard_SourceNotFound uses no raftHost, so resolveMoveLeader
+// degrades to local execution (step 0) and the leader-wait (step 1) is skipped
+// -- moveTenantGroupShard reaches find-source (step 2) directly, exactly as
+// before the observer-first/leader-routing fix.
 func TestMoveTenantGroupShard_SourceNotFound(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 	svc := &RebalanceService{
 		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-a:9100",
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "nonexistent:9100", ToNode: "node-c:9100"}
@@ -375,18 +368,218 @@ func TestMoveTenantGroupShard_SourceNotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// moveTenantGroupShard: key delivery failure
+// moveTenantGroupShard: leader routing
 // ---------------------------------------------------------------------------
 
-func TestMoveTenantGroupShard_KeyDeliveryFailure(t *testing.T) {
+// TestMoveTenantGroupShard_LeaderRouting_ForwardsWhenNotLeader verifies that
+// when the local node is not the dedicated group's current Raft leader,
+// moveTenantGroupShard fails fast (no placement mutation, no Raft calls)
+// with a *RebalanceMoveError wrapping *NotLeaderError, mirroring
+// DatabaseService.ScaleForTenant's resolveScaleLeader forwarding contract so
+// the REST layer's tryForwardWrite can proxy the request to the leader.
+func TestMoveTenantGroupShard_LeaderRouting_ForwardsWhenNotLeader(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	// node-a is replica 1 (self); the live leader is replica 2 (node-b).
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-a:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	if err == nil {
+		t.Fatal("expected NotLeaderError")
+	}
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("expected *RebalanceMoveError, got %T", err)
+	}
+	if mve.Step != "leader-routing" {
+		t.Fatalf("expected step leader-routing, got %q", mve.Step)
+	}
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected wrapped *NotLeaderError, got %T", errors.Unwrap(err))
+	}
+	if nle.LeaderAddress != "node-b:9100" {
+		t.Errorf("LeaderAddress = %q, want node-b:9100", nle.LeaderAddress)
+	}
+
+	// No membership change or placement mutation must have been attempted.
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Error("no Raft calls expected when forwarding to the leader")
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != 2 {
+		t.Errorf("expected placement unchanged (2 replicas), got %d", len(current.Replicas))
+	}
+}
+
+// TestMoveTenantGroupShard_LeaderRouting_ExecutesLocallyWhenLeader verifies
+// the local node executes the MOVE (no forwarding, no leadership transfer)
+// when it is confirmed to be the dedicated group's current Raft leader AND
+// the source of the MOVE is some OTHER replica (the ordinary case). See
+// TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource for
+// the case where the leader is ALSO the MOVE's source.
+func TestMoveTenantGroupShard_LeaderRouting_ExecutesLocallyWhenLeader(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	// node-b is replica 2 (self) and also the live leader; the MOVE's
+	// source is node-a (replica 1, NOT self).
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(host.observerCalls) != 1 {
+		t.Errorf("expected 1 AddObserver call, got %d", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 1 {
+		t.Errorf("expected 1 RemoveFollowerNode call, got %d", len(host.removeCalls))
+	}
+	if len(host.transferCalls) != 0 {
+		t.Errorf("expected 0 RequestLeaderTransfer calls (source is not self), got %d", len(host.transferCalls))
+	}
+}
+
+// TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource is
+// the direct regression test for the bug this test file's ordering
+// discovered while it was being written: when the LOCAL node is BOTH the
+// dedicated group's current leader AND the MOVE's source, moveTenantGroupShard
+// must NOT attempt to remove itself locally (go-quicraft applies a
+// self-removing leader's config-change entry to its own log and steps down
+// immediately, without necessarily replicating it to any surviving voter
+// first -- if the reconciler then tears the removed leader down before that
+// entry ever reaches a survivor, the survivor is stranded campaigning
+// forever). Instead resolveMoveLeader proactively transfers leadership to
+// another voting replica and reports a *NotLeaderError pointing at the NEW
+// leader, WITHOUT ever mutating placement or attempting AddObserver, so the
+// whole request is safe to forward and retry in full.
+func TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	// node-a is replica 1 (self), also the live leader, AND the MOVE's
+	// source -- the case that requires a proactive transfer.
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-a:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	if err == nil {
+		t.Fatal("expected NotLeaderError")
+	}
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("expected *RebalanceMoveError, got %T", err)
+	}
+	if mve.Step != "leader-routing" {
+		t.Fatalf("expected step leader-routing, got %q", mve.Step)
+	}
+	var nle *NotLeaderError
+	if !errors.As(err, &nle) {
+		t.Fatalf("expected wrapped *NotLeaderError, got %T", errors.Unwrap(err))
+	}
+	if nle.LeaderAddress != "node-b:9100" {
+		t.Errorf("LeaderAddress = %q, want node-b:9100 (the new leader after transfer)", nle.LeaderAddress)
+	}
+
+	// The transfer itself must have been attempted, targeting the only
+	// other voting replica.
+	if len(host.transferCalls) != 1 || host.transferCalls[0].targetReplicaID != 2 {
+		t.Fatalf("transferCalls = %+v, want exactly 1 call targeting replica 2", host.transferCalls)
+	}
+	// No membership change or placement mutation must have been attempted.
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Error("no AddObserver/RemoveFollowerNode calls expected when forwarding after a self-source transfer")
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != 2 {
+		t.Errorf("expected placement unchanged (2 replicas), got %d", len(current.Replicas))
+	}
+}
+
+// TestMoveTenantGroupShard_LeaderRouting_SelfIsSourceTransferTimeout
+// verifies that when the leadership transfer itself times out (the new
+// leader never actually takes over), resolveMoveLeader degrades to LOCAL
+// execution rather than forwarding to a stale/incorrect address -- mirroring
+// resolveGroupLeader's own degrade-to-local behavior when the leader cannot
+// be resolved. The subsequent AddObserver/RemoveFollowerNode calls proceed
+// (and, in this fake, succeed) since the underlying RaftHost double does not
+// itself enforce leader-only semantics.
+func TestMoveTenantGroupShard_LeaderRouting_SelfIsSourceTransferTimeout(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+	store := newTestPlacementStore(t, p)
+
+	host := &fakeRaftHost{leaderID: 1, leaderOK: true, transferNoop: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-a:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("unexpected error (must degrade to local execution): %v", err)
+	}
+	if len(host.transferCalls) != 1 {
+		t.Fatalf("expected exactly 1 RequestLeaderTransfer attempt, got %d", len(host.transferCalls))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// moveTenantGroupShard: key delivery failure is non-fatal
+// ---------------------------------------------------------------------------
+
+// TestMoveTenantGroupShard_KeyDeliveryFailure_NonFatal verifies that, exactly
+// like DatabaseService.scaleUp, a key-delivery failure for the MOVE
+// destination is logged and does NOT fail the call: the destination's own
+// TenantShardReconciler pulls the key independently once its placement view
+// catches up. This is a deliberate behavior change from the move's old
+// key-delivery-is-fatal semantics, which predates observer-first admission
+// and could never have worked anyway once placement-put was correctly
+// reordered to precede key delivery (see addObserverReplica's doc comment).
+func TestMoveTenantGroupShard_KeyDeliveryFailure_NonFatal(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
 	deliverErr := errors.New("HPKE seal failed")
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
 	svc := &RebalanceService{
 		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
 		keyDeliverer: &fakeKeyDeliverer{
 			deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string, _ bool) error {
 				return deliverErr
@@ -400,128 +593,93 @@ func TestMoveTenantGroupShard_KeyDeliveryFailure(t *testing.T) {
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	err := svc.moveTenantGroupShard(context.Background(), move, p)
-	if err == nil {
-		t.Fatal("expected error from key delivery")
-	}
-	var mve *RebalanceMoveError
-	if !errors.As(err, &mve) {
-		t.Fatalf("expected *RebalanceMoveError, got %T", err)
-	}
-	if mve.Step != "key-delivery" {
-		t.Fatalf("expected step key-delivery, got %q", mve.Step)
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("unexpected error (key-delivery failure must be non-fatal): %v", err)
 	}
 
-	// Placement must remain unchanged (no Add or Remove was called).
+	// The move must still have completed: dst admitted as observer, src
+	// evicted, placement fully updated.
+	if len(host.observerCalls) != 1 {
+		t.Errorf("expected 1 AddObserver call, got %d", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 1 {
+		t.Errorf("expected 1 RemoveFollowerNode call, got %d", len(host.removeCalls))
+	}
 	current, getErr := store.Get(context.Background(), p.TenantID, p.Database)
 	if getErr != nil {
 		t.Fatalf("store.Get: %v", getErr)
 	}
 	if len(current.Replicas) != 2 {
-		t.Fatalf("expected placement unchanged (2 replicas), got %d", len(current.Replicas))
+		t.Fatalf("expected 2 replicas after move, got %d", len(current.Replicas))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// moveTenantGroupShard: RequestAddNode failure
+// moveTenantGroupShard: AddObserver failure
 // ---------------------------------------------------------------------------
 
-func TestMoveTenantGroupShard_AddNodeFailure(t *testing.T) {
+// TestMoveTenantGroupShard_AddObserverFailure verifies a failing AddObserver
+// fails the whole MOVE with step "add-observer", wrapping the underlying
+// error, and that the placement-put for the destination (which happens
+// BEFORE AddObserver is attempted) has already been persisted -- mirroring
+// DatabaseService.scaleUp's identical AddObserver-failure contract.
+func TestMoveTenantGroupShard_AddObserverFailure(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
-	addErr := errors.New("shard not found")
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return nil, addErr
-		},
-	}
-
+	addErr := errors.New("shard not yet started")
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true, observerErr: addErr}
 	svc := &RebalanceService{
-		host:           host,
+		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
 	err := svc.moveTenantGroupShard(context.Background(), move, p)
 	if err == nil {
-		t.Fatal("expected error from RequestAddNode failure")
+		t.Fatal("expected error from AddObserver failure")
 	}
 	var mve *RebalanceMoveError
 	if !errors.As(err, &mve) {
 		t.Fatalf("expected *RebalanceMoveError, got %T", err)
 	}
-	if mve.Step != "add-node" {
-		t.Fatalf("expected step add-node, got %q", mve.Step)
+	if mve.Step != "add-observer" {
+		t.Fatalf("expected step add-observer, got %q", mve.Step)
 	}
 	if !errors.Is(err, addErr) {
 		t.Fatal("expected underlying addErr")
 	}
+	if len(host.observerCalls) != 1 {
+		t.Errorf("expected 1 AddObserver attempt, got %d", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 0 {
+		t.Error("RemoveFollowerNode must not be attempted when AddObserver fails")
+	}
 
-	// Placement must remain unchanged.
-	current, _ := store.Get(context.Background(), p.TenantID, p.Database)
-	if len(current.Replicas) != 2 {
-		t.Fatalf("expected placement unchanged, got %d replicas", len(current.Replicas))
+	// Placement-put for the destination already committed before the failed
+	// AddObserver call.
+	current, gerr := store.Get(context.Background(), p.TenantID, p.Database)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != 3 {
+		t.Fatalf("expected dst already persisted (3 replicas), got %d", len(current.Replicas))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// moveTenantGroupShard: AddNode result error
+// moveTenantGroupShard: add-placement failure
 // ---------------------------------------------------------------------------
 
-func TestMoveTenantGroupShard_AddNodeResultError(t *testing.T) {
-	p := newTestPlacement("acme", "db1", 10)
-	store := newTestPlacementStore(t, p)
-
-	resultErr := errors.New("config change rejected")
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{Err: resultErr}), nil
-		},
-	}
-
-	svc := &RebalanceService{
-		host:           host,
-		placementStore: store,
-		selfNodeID:     "self:9100",
-	}
-
-	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	err := svc.moveTenantGroupShard(context.Background(), move, p)
-	if err == nil {
-		t.Fatal("expected error from AddNode result failure")
-	}
-	var mve *RebalanceMoveError
-	if !errors.As(err, &mve) {
-		t.Fatalf("expected *RebalanceMoveError, got %T", err)
-	}
-	if mve.Step != "add-node-result" {
-		t.Fatalf("expected step add-node-result, got %q", mve.Step)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// moveTenantGroupShard: placement update failure
-// ---------------------------------------------------------------------------
-
-func TestMoveTenantGroupShard_PlacementUpdateFailure(t *testing.T) {
+// TestMoveTenantGroupShard_AddPlacementFailure verifies a failing
+// placement-put for the destination fails the whole MOVE with step
+// "add-placement" and never attempts AddObserver.
+func TestMoveTenantGroupShard_AddPlacementFailure(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 
-	// Use a KV that rejects Put after the first read (pre-seeded) so the
-	// placement update fails.
 	kv := &failingPutKV{inner: newMemPlacementKV()}
 	store, err := placement.NewStore(kv)
 	if err != nil {
@@ -530,39 +688,48 @@ func TestMoveTenantGroupShard_PlacementUpdateFailure(t *testing.T) {
 	if putErr := store.Put(context.Background(), p); putErr != nil {
 		t.Fatalf("initial Put: %v", putErr)
 	}
-	// Now arm the failure for subsequent Put calls.
 	kv.failPut = true
 
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
 	svc := &RebalanceService{
 		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
 	err = svc.moveTenantGroupShard(context.Background(), move, p)
 	if err == nil {
-		t.Fatal("expected error from placement update failure")
+		t.Fatal("expected error from add-placement failure")
 	}
 	var mve *RebalanceMoveError
 	if !errors.As(err, &mve) {
 		t.Fatalf("expected *RebalanceMoveError, got %T", err)
 	}
-	if mve.Step != "placement-update" {
-		t.Fatalf("expected step placement-update, got %q", mve.Step)
+	if mve.Step != "add-placement" {
+		t.Fatalf("expected step add-placement, got %q", mve.Step)
+	}
+	if len(host.observerCalls) != 0 {
+		t.Error("AddObserver must not be attempted when the placement-put fails")
 	}
 }
 
-// failingPutKV wraps memPlacementKV and rejects Put when failPut is set and
-// Scan when failScan is set.
+// failingPutKV wraps memPlacementKV and rejects Put when failPut is set
+// (every subsequent call) or when failOnPutN matches the 1-indexed call
+// number of this Put invocation, and rejects Scan when failScan is set.
 type failingPutKV struct {
-	inner    *memPlacementKV
-	failPut  bool
-	failScan bool
+	inner      *memPlacementKV
+	failPut    bool
+	failScan   bool
+	putCount   int
+	failOnPutN int
 }
 
 func (f *failingPutKV) Put(ctx context.Context, key string, value []byte) error {
-	if f.failPut {
+	f.putCount++
+	if f.failPut || (f.failOnPutN > 0 && f.putCount == f.failOnPutN) {
 		return errors.New("kv: storage full")
 	}
 	return f.inner.Put(ctx, key, value)
@@ -584,39 +751,81 @@ func (f *failingPutKV) Scan(ctx context.Context, prefix string, fn func(string, 
 }
 
 // ---------------------------------------------------------------------------
-// moveTenantGroupShard: RequestRemoveNode failure
+// moveTenantGroupShard: remove-placement failure
 // ---------------------------------------------------------------------------
 
+// TestMoveTenantGroupShard_RemovePlacementFailure verifies a failing
+// placement-put for the source removal fails the whole MOVE with step
+// "remove-placement", after the destination has already been successfully
+// admitted (add-placement + AddObserver both already succeeded).
+func TestMoveTenantGroupShard_RemovePlacementFailure(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+
+	kv := &failingPutKV{inner: newMemPlacementKV()}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	if putErr := store.Put(context.Background(), p); putErr != nil { // put #1: initial seed
+		t.Fatalf("initial Put: %v", putErr)
+	}
+	kv.failOnPutN = 3 // put #2 (add dst) succeeds; put #3 (remove src) fails.
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err = svc.moveTenantGroupShard(context.Background(), move, p)
+	if err == nil {
+		t.Fatal("expected error from remove-placement failure")
+	}
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("expected *RebalanceMoveError, got %T", err)
+	}
+	if mve.Step != "remove-placement" {
+		t.Fatalf("expected step remove-placement, got %q", mve.Step)
+	}
+	if len(host.observerCalls) != 1 {
+		t.Errorf("expected dst already admitted (1 AddObserver call), got %d", len(host.observerCalls))
+	}
+	if len(host.removeCalls) != 0 {
+		t.Error("RemoveFollowerNode must not be attempted when the remove placement-put fails")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// moveTenantGroupShard: RemoveFollowerNode failure
+// ---------------------------------------------------------------------------
+
+// TestMoveTenantGroupShard_RemoveNodeFailure verifies a failing
+// RemoveFollowerNode fails the whole MOVE with step "remove-node", but the
+// placement already reflects the intended post-move state (dst in, src out)
+// -- mirroring DatabaseService.scaleDown's identical contract.
 func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
-	removeErr := errors.New("not the leader")
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-		requestRemoveNodeFn: func(_ context.Context, _ uint64, _ uint64) (*quicraft.RequestState, error) {
-			return nil, removeErr
-		},
-	}
-
+	removeErr := errors.New("config change rejected")
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true, removeErr: removeErr}
 	svc := &RebalanceService{
-		host:           host,
+		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
 	err := svc.moveTenantGroupShard(context.Background(), move, p)
 	if err == nil {
-		t.Fatal("expected error from RequestRemoveNode failure")
+		t.Fatal("expected error from RemoveFollowerNode failure")
 	}
 	var mve *RebalanceMoveError
 	if !errors.As(err, &mve) {
@@ -625,9 +834,12 @@ func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 	if mve.Step != "remove-node" {
 		t.Fatalf("expected step remove-node, got %q", mve.Step)
 	}
+	if !errors.Is(err, removeErr) {
+		t.Fatal("expected underlying removeErr")
+	}
 
 	// Placement MUST have been updated (dst added, src removed) even though
-	// the Raft RemoveNode call failed.
+	// the Raft RemoveFollowerNode call failed.
 	current, getErr := store.Get(context.Background(), p.TenantID, p.Database)
 	if getErr != nil {
 		t.Fatalf("store.Get: %v", getErr)
@@ -635,7 +847,6 @@ func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 	if len(current.Replicas) != 2 {
 		t.Fatalf("expected 2 replicas after placement update, got %d", len(current.Replicas))
 	}
-	// dst (node-c:9100) must be present; src (node-a:9100, replicaID=1) must be gone.
 	foundDst := false
 	for _, r := range current.Replicas {
 		if r.NodeID == "node-c:9100" {
@@ -651,85 +862,26 @@ func TestMoveTenantGroupShard_RemoveNodeFailure(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// moveTenantGroupShard: RemoveNode result error
+// moveTenantGroupShard: happy path (observer-first, no key delivery configured)
 // ---------------------------------------------------------------------------
 
-func TestMoveTenantGroupShard_RemoveNodeResultError(t *testing.T) {
-	p := newTestPlacement("acme", "db1", 10)
-	store := newTestPlacementStore(t, p)
-
-	resultErr := errors.New("membership change in progress")
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-		requestRemoveNodeFn: func(_ context.Context, _ uint64, _ uint64) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{Err: resultErr}), nil
-		},
-	}
-
-	svc := &RebalanceService{
-		host:           host,
-		placementStore: store,
-		selfNodeID:     "self:9100",
-	}
-
-	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	err := svc.moveTenantGroupShard(context.Background(), move, p)
-	if err == nil {
-		t.Fatal("expected error from RemoveNode result failure")
-	}
-	var mve *RebalanceMoveError
-	if !errors.As(err, &mve) {
-		t.Fatalf("expected *RebalanceMoveError, got %T", err)
-	}
-	if mve.Step != "remove-node-result" {
-		t.Fatalf("expected step remove-node-result, got %q", mve.Step)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// moveTenantGroupShard: happy path (no key delivery configured)
-// ---------------------------------------------------------------------------
-
+// TestMoveTenantGroupShard_HappyPath_NoKeyDelivery verifies the full,
+// correct MOVE sequence: the destination is admitted via AddObserver (NEVER
+// a voter add), the source is evicted via RemoveFollowerNode, and the final
+// placement reflects dst-in/src-out with the destination recorded as
+// placement.ReplicaStateObserver (promotion to a full voter happens
+// asynchronously via TenantShardReconciler, off this request path).
 func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
-	var capturedAddShardID, capturedAddReplicaID uint64
-	var capturedAddAddr string
-	var capturedRemoveShardID, capturedRemoveReplicaID uint64
-
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, shardID, replicaID uint64, addr string) (*quicraft.RequestState, error) {
-			capturedAddShardID = shardID
-			capturedAddReplicaID = replicaID
-			capturedAddAddr = addr
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-		requestRemoveNodeFn: func(_ context.Context, shardID, replicaID uint64) (*quicraft.RequestState, error) {
-			capturedRemoveShardID = shardID
-			capturedRemoveReplicaID = replicaID
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-	}
-
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
 	svc := &RebalanceService{
-		host:           host,
+		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
@@ -737,24 +889,35 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify Raft calls.
-	if capturedAddShardID != 10 {
-		t.Errorf("RequestAddNode: want shardID 10, got %d", capturedAddShardID)
+	// Verify the destination was admitted as a non-voting OBSERVER, never a
+	// voter (host.requestAddNodeFn from hostForMove is never wired to be
+	// called by moveTenantGroupShard at all).
+	if len(host.observerCalls) != 1 {
+		t.Fatalf("AddObserver called %d times, want 1", len(host.observerCalls))
 	}
-	if capturedAddReplicaID != 3 { // max(1,2)+1
-		t.Errorf("RequestAddNode: want replicaID 3, got %d", capturedAddReplicaID)
+	oc := host.observerCalls[0]
+	if oc.shardID != 10 {
+		t.Errorf("AddObserver: want shardID 10, got %d", oc.shardID)
 	}
-	if capturedAddAddr != "node-c:9100" {
-		t.Errorf("RequestAddNode: want addr node-c:9100, got %q", capturedAddAddr)
+	if oc.replicaID != 3 { // max(1,2)+1
+		t.Errorf("AddObserver: want replicaID 3, got %d", oc.replicaID)
 	}
-	if capturedRemoveShardID != 10 {
-		t.Errorf("RequestRemoveNode: want shardID 10, got %d", capturedRemoveShardID)
-	}
-	if capturedRemoveReplicaID != 1 { // node-a:9100 is replicaID 1
-		t.Errorf("RequestRemoveNode: want replicaID 1 (src), got %d", capturedRemoveReplicaID)
+	if oc.raftAddr != "node-c:9100" {
+		t.Errorf("AddObserver: want addr node-c:9100, got %q", oc.raftAddr)
 	}
 
-	// Verify placement updated: dst in, src out.
+	if len(host.removeCalls) != 1 {
+		t.Fatalf("RemoveFollowerNode called %d times, want 1", len(host.removeCalls))
+	}
+	rc := host.removeCalls[0]
+	if rc.shardID != 10 {
+		t.Errorf("RemoveFollowerNode: want shardID 10, got %d", rc.shardID)
+	}
+	if rc.replicaID != 1 { // node-a:9100 is replicaID 1
+		t.Errorf("RemoveFollowerNode: want replicaID 1 (src), got %d", rc.replicaID)
+	}
+
+	// Verify placement updated: dst in (as an observer), src out.
 	current, err := store.Get(context.Background(), p.TenantID, p.Database)
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)
@@ -766,8 +929,17 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	for _, r := range current.Replicas {
 		if r.NodeID == "node-c:9100" {
 			foundDst = true
-			if r.DataRoot != "/data" {
-				t.Errorf("dst DataRoot = %q, want /data", r.DataRoot)
+			// DataRoot MUST be empty, never copied from an existing replica
+			// (e.g. the source's "/data" fixture value below): the
+			// destination resolves its own local volume-pool root via
+			// LocalRootResolver, exactly like a scale-up observer
+			// (placement.Scheduler.PlaceAdditional). See moveTenantGroupShard's
+			// step-3 doc comment.
+			if r.DataRoot != "" {
+				t.Errorf("dst DataRoot = %q, want empty string", r.DataRoot)
+			}
+			if r.State != placement.ReplicaStateObserver {
+				t.Errorf("dst State = %v, want ReplicaStateObserver", r.State)
 			}
 		}
 		if r.NodeID == "node-a:9100" {
@@ -779,6 +951,63 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	}
 	if foundSrc {
 		t.Error("src node-a:9100 still present in updated placement")
+	}
+}
+
+// TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrdering
+// verifies the step ordering: the placement update (dst added) is persisted
+// BEFORE the tenant barrier key is delivered, which in turn happens before
+// the Raft AddObserver call -- reusing the SAME ordering fakes
+// (orderingPlacementKV / orderedKeyDistributor) database_service_scale_test.go
+// uses to pin scale-up's identical ordering contract, since both now share
+// the addObserverReplica helper. This is the direct regression test for the
+// ordering defect fixed in moveTenantGroupShard (placement-before-key-
+// delivery; the receiver's placement gate rejects a key delivered before its
+// own copy of the placement table lists the destination replica).
+func TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrdering(t *testing.T) {
+	p := newTestPlacement("acme", "db1", 10)
+
+	log := &stepLog{}
+	store, err := placement.NewStore(&orderingPlacementKV{memPlacementKV: newMemPlacementKV(), log: log})
+	if err != nil {
+		t.Fatalf("placement.NewStore: %v", err)
+	}
+	if putErr := store.Put(context.Background(), p); putErr != nil {
+		t.Fatalf("initial Put: %v", putErr)
+	}
+	// The initial seed put is irrelevant to this assertion; reset the log.
+	log.mu.Lock()
+	log.steps = nil
+	log.mu.Unlock()
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true, onObserver: func() { log.record("add-node") }}
+	dist := &orderedKeyDistributor{log: log}
+	tb := newTestTenantBarrier(t, "acme")
+	lookup := &fakeTenantBarrierLookup{tb: tb}
+
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+		keyDeliverer:   dist,
+		barrierLookup:  lookup,
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := log.snapshot()
+	// The remove-src placement-put also records "placement-put", so at least
+	// 3 steps are expected; only the first 3 (dst admission) are asserted.
+	if len(got) < 3 {
+		t.Fatalf("step log = %v, want at least 3 steps", got)
+	}
+	if got[0] != "placement-put" || got[1] != "key-delivery" || got[2] != "add-node" {
+		t.Fatalf("step order = %v, want [placement-put key-delivery add-node ...]", got)
 	}
 }
 
@@ -829,22 +1058,12 @@ func TestExecuteRebalance_DedicatedTenantShard_SuccessfulMove(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-		requestRemoveNodeFn: func(_ context.Context, _ uint64, _ uint64) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
-	}
-
-	svc := NewRebalanceService(host, WithRebalancePlacementStore(store), WithRebalanceSelfNodeID("self:9100"))
+	raftHost := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := NewRebalanceService(hostForMove(t),
+		WithRebalancePlacementStore(store),
+		WithRebalanceSelfNodeID("node-b:9100"),
+		WithRebalanceRaftHost(raftHost),
+	)
 	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
 			{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"},
@@ -859,25 +1078,22 @@ func TestExecuteRebalance_DedicatedTenantShard_SuccessfulMove(t *testing.T) {
 	if result.MovesFailed != 0 {
 		t.Fatalf("expected 0 failed, got %d", result.MovesFailed)
 	}
+	if len(raftHost.observerCalls) != 1 || len(raftHost.removeCalls) != 1 {
+		t.Errorf("expected observer-first admit + remove, got %d observer / %d remove calls",
+			len(raftHost.observerCalls), len(raftHost.removeCalls))
+	}
 }
 
 func TestExecuteRebalance_DedicatedTenantShard_FailureCounted(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
-	host := &mockHost{
-		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
-			return &quicraft.NodeHostInfo{}
-		},
-		staleReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return map[string][]byte{}, nil
-		},
-		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
-			return nil, errors.New("add failed")
-		},
-	}
-
-	svc := NewRebalanceService(host, WithRebalancePlacementStore(store), WithRebalanceSelfNodeID("self:9100"))
+	raftHost := &fakeRaftHost{leaderID: 2, leaderOK: true, observerErr: errors.New("add failed")}
+	svc := NewRebalanceService(hostForMove(t),
+		WithRebalancePlacementStore(store),
+		WithRebalanceSelfNodeID("node-b:9100"),
+		WithRebalanceRaftHost(raftHost),
+	)
 	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
 			{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"},
@@ -902,6 +1118,9 @@ func TestExecuteRebalance_MixedMoves(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 
+	// The generic system-shard path (shard 5) still goes through the
+	// generic Host's RequestAddNode; the dedicated-tenant path (shard 10)
+	// goes through raftHost's AddObserver/RemoveFollowerNode.
 	host := &mockHost{
 		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
 			return &quicraft.NodeHostInfo{
@@ -917,12 +1136,13 @@ func TestExecuteRebalance_MixedMoves(t *testing.T) {
 		requestAddNodeFn: func(_ context.Context, _ uint64, _ uint64, _ string) (*quicraft.RequestState, error) {
 			return newCompletedRequestState(quicraft.RequestResult{}), nil
 		},
-		requestRemoveNodeFn: func(_ context.Context, _ uint64, _ uint64) (*quicraft.RequestState, error) {
-			return newCompletedRequestState(quicraft.RequestResult{}), nil
-		},
 	}
 
-	svc := NewRebalanceService(host, WithRebalancePlacementStore(store), WithRebalanceSelfNodeID("self:9100"))
+	svc := NewRebalanceService(host,
+		WithRebalancePlacementStore(store),
+		WithRebalanceSelfNodeID("node-b:9100"),
+		WithRebalanceRaftHost(&fakeRaftHost{leaderID: 2, leaderOK: true}),
+	)
 	result, err := svc.ExecuteRebalance(context.Background(), &RebalancePlanResult{
 		Moves: []RebalanceMovePlan{
 			// Dedicated-tenant move.
@@ -968,7 +1188,16 @@ func TestBuildShardPlacementIndex_ListFailure_ReturnsNil(t *testing.T) {
 // deliverKeyToDst: success path
 // ---------------------------------------------------------------------------
 
-func TestDeliverKeyToDst_SuccessPath(t *testing.T) {
+// TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNodeID
+// verifies moveTenantGroupShard's key delivery (through the shared
+// addObserverReplica -> deliverTenantKeyToReplicaWithRetry ->
+// deliverTenantKeyToReplica chain) resolves the tenant barrier and
+// correctly propagates autoUnseal and selfNodeID to the deliverer, exactly
+// as DatabaseService.scaleUp's identical delivery does. This replaces the
+// old TestDeliverKeyToDst_SuccessPath, which exercised a
+// RebalanceService.deliverKeyToDst method now superseded by the shared
+// addObserverReplica helper.
+func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesAutoUnsealAndSelfNodeID(t *testing.T) {
 	// Build a minimal real TenantBarrier (sealed, StrategyNone) so that
 	// Barrier().ActiveStrategy() is callable. A sealed barrier returns "" from
 	// ActiveStrategy, which is ≠ StrategySystemBarrier, so autoUnseal = false.
@@ -1000,10 +1229,16 @@ func TestDeliverKeyToDst_SuccessPath(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)
 	svc := &RebalanceService{
-		host:           &mockHost{},
+		host:           hostForMove(t),
 		placementStore: store,
-		selfNodeID:     "self:9100",
-		keyDeliverer:   deliverer,
+		// self is node-b (replica 2, the leader); the MOVE's source is
+		// node-a (replica 1, NOT self) so this exercises the ordinary path
+		// without triggering the self-source leadership transfer (see
+		// TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource).
+		selfNodeID:   "node-b:9100",
+		raftHost:     &fakeRaftHost{leaderID: 2, leaderOK: true},
+		logger:       testLogger(),
+		keyDeliverer: deliverer,
 		barrierLookup: &fakeBarrierLookup{
 			getFn: func(_ string) (*seal.TenantBarrier, error) {
 				return tb, nil
@@ -1011,9 +1246,9 @@ func TestDeliverKeyToDst_SuccessPath(t *testing.T) {
 		},
 	}
 
-	dst := placement.Replica{ReplicaID: 3, NodeID: "node-c:9100", RaftAddr: "node-c:9100", DataRoot: "/data"}
-	if err := svc.deliverKeyToDst(context.Background(), p, dst); err != nil {
-		t.Fatalf("deliverKeyToDst: %v", err)
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
+		t.Fatalf("moveTenantGroupShard: %v", err)
 	}
 
 	// A sealed barrier (not initialized) returns "" for ActiveStrategy, which is
@@ -1021,8 +1256,8 @@ func TestDeliverKeyToDst_SuccessPath(t *testing.T) {
 	if capturedAutoUnseal {
 		t.Error("expected autoUnseal=false for non-system-barrier strategy")
 	}
-	if capturedSelfNodeID != "self:9100" {
-		t.Errorf("selfNodeID = %q, want self:9100", capturedSelfNodeID)
+	if capturedSelfNodeID != "node-b:9100" {
+		t.Errorf("selfNodeID = %q, want node-b:9100", capturedSelfNodeID)
 	}
 }
 

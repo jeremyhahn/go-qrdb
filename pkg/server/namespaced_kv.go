@@ -51,6 +51,16 @@ func (s *namespacedKVService) Put(ctx context.Context, key string, value []byte)
 	return s.inner.Put(ctx, s.prefix+key, value)
 }
 
+// PutIfAbsent stores value under the prefixed key only when that key is absent.
+//
+// The prefix is applied before the condition is evaluated, so the check is
+// scoped to this tenant's namespace: two tenants may each hold the same logical
+// key, and one tenant's write must never be declined because another tenant
+// already used that name.
+func (s *namespacedKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return s.inner.PutIfAbsent(ctx, s.prefix+key, value)
+}
+
 // Get retrieves a value by prefixed key.
 func (s *namespacedKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	return s.inner.Get(ctx, s.prefix+key)

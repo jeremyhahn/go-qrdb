@@ -85,7 +85,7 @@ func (s *kvServer) Range(ctx context.Context, req *pb.RangeRequest) (*pb.RangeRe
 		end = []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	}
 
-	kvs, count, err := s.mvccSvc.Range(ctx, start, end, opts...)
+	kvs, count, _, err := s.mvccSvc.Range(ctx, start, end, opts...)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "range: %v", err)
 	}
@@ -157,7 +157,7 @@ func (s *kvServer) DeleteRange(ctx context.Context, req *pb.DeleteRangeRequest) 
 	}
 
 	// Range delete: first get all keys in range, then delete each.
-	kvs, _, err := s.mvccSvc.Range(ctx, req.Key, req.RangeEnd)
+	kvs, _, _, err := s.mvccSvc.Range(ctx, req.Key, req.RangeEnd)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "delete range scan: %v", err)
 	}

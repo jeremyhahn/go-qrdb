@@ -64,7 +64,7 @@ func (f *fakeDatabaseServicer) SealDatabase(_ context.Context, _ string) error {
 func (f *fakeDatabaseServicer) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error {
 	return nil
 }
-func (f *fakeDatabaseServicer) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (f *fakeDatabaseServicer) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 func (f *fakeDatabaseServicer) CreateForTenant(_ context.Context, _ database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -91,6 +91,9 @@ func (f *fakeDatabaseServicer) UpdateBarrierForTenant(_ context.Context, _ strin
 }
 func (f *fakeDatabaseServicer) UpdateConnectionForTenant(_ context.Context, _ string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
 	return &database.DatabaseInfo{Name: "testdb"}, nil
+}
+func (f *fakeDatabaseServicer) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }
 
 // ===========================================================================

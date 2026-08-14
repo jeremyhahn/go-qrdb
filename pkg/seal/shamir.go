@@ -178,7 +178,7 @@ func (b *StorageBarrier) updateSealedShamirParams(ctx context.Context, threshold
 	if err != nil {
 		return err
 	}
-	b.strategies[StrategyShamir] = newStrat
+	b.setStrategy(StrategyShamir, newStrat)
 
 	if b.config.Shamir != nil {
 		b.config.Shamir.Threshold = threshold

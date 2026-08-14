@@ -39,6 +39,7 @@ type mockDatabaseService struct {
 	updateRaftFn       func(name string, cfg *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
 	updateBarrierFn    func(name string, cfg *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 	updateConnectionFn func(name string, cfg *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+	scaleFn            func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
 
 func newMockDatabaseService() *mockDatabaseService {
@@ -139,7 +140,7 @@ func (m *mockDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal
 	return nil
 }
 
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return &seal.BarrierStatus{}, nil
 }
 
@@ -182,6 +183,13 @@ func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name 
 	return m.UpdateConnection(name, cfg)
 }
 
+func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	if m.scaleFn != nil {
+		return m.scaleFn(name, targetReplicas)
+	}
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas, Status: database.StatusOpen}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
@@ -198,6 +206,7 @@ func TestDatabaseTools_Registration(t *testing.T) {
 		"qrdb_database_update_protocol",
 		"qrdb_database_update_etcd",
 		"qrdb_database_update_raft",
+		"qrdb_database_scale",
 		"qrdb_database_update_barrier",
 		"qrdb_database_update_connection",
 		"qrdb_database_seal",

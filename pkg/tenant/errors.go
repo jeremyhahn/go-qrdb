@@ -80,6 +80,13 @@ var (
 	// a logical-prefix tenant so its IAM data lives in the shared store and
 	// remains reachable during bootstrap while tenant barriers are sealed.
 	ErrSystemTenantMustBePrefix = errors.New("tenant: system tenant must use prefix isolation")
+
+	// ErrEmptyDataRoot is returned when CreateTenant's WithDataRoot option is
+	// used with an empty path. An explicit request for a dedicated-disk
+	// DataRoot must name a real path; it is never silently treated as "no
+	// preference" (which would fall back to pool allocation without telling
+	// the caller its request was dropped).
+	ErrEmptyDataRoot = errors.New("tenant: empty data root")
 )
 
 // InvalidTenantIDError is returned when a tenant ID is empty or malformed.
@@ -145,6 +152,30 @@ func (e *TenantScopeError) Error() string {
 		e.Op + " barrier of tenant " + e.TargetTenantID
 }
 
+// CrossTenantDeniedError is returned by IAM routing services when a caller
+// authenticated to one tenant supplies a different, non-empty target tenant
+// in the request. IAM records (users, roles) are routed and stored strictly
+// on the caller's identity tenant; only the system tenant may target another
+// tenant. This mirrors the data-plane rule that the effective tenant is NEVER
+// sourced from client-supplied request fields — transport-level RBAC scopes a
+// caller to its own tenant, but the routing layer must independently refuse to
+// act on a client-supplied tenant so a compromised or mis-wired handler cannot
+// reach another tenant's IAM store. It maps to 403 Forbidden on REST,
+// codes.PermissionDenied on gRPC/QUIC, and the permission-denied MCP contract.
+type CrossTenantDeniedError struct {
+	// IdentityTenantID is the caller's authenticated tenant.
+	IdentityTenantID string
+	// RequestedTenantID is the (rejected) client-supplied target tenant.
+	RequestedTenantID string
+	// Op names the attempted IAM operation, e.g. "create user".
+	Op string
+}
+
+func (e *CrossTenantDeniedError) Error() string {
+	return "tenant: caller in tenant " + e.IdentityTenantID +
+		" is not permitted to " + e.Op + " in tenant " + e.RequestedTenantID
+}
+
 // QuotaExceededError is returned by IncrementQuotaUsage when adding delta
 // would cause the tenant's current usage to exceed the configured limit.
 type QuotaExceededError struct {
@@ -189,6 +220,65 @@ func (e *BarrierError) Error() string {
 
 func (e *BarrierError) Unwrap() error {
 	return e.Err
+}
+
+// InvalidDataRootError is returned when CreateTenant's WithDataRoot option is
+// used with a path that is not a usable dedicated-disk location (relative,
+// non-canonical, or unreadable). See validateExplicitDataRoot.
+type InvalidDataRootError struct {
+	DataRoot string
+	Reason   string
+}
+
+func (e *InvalidDataRootError) Error() string {
+	return "tenant: invalid data root " + e.DataRoot + ": " + e.Reason
+}
+
+// DataRootNotEmptyError is returned when CreateTenant's WithDataRoot option
+// names an existing, non-empty directory. A fresh tenant is never registered
+// on top of another tenant's (or a deleted tenant's) leftover data; the
+// operator must point the option at an empty or not-yet-existing path.
+type DataRootNotEmptyError struct {
+	DataRoot string
+}
+
+func (e *DataRootNotEmptyError) Error() string {
+	return "tenant: data root " + e.DataRoot + " is not empty"
+}
+
+// DataRootOverlapError is returned when CreateTenant's WithDataRoot option
+// names a dedicated-disk path that overlaps a reserved storage location: the
+// configured volume-pool base path, the system data dir, or an existing
+// tenant's DataRoot. Two paths overlap when they are equal or one is a
+// filesystem ancestor of the other. Nesting a tenant's dedicated disk inside
+// the pool, the system tree, or another tenant's tree causes data-confusion,
+// so the request is rejected up front.
+type DataRootOverlapError struct {
+	// DataRoot is the operator-supplied path that was rejected.
+	DataRoot string
+	// Conflict is the reserved path it overlaps.
+	Conflict string
+	// Kind describes the reserved path (e.g. "volume pool", "system data dir",
+	// or "tenant <id>").
+	Kind string
+}
+
+func (e *DataRootOverlapError) Error() string {
+	return "tenant: data root " + e.DataRoot + " overlaps " + e.Kind + " path " + e.Conflict
+}
+
+// DataRootIsolationTypeError is returned when CreateTenant's WithDataRoot
+// option is used with an isolation type that has no meaningful notion of a
+// dedicated filesystem DataRoot (prefix or barrier isolation). Only
+// IsolationVolume and IsolationRaft tenants get a dedicated DataRoot.
+type DataRootIsolationTypeError struct {
+	TenantID      string
+	IsolationType IsolationType
+}
+
+func (e *DataRootIsolationTypeError) Error() string {
+	return "tenant: data root is not meaningful for tenant " + e.TenantID +
+		" with isolation type " + string(e.IsolationType) + " (requires volume or raft isolation)"
 }
 
 // InvalidStrategyError is returned when the caller requests a seal strategy

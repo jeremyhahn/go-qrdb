@@ -15,8 +15,11 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
@@ -376,6 +379,45 @@ func TestBackfillIndex_EmptyValues(t *testing.T) {
 	all, _ := idx.GetAll()
 	if len(all) != 0 {
 		t.Errorf("expected 0 IDs for empty values, got %d", len(all))
+	}
+}
+
+func TestBackfillIndex_PutErrorLogged(t *testing.T) {
+	// A unique index backfilled from data that violates uniqueness triggers a
+	// per-entry Put failure. The failure must not abort the backfill (the
+	// non-conflicting entry still gets indexed) but must be observable via a
+	// Warn log rather than silently swallowed.
+	idx := index.NewMemoryIndex("by_email", true)
+
+	scanner := func() ([]*service.KeyValue, error) {
+		return []*service.KeyValue{
+			{Key: []byte("user:1"), Value: []byte(`{"email":"a@example.com"}`)},
+			{Key: []byte("user:2"), Value: []byte(`{"email":"a@example.com"}`)}, // duplicate -> Put fails
+			{Key: []byte("user:3"), Value: []byte(`{"email":"b@example.com"}`)},
+		}, nil
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	defer slog.SetDefault(prev)
+
+	BackfillIndex(scanner, idx, "email")
+
+	all, err := idx.GetAll()
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("expected 2 IDs (the non-conflicting entries), got %d", len(all))
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "index backfill entry failed") {
+		t.Errorf("expected a Warn log for the Put failure, got: %q", logged)
+	}
+	if !strings.Contains(logged, "user:2") {
+		t.Errorf("expected the Warn log to identify the failing key, got: %q", logged)
 	}
 }
 

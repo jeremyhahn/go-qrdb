@@ -120,6 +120,11 @@ type Transport struct {
 	authFactorSvc     service.AuthFactorServicer
 	auditLogger       audit.AuditLogger
 
+	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
+	// kvSvc/dbSvc on first Query call. See transport_sql.go.
+	sqlOnce     sync.Once
+	sqlSvcCache service.SQLServicer
+
 	// Phase 3 auth/identity wiring. All optional; SDK accessors return
 	// typed Missing*Error values when the corresponding service is not
 	// configured.
@@ -328,6 +333,7 @@ var requestHandlers = map[string]requestHandler{
 	"Range":                       handleRange,
 	"Compact":                     handleCompact,
 	"CurrentRevision":             handleCurrentRevision,
+	"RestoreToRevision":           handleRestoreToRevision,
 	"ExecuteTransaction":          handleExecuteTransaction,
 	"ExecuteBatch":                handleExecuteBatch,
 	"Watch":                       handleWatch,
@@ -399,7 +405,8 @@ var requestHandlers = map[string]requestHandler{
 	"CeremonyStatus":              handleCeremonyStatus,
 	"CeremonyClaimCertBegin":      handleCeremonyClaimCertBegin,
 	"CeremonyClaimCertComplete":   handleCeremonyClaimCertComplete,
-	"CeremonyClaimShare":          handleCeremonyClaimShare,
+	"CeremonyBeginClaimShare":     handleCeremonyBeginClaimShare,
+	"CeremonyCompleteClaimShare":  handleCeremonyCompleteClaimShare,
 	"CeremonySignCSR":             handleCeremonySignCSR,
 	"CredentialSubmit":            handleCredentialSubmit,
 	"CredentialStrategy":          handleCredentialStrategy,
@@ -910,22 +917,24 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 		return nil, &NilServiceError{Service: "MVCCKVServicer"}
 	}
 	if ro, ok := resolveReadConsistency(opts); ok {
-		kvs, count, err := t.mvccSvc.RangeWithConsistency(ctx, start, end, ro, toServiceRangeOpts(rangeOpts)...)
+		kvs, count, revision, err := t.mvccSvc.RangeWithConsistency(ctx, start, end, ro, toServiceRangeOpts(rangeOpts)...)
 		if err != nil {
 			return nil, translateError(err)
 		}
 		return &transport.RangeResponse{
-			Kvs:   toTransportKVSlice(kvs),
-			Count: count,
+			Kvs:      toTransportKVSlice(kvs),
+			Count:    count,
+			Revision: revision,
 		}, nil
 	}
-	kvs, count, err := t.mvccSvc.Range(ctx, start, end, toServiceRangeOpts(rangeOpts)...)
+	kvs, count, revision, err := t.mvccSvc.Range(ctx, start, end, toServiceRangeOpts(rangeOpts)...)
 	if err != nil {
 		return nil, translateError(err)
 	}
 	return &transport.RangeResponse{
-		Kvs:   toTransportKVSlice(kvs),
-		Count: count,
+		Kvs:      toTransportKVSlice(kvs),
+		Count:    count,
+		Revision: revision,
 	}, nil
 }
 
@@ -955,6 +964,28 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 		return 0, translateError(err)
 	}
 	return rev, nil
+}
+
+// RestoreToRevision returns a bounded set of keys to the value they held at
+// an earlier MVCC revision through the embedded MVCC service -- a logical
+// undo, never a Raft rewind. Exactly one of req.Prefix and req.Keys must be
+// set.
+func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if t.mvccSvc == nil {
+		return nil, &NilServiceError{Service: "MVCCKVServicer"}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
+	}
+
+	result, err := t.mvccSvc.RestoreToRevision(ctx, toServiceRestoreRevisionRequest(req))
+	if err != nil {
+		return nil, translateError(err)
+	}
+	return toTransportRestoreRevisionResult(result), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,6 +2139,66 @@ func toTransportKVSlice(kvs []*service.KeyValue) []*transport.MVCCKeyValue {
 	return out
 }
 
+// transportRestoreActionFromService converts service-layer RestoreAction to
+// transport-layer RestoreAction.
+var transportRestoreActionFromService = map[service.RestoreAction]transport.RestoreAction{
+	service.RestoreActionRevert:   transport.RestoreActionRevert,
+	service.RestoreActionRecreate: transport.RestoreActionRecreate,
+	service.RestoreActionDelete:   transport.RestoreActionDelete,
+}
+
+// toServiceRestoreRevisionRequest converts a transport-layer RestoreRevisionRequest
+// to its service-layer representation. Prefix and Keys are converted from
+// []byte / [][]byte to string / []string -- a lossless, byte-transparent
+// conversion in Go, unlike the JSON/base64 encoding the wire transports
+// apply to preserve the same bytes across the network.
+func toServiceRestoreRevisionRequest(req *transport.RestoreRevisionRequest) *service.RestoreRevisionRequest {
+	keys := make([]string, len(req.Keys))
+	for i, k := range req.Keys {
+		keys[i] = string(k)
+	}
+	return &service.RestoreRevisionRequest{
+		Revision: req.Revision,
+		Prefix:   string(req.Prefix),
+		Keys:     keys,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	}
+}
+
+// toTransportRestoreRevisionChanges converts service-layer RestoreKeyChange values
+// to transport-layer RestoreKeyChange pointers.
+func toTransportRestoreRevisionChanges(changes []service.RestoreKeyChange) []*transport.RestoreKeyChange {
+	out := make([]*transport.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = &transport.RestoreKeyChange{
+			Key:          []byte(c.Key),
+			Action:       transportRestoreActionFromService[c.Action],
+			FromRevision: c.FromRevision,
+			ToRevision:   c.ToRevision,
+			ValueBytes:   c.ValueBytes,
+		}
+	}
+	return out
+}
+
+// toTransportRestoreRevisionResult converts a service-layer
+// RestoreRevisionResult to its transport-layer representation.
+func toTransportRestoreRevisionResult(result *service.RestoreRevisionResult) *transport.RestoreRevisionResult {
+	if result == nil {
+		return nil
+	}
+	return &transport.RestoreRevisionResult{
+		Revision:   result.Revision,
+		Changes:    toTransportRestoreRevisionChanges(result.Changes),
+		Conflicts:  toTransportRestoreRevisionChanges(result.Conflicts),
+		Applied:    result.Applied,
+		Skipped:    result.Skipped,
+		Conflicted: result.Conflicted,
+		DryRun:     result.DryRun,
+	}
+}
+
 // toServiceCompares converts transport-layer Compare values to
 // service-layer Compare values.
 func toServiceCompares(compares []transport.Compare) []service.Compare {
@@ -2720,6 +2811,21 @@ func handleCurrentRevision(ctx context.Context, t *Transport, _, resp any) error
 	}
 	if out, ok := resp.(*int64); ok {
 		*out = rev
+	}
+	return nil
+}
+
+func handleRestoreToRevision(ctx context.Context, t *Transport, req, resp any) error {
+	r, ok := req.(*transport.RestoreRevisionRequest)
+	if !ok {
+		return &InvalidRequestError{Method: "RestoreToRevision"}
+	}
+	result, err := t.RestoreToRevision(ctx, r)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp.(**transport.RestoreRevisionResult); ok {
+		*out = result
 	}
 	return nil
 }

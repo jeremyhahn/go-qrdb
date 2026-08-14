@@ -372,16 +372,35 @@ type barrierEnableEncryptionRequest struct {
 	ShamirTotal     int `json:"shamir_total,omitempty"`
 }
 
-// migrationStartGrace gives the 202 response time to flush before a
-// system-scope migration tears down the data-plane server it was served on.
-const migrationStartGrace = 750 * time.Millisecond
+// migrationAcceptWindow bounds how long the handler waits for
+// EncryptionMigrator.EnableEncryption to return before giving up on
+// delivering its outcome synchronously. EnableEncryption is a single
+// synchronous call spanning both the fast, purely in-memory acceptance
+// checks (target-strategy/mechanism/availability validation, tenant
+// entitlement, shared-barrier-immutable authority, Shamir officer quorum,
+// provider availability) AND the slow, destructive execution phase (Quiesce,
+// which for a system-scope migration tears down the data-plane server this
+// request is served on, followed by the re-encryption itself). Every
+// synchronously-knowable rejection returns well within this window, before
+// Quiesce ever runs, so racing the call against it lets the handler surface
+// a real error instead of a false "migration_started". If the window elapses
+// the migration has moved past acceptance into its long-running execution;
+// its eventual outcome can no longer be delivered to this client and is
+// logged only.
+const migrationAcceptWindow = 750 * time.Millisecond
 
 // handleBarrierEnableEncryption handles POST /v1/barrier/enable-encryption --
-// migrates a previously-unencrypted barrier to a keyed strategy. The work runs
-// asynchronously because a system-scope migration recycles the data-plane
-// server in process; the handler validates the request, starts the migration,
-// and returns 202. Clients observe completion by polling GET /v1/barrier/status
-// (the strategy changes from "none" to the keyed strategy).
+// migrates a previously-unencrypted barrier to a keyed strategy. It validates
+// the request synchronously, then invokes the migrator and races its result
+// against migrationAcceptWindow: a synchronous rejection (bad target,
+// shared-barrier-immutable, insufficient officers, entitlement denied,
+// provider unavailable) is returned to the caller as a proper error, while a
+// migration that is still running once the window elapses is acknowledged
+// with 202 "migration_started" — a system-scope migration recycles the
+// data-plane server in process, so its outcome cannot be delivered to this
+// client either way. Clients observe completion by polling
+// GET /v1/barrier/status (the strategy changes from "none" to the keyed
+// strategy).
 // Required permission: seal:enable_encryption.
 func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Request) {
 	if s.encMigrator == nil {
@@ -414,19 +433,37 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Run asynchronously: a system-scope migration tears down the server this
-	// request is served on, so we must respond first. A background context is
-	// used because the request context is cancelled once the response returns.
+	// A background context is used because the request context is cancelled
+	// once the response returns, and the migration must continue independent
+	// of this request's lifetime.
+	resultCh := make(chan error, 1)
 	go func() {
-		time.Sleep(migrationStartGrace)
-		if err := s.encMigrator.EnableEncryption(context.Background(), scope, opts); err != nil {
-			slog.Error("enable-encryption migration failed",
-				slog.String("scope", string(scope.Kind)),
-				slog.String("tenant", scope.TenantID),
-				slog.String("strategy", string(opts.TargetStrategy)),
-				slog.Any("error", err))
-		}
+		resultCh <- s.encMigrator.EnableEncryption(context.Background(), scope, opts)
 	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
+			return
+		}
+		// Completed within the window with no error: an unusually fast
+		// migration (e.g. an empty barrier) already finished. Fall through
+		// and report "migration_started" — BarrierStatus already reflects
+		// the committed strategy, so the wording is accurate either way.
+	case <-time.After(migrationAcceptWindow):
+		// Still running past acceptance: no client is left to deliver the
+		// eventual outcome to, so only log it.
+		go func() {
+			if err := <-resultCh; err != nil {
+				slog.Error("enable-encryption migration failed",
+					slog.String("scope", string(scope.Kind)),
+					slog.String("tenant", scope.TenantID),
+					slog.String("strategy", string(opts.TargetStrategy)),
+					slog.Any("error", err))
+			}
+		}()
+	}
 
 	writeJSON(w, map[string]interface{}{
 		"status": "migration_started",

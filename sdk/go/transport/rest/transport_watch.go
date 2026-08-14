@@ -115,7 +115,7 @@ func (t *Transport) watchSSE(ctx context.Context, key string, isPrefix bool, opt
 
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
-		return nil, t.decodeErrorResponse("Watch", resp)
+		return nil, transport.ClassifyWatchError(t.decodeErrorResponse("Watch", resp))
 	}
 
 	ch := make(chan transport.WatchResponse, 16)

@@ -158,24 +158,16 @@ func (m *MemoryIndex) Delete(entityKey []byte, fieldValue []byte) error {
 
 // Scan retrieves all index entries with field values in the half-open
 // interval [start, end). Returns a map of field value strings to copies
-// of their entity key slices.
+// of their entity key slices. A nil start or end means unbounded on that
+// side, matching the semantics of the other Index implementations and the
+// [start, end) contract documented on the Index interface.
 func (m *MemoryIndex) Scan(start, end []byte) (map[string][][]byte, error) {
-	if start == nil {
-		return nil, &NilFieldValueError{Op: "scan start"}
-	}
-	if end == nil {
-		return nil, &NilFieldValueError{Op: "scan end"}
-	}
-
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if m.data == nil {
 		return nil, &ClosedError{Name: m.name}
 	}
-
-	startStr := string(start)
-	endStr := string(end)
 
 	// Collect and sort keys for deterministic output.
 	fieldKeys := make([]string, 0, len(m.data))
@@ -186,16 +178,22 @@ func (m *MemoryIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 
 	result := make(map[string][][]byte)
 	for _, k := range fieldKeys {
-		if k >= startStr && k < endStr {
-			keys := m.data[k]
-			cp := make([][]byte, len(keys))
-			for i, ek := range keys {
-				c := make([]byte, len(ek))
-				copy(c, ek)
-				cp[i] = c
-			}
-			result[k] = cp
+		keyBytes := []byte(k)
+		if start != nil && bytes.Compare(keyBytes, start) < 0 {
+			continue
 		}
+		if end != nil && bytes.Compare(keyBytes, end) >= 0 {
+			continue
+		}
+
+		keys := m.data[k]
+		cp := make([][]byte, len(keys))
+		for i, ek := range keys {
+			c := make([]byte, len(ek))
+			copy(c, ek)
+			cp[i] = c
+		}
+		result[k] = cp
 	}
 
 	return result, nil

@@ -49,6 +49,23 @@ func (m *memoryKVStore) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// PutIfAbsent satisfies kvstore.AtomicKVStore. The check and the write happen
+// under one exclusive lock, which is what a single-process store must do to
+// honour the contract — releasing between them would let two goroutines both
+// observe the key missing and both write.
+func (m *memoryKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.data[key]; exists {
+		return false, nil
+	}
+	valueCopy := make([]byte, len(value))
+	copy(valueCopy, value)
+	m.data[key] = valueCopy
+	return true, nil
+}
+
 func (m *memoryKVStore) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

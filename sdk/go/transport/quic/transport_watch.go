@@ -85,8 +85,26 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 		return nil, &streamError{Err: err}
 	}
 
+	// Tie the stream's read side to ctx: OpenStreamSync only used ctx to
+	// establish the stream, so without this a caller cancellation (Ctrl-C,
+	// --timeout) would not unblock a readWatchResponses goroutine parked in
+	// wire.ReadResponse waiting on the server. CancelRead is idempotent with
+	// the deferred CancelRead(0) in readWatchResponses on normal exit, and
+	// this goroutine exits as soon as either happens.
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			stream.CancelRead(0)
+		case <-watchDone:
+		}
+	}()
+
 	ch := make(chan transport.WatchResponse, 16)
-	go readWatchResponses(ctx, stream, ch)
+	go func() {
+		readWatchResponses(ctx, stream, ch)
+		close(watchDone)
+	}()
 
 	return ch, nil
 }

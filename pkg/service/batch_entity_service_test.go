@@ -328,6 +328,39 @@ func TestBatchService_ExecuteEntity_ProposeError(t *testing.T) {
 	}
 }
 
+// TestBatchService_ExecuteEntity_AppError verifies that a state-machine-
+// encoded application error (e.g. a unique-index violation rejected by
+// handleBatch without a fatal Update error) is surfaced to the caller
+// instead of being silently swallowed and reported as success.
+func TestBatchService_ExecuteEntity_AppError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Data: protocol.EncodeAppError("unique index violation: email")}, nil
+		},
+	}
+
+	svc := NewBatchService(host, 1)
+	resp, err := svc.ExecuteEntity(context.Background(), &BatchEntityRequest{
+		Ops: []BatchEntityOp{
+			{Type: "put", EntityType: "user", ID: "u1", Data: []byte(`{"email":"a@example.com"}`)},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil response on app error, got %+v", resp)
+	}
+
+	var smErr *SMNotConfiguredError
+	if !errors.As(err, &smErr) {
+		t.Fatalf("expected *SMNotConfiguredError, got %T: %v", err, err)
+	}
+	if smErr.Message != "unique index violation: email" {
+		t.Fatalf("expected message %q, got %q", "unique index violation: email", smErr.Message)
+	}
+}
+
 func TestBatchService_ExecuteEntity_NotLeaderError(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {

@@ -156,6 +156,7 @@ func startUnixTestServerWithBarrier(t *testing.T, barrierSvc tenantpkg.TenantSer
 	socketPath := tempSocketPath(t)
 	srv := unixserver.NewServer(newMockKVService(), newMockAdminService(), socketPath,
 		unixserver.WithTenantBarrierService(barrierSvc),
+		unixserver.WithTLS(testUnixServerTLS),
 	)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("failed to start Unix server: %v", err)
@@ -169,7 +170,7 @@ func connectTransportWithBarrier(t *testing.T, barrierSvc tenantpkg.TenantServic
 	t.Helper()
 	socketPath, stopSrv := startUnixTestServerWithBarrier(t, barrierSvc)
 
-	tr, err := New(transport.WithAddress(socketPath))
+	tr, err := New(transport.WithAddress(socketPath), testClientTLSOption())
 	if err != nil {
 		stopSrv()
 		t.Fatalf("New: %v", err)

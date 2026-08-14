@@ -526,11 +526,19 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 			continue
 		}
 
-		if err := s.provider.RestoreShard(ctx, shardID, data); err != nil {
+		// Prefer the SAFETY-GUARDED online path when the provider supports
+		// it: the shard may still be RUNNING (this is the live REST/gRPC/CLI
+		// restore path), and plain RestoreShard's ImportSnapshot always
+		// refuses a running shard. A provider that does not implement
+		// OnlineShardRestorer (e.g. a simple test double) falls back to
+		// RestoreShard, which requires the shard to already be stopped —
+		// exactly the OFFLINE boot-time restore pattern.
+		restoreErr := s.restoreShard(ctx, shardID, data)
+		if restoreErr != nil {
 			errMu.Lock()
 			errs = append(errs, ShardError{
 				ShardID: shardID,
-				Message: err.Error(),
+				Message: restoreErr.Error(),
 			})
 			errMu.Unlock()
 			continue
@@ -547,6 +555,42 @@ func (s *BackupService) RestoreBackup(ctx context.Context, opts RestoreOptions) 
 	}
 
 	return result, nil
+}
+
+// restoreShard restores a single shard, preferring the provider's
+// SAFETY-GUARDED OnlineShardRestorer when available.
+func (s *BackupService) restoreShard(ctx context.Context, shardID uint64, data []byte) error {
+	if online, ok := s.provider.(OnlineShardRestorer); ok {
+		return online.RestoreShardOnline(ctx, shardID, data)
+	}
+	return s.provider.RestoreShard(ctx, shardID, data)
+}
+
+// SetShardRestarter wires a ShardRestarter into svc's underlying host-backed
+// ShardSnapshotProvider, enabling ONLINE restore (RestoreShardOnline) for the
+// dedicated shards the restarter manages — e.g. server.RaftBackendFactory for
+// its dedicated per-database Raft shards. Callers construct their
+// IsolationRaft factory only after the core service graph (including the
+// backup service returned by NewBackupService) already exists, so this is
+// the late-binding wiring point: call it once the factory exists, before
+// serving traffic. It is a safe no-op when svc is not a *BackupService (e.g.
+// a test double), when its provider is not host-backed, or when restarter is
+// nil.
+func SetShardRestarter(svc BackupServicer, restarter ShardRestarter) {
+	if restarter == nil {
+		return
+	}
+	bs, ok := svc.(*BackupService)
+	if !ok {
+		return
+	}
+	p, ok := bs.provider.(*hostShardSnapshotProvider)
+	if !ok {
+		return
+	}
+	p.mu.Lock()
+	p.restarter = restarter
+	p.mu.Unlock()
 }
 
 // VerifyBackup verifies the integrity of a backup by recomputing the

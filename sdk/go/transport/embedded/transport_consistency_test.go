@@ -180,14 +180,14 @@ func (m *captureMVCCSvcCapture) GetAtRevisionWithConsistency(ctx context.Context
 	return m.mockMVCCService.GetAtRevision(ctx, key, revision)
 }
 
-func (m *captureMVCCSvcCapture) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *captureMVCCSvcCapture) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.mu.Lock()
 	m.called = "Range"
 	m.mu.Unlock()
 	return m.mockMVCCService.Range(ctx, start, end, opts...)
 }
 
-func (m *captureMVCCSvcCapture) RangeWithConsistency(ctx context.Context, start, end []byte, ropts consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *captureMVCCSvcCapture) RangeWithConsistency(ctx context.Context, start, end []byte, ropts consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.mu.Lock()
 	m.called = "RangeWithConsistency"
 	m.ropts = ropts

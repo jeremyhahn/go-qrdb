@@ -181,6 +181,7 @@ PKG_STATEMACHINE   := ./pkg/statemachine/...
 PKG_SEAL           := ./pkg/seal/...
 PKG_SEAL_KDF       := ./pkg/seal/kdf/...
 PKG_CEREMONY       := ./pkg/ceremony/...
+PKG_INVITE         := ./pkg/invite/...
 PKG_CREDENTIALS    := ./pkg/credentials/...
 PKG_TENANT         := ./pkg/tenant/...
 PKG_KVSTORE        := ./pkg/kvstore/...
@@ -199,6 +200,8 @@ PKG_SQL_PROVIDER   := ./pkg/sql/provider/...
 PKG_SQL_ENGINE     := ./pkg/sql/engine/...
 PKG_SQL_MYSQL      := ./pkg/sql/mysql/...
 PKG_SQL_PGSQL      := ./pkg/sql/pgsql/...
+PKG_SQL_QUERY      := ./pkg/sql/query/...
+PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
 PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
@@ -207,6 +210,9 @@ PKG_MCP            := ./pkg/api/mcp/...
 
 # SDK (separate Go module)
 SDK_DIR            := sdk/go
+
+# SDK packages addressed individually (paths are relative to SDK_DIR)
+SDK_PKG_QRDBDHARNESS := ./testutil/qrdbdharness/...
 
 # Integration test paths
 INT_TEST_DIR  := ./test/integration
@@ -388,6 +394,10 @@ test-seal-kdf:
 test-ceremony:
 	$(GOTEST) $(TAG_FLAG) $(PKG_CEREMONY)
 
+.PHONY: test-invite
+test-invite:
+	$(GOTEST) $(TAG_FLAG) $(PKG_INVITE)
+
 .PHONY: test-custodian
 test-custodian:
 	$(GOTEST) $(TAG_FLAG) ./pkg/custodian/...
@@ -468,6 +478,14 @@ test-sql-mysql:
 test-sql-pgsql:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGSQL)
 
+.PHONY: test-sql-query
+test-sql-query:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_QUERY)
+
+.PHONY: test-sql-catalog
+test-sql-catalog:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_CATALOG)
+
 .PHONY: test-codec
 test-codec:
 	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
@@ -489,11 +507,19 @@ test-mcp:
 	$(GOTEST) $(TAG_FLAG) $(PKG_MCP)
 
 .PHONY: test-sql
-test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql
+test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog
 
 .PHONY: test-sdk
 test-sdk:
 	cd $(SDK_DIR) && $(GOTEST) ./...
+
+# The qrdbd integration-test harness shared by test/integration, the
+# cmd/qrdb-sqlite gateway module and the GORM conformance module. It is part of
+# the SDK module, so test-sdk already runs it via ./... ; this target exists to
+# run it alone.
+.PHONY: test-testutil-qrdbdharness
+test-testutil-qrdbdharness: ## Run unit tests for the shared qrdbd test harness
+	cd $(SDK_DIR) && $(GOTEST) $(SDK_PKG_QRDBDHARNESS)
 
 # ============================================================================
 # E2E tests (Playwright – always run in devcontainer)
@@ -904,6 +930,16 @@ coverage-sql-pgsql: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgsql.out $(PKG_SQL_PGSQL)
 	$(call check-coverage,$(COVER_DIR)/sql-pgsql.out,sql-pgsql)
 
+.PHONY: coverage-sql-query
+coverage-sql-query: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-query.out $(PKG_SQL_QUERY)
+	$(call check-coverage,$(COVER_DIR)/sql-query.out,sql-query)
+
+.PHONY: coverage-sql-catalog
+coverage-sql-catalog: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-catalog.out $(PKG_SQL_CATALOG)
+	$(call check-coverage,$(COVER_DIR)/sql-catalog.out,sql-catalog)
+
 .PHONY: coverage-codec
 coverage-codec: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
@@ -930,12 +966,19 @@ coverage-mcp: | _cover-dir
 	$(call check-coverage,$(COVER_DIR)/mcp.out,mcp)
 
 .PHONY: coverage-sql
-coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql
+coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql coverage-sql-query coverage-sql-catalog
 
 .PHONY: coverage-sdk
 coverage-sdk: | _cover-dir
 	cd $(SDK_DIR) && $(GOTEST) -coverprofile=../../$(COVER_DIR)/sdk.out ./...
 	$(call check-coverage,$(COVER_DIR)/sdk.out,sdk)
+
+# Included in coverage-sdk's ./... profile; this target gates the harness
+# package on its own so a regression there is attributable.
+.PHONY: coverage-testutil-qrdbdharness
+coverage-testutil-qrdbdharness: | _cover-dir ## Coverage for the shared qrdbd test harness
+	cd $(SDK_DIR) && $(GOTEST) -coverprofile=../../$(COVER_DIR)/testutil-qrdbdharness.out $(SDK_PKG_QRDBDHARNESS)
+	$(call check-coverage,$(COVER_DIR)/testutil-qrdbdharness.out,testutil-qrdbdharness)
 
 _cover-dir:
 	@mkdir -p $(COVER_DIR)
@@ -1283,6 +1326,65 @@ coverage-sqlite-gateway:
 	cp coverage.out ../../$(COVER_DIR)/sqlite-gateway.out
 
 # ============================================================================
+# GORM Conformance Suite
+# ============================================================================
+# sdk/go/gorm/conformance runs GORM's own upstream test suite against qrdb's
+# GORM dialector (sdk/go/gorm) and, over gorm.io/driver/mysql and
+# gorm.io/driver/postgres, qrdb's SQL wire protocol servers. It is a nested
+# Go module (its go.mod pulls in gorm.io/driver/{mysql,postgres,gaussdb},
+# lib/pq, and the upstream test fixtures — none of which belong in sdk/go's
+# own dependency graph) with its own build-tag-gated, ratcheted allowlist;
+# see sdk/go/gorm/conformance/README.md and GORM_SUITE.lock.
+#
+# This suite is INFRASTRUCTURE, not a gate: it is expected to fail a large,
+# tracked fraction of its tests until qrdb's Migrator/DDL support lands (see
+# sdk/go/gorm/migrator.go and pkg/sql/provider). conformance-test-gorm-* is
+# therefore never wired into `make test`, `make integration-test`, or `make
+# all` — same reasoning as the sqlite gateway's own integration targets
+# above, and doubly true here since a red run is the expected, tracked
+# state rather than a transient one.
+
+GORM_DIR  := sdk/go/gorm/conformance
+GORM_TAGS := gormconformance
+
+.PHONY: test-gorm
+test-gorm: ## Compile-check the GORM conformance harness (does not run the suite)
+	cd $(GORM_DIR) && go vet -tags $(GORM_TAGS) ./...
+
+.PHONY: coverage-gorm
+coverage-gorm: | _cover-dir ## Generate coverage for the node-target GORM conformance run (not COVER_MIN-gated: this suite is expected red)
+	cd $(GORM_DIR) && GORM_QRDB_TARGET=node go test -tags $(GORM_TAGS) -count=1 -coverprofile=coverage.out ./... ; \
+	go tool cover -func=coverage.out
+	cp $(GORM_DIR)/coverage.out $(COVER_DIR)/gorm-node.out
+
+.PHONY: gorm-suite-sync
+gorm-suite-sync: ## Fetch/verify/materialize the upstream GORM test suite (see GORM_SUITE.lock)
+	cd $(GORM_DIR) && go run sync.go
+
+.PHONY: gorm-suite-clean
+gorm-suite-clean: ## Remove the materialized upstream GORM test suite
+	cd $(GORM_DIR) && go run sync.go -clean
+
+.PHONY: conformance-test-gorm-node
+conformance-test-gorm-node: gorm-suite-sync ## Run+reconcile the GORM suite against qrdb's native dialector over a complete in-process node
+	cd $(GORM_DIR) && go run runner.go -target=node
+
+.PHONY: conformance-test-gorm-mysql
+conformance-test-gorm-mysql: build-server gorm-suite-sync ## Run+reconcile the GORM suite over qrdb's MySQL wire protocol server
+	cd $(GORM_DIR) && go run runner.go -target=mysql
+
+.PHONY: conformance-test-gorm-pgsql
+conformance-test-gorm-pgsql: build-server gorm-suite-sync ## Run+reconcile the GORM suite over qrdb's PostgreSQL wire protocol server
+	cd $(GORM_DIR) && go run runner.go -target=pgsql
+
+.PHONY: conformance-test-gorm
+conformance-test-gorm: conformance-test-gorm-node conformance-test-gorm-mysql conformance-test-gorm-pgsql ## Run all three GORM conformance targets
+
+.PHONY: bench-gorm
+bench-gorm: gorm-suite-sync ## Run GORM's own upstream benchmarks against the in-process node target
+	cd $(GORM_DIR) && GORM_QRDB_TARGET=node go test -tags $(GORM_TAGS) -run '^$$' -bench=. -benchmem -count=1 ./...
+
+# ============================================================================
 # Help
 # ============================================================================
 
@@ -1382,3 +1484,14 @@ help:
 	@echo "  integration-test-sqlite-gateway  Run integration tests"
 	@echo "  bench-sqlite-gateway             Run benchmarks"
 	@echo "  coverage-sqlite-gateway          Generate coverage report"
+	@echo ""
+	@echo "GORM Conformance (separate module at sdk/go/gorm/conformance; RED by design, see README):"
+	@echo "  gorm-suite-sync                  Fetch/verify/materialize the upstream GORM test suite"
+	@echo "  gorm-suite-clean                 Remove the materialized upstream GORM test suite"
+	@echo "  test-gorm                        Compile-check the harness (go vet -tags gormconformance)"
+	@echo "  conformance-test-gorm-node       Run+reconcile against an in-process qrdb node"
+	@echo "  conformance-test-gorm-mysql      Run+reconcile over qrdb's MySQL wire protocol server"
+	@echo "  conformance-test-gorm-pgsql      Run+reconcile over qrdb's PostgreSQL wire protocol server"
+	@echo "  conformance-test-gorm            Run all three GORM conformance targets"
+	@echo "  bench-gorm                       Run GORM's own upstream benchmarks (node target)"
+	@echo "  coverage-gorm                    Generate coverage for the node-target run"

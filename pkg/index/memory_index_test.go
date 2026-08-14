@@ -352,25 +352,52 @@ func TestMemoryIndex_Scan_ReturnsCopies(t *testing.T) {
 
 func TestMemoryIndex_Scan_NilStart(t *testing.T) {
 	idx := NewMemoryIndex("test", false)
-	_, err := idx.Scan(nil, []byte("end"))
-	if err == nil {
-		t.Fatal("Scan(nil start): expected NilFieldValueError, got nil")
+	_ = idx.Put([]byte("entity-1"), []byte("apple"))
+	_ = idx.Put([]byte("entity-2"), []byte("cherry"))
+
+	// A nil start means unbounded below: [-inf, "cherry").
+	result, err := idx.Scan(nil, []byte("cherry"))
+	if err != nil {
+		t.Fatalf("Scan(nil start): unexpected error: %v", err)
 	}
-	var nfv *NilFieldValueError
-	if !errors.As(err, &nfv) {
-		t.Fatalf("Scan(nil start): expected NilFieldValueError, got %T: %v", err, err)
+	if _, ok := result["apple"]; !ok {
+		t.Error("Scan(nil start): expected 'apple' in result")
+	}
+	if _, ok := result["cherry"]; ok {
+		t.Error("Scan(nil start): 'cherry' should be excluded (exclusive end)")
 	}
 }
 
 func TestMemoryIndex_Scan_NilEnd(t *testing.T) {
 	idx := NewMemoryIndex("test", false)
-	_, err := idx.Scan([]byte("start"), nil)
-	if err == nil {
-		t.Fatal("Scan(nil end): expected NilFieldValueError, got nil")
+	_ = idx.Put([]byte("entity-1"), []byte("apple"))
+	_ = idx.Put([]byte("entity-2"), []byte("cherry"))
+
+	// A nil end means unbounded above: ["banana", +inf).
+	result, err := idx.Scan([]byte("banana"), nil)
+	if err != nil {
+		t.Fatalf("Scan(nil end): unexpected error: %v", err)
 	}
-	var nfv *NilFieldValueError
-	if !errors.As(err, &nfv) {
-		t.Fatalf("Scan(nil end): expected NilFieldValueError, got %T: %v", err, err)
+	if _, ok := result["cherry"]; !ok {
+		t.Error("Scan(nil end): expected 'cherry' in result")
+	}
+	if _, ok := result["apple"]; ok {
+		t.Error("Scan(nil end): 'apple' should be excluded (below start)")
+	}
+}
+
+func TestMemoryIndex_Scan_NilStartAndEnd(t *testing.T) {
+	idx := NewMemoryIndex("test", false)
+	_ = idx.Put([]byte("entity-1"), []byte("apple"))
+	_ = idx.Put([]byte("entity-2"), []byte("cherry"))
+
+	// Both bounds nil means the full index.
+	result, err := idx.Scan(nil, nil)
+	if err != nil {
+		t.Fatalf("Scan(nil, nil): unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("Scan(nil, nil): got %d entries, want 2", len(result))
 	}
 }
 

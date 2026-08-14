@@ -61,6 +61,22 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		applyRaftArgs(args, req.Raft, "raft_")
 	}
 
+	if req.Barrier != nil {
+		args["barrier_enabled"] = req.Barrier.Enabled
+		if req.Barrier.Mode != "" {
+			args["barrier_mode"] = req.Barrier.Mode
+		}
+		if req.Barrier.SharesRequired != 0 {
+			args["barrier_shares_required"] = req.Barrier.SharesRequired
+		}
+		if req.Barrier.SharesTotal != 0 {
+			args["barrier_shares_total"] = req.Barrier.SharesTotal
+		}
+		if req.Barrier.Secret != "" {
+			args["barrier_secret"] = req.Barrier.Secret
+		}
+	}
+
 	text, err := t.callTool(ctx, "qrdb_database_create", args)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateDatabase", Err: err}
@@ -213,6 +229,31 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	return &info, nil
 }
 
+// ScaleDatabase changes the replication factor of a dedicated-raft database
+// by calling the qrdb_database_scale MCP tool.
+func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	args := map[string]any{
+		"name":            req.Name,
+		"target_replicas": req.TargetReplicas,
+	}
+
+	text, err := t.callTool(ctx, "qrdb_database_scale", args)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "ScaleDatabase", Err: err}
+	}
+
+	var info transport.DatabaseInfo
+	if jsonErr := json.Unmarshal([]byte(text), &info); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "ScaleDatabase", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &info, nil
+}
+
 // UpdateDatabaseBarrier updates the encryption barrier configuration for a
 // database by calling the qrdb_database_update_barrier MCP tool.
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {
@@ -223,6 +264,15 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 	args := map[string]any{
 		"name":    req.Name,
 		"enabled": req.Barrier.Enabled,
+	}
+	if req.Barrier.Mode != "" {
+		args["mode"] = req.Barrier.Mode
+	}
+	if req.Barrier.SharesRequired != 0 {
+		args["shares_required"] = req.Barrier.SharesRequired
+	}
+	if req.Barrier.SharesTotal != 0 {
+		args["shares_total"] = req.Barrier.SharesTotal
 	}
 
 	text, err := t.callTool(ctx, "qrdb_database_update_barrier", args)

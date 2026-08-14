@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // Compile-time interface assertions.
@@ -44,32 +43,41 @@ var (
 
 // EntityTable implements sql.Table for a registered entity type. Each entity
 // type is exposed as a SQL table with an _id BIGINT UNSIGNED primary key and
-// columns derived from the entity's Registration field metadata. When indexSvc
-// is non-nil, the query planner may accelerate WHERE clause evaluation using
-// QRDB secondary indexes built from fields marked Indexed in the Registration.
+// columns derived from the entity's Registration field metadata. Rows are
+// keyed under prefix, which the caller (Database.GetTableInsensitive)
+// computes — typically the composite "<tenant>/<db>/" physical namespace
+// (see tenant.ComposeNamespace) that REST/gRPC/QUIC/Unix/MCP use, so
+// entities written through the DAO/service layer for a given (tenant, db)
+// are visible to SQL sessions scoped to that same (tenant, db), and vice
+// versa; or the empty string when kvSvc is already scoped to the desired
+// namespace. When indexSvc is non-nil, the query planner may accelerate
+// WHERE clause evaluation using QRDB secondary indexes built from fields
+// marked Indexed in the Registration.
 type EntityTable struct {
 	kvSvc      service.KVServicer
-	tenantID   string
+	prefix     string
 	reg        *entity.Registration
 	schema     sqle.Schema
 	fieldOrder []string            // JSON field names in column order (excluding _id)
 	indexSvc   index.IndexServicer // nil when index acceleration is not available
 }
 
-// NewEntityTable creates a new EntityTable backed by the given KV service,
-// scoped to the specified tenant, and described by the entity Registration.
-// The SQL schema is derived from reg.Fields. The optional indexSvc enables
-// secondary index acceleration for WHERE clause evaluation on Indexed fields.
+// NewEntityTable creates a new EntityTable backed by the given KV service
+// and described by the entity Registration. Every key the table reads or
+// writes is composed with prefix; pass the empty string when kvSvc is
+// already scoped to the desired namespace. The SQL schema is derived from
+// reg.Fields. The optional indexSvc enables secondary index acceleration
+// for WHERE clause evaluation on Indexed fields.
 func NewEntityTable(
 	kvSvc service.KVServicer,
-	tenantID string,
+	prefix string,
 	reg *entity.Registration,
 	indexSvc index.IndexServicer,
 ) *EntityTable {
 	schema, fieldOrder := buildEntitySchema(reg)
 	return &EntityTable{
 		kvSvc:      kvSvc,
-		tenantID:   tenantID,
+		prefix:     prefix,
 		reg:        reg,
 		schema:     schema,
 		fieldOrder: fieldOrder,
@@ -88,7 +96,7 @@ func (t *EntityTable) String() string {
 }
 
 // Schema returns the SQL schema for this entity table.
-func (t *EntityTable) Schema() sqle.Schema {
+func (t *EntityTable) Schema(_ *sqle.Context) sqle.Schema {
 	return t.schema
 }
 
@@ -114,9 +122,9 @@ func (t *EntityTable) PartitionRows(ctx *sqle.Context, part sqle.Partition) (sql
 }
 
 // fullScanRows performs a prefix scan over all entities of this type stored
-// in the KV service under the tenant namespace.
+// in the KV service under the table's namespace prefix.
 func (t *EntityTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
-	prefix := tenant.PrefixKey(t.tenantID, t.reg.EntityType+"/")
+	prefix := t.prefix + t.reg.EntityType + "/"
 	data, err := t.kvSvc.Scan(ctx, prefix)
 	if err != nil {
 		return nil, err
@@ -139,9 +147,10 @@ func (t *EntityTable) fullScanRows(ctx *sqle.Context) (sqle.RowIter, error) {
 // indexed partition, performing a point lookup per entity key. Keys stored
 // in the index have the form "entityType/id".
 func (t *EntityTable) indexedPartitionRows(ctx *sqle.Context, ip *indexedPartition) (sqle.RowIter, error) {
+	prefix := t.prefix
 	rows := make([]sqle.Row, 0, len(ip.keys))
 	for _, rawKey := range ip.keys {
-		fullKey := tenant.PrefixKey(t.tenantID, string(rawKey))
+		fullKey := prefix + string(rawKey)
 		raw, err := t.kvSvc.Get(ctx, fullKey)
 		if err != nil {
 			// Entity may have been deleted after the index lookup; skip it.
@@ -288,7 +297,7 @@ func (t *EntityTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexLooku
 	}
 
 	ranges := lookup.Ranges.ToRanges()
-	keys, err := translateRanges(ctx, t.indexSvc, qIdx.column, ranges)
+	keys, err := translateRanges(ctx, t.indexSvc, qIdx.firstColumn(), ranges)
 	if err != nil {
 		return nil, &IndexLookupError{IndexName: qIdx.id, Err: err}
 	}
@@ -304,7 +313,7 @@ func (t *EntityTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexLooku
 func (t *EntityTable) Inserter(_ *sqle.Context) sqle.RowInserter {
 	return &entityWriter{
 		kvSvc:      t.kvSvc,
-		tenantID:   t.tenantID,
+		prefix:     t.prefix,
 		reg:        t.reg,
 		fieldOrder: t.fieldOrder,
 	}
@@ -314,7 +323,7 @@ func (t *EntityTable) Inserter(_ *sqle.Context) sqle.RowInserter {
 func (t *EntityTable) Deleter(_ *sqle.Context) sqle.RowDeleter {
 	return &entityWriter{
 		kvSvc:      t.kvSvc,
-		tenantID:   t.tenantID,
+		prefix:     t.prefix,
 		reg:        t.reg,
 		fieldOrder: t.fieldOrder,
 	}
@@ -324,7 +333,7 @@ func (t *EntityTable) Deleter(_ *sqle.Context) sqle.RowDeleter {
 func (t *EntityTable) Updater(_ *sqle.Context) sqle.RowUpdater {
 	return &entityWriter{
 		kvSvc:      t.kvSvc,
-		tenantID:   t.tenantID,
+		prefix:     t.prefix,
 		reg:        t.reg,
 		fieldOrder: t.fieldOrder,
 	}
@@ -334,7 +343,7 @@ func (t *EntityTable) Updater(_ *sqle.Context) sqle.RowUpdater {
 func (t *EntityTable) Replacer(_ *sqle.Context) sqle.RowReplacer {
 	return &entityWriter{
 		kvSvc:      t.kvSvc,
-		tenantID:   t.tenantID,
+		prefix:     t.prefix,
 		reg:        t.reg,
 		fieldOrder: t.fieldOrder,
 	}
@@ -439,7 +448,7 @@ func goKindToIndexType(k reflect.Kind) string {
 // to marshal/unmarshal entity structs.
 type entityWriter struct {
 	kvSvc      service.KVServicer
-	tenantID   string
+	prefix     string
 	reg        *entity.Registration
 	fieldOrder []string
 }
@@ -477,6 +486,9 @@ func (w *entityWriter) Close(_ *sqle.Context) error {
 // Insert inserts an entity from a SQL row. Column 0 is _id (uint64),
 // remaining columns map to fieldOrder using the Registration's field metadata.
 func (w *entityWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, w.reg.EntityType); err != nil {
+		return err
+	}
 	id, err := extractDocID(row)
 	if err != nil {
 		return err
@@ -522,23 +534,29 @@ func (w *entityWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 		return &InvalidValueError{Reason: "marshal failed: " + err.Error()}
 	}
 
-	key := tenant.PrefixKey(w.tenantID, fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(id, 10)))
+	key := w.prefix + fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(id, 10))
 	return w.kvSvc.Put(ctx, key, data)
 }
 
 // Delete deletes an entity by _id from column 0.
 func (w *entityWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
+	if err := requireAutocommit(ctx, w.reg.EntityType); err != nil {
+		return err
+	}
 	id, err := extractDocID(row)
 	if err != nil {
 		return err
 	}
-	key := tenant.PrefixKey(w.tenantID, fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(id, 10)))
+	key := w.prefix + fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(id, 10))
 	return w.kvSvc.Delete(ctx, key)
 }
 
 // Update updates an entity. Deletes the old key if the ID changed, then
 // inserts the new entity under the new key.
 func (w *entityWriter) Update(ctx *sqle.Context, old sqle.Row, newRow sqle.Row) error {
+	if err := requireAutocommit(ctx, w.reg.EntityType); err != nil {
+		return err
+	}
 	oldID, err := extractDocID(old)
 	if err != nil {
 		return err
@@ -549,7 +567,7 @@ func (w *entityWriter) Update(ctx *sqle.Context, old sqle.Row, newRow sqle.Row) 
 	}
 
 	if oldID != newID {
-		oldKey := tenant.PrefixKey(w.tenantID, fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(oldID, 10)))
+		oldKey := w.prefix + fmt.Sprintf("%s/%s", w.reg.EntityType, strconv.FormatUint(oldID, 10))
 		// Best-effort deletion of the old key; ignore errors.
 		_ = w.kvSvc.Delete(ctx, oldKey)
 	}

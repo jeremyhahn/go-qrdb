@@ -22,6 +22,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// annotationSkipClient marks a command whose PersistentPreRunE must skip
+// SDK client construction (and the server connection it performs). Used by
+// deprecation-redirect stubs that only emit a "command moved" error and by
+// any other command that must run without a reachable daemon.
+const annotationSkipClient = "qrdb/skip-client"
+
 // validLogLevels is the set of supported log levels for O(1) lookup.
 var validLogLevels = map[string]struct{}{
 	"trace": {},
@@ -113,8 +119,13 @@ Supported transports:
   unix      Unix domain socket (default: /var/run/qrdbd/qrdbd.sock) [DEFAULT]
   embedded  In-process server (desktop/GUI build only)`,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			// Skip client construction for commands that do not need it.
-			if cmd.Name() == "version" || cmd.Name() == "help" {
+			// Skip client construction for commands that do not need a
+			// server connection: version/help, and any command annotated
+			// with annotationSkipClient (e.g. the deprecation-redirect
+			// stubs, which must emit their redirect even with no daemon
+			// reachable).
+			if cmd.Name() == "version" || cmd.Name() == "help" ||
+				cmd.Annotations[annotationSkipClient] == "true" {
 				return nil
 			}
 
@@ -199,10 +210,19 @@ Supported transports:
 	rootCmd.AddCommand(newIndexCmd())
 	rootCmd.AddCommand(newDatabaseCmd())
 	rootCmd.AddCommand(newCollectionCmd())
+	rootCmd.AddCommand(newSQLCmd())
 	rootCmd.AddCommand(newAuditCmd())
 	rootCmd.AddCommand(newUsersCmd())
 	rootCmd.AddCommand(newRolesCmd())
-	rootCmd.AddCommand(newTenantCmd())
+
+	// The tenant command tree is assembled here (rather than inside
+	// newTenantCmd itself) so the tenant-scoped Security Officer surface
+	// (barrier.go's newTenantBarrierOfficerCmd/newTenantBarrierShamirSealVoteCmd)
+	// can be grafted on without editing tenant.go.
+	tenantCmd := newTenantCmd()
+	tenantCmd.AddCommand(newTenantBarrierOfficerCmd(), newTenantBarrierShamirSealVoteCmd())
+	rootCmd.AddCommand(tenantCmd)
+
 	rootCmd.AddCommand(newInitCmd())
 	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newBootstrapCmd())

@@ -30,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,12 @@ func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error
 		return m.putFn(ctx, key, value)
 	}
 	return nil
+}
+
+// PutIfAbsent reports a successful create. This mock keeps no state, so
+// there is nothing for the condition to consult.
+func (m *mockKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return true, nil
 }
 
 func (m *mockKVService) Get(ctx context.Context, key string) ([]byte, error) {
@@ -280,7 +287,8 @@ func (m *mockHost) RaftAddress() string { return m.addr }
 func TestServer_StartAndStop(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0")
+	tlsCfg, _ := generateTestTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() returned error: %v", err)
@@ -312,7 +320,8 @@ func TestServer_AddrBeforeStart(t *testing.T) {
 func TestServer_StartError_InvalidAddress(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
-	srv := NewServer(kvSvc, adminSvc, "invalid-addr-no-port")
+	tlsCfg, _ := generateTestTLSConfig(t)
+	srv := NewServer(kvSvc, adminSvc, "invalid-addr-no-port", WithTLS(tlsCfg))
 
 	err := srv.Start()
 	if err == nil {
@@ -333,6 +342,55 @@ func TestServer_StopNilServer(t *testing.T) {
 	// Stop on a zero-value server should not panic.
 	s := &Server{}
 	s.Stop()
+}
+
+// TestServer_Start_NoTLS_FailsClosed verifies the REST transport is TLS-only:
+// Start without a WithTLS config returns *TLSNotConfiguredError rather than
+// binding a plaintext listener.
+func TestServer_Start_NoTLS_FailsClosed(t *testing.T) {
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+		t.Fatal("Start() with no TLS returned nil; want *TLSNotConfiguredError")
+	}
+	var tlsErr *TLSNotConfiguredError
+	if !errors.As(err, &tlsErr) {
+		t.Fatalf("Start() error type = %T, want *TLSNotConfiguredError", err)
+	}
+}
+
+// TestServer_Start_WeakTLS_Rejected verifies the REST transport enforces the
+// TLS 1.3 floor: an explicitly weaker MinVersion is rejected at Start rather
+// than silently negotiating a weaker handshake.
+func TestServer_Start_WeakTLS_Rejected(t *testing.T) {
+	cfg, _ := generateTestTLSConfig(t)
+	cfg.MinVersion = tls.VersionTLS12
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(cfg))
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+		t.Fatal("Start() with TLS 1.2 MinVersion returned nil; want *WeakTLSVersionError")
+	}
+	var weak *WeakTLSVersionError
+	if !errors.As(err, &weak) {
+		t.Fatalf("Start() error type = %T, want *WeakTLSVersionError", err)
+	}
+}
+
+// TestWithTLS_UnsetMinVersion_RaisedToTLS13 verifies WithTLS raises an unset
+// MinVersion to TLS 1.3 rather than leaving it at the crypto/tls default of
+// TLS 1.2.
+func TestWithTLS_UnsetMinVersion_RaisedToTLS13(t *testing.T) {
+	cfg, _ := generateTestTLSConfig(t)
+	cfg.MinVersion = 0
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(cfg))
+	if srv.tlsConfig == nil {
+		t.Fatal("tlsConfig nil after WithTLS with valid config")
+	}
+	if srv.tlsConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %x, want TLS 1.3 (%x)", srv.tlsConfig.MinVersion, tls.VersionTLS13)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -862,6 +920,60 @@ func TestHandler_MembershipAdd_ServiceError(t *testing.T) {
 	}
 }
 
+// TestHandler_MembershipAdd_ForwardsOnNotLeader verifies that a membership
+// add issued to a follower is forwarded to the leader instead of failing
+// with a generic 500, mirroring the KV/scale forwarding paths.
+func TestHandler_MembershipAdd_ForwardsOnNotLeader(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/membership/add" {
+			t.Fatalf("leader received path %s, want /membership/add", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer leaderSrv.Close()
+
+	adminSvc := &mockAdminService{
+		addMemberFn: func(_ context.Context, _, _ uint64, _ string) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithLeaderForwarding(reg))
+
+	body := `{"shard_id":1,"replica_id":3,"address":"10.0.0.3:63001"}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/add", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /membership/add (not leader, forwarded) status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestHandler_MembershipAdd_NotLeader_NoResolver verifies that, absent
+// leader forwarding configuration, a NotLeaderError from AddMember still
+// surfaces as a non-panicking error response (not a 500 buried inside an
+// opaque MembershipError with no leader routing information lost).
+func TestHandler_MembershipAdd_NotLeader_NoResolver(t *testing.T) {
+	adminSvc := &mockAdminService{
+		addMemberFn: func(_ context.Context, _, _ uint64, _ string) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0")
+
+	body := `{"shard_id":1,"replica_id":3,"address":"10.0.0.3:63001"}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/add", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /membership/add (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestHandler_MembershipRemove_OK(t *testing.T) {
 	adminSvc := &mockAdminService{
 		removeMemberFn: func(_ context.Context, shardID, replicaID uint64) error {
@@ -910,6 +1022,59 @@ func TestHandler_MembershipRemove_ServiceError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /membership/remove (error) status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// TestHandler_MembershipRemove_ForwardsOnNotLeader verifies that a
+// membership remove issued to a follower is forwarded to the leader instead
+// of failing with a generic 500, mirroring the KV/scale forwarding paths.
+func TestHandler_MembershipRemove_ForwardsOnNotLeader(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/membership/remove" {
+			t.Fatalf("leader received path %s, want /membership/remove", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer leaderSrv.Close()
+
+	adminSvc := &mockAdminService{
+		removeMemberFn: func(_ context.Context, _, _ uint64) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithLeaderForwarding(reg))
+
+	body := `{"shard_id":1,"replica_id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/remove", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /membership/remove (not leader, forwarded) status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestHandler_MembershipRemove_NotLeader_NoResolver verifies that, absent
+// leader forwarding configuration, a NotLeaderError from RemoveMember still
+// surfaces as a non-panicking error response.
+func TestHandler_MembershipRemove_NotLeader_NoResolver(t *testing.T) {
+	adminSvc := &mockAdminService{
+		removeMemberFn: func(_ context.Context, _, _ uint64) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0")
+
+	body := `{"shard_id":1,"replica_id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/membership/remove", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /membership/remove (not leader, no resolver) status = %d, want %d", rec.Code, http.StatusInternalServerError)
 	}
 }
 
@@ -1367,14 +1532,18 @@ func TestServer_Integration_HealthViaHTTP(t *testing.T) {
 			return &service.HealthStatus{Status: "ok", Leader: false}, nil
 		},
 	}
-	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0")
+	tlsCfg, pool := generateTestTLSConfig(t)
+	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	defer srv.Stop()
 
-	url := "http://" + srv.Addr() + "/health"
-	resp, err := http.Get(url)
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+	}}
+	url := "https://" + srv.Addr() + "/health"
+	resp, err := client.Get(url)
 	if err != nil {
 		t.Fatalf("GET /health error: %v", err)
 	}
@@ -1415,14 +1584,17 @@ func TestServer_Integration_PutGetDelete(t *testing.T) {
 		},
 	}
 
-	srv := NewServer(kvSvc, &mockAdminService{}, "127.0.0.1:0")
+	tlsCfg, pool := generateTestTLSConfig(t)
+	srv := NewServer(kvSvc, &mockAdminService{}, "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	defer srv.Stop()
 
-	base := "http://" + srv.Addr()
-	client := &http.Client{}
+	base := "https://" + srv.Addr()
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
+	}}
 
 	// PUT
 	putReq, _ := http.NewRequest(http.MethodPut, base+"/kv/testkey", strings.NewReader("testval"))
@@ -1436,7 +1608,7 @@ func TestServer_Integration_PutGetDelete(t *testing.T) {
 	}
 
 	// GET
-	getResp, err := http.Get(base + "/kv/testkey")
+	getResp, err := client.Get(base + "/kv/testkey")
 	if err != nil {
 		t.Fatalf("GET error: %v", err)
 	}
@@ -1461,7 +1633,7 @@ func TestServer_Integration_PutGetDelete(t *testing.T) {
 	}
 
 	// GET after DELETE -> 404
-	getResp2, err := http.Get(base + "/kv/testkey")
+	getResp2, err := client.Get(base + "/kv/testkey")
 	if err != nil {
 		t.Fatalf("GET after DELETE error: %v", err)
 	}
@@ -1526,13 +1698,123 @@ func TestHandler_KVPut_ForwardLoopDetection(t *testing.T) {
 
 	body := strings.NewReader("val")
 	req := httptest.NewRequest(http.MethodPut, "/kv/key1", body)
-	// Simulate an already-forwarded request.
-	req.Header.Set(headerForwardedBy, "10.0.0.1:63001")
+	// Simulate a request that has already exhausted the bounded hop budget
+	// (maxForwardHops); one more forward attempt must be rejected as a loop.
+	req.Header.Set(headerForwardHops, strconv.Itoa(maxForwardHops))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
 	if rec.Code != http.StatusLoopDetected {
 		t.Fatalf("PUT /kv/key1 (loop) status = %d, want %d", rec.Code, http.StatusLoopDetected)
+	}
+}
+
+func TestHandler_KVPut_ForwardBelowMaxHops_NotRejected(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(headerForwardHops); got != "2" {
+			t.Fatalf("leader received hop count %q, want %q", got, "2")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer leaderSrv.Close()
+
+	kvSvc := &mockKVService{
+		putFn: func(_ context.Context, _ string, _ []byte) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+	srv := NewServer(kvSvc, &mockAdminService{}, "127.0.0.1:0", WithLeaderForwarding(reg))
+
+	body := strings.NewReader("val")
+	req := httptest.NewRequest(http.MethodPut, "/kv/key1", body)
+	// One hop already taken; this forward is the second of maxForwardHops.
+	req.Header.Set(headerForwardHops, "1")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT /kv/key1 (below max hops) status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+// TestHandler_KVPut_ForwardToLeader_TwoHops exercises a genuine two-hop
+// forwarding chain across three distinct *Server instances: a non-member
+// entry node forwards to a guessed shard member that is itself not the
+// leader, which in turn forwards to the real leader. This mirrors the
+// scenario a rebalance MOVE or any write can hit when the entry node's
+// resolver only knows a member address, not the current leader.
+func TestHandler_KVPut_ForwardToLeader_TwoHops(t *testing.T) {
+	var leaderSawHops string
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaderSawHops = r.Header.Get(headerForwardHops)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer leaderSrv.Close()
+
+	// Intermediate node: a shard member, but not the leader. Its resolver
+	// knows how to reach the real leader.
+	memberKVSvc := &mockKVService{
+		putFn: func(_ context.Context, _ string, _ []byte) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 3, LeaderAddress: "10.0.0.3:63001"}
+		},
+	}
+	memberReg := NewPeerAdminRegistry("63002")
+	memberReg.Register("10.0.0.3:63001", leaderSrv.URL)
+	memberSrv := NewServer(memberKVSvc, &mockAdminService{}, "127.0.0.1:0", WithLeaderForwarding(memberReg))
+	memberHTTP := httptest.NewServer(http.HandlerFunc(memberSrv.dispatch))
+	defer memberHTTP.Close()
+
+	// Entry node: not a member of the shard at all. Its resolver only knows
+	// how to reach the guessed member above, not the real leader.
+	entryKVSvc := &mockKVService{
+		putFn: func(_ context.Context, _ string, _ []byte) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	entryReg := NewPeerAdminRegistry("63002")
+	entryReg.Register("10.0.0.2:63001", memberHTTP.URL)
+	entrySrv := NewServer(entryKVSvc, &mockAdminService{}, "127.0.0.1:0", WithLeaderForwarding(entryReg))
+
+	body := strings.NewReader("val")
+	req := httptest.NewRequest(http.MethodPut, "/kv/key1", body)
+	rec := httptest.NewRecorder()
+	entrySrv.dispatch(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("two-hop forwarded PUT status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if leaderSawHops != "2" {
+		t.Fatalf("leader observed hop count %q, want %q", leaderSawHops, "2")
+	}
+}
+
+// TestHandler_KVPut_ForwardToLeader_FourthHopRejected drives the same
+// non-member -> member -> leader chain as the two-hop test, but starting
+// from a request that has already taken maxForwardHops-1 hops, so the
+// entry node's forward attempt is itself the hop that exceeds the budget
+// and must be rejected before any network call is made.
+func TestHandler_KVPut_ForwardToLeader_FourthHopRejected(t *testing.T) {
+	kvSvc := &mockKVService{
+		putFn: func(_ context.Context, _ string, _ []byte) error {
+			return &service.NotLeaderError{ShardID: 1, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+		},
+	}
+	reg := NewPeerAdminRegistry("63002")
+	// Deliberately unregistered -- if forwarding were attempted it would
+	// have no admin URL to target, but the hop-budget check must reject
+	// before resolution is even consulted.
+	srv := NewServer(kvSvc, &mockAdminService{}, "127.0.0.1:0", WithLeaderForwarding(reg))
+
+	body := strings.NewReader("val")
+	req := httptest.NewRequest(http.MethodPut, "/kv/key1", body)
+	req.Header.Set(headerForwardHops, strconv.Itoa(maxForwardHops))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code != http.StatusLoopDetected {
+		t.Fatalf("fourth-hop PUT status = %d, want %d", rec.Code, http.StatusLoopDetected)
 	}
 }
 

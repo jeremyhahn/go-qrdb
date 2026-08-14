@@ -58,9 +58,19 @@ type claimCertCompleteRequest struct {
 	Signature string `json:"signature"` // base64-encoded
 }
 
-// claimShareRequest is the JSON payload for POST /v1/ceremony/claim-share.
-type claimShareRequest struct {
+// beginClaimShareRequest is the JSON payload for
+// POST /v1/ceremony/claim-share/begin. No thumbprint appears here: the server
+// derives it from the mTLS peer certificate so a client cannot assert one.
+type beginClaimShareRequest struct {
 	Username string `json:"username"`
+}
+
+// completeClaimShareRequest is the JSON payload for
+// POST /v1/ceremony/claim-share/complete.
+type completeClaimShareRequest struct {
+	Username  string `json:"username"`
+	NonceHex  string `json:"nonce_hex"`
+	Signature string `json:"signature"` // base64-encoded
 }
 
 // signCSRRequest is the JSON payload for POST /v1/ceremony/sign-csr.
@@ -214,38 +224,96 @@ func (s *Server) handleCeremonyClaimCertComplete(w http.ResponseWriter, r *http.
 	writeJSON(w, ceremonyClaimCertToResponse(result))
 }
 
-// handleCeremonyClaimShare handles POST /v1/ceremony/claim-share -- retrieves
-// the Shamir share for the given officer username.
+// handleCeremonyBeginClaimShare handles POST /v1/ceremony/claim-share/begin --
+// starts the Shamir share claim handshake for the given officer username.
+//
+// The caller MUST present an mTLS client certificate even though an officer
+// mid-ceremony has no account yet: the certificate thumbprint IS the
+// authentication. It is derived from the verified TLS peer chain, never from
+// the request body, so a client cannot assert another officer's identity.
 // Required permission: ceremony:claim_share_complete (enrolled Custodian).
-func (s *Server) handleCeremonyClaimShare(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCeremonyBeginClaimShare(w http.ResponseWriter, r *http.Request) {
 	if s.ceremonySvc == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
 		return
 	}
 
-	var req claimShareRequest
+	thumbprint, err := restCertThumbprint(r)
+	if err != nil {
+		writeErrorJSON(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	var req beginClaimShareRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
 
-	share, err := s.ceremonySvc.CeremonyClaimShare(r.Context(), req.Username)
+	challenge, err := s.ceremonySvc.CeremonyBeginClaimShare(r.Context(), req.Username, thumbprint)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
-	// share is already JSON text (a marshaled shamir.Share envelope, per
-	// pkg/ceremony's sealedShareStore) -- not raw secret bytes needing
-	// base64. The response key and encoding must match
-	// transport.ClaimShareResponse{ShareJSON string `json:"share_json"`},
-	// the shared SDK type, and the gRPC/QUIC/embedded transports, which all
-	// emit the share bytes verbatim as a string. A prior {"share":
-	// base64(...)} shape here left every REST-transport caller's ShareJSON
-	// field empty (wrong key) even when the CSR-derived guess landed on the
-	// right shape.
 	writeJSON(w, map[string]interface{}{
-		"share_json": string(share),
+		"nonce_hex":  challenge.NonceHex,
+		"expires_at": challenge.ExpiresAt.Format(time.RFC3339),
+	})
+}
+
+// handleCeremonyCompleteClaimShare handles
+// POST /v1/ceremony/claim-share/complete -- verifies the officer's signature
+// over the challenge nonce, re-verifies the mTLS peer certificate thumbprint,
+// and releases the share exactly once.
+// Required permission: ceremony:claim_share_complete (enrolled Custodian).
+func (s *Server) handleCeremonyCompleteClaimShare(w http.ResponseWriter, r *http.Request) {
+	if s.ceremonySvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "ceremony"})
+		return
+	}
+
+	thumbprint, err := restCertThumbprint(r)
+	if err != nil {
+		writeErrorJSON(w, http.StatusUnauthorized, err)
+		return
+	}
+
+	var req completeClaimShareRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return
+	}
+	if req.NonceHex == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "nonce_hex"})
+		return
+	}
+	if req.Signature == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "signature"})
+		return
+	}
+
+	sig, decErr := base64.StdEncoding.DecodeString(req.Signature)
+	if decErr != nil {
+		writeErrorJSON(w, http.StatusBadRequest, &ValidationError{Field: "signature"})
+		return
+	}
+
+	result, err := s.ceremonySvc.CeremonyCompleteClaimShare(r.Context(), req.Username, req.NonceHex, sig, thumbprint)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
+
+	// result.ShareBytes is already JSON text (a marshalled shamir.Share
+	// envelope, per pkg/ceremony's sealedShareStore) -- not raw secret bytes
+	// needing base64. The response key and encoding match
+	// transport.ClaimShareResponse{ShareJSON string `json:"share_json"`}, the
+	// shared SDK type, and the gRPC/QUIC/embedded transports, which all emit
+	// the share bytes verbatim as a string.
+	writeJSON(w, map[string]interface{}{
+		"share_index": result.ShareIndex,
+		"share_json":  string(result.ShareBytes),
 	})
 }
 
@@ -316,8 +384,6 @@ func ceremonyInitToResponse(r *service.CeremonyInitResult) map[string]interface{
 		"spki_pin":     r.SPKIPin,
 		"ca_cert_pem":  string(r.CACertPEM),
 		"tls_cert_pem": string(r.TLSCertPEM),
-		"so_cert_pem":  string(r.SOCertPEM),
-		"so_key_pem":   string(r.SOKeyPEM),
 		"state":        r.State,
 		"share_count":  r.ShareCount,
 	}

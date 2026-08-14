@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/cmd/qrdb-sqlite/vtab"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -911,6 +913,313 @@ func TestRun_DotPragma_SetValue(t *testing.T) {
 	input := strings.NewReader(".pragma cache_size = 100\n.quit\n")
 	if err := sh.run(input); err != nil {
 		t.Fatalf("run error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// .pragma qrdb_* — custom pragma interception
+//
+// Real SQLite has no knowledge of qrdb_consistency / qrdb_write_mode /
+// qrdb_status; it silently no-ops on unrecognized pragma names (0 columns, 0
+// rows, no error). These tests prove the shell intercepts the three custom
+// names before they ever reach SQLite, routes them to the session's
+// *vtab.PragmaStore, and that the change is visible to subsequent queries
+// (the same store instance the adapters resolve read/write options from on
+// every call — see readOpts/writeOpts in adapters.go).
+// ---------------------------------------------------------------------------
+
+func TestDotPragma_QRDBWriteMode_ChangesPragmaStore_AndAffectsSubsequentQuery(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	if got := store.WriteMode(); got != vtab.WriteModeSync {
+		t.Fatalf("initial WriteMode = %q, want %q", got, vtab.WriteModeSync)
+	}
+
+	input := strings.NewReader(".pragma qrdb_write_mode wal_durable\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	if got := store.WriteMode(); got != vtab.WriteModeWALDurable {
+		t.Errorf("WriteMode after .pragma = %q, want %q", got, vtab.WriteModeWALDurable)
+	}
+	if !strings.Contains(buf.String(), "wal_durable") {
+		t.Errorf("expected pragma output to echo the new value:\n%s", buf.String())
+	}
+
+	// Prove a subsequent query actually observes the change: writeOpts is what
+	// every kv/entity/batch adapter calls on each Put/Delete/ExecuteBatch, and
+	// it reads directly from the same store instance the pragma just mutated.
+	resolved := transport.ResolveWriteOptions(writeOpts(store)...)
+	if resolved.Mode != transport.WriteModeWALDurable {
+		t.Errorf("writeOpts(store) resolved Mode = %v, want WriteModeWALDurable", resolved.Mode)
+	}
+}
+
+func TestDotPragma_QRDBConsistency_ChangesPragmaStore_AndAffectsSubsequentQuery(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	input := strings.NewReader(".pragma qrdb_consistency eventual\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	if got := store.Consistency(); got != vtab.ConsistencyEventual {
+		t.Errorf("Consistency after .pragma = %q, want %q", got, vtab.ConsistencyEventual)
+	}
+	if !strings.Contains(buf.String(), "eventual") {
+		t.Errorf("expected pragma output to echo the new value:\n%s", buf.String())
+	}
+
+	resolved := transport.ResolveReadOptions(readOpts(store)...)
+	if resolved.Consistency != transport.ConsistencyEventual {
+		t.Errorf("readOpts(store) resolved Consistency = %v, want ConsistencyEventual", resolved.Consistency)
+	}
+}
+
+func TestDotPragma_QRDBStatus_PrintsCurrentSettings(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("client", "grpc://localhost:9090", "mydb")
+	sh.pragma = store
+	if err := store.SetConsistency(vtab.ConsistencyEventual); err != nil {
+		t.Fatalf("SetConsistency: %v", err)
+	}
+	if err := store.SetWriteMode(vtab.WriteModeBatched); err != nil {
+		t.Fatalf("SetWriteMode: %v", err)
+	}
+
+	input := strings.NewReader(".pragma qrdb_status\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"client", "grpc://localhost:9090", "mydb", "eventual", "batched"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("qrdb_status output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestDotPragma_QRDBWriteMode_InvalidValue_ReturnsTypedError(t *testing.T) {
+	sh, _ := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	_, err := sh.executeDotCommand(".pragma qrdb_write_mode bogus")
+	if err == nil {
+		t.Fatal("expected error for invalid qrdb_write_mode value")
+	}
+	var target *vtab.InvalidPragmaValueError
+	if !errors.As(err, &target) {
+		t.Fatalf("error = %v (%T), want *vtab.InvalidPragmaValueError", err, err)
+	}
+	if target.Pragma != "qrdb_write_mode" {
+		t.Errorf("Pragma = %q, want qrdb_write_mode", target.Pragma)
+	}
+
+	// A rejected value must not mutate the store.
+	if got := store.WriteMode(); got != vtab.WriteModeSync {
+		t.Errorf("WriteMode after invalid set = %q, want unchanged default %q", got, vtab.WriteModeSync)
+	}
+}
+
+func TestDotPragma_QRDBConsistency_InvalidValue_PrintsError(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	input := strings.NewReader(".pragma qrdb_consistency bogus\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Error:") {
+		t.Errorf("expected error output for invalid qrdb_consistency value:\n%s", buf.String())
+	}
+}
+
+func TestDotPragma_QRDBPragma_NoStoreConfigured_ReturnsTypedError(t *testing.T) {
+	sh, buf := newTestShell(t) // sh.pragma left nil: no store attached
+
+	input := strings.NewReader(".pragma qrdb_status\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Error:") {
+		t.Errorf("expected typed error output when no pragma store is configured:\n%s", buf.String())
+	}
+}
+
+func TestDotPragma_NonQRDBPragma_PassesThroughEvenWithStoreAttached(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store // present, but must not intercept unrelated pragmas
+
+	input := strings.NewReader(".pragma journal_mode\n.quit\n")
+	if err := sh.run(input); err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	if buf.Len() == 0 {
+		t.Error(".pragma journal_mode should still pass through to SQLite and produce output")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeSQL — bare SQL "PRAGMA qrdb_*" statement form
+// ---------------------------------------------------------------------------
+
+func TestExecuteSQL_QRDBPragmaSQLForm_Intercepted(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	if err := sh.executeSQL("PRAGMA qrdb_write_mode = 'batched';"); err != nil {
+		t.Fatalf("executeSQL error: %v", err)
+	}
+	if got := store.WriteMode(); got != vtab.WriteModeBatched {
+		t.Errorf("WriteMode after SQL-form PRAGMA = %q, want %q", got, vtab.WriteModeBatched)
+	}
+	if !strings.Contains(buf.String(), "batched") {
+		t.Errorf("expected output to echo the new write mode:\n%s", buf.String())
+	}
+}
+
+func TestExecuteSQL_QRDBStatusSQLForm_Intercepted(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store
+
+	if err := sh.executeSQL("PRAGMA qrdb_status;"); err != nil {
+		t.Fatalf("executeSQL error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "embedded") {
+		t.Errorf("expected qrdb_status output to include the session mode:\n%s", buf.String())
+	}
+}
+
+func TestExecuteSQL_NonQRDBPragma_PassesThroughToSQLite(t *testing.T) {
+	sh, buf := newTestShell(t)
+	store := vtab.NewPragmaStore("embedded", "", "testdb")
+	sh.pragma = store // present, but must not intercept unrelated pragmas
+
+	if err := sh.executeSQL("PRAGMA table_info(people);"); err != nil {
+		t.Fatalf("executeSQL error: %v", err)
+	}
+	// table_info returns rows with a "name" column among others.
+	if !strings.Contains(buf.String(), "name") {
+		t.Errorf("expected table_info output to pass through to SQLite:\n%s", buf.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseQRDBPragmaStatement / trimPragmaQuotes
+// ---------------------------------------------------------------------------
+
+func TestParseQRDBPragmaStatement(t *testing.T) {
+	cases := []struct {
+		name      string
+		query     string
+		wantName  string
+		wantValue string
+		wantOK    bool
+	}{
+		{"read-only, no semicolon", "PRAGMA qrdb_status", "qrdb_status", "", true},
+		{"read-only, semicolon", "PRAGMA qrdb_status;", "qrdb_status", "", true},
+		{"set, bare value", "PRAGMA qrdb_write_mode = batched", "qrdb_write_mode", "batched", true},
+		{"set, quoted value", "PRAGMA qrdb_write_mode = 'batched';", "qrdb_write_mode", "batched", true},
+		{"case-insensitive name", "PRAGMA QRDB_Consistency = eventual;", "qrdb_consistency", "eventual", true},
+		{"not a qrdb pragma", "PRAGMA journal_mode = wal;", "", "", false},
+		{"not a pragma at all", "SELECT 1;", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, value, ok := parseQRDBPragmaStatement(tc.query)
+			if ok != tc.wantOK || name != tc.wantName || value != tc.wantValue {
+				t.Errorf("parseQRDBPragmaStatement(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.query, name, value, ok, tc.wantName, tc.wantValue, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestTrimPragmaQuotes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"'batched'", "batched"},
+		{`"batched"`, "batched"},
+		{"batched", "batched"},
+		{"'", "'"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := trimPragmaQuotes(tc.in); got != tc.want {
+			t.Errorf("trimPragmaQuotes(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executeSQL — DML statements must actually execute
+//
+// Regression coverage for a bug where executeSQL used s.db.Query for every
+// statement (including INSERT/UPDATE/DELETE) and returned immediately when
+// the result had zero columns. The mattn/go-sqlite3 driver's Query path only
+// prepares and binds a statement — sqlite3_step (which runs the statement
+// and, for a virtual table, invokes its Insert/Update/Delete callback) is
+// only triggered by Rows.Next. Because DML statements return zero columns,
+// they were prepared and bound but never stepped, so they silently no-opped:
+// no error, no effect. These tests pin that DML issued through executeSQL
+// actually lands, not merely that it returns a nil error.
+// ---------------------------------------------------------------------------
+
+func TestExecuteSQL_Insert_ActuallyPersists(t *testing.T) {
+	sh, _ := newTestShell(t)
+
+	if err := sh.executeSQL("INSERT INTO people (id, name, age) VALUES (99, 'Dave', 40)"); err != nil {
+		t.Fatalf("executeSQL(INSERT): %v", err)
+	}
+
+	var name string
+	if err := sh.db.QueryRow("SELECT name FROM people WHERE id = 99").Scan(&name); err != nil {
+		t.Fatalf("row inserted via executeSQL was not found: %v", err)
+	}
+	if name != "Dave" {
+		t.Errorf("name = %q, want %q", name, "Dave")
+	}
+}
+
+func TestExecuteSQL_Update_ActuallyPersists(t *testing.T) {
+	sh, _ := newTestShell(t)
+
+	if err := sh.executeSQL("UPDATE people SET age = 99 WHERE id = 1"); err != nil {
+		t.Fatalf("executeSQL(UPDATE): %v", err)
+	}
+
+	var age int
+	if err := sh.db.QueryRow("SELECT age FROM people WHERE id = 1").Scan(&age); err != nil {
+		t.Fatalf("QueryRow after UPDATE: %v", err)
+	}
+	if age != 99 {
+		t.Errorf("age after executeSQL(UPDATE) = %d, want 99", age)
+	}
+}
+
+func TestExecuteSQL_Delete_ActuallyPersists(t *testing.T) {
+	sh, _ := newTestShell(t)
+
+	if err := sh.executeSQL("DELETE FROM people WHERE id = 2"); err != nil {
+		t.Fatalf("executeSQL(DELETE): %v", err)
+	}
+
+	var count int
+	if err := sh.db.QueryRow("SELECT COUNT(*) FROM people WHERE id = 2").Scan(&count); err != nil {
+		t.Fatalf("QueryRow after DELETE: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("row still present after executeSQL(DELETE); found %d matching rows", count)
 	}
 }
 

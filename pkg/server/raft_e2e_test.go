@@ -288,7 +288,7 @@ func TestRaftE2E_FullVertical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolver KVService after restart: %v", err)
 	}
-	if got, err := kvAfter.Get(ctx, "order:1"); err != nil || string(got) != secret {
+	if got, err := getWhenReadable(ctx, t, kvAfter.Get, "order:1"); err != nil || string(got) != secret {
 		t.Fatalf("acme KV.Get after restart = %q, %v; want %q (data did not persist)", got, err, secret)
 	}
 	t.Logf("PROOF: acme shard re-attached from tenant volume; data persisted across restart")

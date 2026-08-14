@@ -698,9 +698,18 @@ func (t *Transport) RebuildIndex(ctx context.Context, req *transport.RebuildInde
 		return nil, &unmarshalError{Err: err}
 	}
 
+	// pb.VectorRebuildIndexRequest carries no Async field, so the QUIC
+	// handleVectorRebuildIndex handler always builds a
+	// service.RebuildIndexRequest with Async left at its zero value
+	// (false); vectorService.RebuildIndex therefore always runs
+	// performIndexRebuild synchronously and has already completed by the
+	// time this call returns -- report "completed", matching the REST
+	// transport's decoded response (which does forward the server's actual
+	// Status) instead of the "running" this client used to hardcode
+	// regardless of the true, always-synchronous outcome.
 	return &transport.RebuildIndexResponse{
 		JobID:     pbResp.GetJobId(),
-		Status:    "running",
+		Status:    "completed",
 		Timestamp: pbResp.GetTimestamp(),
 		Success:   pbResp.GetStarted(),
 	}, nil

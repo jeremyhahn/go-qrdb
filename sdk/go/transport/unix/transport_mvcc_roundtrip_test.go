@@ -22,14 +22,14 @@ package unix
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"io"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -46,9 +46,10 @@ type mockMVCCSvc struct {
 	putWithLeaseFn func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
 	getRevisionFn  func(ctx context.Context, key string) (*kv.KeyValue, error)
 	getAtRevFn     func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
-	rangeFn        func(ctx context.Context, start, end []byte, opts service.RangeOptions) ([]*kv.KeyValue, int64, error)
+	rangeFn        func(ctx context.Context, start, end []byte, opts service.RangeOptions) ([]*kv.KeyValue, int64, int64, error)
 	compactFn      func(ctx context.Context, revision int64) error
 	currentRevFn   func(ctx context.Context) (int64, error)
+	restoreFn      func(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error)
 }
 
 func newMockMVCCSvc() *mockMVCCSvc {
@@ -106,7 +107,7 @@ func (m *mockMVCCSvc) GetAtRevisionWithConsistency(ctx context.Context, key stri
 	return m.GetAtRevision(ctx, key, revision)
 }
 
-func (m *mockMVCCSvc) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCSvc) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	var ro service.RangeOptions
 	for _, o := range opts {
 		o(&ro)
@@ -117,10 +118,10 @@ func (m *mockMVCCSvc) Range(ctx context.Context, start, end []byte, opts ...serv
 	return []*kv.KeyValue{
 		{Key: []byte("k1"), Value: []byte("v1"), ModRevision: 10},
 		{Key: []byte("k2"), Value: []byte("v2"), ModRevision: 11},
-	}, 2, nil
+	}, 2, 11, nil
 }
 
-func (m *mockMVCCSvc) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCSvc) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	return m.Range(ctx, start, end, opts...)
 }
 
@@ -136,6 +137,20 @@ func (m *mockMVCCSvc) CurrentRevision(ctx context.Context) (int64, error) {
 		return m.currentRevFn(ctx)
 	}
 	return 42, nil
+}
+
+func (m *mockMVCCSvc) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if m.restoreFn != nil {
+		return m.restoreFn(ctx, req)
+	}
+	return &service.RestoreRevisionResult{
+		Revision: req.Revision,
+		Changes: []service.RestoreKeyChange{
+			{Key: "restored-key", Action: service.RestoreActionRevert, FromRevision: 5, ToRevision: 3, ValueBytes: 7},
+		},
+		Applied: 1,
+		DryRun:  req.DryRun,
+	}, nil
 }
 
 var _ service.MVCCKVServicer = (*mockMVCCSvc)(nil)
@@ -204,16 +219,21 @@ func TestUnixRT_Range(t *testing.T) {
 	if got == nil || len(got.Kvs) != 2 || got.Count != 2 {
 		t.Errorf("got %+v, want 2 kvs", got)
 	}
+	// Revision (11) is deliberately distinct from Count (2) so this
+	// assertion cannot pass by coincidence if the revision is dropped.
+	if got.Revision != 11 {
+		t.Errorf("Revision = %d, want 11", got.Revision)
+	}
 }
 
 func TestUnixRT_Range_WithSortOptions(t *testing.T) {
 	svc := &mockMVCCSvc{
 		mockKVService: newMockKVService(),
-		rangeFn: func(_ context.Context, _, _ []byte, opts service.RangeOptions) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, opts service.RangeOptions) ([]*kv.KeyValue, int64, int64, error) {
 			if opts.Limit != 5 {
 				t.Errorf("expected Limit=5, got %d", opts.Limit)
 			}
-			return []*kv.KeyValue{{Key: []byte("a")}}, 1, nil
+			return []*kv.KeyValue{{Key: []byte("a")}}, 1, 1, nil
 		},
 	}
 	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
@@ -253,6 +273,97 @@ func TestUnixRT_CurrentRevision(t *testing.T) {
 	}
 	if rev != 42 {
 		t.Errorf("got rev=%d, want 42", rev)
+	}
+}
+
+func TestUnixRT_RestoreToRevision(t *testing.T) {
+	var captured *service.RestoreRevisionRequest
+	svc := &mockMVCCSvc{
+		mockKVService: newMockKVService(),
+		restoreFn: func(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+			captured = req
+			return &service.RestoreRevisionResult{
+				Revision: 5,
+				Changes: []service.RestoreKeyChange{
+					{Key: "a", Action: service.RestoreActionRevert, FromRevision: 9, ToRevision: 5, ValueBytes: 3},
+				},
+				Applied: 1,
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result.Revision != 5 || result.Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "a" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+	if captured == nil || captured.Prefix != "prefix" {
+		t.Fatalf("expected service prefix %q, got %+v", "prefix", captured)
+	}
+}
+
+// TestUnixRT_RestoreToRevision_BinaryRoundTrip proves an arbitrary
+// byte-valued prefix and response key round-trip byte-for-byte through the
+// gRPC-over-UDS proto `bytes` encoding.
+func TestUnixRT_RestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryPrefix := []byte{0x00, 0xff, 0xfe, 'p'}
+	binaryRespKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	var captured *service.RestoreRevisionRequest
+	svc := &mockMVCCSvc{
+		mockKVService: newMockKVService(),
+		restoreFn: func(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+			captured = req
+			return &service.RestoreRevisionResult{
+				Revision: 5,
+				Changes: []service.RestoreKeyChange{
+					{Key: string(binaryRespKey), Action: service.RestoreActionDelete, FromRevision: 9},
+				},
+				Applied: 1,
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   binaryPrefix,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if captured == nil || captured.Prefix != string(binaryPrefix) {
+		t.Fatalf("server received prefix %+v, want %v", captured, binaryPrefix)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != string(binaryRespKey) {
+		t.Fatalf("expected round-tripped binary response key %v, got %+v", binaryRespKey, result.Changes)
+	}
+}
+
+func TestUnixRT_RestoreToRevision_ServiceError(t *testing.T) {
+	svc := &mockMVCCSvc{
+		mockKVService: newMockKVService(),
+		restoreFn: func(_ context.Context, _ *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+			return nil, &service.RestoreScopeEmptyError{}
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
+	defer cleanup()
+
+	_, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1})
+	if err == nil {
+		t.Fatal("expected error from server")
 	}
 }
 
@@ -395,6 +506,7 @@ func TestUnixRT_ExecuteTransaction_ServiceError(t *testing.T) {
 
 type mockBatchSvc struct {
 	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
+	importFn  func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
 }
 
 func (m *mockBatchSvc) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
@@ -416,8 +528,11 @@ func (m *mockBatchSvc) ExecuteEntity(_ context.Context, _ *service.BatchEntityRe
 	return &service.BatchEntityResponse{}, nil
 }
 
-func (m *mockBatchSvc) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
-	return nil, nil
+func (m *mockBatchSvc) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	if m.importFn != nil {
+		return m.importFn(ctx, file, opts)
+	}
+	return &service.ImportResult{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +581,62 @@ func TestUnixRT_ExecuteBatch_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	_, err := tr.ExecuteBatch(context.Background(), []transport.Op{{Type: transport.OpPut}})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ImportFile round-trips
+// ---------------------------------------------------------------------------
+
+func TestUnixRT_ImportFile(t *testing.T) {
+	svc := &mockBatchSvc{
+		importFn: func(_ context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+			data, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("read file: %v", err)
+			}
+			if string(data) != "id,val\n1,a\n" {
+				t.Errorf("file = %q", data)
+			}
+			if opts.Format != "csv" || opts.KeyField != "id" || opts.ValueMode != "row" {
+				t.Errorf("opts = %+v", opts)
+			}
+			return &service.ImportResult{
+				Total:     1,
+				Succeeded: 1,
+				Errors:    []service.ImportError{{Row: 2, Key: "1", Message: "duplicate"}},
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithBatch(svc))
+	defer cleanup()
+
+	result, err := tr.ImportFile(context.Background(), "data.csv",
+		strings.NewReader("id,val\n1,a\n"),
+		transport.ImportOptions{Format: "csv", KeyField: "id", ValueMode: "row"})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if result.Total != 1 || result.Succeeded != 1 {
+		t.Errorf("got %+v", result)
+	}
+	if len(result.Errors) != 1 || result.Errors[0].Message != "duplicate" {
+		t.Errorf("errors = %+v", result.Errors)
+	}
+}
+
+func TestUnixRT_ImportFile_ServiceError(t *testing.T) {
+	svc := &mockBatchSvc{
+		importFn: func(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+			return nil, &service.ImportInvalidFormatError{Format: "bogus"}
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithBatch(svc))
+	defer cleanup()
+
+	_, err := tr.ImportFile(context.Background(), "data.bogus", strings.NewReader(""), transport.ImportOptions{Format: "bogus"})
 	if err == nil {
 		t.Fatal("expected error from server")
 	}

@@ -15,28 +15,12 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// ---------------------------------------------------------------------------
-// transport_batch.go - ImportFile is NotImplemented
-// ---------------------------------------------------------------------------
-
-func TestImportFile_NotImplemented(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	var nie *transport.NotImplementedError
-
-	r := bytes.NewReader([]byte(""))
-	_, err := tr.ImportFile(context.Background(), "file.csv", r, transport.ImportOptions{})
-	if !errors.As(err, &nie) {
-		t.Errorf("ImportFile: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // transport_watch.go - WatchPrefix on closed transport

@@ -136,7 +136,9 @@ func (e *KVEngine) Type() string { return "kv" }
 // Each entry is decoded using the base KV wire protocol first. If that
 // fails, the extended protocol is tried to support index operations.
 // MVCC, lease, transaction, and time-series opcodes return
-// UnsupportedOperationError.
+// UnsupportedOperationError. An entry undecodable by both protocols yields
+// an application-error result (see CommandDecodeError) rather than being
+// silently reported as applied.
 func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		// Try base KV protocol (OpPut=1, OpDelete=3).
@@ -159,7 +161,14 @@ func (e *KVEngine) Update(_ context.Context, entries []sm.Entry, results []sm.Re
 		// Try extended protocol for index and batch operations.
 		extCmd, extErr := protocol.DecodeCommand(entries[i].Cmd)
 		if extErr != nil {
-			results[i] = sm.Result{Value: 1}
+			// Undecodable by both protocols: this is a deterministic
+			// consequence of the specific committed bytes (corruption or a
+			// version-skewed writer), not engine state. Surface it as an
+			// application error rather than reporting Value:1 (SUCCESS) —
+			// silently dropping the write — or returning a Go error, which
+			// would stall consensus.
+			decErr := &CommandDecodeError{KVErr: err, ExtErr: extErr}
+			results[i] = sm.Result{Data: protocol.EncodeAppError(decErr.Error())}
 			continue
 		}
 

@@ -20,6 +20,7 @@ package rest
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -124,25 +125,46 @@ type Server struct {
 	gatherer          prometheus.Gatherer
 	resolver          LeaderAdminResolver
 	forwardClient     *http.Client
-	addr              string
-	server            *http.Server
-	listener          net.Listener
-	routes            map[string]route
-	tlsConfig         *tls.Config
-	caCertPool        *x509.CertPool
-	http3Server       *http3.Server
-	host              Host
-	caBootstrapCert   []byte // PEM-encoded CA cert for bootstrap endpoint
-	caBootstrapKey    []byte // PEM-encoded CA private key for bootstrap endpoint
-	onEtcdUpdated     func(dbName string, cfg *database.EtcdConfig) error
-	webUI             http.Handler      // optional embedded web UI file server
-	auditLogger       audit.AuditLogger // optional compliance-grade audit logger
+
+	// forwardSigner is this node's own private key, used to sign the
+	// on-behalf CallerAssertion attached to forwarded write requests. It is
+	// derived from the node's TLS identity certificate (the same certificate
+	// forwardClient presents as its mTLS client certificate), so the leader
+	// can verify the assertion against the presenting peer certificate.
+	forwardSigner crypto.Signer
+
+	// forwardNodeID is this node's SPIFFE node id, extracted from its own
+	// identity certificate's node-scoped SPIFFE SAN. It is stamped into the
+	// on-behalf assertion and re-checked by the leader against the mTLS peer
+	// certificate. Empty when the node certificate carries no node SAN, in
+	// which case on-behalf assertions are not emitted.
+	forwardNodeID   string
+	addr            string
+	server          *http.Server
+	listener        net.Listener
+	routes          map[string]route
+	tlsConfig       *tls.Config
+	tlsErr          error
+	caCertPool      *x509.CertPool
+	http3Server     *http3.Server
+	host            Host
+	caBootstrapCert []byte // PEM-encoded CA cert for bootstrap endpoint
+	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
+	onEtcdUpdated   func(dbName string, cfg *database.EtcdConfig) error
+	webUI           http.Handler      // optional embedded web UI file server
+	auditLogger     audit.AuditLogger // optional compliance-grade audit logger
 
 	// custodianSvc handles custodian registration, listing, and revocation.
 	custodianSvc custodianServicer
 
 	// soPINVerifier handles SO PIN verification for dual-factor auth.
 	soPINVerifier soPINVerifier
+
+	// soDualFactor enables the SO dual-factor middleware
+	// (authmw.SOMiddleware) on SO-gated routes. Installed only when
+	// both this flag is set (auth.so_dual_factor) and soPINVerifier is
+	// wired; otherwise the chain is unchanged.
+	soDualFactor bool
 
 	// serviceRegistry provides per-(tenant, database) service resolution.
 	// When nil, all handlers fall back to the singleton service fields above,
@@ -183,10 +205,28 @@ func WithLeaderForwarding(resolver LeaderAdminResolver) ServerOption {
 }
 
 // WithTLS configures the server with TLS for HTTP/2 (via ALPN "h2")
-// and starts an HTTP/3 server on the same port via QUIC.
+// and starts an HTTP/3 server on the same port via QUIC. The config is
+// cloned and pinned to a TLS 1.3 floor: an unset MinVersion is raised to
+// TLS 1.3, and an explicitly weaker MinVersion is rejected (surfaced by
+// Start as *WeakTLSVersionError) rather than silently negotiating a weaker
+// handshake. This mirrors the gRPC and unix transports so the "TLS 1.3
+// only" posture holds on every transport, not just the mTLS ones. A nil cfg
+// leaves TLS unconfigured; because the transport is TLS-only, Start then
+// fails closed with *TLSNotConfiguredError.
 func WithTLS(cfg *tls.Config) ServerOption {
 	return func(s *Server) {
-		s.tlsConfig = cfg
+		if cfg == nil {
+			return
+		}
+		clone := cfg.Clone()
+		switch {
+		case clone.MinVersion == 0:
+			clone.MinVersion = tls.VersionTLS13
+		case clone.MinVersion < tls.VersionTLS13:
+			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+			return
+		}
+		s.tlsConfig = clone
 	}
 }
 
@@ -416,6 +456,15 @@ func WithSOAuthenticator(verifier soPINVerifier) ServerOption {
 	return func(s *Server) { s.soPINVerifier = verifier }
 }
 
+// WithSODualFactor enables Security Officer dual-factor enforcement:
+// routes mapped to SO-gated permissions additionally require a valid
+// in-band SO PIN via the X-QRDB-SO-PIN header. The middleware is only
+// installed when an SO authenticator is also wired via
+// WithSOAuthenticator. Driven by the auth.so_dual_factor config flag.
+func WithSODualFactor() ServerOption {
+	return func(s *Server) { s.soDualFactor = true }
+}
+
 // WithCertProvider attaches a CertProvider for certificate management
 // operations.
 func WithCertProvider(svc cert.CertProvider) ServerOption {
@@ -526,8 +575,23 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		transport := &http.Transport{}
 		if s.tlsConfig != nil {
 			transport.TLSClientConfig = &tls.Config{
-				RootCAs:    s.caCertPool,
-				MinVersion: tls.VersionTLS13,
+				RootCAs: s.caCertPool,
+				// Present this node's own listener identity (the same
+				// cert/key mesh identity clustertls issues every node --
+				// "self-signed cluster CA verifies both roles", see
+				// tlsBundleFromMaterial) as the CLIENT certificate for
+				// forwarded requests. Every REST listener in an mTLS
+				// cluster requires a peer certificate on every connection
+				// (pkg/auth/middleware/rest.go, ErrNoPeerCertificate) --
+				// without this, forwardToLeader's proxied request is
+				// rejected with 401 no_peer_cert before it ever reaches
+				// the leader's handler, silently breaking cross-node
+				// leader forwarding (KV PUT/DELETE and database scale
+				// alike) in exactly the mTLS-secured topology this
+				// mechanism exists for.
+				Certificates:         s.tlsConfig.Certificates,
+				GetClientCertificate: s.tlsConfig.GetClientCertificate,
+				MinVersion:           tls.VersionTLS13,
 			}
 			transport.ForceAttemptHTTP2 = true
 		}
@@ -535,6 +599,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 			Timeout:   25 * time.Second,
 			Transport: transport,
 		}
+
+		// Derive the on-behalf assertion signer and this node's SPIFFE node id
+		// from the node's own identity certificate (the same certificate
+		// forwardClient presents as its mTLS client certificate). This lets a
+		// forwarded write carry a signed assertion of the ORIGINAL caller's
+		// identity that the leader verifies against the presenting peer
+		// certificate, so RBAC re-authorizes as the caller rather than the
+		// forwarding node. When no identity certificate or node SAN is present
+		// (e.g. auth-disabled deployments), the signer/nodeID stay unset and
+		// no assertion is emitted -- behavior is unchanged.
+		s.forwardSigner, s.forwardNodeID = deriveForwardIdentity(s.tlsConfig)
 	}
 
 	// Map-based dispatch for O(1) routing with method enforcement.
@@ -571,6 +646,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	s.routes["/kv/range"] = route{method: http.MethodGet, handler: s.handleRange}
 	s.routes["/kv/compact"] = route{method: http.MethodPost, handler: s.handleCompact}
 	s.routes["/kv/revision"] = route{method: http.MethodGet, handler: s.handleCurrentRevision}
+	s.routes["/kv/restore"] = route{method: http.MethodPost, handler: s.handleRestoreToRevision}
 	if s.kvSvc != nil {
 		s.routes["/kv/scan"] = route{method: http.MethodGet, handler: s.handleKVScan}
 	}
@@ -785,7 +861,8 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		s.routes["/v1/ceremony/status"] = route{method: http.MethodGet, handler: s.handleCeremonyStatus}
 		s.routes["/v1/ceremony/claim-cert/begin"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimCertBegin}
 		s.routes["/v1/ceremony/claim-cert/complete"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimCertComplete}
-		s.routes["/v1/ceremony/claim-share"] = route{method: http.MethodPost, handler: s.handleCeremonyClaimShare}
+		s.routes["/v1/ceremony/officer-share/begin"] = route{method: http.MethodPost, handler: s.handleCeremonyBeginClaimShare}
+		s.routes["/v1/ceremony/officer-share/complete"] = route{method: http.MethodPost, handler: s.handleCeremonyCompleteClaimShare}
 		s.routes["/v1/ceremony/sign-csr"] = route{method: http.MethodPost, handler: s.handleCeremonySignCSR}
 		s.routes["/v1/init/enroll-external-officer"] = route{method: http.MethodPost, handler: s.handleCeremonyEnrollExternalOfficer}
 	}
@@ -826,7 +903,16 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// scope so that allowlisted endpoints (e.g. /v1/barrier/unseal) bypass
 	// auth — possession of the unseal credential is the authorization, per
 	// the Vault model.
+	// The SO dual-factor middleware is the innermost wrapper (directly
+	// around the mux) so it runs AFTER the auth middleware has resolved
+	// the caller's identity into the request context. It gates only the
+	// routes mapped to authmw.SOPermissions and is installed only when
+	// explicitly enabled (auth.so_dual_factor) and an SO PIN verifier is
+	// wired — default posture is unchanged.
 	var handler http.Handler = mux
+	if s.soDualFactor && s.soPINVerifier != nil {
+		handler = authmw.SOMiddleware(s.soPINVerifier, s.auditLogger, slog.Default(), handler)
+	}
 	if s.authMW != nil {
 		handler = s.authMW.RESTMiddleware(handler)
 	}
@@ -852,15 +938,26 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // for automatic HTTP/2 via ALPN "h2", and an HTTP/3 server is started
 // on the same port via QUIC.
 func (s *Server) Start() error {
+	// A WithTLS config with an explicitly weak MinVersion was rejected at
+	// option-application time; surface it now.
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
+	// TLS-only: fail closed rather than bind a plaintext listener. The
+	// orchestrator always supplies a config (operator-provided or
+	// auto-provisioned from the node CA); a nil here means a direct caller
+	// tried to start the raw server without TLS.
+	if s.tlsConfig == nil {
+		return &TLSNotConfiguredError{}
+	}
+
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
 		return &StartError{Addr: s.addr, Err: err}
 	}
 
-	// Wrap listener with TLS when configured.
-	if s.tlsConfig != nil {
-		ln = tls.NewListener(ln, s.tlsConfig)
-	}
+	// Wrap listener with TLS (always configured; guarded above).
+	ln = tls.NewListener(ln, s.tlsConfig)
 	s.listener = ln
 
 	// Add Alt-Svc header middleware to advertise HTTP/3 availability.
@@ -1169,8 +1266,21 @@ func (r *peerAdminRegistry) Register(raftAddr, adminURL string) {
 	r.peers[raftAddr] = adminURL
 }
 
-// headerForwardedBy is the HTTP header used to detect forwarding loops.
+// headerForwardedBy carries the Raft address of the node that most recently
+// forwarded a request. It identifies the immediate forwarder for logging and
+// diagnostics; loop prevention itself is bounded by headerForwardHops below.
 const headerForwardedBy = "X-Quicraft-Forwarded-By"
+
+// headerForwardHops carries the number of leader-forwarding hops a request
+// has already taken, as a decimal integer. It bounds forwarding chains to
+// maxForwardHops so a genuine loop terminates, while still permitting the
+// multi-hop path a non-member entry node may need to reach the real leader
+// (guessed member -> real leader), plus one hop of slack.
+const headerForwardHops = "X-Quicraft-Forward-Hops"
+
+// maxForwardHops is the maximum number of leader-forwarding hops permitted
+// for a single client request before it is rejected as a forwarding loop.
+const maxForwardHops = 3
 
 // FetchJSON issues an HTTP GET to the given URL and decodes the JSON
 // response into dst. The caCertPool is used to verify the server's TLS

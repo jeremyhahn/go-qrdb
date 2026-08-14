@@ -134,14 +134,17 @@ func (s *Server) handleBatchImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = file.Close() }()
 
-	// Extract and validate format parameter.
+	// Extract and validate format parameter. The accepted set must match
+	// the service's own import parser (BatchService.Import); keeping this
+	// list in sync is what lets ndjson/yaml/auto imports reach the service
+	// instead of being rejected at the HTTP layer.
 	format := r.FormValue("format")
 	if format == "" {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "format"})
 		return
 	}
 	switch format {
-	case "csv", "json", "archive":
+	case "csv", "json", "ndjson", "yaml", "archive", "auto":
 	default:
 		writeErrorJSON(w, http.StatusBadRequest, &service.ImportInvalidFormatError{Format: format})
 		return

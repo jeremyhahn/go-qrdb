@@ -76,6 +76,16 @@ type ClusterMigration struct {
 	// Mechanism selects swap vs in-place recode for each node's recycle.
 	Mechanism seal.MigrationMechanism `json:"mechanism,omitempty"`
 
+	// ShamirThreshold / ShamirTotal carry the M-of-N scheme for a Shamir-target
+	// migration (seal.MigrationOptions.ShamirThreshold / ShamirTotal). They are
+	// ignored for a passphrase target. Every owner's reconciler rebuilds
+	// seal.MigrationOptions from this record alone (see LocalRecycler), so these
+	// fields MUST round-trip through the replicated record or a Shamir-target
+	// migration fails seal.MigrationOptions.Validate() on every retry, forever,
+	// regardless of what the operator originally requested.
+	ShamirThreshold int `json:"shamir_threshold,omitempty"`
+	ShamirTotal     int `json:"shamir_total,omitempty"`
+
 	// Owners is the NodeID set (from the placement Replicas) that must each
 	// confirm. Completion is measured against this set + Generation.
 	Owners []string `json:"owners"`
@@ -106,6 +116,14 @@ type NodeMigrationStatus struct {
 	Phase         seal.MigrationPhase `json:"phase"`
 	Detail        string              `json:"detail,omitempty"`
 	UpdatedAtUnix int64               `json:"updated_at_unix,omitempty"`
+
+	// Attempts counts consecutive PhaseFailed recycles this node has recorded
+	// for Generation (reset to 0 on a new generation or a PhaseComplete ack).
+	// The Reconciler stops retrying — and this record becomes the
+	// operator-visible terminal failure — once Attempts reaches
+	// MaxRecycleAttempts; Detail then explains the exhaustion. It is the bound
+	// on the otherwise-infinite per-tick retry loop.
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // Store persists ClusterMigration intent + per-node status in the replicated

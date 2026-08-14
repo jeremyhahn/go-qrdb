@@ -16,7 +16,11 @@ package sdk
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestTenantContextRoundTrip verifies that TenantFromContext returns the
@@ -70,5 +74,34 @@ func TestTenantFromContextMissing(t *testing.T) {
 				t.Errorf("TenantFromContext id = %q, want empty", id)
 			}
 		})
+	}
+}
+
+// TestErrTenantBarrierNotEnabledAlias verifies the SDK re-export is the same
+// sentinel value as pkg/tenant.ErrBarrierNotEnabled so composing services can
+// classify the error through the SDK boundary with errors.Is.
+func TestErrTenantBarrierNotEnabledAlias(t *testing.T) {
+	if ErrTenantBarrierNotEnabled == nil {
+		t.Fatal("ErrTenantBarrierNotEnabled is nil")
+	}
+	if !errors.Is(ErrTenantBarrierNotEnabled, tenant.ErrBarrierNotEnabled) {
+		t.Error("ErrTenantBarrierNotEnabled does not alias pkg/tenant.ErrBarrierNotEnabled")
+	}
+	const wantMsg = "tenant: barrier not enabled (seal subsystem disabled)"
+	if got := ErrTenantBarrierNotEnabled.Error(); got != wantMsg {
+		t.Errorf("ErrTenantBarrierNotEnabled message = %q, want %q", got, wantMsg)
+	}
+}
+
+// TestErrTenantBarrierNotEnabledWrapped verifies errors.Is traversal through a
+// wrapped chain, matching how the sentinel typically arrives at a composing
+// service's transport layer (wrapped by intermediate layers with %w).
+func TestErrTenantBarrierNotEnabledWrapped(t *testing.T) {
+	wrapped := fmt.Errorf("tenant barrier init: %w", ErrTenantBarrierNotEnabled)
+	if !errors.Is(wrapped, ErrTenantBarrierNotEnabled) {
+		t.Error("errors.Is failed to match the wrapped sentinel")
+	}
+	if errors.Is(errors.New("unrelated"), ErrTenantBarrierNotEnabled) {
+		t.Error("errors.Is matched an unrelated error")
 	}
 }

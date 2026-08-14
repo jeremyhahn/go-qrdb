@@ -354,10 +354,16 @@ func TestE2E_CeremonyClaimCertComplete_UnmarshalError(t *testing.T) {
 
 func TestE2E_CeremonyClaimShare_UnmarshalError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("ceremony.ClaimShare", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("ceremony.BeginClaimShare", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
-	if _, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{}); err == nil {
+	srv.SetResponder("ceremony.CompleteClaimShare", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, garbageProto
+	})
+	if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{}); err == nil {
+		t.Fatal("expected unmarshal error")
+	}
+	if _, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
@@ -411,7 +417,7 @@ func TestE2E_CredentialRotate_UnmarshalError(t *testing.T) {
 	srv.SetResponder("credential.Rotate", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
-	if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: "v"}); err == nil {
+	if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

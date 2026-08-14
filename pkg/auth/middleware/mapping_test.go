@@ -666,6 +666,21 @@ func TestLookupREST_PathParamRoutes(t *testing.T) {
 		{"POST", "/v1/tenants/t-1/barrier/officers", permission.TenantBarrierOfficerRegister},
 		{"POST", "/v1/tenants/t-1/barrier/officers/alice/claim/begin", permission.IdentityGated},
 		{"POST", "/v1/tenants/t-1/barrier/officers/alice/claim/complete", permission.IdentityGated},
+		// Ceremony routes. These MUST resolve a permission or they are
+		// default-denied (403) with auth enabled, making the ceremony API
+		// unreachable. The officer-share begin/complete pair is the regression
+		// guard for a real gap: the routes were registered in the REST server
+		// but had no mapping entry, so an enrolled officer's share claim was
+		// rejected by default-deny. Custodian claim-share is the sibling flow.
+		{"POST", "/v1/ceremony/claim-cert/begin", permission.CeremonyClaimCert},
+		{"POST", "/v1/ceremony/claim-cert/complete", permission.CeremonyClaimCert},
+		{"POST", "/v1/ceremony/officer-share/begin", permission.IdentityGated},
+		{"POST", "/v1/ceremony/officer-share/complete", permission.IdentityGated},
+		{"POST", "/v1/ceremony/claim-share/begin", permission.IdentityGated},
+		{"POST", "/v1/ceremony/claim-share/complete", permission.IdentityGated},
+		{"POST", "/v1/ceremony/sign-csr", permission.CeremonySignCSR},
+		{"POST", "/v1/ceremony/enroll-custodian", permission.CeremonyEnrollCustodian},
+		{"POST", "/v1/ceremony/revoke-custodian", permission.CeremonyRevokeCustodian},
 		// Database config sub-resources are updated with PATCH (not POST).
 		{"PATCH", "/v1/databases/db1/etcd", permission.DatabasesUpdate},
 		{"PATCH", "/v1/databases/db1/raft", permission.DatabasesUpdate},

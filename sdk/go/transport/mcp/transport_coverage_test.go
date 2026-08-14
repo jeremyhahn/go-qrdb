@@ -174,43 +174,9 @@ func TestMCPAuthExtras_AfterClose(t *testing.T) {
 	}
 }
 
-// ===========================================================================
-// transport_collection.go — all methods are NotImplemented stubs
-// ===========================================================================
-
-func TestMCPCollection_NotImplemented(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	var nie *transport.NotImplementedError
-	ctx := context.Background()
-
-	if _, err := tr.CreateCollection(ctx, transport.CreateCollectionRequest{}); !errors.As(err, &nie) {
-		t.Errorf("CreateCollection: %v", err)
-	}
-	if _, err := tr.GetCollectionInfo(ctx, "db", "c"); !errors.As(err, &nie) {
-		t.Errorf("GetCollectionInfo: %v", err)
-	}
-	if _, err := tr.ListCollections(ctx, "db"); !errors.As(err, &nie) {
-		t.Errorf("ListCollections: %v", err)
-	}
-	if err := tr.DropCollection(ctx, "db", "c"); !errors.As(err, &nie) {
-		t.Errorf("DropCollection: %v", err)
-	}
-	if _, err := tr.InsertDocument(ctx, transport.InsertDocumentRequest{}); !errors.As(err, &nie) {
-		t.Errorf("InsertDocument: %v", err)
-	}
-	if _, err := tr.GetDocument(ctx, "db", "c", 1); !errors.As(err, &nie) {
-		t.Errorf("GetDocument: %v", err)
-	}
-	if err := tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}); !errors.As(err, &nie) {
-		t.Errorf("UpdateDocument: %v", err)
-	}
-	if err := tr.DeleteDocument(ctx, "db", "c", 1); !errors.As(err, &nie) {
-		t.Errorf("DeleteDocument: %v", err)
-	}
-	if _, err := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); !errors.As(err, &nie) {
-		t.Errorf("ListDocuments: %v", err)
-	}
-}
+// transport_collection.go is now fully implemented over MCP (callTool-based
+// client wiring); its NotImplemented stub test was removed. The MCP collection
+// surface is exercised end-to-end in test/integration/collection_cli_test.go.
 
 // ===========================================================================
 // transport_ceremony.go — closed paths
@@ -233,8 +199,8 @@ func TestMCPCeremonyExtras_AfterClose(t *testing.T) {
 	if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CeremonyClaimCertComplete: %v", err)
 	}
-	if _, err := tr.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimShare: %v", err)
+	if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); !errors.As(err, &ce) {
+		t.Errorf("CeremonyBeginClaimShare: %v", err)
 	}
 	if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CeremonySignCSR: %v", err)

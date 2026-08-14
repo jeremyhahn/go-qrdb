@@ -43,6 +43,32 @@ type Client interface {
 
 All transports enforce TLS 1.3 (except Unix which is inherently local and Embedded which is in-process).
 
+## `database/sql` and GORM
+
+Alongside the `Client` interface, the SDK ships a `database/sql` driver and a
+GORM dialector:
+
+| Package | Registers | Purpose |
+|---------|-----------|---------|
+| `sdk/go/driver` | `sql.Open("qrdb", ...)` with the `embedded://`, `rest://` and `grpc://` schemes | SQL over an in-process KV-only database, or over the network SQL API |
+| `sdk/go/driver/node` | the `node://` scheme (blank import) | SQL over a complete in-process node — Raft, service registry, relational tables, interactive transactions |
+| `sdk/go/gorm` | a `gorm.Dialector` | GORM on top of the driver |
+
+```go
+import (
+    "database/sql"
+
+    _ "github.com/jeremyhahn/go-qrdb/sdk/go/driver/node"
+)
+
+db, err := sql.Open("qrdb", "node://memory?database=app")
+```
+
+`node://` is a separate, side-effect-imported package because it pulls in the
+whole node dependency graph; `embedded://` stays the fast KV-only path and
+cannot create relational tables. See
+[SQL / GORM documentation](../sql/gorm.md) for the full comparison.
+
 ## Quick Start
 
 ```go

@@ -148,7 +148,7 @@ func newPlainConn() *vitessmysql.Conn {
 // ---------------------------------------------------------------------------
 
 func TestSessionBuilder_NilAuth_ReturnsSystemSession(t *testing.T) {
-	sb := newSessionBuilder(nil)
+	sb := newSessionBuilder(nil, nil)
 
 	conn := newPlainConn()
 	defer func() { _ = conn.Conn.Close() }()
@@ -176,7 +176,7 @@ func TestSessionBuilder_AuthSuccess(t *testing.T) {
 	authz := &mockAuthorizer{}
 	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
 
-	sb := newSessionBuilder(mw)
+	sb := newSessionBuilder(mw, nil)
 
 	// Need a TLS conn for the auth path.
 	conn := newTLSConn(t)
@@ -199,7 +199,7 @@ func TestSessionBuilder_AuthFailure_ReturnsError(t *testing.T) {
 	authz := &mockAuthorizer{}
 	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
 
-	sb := newSessionBuilder(mw)
+	sb := newSessionBuilder(mw, nil)
 
 	conn := newTLSConn(t)
 	defer func() { _ = conn.Conn.Close() }()
@@ -218,7 +218,7 @@ func TestSessionBuilder_NoTLS_WithAuth_ReturnsAuthenticationError(t *testing.T) 
 	authz := &mockAuthorizer{}
 	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
 
-	sb := newSessionBuilder(mw)
+	sb := newSessionBuilder(mw, nil)
 
 	// Plain (non-TLS) connection with auth middleware configured.
 	conn := newPlainConn()
@@ -240,7 +240,7 @@ func TestSessionBuilder_MTLSAuth_WithVerifiedChains(t *testing.T) {
 	authz := &mockAuthorizer{}
 	mw := authmw.New(authz, authmw.WithAuthenticator(authn))
 
-	sb := newSessionBuilder(mw)
+	sb := newSessionBuilder(mw, nil)
 
 	// Create a TLS conn. The mTLS authenticator requires verified chains
 	// in the TLS state, which we cannot easily inject into a real
@@ -259,7 +259,7 @@ func TestSessionBuilder_MTLSAuth_WithVerifiedChains(t *testing.T) {
 }
 
 func TestSessionBuilder_SetsConnectionIDAndUser(t *testing.T) {
-	sb := newSessionBuilder(nil)
+	sb := newSessionBuilder(nil, nil)
 
 	conn := newPlainConn()
 	conn.ConnectionID = 99
@@ -280,7 +280,7 @@ func TestSessionBuilder_SetsConnectionIDAndUser(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewSessionBuilder(t *testing.T) {
-	sb := newSessionBuilder(nil)
+	sb := newSessionBuilder(nil, nil)
 	require.NotNil(t, sb)
 	assert.Nil(t, sb.authMW)
 }
@@ -289,7 +289,7 @@ func TestNewSessionBuilder_WithMiddleware(t *testing.T) {
 	authz := &mockAuthorizer{}
 	mw := authmw.New(authz)
 
-	sb := newSessionBuilder(mw)
+	sb := newSessionBuilder(mw, nil)
 	require.NotNil(t, sb)
 	assert.NotNil(t, sb.authMW)
 }
@@ -300,7 +300,7 @@ func TestNewSessionBuilder_WithMiddleware(t *testing.T) {
 
 func TestSessionBuilder_NilAuth_TenantSystem(t *testing.T) {
 	// Verify that a nil-auth session always produces the system tenant.
-	sb := newSessionBuilder(nil)
+	sb := newSessionBuilder(nil, nil)
 
 	conn := newPlainConn()
 	defer func() { _ = conn.Conn.Close() }()

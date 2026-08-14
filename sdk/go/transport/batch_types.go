@@ -52,12 +52,6 @@ type ImportOptions struct {
 	// Transactional enables all-or-nothing mode where any error causes
 	// the entire import to be rolled back.
 	Transactional bool `json:"transactional"`
-
-	// Collection is an optional target collection name.
-	Collection string `json:"collection,omitempty"`
-
-	// Database is an optional target database name.
-	Database string `json:"database,omitempty"`
 }
 
 // ImportResult contains statistics from a batch import operation.

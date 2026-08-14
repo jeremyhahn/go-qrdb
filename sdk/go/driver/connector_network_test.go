@@ -16,181 +16,246 @@ package driver
 
 import (
 	"context"
-	sqld "database/sql/driver"
+	"database/sql/driver"
+	"errors"
+	"io"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// TestNewNetworkConnector_WithoutTLS verifies NewNetworkConnector without TLS config.
-func TestNewNetworkConnector_WithoutTLS(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "mydb",
-	}
-	c := NewNetworkConnector(cfg)
-	if c == nil {
-		t.Fatal("expected non-nil connector")
-	}
-	if c.client == nil {
-		t.Fatal("expected non-nil http client")
-	}
+// stubTransport is a sqlTransport that records lifecycle calls, standing in
+// for a real SDK transport so connector behaviour can be asserted without a
+// server.
+type stubTransport struct {
+	client       transport.SQLClient
+	connectErr   error
+	connectCalls int
+	closeCalls   int
 }
 
-// TestNewNetworkConnector_WithCAFile verifies connector is created with CA file config.
-func TestNewNetworkConnector_WithCAFile(t *testing.T) {
-	// Use a non-existent CA file — constructor should not error, it silently skips bad files.
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "mydb",
-		CAFile:   "/nonexistent/ca.pem",
-	}
-	c := NewNetworkConnector(cfg)
-	if c == nil {
-		t.Fatal("expected non-nil connector")
-	}
-	// Transport should be set because CAFile was provided (even if file doesn't exist).
-	if c.client.Transport == nil {
-		t.Log("Transport is nil (CA file not found), this is acceptable behavior")
-	}
+func (s *stubTransport) SQLClient() transport.SQLClient { return s.client }
+
+func (s *stubTransport) Connect(_ context.Context) error {
+	s.connectCalls++
+	return s.connectErr
 }
 
-// TestNewNetworkConnector_WithCertAndKey verifies connector with cert and key paths.
-func TestNewNetworkConnector_WithCertAndKey(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "mydb",
-		CAFile:   "/nonexistent/ca.pem",
-		CertFile: "/nonexistent/client.crt",
-		KeyFile:  "/nonexistent/client.key",
-	}
-	c := NewNetworkConnector(cfg)
-	if c == nil {
-		t.Fatal("expected non-nil connector")
-	}
+func (s *stubTransport) Close() error {
+	s.closeCalls++
+	return nil
 }
 
-// TestNetworkConnector_Connect verifies Connect returns a networkConn.
-func TestNetworkConnector_Connect(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "testdb",
-	}
-	c := NewNetworkConnector(cfg)
+// withStubTransport installs a stub factory for the given scheme for the
+// duration of the test, restoring the real factory afterwards.
+func withStubTransport(t *testing.T, scheme string, stub *stubTransport) {
+	t.Helper()
 
-	conn, err := c.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
+	original, existed := transportFactories[scheme]
+	transportFactories[scheme] = func(...transport.Option) (sqlTransport, error) {
+		return stub, nil
 	}
-	if conn == nil {
-		t.Fatal("expected non-nil connection")
-	}
-
-	nc, ok := conn.(*networkConn)
-	if !ok {
-		t.Fatalf("expected *networkConn, got %T", conn)
-	}
-	if nc.database != "testdb" {
-		t.Errorf("database = %q, want testdb", nc.database)
-	}
-	if nc.baseURL != "rest://localhost:63001" {
-		t.Errorf("baseURL = %q, want rest://localhost:63001", nc.baseURL)
-	}
+	t.Cleanup(func() {
+		if existed {
+			transportFactories[scheme] = original
+			return
+		}
+		delete(transportFactories, scheme)
+	})
 }
 
-// TestNetworkConnector_ConnectGRPC verifies Connect for gRPC scheme.
-func TestNetworkConnector_ConnectGRPC(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeGRPC,
-		Host:     "server:50051",
-		Database: "grpcdb",
-	}
-	c := NewNetworkConnector(cfg)
-
-	conn, err := c.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-
-	nc, ok := conn.(*networkConn)
-	if !ok {
-		t.Fatalf("expected *networkConn, got %T", conn)
-	}
-	if nc.baseURL != "grpc://server:50051" {
-		t.Errorf("baseURL = %q, want grpc://server:50051", nc.baseURL)
-	}
-}
-
-// TestNetworkConnector_Driver verifies Driver() returns a Driver instance.
-func TestNetworkConnector_Driver(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "db",
-	}
-	c := NewNetworkConnector(cfg)
-	d := c.Driver()
-	if d == nil {
-		t.Fatal("expected non-nil driver")
-	}
-	if _, ok := d.(*Driver); !ok {
-		t.Errorf("expected *Driver, got %T", d)
-	}
-}
-
-// TestNetworkConnector_InterfaceCompliance verifies NetworkConnector implements driver.Connector.
+// TestNetworkConnector_InterfaceCompliance verifies the connector satisfies
+// the interfaces database/sql expects.
 func TestNetworkConnector_InterfaceCompliance(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost",
-		Database: "db",
+	var _ driver.Connector = (*NetworkConnector)(nil)
+	var _ io.Closer = (*NetworkConnector)(nil)
+}
+
+// TestNetworkConnector_Driver verifies Driver returns the qrdb driver.
+func TestNetworkConnector_Driver(t *testing.T) {
+	cfg, err := ParseDSN("rest://localhost:63001/mydb")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
 	}
-	var c sqld.Connector = NewNetworkConnector(cfg)
-	if c == nil {
-		t.Fatal("NetworkConnector should implement driver.Connector")
+	if NewNetworkConnector(cfg).Driver() == nil {
+		t.Error("Driver() = nil")
 	}
 }
 
-// TestNewNetworkConnector_WithCertOnly verifies connector with CertFile but no key (TLS path still created).
-func TestNewNetworkConnector_WithCertOnly(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:63001",
-		Database: "mydb",
-		CertFile: "/nonexistent/client.crt",
-		// No KeyFile — cert load will fail silently.
+// TestNetworkConnector_Connect verifies the connection carries the configured
+// database and scheme and is backed by the transport's SQL client.
+func TestNetworkConnector_Connect(t *testing.T) {
+	stub := &stubTransport{client: &fakeSQLClient{}}
+	withStubTransport(t, SchemeREST, stub)
+
+	cfg, err := ParseDSN("rest://localhost:63001/mydb")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
 	}
-	c := NewNetworkConnector(cfg)
-	if c == nil {
-		t.Fatal("expected non-nil connector")
+
+	connector := NewNetworkConnector(cfg)
+	defer func() { _ = connector.Close() }()
+
+	conn, err := connector.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	nc, ok := conn.(*networkConn)
+	if !ok {
+		t.Fatalf("conn = %T, want *networkConn", conn)
+	}
+	if nc.database != "mydb" {
+		t.Errorf("database = %q, want mydb", nc.database)
+	}
+	if nc.scheme != SchemeREST {
+		t.Errorf("scheme = %q, want %q", nc.scheme, SchemeREST)
+	}
+	if nc.sqlClient != stub.client {
+		t.Error("connection is not backed by the transport's SQL client")
 	}
 }
 
-// TestNetworkConnector_MultipleConnects verifies multiple Connect calls each return a new conn.
-func TestNetworkConnector_MultipleConnects(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeREST,
-		Host:     "localhost:8080",
-		Database: "multidb",
-	}
-	c := NewNetworkConnector(cfg)
+// TestNetworkConnector_GRPCUsesGRPCTransport verifies a grpc:// DSN builds a
+// gRPC transport.
+//
+// This is a regression guard: both schemes previously routed to the same
+// hand-rolled HTTP client, so a grpc:// DSN silently spoke REST.
+func TestNetworkConnector_GRPCUsesGRPCTransport(t *testing.T) {
+	restStub := &stubTransport{client: &fakeSQLClient{}}
+	grpcStub := &stubTransport{client: &fakeSQLClient{}}
+	withStubTransport(t, SchemeREST, restStub)
+	withStubTransport(t, SchemeGRPC, grpcStub)
 
-	conn1, err := c.Connect(context.Background())
+	cfg, err := ParseDSN("grpc://server:50051/mydb")
 	if err != nil {
-		t.Fatalf("first Connect: %v", err)
-	}
-	conn2, err := c.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("second Connect: %v", err)
+		t.Fatalf("ParseDSN: %v", err)
 	}
 
-	// Both should be network connections.
-	if _, ok := conn1.(*networkConn); !ok {
-		t.Fatalf("conn1 expected *networkConn, got %T", conn1)
+	connector := NewNetworkConnector(cfg)
+	defer func() { _ = connector.Close() }()
+
+	if _, err := connector.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
 	}
-	if _, ok := conn2.(*networkConn); !ok {
-		t.Fatalf("conn2 expected *networkConn, got %T", conn2)
+
+	if grpcStub.connectCalls != 1 {
+		t.Errorf("gRPC transport connect calls = %d, want 1", grpcStub.connectCalls)
+	}
+	if restStub.connectCalls != 0 {
+		t.Errorf("REST transport was used for a grpc:// DSN (%d calls)", restStub.connectCalls)
+	}
+}
+
+// TestNetworkConnector_TransportSharedAcrossConnections verifies the transport
+// is built once and reused, rather than reconnected per connection.
+func TestNetworkConnector_TransportSharedAcrossConnections(t *testing.T) {
+	stub := &stubTransport{client: &fakeSQLClient{}}
+	withStubTransport(t, SchemeREST, stub)
+
+	cfg, _ := ParseDSN("rest://localhost:63001/mydb")
+	connector := NewNetworkConnector(cfg)
+	defer func() { _ = connector.Close() }()
+
+	for i := 0; i < 3; i++ {
+		if _, err := connector.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect %d: %v", i, err)
+		}
+	}
+
+	if stub.connectCalls != 1 {
+		t.Errorf("transport connect calls = %d, want 1", stub.connectCalls)
+	}
+}
+
+// TestNetworkConnector_ConnectFailureClosesTransport verifies a transport that
+// fails to connect is closed rather than leaked, and is not cached.
+func TestNetworkConnector_ConnectFailureClosesTransport(t *testing.T) {
+	sentinel := errors.New("dial failed")
+	stub := &stubTransport{client: &fakeSQLClient{}, connectErr: sentinel}
+	withStubTransport(t, SchemeREST, stub)
+
+	cfg, _ := ParseDSN("rest://localhost:63001/mydb")
+	connector := NewNetworkConnector(cfg)
+	defer func() { _ = connector.Close() }()
+
+	_, err := connector.Connect(context.Background())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Connect error = %v, want %v", err, sentinel)
+	}
+	if stub.closeCalls != 1 {
+		t.Errorf("transport close calls = %d, want 1 (transport leaked)", stub.closeCalls)
+	}
+
+	// A second attempt must retry rather than reuse a failed transport.
+	_, _ = connector.Connect(context.Background())
+	if stub.connectCalls != 2 {
+		t.Errorf("connect calls = %d, want 2 (failed transport was cached)", stub.connectCalls)
+	}
+}
+
+// TestNetworkConnector_CloseReleasesTransport verifies Close releases the
+// transport and is idempotent, and that a closed connector refuses to connect.
+func TestNetworkConnector_CloseReleasesTransport(t *testing.T) {
+	stub := &stubTransport{client: &fakeSQLClient{}}
+	withStubTransport(t, SchemeREST, stub)
+
+	cfg, _ := ParseDSN("rest://localhost:63001/mydb")
+	connector := NewNetworkConnector(cfg)
+
+	if _, err := connector.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := connector.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if stub.closeCalls != 1 {
+		t.Errorf("transport close calls = %d, want 1", stub.closeCalls)
+	}
+
+	if err := connector.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+	if stub.closeCalls != 1 {
+		t.Errorf("transport closed twice (%d calls)", stub.closeCalls)
+	}
+
+	_, err := connector.Connect(context.Background())
+	var closedErr *ConnectorClosedError
+	if !errors.As(err, &closedErr) {
+		t.Errorf("Connect after Close error = %v, want *ConnectorClosedError", err)
+	}
+}
+
+// TestNetworkConnector_TLSOptionsFromDSN verifies TLS material named in the
+// DSN is parsed and carried through to the transport options.
+func TestNetworkConnector_TLSOptionsFromDSN(t *testing.T) {
+	cfg, err := ParseDSN("rest://localhost:63001/mydb?ca=/tmp/ca.pem&cert=/tmp/c.pem&key=/tmp/k.pem")
+	if err != nil {
+		t.Fatalf("ParseDSN: %v", err)
+	}
+
+	if cfg.CAFile != "/tmp/ca.pem" {
+		t.Errorf("CAFile = %q, want /tmp/ca.pem", cfg.CAFile)
+	}
+	if cfg.CertFile != "/tmp/c.pem" {
+		t.Errorf("CertFile = %q, want /tmp/c.pem", cfg.CertFile)
+	}
+	if cfg.KeyFile != "/tmp/k.pem" {
+		t.Errorf("KeyFile = %q, want /tmp/k.pem", cfg.KeyFile)
+	}
+}
+
+// TestNetworkConnector_UnknownScheme verifies an unroutable scheme is
+// reported rather than silently defaulting to a transport.
+func TestNetworkConnector_UnknownScheme(t *testing.T) {
+	connector := NewNetworkConnector(&DSNConfig{Scheme: "carrierpigeon", Host: "h", Database: "d"})
+	defer func() { _ = connector.Close() }()
+
+	_, err := connector.Connect(context.Background())
+
+	var unsupported *UnsupportedSchemeError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("error = %v, want *UnsupportedSchemeError", err)
 	}
 }

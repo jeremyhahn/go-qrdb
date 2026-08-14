@@ -142,78 +142,6 @@ func (m *mockAuditLogger) Close() error { return nil }
 // Mock UserAuthFactorServicer
 // ---------------------------------------------------------------------------
 
-type mockUserAuthFactorSvc struct {
-	addErr       error
-	listResult   []*auth.AuthFactor
-	listErr      error
-	getResult    *auth.AuthFactor
-	getErr       error
-	removeErr    error
-	rotateErr    error
-	relabelErr   error
-	lookupResult *auth.AuthFactor
-	lookupErr    error
-}
-
-var _ service.UserAuthFactorServicer = (*mockUserAuthFactorSvc)(nil)
-
-func newMockUserAuthFactorSvc() *mockUserAuthFactorSvc {
-	now := time.Now()
-	return &mockUserAuthFactorSvc{
-		getResult: &auth.AuthFactor{
-			ID:           "factor-1",
-			UserID:       42,
-			Type:         auth.AuthFactorType("totp"),
-			Label:        "my-totp",
-			Credential:   []byte("secret"),
-			RegisteredAt: now,
-		},
-		lookupResult: &auth.AuthFactor{
-			ID:           "factor-1",
-			UserID:       42,
-			Type:         auth.AuthFactorType("totp"),
-			RegisteredAt: now,
-		},
-		listResult: []*auth.AuthFactor{
-			{ID: "factor-1", UserID: 42, Type: "totp", RegisteredAt: now},
-		},
-	}
-}
-
-func (m *mockUserAuthFactorSvc) Add(_ context.Context, _ uint64, _ *auth.AuthFactor) error {
-	return m.addErr
-}
-func (m *mockUserAuthFactorSvc) List(_ context.Context, _ uint64) ([]*auth.AuthFactor, error) {
-	if m.listErr != nil {
-		return nil, m.listErr
-	}
-	return m.listResult, nil
-}
-func (m *mockUserAuthFactorSvc) Get(_ context.Context, _ string) (*auth.AuthFactor, error) {
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	return m.getResult, nil
-}
-func (m *mockUserAuthFactorSvc) LookupByCredentialKey(_ context.Context, _ auth.AuthFactorType, _ []byte) (*auth.AuthFactor, error) {
-	if m.lookupErr != nil {
-		return nil, m.lookupErr
-	}
-	return m.lookupResult, nil
-}
-func (m *mockUserAuthFactorSvc) Remove(_ context.Context, _ string, _ bool) error {
-	return m.removeErr
-}
-func (m *mockUserAuthFactorSvc) Rotate(_ context.Context, _ string, _ *auth.AuthFactor) error {
-	return m.rotateErr
-}
-func (m *mockUserAuthFactorSvc) Relabel(_ context.Context, _ string, _ string) error {
-	return m.relabelErr
-}
-func (m *mockUserAuthFactorSvc) MarkUsed(_ context.Context, _ string, _ time.Time) error {
-	return nil
-}
-
 // ---------------------------------------------------------------------------
 // Mock PIN backend
 // ---------------------------------------------------------------------------
@@ -270,12 +198,13 @@ func startServerWithAudit(t *testing.T, logger audit.AuditLogger) (*grpc.ClientC
 // startServerWithUserAuthFactor starts a gRPC server with UserAuthFactorService registered.
 func startServerWithUserAuthFactor(t *testing.T, svc service.UserAuthFactorServicer) (*grpc.ClientConn, func()) {
 	t.Helper()
+	tlsCfg := testServerTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithUserAuthFactorService(svc))
+		WithTLS(tlsCfg), WithUserAuthFactorService(svc))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("grpc.NewClient failed: %v", err)
@@ -995,12 +924,13 @@ func TestAuditService_Query_RoundTrip(t *testing.T) {
 // service registered via WithTenantService and returns a client connection.
 func startGRPCWithTenantBarrier(t *testing.T, tenantSvc *mockTenantBarrierOnlySvc) (*grpc.ClientConn, func()) {
 	t.Helper()
+	tlsCfg := testServerTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithTenantService(tenantSvc))
+		WithTLS(tlsCfg), WithTenantService(tenantSvc))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("grpc.NewClient: %v", err)
@@ -1302,7 +1232,7 @@ func (m *mockTenantBarrierOnlySvc) TenantBarrierShamirSealVote(_ context.Context
 
 func TestUserAuthFactorService_NilSvc_NotRegistered(t *testing.T) {
 	grpcSrv := grpc.NewServer()
-	RegisterUserAuthFactorService(grpcSrv, nil)
+	RegisterUserAuthFactorService(grpcSrv, nil, nil)
 	grpcSrv.Stop()
 }
 

@@ -38,7 +38,7 @@ func TestNewVectorsTable(t *testing.T) {
 func TestVectorsTable_Schema(t *testing.T) {
 	tbl := NewVectorsTable()
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	require.Len(t, schema, 3)
 

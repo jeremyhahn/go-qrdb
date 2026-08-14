@@ -110,12 +110,13 @@ func (m *mockAuthFactorSvc) RevokeFactor(_ context.Context, _ string) error {
 
 func startServerWithAuthFactor(t *testing.T, svc service.AuthFactorServicer) (*grpc.ClientConn, func()) {
 	t.Helper()
+	tlsCfg := testServerTLSConfig(t)
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithAuthFactorService(svc))
+		WithTLS(tlsCfg), WithAuthFactorService(svc))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
-	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(srv.Addr(), grpc.WithTransportCredentials(testClientCreds(t, tlsCfg)))
 	if err != nil {
 		srv.Stop()
 		t.Fatalf("grpc.NewClient failed: %v", err)

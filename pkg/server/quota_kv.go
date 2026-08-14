@@ -91,6 +91,28 @@ func (s *quotaKVService) Put(ctx context.Context, key string, value []byte) erro
 	return nil
 }
 
+// PutIfAbsent reserves quota, attempts the conditional write, and releases the
+// reservation when the write did not take effect.
+//
+// The release on stored=false is the part that matters. A declined conditional
+// write stores nothing, so charging the tenant for it would let a caller
+// exhaust another tenant's — or their own — quota by racing for a key that
+// already exists, without ever writing a byte. Reserving first is still
+// required: admitting the write only after it has landed would let a tenant
+// exceed their limit whenever two writes are in flight.
+func (s *quotaKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	n := len(value)
+	if err := s.reserve(ctx, n); err != nil {
+		return false, err
+	}
+	stored, err := s.inner.PutIfAbsent(ctx, key, value)
+	if err != nil || !stored {
+		s.acct.Release(s.tenantID, int64(n))
+		return stored, err
+	}
+	return true, nil
+}
+
 // PutWithMode accounts len(value) bytes after admitting the write.
 func (s *quotaKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
 	n := len(value)

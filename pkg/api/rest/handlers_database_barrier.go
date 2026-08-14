@@ -66,7 +66,7 @@ func (s *Server) handleUnsealDatabase(w http.ResponseWriter, r *http.Request, na
 // handleDatabaseBarrierStatus handles GET /v1/databases/{name}/barrier/status --
 // reports the sealed/initialized state and active strategy metadata.
 func (s *Server) handleDatabaseBarrierStatus(w http.ResponseWriter, r *http.Request, name string) {
-	st, err := s.databaseSvc.DatabaseBarrierStatus(name)
+	st, err := s.databaseSvc.DatabaseBarrierStatus(r.Context(), name)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

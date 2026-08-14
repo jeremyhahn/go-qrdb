@@ -263,30 +263,38 @@ func TestNetworkRequestErrorUnwrap(t *testing.T) {
 	}
 }
 
-// TestArgumentSubstitutionError verifies ArgumentSubstitutionError message variants.
-func TestArgumentSubstitutionError(t *testing.T) {
+// TestUnsupportedArgumentTypeError verifies the message names the offending
+// position and Go type, which is what makes an unbindable argument diagnosable.
+func TestUnsupportedArgumentTypeError(t *testing.T) {
 	tests := []struct {
 		name    string
-		index   int
-		inner   error
+		ordinal int
+		value   any
 		wantMsg string
 	}{
 		{
-			name:    "without inner error",
-			index:   2,
-			wantMsg: "driver: argument substitution failed at index 2",
+			name:    "struct value",
+			ordinal: 3,
+			value:   struct{ A int }{},
+			wantMsg: "driver: cannot bind argument 3 of type struct { A int }",
 		},
 		{
-			name:    "with inner error",
-			index:   0,
-			inner:   io.EOF,
-			wantMsg: "driver: argument substitution failed at index 0: EOF",
+			name:    "map value",
+			ordinal: 1,
+			value:   map[string]int{},
+			wantMsg: "driver: cannot bind argument 1 of type map[string]int",
+		},
+		{
+			name:    "nil value",
+			ordinal: 2,
+			value:   nil,
+			wantMsg: "driver: cannot bind argument 2 of type <nil>",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := &ArgumentSubstitutionError{Index: tt.index, Err: tt.inner}
+			err := &UnsupportedArgumentTypeError{Ordinal: tt.ordinal, Value: tt.value}
 			if err.Error() != tt.wantMsg {
 				t.Errorf("Error() = %q, want %q", err.Error(), tt.wantMsg)
 			}
@@ -294,15 +302,52 @@ func TestArgumentSubstitutionError(t *testing.T) {
 	}
 }
 
-// TestArgumentSubstitutionErrorUnwrap verifies Unwrap returns the wrapped error.
-func TestArgumentSubstitutionErrorUnwrap(t *testing.T) {
-	inner := io.ErrClosedPipe
-	err := &ArgumentSubstitutionError{Index: 1, Err: inner}
-	if err.Unwrap() != inner {
-		t.Errorf("Unwrap() = %v, want %v", err.Unwrap(), inner)
+// TestNamedParameterUnsupportedError verifies the message quotes the parameter
+// name and points at the supported form.
+func TestNamedParameterUnsupportedError(t *testing.T) {
+	err := &NamedParameterUnsupportedError{Name: "tenant"}
+	want := `driver: named parameter "tenant" is not supported; use positional ? placeholders`
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestParameterizedQueryUnsupportedError verifies the message names the scheme
+// and how many arguments were refused.
+func TestParameterizedQueryUnsupportedError(t *testing.T) {
+	err := &ParameterizedQueryUnsupportedError{Scheme: "rest", Count: 2}
+	want := "driver: rest connections cannot bind query parameters (2 supplied); " +
+		"the network SQL API accepts a statement only"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestResultMetadataUnsupportedError verifies the message names the field.
+func TestResultMetadataUnsupportedError(t *testing.T) {
+	err := &ResultMetadataUnsupportedError{Field: "RowsAffected"}
+	want := "driver: RowsAffected is not reported by the network SQL API"
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestPrepareError verifies the message and that Unwrap exposes the cause.
+func TestPrepareError(t *testing.T) {
+	inner := io.EOF
+	err := &PrepareError{Query: "SELECT ?", Err: inner}
+
+	want := `driver: failed to prepare query "SELECT ?": EOF`
+	if err.Error() != want {
+		t.Errorf("Error() = %q, want %q", err.Error(), want)
 	}
 	if !errors.Is(err, inner) {
-		t.Error("errors.Is should find inner error via Unwrap")
+		t.Error("errors.Is should find the inner error via Unwrap")
+	}
+
+	bare := &PrepareError{Query: "SELECT 1"}
+	if bare.Error() != `driver: failed to prepare query "SELECT 1"` {
+		t.Errorf("Error() without inner = %q", bare.Error())
 	}
 }
 

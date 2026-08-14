@@ -388,10 +388,17 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("ceremony.ClaimShare", func(t *testing.T) {
+	t.Run("ceremony.BeginClaimShare", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
-		serverErr(srv, "ceremony.ClaimShare", "err")
-		if _, err := tr.CeremonyClaimShare(context.Background(), &transport.ClaimShareRequest{}); err == nil {
+		serverErr(srv, "ceremony.BeginClaimShare", "err")
+		if _, err := tr.CeremonyBeginClaimShare(context.Background(), &transport.BeginClaimShareRequest{}); err == nil {
+			t.Fatal("expected err")
+		}
+	})
+	t.Run("ceremony.CompleteClaimShare", func(t *testing.T) {
+		srv, tr := startE2EServer(t)
+		serverErr(srv, "ceremony.CompleteClaimShare", "err")
+		if _, err := tr.CeremonyCompleteClaimShare(context.Background(), &transport.CompleteClaimShareRequest{}); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -413,7 +420,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("credential.Submit", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "credential.Submit", "err")
-		if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "k", Value: "v"}); err == nil {
+		if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "k", Value: []byte("v")}); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -441,7 +448,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("credential.Rotate", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "credential.Rotate", "err")
-		if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: "v"}); err == nil {
+		if _, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")}); err == nil {
 			t.Fatal("expected err")
 		}
 	})

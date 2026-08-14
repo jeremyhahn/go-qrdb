@@ -39,6 +39,7 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 		ID:            resp.GetId(),
 		Name:          resp.GetName(),
 		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
+		DataRoot:      resp.GetDataRoot(),
 	}
 
 	if pbQ := resp.GetQuotas(); pbQ != nil {

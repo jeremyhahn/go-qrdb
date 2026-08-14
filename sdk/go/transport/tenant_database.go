@@ -116,6 +116,14 @@ func (t *TenantDatabaseClient) UpdateDatabaseRaft(ctx context.Context, req Updat
 	return t.inner.UpdateDatabaseRaft(ctx, req)
 }
 
+// ScaleDatabase changes the replication factor for a tenant-owned database.
+func (t *TenantDatabaseClient) ScaleDatabase(ctx context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error) {
+	if err := t.verifyOwnership(ctx, req.Name); err != nil {
+		return nil, err
+	}
+	return t.inner.ScaleDatabase(ctx, req)
+}
+
 // UpdateDatabaseBarrier updates barrier config for a tenant-owned database.
 func (t *TenantDatabaseClient) UpdateDatabaseBarrier(ctx context.Context, req UpdateDatabaseBarrierRequest) (*DatabaseInfo, error) {
 	if err := t.verifyOwnership(ctx, req.Name); err != nil {

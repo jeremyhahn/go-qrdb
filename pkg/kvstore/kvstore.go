@@ -122,3 +122,40 @@ type KVStore interface {
 	// it open.
 	ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error)
 }
+
+// AtomicKVStore is the optional capability of performing a write whose outcome
+// is defined under concurrency.
+//
+// It is a separate interface, discovered by type assertion, rather than a
+// method on KVStore. Every KVStore would otherwise have to grow it, and the
+// implementations do not all sit somewhere that can honour it: the Raft-backed
+// service store would need a new consensus command, while a barrier-backed or
+// partition-backed store already has the primitive one call away. Forcing the
+// method everywhere would mean stubs that either lie about atomicity or return
+// "unsupported" — and a caller cannot tell those apart from a real refusal.
+//
+// Callers that need exactly-once semantics assert for this and fail closed when
+// it is absent:
+//
+//	atomic, ok := store.(kvstore.AtomicKVStore)
+//	if !ok {
+//	    return ErrAtomicWriteUnsupported
+//	}
+//
+// A Get followed by a Put is NOT a substitute. Two callers can both observe
+// "absent" in the window between the two operations and both write, which for a
+// single-use token means it is redeemed twice.
+type AtomicKVStore interface {
+	KVStore
+
+	// PutIfAbsent atomically stores value under key only if key does not
+	// already exist. It reports stored=true when this call created the key and
+	// stored=false, with a nil error, when the key was already present — in
+	// which case the store is unchanged. A non-nil error means the outcome is
+	// unknown and the caller must not assume either way.
+	//
+	// Atomicity is per consistency domain: a single-process store serialises
+	// the check-then-write internally, and a replicated store must use its
+	// native compare-and-set so the guarantee holds across nodes.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+}

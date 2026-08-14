@@ -376,10 +376,13 @@ func execCLIBackground(t *testing.T, cfg *TestConfig, protocol ProtocolType, tim
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
+	// Unix (grpc-over-UDS) is "verified TLS 1.3 only", identical to TCP
+	// gRPC, so it needs the same CA/cert/key flags as the other transports.
 	needsTLS := strings.HasPrefix(serverURL, "https://") ||
 		strings.HasPrefix(serverURL, "grpcs://") ||
 		strings.HasPrefix(serverURL, "mcp://") ||
-		strings.HasPrefix(serverURL, "quics://")
+		strings.HasPrefix(serverURL, "quics://") ||
+		strings.HasPrefix(serverURL, "unix://")
 
 	if needsTLS {
 		if cfg.TLSCACert != "" {
@@ -426,10 +429,13 @@ func execCLIWithShamirProtocol(t *testing.T, cfg *TestConfig, protocol ProtocolT
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
+	// Unix (grpc-over-UDS) is "verified TLS 1.3 only", identical to TCP
+	// gRPC, so it needs the same CA/cert/key flags as the other transports.
 	needsTLS := strings.HasPrefix(serverURL, "https://") ||
 		strings.HasPrefix(serverURL, "grpcs://") ||
 		strings.HasPrefix(serverURL, "mcp://") ||
-		strings.HasPrefix(serverURL, "quics://")
+		strings.HasPrefix(serverURL, "quics://") ||
+		strings.HasPrefix(serverURL, "unix://")
 
 	if needsTLS {
 		if shamir.TLSCACert != "" {

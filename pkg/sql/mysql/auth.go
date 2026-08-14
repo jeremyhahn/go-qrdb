@@ -33,11 +33,15 @@ import (
 // middleware chain.
 type sessionBuilder struct {
 	authMW *authmw.AuthMiddleware
+	// sealedProbe gates session creation while the storage barrier is
+	// sealed. Nil disables the gate.
+	sealedProbe sealedWindowProbe
 }
 
-// newSessionBuilder creates a session builder with auth middleware.
-func newSessionBuilder(authMW *authmw.AuthMiddleware) *sessionBuilder {
-	return &sessionBuilder{authMW: authMW}
+// newSessionBuilder creates a session builder with auth middleware and
+// an optional sealed-window probe.
+func newSessionBuilder(authMW *authmw.AuthMiddleware, probe sealedWindowProbe) *sessionBuilder {
+	return &sessionBuilder{authMW: authMW, sealedProbe: probe}
 }
 
 // Build creates a QRDBSession for a MySQL connection. It extracts the TLS
@@ -46,6 +50,13 @@ func newSessionBuilder(authMW *authmw.AuthMiddleware) *sessionBuilder {
 // tenant. When no auth middleware is configured, a default session with
 // nil identity is returned.
 func (b *sessionBuilder) Build(ctx context.Context, conn *mysql.Conn, addr string) (sql.Session, error) {
+	// Fail closed while the storage barrier is sealed: no SQL session may
+	// be established until the operator drives the unseal API. Mirrors
+	// the 503 / Unavailable envelope on the other protocol transports.
+	if b.sealedProbe != nil && b.sealedProbe.IsSealed() {
+		return nil, &BarrierSealedError{}
+	}
+
 	base := sql.NewBaseSessionWithClientServer(addr, sql.Client{
 		Address: addr,
 		User:    conn.User,

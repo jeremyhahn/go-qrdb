@@ -27,12 +27,19 @@ var (
 	_ driver.StmtQueryContext = (*stmt)(nil)
 )
 
-// stmt implements driver.Stmt for both embedded and network connections.
-// It holds a reference to the connection and the query string; argument
-// substitution happens at execution time.
+// stmt implements driver.Stmt for embedded connections. It holds a reference
+// to the connection and the query string; arguments are bound as typed
+// expressions at execution time and the query text is never rewritten.
 type stmt struct {
-	conn   *embeddedConn
-	query  string
+	conn  *embeddedConn
+	query string
+
+	// numInput is the placeholder count determined when the statement was
+	// prepared, or -1 when the statement could not be parsed. It is computed
+	// once rather than per call because NumInput is invoked on every
+	// execution.
+	numInput int
+
 	closed atomic.Bool
 }
 
@@ -42,9 +49,11 @@ func (s *stmt) Close() error {
 	return nil
 }
 
-// NumInput returns the number of placeholder parameters in the query.
+// NumInput returns the number of placeholder parameters in the query, or -1
+// when it is unknown, which tells database/sql to skip its argument-count
+// check and let the engine report the problem.
 func (s *stmt) NumInput() int {
-	return countPlaceholders(s.query)
+	return s.numInput
 }
 
 // Exec executes a query that doesn't return rows using the legacy
@@ -81,24 +90,6 @@ func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, &StmtClosedError{}
 	}
 	return s.conn.QueryContext(ctx, s.query, args)
-}
-
-// countPlaceholders returns the number of ? placeholders in a query,
-// excluding those inside single-quoted strings.
-func countPlaceholders(query string) int {
-	count := 0
-	inQuote := false
-	for i := 0; i < len(query); i++ {
-		switch {
-		case query[i] == '\'' && !inQuote:
-			inQuote = true
-		case query[i] == '\'' && inQuote:
-			inQuote = false
-		case query[i] == '?' && !inQuote:
-			count++
-		}
-	}
-	return count
 }
 
 // valuesToNamed converts legacy driver.Value args to NamedValue args.

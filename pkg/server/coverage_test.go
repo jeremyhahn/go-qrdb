@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -95,5 +96,47 @@ func TestWithDatabaseServiceRegistry(t *testing.T) {
 	}
 	if srv.opts.dbRegistry != reg {
 		t.Error("dbRegistry should be the same instance passed to WithDatabaseServiceRegistry")
+	}
+}
+
+// TestServiceRegistry_NilWithoutDatabaseRegistry verifies the exported
+// accessor reports the absence of a configured registry the same way every
+// internal call site observes it, rather than handing back an empty resolver
+// that would silently answer for every (tenant, database).
+func TestServiceRegistry_NilWithoutDatabaseRegistry(t *testing.T) {
+	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+
+	if reg := srv.ServiceRegistry(); reg != nil {
+		t.Fatalf("ServiceRegistry() = %#v, want nil when no database registry is configured", reg)
+	}
+}
+
+// TestServiceRegistry_ResolvesThroughDatabaseRegistry verifies the accessor
+// returns a working registry built over the configured database registry, and
+// that it is the same construction the wire listeners get: a fresh instance
+// per call (see buildServiceRegistry for why it is not memoized).
+func TestServiceRegistry_ResolvesThroughDatabaseRegistry(t *testing.T) {
+	dbReg := NewDatabaseServiceRegistry("system")
+	kv := newMockKVService()
+	dbReg.Register("system", &DatabaseServices{Name: "system", KV: kv})
+
+	srv := New(testConfig(false, false), kv, &mockAdminService{},
+		WithDatabaseServiceRegistry(dbReg))
+
+	reg := srv.ServiceRegistry()
+	if reg == nil {
+		t.Fatal("ServiceRegistry() = nil, want a registry")
+	}
+
+	resolved, err := reg.KVService(tenant.SystemTenantID, "system")
+	if err != nil {
+		t.Fatalf("KVService: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("KVService returned a nil servicer")
+	}
+
+	if second := srv.ServiceRegistry(); second == reg {
+		t.Error("ServiceRegistry() must build a fresh registry per call, matching every internal call site")
 	}
 }

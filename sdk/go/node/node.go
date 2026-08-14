@@ -866,6 +866,13 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 		n.tenantHosts = ti.Hosts
 		n.raftBackend = ti.Raft
+		// Wire the IsolationRaft factory into the already-built backup
+		// service as its ShardRestarter, enabling ONLINE restore for
+		// dedicated per-database Raft shards (see
+		// service.RestoreShardOnline). Mirrors cmd/qrdbd/start.go's wiring.
+		if n.raftBackend != nil && svcNode.Backup != nil {
+			service.SetShardRestarter(svcNode.Backup, n.raftBackend)
+		}
 		if ti.Reconciler != nil {
 			// Use a node-lifetime context so the reconciler keeps running after
 			// the unseal/boot request ctx is cancelled. The background context is

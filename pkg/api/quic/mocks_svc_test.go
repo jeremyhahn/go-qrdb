@@ -18,6 +18,7 @@ package quic
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"time"
 
@@ -27,6 +28,26 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
+
+// ---------------------------------------------------------------------------
+// stubCeremonyCA
+// ---------------------------------------------------------------------------
+
+// stubCeremonyCA is a minimal ceremony.CeremonyCA implementation for tests
+// that need to prove a real (non-nil) CA reference reaches the ceremony
+// service layer, without exercising actual certificate issuance.
+type stubCeremonyCA struct{}
+
+var _ ceremony.CeremonyCA = (*stubCeremonyCA)(nil)
+
+func (stubCeremonyCA) SignCSR(_ context.Context, _ []byte, _ *ceremony.SignCSROptions) (*x509.Certificate, error) {
+	return nil, nil
+}
+func (stubCeremonyCA) CACertificate() (*x509.Certificate, error) { return nil, nil }
+func (stubCeremonyCA) CABundle() ([]byte, error)                 { return []byte("ca-bundle"), nil }
+func (stubCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertRequest) (*ceremony.IssuedCert, error) {
+	return &ceremony.IssuedCert{CertPEM: []byte("cert-pem"), KeyPEM: []byte("key-pem")}, nil
+}
 
 // ---------------------------------------------------------------------------
 // mockBarrierService
@@ -183,10 +204,12 @@ type mockCeremonyService struct {
 	ceremonySignCSRFn           func(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error)
 	ceremonyStatusFn            func(ctx context.Context) (*service.CeremonyStatusInfo, error)
 	capturedInitOpts            *service.CeremonyInitializeOptions
+	capturedCA                  ceremony.CeremonyCA
 }
 
 func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.CeremonyCA, opts *service.CeremonyInitializeOptions) (*service.CeremonyInitResult, error) {
 	m.capturedInitOpts = opts
+	m.capturedCA = ca
 	if m.ceremonyInitializeFn != nil {
 		return m.ceremonyInitializeFn(ctx, ca)
 	}
@@ -194,8 +217,6 @@ func (m *mockCeremonyService) CeremonyInitialize(ctx context.Context, ca ceremon
 		SPKIPin:    "sha256/abc123",
 		CACertPEM:  []byte("ca-cert-pem"),
 		TLSCertPEM: []byte("tls-cert-pem"),
-		SOCertPEM:  []byte("so-cert-pem"),
-		SOKeyPEM:   []byte("so-key-pem"),
 		State:      "initialized",
 		ShareCount: 3,
 	}, nil
@@ -215,11 +236,24 @@ func (m *mockCeremonyService) CeremonyCompleteClaimCert(ctx context.Context, use
 	return &service.CeremonyClaimCertResult{CertPEM: []byte("cert-pem"), CACertPEM: []byte("ca-cert-pem")}, nil
 }
 
-func (m *mockCeremonyService) CeremonyClaimShare(ctx context.Context, username string) ([]byte, error) {
+func (m *mockCeremonyService) CeremonyBeginClaimShare(ctx context.Context, username, _ string) (*service.CeremonyChallenge, error) {
 	if m.ceremonyClaimShareFn != nil {
-		return m.ceremonyClaimShareFn(ctx, username)
+		if _, err := m.ceremonyClaimShareFn(ctx, username); err != nil {
+			return nil, err
+		}
 	}
-	return []byte("shamir-share-value"), nil
+	return &service.CeremonyChallenge{NonceHex: "abcd", ExpiresAt: time.Now().Add(time.Minute)}, nil
+}
+
+func (m *mockCeremonyService) CeremonyCompleteClaimShare(ctx context.Context, username, _ string, _ []byte, _ string) (*service.CeremonyShareClaimResult, error) {
+	if m.ceremonyClaimShareFn != nil {
+		share, err := m.ceremonyClaimShareFn(ctx, username)
+		if err != nil {
+			return nil, err
+		}
+		return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: share}, nil
+	}
+	return &service.CeremonyShareClaimResult{ShareIndex: 1, ShareBytes: []byte("shamir-share-value")}, nil
 }
 
 func (m *mockCeremonyService) CeremonySignCSR(ctx context.Context, username, soPin, csrPEM, role string) (*service.CeremonySignCSRResult, error) {
@@ -445,7 +479,7 @@ func (m *mockDatabaseService) UnsealDatabase(ctx context.Context, name string, c
 	return nil
 }
 
-func (m *mockDatabaseService) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, name string) (*seal.BarrierStatus, error) {
 	if m.databaseBarrierStatusFn != nil {
 		return m.databaseBarrierStatusFn(name)
 	}
@@ -516,4 +550,8 @@ func (m *mockDatabaseService) UpdateConnectionForTenant(ctx context.Context, nam
 		return m.updateConnectionForTenantFn(ctx, name, conn)
 	}
 	return m.UpdateConnection(name, conn)
+}
+
+func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
 }

@@ -338,3 +338,37 @@ func TestSOMiddleware_NilAuditLogger_NoPanic(t *testing.T) {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SOMiddleware — plain HTTP on a NON-SO route passes through
+// ---------------------------------------------------------------------------
+
+// TestSOMiddleware_PlainHTTP_NonSORoute_PassesThrough verifies the TLS
+// requirement is scoped to SO-gated routes only: a mapped non-SO route
+// over plain HTTP must pass through untouched, so enabling the SO
+// dual-factor flag never changes behavior outside SOPermissions.
+func TestSOMiddleware_PlainHTTP_NonSORoute_PassesThrough(t *testing.T) {
+	verifier := &mockSOVerifier{}
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := SOMiddleware(verifier, nil, discardLogger(), next)
+
+	// GET /v1/barrier/status maps to a non-SO permission; req.TLS is nil.
+	req := httptest.NewRequest(http.MethodGet, "/v1/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Error("expected next to be called for a non-SO route over plain HTTP")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if verifier.calls.Load() != 0 {
+		t.Error("VerifySOPIN should not be called for non-SO routes")
+	}
+}

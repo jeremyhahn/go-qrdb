@@ -146,8 +146,9 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	}
 
 	return &transport.RangeResponse{
-		Kvs:   kvs,
-		Count: resp.GetCount(),
+		Kvs:      kvs,
+		Count:    resp.GetCount(),
+		Revision: resp.GetRevision(),
 	}, nil
 }
 
@@ -183,9 +184,84 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 	return resp.GetRevision(), nil
 }
 
+// RestoreToRevision returns a bounded set of keys to the value they held at
+// an earlier MVCC revision through the gRPC transport -- a logical undo,
+// never a Raft rewind. Exactly one of req.Prefix and req.Keys must be set.
+func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
+	}
+
+	keys := make([][]byte, len(req.Keys))
+	copy(keys, req.Keys)
+
+	resp, err := t.client.RestoreToRevision(ctx, &pb.RestoreRevisionRequest{
+		Revision: req.Revision,
+		Prefix:   req.Prefix,
+		Keys:     keys,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	})
+	if err != nil {
+		return nil, mapGRPCError("RestoreToRevision", err)
+	}
+
+	return protoToRestoreResult(resp), nil
+}
+
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+// restoreActionFromProto converts proto RestoreAction to transport
+// RestoreAction.
+var restoreActionFromProto = map[pb.RestoreAction]transport.RestoreAction{
+	pb.RestoreAction_RESTORE_ACTION_REVERT:   transport.RestoreActionRevert,
+	pb.RestoreAction_RESTORE_ACTION_RECREATE: transport.RestoreActionRecreate,
+	pb.RestoreAction_RESTORE_ACTION_DELETE:   transport.RestoreActionDelete,
+}
+
+// protoToRestoreChange converts a proto RestoreKeyChange to its transport
+// representation.
+func protoToRestoreChange(c *pb.RestoreKeyChange) *transport.RestoreKeyChange {
+	if c == nil {
+		return nil
+	}
+	return &transport.RestoreKeyChange{
+		Key:          c.GetKey(),
+		Action:       restoreActionFromProto[c.GetAction()],
+		FromRevision: c.GetFromRevision(),
+		ToRevision:   c.GetToRevision(),
+		ValueBytes:   c.GetValueBytes(),
+	}
+}
+
+// protoToRestoreChanges converts a slice of proto RestoreKeyChange to their
+// transport representation.
+func protoToRestoreChanges(changes []*pb.RestoreKeyChange) []*transport.RestoreKeyChange {
+	out := make([]*transport.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = protoToRestoreChange(c)
+	}
+	return out
+}
+
+// protoToRestoreResult converts a proto RestoreRevisionResponse to the
+// transport RestoreRevisionResult.
+func protoToRestoreResult(resp *pb.RestoreRevisionResponse) *transport.RestoreRevisionResult {
+	return &transport.RestoreRevisionResult{
+		Revision:   resp.GetRevision(),
+		Changes:    protoToRestoreChanges(resp.GetChanges()),
+		Conflicts:  protoToRestoreChanges(resp.GetConflicts()),
+		Applied:    int(resp.GetApplied()),
+		Skipped:    int(resp.GetSkipped()),
+		Conflicted: int(resp.GetConflicted()),
+		DryRun:     resp.GetDryRun(),
+	}
+}
 
 // protoToMVCCKV converts a proto KeyValue to a transport MVCCKeyValue.
 func protoToMVCCKV(kv *pb.KeyValue) *transport.MVCCKeyValue {

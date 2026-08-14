@@ -216,7 +216,7 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	if _, err := t.client.CredentialStore(ctx, &pb.CredentialStoreRequest{Name: name, Value: string(value)}); err != nil {
+	if _, err := t.client.CredentialStore(ctx, &pb.CredentialStoreRequest{Name: name, Value: value}); err != nil {
 		return mapGRPCError("CredentialStore", err)
 	}
 	return nil
@@ -231,5 +231,5 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err != nil {
 		return nil, mapGRPCError("CredentialRetrieve", err)
 	}
-	return []byte(resp.GetValue()), nil
+	return resp.GetValue(), nil
 }

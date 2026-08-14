@@ -157,18 +157,45 @@ func (t *Transport) Close() error {
 }
 
 // Healthy returns true if the QUIC connection is active and the server
-// responds to a health check.
+// responds to a health check. An authenticated identity that is reachable
+// but not personally authorized to call admin.Health (see
+// reachableButUnauthorized) still counts as healthy: authorization is a
+// per-RPC decision, not a connectivity signal -- a barrier officer's
+// short-lived claim-cert identity, for example, is never granted the
+// admin:health permission but must still be able to Connect() and drive
+// the share-claim RPCs it IS authorized for.
 func (t *Transport) Healthy(ctx context.Context) bool {
 	if t.closed.Load() || t.conn == nil {
 		return false
 	}
 
 	resp, err := t.Health(ctx)
-	if err != nil {
+	if err == nil {
+		return resp.Status != ""
+	}
+	return reachableButUnauthorized(err)
+}
+
+// reachableButUnauthorized reports whether err is a *transport.RequestError
+// wrapping a QUIC wire-protocol status indicating the server was reached,
+// authenticated the caller's TLS client certificate, and answered the
+// admin.Health RPC, but rejected it purely on AUTHORIZATION grounds
+// (wire.StatusPermissionDenied) rather than a connectivity failure.
+// wire.StatusUnauthenticated is deliberately EXCLUDED -- it means the
+// caller never authenticated at all (no/invalid TLS client certificate),
+// which Connect() must continue to fail closed on. See the identical
+// helper in sdk/go/transport/grpc/transport.go for the full rationale.
+func reachableButUnauthorized(err error) bool {
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
 		return false
 	}
-
-	return resp.Status != ""
+	switch uint16(reqErr.StatusCode) {
+	case wire.StatusPermissionDenied:
+		return true
+	default:
+		return false
+	}
 }
 
 // Request performs a generic QUIC wire protocol request by method name.
@@ -740,6 +767,12 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 			Method:     method,
 			StatusCode: int(statusCode),
 			Err:        errors.New("permission denied: " + msg),
+		}
+	case wire.StatusUnavailable:
+		return &transport.RequestError{
+			Method:     method,
+			StatusCode: int(statusCode),
+			Err:        errors.New("barrier sealed: " + msg),
 		}
 	default:
 		return &transport.RequestError{

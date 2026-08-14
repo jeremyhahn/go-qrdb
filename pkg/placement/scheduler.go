@@ -182,6 +182,79 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	}, nil
 }
 
+// PlaceAdditional extends an existing placement by addCount new replicas,
+// selecting addCount distinct healthy nodes NOT already hosting a replica of
+// this group (extending the anti-affinity set from existing.Replicas), using
+// the same bounded-load selection as Place. Existing replicas, their
+// ReplicaIDs, NodeIDs, DataRoots, and LeaderReplicaID are never modified —
+// only new Replica entries are appended, each with State:
+// ReplicaStateObserver and ReplicaID starting at MaxReplicaID(existing)+1.
+// A ReplicaStateObserver replica is admitted into the live Raft group as a
+// non-voting observer (see DatabaseService.scaleUp and RaftHost.AddObserver)
+// so scale-up never transiently breaks the group's existing voting quorum;
+// it is promoted to a full voting member only after it catches up (see
+// TenantShardReconciler's Observer→ObserverReady→Active state machine).
+//
+// PlaceAdditional never recomputes the group from scratch (unlike Place): a
+// dedicated Raft group's founding-member identity (ReplicaID, NodeID) must
+// stay stable across a scale-up, so a fresh Place call is never safe once a
+// group is running.
+//
+// Returns *InsufficientNodesError (matching ErrInsufficientNodes) when fewer
+// than addCount eligible distinct healthy nodes remain after excluding nodes
+// already hosting a replica of existing.
+func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, addCount int) (*Placement, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, ErrEmptyDatabase
+	}
+	if addCount < 1 {
+		return nil, ErrInvalidRF
+	}
+
+	occupied := make(map[string]struct{}, len(existing.Replicas))
+	for _, r := range existing.Replicas {
+		occupied[r.NodeID] = struct{}{}
+	}
+
+	candidates := make([]NodeLoad, 0, len(s.topo.Nodes()))
+	for _, n := range healthyDistinct(s.topo.Nodes()) {
+		if _, dup := occupied[n.NodeID]; dup {
+			continue
+		}
+		candidates = append(candidates, n)
+	}
+	if len(candidates) < addCount {
+		return nil, &InsufficientNodesError{Have: len(candidates), Need: addCount}
+	}
+
+	selected := s.selectReplicas(candidates, addCount)
+
+	nextID := MaxReplicaID(existing) + 1
+	newReplicas := make([]Replica, 0, addCount)
+	for _, n := range selected {
+		newReplicas = append(newReplicas, Replica{
+			ReplicaID: nextID,
+			NodeID:    n.NodeID,
+			RaftAddr:  n.RaftAddr,
+			DataRoot:  "",
+			State:     ReplicaStateObserver,
+		})
+		nextID++
+	}
+
+	replicas := make([]Replica, 0, len(existing.Replicas)+len(newReplicas))
+	replicas = append(replicas, existing.Replicas...)
+	replicas = append(replicas, newReplicas...)
+
+	updated := *existing
+	updated.Replicas = replicas
+	updated.RF = len(replicas)
+	return &updated, nil
+}
+
 // healthyDistinct returns the healthy nodes, deduplicated by NodeID (first
 // occurrence wins), sorted ascending by load so the least-loaded node is first.
 func healthyDistinct(nodes []NodeLoad) []NodeLoad {

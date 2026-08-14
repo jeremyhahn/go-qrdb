@@ -33,6 +33,15 @@ type kvMockMVCCStore struct {
 	rangeCalled   bool
 	compactCalled bool
 	txnCalled     bool
+	scanCalled    bool
+	scanResult    interface{}
+	scanErr       error
+}
+
+// ScanChanges satisfies the MVCCStore interface.
+func (m *kvMockMVCCStore) ScanChanges(_, _ int64, _ []byte, _ int64) (interface{}, error) {
+	m.scanCalled = true
+	return m.scanResult, m.scanErr
 }
 
 func (m *kvMockMVCCStore) Put(key, value []byte, leaseID int64, revision uint64) (interface{}, error) {

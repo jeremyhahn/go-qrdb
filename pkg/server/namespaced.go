@@ -22,39 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// composeNamespace returns the composite key-namespace prefix for a
-// (tenant, db) pair. A database is a key-namespace layered over the tenant's
-// already-resolved store, so the physical key prefix is the concatenation of a
-// tenant segment and a database segment, and is ALWAYS non-empty and uniform:
-//
-//	"<tenant>/<db>/"
-//
-// Unlike earlier revisions, neither the system tenant nor the bootstrap
-// ("system") database is special-cased to an empty prefix. An empty prefix gave
-// the (system, system) pair the entire shared store root as its keyspace, so a
-// scan of the bootstrap database returned every OTHER database's "<db>/" keys
-// and every customer tenant's "<tenant>/" keys. Prefixing every pair uniformly
-// — including the bootstrap pair, which becomes "system/system/" — closes that
-// cross-database/cross-tenant data-isolation leak.
-//
-// systemTenant and defaultDB are used only as fallbacks when tenantID or db is
-// empty (e.g. an unscoped probe), so the resulting prefix is always a complete
-// "<tenant>/<db>/" with no empty or doubled segment.
-func composeNamespace(tenantID, db, systemTenant, defaultDB string) string {
-	if tenantID == "" {
-		tenantID = systemTenant
-	}
-	if db == "" {
-		db = defaultDB
-	}
-	var b strings.Builder
-	b.WriteString(tenantID)
-	b.WriteByte('/')
-	b.WriteString(db)
-	b.WriteByte('/')
-	return b.String()
-}
-
 // DatabaseCatalog reports the existence of databases. The restServiceRegistry
 // consults it so that any database that exists for a tenant resolves to a
 // namespaced view of the shared service set, without requiring a per-database
@@ -63,21 +30,6 @@ type DatabaseCatalog interface {
 	// DatabaseExists reports whether a database with the given name exists
 	// and is accessible to the given tenant.
 	DatabaseExists(tenantID, name string) bool
-}
-
-// NamespacedImportUnsupportedError is returned when a bulk Import is attempted
-// against a non-default (tenant, db) scope. ImportOptions carries no key-prefix
-// hook and the parser derives keys internally, so the namespace wrapper cannot
-// transparently prefix imported keys without duplicating the format-parsing
-// logic. Importing into a named database is a documented Stage 1 follow-up; the
-// Execute-based batch operations remain fully namespaced.
-type NamespacedImportUnsupportedError struct {
-	Prefix string
-}
-
-// Error implements the error interface.
-func (e *NamespacedImportUnsupportedError) Error() string {
-	return "server: bulk import into a namespaced database (" + e.Prefix + ") is not supported"
 }
 
 // isRangeOp reports whether op addresses a range of keys rather than a single
@@ -102,21 +54,51 @@ func stripStringSlicePrefix(keys []string, prefix string) []string {
 	return out
 }
 
-// prefixBytes returns prefix+key as a new byte slice. A nil key is left nil so
-// that range upper bounds that signal "single key" semantics are preserved.
+// prefixBytes returns prefix+key as a new byte slice. An absent key — nil OR
+// empty — is left nil so that range upper bounds that signal "single key"
+// semantics are preserved. The empty-but-non-nil case matters: wire decoders
+// (e.g. REST's jsonToOps) produce []byte("") for an unset field, and
+// prefixing it would fabricate a RangeEnd equal to the bare namespace
+// prefix, silently turning a single-key GET into an inverted (empty) range.
 //
 // prefixBytes must NOT be used for a range LOWER bound: a nil/empty key would be
 // forwarded as nil, which pkg/mvcc.IsInRange treats as "the start of the entire
 // shared store", returning every other tenant's and database's keys. Use
 // prefixStartBytes for lower bounds and prefixEndBytes for upper bounds.
 func prefixBytes(key []byte, prefix string) []byte {
-	if key == nil {
+	if len(key) == 0 {
 		return nil
 	}
 	out := make([]byte, 0, len(prefix)+len(key))
 	out = append(out, prefix...)
 	out = append(out, key...)
 	return out
+}
+
+// prefixKeyBytes returns the namespaced form of a single-key operation's Key
+// (a Put/Delete/Get/entity-ID style key, never a range bound). An absent
+// (nil or empty) key is confined to the namespace by mapping it to the bare
+// prefix itself — the same confinement namespacedKVService.Put already
+// applies when called with an empty string key: Put(ctx, "", v) stores under
+// the literal "<prefix>" key, not at the shared store root.
+//
+// Without this confinement, prefixBytes leaves an empty key nil, and a nil
+// single-key Op.Key is NOT confined to the namespace: pkg/mvcc.IsInRange (and
+// a bare map/tree lookup) treats it as addressing the shared store root,
+// where two tenants' or databases' empty-key ops collide. A non-empty key is
+// prefixed normally, identically to prefixStartBytes.
+//
+// prefixKeyBytes intentionally shares its confinement logic with
+// prefixStartBytes (a range lower bound and a single key must refuse to let
+// an absent key escape the namespace in the exact same way) but is named for
+// its single-key call sites so a reader is not misled into thinking a range
+// bound is being computed.
+//
+// Do NOT use this for RangeEnd on a single-key op: RangeEnd must stay
+// nil-preserving (use prefixBytes) so a GET is not misread as an inverted
+// empty range.
+func prefixKeyBytes(key []byte, prefix string) []byte {
+	return prefixStartBytes(key, prefix)
 }
 
 // prefixStartBytes returns the namespaced inclusive lower bound for a range. An
@@ -161,8 +143,8 @@ func prefixEndBytes(key []byte, prefix string) []byte {
 // below 0xFF incremented and the trailing 0xFF bytes dropped. It is the
 // canonical exclusive upper bound of a prefix scan. A prefix that is empty or
 // all-0xFF has no finite successor and yields nil (an unbounded upper bound);
-// composeNamespace always produces a non-empty prefix ending in '/', so this
-// degenerate case never arises for namespace prefixes in practice.
+// tenant.ComposeNamespace always produces a non-empty prefix ending in '/',
+// so this degenerate case never arises for namespace prefixes in practice.
 func prefixSuccessor(prefix string) []byte {
 	b := []byte(prefix)
 	for i := len(b) - 1; i >= 0; i-- {

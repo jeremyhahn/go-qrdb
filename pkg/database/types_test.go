@@ -1618,3 +1618,42 @@ func TestDatabaseInfo_TenantID_JSONRoundTrip(t *testing.T) {
 		t.Errorf("TenantID = %q, want %q", got.TenantID, "tenant-info-abc")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DatabaseConfig.HasDedicatedStore
+// ---------------------------------------------------------------------------
+
+func TestDatabaseConfig_HasDedicatedStore_DefaultPathIsShared(t *testing.T) {
+	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble}
+	if cfg.HasDedicatedStore() {
+		t.Error("HasDedicatedStore() = true for empty DataDir + non-raft backend, want false")
+	}
+}
+
+func TestDatabaseConfig_HasDedicatedStore_ExplicitDataDir(t *testing.T) {
+	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble, DataDir: "/data/tenant/db"}
+	if !cfg.HasDedicatedStore() {
+		t.Error("HasDedicatedStore() = false with explicit DataDir, want true")
+	}
+}
+
+func TestDatabaseConfig_HasDedicatedStore_WhitespaceOnlyDataDirIsShared(t *testing.T) {
+	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendPebble, DataDir: "   "}
+	if cfg.HasDedicatedStore() {
+		t.Error("HasDedicatedStore() = true for whitespace-only DataDir, want false")
+	}
+}
+
+func TestDatabaseConfig_HasDedicatedStore_RaftBackend(t *testing.T) {
+	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendRaft}
+	if !cfg.HasDedicatedStore() {
+		t.Error("HasDedicatedStore() = false for BackendRaft, want true")
+	}
+}
+
+func TestDatabaseConfig_HasDedicatedStore_MemoryBackendNoDataDir(t *testing.T) {
+	cfg := DatabaseConfig{Name: "db", Engine: EngineKV, Backend: BackendMemory}
+	if cfg.HasDedicatedStore() {
+		t.Error("HasDedicatedStore() = true for BackendMemory without DataDir, want false")
+	}
+}

@@ -16,6 +16,7 @@ package watch
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
@@ -41,6 +42,34 @@ type watcher struct {
 	progressNotify bool
 	filters        []WatchFilter
 
+	// Replay handoff state. A watcher created with a start revision begins
+	// UNSYNCED: live events from notify() are held in staging while the replay
+	// goroutine streams the historical range, then flushed (deduped against
+	// deliverFloor) and unsynced is cleared so subsequent live events go straight
+	// to the channel. replayDone is closed once the replay goroutine has stopped
+	// touching the channel, so cleanup never closes events out from under it. A
+	// live-only watcher starts synced with replayDone pre-closed. unsynced is
+	// false (the zero value) for a live-only watcher, so a freshly-constructed
+	// watcher delivers directly; beginReplay sets it true and finishReplay clears
+	// it.
+	unsynced   atomic.Bool
+	stagingMu  sync.Mutex
+	staging    []WatchResponse
+	replayDone chan struct{}
+
+	// didReplay marks a watcher that performed a start-revision replay, so the
+	// dedup guard applies. deliverFloor is the highest revision already accounted
+	// for: the replay goroutine advances it to the last revision it actually
+	// delivered, and both the staging flush and the post-sync live path drop any
+	// event at or below it. It starts at startRevision-1 so live events below the
+	// requested start are never leaked, and because durable revisions are
+	// atomic-per-batch and monotonic, every revision <= deliverFloor was genuinely
+	// replayed (dedup-safe) while every revision > deliverFloor must be delivered
+	// (loss-safe) — this is what closes the window where the in-memory boundary
+	// named a revision that was neither durable-for-replay nor yet delivered live.
+	didReplay    bool
+	deliverFloor atomic.Int64
+
 	err    atomic.Pointer[error]
 	closed atomic.Bool
 }
@@ -50,7 +79,7 @@ type watcher struct {
 // will be delivered.
 func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, parentCtx context.Context) *watcher {
 	ctx, cancel := context.WithCancel(parentCtx)
-	return &watcher{
+	w := &watcher{
 		id:             id,
 		key:            key,
 		rangeEnd:       rangeEnd,
@@ -61,7 +90,40 @@ func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, parentCtx co
 		startRevision:  opts.StartRevision,
 		progressNotify: opts.ProgressNotify,
 		filters:        opts.Filters,
+		replayDone:     make(chan struct{}),
 	}
+	// Default: live-only (unsynced == false). A replaying watcher is switched to
+	// unsynced by the hub before it is registered (beginReplay); here replayDone
+	// is pre-closed so cleanup for a live-only watcher never blocks.
+	close(w.replayDone)
+	return w
+}
+
+// beginReplay marks the watcher as unsynced and re-arms replayDone so live
+// events are staged until the replay goroutine finishes. Called by the hub
+// before the watcher is registered, so no live event can be missed. The
+// deliver floor starts one below the requested start revision so nothing below
+// it is ever delivered; the replay goroutine raises it as it streams history.
+func (w *watcher) beginReplay() {
+	w.replayDone = make(chan struct{})
+	w.didReplay = true
+	w.deliverFloor.Store(w.startRevision - 1)
+	w.unsynced.Store(true)
+}
+
+// advanceDeliverFloor raises the deliver floor to rev (the replay goroutine
+// calls this after delivering each historical event; revisions are ascending).
+func (w *watcher) advanceDeliverFloor(rev int64) {
+	if rev > w.deliverFloor.Load() {
+		w.deliverFloor.Store(rev)
+	}
+}
+
+// dedupDrop reports whether a replaying watcher must drop resp because its
+// revision was already accounted for by the replay (at or below the floor).
+// Live-only watchers never drop (their events may legitimately carry revision 0).
+func (w *watcher) dedupDrop(resp WatchResponse) bool {
+	return w.didReplay && resp.Revision <= w.deliverFloor.Load()
 }
 
 // Events returns the channel on which watch responses are delivered. The
@@ -113,6 +175,40 @@ func (w *watcher) setErr(err error) {
 // it cannot run until notify releases the READ lock it holds across this
 // call — there is no send-on-closed-channel race.
 func (w *watcher) send(resp WatchResponse) {
+	// Fast path: a synced (or live-only) watcher delivers directly. This is the
+	// common case and adds only one atomic load over the pre-replay design. A
+	// replaying watcher drops a late notify for a revision the replay already
+	// delivered (dedupDrop), so a delayed live delivery of a replayed revision
+	// cannot duplicate it.
+	if !w.unsynced.Load() {
+		if w.dedupDrop(resp) {
+			return
+		}
+		w.deliver(resp)
+		return
+	}
+	// Unsynced: hold the live event in staging until replay completes. Re-check
+	// UNDER the lock so an event cannot slip between the fast-path miss and
+	// finishReplay clearing the flag — either this append is drained by
+	// finishReplay, or the re-check sees synced and delivers directly.
+	w.stagingMu.Lock()
+	if !w.unsynced.Load() {
+		w.stagingMu.Unlock()
+		if w.dedupDrop(resp) {
+			return
+		}
+		w.deliver(resp)
+		return
+	}
+	w.staging = append(w.staging, resp)
+	w.stagingMu.Unlock()
+}
+
+// deliver performs the actual non-blocking channel send with the same three
+// outcomes send() documents (enqueue / drop-on-cancel / evict-on-overflow). It
+// is called both from notify() (under the shard read lock) and from the replay
+// goroutine (guarded by replayDone so cleanup cannot close events beneath it).
+func (w *watcher) deliver(resp WatchResponse) {
 	select {
 	case w.events <- resp:
 	case <-w.ctx.Done():
@@ -121,6 +217,32 @@ func (w *watcher) send(resp WatchResponse) {
 		w.cancel()
 	}
 }
+
+// finishReplay flushes staged live events with a revision strictly greater than
+// the deliver floor (events at or below it were already delivered by the
+// historical replay, so dropping them dedupes the handoff), then flips the
+// watcher to synced so later live events bypass staging. Ordering is preserved:
+// notify is a single writer of monotonically increasing revisions, so staged
+// events are already in revision order. The floor is the last revision the
+// replay actually delivered — NOT the in-memory boundary — so a staged event
+// for a revision the replay could not see (not yet durable at scan time) is
+// above the floor and is delivered here rather than silently dropped.
+func (w *watcher) finishReplay() {
+	floor := w.deliverFloor.Load()
+	w.stagingMu.Lock()
+	for _, resp := range w.staging {
+		if resp.Revision > floor {
+			w.deliver(resp)
+		}
+	}
+	w.staging = nil
+	w.unsynced.Store(false)
+	w.stagingMu.Unlock()
+}
+
+// markReplayDone signals that the replay goroutine has stopped touching the
+// event channel, releasing cleanup to close it.
+func (w *watcher) markReplayDone() { close(w.replayDone) }
 
 // hasFilter returns true if the watcher has the specified filter.
 func (w *watcher) hasFilter(f WatchFilter) bool {

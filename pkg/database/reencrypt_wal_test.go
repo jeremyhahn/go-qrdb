@@ -196,13 +196,20 @@ func TestReencryptWALStore_ReencryptsSnapshotData(t *testing.T) {
 	if err := os.MkdirAll(snapDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
+	// snapshotIndex is the log index this snapshot is taken at, recorded by the
+	// SaveSnapshot call below. It is part of the frame AAD, so every re-encrypt
+	// of this file — seeding it and reading it back — must present the same
+	// (shard, replica, index) triple or the frames will not authenticate.
+	const snapshotIndex = uint64(5)
+
 	plain := []byte("the-serialized-state-machine-bytes-0123456789-abcdef")
 	plainPath := filepath.Join(base, "plain.bin")
 	if err := os.WriteFile(plainPath, plain, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	snapDat := filepath.Join(snapDir, SnapshotDataFile)
-	if _, err := quicraft.ReencryptSnapshotFile(plainPath, snapDat, nil, barA.EpochBarrier()); err != nil {
+	if _, err := quicraft.ReencryptSnapshotFile(plainPath, snapDat,
+		shardID, replicaID, snapshotIndex, nil, barA.EpochBarrier()); err != nil {
 		t.Fatalf("seed snapshot.dat under A: %v", err)
 	}
 	fi, _ := os.Stat(snapDat)
@@ -218,7 +225,7 @@ func TestReencryptWALStore_ReencryptsSnapshotData(t *testing.T) {
 		t.Fatalf("SaveBootstrap: %v", err)
 	}
 	if err := db.SaveSnapshot(shardID, replicaID, logdb.Snapshot{
-		Index: 5, Term: 1, Filepath: snapDir, FileSize: uint64(fi.Size()),
+		Index: snapshotIndex, Term: 1, Filepath: snapDir, FileSize: uint64(fi.Size()),
 	}); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
@@ -260,7 +267,8 @@ func TestReencryptWALStore_ReencryptsSnapshotData(t *testing.T) {
 
 	// The committed snapshot.dat recovers the original under B (decrypt B -> plaintext).
 	recovered := filepath.Join(base, "recovered.bin")
-	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, recovered, barB.EpochBarrier(), nil); derr != nil {
+	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, recovered,
+		shardID, replicaID, snapshotIndex, barB.EpochBarrier(), nil); derr != nil {
 		t.Fatalf("committed snapshot not readable under B: %v", derr)
 	}
 	if got := mustReadFile(t, recovered); got != string(plain) {
@@ -269,7 +277,8 @@ func TestReencryptWALStore_ReencryptsSnapshotData(t *testing.T) {
 
 	// Barrier A must NOT recover B's committed snapshot.
 	bad := filepath.Join(base, "bad.bin")
-	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, bad, barA.EpochBarrier(), nil); derr == nil {
+	if _, derr := quicraft.ReencryptSnapshotFile(snapDat, bad,
+		shardID, replicaID, snapshotIndex, barA.EpochBarrier(), nil); derr == nil {
 		if got, _ := os.ReadFile(bad); string(got) == string(plain) {
 			t.Fatal("barrier A decrypted barrier B's committed snapshot — keys not isolated")
 		}

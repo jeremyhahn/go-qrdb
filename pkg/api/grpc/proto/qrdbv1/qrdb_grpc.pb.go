@@ -45,8 +45,10 @@ const (
 	QRDBService_Range_FullMethodName                             = "/qrdb.v1.QRDBService/Range"
 	QRDBService_Compact_FullMethodName                           = "/qrdb.v1.QRDBService/Compact"
 	QRDBService_CurrentRevision_FullMethodName                   = "/qrdb.v1.QRDBService/CurrentRevision"
+	QRDBService_RestoreToRevision_FullMethodName                 = "/qrdb.v1.QRDBService/RestoreToRevision"
 	QRDBService_Transaction_FullMethodName                       = "/qrdb.v1.QRDBService/Transaction"
 	QRDBService_Batch_FullMethodName                             = "/qrdb.v1.QRDBService/Batch"
+	QRDBService_BatchImport_FullMethodName                       = "/qrdb.v1.QRDBService/BatchImport"
 	QRDBService_Watch_FullMethodName                             = "/qrdb.v1.QRDBService/Watch"
 	QRDBService_LeaseGrant_FullMethodName                        = "/qrdb.v1.QRDBService/LeaseGrant"
 	QRDBService_LeaseRevoke_FullMethodName                       = "/qrdb.v1.QRDBService/LeaseRevoke"
@@ -146,6 +148,7 @@ const (
 	QRDBService_DatabaseUpdateProtocol_FullMethodName            = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
 	QRDBService_DatabaseUpdateEtcd_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
 	QRDBService_DatabaseUpdateRaft_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
+	QRDBService_DatabaseScale_FullMethodName                     = "/qrdb.v1.QRDBService/DatabaseScale"
 	QRDBService_DatabaseUpdateBarrier_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
 	QRDBService_DatabaseUpdateConnection_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
 	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
@@ -175,7 +178,8 @@ const (
 	QRDBService_CeremonyStatus_FullMethodName                    = "/qrdb.v1.QRDBService/CeremonyStatus"
 	QRDBService_CeremonyClaimCertBegin_FullMethodName            = "/qrdb.v1.QRDBService/CeremonyClaimCertBegin"
 	QRDBService_CeremonyClaimCertComplete_FullMethodName         = "/qrdb.v1.QRDBService/CeremonyClaimCertComplete"
-	QRDBService_CeremonyClaimShare_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyClaimShare"
+	QRDBService_CeremonyBeginClaimShare_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyBeginClaimShare"
+	QRDBService_CeremonyCompleteClaimShare_FullMethodName        = "/qrdb.v1.QRDBService/CeremonyCompleteClaimShare"
 	QRDBService_CeremonySignCSR_FullMethodName                   = "/qrdb.v1.QRDBService/CeremonySignCSR"
 	QRDBService_CeremonyEnrollExternalOfficer_FullMethodName     = "/qrdb.v1.QRDBService/CeremonyEnrollExternalOfficer"
 	QRDBService_CeremonyClaimShareBegin_FullMethodName           = "/qrdb.v1.QRDBService/CeremonyClaimShareBegin"
@@ -218,6 +222,7 @@ const (
 	QRDBService_DatabaseSeal_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseSeal"
 	QRDBService_DatabaseUnseal_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseUnseal"
 	QRDBService_DatabaseBarrierStatus_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
+	QRDBService_SQLQuery_FullMethodName                          = "/qrdb.v1.QRDBService/SQLQuery"
 )
 
 // QRDBServiceClient is the client API for QRDBService service.
@@ -249,10 +254,21 @@ type QRDBServiceClient interface {
 	Compact(ctx context.Context, in *CompactRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CurrentRevision returns the latest committed MVCC revision.
 	CurrentRevision(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*CurrentRevisionResponse, error)
+	// RestoreToRevision returns a bounded set of keys to the value they held
+	// at an earlier MVCC revision by proposing new writes -- a logical undo,
+	// never a Raft rewind. Exactly one of RestoreRevisionRequest.prefix and
+	// .keys must be set.
+	RestoreToRevision(ctx context.Context, in *RestoreRevisionRequest, opts ...grpc.CallOption) (*RestoreRevisionResponse, error)
 	// Transaction executes an atomic compare-and-swap transaction.
 	Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
 	Batch(ctx context.Context, in *BatchRequest, opts ...grpc.CallOption) (*BatchResponse, error)
+	// BatchImport parses and imports key-value pairs from a file (CSV, JSON,
+	// NDJSON, YAML, or archive) carried in the request. This is a bounded
+	// unary RPC, not a stream; the file must fit within the server's
+	// configured max receive message size (mirrors the REST /batch/import
+	// 100 MB bound).
+	BatchImport(ctx context.Context, in *BatchImportRequest, opts ...grpc.CallOption) (*BatchImportResponse, error)
 	// Watch creates a server-streaming watcher that delivers events for
 	// the specified key or prefix.
 	Watch(ctx context.Context, in *WatchRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchResponse], error)
@@ -456,6 +472,9 @@ type QRDBServiceClient interface {
 	DatabaseUpdateEtcd(ctx context.Context, in *DatabaseUpdateEtcdRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateRaft updates the Raft consensus configuration.
 	DatabaseUpdateRaft(ctx context.Context, in *DatabaseUpdateRaftRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
+	// DatabaseScale changes the replication factor of an existing
+	// dedicated-raft database.
+	DatabaseScale(ctx context.Context, in *DatabaseScaleRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateBarrier updates the encryption barrier configuration.
 	DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateConnection updates the remote connection configuration.
@@ -520,8 +539,15 @@ type QRDBServiceClient interface {
 	CeremonyClaimCertBegin(ctx context.Context, in *CeremonyClaimCertBeginRequest, opts ...grpc.CallOption) (*CeremonyClaimCertBeginResponse, error)
 	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
 	CeremonyClaimCertComplete(ctx context.Context, in *CeremonyClaimCertCompleteRequest, opts ...grpc.CallOption) (*CeremonyClaimCertCompleteResponse, error)
-	// CeremonyClaimShare retrieves the Shamir share for an officer.
-	CeremonyClaimShare(ctx context.Context, in *CeremonyClaimShareRequest, opts ...grpc.CallOption) (*CeremonyClaimShareResponse, error)
+	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+	// officer. The caller MUST present an mTLS client certificate; the server
+	// matches its thumbprint against the enrolled officer record before
+	// issuing the challenge nonce.
+	CeremonyBeginClaimShare(ctx context.Context, in *CeremonyBeginClaimShareRequest, opts ...grpc.CallOption) (*CeremonyBeginClaimShareResponse, error)
+	// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+	// submitting the signed nonce. The caller's mTLS certificate thumbprint is
+	// re-verified before the share is released exactly once.
+	CeremonyCompleteClaimShare(ctx context.Context, in *CeremonyCompleteClaimShareRequest, opts ...grpc.CallOption) (*CeremonyCompleteClaimShareResponse, error)
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(ctx context.Context, in *CeremonySignCSRRequest, opts ...grpc.CallOption) (*CeremonySignCSRResponse, error)
 	// CeremonyEnrollExternalOfficer enrols an officer whose key material
@@ -631,6 +657,9 @@ type QRDBServiceClient interface {
 	DatabaseUnseal(ctx context.Context, in *DatabaseUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
 	DatabaseBarrierStatus(ctx context.Context, in *DatabaseBarrierStatusRequest, opts ...grpc.CallOption) (*DatabaseBarrierStatusResponse, error)
+	// SQLQuery executes an ad-hoc SQL query against a named database and
+	// returns the result set. Mirrors the REST POST /sql/query contract.
+	SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error)
 }
 
 type qRDBServiceClient struct {
@@ -751,6 +780,16 @@ func (c *qRDBServiceClient) CurrentRevision(ctx context.Context, in *emptypb.Emp
 	return out, nil
 }
 
+func (c *qRDBServiceClient) RestoreToRevision(ctx context.Context, in *RestoreRevisionRequest, opts ...grpc.CallOption) (*RestoreRevisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestoreRevisionResponse)
+	err := c.cc.Invoke(ctx, QRDBService_RestoreToRevision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) Transaction(ctx context.Context, in *TransactionRequest, opts ...grpc.CallOption) (*TransactionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(TransactionResponse)
@@ -765,6 +804,16 @@ func (c *qRDBServiceClient) Batch(ctx context.Context, in *BatchRequest, opts ..
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BatchResponse)
 	err := c.cc.Invoke(ctx, QRDBService_Batch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) BatchImport(ctx context.Context, in *BatchImportRequest, opts ...grpc.CallOption) (*BatchImportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BatchImportResponse)
+	err := c.cc.Invoke(ctx, QRDBService_BatchImport_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1770,6 +1819,16 @@ func (c *qRDBServiceClient) DatabaseUpdateRaft(ctx context.Context, in *Database
 	return out, nil
 }
 
+func (c *qRDBServiceClient) DatabaseScale(ctx context.Context, in *DatabaseScaleRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DatabaseInfoResponse)
+	err := c.cc.Invoke(ctx, QRDBService_DatabaseScale_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) DatabaseUpdateBarrier(ctx context.Context, in *DatabaseUpdateBarrierRequest, opts ...grpc.CallOption) (*DatabaseInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DatabaseInfoResponse)
@@ -2060,10 +2119,20 @@ func (c *qRDBServiceClient) CeremonyClaimCertComplete(ctx context.Context, in *C
 	return out, nil
 }
 
-func (c *qRDBServiceClient) CeremonyClaimShare(ctx context.Context, in *CeremonyClaimShareRequest, opts ...grpc.CallOption) (*CeremonyClaimShareResponse, error) {
+func (c *qRDBServiceClient) CeremonyBeginClaimShare(ctx context.Context, in *CeremonyBeginClaimShareRequest, opts ...grpc.CallOption) (*CeremonyBeginClaimShareResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CeremonyClaimShareResponse)
-	err := c.cc.Invoke(ctx, QRDBService_CeremonyClaimShare_FullMethodName, in, out, cOpts...)
+	out := new(CeremonyBeginClaimShareResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyBeginClaimShare_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CeremonyCompleteClaimShare(ctx context.Context, in *CeremonyCompleteClaimShareRequest, opts ...grpc.CallOption) (*CeremonyCompleteClaimShareResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CeremonyCompleteClaimShareResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CeremonyCompleteClaimShare_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2490,6 +2559,16 @@ func (c *qRDBServiceClient) DatabaseBarrierStatus(ctx context.Context, in *Datab
 	return out, nil
 }
 
+func (c *qRDBServiceClient) SQLQuery(ctx context.Context, in *SQLQueryRequest, opts ...grpc.CallOption) (*SQLQueryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SQLQueryResponse)
+	err := c.cc.Invoke(ctx, QRDBService_SQLQuery_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // QRDBServiceServer is the server API for QRDBService service.
 // All implementations must embed UnimplementedQRDBServiceServer
 // for forward compatibility.
@@ -2519,10 +2598,21 @@ type QRDBServiceServer interface {
 	Compact(context.Context, *CompactRequest) (*emptypb.Empty, error)
 	// CurrentRevision returns the latest committed MVCC revision.
 	CurrentRevision(context.Context, *emptypb.Empty) (*CurrentRevisionResponse, error)
+	// RestoreToRevision returns a bounded set of keys to the value they held
+	// at an earlier MVCC revision by proposing new writes -- a logical undo,
+	// never a Raft rewind. Exactly one of RestoreRevisionRequest.prefix and
+	// .keys must be set.
+	RestoreToRevision(context.Context, *RestoreRevisionRequest) (*RestoreRevisionResponse, error)
 	// Transaction executes an atomic compare-and-swap transaction.
 	Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error)
 	// Batch executes multiple operations atomically.
 	Batch(context.Context, *BatchRequest) (*BatchResponse, error)
+	// BatchImport parses and imports key-value pairs from a file (CSV, JSON,
+	// NDJSON, YAML, or archive) carried in the request. This is a bounded
+	// unary RPC, not a stream; the file must fit within the server's
+	// configured max receive message size (mirrors the REST /batch/import
+	// 100 MB bound).
+	BatchImport(context.Context, *BatchImportRequest) (*BatchImportResponse, error)
 	// Watch creates a server-streaming watcher that delivers events for
 	// the specified key or prefix.
 	Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error
@@ -2726,6 +2816,9 @@ type QRDBServiceServer interface {
 	DatabaseUpdateEtcd(context.Context, *DatabaseUpdateEtcdRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateRaft updates the Raft consensus configuration.
 	DatabaseUpdateRaft(context.Context, *DatabaseUpdateRaftRequest) (*DatabaseInfoResponse, error)
+	// DatabaseScale changes the replication factor of an existing
+	// dedicated-raft database.
+	DatabaseScale(context.Context, *DatabaseScaleRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateBarrier updates the encryption barrier configuration.
 	DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error)
 	// DatabaseUpdateConnection updates the remote connection configuration.
@@ -2790,8 +2883,15 @@ type QRDBServiceServer interface {
 	CeremonyClaimCertBegin(context.Context, *CeremonyClaimCertBeginRequest) (*CeremonyClaimCertBeginResponse, error)
 	// CeremonyClaimCertComplete completes a certificate claim by submitting the signed nonce.
 	CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error)
-	// CeremonyClaimShare retrieves the Shamir share for an officer.
-	CeremonyClaimShare(context.Context, *CeremonyClaimShareRequest) (*CeremonyClaimShareResponse, error)
+	// CeremonyBeginClaimShare starts the Shamir share claim handshake for an
+	// officer. The caller MUST present an mTLS client certificate; the server
+	// matches its thumbprint against the enrolled officer record before
+	// issuing the challenge nonce.
+	CeremonyBeginClaimShare(context.Context, *CeremonyBeginClaimShareRequest) (*CeremonyBeginClaimShareResponse, error)
+	// CeremonyCompleteClaimShare completes the Shamir share claim handshake by
+	// submitting the signed nonce. The caller's mTLS certificate thumbprint is
+	// re-verified before the share is released exactly once.
+	CeremonyCompleteClaimShare(context.Context, *CeremonyCompleteClaimShareRequest) (*CeremonyCompleteClaimShareResponse, error)
 	// CeremonySignCSR submits a CSR for signing during the ceremony.
 	CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error)
 	// CeremonyEnrollExternalOfficer enrols an officer whose key material
@@ -2901,6 +3001,9 @@ type QRDBServiceServer interface {
 	DatabaseUnseal(context.Context, *DatabaseUnsealRequest) (*emptypb.Empty, error)
 	// DatabaseBarrierStatus returns the encryption-barrier status for a database.
 	DatabaseBarrierStatus(context.Context, *DatabaseBarrierStatusRequest) (*DatabaseBarrierStatusResponse, error)
+	// SQLQuery executes an ad-hoc SQL query against a named database and
+	// returns the result set. Mirrors the REST POST /sql/query contract.
+	SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error)
 	mustEmbedUnimplementedQRDBServiceServer()
 }
 
@@ -2944,11 +3047,17 @@ func (UnimplementedQRDBServiceServer) Compact(context.Context, *CompactRequest) 
 func (UnimplementedQRDBServiceServer) CurrentRevision(context.Context, *emptypb.Empty) (*CurrentRevisionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CurrentRevision not implemented")
 }
+func (UnimplementedQRDBServiceServer) RestoreToRevision(context.Context, *RestoreRevisionRequest) (*RestoreRevisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreToRevision not implemented")
+}
 func (UnimplementedQRDBServiceServer) Transaction(context.Context, *TransactionRequest) (*TransactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Transaction not implemented")
 }
 func (UnimplementedQRDBServiceServer) Batch(context.Context, *BatchRequest) (*BatchResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Batch not implemented")
+}
+func (UnimplementedQRDBServiceServer) BatchImport(context.Context, *BatchImportRequest) (*BatchImportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BatchImport not implemented")
 }
 func (UnimplementedQRDBServiceServer) Watch(*WatchRequest, grpc.ServerStreamingServer[WatchResponse]) error {
 	return status.Error(codes.Unimplemented, "method Watch not implemented")
@@ -3247,6 +3356,9 @@ func (UnimplementedQRDBServiceServer) DatabaseUpdateEtcd(context.Context, *Datab
 func (UnimplementedQRDBServiceServer) DatabaseUpdateRaft(context.Context, *DatabaseUpdateRaftRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateRaft not implemented")
 }
+func (UnimplementedQRDBServiceServer) DatabaseScale(context.Context, *DatabaseScaleRequest) (*DatabaseInfoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DatabaseScale not implemented")
+}
 func (UnimplementedQRDBServiceServer) DatabaseUpdateBarrier(context.Context, *DatabaseUpdateBarrierRequest) (*DatabaseInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseUpdateBarrier not implemented")
 }
@@ -3334,8 +3446,11 @@ func (UnimplementedQRDBServiceServer) CeremonyClaimCertBegin(context.Context, *C
 func (UnimplementedQRDBServiceServer) CeremonyClaimCertComplete(context.Context, *CeremonyClaimCertCompleteRequest) (*CeremonyClaimCertCompleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimCertComplete not implemented")
 }
-func (UnimplementedQRDBServiceServer) CeremonyClaimShare(context.Context, *CeremonyClaimShareRequest) (*CeremonyClaimShareResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method CeremonyClaimShare not implemented")
+func (UnimplementedQRDBServiceServer) CeremonyBeginClaimShare(context.Context, *CeremonyBeginClaimShareRequest) (*CeremonyBeginClaimShareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyBeginClaimShare not implemented")
+}
+func (UnimplementedQRDBServiceServer) CeremonyCompleteClaimShare(context.Context, *CeremonyCompleteClaimShareRequest) (*CeremonyCompleteClaimShareResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CeremonyCompleteClaimShare not implemented")
 }
 func (UnimplementedQRDBServiceServer) CeremonySignCSR(context.Context, *CeremonySignCSRRequest) (*CeremonySignCSRResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CeremonySignCSR not implemented")
@@ -3462,6 +3577,9 @@ func (UnimplementedQRDBServiceServer) DatabaseUnseal(context.Context, *DatabaseU
 }
 func (UnimplementedQRDBServiceServer) DatabaseBarrierStatus(context.Context, *DatabaseBarrierStatusRequest) (*DatabaseBarrierStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method DatabaseBarrierStatus not implemented")
+}
+func (UnimplementedQRDBServiceServer) SQLQuery(context.Context, *SQLQueryRequest) (*SQLQueryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SQLQuery not implemented")
 }
 func (UnimplementedQRDBServiceServer) mustEmbedUnimplementedQRDBServiceServer() {}
 func (UnimplementedQRDBServiceServer) testEmbeddedByValue()                     {}
@@ -3682,6 +3800,24 @@ func _QRDBService_CurrentRevision_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_RestoreToRevision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreRevisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).RestoreToRevision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_RestoreToRevision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).RestoreToRevision(ctx, req.(*RestoreRevisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_Transaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TransactionRequest)
 	if err := dec(in); err != nil {
@@ -3714,6 +3850,24 @@ func _QRDBService_Batch_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).Batch(ctx, req.(*BatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_BatchImport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BatchImportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).BatchImport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_BatchImport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).BatchImport(ctx, req.(*BatchImportRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -5493,6 +5647,24 @@ func _QRDBService_DatabaseUpdateRaft_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_DatabaseScale_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DatabaseScaleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).DatabaseScale(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_DatabaseScale_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).DatabaseScale(ctx, req.(*DatabaseScaleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_DatabaseUpdateBarrier_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DatabaseUpdateBarrierRequest)
 	if err := dec(in); err != nil {
@@ -6015,20 +6187,38 @@ func _QRDBService_CeremonyClaimCertComplete_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
-func _QRDBService_CeremonyClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CeremonyClaimShareRequest)
+func _QRDBService_CeremonyBeginClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyBeginClaimShareRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(QRDBServiceServer).CeremonyClaimShare(ctx, in)
+		return srv.(QRDBServiceServer).CeremonyBeginClaimShare(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: QRDBService_CeremonyClaimShare_FullMethodName,
+		FullMethod: QRDBService_CeremonyBeginClaimShare_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(QRDBServiceServer).CeremonyClaimShare(ctx, req.(*CeremonyClaimShareRequest))
+		return srv.(QRDBServiceServer).CeremonyBeginClaimShare(ctx, req.(*CeremonyBeginClaimShareRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CeremonyCompleteClaimShare_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CeremonyCompleteClaimShareRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CeremonyCompleteClaimShare(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CeremonyCompleteClaimShare_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CeremonyCompleteClaimShare(ctx, req.(*CeremonyCompleteClaimShareRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -6789,6 +6979,24 @@ func _QRDBService_DatabaseBarrierStatus_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_SQLQuery_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SQLQueryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).SQLQuery(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_SQLQuery_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).SQLQuery(ctx, req.(*SQLQueryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // QRDBService_ServiceDesc is the grpc.ServiceDesc for QRDBService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -6841,12 +7049,20 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_CurrentRevision_Handler,
 		},
 		{
+			MethodName: "RestoreToRevision",
+			Handler:    _QRDBService_RestoreToRevision_Handler,
+		},
+		{
 			MethodName: "Transaction",
 			Handler:    _QRDBService_Transaction_Handler,
 		},
 		{
 			MethodName: "Batch",
 			Handler:    _QRDBService_Batch_Handler,
+		},
+		{
+			MethodName: "BatchImport",
+			Handler:    _QRDBService_BatchImport_Handler,
 		},
 		{
 			MethodName: "LeaseGrant",
@@ -7241,6 +7457,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_DatabaseUpdateRaft_Handler,
 		},
 		{
+			MethodName: "DatabaseScale",
+			Handler:    _QRDBService_DatabaseScale_Handler,
+		},
+		{
 			MethodName: "DatabaseUpdateBarrier",
 			Handler:    _QRDBService_DatabaseUpdateBarrier_Handler,
 		},
@@ -7357,8 +7577,12 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _QRDBService_CeremonyClaimCertComplete_Handler,
 		},
 		{
-			MethodName: "CeremonyClaimShare",
-			Handler:    _QRDBService_CeremonyClaimShare_Handler,
+			MethodName: "CeremonyBeginClaimShare",
+			Handler:    _QRDBService_CeremonyBeginClaimShare_Handler,
+		},
+		{
+			MethodName: "CeremonyCompleteClaimShare",
+			Handler:    _QRDBService_CeremonyCompleteClaimShare_Handler,
 		},
 		{
 			MethodName: "CeremonySignCSR",
@@ -7527,6 +7751,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DatabaseBarrierStatus",
 			Handler:    _QRDBService_DatabaseBarrierStatus_Handler,
+		},
+		{
+			MethodName: "SQLQuery",
+			Handler:    _QRDBService_SQLQuery_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

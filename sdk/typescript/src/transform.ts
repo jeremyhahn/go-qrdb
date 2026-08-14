@@ -12,7 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { DistanceMetric, VectorIndexType } from './types.js';
+import type {
+    DistanceMetric,
+    MVCCKeyValue,
+    OpResponse,
+    RestoreKeyChange,
+    RestoreRevisionResult,
+    VectorIndexType,
+    WatchEvent,
+} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Wire-format key transformers
@@ -261,4 +269,131 @@ export function normalizeVectorEnumFields<T>(obj: T): T {
         out.indexType = wireToIndexType(out.indexType);
     }
     return out as T;
+}
+
+// ---------------------------------------------------------------------------
+// MVCCKeyValue base64 → plaintext decoding
+// ---------------------------------------------------------------------------
+//
+// `sdk/go/transport.MVCCKeyValue` carries `Key`/`Value` as `[]byte`, so both
+// wire protocols the TypeScript SDK speaks serialize them as base64:
+//
+//   - The Go REST API marshals `[]byte` fields as base64 via
+//     `encoding/json` (Go's standard behavior), e.g. GET /kv/{key}?revision=true,
+//     POST /kv/range, POST /tx, and POST /batch.
+//   - The Wails IPC boundary marshals Go method return values the same way.
+//     `cmd/qrdb/bindings_mvcc.go`'s MVCCBinding methods (PutWithLease,
+//     GetRevision, GetAtRevision, Range) and `bindings_transaction.go` /
+//     `bindings_batch.go`'s Execute methods return `*transport.MVCCKeyValue`
+//     / `*transport.OpResponse` unconverted, so they carry the same base64
+//     encoding. (This differs from `KVBinding.Get`/`Scan`, which already
+//     convert to Go strings server-side, and `WatchBinding`, which emits the
+//     string-typed `wailsKeyValue` — see `bindings_watch.go` — so those two
+//     paths need no decoding here.)
+//
+// Both transports decode through the helpers below so every `MVCCKeyValue`
+// the SDK returns is plaintext, matching `kv.get`/`kv.scan`.
+
+/**
+ * Decodes a base64 string into its UTF-8 plaintext representation.
+ *
+ * The `atob` → `Uint8Array` → `TextDecoder` chain is used (rather than the
+ * lossy `atob` shortcut on its own) so that multibyte UTF-8 sequences decode
+ * correctly.
+ */
+export function decodeBase64Utf8(b64: string): string {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Encodes a UTF-8 string into its base64 representation.
+ *
+ * The inverse of {@link decodeBase64Utf8}. Used to prepare plaintext
+ * SDK-facing fields (e.g. a restore request's `prefix`/`keys`) for the
+ * wire's binary-safe `[]byte` field convention (base64 in REST JSON and
+ * Wails IPC), so arbitrary byte content — not just valid UTF-8 — round-trips
+ * intact once it reaches the server as raw bytes.
+ */
+export function encodeBase64Utf8(text: string): string {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+/**
+ * Decodes the base64 `key`/`value` fields of an {@link MVCCKeyValue} to
+ * UTF-8 plaintext, returning a new object.
+ *
+ * Empty strings decode to empty strings (no-op); the field is only skipped
+ * when falsy, which cannot happen for a well-formed wire object but is
+ * guarded against defensively.
+ */
+export function decodeMVCCKV(kv: MVCCKeyValue): MVCCKeyValue {
+    return {
+        ...kv,
+        key: kv.key ? decodeBase64Utf8(kv.key) : kv.key,
+        value: kv.value ? decodeBase64Utf8(kv.value) : kv.value,
+    };
+}
+
+/**
+ * Decodes the `kv` and, when present, `prevKv` fields of a {@link
+ * WatchEvent} from base64 to plaintext. See {@link decodeMVCCKV}.
+ */
+export function decodeWatchEventKV(evt: WatchEvent): WatchEvent {
+    return {
+        ...evt,
+        kv: evt.kv ? decodeMVCCKV(evt.kv) : evt.kv,
+        prevKv: evt.prevKv ? decodeMVCCKV(evt.prevKv) : evt.prevKv,
+    };
+}
+
+/**
+ * Decodes the `kvs` of each {@link OpResponse} (the `Get`/`Range` results
+ * within a transaction or batch) from base64 to plaintext. See
+ * {@link decodeMVCCKV}.
+ */
+export function decodeOpResponses(responses: readonly OpResponse[]): OpResponse[] {
+    return responses.map((r) => (r.kvs ? { ...r, kvs: r.kvs.map(decodeMVCCKV) } : r));
+}
+
+// ---------------------------------------------------------------------------
+// RestoreRevisionResult base64 → plaintext decoding
+// ---------------------------------------------------------------------------
+//
+// `sdk/go/transport.RestoreKeyChange` carries `Key` as `[]byte` for the same
+// binary-safety reason as `MVCCKeyValue`, so both wire protocols base64
+// -encode it. Decoded here so every `RestoreKeyChange` the SDK returns is
+// plaintext, matching `decodeMVCCKV`.
+
+/**
+ * Decodes the base64 `key` field of a {@link RestoreKeyChange} to UTF-8
+ * plaintext, returning a new object. See {@link decodeMVCCKV}.
+ */
+export function decodeRestoreKeyChange(change: RestoreKeyChange): RestoreKeyChange {
+    return {
+        ...change,
+        key: change.key ? decodeBase64Utf8(change.key) : change.key,
+    };
+}
+
+/**
+ * Decodes the `changes` and, when present, `conflicts` entries of a
+ * {@link RestoreRevisionResult} from base64 to plaintext. See
+ * {@link decodeRestoreKeyChange}.
+ */
+export function decodeRestoreResult(result: RestoreRevisionResult): RestoreRevisionResult {
+    return {
+        ...result,
+        changes: result.changes.map(decodeRestoreKeyChange),
+        conflicts: result.conflicts ? result.conflicts.map(decodeRestoreKeyChange) : result.conflicts,
+    };
 }

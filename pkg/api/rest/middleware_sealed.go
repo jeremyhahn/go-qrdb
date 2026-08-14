@@ -17,6 +17,8 @@ package rest
 import (
 	"net/http"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 // sealedWindowProbe is the abstraction the middleware needs to know
@@ -28,37 +30,14 @@ type sealedWindowProbe interface {
 	IsSealed() bool
 }
 
-// SealedWindowAllowlist is the canonical set of REST paths that
-// remain operative while the barrier is sealed. Each entry is
-// either an exact path match or a prefix (entries ending in "/" are
-// matched as prefixes). The allowlist is exposed as a package-level
-// var so callers can compose with project-specific extensions if
-// they ever need to, but the canonical list is the one initialized
-// here.
-var SealedWindowAllowlist = []string{
-	"/v1/health",
-	"/v1/barrier/status",
-	"/v1/barrier/initialize",
-	"/v1/barrier/unseal",
-	"/v1/barrier/shamir/initialize",
-	"/v1/barrier/shamir/unseal-share",
-	"/v1/barrier/shamir/unseal-shares",
-	"/v1/barrier/shamir/verify",
-	"/v1/barrier/recovery/generate",
-	"/v1/barrier/recovery/recover",
-	"/v1/barrier/recovery/status",
-	"/v1/barrier/officers",
-	"/v1/barrier/officers/",
-	"/v1/barrier/recovery/officers",
-	"/v1/barrier/recovery/officers/",
-	"/v1/init/",
-	"/v1/bootstrap/",
-	// Cluster peer key-transport paths must work regardless of sealed state so
-	// follower replicas can receive their tenant barrier key before unsealing.
-	// The receiver self-authorises via node-cert + placement check; the auth
-	// middleware also pre-exempts /v1/cluster/ unconditionally.
-	"/v1/cluster/",
-}
+// SealedWindowAllowlist is the set of REST paths that remain operative
+// while the barrier is sealed. Each entry is either an exact path match
+// or a prefix (entries ending in "/" are matched as prefixes). The list
+// is derived from the canonical transport-neutral verb table in
+// pkg/api/sealedwindow so it cannot drift from the other transports; it
+// remains exposed as a package-level var so callers can compose with
+// project-specific extensions if they ever need to.
+var SealedWindowAllowlist = sealedwindow.RESTAllowlist()
 
 // sealedResponseBody is the JSON envelope returned to clients while
 // the barrier is sealed and they hit a non-allowlist endpoint.

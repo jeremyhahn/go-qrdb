@@ -61,6 +61,16 @@ func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateData
 		pbReq.Raft = transportRaftConfigToProto(req.Raft)
 	}
 
+	if req.Barrier != nil {
+		pbReq.Barrier = &pb.DatabaseBarrierConfig{
+			Enabled:        req.Barrier.Enabled,
+			Mode:           req.Barrier.Mode,
+			SharesRequired: int32(req.Barrier.SharesRequired),
+			SharesTotal:    int32(req.Barrier.SharesTotal),
+			Secret:         req.Barrier.Secret,
+		}
+	}
+
 	resp, err := t.client.DatabaseCreate(ctx, pbReq)
 	if err != nil {
 		return nil, mapGRPCError("CreateDatabase", err)
@@ -183,6 +193,26 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	return protoDatabaseInfoToTransport(resp), nil
 }
 
+// ScaleDatabase changes the replication factor of a dedicated-raft database
+// by calling the DatabaseScale gRPC method over the Unix domain socket.
+func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	pbReq := &pb.DatabaseScaleRequest{
+		Name:           req.Name,
+		TargetReplicas: int32(req.TargetReplicas),
+	}
+
+	resp, err := t.client.DatabaseScale(ctx, pbReq)
+	if err != nil {
+		return nil, mapGRPCError("ScaleDatabase", err)
+	}
+
+	return protoDatabaseInfoToTransport(resp), nil
+}
+
 // UpdateDatabaseBarrier updates the encryption barrier configuration for a
 // database by calling the DatabaseUpdateBarrier gRPC method over the Unix
 // domain socket.
@@ -197,7 +227,10 @@ func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.Upd
 
 	if req.Barrier != nil {
 		pbReq.Barrier = &pb.DatabaseBarrierConfig{
-			Enabled: req.Barrier.Enabled,
+			Enabled:        req.Barrier.Enabled,
+			Mode:           req.Barrier.Mode,
+			SharesRequired: int32(req.Barrier.SharesRequired),
+			SharesTotal:    int32(req.Barrier.SharesTotal),
 		}
 	}
 
@@ -278,13 +311,20 @@ func protoDatabaseInfoToTransport(resp *pb.DatabaseInfoResponse) *transport.Data
 
 	if b := resp.GetBarrier(); b != nil {
 		info.Barrier = &transport.DatabaseBarrierConfig{
-			Enabled: b.GetEnabled(),
+			Enabled:        b.GetEnabled(),
+			Mode:           b.GetMode(),
+			SharesRequired: int(b.GetSharesRequired()),
+			SharesTotal:    int(b.GetSharesTotal()),
 		}
 	}
 
 	if c := resp.GetConnection(); c != nil {
 		info.Connection = &transport.DatabaseConnectionConfig{
-			Address: c.GetRemoteAddress(),
+			Transport: c.GetTransport(),
+			Address:   c.GetRemoteAddress(),
+			CAFile:    c.GetCaFile(),
+			CertFile:  c.GetCertFile(),
+			KeyFile:   c.GetKeyFile(),
 		}
 	}
 

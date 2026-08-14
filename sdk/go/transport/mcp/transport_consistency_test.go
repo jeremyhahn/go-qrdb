@@ -57,6 +57,17 @@ func (m *trackingKVService) Put(_ context.Context, key string, value []byte) err
 	return nil
 }
 
+func (m *trackingKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.record("PutIfAbsent")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *trackingKVService) PutWithMode(_ context.Context, key string, value []byte, _ writemode.Mode) error {
 	m.record("PutWithMode")
 	m.mu.Lock()
@@ -192,18 +203,30 @@ func (m *trackingMVCCSvc) GetAtRevisionWithConsistency(_ context.Context, key st
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("v"), ModRevision: revision, Version: 1}, nil
 }
 
-func (m *trackingMVCCSvc) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *trackingMVCCSvc) Range(_ context.Context, start, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.record("Range")
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, nil
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, 1, nil
 }
 
-func (m *trackingMVCCSvc) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *trackingMVCCSvc) RangeWithConsistency(_ context.Context, start, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.record("RangeWithConsistency")
-	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, nil
+	return []*kv.KeyValue{{Key: start, Value: []byte("v"), ModRevision: 1}}, 1, 1, nil
 }
 
 func (m *trackingMVCCSvc) Compact(_ context.Context, _ int64) error         { return nil }
 func (m *trackingMVCCSvc) CurrentRevision(_ context.Context) (int64, error) { return 1, nil }
+
+func (m *trackingMVCCSvc) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	m.record("RestoreToRevision")
+	return &service.RestoreRevisionResult{
+		Revision: req.Revision,
+		Changes: []service.RestoreKeyChange{
+			{Key: "restored-key", Action: service.RestoreActionRevert, FromRevision: 5, ToRevision: 3, ValueBytes: 7},
+		},
+		Applied: 1,
+		DryRun:  req.DryRun,
+	}, nil
+}
 
 var _ service.MVCCKVServicer = (*trackingMVCCSvc)(nil)
 

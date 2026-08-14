@@ -176,6 +176,31 @@ func (e *WatchCanceledError) Error() string {
 	return "transport: watch canceled: " + e.Reason
 }
 
+// WatchCompactedError indicates a watch requested a start revision that has
+// already been compacted on the server, so the intervening history can no
+// longer be replayed. The caller's remedy is a fresh read followed by a new
+// watch from the current revision — see ClassifyWatchError.
+type WatchCompactedError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *WatchCompactedError) Error() string {
+	return "transport: watch start revision has been compacted: " + e.Reason
+}
+
+// WatchStartRevisionUnsupportedError indicates a watch requested a start
+// revision against a server-side store with no change history attached (a
+// non-MVCC store), so replay is impossible.
+type WatchStartRevisionUnsupportedError struct {
+	Reason string
+}
+
+// Error returns a human-readable description.
+func (e *WatchStartRevisionUnsupportedError) Error() string {
+	return "transport: watch start revision not supported: " + e.Reason
+}
+
 // IndexExistsError is returned when an index already exists.
 type IndexExistsError struct {
 	Name string

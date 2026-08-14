@@ -279,3 +279,34 @@ func convertOps(ops []statemachine.MVCCOp) ([]mvcc.RaftTxnOp, error) {
 	}
 	return result, nil
 }
+
+// ScanChangesUnsupportedError reports that this backend keeps no durable
+// revision index and therefore cannot say which keys changed in a revision
+// window.
+//
+// mvcc.RaftStorage stores versioned data entries but maintains no
+// revision-ordered change log, so a delete leaves nothing enumerable behind:
+// the key simply stops being live. Answering an empty result would be
+// indistinguishable from "nothing changed" and would let a selective restore
+// silently omit every key deleted since its target revision. The refusal is
+// the safe answer, and callers surface it as such.
+type ScanChangesUnsupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *ScanChangesUnsupportedError) Error() string {
+	return "mvccadapter: this MVCC backend maintains no revision index and cannot enumerate changed keys"
+}
+
+// ScanChangesUnsupported marks this error as the "backend keeps no revision
+// index" refusal. It lets pkg/service recognize the condition through a small
+// interface rather than importing this package, which it cannot do (the
+// dependency runs the other way). It mirrors the KeyNotFound /
+// RevisionCompacted marker methods the MVCC error types already use for the
+// same purpose.
+func (e *ScanChangesUnsupportedError) ScanChangesUnsupported() {}
+
+// ScanChanges is unsupported by this backend and always fails closed. See
+// ScanChangesUnsupportedError.
+func (a *Adapter) ScanChanges(_, _ int64, _ []byte, _ int64) (interface{}, error) {
+	return nil, &ScanChangesUnsupportedError{}
+}

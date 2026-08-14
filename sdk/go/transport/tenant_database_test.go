@@ -141,6 +141,18 @@ func (m *mockDatabaseClient) UpdateDatabaseBarrier(_ context.Context, req Update
 	return info, nil
 }
 
+func (m *mockDatabaseClient) ScaleDatabase(_ context.Context, req ScaleDatabaseRequest) (*DatabaseInfo, error) {
+	if m.updateErr != nil {
+		return nil, m.updateErr
+	}
+	info, ok := m.databases[req.Name]
+	if !ok {
+		return nil, &DatabaseNotFoundError{Name: req.Name}
+	}
+	info.Replicas = req.TargetReplicas
+	return info, nil
+}
+
 func (m *mockDatabaseClient) UpdateDatabaseConnection(_ context.Context, req UpdateDatabaseConnectionRequest) (*DatabaseInfo, error) {
 	if m.updateErr != nil {
 		return nil, m.updateErr
@@ -208,6 +220,10 @@ func (f *failingDatabaseClient) UpdateDatabaseRaft(_ context.Context, _ UpdateDa
 }
 
 func (f *failingDatabaseClient) UpdateDatabaseBarrier(_ context.Context, _ UpdateDatabaseBarrierRequest) (*DatabaseInfo, error) {
+	return nil, f.err
+}
+
+func (f *failingDatabaseClient) ScaleDatabase(_ context.Context, _ ScaleDatabaseRequest) (*DatabaseInfo, error) {
 	return nil, f.err
 }
 

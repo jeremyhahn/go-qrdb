@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -289,6 +290,43 @@ func TestHandleRestoreBackup_Success(t *testing.T) {
 	}
 }
 
+// TestHandleRestoreBackup_OnlineGuardRefused proves a guarded online-restore
+// refusal (e.g. the system shard, or a replicated shard) surfaces as a
+// per-shard error in a 200 OK restoreResultResponse — matching
+// BackupService.RestoreBackup's existing partial-success contract for any
+// other per-shard restore failure — rather than failing the whole request.
+// The GUI/CLI must inspect result.errors[] to see the guard's
+// offline-restore guidance even on a 200 response.
+func TestHandleRestoreBackup_OnlineGuardRefused(t *testing.T) {
+	svc := newStubBackupService()
+	svc.restoreFn = func(_ context.Context, opts service.RestoreOptions) (*service.RestoreResult, error) {
+		return &service.RestoreResult{
+			BackupID:       opts.BackupID,
+			ShardsRestored: 0,
+			Errors: []service.ShardError{
+				{ShardID: 1, Message: (&service.OnlineRestoreSystemShardError{ShardID: 1}).Error()},
+			},
+		}, nil
+	}
+	s := newBackupServer(t, svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/backups/restore", strings.NewReader(`{"backup_id":"bkp-1"}`))
+	rec := httptest.NewRecorder()
+	s.handleRestoreBackup(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp restoreResultResponse
+	decodeJSON(t, rec, &resp)
+	if resp.ShardsRestored != 0 {
+		t.Errorf("shards_restored = %d, want 0", resp.ShardsRestored)
+	}
+	if len(resp.Errors) != 1 {
+		t.Fatalf("errors = %+v, want 1 entry", resp.Errors)
+	}
+	if !strings.Contains(resp.Errors[0].Message, "offline") {
+		t.Errorf("error message = %q, want it to mention the offline restore flow", resp.Errors[0].Message)
+	}
+}
+
 func TestHandleRestoreBackup_ServiceError(t *testing.T) {
 	svc := newStubBackupService()
 	svc.restoreFn = func(_ context.Context, _ service.RestoreOptions) (*service.RestoreResult, error) {
@@ -465,6 +503,9 @@ func TestMapBackupError_AllCases(t *testing.T) {
 		{"inv_enc", &service.BackupInvalidEncryptionError{}, http.StatusBadRequest},
 		{"checksum", &service.BackupChecksumMismatchError{}, http.StatusConflict},
 		{"unsup", &service.BackupUnsupportedError{}, http.StatusNotImplemented},
+		{"online_restore_system_shard", &service.OnlineRestoreSystemShardError{}, http.StatusConflict},
+		{"online_restore_replicated_shard", &service.OnlineRestoreReplicatedShardError{}, http.StatusConflict},
+		{"online_restore_unsupported", &service.OnlineRestoreUnsupportedError{}, http.StatusNotImplemented},
 		{"generic", errors.New("boom"), http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
@@ -646,6 +687,94 @@ func TestHandleRebalanceExecute_ServiceError(t *testing.T) {
 	assertStatus(t, rec, http.StatusInternalServerError)
 }
 
+// TestHandleRebalanceExecute_ForwardToLeader_Success verifies that when
+// ExecuteRebalance returns *service.NotLeaderError with a known leader
+// address (RebalanceService.ExecuteRebalance returns this, unwrapped, when
+// moveTenantGroupShard determines the local node cannot execute a
+// dedicated-tenant shard MOVE -- see resolveMoveLeader), handleRebalanceExecute
+// forwards the original POST request (method, path, and body intact) to the
+// leader's REST server, mirroring the KV PUT/DELETE and database-scale
+// leader-forwarding paths (see TestHandleScaleDatabase_ForwardToLeader_Success).
+func TestHandleRebalanceExecute_ForwardToLeader_Success(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("leader received method %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/rebalance/execute" {
+			t.Fatalf("leader received path %s, want /v1/rebalance/execute", r.URL.Path)
+		}
+		fwd := r.Header.Get(headerForwardedBy)
+		if fwd == "" {
+			t.Fatal("leader did not receive X-Quicraft-Forwarded-By header")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("leader read body: %v", err)
+		}
+		var req rebalancePlanResponse
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("leader decode body: %v", err)
+		}
+		if len(req.Moves) != 1 || req.Moves[0].ShardID != 1000 {
+			t.Fatalf("leader received moves=%+v, want a single move for shard 1000", req.Moves)
+		}
+		writeJSON(w, rebalanceExecutionResponse{MovesCompleted: 1})
+	}))
+	defer leaderSrv.Close()
+
+	svc := newStubRebalanceService()
+	svc.executeFn = func(_ context.Context, _ *service.RebalancePlanResult) (*service.RebalanceExecutionResult, error) {
+		return nil, &service.NotLeaderError{
+			ShardID:       1000,
+			LeaderID:      2,
+			LeaderAddress: "10.0.0.2:63001",
+		}
+	}
+
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+
+	host := &mockHost{addr: "10.0.0.1:63001"}
+	srv := NewServer(&mockKVService{}, newDefaultAdminSvc(), "127.0.0.1:0",
+		WithRebalanceService(svc), WithLeaderForwarding(reg), WithHost(host))
+
+	body, _ := json.Marshal(rebalancePlanResponse{
+		Moves: []rebalanceMoveResponse{
+			{ShardID: 1000, FromNode: "node-a:9100", ToNode: "node-c:9100"},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/rebalance/execute", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp rebalanceExecutionResponse
+	decodeJSON(t, rec, &resp)
+	if resp.MovesCompleted != 1 {
+		t.Errorf("resp.MovesCompleted = %d, want 1", resp.MovesCompleted)
+	}
+}
+
+// TestHandleRebalanceExecute_NotLeader_NoResolver verifies that when
+// ExecuteRebalance returns *service.NotLeaderError but no leader-forwarding
+// resolver is configured, handleRebalanceExecute falls back to
+// mapHTTPError's mapped status rather than forwarding.
+func TestHandleRebalanceExecute_NotLeader_NoResolver(t *testing.T) {
+	svc := newStubRebalanceService()
+	svc.executeFn = func(_ context.Context, _ *service.RebalancePlanResult) (*service.RebalanceExecutionResult, error) {
+		return nil, &service.NotLeaderError{ShardID: 1000, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+	}
+	s := newRebalanceServer(t, svc)
+	req := httptest.NewRequest(http.MethodPost, "/v1/rebalance/execute", strings.NewReader(`{"moves":[]}`))
+	rec := httptest.NewRecorder()
+	s.handleRebalanceExecute(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected non-200 status without a resolver, got %d", rec.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleImbalanceReport
 // ---------------------------------------------------------------------------
@@ -672,6 +801,47 @@ func TestHandleImbalanceReport_Success(t *testing.T) {
 	}
 	if resp.ImbalanceScore != 0.1 {
 		t.Errorf("imbalance_score = %f, want 0.1", resp.ImbalanceScore)
+	}
+}
+
+// TestHandleImbalanceReport_HotspotsAlwaysArray is a regression test for a
+// real GUI crash: a balanced cluster (the common case) has zero hotspots, and
+// the "hotspots" field was tagged omitempty, so it was omitted from the JSON
+// entirely — the RebalancePanel then read report.hotspots.length on undefined
+// and crashed the whole page. The wire value MUST always be a JSON array
+// ("hotspots":[]), never omitted and never null, for both a nil and an empty
+// service result.
+func TestHandleImbalanceReport_HotspotsAlwaysArray(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hotspots []string
+	}{
+		{"nil hotspots", nil},
+		{"empty hotspots", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newStubRebalanceService()
+			svc.reportFn = func(_ context.Context) (*service.ImbalanceReportResult, error) {
+				return &service.ImbalanceReportResult{
+					Nodes:          []service.NodeLoadInfo{},
+					ImbalanceScore: 0,
+					Hotspots:       tc.hotspots,
+				}, nil
+			}
+			s := newRebalanceServer(t, svc)
+			req := httptest.NewRequest(http.MethodGet, "/v1/rebalance/report", nil)
+			rec := httptest.NewRecorder()
+			s.handleImbalanceReport(rec, req)
+			assertStatus(t, rec, http.StatusOK)
+
+			body := rec.Body.String()
+			if !strings.Contains(body, `"hotspots":[]`) {
+				t.Errorf("body must contain \"hotspots\":[] (present, empty array); got %s", body)
+			}
+			if strings.Contains(body, `"hotspots":null`) {
+				t.Errorf("hotspots must never serialize as null; got %s", body)
+			}
+		})
 	}
 }
 

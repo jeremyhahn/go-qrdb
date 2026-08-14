@@ -211,6 +211,36 @@ func (t *Transport) UpdateDatabaseRaft(ctx context.Context, req transport.Update
 	return &info, nil
 }
 
+// ScaleDatabase changes the replication factor of a dedicated-raft database
+// by calling the db.Scale handler.
+func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(struct {
+		Name           string `json:"name"`
+		TargetReplicas int    `json:"targetReplicas"`
+	}{
+		Name:           req.Name,
+		TargetReplicas: req.TargetReplicas,
+	})
+	if err != nil {
+		return nil, &marshalError{Err: err}
+	}
+
+	respBytes, err := t.call(ctx, "db.Scale", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var info transport.DatabaseInfo
+	if err := json.Unmarshal(respBytes, &info); err != nil {
+		return nil, &unmarshalError{Err: err}
+	}
+	return &info, nil
+}
+
 // UpdateDatabaseBarrier updates the encryption barrier configuration for
 // a database by calling the db.UpdateBarrier handler.
 func (t *Transport) UpdateDatabaseBarrier(ctx context.Context, req transport.UpdateDatabaseBarrierRequest) (*transport.DatabaseInfo, error) {

@@ -17,29 +17,15 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"io"
 	"math"
-	"math/big"
-	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -47,278 +33,32 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/cmd/qrdb-sqlite/vtab"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	sdktransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
-// qrdbd binary build — once per test binary run
-// ---------------------------------------------------------------------------
-
-var (
-	buildOnce   sync.Once
-	builtBinary string
-	buildErr    error
-)
-
-// buildQRDBd compiles the qrdbd daemon binary into an os.MkdirTemp directory
-// and returns its path. The binary is built once per test run.
+// testServer — the shared qrdbd subprocess
 //
-// os.MkdirTemp is used rather than t.TempDir() because sync.Once captures
-// the first caller's *testing.T. Using t.TempDir() would cause the directory
-// to be removed when that first test finishes, breaking all subsequent tests.
-func buildQRDBd() string {
-	buildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "qrdbd-sqlite-test-*")
-		if err != nil {
-			buildErr = fmt.Errorf("MkdirTemp: %w", err)
-			return
-		}
-		builtBinary = filepath.Join(dir, "qrdbd")
-		cmd := exec.Command("go", "build", "-buildvcs=false",
-			"-tags", "codec_json raft qrdb_ts qrdb_vector qrdb_mysql qrdb_pgsql",
-			"-o", builtBinary, "./cmd/qrdbd")
-		cmd.Dir = projectRoot()
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			buildErr = fmt.Errorf("go build failed: %w\n%s", err, out)
-		}
-	})
-	return builtBinary
-}
-
-// projectRoot walks up from the current working directory to find the
-// go.mod that declares module github.com/jeremyhahn/go-qrdb. This works
-// whether tests run from within the module or a subdirectory.
-func projectRoot() string {
-	dir, _ := os.Getwd()
-	for {
-		modFile := filepath.Join(dir, "go.mod")
-		if data, err := os.ReadFile(modFile); err == nil {
-			if strings.Contains(string(data), "module github.com/jeremyhahn/go-qrdb\n") {
-				return dir
-			}
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	// Fallback: walk up until we find any go.mod (for monorepo layouts).
-	dir, _ = os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	return dir
-}
-
-// ---------------------------------------------------------------------------
-// testCA — ephemeral certificate authority for test TLS
+// Building qrdbd, minting its TLS material, reserving listen ports, spawning
+// the process and waiting for it to become ready all live in
+// sdk/go/testutil/qrdbdharness, which this module shares with the root
+// module's test/integration suite and the GORM conformance module. Only the
+// protocol-address plumbing the SQLite gateway needs is local.
 // ---------------------------------------------------------------------------
 
-// testCA holds a CA certificate and key for generating test TLS certificates.
-type testCA struct {
-	CertPEM  []byte
-	CertPath string
-	Pool     *x509.CertPool
-	cert     *x509.Certificate
-	key      *ecdsa.PrivateKey
-}
+const (
+	// serverOrganization is the X.509 Organization on this suite's harness
+	// certificates, purely so a stray certificate is attributable.
+	serverOrganization = "qrdb-sqlite-test"
 
-// generateTestCA creates an ephemeral ECDSA P-256 CA certificate for
-// integration tests. The CA cert is written to a temp file referenced by
-// testCA.CertPath.
-func generateTestCA(dir string) (*testCA, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate CA key: %w", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, fmt.Errorf("CA serial: %w", err)
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"qrdb-sqlite-test"},
-			CommonName:   "test-ca",
-		},
-		NotBefore:             time.Now().Add(-1 * time.Minute),
-		NotAfter:              time.Now().Add(2 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLen:            0,
-		MaxPathLenZero:        true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		return nil, fmt.Errorf("create CA cert: %w", err)
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	cert, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return nil, fmt.Errorf("parse CA cert: %w", err)
-	}
-
-	pool := x509.NewCertPool()
-	pool.AddCert(cert)
-
-	caFile := filepath.Join(dir, "ca.pem")
-	if err := os.WriteFile(caFile, certPEM, 0600); err != nil {
-		return nil, fmt.Errorf("write CA cert: %w", err)
-	}
-
-	return &testCA{
-		CertPEM:  certPEM,
-		CertPath: caFile,
-		Pool:     pool,
-		cert:     cert,
-		key:      key,
-	}, nil
-}
-
-// generateNodeCert creates a leaf TLS certificate signed by this CA with
-// SANs covering localhost, 127.0.0.1, and all local interface addresses.
-// Both server auth and client auth extended key usages are included.
-// The cert and key are written to dir/node-cert.pem and dir/node-key.pem.
-func (ca *testCA) generateNodeCert(dir string) (certPath, keyPath string, err error) {
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return "", "", fmt.Errorf("generate node key: %w", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return "", "", fmt.Errorf("node serial: %w", err)
-	}
-
-	dnsNames := []string{"localhost"}
-	ips := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
-	if hostname, herr := os.Hostname(); herr == nil && hostname != "" {
-		dnsNames = append(dnsNames, hostname)
-	}
-	if addrs, aerr := net.InterfaceAddrs(); aerr == nil {
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-				ips = append(ips, ipNet.IP)
-			}
-		}
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization: []string{"qrdb-sqlite-test"},
-			CommonName:   "test-node",
-		},
-		DNSNames:    dnsNames,
-		IPAddresses: ips,
-		NotBefore:   time.Now().Add(-1 * time.Minute),
-		NotAfter:    time.Now().Add(2 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageServerAuth,
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &leafKey.PublicKey, ca.key)
-	if err != nil {
-		return "", "", fmt.Errorf("create node cert: %w", err)
-	}
-
-	keyDER, err := x509.MarshalECPrivateKey(leafKey)
-	if err != nil {
-		return "", "", fmt.Errorf("marshal node key: %w", err)
-	}
-
-	certPath = filepath.Join(dir, "node-cert.pem")
-	keyPath = filepath.Join(dir, "node-key.pem")
-
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600); err != nil {
-		return "", "", fmt.Errorf("write node cert: %w", err)
-	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
-		return "", "", fmt.Errorf("write node key: %w", err)
-	}
-
-	return certPath, keyPath, nil
-}
-
-// generateClientCert creates a client mTLS certificate signed by this CA with
-// CN=admin and OU=system. The mTLS authenticator derives the tenant from
-// OU[0] (auth.MTLSAuthenticator.TenantFromCert), and the admin user is
-// bootstrapped in the reserved system tenant (tenant.SystemTenantID), so the
-// OU must be "system" for the identity to resolve to Admin@system (the
-// system-tenant rule lifts that to platform-wide authority). The cert and
-// key are written to dir/client-cert.pem and dir/client-key.pem.
-func (ca *testCA) generateClientCert(dir string) (certPath, keyPath string, err error) {
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return "", "", fmt.Errorf("generate client key: %w", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return "", "", fmt.Errorf("client serial: %w", err)
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject: pkix.Name{
-			Organization:       []string{"qrdb-sqlite-test"},
-			CommonName:         "admin",
-			OrganizationalUnit: []string{"system"},
-		},
-		NotBefore: time.Now().Add(-1 * time.Minute),
-		NotAfter:  time.Now().Add(2 * time.Hour),
-		KeyUsage:  x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageClientAuth,
-		},
-		BasicConstraintsValid: true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.cert, &clientKey.PublicKey, ca.key)
-	if err != nil {
-		return "", "", fmt.Errorf("create client cert: %w", err)
-	}
-
-	keyDER, err := x509.MarshalECPrivateKey(clientKey)
-	if err != nil {
-		return "", "", fmt.Errorf("marshal client key: %w", err)
-	}
-
-	certPath = filepath.Join(dir, "client-cert.pem")
-	keyPath = filepath.Join(dir, "client-key.pem")
-
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0600); err != nil {
-		return "", "", fmt.Errorf("write client cert: %w", err)
-	}
-	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
-		return "", "", fmt.Errorf("write client key: %w", err)
-	}
-
-	return certPath, keyPath, nil
-}
-
-// ---------------------------------------------------------------------------
-// testServer — subprocess lifecycle
-// ---------------------------------------------------------------------------
+	// adminUser and adminTenant are the CN/OU the qrdb mTLS authenticator maps
+	// to the identity firstboot.Initialize provisions: the admin user in the
+	// reserved system tenant, which the system-tenant rule lifts to
+	// platform-wide authority.
+	adminUser   = "admin"
+	adminTenant = "system"
+)
 
 // testServer holds the addresses and resources of the shared qrdbd subprocess.
 type testServer struct {
@@ -328,10 +68,10 @@ type testServer struct {
 	mcpPort        int
 	unixSocket     string
 	dataDir        string
-	ca             *testCA
+	ca             *qrdbdharness.CA
 	clientCertPath string
 	clientKeyPath  string
-	cmd            *exec.Cmd
+	daemon         *qrdbdharness.Daemon
 }
 
 // restAddr returns the REST server address.
@@ -354,6 +94,16 @@ func (s *testServer) mcpAddr() string {
 	return fmt.Sprintf("https://127.0.0.1:%d", s.mcpPort)
 }
 
+// healthURL returns the REST /health endpoint.
+func (s *testServer) healthURL() string {
+	return s.restAddr() + "/health"
+}
+
+// statusURL returns the REST /status endpoint.
+func (s *testServer) statusURL() string {
+	return s.restAddr() + "/status"
+}
+
 // addrFor returns the protocol-appropriate address string.
 func (s *testServer) addrFor(proto protocol) string {
 	switch proto {
@@ -372,22 +122,21 @@ func (s *testServer) addrFor(proto protocol) string {
 	}
 }
 
-// stop sends SIGINT to the qrdbd process and waits for it to exit.
+// stop shuts the qrdbd process down and waits for it to exit.
 func (s *testServer) stop() {
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.daemon == nil {
 		return
 	}
-	_ = s.cmd.Process.Signal(os.Interrupt)
-	_ = s.cmd.Wait()
+	_ = s.daemon.Stop()
 }
 
 // startSharedServer builds qrdbd, generates ephemeral TLS certificates, starts
 // a single-node cluster with all protocols enabled, and waits for it to be
 // healthy and elected leader. It is called once from TestMain.
 func startSharedServer() (*testServer, error) {
-	bin := buildQRDBd()
-	if buildErr != nil {
-		return nil, fmt.Errorf("build qrdbd: %w", buildErr)
+	bin, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create a persistent temp directory for all server files. This must
@@ -401,46 +150,40 @@ func startSharedServer() (*testServer, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir data: %w", err)
 	}
-
 	certDir := filepath.Join(dir, "certs")
-	if err := os.MkdirAll(certDir, 0o700); err != nil {
-		return nil, fmt.Errorf("mkdir certs: %w", err)
+
+	// Generate CA + node cert + admin client cert.
+	ca, err := qrdbdharness.NewCA(certDir, qrdbdharness.WithCAOrganization(serverOrganization))
+	if err != nil {
+		return nil, err
+	}
+	node, err := ca.Issue(certDir,
+		qrdbdharness.WithSubject("test-node", ""),
+		qrdbdharness.WithCertOrganization(serverOrganization),
+		qrdbdharness.WithServerAuth(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	client, err := ca.Issue(certDir,
+		qrdbdharness.WithSubject(adminUser, adminTenant),
+		qrdbdharness.WithCertOrganization(serverOrganization),
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	// Generate CA + server cert + client (admin) cert.
-	ca, err := generateTestCA(certDir)
+	// Reserve listen ports from the harness's non-ephemeral window: the Raft
+	// transport listens on UDP (QUIC), everything else on TCP.
+	raftPort, err := qrdbdharness.ReserveUDPPort()
 	if err != nil {
-		return nil, fmt.Errorf("generate CA: %w", err)
+		return nil, err
 	}
-
-	nodeCert, nodeKey, err := ca.generateNodeCert(certDir)
+	tcpPorts, err := qrdbdharness.ReserveTCPPorts(3)
 	if err != nil {
-		return nil, fmt.Errorf("generate node cert: %w", err)
+		return nil, err
 	}
-
-	clientCert, clientKey, err := ca.generateClientCert(certDir)
-	if err != nil {
-		return nil, fmt.Errorf("generate client cert: %w", err)
-	}
-
-	// Allocate free ports for all protocols. Ports are allocated as a batch
-	// so the OS does not reassign them between allocation and bind.
-	raftPort, err := allocateTCPPort()
-	if err != nil {
-		return nil, fmt.Errorf("allocate raft port: %w", err)
-	}
-	restPort, err := allocateTCPPort()
-	if err != nil {
-		return nil, fmt.Errorf("allocate rest port: %w", err)
-	}
-	grpcPort, err := allocateTCPPort()
-	if err != nil {
-		return nil, fmt.Errorf("allocate grpc port: %w", err)
-	}
-	mcpPort, err := allocateTCPPort()
-	if err != nil {
-		return nil, fmt.Errorf("allocate mcp port: %w", err)
-	}
+	restPort, grpcPort, mcpPort := tcpPorts[0], tcpPorts[1], tcpPorts[2]
 
 	unixSocket := filepath.Join(dir, "qrdbd.sock")
 
@@ -458,9 +201,6 @@ func startSharedServer() (*testServer, error) {
 		"--grpc-port", fmt.Sprintf("%d", grpcPort),
 		"--mcp-port", fmt.Sprintf("%d", mcpPort),
 		"--unix-socket-path", unixSocket,
-		"--tls-ca-file", ca.CertPath,
-		"--tls-cert-file", nodeCert,
-		"--tls-key-file", nodeKey,
 		"--enable-rest=true",
 		"--enable-grpc=true",
 		"--enable-unix=true",
@@ -468,14 +208,14 @@ func startSharedServer() (*testServer, error) {
 		"--log-level", "warn",
 		"--log-format", "json",
 	}
+	args = append(args, ca.TLSFlags(node)...)
 
-	lw := &stderrLogWriter{prefix: "[qrdbd] "}
-	cmd := exec.Command(bin, args...)
-	cmd.Stdout = lw
-	cmd.Stderr = lw
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start qrdbd: %w", err)
+	// Subprocess output goes to os.Stderr rather than t.Log: the shared server
+	// outlives every individual test, so no *testing.T is in scope.
+	daemon, err := qrdbdharness.Start(bin, args,
+		qrdbdharness.WithOutput(qrdbdharness.NewPrefixWriter(os.Stderr, "[qrdbd] ")))
+	if err != nil {
+		return nil, err
 	}
 
 	srv := &testServer{
@@ -486,173 +226,31 @@ func startSharedServer() (*testServer, error) {
 		unixSocket:     unixSocket,
 		dataDir:        dataDir,
 		ca:             ca,
-		clientCertPath: clientCert,
-		clientKeyPath:  clientKey,
-		cmd:            cmd,
+		clientCertPath: client.CertPath,
+		clientKeyPath:  client.KeyPath,
+		daemon:         daemon,
 	}
 
 	// Wait for the REST health endpoint to return 200 and for a leader to
 	// be elected before returning. Use a 120-second deadline to accommodate
-	// slow CI environments.
-	if err := waitForHealthy(srv, 120*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("wait for health: %w", err)
+	// slow CI environments. /health is public; /status is not, so leader
+	// polling presents the admin client certificate.
+	if err := qrdbdharness.WaitForHTTPOK(srv.healthURL(), ca.Pool, nil, 120*time.Second); err != nil {
+		srv.stop()
+		return nil, err
 	}
 
-	if err := waitForLeader(srv, 60*time.Second); err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("wait for leader: %w", err)
+	adminCert, err := client.TLSCertificate()
+	if err != nil {
+		srv.stop()
+		return nil, err
+	}
+	if err := qrdbdharness.WaitForLeader(srv.statusURL(), ca.Pool, &adminCert, 60*time.Second); err != nil {
+		srv.stop()
+		return nil, err
 	}
 
 	return srv, nil
-}
-
-// ---------------------------------------------------------------------------
-// Port allocation
-// ---------------------------------------------------------------------------
-
-// allocateTCPPort finds a free TCP port by binding a listener on :0 and
-// immediately closing it. There is a TOCTOU race between the close and the
-// server bind, but it is accepted for test infrastructure.
-func allocateTCPPort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, fmt.Errorf("listen: %w", err)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-	return port, nil
-}
-
-// ---------------------------------------------------------------------------
-// Health and leader wait
-// ---------------------------------------------------------------------------
-
-// waitForHealthy polls the REST /health endpoint until it returns HTTP 200 or
-// the deadline is reached. It uses a CA-only TLS client (no mTLS) since the
-// /health endpoint is typically public.
-func waitForHealthy(srv *testServer, timeout time.Duration) error {
-	url := fmt.Sprintf("https://127.0.0.1:%d/health", srv.restPort)
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    srv.ca.Pool,
-				MinVersion: tls.VersionTLS13,
-			},
-			ForceAttemptHTTP2: true,
-		},
-	}
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
-		if err == nil {
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-			lastErr = fmt.Errorf("health check status %d", resp.StatusCode)
-		} else {
-			lastErr = err
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return fmt.Errorf("qrdbd not healthy after %v (last: %v)", timeout, lastErr)
-}
-
-// waitForLeader polls the REST /status endpoint using mTLS until at least one
-// shard reports is_leader:true, or the deadline is reached.
-func waitForLeader(srv *testServer, timeout time.Duration) error {
-	// Load client cert for mTLS.
-	clientCert, err := tls.LoadX509KeyPair(srv.clientCertPath, srv.clientKeyPath)
-	if err != nil {
-		return fmt.Errorf("load client cert: %w", err)
-	}
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:      srv.ca.Pool,
-				Certificates: []tls.Certificate{clientCert},
-				MinVersion:   tls.VersionTLS13,
-			},
-			ForceAttemptHTTP2: true,
-		},
-	}
-
-	url := fmt.Sprintf("https://127.0.0.1:%d/status", srv.restPort)
-	deadline := time.Now().Add(timeout)
-	var lastDiag string
-
-	for time.Now().Before(deadline) {
-		resp, err := client.Get(url)
-		if err != nil {
-			lastDiag = fmt.Sprintf("GET /status error: %v", err)
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		body, rerr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if rerr != nil || resp.StatusCode != http.StatusOK {
-			lastDiag = fmt.Sprintf("status %d: %s", resp.StatusCode, string(body))
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		var result map[string]interface{}
-		if jerr := json.Unmarshal(body, &result); jerr != nil {
-			lastDiag = fmt.Sprintf("decode: %v", jerr)
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		if shards, ok := result["shards"].([]interface{}); ok {
-			for _, s := range shards {
-				shard, ok := s.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if isLeader, ok := shard["is_leader"].(bool); ok && isLeader {
-					return nil
-				}
-			}
-		}
-		lastDiag = "no shard reporting is_leader"
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	return fmt.Errorf("no leader elected after %v (last: %s)", timeout, lastDiag)
-}
-
-// ---------------------------------------------------------------------------
-// stderrLogWriter — io.Writer that writes to os.Stderr with a prefix
-// ---------------------------------------------------------------------------
-
-// stderrLogWriter forwards qrdbd subprocess output to os.Stderr, prefixing
-// each line. This keeps server logs visible in verbose test output (-v) without
-// requiring a *testing.T, which is unavailable from TestMain cleanup handlers.
-type stderrLogWriter struct {
-	prefix string
-	mu     sync.Mutex
-	buf    []byte
-}
-
-func (w *stderrLogWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.buf = append(w.buf, p...)
-	for {
-		idx := bytes.IndexByte(w.buf, '\n')
-		if idx < 0 {
-			break
-		}
-		line := string(w.buf[:idx])
-		w.buf = w.buf[idx+1:]
-		fmt.Fprintf(os.Stderr, "%s%s\n", w.prefix, line)
-	}
-	return len(p), nil
 }
 
 // ---------------------------------------------------------------------------

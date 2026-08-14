@@ -363,6 +363,39 @@ func TestTransactionService_ExecuteEntity_ProposeError(t *testing.T) {
 	}
 }
 
+// TestTransactionService_ExecuteEntity_AppError verifies that a
+// state-machine-encoded application error (e.g. a unique-index violation
+// rejected by handleTransaction without a fatal Update error) is surfaced
+// to the caller instead of being misread as a Data[0] success/failure flag.
+func TestTransactionService_ExecuteEntity_AppError(t *testing.T) {
+	host := &mockHost{
+		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+			return sm.Result{Data: protocol.EncodeAppError("unique index violation: email")}, nil
+		},
+	}
+
+	svc := NewTransactionService(host, 1)
+	resp, err := svc.ExecuteEntity(context.Background(), &TransactionEntityRequest{
+		Success: []TransactionEntityOp{
+			{Type: "put", EntityType: "user", ID: "u1", Data: []byte(`{"email":"a@example.com"}`)},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if resp != nil {
+		t.Fatalf("expected nil response on app error, got %+v", resp)
+	}
+
+	var smErr *SMNotConfiguredError
+	if !errors.As(err, &smErr) {
+		t.Fatalf("expected *SMNotConfiguredError, got %T: %v", err, err)
+	}
+	if smErr.Message != "unique index violation: email" {
+		t.Fatalf("expected message %q, got %q", "unique index violation: email", smErr.Message)
+	}
+}
+
 func TestTransactionService_ExecuteEntity_NotLeaderError(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {

@@ -36,6 +36,7 @@ import (
 //   - MVCCGetAtRevisionQuery: MVCC point lookup at revision
 //   - MVCCRangeQuery: MVCC range query
 //   - MVCCRevisionQuery: current MVCC revision
+//   - MVCCScanChangesQuery: keys changed in a revision window
 //   - timeseries.TSQueryRequest: time-series range query
 //   - timeseries.TSAggregateRequest: time-series aggregation
 //   - timeseries.TSRichQueryRequest: rich time-series query
@@ -239,6 +240,20 @@ func (k *KVStateMachine) lookupMVCC(query interface{}) (interface{}, bool, error
 		}
 		_, rev, err := k.mvccStore.Range(nil, nil, 0, 0, true, false)
 		return rev, true, err
+
+	case MVCCScanChangesQuery:
+		if k.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := k.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
+
+	case *MVCCScanChangesQuery:
+		if k.mvccStore == nil {
+			return nil, true, &ServiceNotConfiguredError{Service: "mvcc"}
+		}
+		result, err := k.mvccStore.ScanChanges(q.StartRevision, q.EndRevision, q.Prefix, q.Limit)
+		return result, true, err
 
 	default:
 		return nil, false, nil

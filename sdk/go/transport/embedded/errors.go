@@ -144,3 +144,14 @@ func translateError(err error) error {
 
 	return &transport.RequestError{Method: "embedded", Err: err}
 }
+
+// ClientCertRequiredError is returned when an operation that binds to the
+// caller's mTLS identity — the Security Officer share claim — is invoked
+// without a verified peer certificate on the context. The share claim fails
+// closed rather than releasing quorum material to an unidentified caller.
+type ClientCertRequiredError struct{}
+
+// Error returns a human-readable description.
+func (e *ClientCertRequiredError) Error() string {
+	return "embedded: client certificate required for share claim"
+}

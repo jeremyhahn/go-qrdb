@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"math/big"
@@ -65,6 +66,16 @@ func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error
 	defer m.mu.Unlock()
 	m.store[key] = value
 	return nil
+}
+
+// PutIfAbsent stores only when the key is absent, matching the real
+// engines. The map lookup is the same check they perform.
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
 }
 
 func (m *mockKVService) Get(ctx context.Context, key string) ([]byte, error) {
@@ -415,8 +426,13 @@ func TestNewServer_WithTLS(t *testing.T) {
 
 	s := NewServer(kvSvc, adminSvc, ":0", WithTLS(tlsCfg))
 
-	if s.tlsConfig != tlsCfg {
-		t.Error("TLS config not applied")
+	// WithTLS clones the config and pins the TLS 1.3 floor, so the stored
+	// config is a distinct pointer with MinVersion >= TLS 1.3.
+	if s.tlsConfig == nil {
+		t.Fatal("TLS config not applied")
+	}
+	if s.tlsConfig.MinVersion < tls.VersionTLS13 {
+		t.Errorf("MinVersion = %x, want >= TLS 1.3 (%x)", s.tlsConfig.MinVersion, tls.VersionTLS13)
 	}
 }
 
@@ -428,7 +444,7 @@ func TestServer_StartStop(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 
-	s := NewServer(kvSvc, adminSvc, ":0")
+	s := NewServer(kvSvc, adminSvc, ":0", WithTLS(testTLSConfig(t)))
 
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -482,11 +498,44 @@ func TestServer_StartStop_TLS(t *testing.T) {
 	_ = conn.Close()
 }
 
+// TestServer_Start_NoTLS_FailsClosed verifies the MCP transport is TLS-only:
+// Start without a WithTLS config returns *TLSNotConfiguredError rather than
+// binding a plaintext listener.
+func TestServer_Start_NoTLS_FailsClosed(t *testing.T) {
+	s := NewServer(newMockKVService(), newMockAdminService(), ":0")
+	err := s.Start()
+	if err == nil {
+		s.Stop()
+		t.Fatal("Start() with no TLS returned nil; want *TLSNotConfiguredError")
+	}
+	var tlsErr *TLSNotConfiguredError
+	if !errors.As(err, &tlsErr) {
+		t.Fatalf("Start() error type = %T, want *TLSNotConfiguredError", err)
+	}
+}
+
+// TestServer_Start_WeakTLS_Rejected verifies the MCP transport enforces the
+// TLS 1.3 floor: an explicitly weaker MinVersion is rejected at Start.
+func TestServer_Start_WeakTLS_Rejected(t *testing.T) {
+	cfg := testTLSConfig(t)
+	cfg.MinVersion = tls.VersionTLS12
+	s := NewServer(newMockKVService(), newMockAdminService(), ":0", WithTLS(cfg))
+	err := s.Start()
+	if err == nil {
+		s.Stop()
+		t.Fatal("Start() with TLS 1.2 MinVersion returned nil; want *WeakTLSVersionError")
+	}
+	var weak *WeakTLSVersionError
+	if !errors.As(err, &weak) {
+		t.Fatalf("Start() error type = %T, want *WeakTLSVersionError", err)
+	}
+}
+
 func TestServer_Start_BadAddress(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
 
-	s := NewServer(kvSvc, adminSvc, "invalid-addr-no-port")
+	s := NewServer(kvSvc, adminSvc, "invalid-addr-no-port", WithTLS(testTLSConfig(t)))
 
 	err := s.Start()
 	if err == nil {
@@ -573,7 +622,7 @@ func TestHandlePut_Success(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_put", map[string]any{
 		"key":   "mykey",
-		"value": "myvalue",
+		"value": "bXl2YWx1ZQ==", // base64("myvalue")
 	})
 
 	result, err := handler(context.Background(), req)
@@ -586,7 +635,7 @@ func TestHandlePut_Success(t *testing.T) {
 		t.Errorf("expected 'ok', got %q", text)
 	}
 
-	// Verify the value was stored.
+	// Verify the decoded value was stored.
 	kvSvc.mu.RLock()
 	stored := string(kvSvc.store["mykey"])
 	kvSvc.mu.RUnlock()
@@ -640,7 +689,7 @@ func TestHandlePut_ServiceError(t *testing.T) {
 
 	req := buildCallToolRequest(t, "qrdb_put", map[string]any{
 		"key":   "mykey",
-		"value": "myvalue",
+		"value": "bXl2YWx1ZQ==", // base64("myvalue")
 	})
 
 	_, err := handler(context.Background(), req)
@@ -671,9 +720,18 @@ func TestHandleGet_Success(t *testing.T) {
 		t.Fatalf("handleGet: %v", err)
 	}
 
+	// The result is base64-encoded (RFC 4648) so arbitrary binary values
+	// round-trip byte-for-byte.
 	text := resultText(t, result)
-	if text != "world" {
-		t.Errorf("expected 'world', got %q", text)
+	if text != "d29ybGQ=" {
+		t.Errorf("expected base64(%q), got %q", "world", text)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(text)
+	if err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if string(decoded) != "world" {
+		t.Errorf("decoded value: got %q, want %q", decoded, "world")
 	}
 }
 

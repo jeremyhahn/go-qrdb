@@ -306,6 +306,16 @@ func backupToResponse(info *service.BackupInfo) *backupResponse {
 }
 
 // mapBackupError maps backup domain errors to the appropriate HTTP status code.
+//
+// The online-restore guard errors (OnlineRestoreSystemShardError,
+// OnlineRestoreReplicatedShardError, OnlineRestoreUnsupportedError) are
+// mapped here for defense in depth, but RestoreBackup's per-shard loop
+// (pkg/service/backup_service.go) normally embeds them as a ShardError in a
+// 200 OK restoreResultResponse rather than returning them as this handler's
+// top-level err — see restoreResultResponse.Errors, which callers must
+// inspect for a partial/guarded restore outcome even on a 200 response. This
+// mapping applies if a future caller (or a single-target-shard optimization)
+// ever surfaces one of these as RestoreBackup's top-level error instead.
 func mapBackupError(err error) int {
 	var nfe *service.BackupNotFoundError
 	var ede *service.BackupEmptyDestinationError
@@ -316,6 +326,9 @@ func mapBackupError(err error) int {
 	var iee *service.BackupInvalidEncryptionError
 	var cme *service.BackupChecksumMismatchError
 	var unsup *service.BackupUnsupportedError
+	var sysShard *service.OnlineRestoreSystemShardError
+	var replicated *service.OnlineRestoreReplicatedShardError
+	var onlineUnsup *service.OnlineRestoreUnsupportedError
 
 	switch {
 	case errors.As(err, &nfe):
@@ -327,9 +340,11 @@ func mapBackupError(err error) int {
 		errors.As(err, &ice),
 		errors.As(err, &iee):
 		return http.StatusBadRequest
-	case errors.As(err, &cme):
+	case errors.As(err, &cme),
+		errors.As(err, &sysShard),
+		errors.As(err, &replicated):
 		return http.StatusConflict
-	case errors.As(err, &unsup):
+	case errors.As(err, &unsup), errors.As(err, &onlineUnsup):
 		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError

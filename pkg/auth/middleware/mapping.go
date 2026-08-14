@@ -34,18 +34,20 @@ var grpcPermissions = map[string]permission.Permission{
 	pb.QRDBService_Scan_FullMethodName:   permission.KVRange,
 
 	// MVCC
-	pb.QRDBService_PutWithLease_FullMethodName:    permission.MVCCPutWithLease,
-	pb.QRDBService_GetRevision_FullMethodName:     permission.MVCCGetRevision,
-	pb.QRDBService_GetAtRevision_FullMethodName:   permission.MVCCGetAtRevision,
-	pb.QRDBService_Range_FullMethodName:           permission.MVCCRange,
-	pb.QRDBService_Compact_FullMethodName:         permission.MVCCCompact,
-	pb.QRDBService_CurrentRevision_FullMethodName: permission.MVCCCurrentRevision,
+	pb.QRDBService_PutWithLease_FullMethodName:      permission.MVCCPutWithLease,
+	pb.QRDBService_GetRevision_FullMethodName:       permission.MVCCGetRevision,
+	pb.QRDBService_GetAtRevision_FullMethodName:     permission.MVCCGetAtRevision,
+	pb.QRDBService_Range_FullMethodName:             permission.MVCCRange,
+	pb.QRDBService_Compact_FullMethodName:           permission.MVCCCompact,
+	pb.QRDBService_CurrentRevision_FullMethodName:   permission.MVCCCurrentRevision,
+	pb.QRDBService_RestoreToRevision_FullMethodName: permission.MVCCRestore,
 
 	// Transaction
 	pb.QRDBService_Transaction_FullMethodName: permission.TransactionExecute,
 
 	// Batch
-	pb.QRDBService_Batch_FullMethodName: permission.BatchExecute,
+	pb.QRDBService_Batch_FullMethodName:       permission.BatchExecute,
+	pb.QRDBService_BatchImport_FullMethodName: permission.BatchExecute,
 
 	// Watch
 	pb.QRDBService_Watch_FullMethodName: permission.WatchWatch,
@@ -224,7 +226,8 @@ var grpcPermissions = map[string]permission.Permission{
 	// Custodian share-claim routes are identity-gated (see
 	// permission.IdentityGated): the handler verifies the enrolled
 	// custodian's factor challenge response.
-	pb.QRDBService_CeremonyClaimShare_FullMethodName:            permission.IdentityGated,
+	pb.QRDBService_CeremonyBeginClaimShare_FullMethodName:       permission.IdentityGated,
+	pb.QRDBService_CeremonyCompleteClaimShare_FullMethodName:    permission.IdentityGated,
 	pb.QRDBService_CeremonySignCSR_FullMethodName:               permission.CeremonySignCSR,
 	pb.QRDBService_CeremonyEnrollExternalOfficer_FullMethodName: permission.CeremonyEnrollCustodian,
 	pb.QRDBService_CeremonyClaimShareBegin_FullMethodName:       permission.IdentityGated,
@@ -275,9 +278,14 @@ var grpcPermissions = map[string]permission.Permission{
 	pb.QRDBService_DatabaseUpdateEtcd_FullMethodName:       permission.DatabasesUpdate,
 	pb.QRDBService_DatabaseUpdateProtocol_FullMethodName:   permission.DatabasesUpdate,
 	pb.QRDBService_DatabaseUpdateRaft_FullMethodName:       permission.DatabasesUpdate,
+	pb.QRDBService_DatabaseScale_FullMethodName:            permission.DatabasesScale,
 	pb.QRDBService_DatabaseSeal_FullMethodName:             permission.DatabasesSeal,
 	pb.QRDBService_DatabaseUnseal_FullMethodName:           permission.DatabasesUnseal,
 	pb.QRDBService_DatabaseBarrierStatus_FullMethodName:    permission.DatabasesBarrierStatus,
+
+	// SQL query (read-through over the KV range surface). Mirrors
+	// restPermissions "POST /sql/query" / "POST /v1/sql/query".
+	pb.QRDBService_SQLQuery_FullMethodName: permission.KVRange,
 
 	// Collection / Document management.
 	pb.QRDBService_CreateCollection_FullMethodName:  permission.CollectionsCreate,
@@ -337,6 +345,7 @@ var restPermissions = map[string]permission.Permission{
 	"PUT /kv/lease":    permission.MVCCPutWithLease,
 	"GET /kv/revision": permission.MVCCCurrentRevision,
 	"POST /kv/compact": permission.MVCCCompact,
+	"POST /kv/restore": permission.MVCCRestore,
 
 	// Transaction
 	"POST /tx": permission.TransactionExecute,
@@ -450,14 +459,21 @@ var restPermissions = map[string]permission.Permission{
 	"GET /v1/ceremony/status":               permission.CeremonyStatus,
 	"POST /v1/ceremony/claim-cert/begin":    permission.CeremonyClaimCert,
 	"POST /v1/ceremony/claim-cert/complete": permission.CeremonyClaimCert,
+	// Officer share-claim routes are identity-gated (see
+	// permission.IdentityGated): the handler derives the caller's mTLS
+	// certificate thumbprint and matches it against the enrolled officer's
+	// record over the nonce challenge-response handshake. These mirror the
+	// gRPC CeremonyBeginClaimShare/CompleteClaimShare mappings above; without
+	// them the registered /officer-share routes are rejected by default-deny.
+	"POST /v1/ceremony/officer-share/begin":    permission.IdentityGated,
+	"POST /v1/ceremony/officer-share/complete": permission.IdentityGated,
+	"POST /v1/ceremony/sign-csr":               permission.CeremonySignCSR,
+	"POST /v1/init/enroll-external-officer":    permission.CeremonyEnrollCustodian,
+	"POST /v1/ceremony/enroll-custodian":       permission.CeremonyEnrollCustodian,
+	"POST /v1/ceremony/revoke-custodian":       permission.CeremonyRevokeCustodian,
 	// Custodian share-claim routes are identity-gated (see
 	// permission.IdentityGated): the handler verifies the enrolled
 	// custodian's factor challenge response.
-	"POST /v1/ceremony/claim-share":          permission.IdentityGated,
-	"POST /v1/ceremony/sign-csr":             permission.CeremonySignCSR,
-	"POST /v1/init/enroll-external-officer":  permission.CeremonyEnrollCustodian,
-	"POST /v1/ceremony/enroll-custodian":     permission.CeremonyEnrollCustodian,
-	"POST /v1/ceremony/revoke-custodian":     permission.CeremonyRevokeCustodian,
 	"POST /v1/ceremony/claim-share/begin":    permission.IdentityGated,
 	"POST /v1/ceremony/claim-share/complete": permission.IdentityGated,
 	"POST /v1/barrier/unseal-share":          permission.BarrierUnsealShare,
@@ -637,6 +653,7 @@ var restPathParamPermissions = map[string]permission.Permission{
 	"PATCH /v1/databases/{name}/etcd":         permission.DatabasesUpdate,
 	"PATCH /v1/databases/{name}/protocol":     permission.DatabasesUpdate,
 	"PATCH /v1/databases/{name}/raft":         permission.DatabasesUpdate,
+	"PATCH /v1/databases/{name}/scale":        permission.DatabasesScale,
 	"POST /v1/databases/{name}/seal":          permission.DatabasesSeal,
 	"POST /v1/databases/{name}/unseal":        permission.DatabasesUnseal,
 	"GET /v1/databases/{name}/barrier/status": permission.DatabasesBarrierStatus,
@@ -727,18 +744,20 @@ var quicPermissions = map[string]permission.Permission{
 	"kv.Scan":   permission.KVRange,
 
 	// MVCC
-	"mvcc.PutWithLease":    permission.MVCCPutWithLease,
-	"mvcc.GetRevision":     permission.MVCCGetRevision,
-	"mvcc.GetAtRevision":   permission.MVCCGetAtRevision,
-	"mvcc.Range":           permission.MVCCRange,
-	"mvcc.Compact":         permission.MVCCCompact,
-	"mvcc.CurrentRevision": permission.MVCCCurrentRevision,
+	"mvcc.PutWithLease":      permission.MVCCPutWithLease,
+	"mvcc.GetRevision":       permission.MVCCGetRevision,
+	"mvcc.GetAtRevision":     permission.MVCCGetAtRevision,
+	"mvcc.Range":             permission.MVCCRange,
+	"mvcc.Compact":           permission.MVCCCompact,
+	"mvcc.CurrentRevision":   permission.MVCCCurrentRevision,
+	"mvcc.RestoreToRevision": permission.MVCCRestore,
 
 	// Transaction
 	"tx.Transaction": permission.TransactionExecute,
 
 	// Batch
-	"batch.Batch": permission.BatchExecute,
+	"batch.Batch":  permission.BatchExecute,
+	"batch.Import": permission.BatchExecute,
 
 	// Watch
 	"watch.Watch":       permission.WatchWatch,
@@ -843,6 +862,7 @@ var quicPermissions = map[string]permission.Permission{
 	"barrier.UnsealShare":      permission.BarrierUnsealShare,
 	"barrier.UnsealShares":     permission.BarrierUnsealShare,
 	"barrier.Rekey":            permission.SealRekey,
+	"barrier.EnableEncryption": permission.SealEnableEncryption,
 	"barrier.GenerateRecovery": permission.SealGenerateRecovery,
 	"barrier.RecoverWithKeys":  permission.SealRecoverWithKeys,
 	"barrier.RootToken":        permission.SealBootstrap,
@@ -951,9 +971,14 @@ var quicPermissions = map[string]permission.Permission{
 	"db.UpdateEtcd":       permission.DatabasesUpdate,
 	"db.UpdateProtocol":   permission.DatabasesUpdate,
 	"db.UpdateRaft":       permission.DatabasesUpdate,
+	"db.Scale":            permission.DatabasesScale,
 	"db.Seal":             permission.DatabasesSeal,
 	"db.Unseal":           permission.DatabasesUnseal,
 	"db.BarrierStatus":    permission.DatabasesBarrierStatus,
+
+	// SQL query (read-through over the KV range surface). Mirrors
+	// restPermissions "POST /sql/query" / grpcPermissions SQLQuery.
+	"sql.Query": permission.KVRange,
 
 	// Distributed locks.
 	"lock.Acquire": permission.LocksAcquire,
@@ -1043,18 +1068,20 @@ var mcpPermissions = map[string]permission.Permission{
 	"qrdb_scan":   permission.KVRange,
 
 	// MVCC
-	"qrdb_mvcc_put_with_lease":   permission.MVCCPutWithLease,
-	"qrdb_mvcc_get_revision":     permission.MVCCGetRevision,
-	"qrdb_mvcc_get_at_revision":  permission.MVCCGetAtRevision,
-	"qrdb_mvcc_range":            permission.MVCCRange,
-	"qrdb_mvcc_compact":          permission.MVCCCompact,
-	"qrdb_mvcc_current_revision": permission.MVCCCurrentRevision,
+	"qrdb_mvcc_put_with_lease":      permission.MVCCPutWithLease,
+	"qrdb_mvcc_get_revision":        permission.MVCCGetRevision,
+	"qrdb_mvcc_get_at_revision":     permission.MVCCGetAtRevision,
+	"qrdb_mvcc_range":               permission.MVCCRange,
+	"qrdb_mvcc_compact":             permission.MVCCCompact,
+	"qrdb_mvcc_current_revision":    permission.MVCCCurrentRevision,
+	"qrdb_mvcc_restore_to_revision": permission.MVCCRestore,
 
 	// Transaction
 	"qrdb_tx_execute": permission.TransactionExecute,
 
 	// Batch
 	"qrdb_batch_execute": permission.BatchExecute,
+	"qrdb_batch_import":  permission.BatchExecute,
 
 	// Watch
 	"qrdb_watch": permission.WatchWatch,
@@ -1203,6 +1230,7 @@ var mcpPermissions = map[string]permission.Permission{
 	"qrdb_barrier_shamir_unseal_share":  permission.BarrierUnsealShare,
 	"qrdb_barrier_shamir_unseal_shares": permission.BarrierUnsealShare,
 	"qrdb_barrier_rekey":                permission.SealRekey,
+	"qrdb_barrier_enable_encryption":    permission.SealEnableEncryption,
 	"qrdb_barrier_recovery_generate":    permission.SealGenerateRecovery,
 	"qrdb_barrier_recovery_recover":     permission.SealRecoverWithKeys,
 	"qrdb_barrier_recovery_delete":      permission.SealGenerateRecovery,
@@ -1258,9 +1286,14 @@ var mcpPermissions = map[string]permission.Permission{
 	"qrdb_database_update_etcd":       permission.DatabasesUpdate,
 	"qrdb_database_update_protocol":   permission.DatabasesUpdate,
 	"qrdb_database_update_raft":       permission.DatabasesUpdate,
+	"qrdb_database_scale":             permission.DatabasesScale,
 	"qrdb_database_seal":              permission.DatabasesSeal,
 	"qrdb_database_unseal":            permission.DatabasesUnseal,
 	"qrdb_database_barrier_status":    permission.DatabasesBarrierStatus,
+
+	// SQL query (read-through over the KV range surface). Mirrors
+	// restPermissions "POST /sql/query" / grpcPermissions SQLQuery.
+	"qrdb_sql_query": permission.KVRange,
 
 	// Collection / Document management.
 	"qrdb_collection_create":         permission.CollectionsCreate,

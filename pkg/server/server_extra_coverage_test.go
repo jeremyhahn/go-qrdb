@@ -128,6 +128,14 @@ func (k *extraKVPassthrough) Put(_ context.Context, key string, value []byte) er
 	k.store[key] = value
 	return nil
 }
+func (k *extraKVPassthrough) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	k.lastKey = key
+	if _, exists := k.store[key]; exists {
+		return false, nil
+	}
+	k.store[key] = value
+	return true, nil
+}
 func (k *extraKVPassthrough) Get(_ context.Context, key string) ([]byte, error) {
 	k.lastKey = key
 	v, ok := k.store[key]
@@ -225,7 +233,10 @@ type extraFailingKV struct {
 	err error
 }
 
-func (f *extraFailingKV) Put(_ context.Context, _ string, _ []byte) error    { return f.err }
+func (f *extraFailingKV) Put(_ context.Context, _ string, _ []byte) error { return f.err }
+func (f *extraFailingKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+	return false, f.err
+}
 func (f *extraFailingKV) Get(_ context.Context, _ string) ([]byte, error)    { return nil, f.err }
 func (f *extraFailingKV) Delete(_ context.Context, _ string) error           { return f.err }
 func (f *extraFailingKV) List(_ context.Context, _ string) ([]string, error) { return nil, f.err }
@@ -1413,6 +1424,7 @@ func TestStart_REST_WithSOAuthenticator(t *testing.T) {
 	cfg := testConfig(true, false) // REST only
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithSOAuthenticator(soAuth),
+		WithCeremonyCA(testServerCA),
 	)
 
 	if err := srv.Start(); err != nil {

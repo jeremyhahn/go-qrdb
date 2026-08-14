@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -38,9 +39,11 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 		return &transport.RequestError{Method: "CredentialSubmit", Err: &nilRequestError{Method: "CredentialSubmit"}}
 	}
 
+	// MCP tool arguments are strings; base64-encode (RFC 4648) so arbitrary
+	// binary credential content round-trips byte-for-byte.
 	_, err := t.callTool(ctx, "qrdb_credential_submit", map[string]any{
 		"name":  req.Name,
-		"value": req.Value,
+		"value": base64.StdEncoding.EncodeToString(req.Value),
 	})
 	if err != nil {
 		return &transport.RequestError{Method: "CredentialSubmit", Err: err}
@@ -117,9 +120,11 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		return nil, &transport.RequestError{Method: "CredentialRotate", Err: &nilRequestError{Method: "CredentialRotate"}}
 	}
 
+	// new_value is base64-encoded (RFC 4648) so binary credential content
+	// round-trips byte-for-byte over the string-only MCP tool argument.
 	text, err := t.callTool(ctx, "qrdb_credential_rotate", map[string]any{
 		"name":                 req.Name,
-		"new_value":            req.NewValue,
+		"new_value":            base64.StdEncoding.EncodeToString(req.NewValue),
 		"grace_period_seconds": req.GracePeriodSeconds,
 	})
 	if err != nil {
@@ -209,14 +214,16 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 	return &resp, nil
 }
 
-// CredentialStore persists a credential value via the qrdb_credential_store tool.
+// CredentialStore persists a credential value via the qrdb_credential_store
+// tool. The value is base64-encoded (RFC 4648) so arbitrary binary content
+// round-trips byte-for-byte over the string-only MCP tool argument.
 func (t *Transport) CredentialStore(ctx context.Context, name string, value []byte) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
 	_, err := t.callTool(ctx, "qrdb_credential_store", map[string]any{
 		"name":  name,
-		"value": string(value),
+		"value": base64.StdEncoding.EncodeToString(value),
 	})
 	if err != nil {
 		return &transport.RequestError{Method: "CredentialStore", Err: err}
@@ -224,8 +231,9 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	return nil
 }
 
-// CredentialRetrieve returns the credential value via the qrdb_credential_retrieve
-// tool, which emits the raw value as text.
+// CredentialRetrieve returns the credential value via the
+// qrdb_credential_retrieve tool, which emits the value base64-encoded
+// (RFC 4648); this decodes it back to raw bytes.
 func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -234,5 +242,9 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CredentialRetrieve", Err: err}
 	}
-	return []byte(text), nil
+	value, decodeErr := base64.StdEncoding.DecodeString(text)
+	if decodeErr != nil {
+		return nil, &transport.RequestError{Method: "CredentialRetrieve", Err: &valueDecodeError{Err: decodeErr}}
+	}
+	return value, nil
 }

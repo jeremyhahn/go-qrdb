@@ -59,6 +59,15 @@ var shared *testServer
 // TestMain builds qrdbd, starts a single-node cluster, waits for it to
 // be healthy, runs the full test suite, then shuts the server down.
 func TestMain(m *testing.M) {
+	// Pre-warm the qrdb-sqlite CGO build before any test runs so that no
+	// per-test context timeout (the binary tests bound each invocation at
+	// 30s) is consumed by the build, which can take tens of seconds under
+	// -race on a loaded machine.
+	if err := ensureQRDBSQLiteBuilt(); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: build qrdb-sqlite: %v\n", err)
+		os.Exit(1)
+	}
+
 	var err error
 	shared, err = startSharedServer()
 	if err != nil {
@@ -254,8 +263,10 @@ func newSDKClient(t *testing.T, proto protocol) *sdk.Client {
 		tr, err = grpctransport.New(mtlsOpts(shared.grpcAddr())...)
 
 	case protoUnix:
-		// Unix sockets do not use TLS.
-		tr, err = unixtransport.New(sdktransport.WithAddress(shared.unixSocket))
+		// Unix (grpc-over-UDS) is "verified TLS 1.3 only", identical to the
+		// TCP gRPC transport: the socket-file mode is defense-in-depth, the
+		// TLS client certificate is the identity the server authenticates.
+		tr, err = unixtransport.New(mtlsOpts(shared.unixSocket)...)
 
 	case protoQUIC:
 		tr, err = quictransport.New(mtlsOpts(shared.quicAddr())...)

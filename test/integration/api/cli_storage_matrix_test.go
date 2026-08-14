@@ -218,28 +218,20 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 				assertContains(t, stdout, "Raft:",
 					fmt.Sprintf("[%s] database info should contain 'Raft:' after update-raft", proto))
 
-				// Update 4: update-barrier --enabled
+				// Update 4: update-barrier --enabled fails closed on this
+				// shared-store database (a per-database barrier is only real
+				// on a dedicated store; see cli_database_test.go). The
+				// dedicated-store happy path lives in the cluster-lane
+				// TestDatabaseBarrier* tests.
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 					"database", "update-barrier", dbName, "--enabled")
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database update-barrier --enabled failed: %v", proto, err)
+				if err == nil {
+					t.Fatalf("[%s] update-barrier --enabled on a shared-store database must fail closed, got success (stdout: %s)",
+						proto, stdout)
 				}
-				output = stdout + stderr
-				assertNotEmpty(t, output,
-					fmt.Sprintf("[%s] database update-barrier produced no output", proto))
-				t.Logf("[%s] update-barrier --enabled passed", proto)
-
-				// Verify update-barrier via info.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database info after update-barrier failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "Barrier:",
-					fmt.Sprintf("[%s] database info should contain 'Barrier:' after update-barrier", proto))
+				assertContains(t, strings.ToLower(stdout+stderr+err.Error()), "dedicated store",
+					fmt.Sprintf("[%s] shared-store barrier rejection should name the dedicated-store requirement", proto))
+				t.Logf("[%s] update-barrier --enabled correctly rejected on shared store", proto)
 
 				// Update 5: update-connection --conn-transport tcp --address remote:9000
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,

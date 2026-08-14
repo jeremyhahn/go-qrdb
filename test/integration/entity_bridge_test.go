@@ -21,12 +21,25 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"testing"
+	"time"
 
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 )
+
+// bridgeDatabase is the SQL database name the entity bridge tests connect to
+// (matches the --sql-database "qrdb" flag passed by startSingleNodeWithSQL,
+// and the "qrdb" dbname used in the MySQL/PgSQL DSNs built by waitForMySQL /
+// waitForPgSQL). REST KV requests must target the same database via the
+// X-QRDB-Database header so both paths key into the identical composite
+// "<tenant>/<db>/" physical namespace (see tenant.ComposeNamespace, the
+// single canonical formula every transport uses) — the DAO/REST write and
+// the SQL scan only land on the same rows when both the tenant AND the
+// database agree.
+const bridgeDatabase = "qrdb"
 
 // ---------------------------------------------------------------------------
 // Test entity helpers
@@ -42,32 +55,64 @@ type bridgeUser struct {
 	Score float64 `json:"score"`
 }
 
-// putBridgeUser marshals u as JSON and stores it via the REST KV API.
-// The key includes the "system/" tenant prefix because the EntityTable
-// scans with tenant.PrefixKey(tenantID, entityType + "/"), and the SQL
-// session derives its tenant from the authenticated mTLS identity — the
-// admin client cert carries OU=system, so the session tenant is "system".
-// The DAO write must land under the same namespace the SQL reader scans.
+// bridgeUserKey returns the bare (tenant/db-unscoped) KV key for a bridge
+// user's entity row. The EntityTable stores entities under
+// "<entityType>/<id>" relative to the composite (tenant, db) namespace, so
+// the REST client must send this bare key together with the X-QRDB-Database
+// header (see putBridgeUser / getBridgeUser) rather than embedding the
+// tenant segment manually — the composite namespace prefix is applied
+// transparently by the REST service registry from the authenticated mTLS
+// identity and the database header, exactly as it is for every other REST
+// KV client.
+func bridgeUserKey(id uint64) string {
+	return fmt.Sprintf("bridge_users/%d", id)
+}
+
+// putBridgeUser marshals u as JSON and stores it via the REST KV API,
+// scoped to bridgeDatabase via the X-QRDB-Database header so the write lands
+// under the same composite (tenant, db) namespace the SQL session (connected
+// to the "qrdb" database) scans.
 func putBridgeUser(t *testing.T, ca *testCA, adminPort int, u bridgeUser) {
 	t.Helper()
 	data, err := json.Marshal(u)
 	if err != nil {
 		t.Fatalf("putBridgeUser: marshal: %v", err)
 	}
-	httpPut(t, ca, adminPort, fmt.Sprintf("system/bridge_users/%d", u.ID), data)
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	status, err := dbScopedPutTolerant(t, client, adminPort, bridgeDatabase, bridgeUserKey(u.ID), data)
+	if err != nil {
+		t.Fatalf("putBridgeUser: %v", err)
+	}
+	if status != http.StatusNoContent {
+		t.Fatalf("putBridgeUser: status %d, want %d", status, http.StatusNoContent)
+	}
 }
 
-// getBridgeUser retrieves the entity via the REST KV API and unmarshals
-// it into a bridgeUser. The key includes the "system/" tenant prefix
-// (the admin identity's tenant; see putBridgeUser).
+// getBridgeUser retrieves the entity via the REST KV API, scoped to
+// bridgeDatabase via the X-QRDB-Database header (see putBridgeUser), and
+// unmarshals it into a bridgeUser.
 func getBridgeUser(t *testing.T, ca *testCA, adminPort int, id uint64) bridgeUser {
 	t.Helper()
-	data := httpGet(t, ca, adminPort, fmt.Sprintf("system/bridge_users/%d", id))
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	data, status := dbScopedGetTolerant(t, client, adminPort, bridgeDatabase, bridgeUserKey(id))
+	if status != http.StatusOK {
+		t.Fatalf("getBridgeUser: status %d, body: %s", status, data)
+	}
 	var u bridgeUser
 	if err := json.Unmarshal(data, &u); err != nil {
 		t.Fatalf("getBridgeUser: unmarshal: %v", err)
 	}
 	return u
+}
+
+// getBridgeUserStatus returns the REST KV GET status code for the given
+// bridge user id, scoped to bridgeDatabase via the X-QRDB-Database header
+// (see putBridgeUser). Used to assert 404 after a SQL-side DELETE.
+func getBridgeUserStatus(t *testing.T, ca *testCA, adminPort int, id uint64) int {
+	t.Helper()
+	client := mtlsHTTPClient(t, ca, 10*time.Second)
+	_, status := dbScopedGetTolerant(t, client, adminPort, bridgeDatabase, bridgeUserKey(id))
+	return status
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +326,7 @@ func TestEntityBridge_MySQL_DeleteAndVerify(t *testing.T) {
 	}
 
 	// Verify REST GET returns 404.
-	status := httpGetStatus(t, ca, adminPort, "system/bridge_users/500")
+	status := getBridgeUserStatus(t, ca, adminPort, 500)
 	if status != 404 {
 		t.Errorf("REST GET after DELETE: got status %d, want 404", status)
 	}

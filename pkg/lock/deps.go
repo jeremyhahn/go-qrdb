@@ -52,7 +52,7 @@ type WatchServicer interface {
 // package. Only GetRevision and Range are used by lock operations.
 type MVCCKVServicer interface {
 	GetRevision(ctx context.Context, key string) (*kv.KeyValue, error)
-	Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, error)
+	Range(ctx context.Context, start, end []byte, opts ...RangeOption) ([]*kv.KeyValue, int64, int64, error)
 }
 
 // ---------------------------------------------------------------------------

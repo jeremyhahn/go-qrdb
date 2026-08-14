@@ -70,6 +70,26 @@ func (m *mockSnapshotProvider) RestoreShard(_ context.Context, _ uint64, _ []byt
 	return m.restoreErr
 }
 
+// mockOnlineSnapshotProvider extends mockSnapshotProvider with
+// OnlineShardRestorer, so BackupService.RestoreBackup's per-shard loop
+// prefers RestoreShardOnline over the plain RestoreShard.
+type mockOnlineSnapshotProvider struct {
+	mockSnapshotProvider
+	onlineErr   error
+	onlineCalls atomic.Int32
+}
+
+func newMockOnlineSnapshotProvider() *mockOnlineSnapshotProvider {
+	return &mockOnlineSnapshotProvider{mockSnapshotProvider: *newMockSnapshotProvider()}
+}
+
+func (m *mockOnlineSnapshotProvider) RestoreShardOnline(_ context.Context, _ uint64, _ []byte) error {
+	m.onlineCalls.Add(1)
+	return m.onlineErr
+}
+
+var _ OnlineShardRestorer = (*mockOnlineSnapshotProvider)(nil)
+
 // ---------------------------------------------------------------------------
 // CreateBackup tests
 // ---------------------------------------------------------------------------
@@ -598,6 +618,66 @@ func TestBackupService_RestoreBackup_RestoreError(t *testing.T) {
 	}
 }
 
+// TestBackupService_RestoreBackup_PrefersOnlineShardRestorer verifies that
+// RestoreBackup calls RestoreShardOnline (not RestoreShard) whenever the
+// configured provider implements OnlineShardRestorer.
+func TestBackupService_RestoreBackup_PrefersOnlineShardRestorer(t *testing.T) {
+	provider := newMockOnlineSnapshotProvider()
+	svc := NewBackupService(provider)
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online"})
+	if err != nil {
+		t.Fatalf("CreateBackup returned error: %v", err)
+	}
+
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup returned error: %v", err)
+	}
+	if result.ShardsRestored != 3 {
+		t.Fatalf("expected 3 shards restored, got %d", result.ShardsRestored)
+	}
+	if provider.onlineCalls.Load() != 3 {
+		t.Fatalf("expected RestoreShardOnline called 3 times, got %d", provider.onlineCalls.Load())
+	}
+	if provider.restoreCalls.Load() != 0 {
+		t.Fatalf("expected the plain RestoreShard to never be called, got %d calls", provider.restoreCalls.Load())
+	}
+}
+
+// TestBackupService_RestoreBackup_OnlineShardRestorerError verifies that a
+// RestoreShardOnline failure (e.g. one of the guard errors) is embedded as a
+// per-shard ShardError rather than aborting the whole restore, matching the
+// plain RestoreShard failure-handling contract.
+func TestBackupService_RestoreBackup_OnlineShardRestorerError(t *testing.T) {
+	provider := newMockOnlineSnapshotProvider()
+	provider.onlineErr = &OnlineRestoreSystemShardError{ShardID: 1}
+	svc := NewBackupService(provider)
+
+	ctx := context.Background()
+	created, err := svc.CreateBackup(ctx, BackupOptions{Destination: "/backups/online-fail"})
+	if err != nil {
+		t.Fatalf("CreateBackup returned error: %v", err)
+	}
+
+	result, err := svc.RestoreBackup(ctx, RestoreOptions{BackupID: created.ID})
+	if err != nil {
+		t.Fatalf("RestoreBackup should not return a top-level error for per-shard guard failures: %v", err)
+	}
+	if result.ShardsRestored != 0 {
+		t.Fatalf("expected 0 shards restored, got %d", result.ShardsRestored)
+	}
+	if len(result.Errors) != 3 {
+		t.Fatalf("expected 3 shard errors, got %d", len(result.Errors))
+	}
+	for _, se := range result.Errors {
+		if se.Message == "" {
+			t.Fatalf("expected a non-empty guard error message for shard %d", se.ShardID)
+		}
+	}
+}
+
 func TestBackupService_RestoreBackup_ShardNotInBackup(t *testing.T) {
 	provider := newMockSnapshotProvider()
 	svc := NewBackupService(provider)
@@ -817,3 +897,96 @@ func TestBackupErrors_Unwrap(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetShardRestarter tests
+// ---------------------------------------------------------------------------
+
+// TestSetShardRestarter_EnablesOnlineRestoreOnHostBackedProvider proves the
+// end-to-end late-binding wiring path the daemon and SDK node builders use:
+// NewBackupService(NewHostShardSnapshotProvider(host)) is constructed first
+// (as it is at lifecycle.BuildServices time, before the IsolationRaft
+// factory exists), and SetShardRestarter is called afterward once the
+// restarter exists — exactly mirroring cmd/qrdbd/start.go and
+// sdk/go/node/node.go.
+func TestSetShardRestarter_EnablesOnlineRestoreOnHostBackedProvider(t *testing.T) {
+	host := newMockSnapshotHost()
+	provider := NewHostShardSnapshotProvider(host)
+	svc := NewBackupService(provider)
+
+	restarter := &fakeShardRestarter{}
+	SetShardRestarter(svc, restarter)
+
+	ctx := context.Background()
+
+	// A direct RestoreShardOnline call (as RestoreBackup would make once a
+	// backup exists) must now route through the wired restarter.
+	online, ok := provider.(OnlineShardRestorer)
+	if !ok {
+		t.Fatal("expected the host-backed provider to implement OnlineShardRestorer")
+	}
+	if err := online.RestoreShardOnline(ctx, 1000, []byte("data")); err != nil {
+		t.Fatalf("RestoreShardOnline returned error: %v", err)
+	}
+	if restarter.stopCalls.Load() != 1 || restarter.restartCalls.Load() != 1 {
+		t.Fatalf("expected the wired restarter to be used (stop=%d, restart=%d)",
+			restarter.stopCalls.Load(), restarter.restartCalls.Load())
+	}
+}
+
+// TestSetShardRestarter_NoopForNonBackupService verifies SetShardRestarter
+// tolerates a BackupServicer implementation other than *BackupService (e.g.
+// a test double) without panicking.
+func TestSetShardRestarter_NoopForNonBackupService(t *testing.T) {
+	var svc BackupServicer = &noopBackupServicer{}
+	SetShardRestarter(svc, &fakeShardRestarter{})
+}
+
+// TestSetShardRestarter_NoopForNonHostBackedProvider verifies
+// SetShardRestarter tolerates a *BackupService whose provider is not the
+// host-backed hostShardSnapshotProvider (e.g. mockSnapshotProvider in tests).
+func TestSetShardRestarter_NoopForNonHostBackedProvider(t *testing.T) {
+	svc := NewBackupService(newMockSnapshotProvider())
+	SetShardRestarter(svc, &fakeShardRestarter{})
+}
+
+// TestSetShardRestarter_NilRestarterIsNoop verifies a nil restarter never
+// clears an already-wired one.
+func TestSetShardRestarter_NilRestarterIsNoop(t *testing.T) {
+	host := newMockSnapshotHost()
+	provider := NewHostShardSnapshotProvider(host)
+	svc := NewBackupService(provider)
+
+	restarter := &fakeShardRestarter{}
+	SetShardRestarter(svc, restarter)
+	SetShardRestarter(svc, nil)
+
+	online := provider.(OnlineShardRestorer)
+	if err := online.RestoreShardOnline(context.Background(), 1000, []byte("data")); err != nil {
+		t.Fatalf("RestoreShardOnline returned error: %v", err)
+	}
+	if restarter.stopCalls.Load() != 1 {
+		t.Fatalf("expected the previously wired restarter to remain wired after a nil SetShardRestarter call, got %d stop calls", restarter.stopCalls.Load())
+	}
+}
+
+// noopBackupServicer is a minimal BackupServicer double (not *BackupService)
+// used to prove SetShardRestarter degrades to a no-op rather than panicking.
+type noopBackupServicer struct{}
+
+func (*noopBackupServicer) CreateBackup(context.Context, BackupOptions) (*BackupInfo, error) {
+	return nil, nil
+}
+func (*noopBackupServicer) ListBackups(context.Context) ([]BackupInfo, error) { return nil, nil }
+func (*noopBackupServicer) GetBackup(context.Context, string) (*BackupInfo, error) {
+	return nil, nil
+}
+func (*noopBackupServicer) DeleteBackup(context.Context, string) error { return nil }
+func (*noopBackupServicer) RestoreBackup(context.Context, RestoreOptions) (*RestoreResult, error) {
+	return nil, nil
+}
+func (*noopBackupServicer) VerifyBackup(context.Context, string) (*VerifyResult, error) {
+	return nil, nil
+}
+
+var _ BackupServicer = (*noopBackupServicer)(nil)

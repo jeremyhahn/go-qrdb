@@ -58,6 +58,9 @@ func toolTenantCreate() mcp.Tool {
 		mcp.WithBoolean("barrier_auto_unseal",
 			mcp.Description("Opt a dedicated-isolation tenant (barrier/volume) into the system-managed auto-unseal key-management mode (entitlement-gated). Default false = self-managed."),
 		),
+		mcp.WithString("data_root",
+			mcp.Description("Pin an IsolationVolume/IsolationRaft tenant's dedicated filesystem DataRoot to this absolute path instead of pool allocation. Empty (default) allocates from the configured volume pool."),
+		),
 	)
 }
 
@@ -77,8 +80,12 @@ func handleTenantCreate(svc tenant.TenantServicer) mcpserver.ToolHandlerFunc {
 		isolationType := tenant.IsolationType(mcp.ParseString(req, "isolation_type", ""))
 		barrierAutoUnseal := mcp.ParseBoolean(req, "barrier_auto_unseal", false)
 
-		info, err := svc.CreateTenant(ctx, id, name, isolationType,
-			tenant.WithBarrierAutoUnseal(barrierAutoUnseal))
+		opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(barrierAutoUnseal)}
+		if dataRoot := mcp.ParseString(req, "data_root", ""); dataRoot != "" {
+			opts = append(opts, tenant.WithDataRoot(dataRoot))
+		}
+
+		info, err := svc.CreateTenant(ctx, id, name, isolationType, opts...)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_tenant_create", Err: err}
 		}

@@ -99,7 +99,6 @@ func TestSealedWindow_SealedAllowlistPasses(t *testing.T) {
 	probe := newFakeSealed(true)
 	mw := SealedWindowMiddleware(probe, nil)
 	for _, path := range []string{
-		"/v1/health",
 		"/v1/barrier/status",
 		"/v1/barrier/initialize",
 		"/v1/barrier/unseal",

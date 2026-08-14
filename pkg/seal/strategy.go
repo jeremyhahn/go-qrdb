@@ -111,6 +111,26 @@ type EpochBarrierConfig = quicraftseal.BarrierConfig
 // DefaultBarrierConfig.
 var DefaultEpochBarrierConfig = quicraftseal.DefaultBarrierConfig
 
+// NewEpochBarrier is a constructor alias for go-quicraft's NewBarrier. It
+// completes the EpochBarrier alias set: callers that already use the
+// EpochBarrier type and EpochBarrierConfig can construct one without reaching
+// past this package into go-quicraft directly.
+//
+// It returns an error for an invalid configuration (unknown algorithm, or a
+// non-FIPS-approved cipher under FIPS mode) rather than panicking, because a
+// barrier config assembled at runtime from a file or per-tenant settings is
+// the normal case here.
+//
+// The returned barrier is sealed. It must be Initialize-d (or unsealed) before
+// use — a WAL opened over a sealed barrier is rejected, because a sealed
+// barrier cannot report whether it authenticates caller context.
+var NewEpochBarrier = quicraftseal.NewBarrier
+
+// MustNewEpochBarrier is a constructor alias for go-quicraft's
+// MustNewBarrier. Use it only when the configuration is built entirely from
+// compile-time constants, where an invalid value is a programmer error.
+var MustNewEpochBarrier = quicraftseal.MustNewBarrier
+
 // InvocationCounter tracks AEAD encrypt operations and enforces limits.
 type InvocationCounter = quicraftseal.InvocationCounter
 

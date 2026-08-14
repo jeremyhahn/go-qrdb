@@ -279,11 +279,11 @@ func NewCredentialService(c *credentials.CredentialService) CredentialServicer
 
 | Transport | Path | Notes |
 |-----------|------|-------|
-| Embedded | `sdk/go/transport/embedded/credentials.go` | Direct method calls. |
+| Embedded | `sdk/go/transport/embedded/transport_credentials.go` | Direct method calls. |
 | gRPC     | `pkg/api/grpc/credentials_server.go` / `pkg/api/grpc/service_credentials.go` | 1:1 wrappers around `CredentialServicer`. |
 | QUIC     | `pkg/api/quic/handlers_credentials.go` | gob-encoded request/response. |
 | REST     | `pkg/api/rest/handlers_credentials.go` | JSON envelope. |
-| MCP      | `pkg/api/mcp/tools_ceremony_credentials.go` | MCP tool surface. |
+| MCP      | `pkg/api/mcp/tools_credentials.go` | MCP tool surface. |
 | UNIX     | gRPC-over-UDS, reuses the gRPC server. |
 
 The five versioned-rotation methods landed in lockstep across every transport in Phase 8e; there are no `NotImplementedError` returns on the credential surface in any SDK transport.

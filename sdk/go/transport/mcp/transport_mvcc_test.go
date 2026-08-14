@@ -50,10 +50,15 @@ type mockMVCCSvc struct {
 	lastRangeEnd   []byte
 	lastCompact    int64
 
-	defaultKV  *kv.KeyValue
-	rangeKVs   []*kv.KeyValue
-	rangeCount int64
-	currentRev int64
+	defaultKV     *kv.KeyValue
+	rangeKVs      []*kv.KeyValue
+	rangeCount    int64
+	rangeRevision int64
+	currentRev    int64
+
+	restoreErr    error
+	restoreResult *service.RestoreRevisionResult
+	lastRestore   *service.RestoreRevisionRequest
 }
 
 var _ service.MVCCKVServicer = (*mockMVCCSvc)(nil)
@@ -72,6 +77,7 @@ func newMockMVCCSvc() *mockMVCCSvc {
 		defaultKV:     dkv,
 		rangeKVs:      []*kv.KeyValue{dkv, {Key: []byte("k2"), Value: []byte("v2"), CreateRevision: 1, ModRevision: 3, Version: 1}},
 		rangeCount:    2,
+		rangeRevision: 9,
 		currentRev:    42,
 	}
 }
@@ -115,18 +121,18 @@ func (m *mockMVCCSvc) GetAtRevisionWithConsistency(ctx context.Context, key stri
 	return m.GetAtRevision(ctx, key, revision)
 }
 
-func (m *mockMVCCSvc) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCSvc) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastRangeStart = append([]byte(nil), start...)
 	m.lastRangeEnd = append([]byte(nil), end...)
 	if m.rangeErr != nil {
-		return nil, 0, m.rangeErr
+		return nil, 0, 0, m.rangeErr
 	}
-	return m.rangeKVs, m.rangeCount, nil
+	return m.rangeKVs, m.rangeCount, m.rangeRevision, nil
 }
 
-func (m *mockMVCCSvc) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCSvc) RangeWithConsistency(ctx context.Context, start, end []byte, _ consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	return m.Range(ctx, start, end, rangeOpts...)
 }
 
@@ -142,6 +148,26 @@ func (m *mockMVCCSvc) CurrentRevision(_ context.Context) (int64, error) {
 		return 0, m.currentRevErr
 	}
 	return m.currentRev, nil
+}
+
+func (m *mockMVCCSvc) RestoreToRevision(_ context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastRestore = req
+	if m.restoreErr != nil {
+		return nil, m.restoreErr
+	}
+	if m.restoreResult != nil {
+		return m.restoreResult, nil
+	}
+	return &service.RestoreRevisionResult{
+		Revision: req.Revision,
+		Changes: []service.RestoreKeyChange{
+			{Key: "restored-key", Action: service.RestoreActionRevert, FromRevision: 5, ToRevision: 3, ValueBytes: 7},
+		},
+		Applied: 1,
+		DryRun:  req.DryRun,
+	}, nil
 }
 
 func connectMVCCInProcess(t *testing.T, svc service.MVCCKVServicer) (*Transport, func()) {
@@ -291,6 +317,11 @@ func TestRange_Success(t *testing.T) {
 	if len(resp.Kvs) != 2 {
 		t.Errorf("kvs: %d", len(resp.Kvs))
 	}
+	// Revision (9) is deliberately distinct from Count (2) so this
+	// assertion cannot pass by coincidence if the revision is dropped.
+	if resp.Revision != 9 {
+		t.Errorf("revision: %d, want 9", resp.Revision)
+	}
 }
 
 func TestRange_ServiceError(t *testing.T) {
@@ -360,6 +391,127 @@ func TestCurrentRevision_ServiceError(t *testing.T) {
 
 	if _, err := tr.CurrentRevision(context.Background()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RestoreToRevision
+// ---------------------------------------------------------------------------
+
+func TestRestoreToRevision_Success(t *testing.T) {
+	svc := newMockMVCCSvc()
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if result.Revision != 5 || result.Applied != 1 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != "restored-key" {
+		t.Fatalf("unexpected changes: %+v", result.Changes)
+	}
+	if svc.lastRestore == nil || svc.lastRestore.Prefix != "prefix" {
+		t.Fatalf("expected service prefix %q, got %+v", "prefix", svc.lastRestore)
+	}
+}
+
+func TestRestoreToRevision_DryRun(t *testing.T) {
+	svc := newMockMVCCSvc()
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   []byte("prefix"),
+		DryRun:   true,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if !result.DryRun {
+		t.Fatal("expected dry_run=true in response")
+	}
+	if svc.lastRestore == nil || !svc.lastRestore.DryRun {
+		t.Fatal("expected service to receive DryRun=true")
+	}
+}
+
+// TestRestoreToRevision_BinaryRoundTrip proves an arbitrary byte-valued
+// prefix and response key round-trip byte-for-byte through the MCP tool's
+// explicit base64 (RFC 4648) argument/response encoding.
+func TestRestoreToRevision_BinaryRoundTrip(t *testing.T) {
+	binaryPrefix := []byte{0x00, 0xff, 0xfe, 'p'}
+	binaryKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	svc := newMockMVCCSvc()
+	svc.restoreResult = &service.RestoreRevisionResult{
+		Revision: 5,
+		Changes: []service.RestoreKeyChange{
+			{Key: string(binaryKey), Action: service.RestoreActionDelete, FromRevision: 9},
+		},
+		Applied: 1,
+	}
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	result, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Prefix:   binaryPrefix,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if svc.lastRestore == nil || svc.lastRestore.Prefix != string(binaryPrefix) {
+		t.Fatalf("server received prefix %+v, want %v", svc.lastRestore, binaryPrefix)
+	}
+	if len(result.Changes) != 1 || string(result.Changes[0].Key) != string(binaryKey) {
+		t.Fatalf("expected round-tripped binary response key %v, got %+v", binaryKey, result.Changes)
+	}
+}
+
+func TestRestoreToRevision_Keys_BinaryRoundTrip(t *testing.T) {
+	binaryKey := []byte{0x00, 0xff, 0xfe, 'k'}
+
+	svc := newMockMVCCSvc()
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{
+		Revision: 5,
+		Keys:     [][]byte{binaryKey},
+	})
+	if err != nil {
+		t.Fatalf("RestoreToRevision: %v", err)
+	}
+	if svc.lastRestore == nil || len(svc.lastRestore.Keys) != 1 || svc.lastRestore.Keys[0] != string(binaryKey) {
+		t.Fatalf("expected service to receive binary key %v, got %+v", binaryKey, svc.lastRestore)
+	}
+}
+
+func TestRestoreToRevision_ServiceError(t *testing.T) {
+	svc := newMockMVCCSvc()
+	svc.restoreErr = errors.New("backend down")
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	if _, err := tr.RestoreToRevision(context.Background(), &transport.RestoreRevisionRequest{Revision: 1}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRestoreToRevision_NilRequest(t *testing.T) {
+	svc := newMockMVCCSvc()
+	tr, cleanup := connectMVCCInProcess(t, svc)
+	defer cleanup()
+
+	if _, err := tr.RestoreToRevision(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil request")
 	}
 }
 

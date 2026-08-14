@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -356,6 +357,71 @@ func TestServices_PlacementMemberStart(t *testing.T) {
 	}
 	if string(got) != "v" {
 		t.Errorf("KV.Get = %q, want %q", got, "v")
+	}
+}
+
+// TestServices_PlacementMemberStart_JoinFlagFromReplicaState is the
+// regression test pinning the Phase 4c-2 / observer-first join-flag fix
+// (raft_backend_factory.go Services): join is computed from
+// localReplica.State, true ONLY for ReplicaStateObserver (a replica that
+// has never received a snapshot and must enter go-quicraft's join
+// bootstrap window), false for ReplicaStateObserverReady and
+// ReplicaStateActive (both already hold committed state -- restarting them
+// with join=true would re-trigger the no-data-loss-restart bug) and for the
+// zero-value legacy state (backward compatibility). IsShardJoining is used
+// as the externally observable proxy for the join flag actually passed to
+// go-quicraft's StartShard, since the flag itself is not otherwise exposed.
+func TestServices_PlacementMemberStart_JoinFlagFromReplicaState(t *testing.T) {
+	tests := []struct {
+		name        string
+		state       placement.ReplicaState
+		wantJoining bool
+	}{
+		{"ReplicaStateObserver starts join=true (enters bootstrap window)", placement.ReplicaStateObserver, true},
+		{"ReplicaStateObserverReady starts join=false", placement.ReplicaStateObserverReady, false},
+		{"ReplicaStateActive starts join=false", placement.ReplicaStateActive, false},
+		{"zero-value legacy state starts join=false", placement.ReplicaState(0), false},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, _ := newSharedTestHost(t)
+			reg := newVolumePooledRegistry(t)
+			ctx := context.Background()
+
+			tenantID := fmt.Sprintf("jf%d", i)
+			dataRoot, _ := registerVolumeTenant(t, reg, tenantID)
+			shardDataDir := filepath.Join(dataRoot, "databases", "db")
+			shardID := uint64(9500 + i)
+
+			store := newPlacementStore(t)
+			if err := store.Put(ctx, &placement.Placement{
+				TenantID: tenantID, Database: "db", ShardID: shardID, RF: 1, LeaderReplicaID: sharedHostReplicaID,
+				Replicas: []placement.Replica{
+					{
+						ReplicaID: sharedHostReplicaID,
+						NodeID:    sharedHostRaftAddr,
+						RaftAddr:  sharedHostRaftAddr,
+						DataRoot:  shardDataDir,
+						State:     tt.state,
+					},
+				},
+			}); err != nil {
+				t.Fatalf("placement Put: %v", err)
+			}
+
+			f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg,
+				newFakeRaftInfoSource(), volTestLogger(),
+				WithPlacementInfoSource(store, sharedHostRaftAddr, reg.LocalTenantDataRoot))
+			t.Cleanup(func() { _ = f.CloseAll() })
+
+			if _, err := f.Services(ctx, tenantID, "db"); err != nil {
+				t.Fatalf("Services: %v", err)
+			}
+
+			if got := f.IsShardJoining(shardID); got != tt.wantJoining {
+				t.Errorf("IsShardJoining after start = %v, want %v (state=%v)", got, tt.wantJoining, tt.state)
+			}
+		})
 	}
 }
 

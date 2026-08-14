@@ -108,6 +108,30 @@ func TestInvalidQueryError_ErrorsIs(t *testing.T) {
 	}
 }
 
+func TestInvalidQueryError_UnsupportedQueryType_True(t *testing.T) {
+	err := &InvalidQueryError{Reason: "unsupported query type"}
+	if !err.UnsupportedQueryType() {
+		t.Error("UnsupportedQueryType() = false, want true for the Lookup switch fallback reason")
+	}
+}
+
+func TestInvalidQueryError_UnsupportedQueryType_False(t *testing.T) {
+	tests := []string{
+		"",
+		"index not found: idx1",
+		"compound index not found: idx1",
+		"lessor not configured",
+		"lease not found",
+		"time-series storage not configured",
+	}
+	for _, reason := range tests {
+		err := &InvalidQueryError{Reason: reason}
+		if err.UnsupportedQueryType() {
+			t.Errorf("UnsupportedQueryType() = true for reason %q, want false", reason)
+		}
+	}
+}
+
 func TestHexByte(t *testing.T) {
 	tests := []struct {
 		name string

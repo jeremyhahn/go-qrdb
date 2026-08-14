@@ -1527,6 +1527,40 @@ func TestBuiltInRoles_AdminHasCrossScopePermissions(t *testing.T) {
 	}
 }
 
+// TestBuiltInRoles_SSHVaultGrants pins which built-in roles reach the SSH key
+// vault. Admin and Operator own the SSH key lifecycle; User and Auditor are
+// deliberately excluded because ssh:read reaches key export, and therefore
+// private key material, unlike the metadata-only verbs those roles carry.
+func TestBuiltInRoles_SSHVaultGrants(t *testing.T) {
+	sshPerms := []permission.Permission{
+		permission.SSHRead, permission.SSHWrite, permission.SSHDelete,
+	}
+
+	for _, tc := range []struct {
+		roleName string
+		want     bool
+	}{
+		{RoleNameAdmin, true},
+		{RoleNameOperator, true},
+		{RoleNameUser, false},
+		{RoleNameAuditor, false},
+	} {
+		role := roleByName(BuiltInRoles("acme"), tc.roleName)
+		if role == nil {
+			t.Fatalf("%s role not found in BuiltInRoles", tc.roleName)
+		}
+		permSet := make(map[permission.Permission]struct{}, len(role.Permissions))
+		for _, p := range role.Permissions {
+			permSet[p] = struct{}{}
+		}
+		for _, p := range sshPerms {
+			if _, ok := permSet[p]; ok != tc.want {
+				t.Errorf("%s role holds %q: got %t, want %t", tc.roleName, p, ok, tc.want)
+			}
+		}
+	}
+}
+
 func TestBuiltInRoles_AdminHasNoDataPermissions(t *testing.T) {
 	roles := BuiltInRoles("acme")
 	admin := roleByName(roles, RoleNameAdmin)

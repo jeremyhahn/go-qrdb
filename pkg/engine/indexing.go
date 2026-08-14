@@ -383,7 +383,14 @@ func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index,
 		}
 
 		val := UnquoteJSON(raw)
-		_ = idx.Put(kv.Key, val)
+		if err := idx.Put(kv.Key, val); err != nil {
+			// A single entry's insert must not abort the backfill (that would
+			// leave the index even more incomplete), but the resulting gap is
+			// an operability hazard — log it so it is observable, mirroring
+			// the scan-failure Warn above.
+			slog.Warn("engine: index backfill entry failed; index built without this entry",
+				"field", fieldName, "key", string(kv.Key), "error", err)
+		}
 	}
 }
 

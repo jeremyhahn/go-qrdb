@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ func TestIndexedRowIter_Close(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_GetIndexes_NilService(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "system", nil)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), nil)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -134,7 +135,7 @@ func TestKVTable_GetIndexes_WithService(t *testing.T) {
 			return []string{"Email", "Name"}, nil
 		},
 	}
-	tbl := NewKVTable(&mockKVService{}, "system", svc)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), svc)
 	ctx := newTestContext()
 
 	indexes, err := tbl.GetIndexes(ctx)
@@ -145,8 +146,8 @@ func TestKVTable_GetIndexes_WithService(t *testing.T) {
 	qi1 := indexes[1].(*qrdbIndex)
 	assert.Equal(t, tableName, qi0.table)
 	assert.Equal(t, tableName, qi1.table)
-	assert.Equal(t, "Email", qi0.column)
-	assert.Equal(t, "Name", qi1.column)
+	assert.Equal(t, "Email", qi0.firstColumn())
+	assert.Equal(t, "Name", qi1.firstColumn())
 }
 
 func TestKVTable_GetIndexes_ListError(t *testing.T) {
@@ -155,7 +156,7 @@ func TestKVTable_GetIndexes_ListError(t *testing.T) {
 			return nil, errors.New("storage unavailable")
 		},
 	}
-	tbl := NewKVTable(&mockKVService{}, "system", svc)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), svc)
 	ctx := newTestContext()
 
 	_, err := tbl.GetIndexes(ctx)
@@ -167,7 +168,7 @@ func TestKVTable_GetIndexes_ListError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_PreciseMatch(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "system", nil)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), nil)
 	assert.True(t, tbl.PreciseMatch())
 }
 
@@ -176,7 +177,7 @@ func TestKVTable_PreciseMatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_IndexedAccess(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "system", nil)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), nil)
 	ctx := newTestContext()
 	// IndexedAccess returns the table itself since KVTable implements IndexedTable.
 	result := tbl.IndexedAccess(ctx, sqle.IndexLookup{})
@@ -188,7 +189,7 @@ func TestKVTable_IndexedAccess(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_LookupPartitions_NilService_FallsToFullScan(t *testing.T) {
-	tbl := NewKVTable(&mockKVService{}, "system", nil)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), nil)
 	ctx := newTestContext()
 
 	iter, err := tbl.LookupPartitions(ctx, sqle.IndexLookup{})
@@ -198,7 +199,7 @@ func TestKVTable_LookupPartitions_NilService_FallsToFullScan(t *testing.T) {
 
 func TestKVTable_LookupPartitions_EmptyLookup_FallsToFullScan(t *testing.T) {
 	svc := &mockIndexServicer{}
-	tbl := NewKVTable(&mockKVService{}, "system", svc)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), svc)
 	ctx := newTestContext()
 
 	// Empty IndexLookup (no index set) falls back to full scan.
@@ -209,7 +210,7 @@ func TestKVTable_LookupPartitions_EmptyLookup_FallsToFullScan(t *testing.T) {
 
 func TestKVTable_LookupPartitions_NonQRDBIndex_FallsToFullScan(t *testing.T) {
 	svc := &mockIndexServicer{}
-	tbl := NewKVTable(&mockKVService{}, "system", svc)
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), svc)
 	ctx := newTestContext()
 
 	// An IndexLookup with a non-qrdbIndex falls back to full scan.
@@ -224,16 +225,16 @@ func TestKVTable_LookupPartitions_NonQRDBIndex_FallsToFullScan(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKVTable_PartitionRows_IndexedPartition(t *testing.T) {
-	// PrefixKey("t1", "key1") = "t1/key1"
+	// ComposeNamespace("t1", "system") + "key1" = "t1/system/key1"
 	kvSvc := &mockKVService{
 		getFn: func(_ context.Context, key string) ([]byte, error) {
-			if key == "t1/key1" {
+			if key == "t1/system/key1" {
 				return []byte("value1"), nil
 			}
 			return nil, &service.KeyNotFoundError{Key: key}
 		},
 	}
-	tbl := NewKVTable(kvSvc, "t1", nil)
+	tbl := NewKVTable(kvSvc, tenant.ComposeNamespace("t1", ""), nil)
 	ctx := newTestContext()
 
 	// indexedPartition with two keys: one found, one missing.
@@ -245,7 +246,7 @@ func TestKVTable_PartitionRows_IndexedPartition(t *testing.T) {
 
 	row, err := iter.Next(ctx)
 	require.NoError(t, err)
-	// StripPrefix("t1", "t1/key1") = "key1"
+	// TrimPrefix("t1/system/key1", "t1/system/") = "key1"
 	assert.Equal(t, "key1", row[0])
 	assert.Equal(t, []byte("value1"), row[1])
 
@@ -403,18 +404,21 @@ func TestProvider_WithIndexService(t *testing.T) {
 // used to verify that non-QRDB indexes fall back to full scans.
 type externalIndex struct{}
 
-func (e *externalIndex) ID() string                                         { return "external" }
-func (e *externalIndex) Database() string                                   { return "db" }
-func (e *externalIndex) Table() string                                      { return "t" }
-func (e *externalIndex) Expressions() []string                              { return nil }
-func (e *externalIndex) IsUnique() bool                                     { return false }
-func (e *externalIndex) IsSpatial() bool                                    { return false }
-func (e *externalIndex) IsFullText() bool                                   { return false }
-func (e *externalIndex) IsVector() bool                                     { return false }
-func (e *externalIndex) Comment() string                                    { return "" }
-func (e *externalIndex) IndexType() string                                  { return "BTREE" }
-func (e *externalIndex) IsGenerated() bool                                  { return false }
-func (e *externalIndex) ColumnExpressionTypes() []sqle.ColumnExpressionType { return nil }
-func (e *externalIndex) CanSupport(_ *sqle.Context, _ ...sqle.Range) bool   { return false }
-func (e *externalIndex) CanSupportOrderBy(_ sqle.Expression) bool           { return false }
-func (e *externalIndex) PrefixLengths() []uint16                            { return nil }
+func (e *externalIndex) ID() string            { return "external" }
+func (e *externalIndex) Database() string      { return "db" }
+func (e *externalIndex) Table() string         { return "t" }
+func (e *externalIndex) Expressions() []string { return nil }
+func (e *externalIndex) IsUnique() bool        { return false }
+func (e *externalIndex) IsSpatial() bool       { return false }
+func (e *externalIndex) IsFullText() bool      { return false }
+func (e *externalIndex) IsVector() bool        { return false }
+func (e *externalIndex) Comment() string       { return "" }
+func (e *externalIndex) IndexType() string     { return "BTREE" }
+func (e *externalIndex) IsGenerated() bool     { return false }
+func (e *externalIndex) ColumnExpressionTypes(_ *sqle.Context) []sqle.ColumnExpressionType {
+	return nil
+}
+func (e *externalIndex) CoversColumns(_ []string) bool                    { return false }
+func (e *externalIndex) CanSupport(_ *sqle.Context, _ ...sqle.Range) bool { return false }
+func (e *externalIndex) CanSupportOrderBy(_ sqle.Expression) bool         { return false }
+func (e *externalIndex) PrefixLengths() []uint16                          { return nil }

@@ -38,16 +38,19 @@ var _ RoleServicer = (*routingRoleService)(nil)
 // shared store.
 type routingRoleService struct {
 	resolver tenant.StoreResolver
+	opts     []Option // applied to every per-tenant kvRoleStore (e.g. audit logger)
 	stores   sync.Map // map[kvstore.KVStore]RoleServicer
 }
 
 // NewRoutingService wraps role services with per-tenant store routing. The
 // resolver maps a tenant ID to its backing KVStore and must not be nil.
-func NewRoutingService(resolver tenant.StoreResolver) (RoleServicer, error) {
+// Optional Options are applied to every per-tenant store the router builds,
+// so cross-cutting concerns like audit logging reach barrier-isolated tenants.
+func NewRoutingService(resolver tenant.StoreResolver, opts ...Option) (RoleServicer, error) {
 	if resolver == nil {
 		return nil, &StoreError{Op: "new_routing", Detail: "store resolver must not be nil"}
 	}
-	return &routingRoleService{resolver: resolver}, nil
+	return &routingRoleService{resolver: resolver, opts: opts}, nil
 }
 
 // storeFor resolves the backing KVStore for tenantID and returns a
@@ -66,7 +69,7 @@ func (r *routingRoleService) storeForKV(kv kvstore.KVStore) (RoleServicer, error
 	if cached, ok := r.stores.Load(kv); ok {
 		return cached.(RoleServicer), nil
 	}
-	svc, err := NewStore(kv)
+	svc, err := NewStore(kv, r.opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -74,24 +77,30 @@ func (r *routingRoleService) storeForKV(kv kvstore.KVStore) (RoleServicer, error
 	return actual.(RoleServicer), nil
 }
 
-// requestTenant returns the explicit tenant from a value, defaulting to the
-// system tenant when empty.
-func requestTenant(explicit string) string {
-	if explicit == "" {
-		return tenant.SystemTenantID
-	}
-	return explicit
-}
-
-// CreateRole routes on the request's TenantID.
+// CreateRole routes on the EFFECTIVE tenant reconciled from the caller's
+// authenticated identity and the request's TenantID (see
+// tenant.EffectiveTenant). A normal tenant caller may only create roles in its
+// own tenant; a request tenant naming a different tenant is rejected with
+// *tenant.CrossTenantDeniedError. The request's TenantID is normalized to the
+// effective tenant before the store call so the stored record's tenant is
+// authoritative rather than attacker-controlled.
 func (r *routingRoleService) CreateRole(ctx context.Context, req *CreateRoleRequest) (*Role, error) {
-	tid := tenant.SystemTenantID
+	requested := ""
 	if req != nil {
-		tid = requestTenant(req.TenantID)
+		requested = req.TenantID
 	}
-	svc, err := r.storeFor(ctx, tid)
+	eff, err := tenant.EffectiveTenant(ctx, requested, "create role")
 	if err != nil {
 		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	if req != nil {
+		normalized := *req
+		normalized.TenantID = eff
+		req = &normalized
 	}
 	return svc.CreateRole(ctx, req)
 }
@@ -106,13 +115,20 @@ func (r *routingRoleService) GetRole(ctx context.Context, id string) (*Role, err
 	return svc.GetRole(ctx, id)
 }
 
-// GetRoleByName routes on the explicit tenant argument.
+// GetRoleByName routes on the EFFECTIVE tenant reconciled from the caller's
+// identity and the explicit tenant argument. Read of another tenant's role is
+// denied for a normal tenant caller (*tenant.CrossTenantDeniedError); the
+// effective tenant — never the raw argument — is passed to the store lookup.
 func (r *routingRoleService) GetRoleByName(ctx context.Context, tenantID, name string) (*Role, error) {
-	svc, err := r.storeFor(ctx, requestTenant(tenantID))
+	eff, err := tenant.EffectiveTenant(ctx, tenantID, "read role by name")
 	if err != nil {
 		return nil, err
 	}
-	return svc.GetRoleByName(ctx, tenantID, name)
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	return svc.GetRoleByName(ctx, eff, name)
 }
 
 // UpdateRole routes on the context tenant.
@@ -133,15 +149,28 @@ func (r *routingRoleService) DeleteRole(ctx context.Context, id string) error {
 	return svc.DeleteRole(ctx, id)
 }
 
-// ListRoles routes on the request's TenantID.
+// ListRoles routes on the EFFECTIVE tenant reconciled from the caller's
+// identity and the request's TenantID. A normal tenant caller may only
+// enumerate its own tenant; a request tenant naming a different tenant is
+// rejected with *tenant.CrossTenantDeniedError. The request's TenantID filter
+// is normalized to the effective tenant before the store scan.
 func (r *routingRoleService) ListRoles(ctx context.Context, req *ListRolesRequest) (*ListRolesResponse, error) {
-	tid := tenant.SystemTenantID
+	requested := ""
 	if req != nil {
-		tid = requestTenant(req.TenantID)
+		requested = req.TenantID
 	}
-	svc, err := r.storeFor(ctx, tid)
+	eff, err := tenant.EffectiveTenant(ctx, requested, "list roles")
 	if err != nil {
 		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	if req != nil {
+		normalized := *req
+		normalized.TenantID = eff
+		req = &normalized
 	}
 	return svc.ListRoles(ctx, req)
 }

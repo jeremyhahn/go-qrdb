@@ -20,11 +20,18 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
+
+// errNotDedicatedDatabaseBarrier is a sentinel returned by
+// resolveDedicatedDatabaseBarrier when the (tenant, db) pair is not a
+// database with its own dedicated-store encryption barrier, so resolve falls
+// through to the shared-store resolution path unchanged.
+var errNotDedicatedDatabaseBarrier = errors.New("server: database has no dedicated barrier store")
 
 // restServiceRegistry is the concrete implementation of rest.ServiceRegistry.
 // It bridges the per-database DatabaseServiceRegistry with the per-tenant
@@ -59,6 +66,19 @@ type restServiceRegistry struct {
 	raftBackend  *RaftBackendFactory
 	accountant   *quota.Accountant
 	systemTenant string
+
+	// dbManager resolves a database's own configuration (barrier, dedicated
+	// store, backend type) so resolve can route a database that carries its
+	// OWN encryption barrier -- independent of the owning tenant's isolation
+	// mode -- to its dedicated encrypting store. nil when the server was not
+	// configured with a database manager, in which case no database can have
+	// a dedicated barrier store and resolve behaves exactly as before.
+	dbManager *database.Manager
+
+	// dedicatedStore caches the per-database service bundles built by
+	// resolveDedicatedDatabaseBarrier for the non-raft (direct encrypting
+	// Backend()) case. Always non-nil; unused when dbManager is nil.
+	dedicatedStore *dedicatedStoreServiceCache
 }
 
 // NewRESTServiceRegistry creates a rest.ServiceRegistry that resolves
@@ -80,9 +100,10 @@ func NewRESTServiceRegistry(
 	opts ...RESTRegistryOption,
 ) rest.ServiceRegistry {
 	r := &restServiceRegistry{
-		dbReg:        dbReg,
-		barrierReg:   barrierReg,
-		systemTenant: systemTenant,
+		dbReg:          dbReg,
+		barrierReg:     barrierReg,
+		systemTenant:   systemTenant,
+		dedicatedStore: newDedicatedStoreServiceCache(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -134,6 +155,18 @@ func withQuotaAccountant(acct *quota.Accountant) RESTRegistryOption {
 	}
 }
 
+// withDatabaseManager sets the database.Manager used to resolve a database's
+// own barrier/dedicated-store configuration. When configured, a database that
+// carries its own encryption barrier over its own dedicated store (an
+// explicit --data-dir, or Backend == database.BackendRaft) is routed to that
+// dedicated encrypting store by resolve, independent of the owning tenant's
+// isolation mode. See resolveDedicatedDatabaseBarrier.
+func withDatabaseManager(mgr *database.Manager) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.dbManager = mgr
+	}
+}
+
 // WithDatabaseCatalog sets the catalog used to check whether a database exists
 // for a tenant. When configured, any database that exists resolves to a
 // namespaced view of the shared service set, even when it is not pre-registered
@@ -175,7 +208,7 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		if err != nil {
 			return nil, err
 		}
-		prefix := composeNamespace(tenantID, db, r.systemTenant, r.dbReg.DefaultName())
+		prefix := tenant.ComposeNamespace(tenantID, db)
 		return r.applyQuota(r.applyComposite(base, prefix), tenantID, info), nil
 	}
 
@@ -213,6 +246,19 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return r.applyQuota(base, tenantID, info), nil
 	}
 
+	// A specific database may carry its OWN encryption barrier over its OWN
+	// dedicated store (an explicit --data-dir, or Backend == BackendRaft --
+	// see database.DatabaseConfig.HasDedicatedStore / DatabaseBarrierManager),
+	// independent of the owning tenant's isolation mode. When that applies,
+	// the database's own encrypting store is the data-plane authority: its
+	// keys physically live in its own encrypted store, never the shared
+	// engine, and a sealed database barrier must fail closed rather than
+	// falling through to dbReg.Default() below (which would silently serve a
+	// different, unencrypted keyspace under the same database name).
+	if svcs, err := r.resolveDedicatedDatabaseBarrier(tenantID, db, info); !errors.Is(err, errNotDedicatedDatabaseBarrier) {
+		return svcs, err
+	}
+
 	// A database is a key-namespace layered over the shared service set, so
 	// there is only one underlying *DatabaseServices. A pre-registered set for
 	// the named database is used when present (e.g. the default database);
@@ -234,8 +280,66 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 	// which yields "system/system/". Every engine is wrapped so that keys are
 	// transparently scoped, which keeps each database's keyspace disjoint from
 	// every other database and every other tenant.
-	prefix := composeNamespace(tenantID, db, r.systemTenant, r.dbReg.DefaultName())
+	prefix := tenant.ComposeNamespace(tenantID, db)
 	return r.applyQuota(r.applyComposite(svcs, prefix), tenantID, info), nil
+}
+
+// resolveDedicatedDatabaseBarrier resolves a database that carries its OWN
+// encryption barrier over its OWN dedicated (non-raft) store, independent of
+// the owning tenant's isolation mode (see database.DatabaseConfig.HasDedicatedStore
+// and database.DatabaseBarrierManager). It returns errNotDedicatedDatabaseBarrier
+// -- checked with errors.Is -- when the (tenant, db) pair is not such a
+// database (no manager configured, no such database, not owned by tenantID,
+// no barrier-enabled dedicated store, or a raft-backed database -- raft-backed
+// isolation is served exclusively through an IsolationRaft tenant's dedicated
+// shard, never through a per-database barrier bolted onto a shared/prefix
+// tenant), in which case the caller falls through to the normal
+// not-found/shared-store resolution path unchanged. Any other returned error
+// is a real, final resolution outcome (including a fail-closed sealed
+// backend error) that the caller returns as-is.
+//
+// Only the non-raft dedicated-store shape (an explicit --data-dir) is served
+// here, directly over the database's own encrypting Backend()
+// (buildDedicatedStoreServices); it fails closed when the database's barrier
+// is sealed rather than falling back to the shared (unencrypted) store.
+func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, error) {
+	if r.dbManager == nil {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+	dbase, err := r.dbManager.Get(db)
+	if err != nil {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+
+	// Ownership check mirrors managerCatalog.DatabaseExists and
+	// managerRaftInfoSource.databaseInfo: the system tenant sees databases
+	// with no owner or the system owner; every other tenant sees only
+	// databases it owns. A mismatch is treated as "not this database" so the
+	// caller falls through to the normal not-found/shared-store handling
+	// instead of granting cross-tenant access to a dedicated encrypting store.
+	owner := dbase.TenantID()
+	if tenantID == r.systemTenant {
+		if owner != "" && owner != r.systemTenant {
+			return nil, errNotDedicatedDatabaseBarrier
+		}
+	} else if owner != tenantID {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+
+	cfg := dbase.Config()
+	if cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.HasDedicatedStore() {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+
+	// Raft-backed isolation is never resolved here: it comes exclusively from
+	// an IsolationRaft tenant's dedicated shard (handled above by the
+	// tenant.IsolationRaft branch in resolve), never from a per-database
+	// barrier layered onto a shared/prefix tenant's database.
+	if cfg.Backend == database.BackendRaft {
+		return nil, errNotDedicatedDatabaseBarrier
+	}
+
+	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
 }
 
 // applyQuota wraps the resolved KV and MVCC servicers with storage-byte quota
@@ -303,7 +407,16 @@ func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 // case no quota wrapper is installed.
 func (r *restServiceRegistry) resolveTenant(tenantID string) (tenant.IsolationType, *tenant.TenantInfo, error) {
 	if r.tenantSvc == nil {
-		// No tenant service: skip lookup, behave as before.
+		// No tenant service: skip lookup, behave as before. There is no
+		// creation-time validator (pkg/tenant.CreateTenant) standing between
+		// an untrusted request header and tenant.ComposeNamespace on this
+		// path, so the charset check that normally runs at tenant creation
+		// must run here instead — otherwise a header tenant like "a/b"
+		// builds the prefix "a/b/<db>/", colliding with tenant "a" + key
+		// "b/...".
+		if err := validateTenantScopeCharset(tenantID); err != nil {
+			return "", nil, err
+		}
 		return tenant.IsolationBarrier, nil, r.checkTenantBarrier(tenantID)
 	}
 
@@ -343,6 +456,25 @@ func (r *restServiceRegistry) resolveTenant(tenantID string) (tenant.IsolationTy
 	return isolation, info, nil
 }
 
+// validateTenantScopeCharset rejects a request-time tenant scope containing a
+// byte that would corrupt the composite "<tenant>/<db>/" namespace prefix
+// built by tenant.ComposeNamespace: a control character, or a path separator
+// ('/' or '\'). It mirrors — and returns the same *tenant.InvalidTenantIDCharError
+// as — the charset check pkg/tenant.validateReservedTenantID applies at tenant
+// CREATION time, which a request whose tenant scope is validated only via the
+// no-tenant-service fallback (resolveTenant, when r.tenantSvc is nil) never
+// passes through. Without this, a header tenant "a/b" builds the prefix
+// "a/b/<db>/", colliding with tenant "a" + key "b/...".
+func validateTenantScopeCharset(tenantID string) error {
+	for i := 0; i < len(tenantID); i++ {
+		b := tenantID[i]
+		if b < 0x20 || b == '/' || b == '\\' {
+			return &tenant.InvalidTenantIDCharError{TenantID: tenantID, Byte: b}
+		}
+	}
+	return nil
+}
+
 // checkTenantBarrier validates the tenant against the barrier registry when
 // applicable. It is a no-op for the system tenant or when no registry is
 // configured.
@@ -366,8 +498,8 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // applyComposite returns a copy of svcs with every non-nil engine wrapped so
 // that keys are transparently prefixed with the composite (tenant, db)
 // namespace and stripped on the way out. The prefix is guaranteed non-empty by
-// composeNamespace, so every (tenant, db) pair — including the bootstrap
-// (system, "system") pair — is wrapped and isolated.
+// tenant.ComposeNamespace, so every (tenant, db) pair — including the
+// bootstrap (system, "system") pair — is wrapped and isolated.
 //
 // Collection is intentionally not wrapped: it composes the namespaced KV and
 // MVCC engines below it rather than keying into the shared store directly, so
@@ -515,4 +647,37 @@ func (r *restServiceRegistry) BatchService(tenantID, db string) (service.BatchSe
 		return nil, &rest.ServiceNotImplementedError{Service: "batch"}
 	}
 	return svcs.Batch, nil
+}
+
+// TableService returns the TableServicer for the given (tenant, db) scope.
+// It is built fresh on every call from the resolved (tenant, db)-scoped
+// KV/MVCC/Transaction servicers -- mirroring how TransactionService and
+// MVCCService are resolved -- rather than cached, since resolve already
+// applies the per-tenant barrier/quota/isolation wrapping every other
+// data-plane path relies on; TableService itself holds no additional state
+// beyond those three servicers plus a SequenceServicer, so constructing it
+// per call costs nothing that isn't already paid by resolve.
+func (r *restServiceRegistry) TableService(tenantID, db string) (service.TableServicer, error) {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
+		return nil, err
+	}
+	if svcs.KV == nil || svcs.MVCC == nil || svcs.Transaction == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "table"}
+	}
+	seq := service.NewSequenceService(svcs.MVCC, svcs.Transaction)
+	return service.NewTableService(svcs.KV, svcs.MVCC, svcs.Transaction, seq), nil
+}
+
+// SequenceService returns the SequenceServicer for the given (tenant, db)
+// scope, built the same way TableService builds its own internal one.
+func (r *restServiceRegistry) SequenceService(tenantID, db string) (service.SequenceServicer, error) {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
+		return nil, err
+	}
+	if svcs.MVCC == nil || svcs.Transaction == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "sequence"}
+	}
+	return service.NewSequenceService(svcs.MVCC, svcs.Transaction), nil
 }

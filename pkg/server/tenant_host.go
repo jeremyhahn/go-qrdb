@@ -205,18 +205,25 @@ func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub) *
 	kv := service.NewKVService(host, shardID)
 	mvcc := service.NewMVCCKVService(host, shardID)
 	idx := service.NewIndexService(host, shardID)
+	txn := service.NewTransactionService(host, shardID)
 	return &DatabaseServices{
 		Name:        "",
 		ShardID:     shardID,
 		KV:          kv,
 		MVCC:        mvcc,
 		Batch:       service.NewBatchService(host, shardID),
-		Transaction: service.NewTransactionService(host, shardID),
+		Transaction: txn,
 		Lease:       service.NewLeaseService(host, shardID),
 		TimeSeries:  service.NewTimeSeriesService(host, shardID),
 		Index:       idx,
 		Watch:       service.NewWatchService(hub),
-		Collection:  service.NewCollectionServiceWithIndex(kv, idx),
+		// SequenceServicer backs Collection's IDStrategyIncrement document
+		// IDs with a Raft-replicated compare-and-swap counter instead of the
+		// process-local counter that would otherwise restart at 0 on every
+		// process restart and diverge across replicas -- see
+		// service.CollectionService.WithSequenceService.
+		Collection: service.NewCollectionServiceWithIndex(kv, idx).
+			WithSequenceService(service.NewSequenceService(mvcc, txn)),
 	}
 }
 

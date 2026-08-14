@@ -16,6 +16,7 @@ package service
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -479,6 +480,28 @@ func (e *BatchEntityEmptyOpsError) Error() string {
 	return "service: batch entity request must contain at least one operation"
 }
 
+// UnsupportedTransactionOpError is returned when a transaction success or
+// failure branch contains an operation type other than Put or Delete.
+// A transaction's selected branch is executed atomically as a single Raft
+// write; the wire protocol carries only a succeeded flag back from the
+// state machine, with no per-operation read-result channel, so branch
+// operations are write-only by design. A read (Get, Range) — or any other
+// unrecognized OpType — in a branch is a client error and is rejected
+// before the transaction is encoded or proposed to Raft, rather than being
+// silently coerced into a write. Callers needing a read as part of a CAS
+// decision should perform it before calling Execute/ExecuteWithMode (its
+// result can feed the transaction's Compare preconditions); reads mixed
+// with writes in a single atomic call are supported by BatchServicer.
+type UnsupportedTransactionOpError struct {
+	OpType OpType
+}
+
+// Error returns a human-readable description of the unsupported op type.
+func (e *UnsupportedTransactionOpError) Error() string {
+	return "service: unsupported transaction operation type " + strconv.Itoa(int(e.OpType)) +
+		" (transaction branches support only Put and Delete)"
+}
+
 // ---------------------------------------------------------------------------
 // Import errors
 // ---------------------------------------------------------------------------
@@ -578,6 +601,75 @@ func (e *ImportArchiveError) Unwrap() error {
 	return e.Err
 }
 
+// ImportInputTooLargeError is returned when the raw bytes read from the
+// Import file argument exceed maxImportInputBytes. It is the service's own
+// defense-in-depth bound, enforced independently of whatever request-size
+// cap (if any) the calling transport applies.
+type ImportInputTooLargeError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *ImportInputTooLargeError) Error() string {
+	return "service: import input exceeds maximum size of " + strconv.Itoa(e.Max) + " bytes"
+}
+
+// ImportArchiveExpandedTooLargeError is returned when the cumulative
+// decompressed bytes produced while extracting a zip/tar/tar.gz archive
+// (summed across every member) exceed maxImportExpandedBytes. This guards
+// against archive ("zip bomb") inputs that are small on the wire but
+// expand to an unbounded amount of memory when decompressed.
+type ImportArchiveExpandedTooLargeError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *ImportArchiveExpandedTooLargeError) Error() string {
+	return "service: import archive decompressed content exceeds maximum expanded size of " + strconv.Itoa(e.Max) + " bytes"
+}
+
+// ImportTooManyEntriesError is returned when a zip/tar/tar.gz archive
+// contains more entries than maxImportArchiveEntries. This guards against
+// archives with a huge number of tiny or empty entries that exhaust CPU
+// and memory processing per-entry bookkeeping even while individually
+// staying under the expanded-bytes budget.
+type ImportTooManyEntriesError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *ImportTooManyEntriesError) Error() string {
+	return "service: import archive contains more than the maximum of " + strconv.Itoa(e.Max) + " entries"
+}
+
+// ImportTooManyRowsError is returned when a parsed import contains more
+// records than maxImportRows, regardless of source format. Callers with
+// larger datasets should split them across multiple Import calls.
+type ImportTooManyRowsError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *ImportTooManyRowsError) Error() string {
+	return "service: import contains more than the maximum of " + strconv.Itoa(e.Max) + " rows"
+}
+
+// ImportProposalTooLargeError is returned when a transactional import's
+// total encoded batch command would exceed maxImportProposalBytes, the
+// ceiling go-quicraft enforces on any single Raft log entry. Unlike
+// non-transactional imports (which are split into multiple sequential
+// proposals), a transactional import cannot be chunked without breaking
+// its all-or-nothing guarantee, so it is rejected outright instead.
+type ImportProposalTooLargeError struct {
+	Max int
+}
+
+// Error returns a human-readable description.
+func (e *ImportProposalTooLargeError) Error() string {
+	return "service: transactional import's encoded batch command exceeds the maximum proposal size of " +
+		strconv.Itoa(e.Max) + " bytes; split the import into smaller, non-transactional batches"
+}
+
 // ---------------------------------------------------------------------------
 // Barrier errors
 // ---------------------------------------------------------------------------
@@ -613,6 +705,127 @@ type BarrierManagerNotConfiguredError struct{}
 // Error returns a human-readable description.
 func (e *BarrierManagerNotConfiguredError) Error() string {
 	return "service: database barrier manager not configured"
+}
+
+// InvalidRaftTopologyError is returned when a raft-backed database's
+// requested Raft cluster-mode topology is internally incoherent (e.g.
+// Backend == BackendRaft paired with ClusterMode == RaftNone). See
+// DatabaseService.validateRaftTopology.
+type InvalidRaftTopologyError struct {
+	Database string
+	Mode     string
+	Reason   string
+}
+
+// Error returns a human-readable description.
+func (e *InvalidRaftTopologyError) Error() string {
+	return "service: database " + e.Database + ": invalid raft topology " + e.Mode + ": " + e.Reason
+}
+
+// RaftDistributedUnavailableError is returned when a raft-backed database
+// requests the "distributed" Raft cluster mode but this node has no
+// placement subsystem configured (WithPlacementStore + WithPlacementScheduler)
+// to compute and materialize multi-node replica placement. The request fails
+// closed rather than silently collapsing to a single local replica; retry
+// against a node in a clustered deployment with the placement subsystem
+// wired, or request cluster mode "local" instead.
+type RaftDistributedUnavailableError struct {
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *RaftDistributedUnavailableError) Error() string {
+	return "service: database " + e.Database + ": distributed raft topology requires the placement subsystem " +
+		"(placement store + scheduler) to be configured on this node"
+}
+
+// ReplicaFloorError is returned by ScaleForTenant when the requested target
+// replication factor is less than 1. Scaling to zero voting replicas is not a
+// valid operation -- use DropForTenant to remove the database entirely.
+type ReplicaFloorError struct {
+	Database  string
+	Requested int
+}
+
+// Error returns a human-readable description.
+func (e *ReplicaFloorError) Error() string {
+	return "service: database " + e.Database + ": target replication factor " + strconv.Itoa(e.Requested) +
+		" is below the minimum of 1; use DropForTenant to remove a database"
+}
+
+// NotDedicatedRaftDatabaseError is returned by ScaleForTenant when the named
+// database has no entry in the replicated placement table: it predates the
+// placement subsystem, or it was created with Raft cluster mode "local"
+// (single, non-distributed replica) rather than "distributed". Only a
+// dedicated-raft database created with RaftDistributed (and a placement
+// subsystem wired) can have its replication factor scaled.
+type NotDedicatedRaftDatabaseError struct {
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *NotDedicatedRaftDatabaseError) Error() string {
+	return "service: database " + e.Database + ": not a distributed dedicated-raft database (no placement entry); " +
+		"scaling requires raft cluster mode \"distributed\""
+}
+
+// ShardLeaderTimeoutError is returned by ScaleForTenant's scaleUp/scaleDown
+// when the dedicated shard does not report a known Raft leader within the
+// bounded wait applied before issuing a membership change. AddFollowerNode
+// and RemoveFollowerNode are hard-rejected by go-quicraft until the shard's
+// leader is known (this is common at RF=1, where the sole replica has not
+// necessarily campaigned and won its own single-voter election yet) --
+// waitForShardLeaderKnown polls for that election to complete instead of
+// racing it, and returns this typed error if it never stabilizes in time so
+// the caller fails closed rather than proceeding to a membership-change call
+// that is certain to be rejected.
+type ShardLeaderTimeoutError struct {
+	ShardID uint64
+	Timeout time.Duration
+}
+
+// Error returns a human-readable description.
+func (e *ShardLeaderTimeoutError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
+		": no raft leader known after " + e.Timeout.String()
+}
+
+// LeaderTransferTimeoutError is returned by
+// transferLeadershipAwayFromRemoved when a requested leadership transfer
+// (issued so a replica about to be removed is not still the shard's leader
+// when RemoveFollowerNode is called -- see that function's doc comment for
+// the race this avoids) does not complete within the bounded wait.
+type LeaderTransferTimeoutError struct {
+	ShardID       uint64
+	FromReplicaID uint64
+	Timeout       time.Duration
+}
+
+// Error returns a human-readable description.
+func (e *LeaderTransferTimeoutError) Error() string {
+	return "service: shard " + strconv.FormatUint(e.ShardID, 10) +
+		": leadership transfer away from replica " + strconv.FormatUint(e.FromReplicaID, 10) +
+		" did not complete after " + e.Timeout.String()
+}
+
+// CompactSystemOnlyError is returned when a non-system tenant attempts an
+// MVCC Compact. MVCC revisions are a store-global monotonic counter shared by
+// every prefix-isolated tenant on the store, so compacting to revision N
+// discards the historical revisions below N for EVERY tenant's keys, not just
+// the caller's. Compaction is therefore an inherently store-global admin
+// operation reserved for the system tenant. This is the service-layer
+// (data-plane) defense; the mvcc:compact permission is additionally tagged
+// ScopeCross so the RBAC authorizer denies it to tenant-local identities. It
+// maps to 403 Forbidden on REST and codes.PermissionDenied on gRPC/QUIC.
+type CompactSystemOnlyError struct {
+	// TenantID is the non-system caller that was refused.
+	TenantID string
+}
+
+// Error returns a human-readable description.
+func (e *CompactSystemOnlyError) Error() string {
+	return "service: tenant " + e.TenantID + " is not permitted to compact MVCC revisions; " +
+		"compaction is store-global and reserved for the system tenant"
 }
 
 // ---------------------------------------------------------------------------

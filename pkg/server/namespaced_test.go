@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -26,33 +27,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
-// ---------------------------------------------------------------------------
-// composeNamespace
-// ---------------------------------------------------------------------------
-
-func TestComposeNamespace(t *testing.T) {
-	// systemTenant and defaultDB ("system") are the empty-input fallbacks.
-	const system, def = "system", "system"
-	cases := []struct {
-		tenant, db, want string
-	}{
-		{"system", "system", "system/system/"}, // bootstrap pair is prefixed
-		{"system", "", "system/system/"},       // empty db == bootstrap db
-		{"", "", "system/system/"},             // empty tenant+db == bootstrap pair
-		{"system", "reports", "system/reports/"},
-		{"acme", "system", "acme/system/"},
-		{"acme", "", "acme/system/"},
-		{"acme", "reports", "acme/reports/"},
-	}
-	for _, c := range cases {
-		got := composeNamespace(c.tenant, c.db, system, def)
-		if got != c.want {
-			t.Errorf("composeNamespace(%q,%q)=%q, want %q", c.tenant, c.db, got, c.want)
-		}
-	}
-}
+// Namespace prefix composition (L5: single-sourced via tenant.ComposeNamespace
+// — see pkg/tenant/database_test.go for the fallback-formula cases; the tests
+// below pin that restServiceRegistry actually calls it and produces the
+// unchanged default-case physical prefix through the full resolve path.
 
 // ---------------------------------------------------------------------------
 // fakeCatalog
@@ -204,9 +185,9 @@ func (m *recMVCC) GetRevision(_ context.Context, key string) (*service.KeyValue,
 	m.lastKey = key
 	return &kv.KeyValue{Key: []byte(key)}, nil
 }
-func (m *recMVCC) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, error) {
+func (m *recMVCC) Range(_ context.Context, start, end []byte, _ ...service.RangeOption) ([]*service.KeyValue, int64, int64, error) {
 	m.lastStart, m.lastEnd = start, end
-	return []*service.KeyValue{{Key: append([]byte("acme/reports/"), 'x')}}, 1, nil
+	return []*service.KeyValue{{Key: append([]byte("acme/reports/"), 'x')}}, 1, 1, nil
 }
 
 func TestNamespacedMVCC_PrefixesAndStrips(t *testing.T) {
@@ -225,7 +206,7 @@ func TestNamespacedMVCC_PrefixesAndStrips(t *testing.T) {
 		t.Errorf("returned key = %q, want k", kvp.Key)
 	}
 
-	kvs, _, err := w.Range(ctx, []byte("a"), []byte("z"))
+	kvs, _, _, err := w.Range(ctx, []byte("a"), []byte("z"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +221,7 @@ func TestNamespacedMVCC_PrefixesAndStrips(t *testing.T) {
 func TestNamespacedMVCC_NilEndConfinedToNamespace(t *testing.T) {
 	rec := &recMVCC{}
 	w := newNamespacedMVCCService(rec, "p/")
-	if _, _, err := w.Range(context.Background(), []byte("a"), nil); err != nil {
+	if _, _, _, err := w.Range(context.Background(), []byte("a"), nil); err != nil {
 		t.Fatal(err)
 	}
 	// A nil end must NOT be forwarded as nil: pkg/mvcc treats a nil end as the
@@ -423,7 +404,8 @@ func TestNamespacedLease_LeasesReturnsAllWithStrippedKeys(t *testing.T) {
 
 type recBatch struct {
 	service.BatchServicer
-	lastKeys []string
+	lastKeys         []string
+	lastImportPrefix string
 }
 
 func (m *recBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpResponse, error) {
@@ -431,6 +413,11 @@ func (m *recBatch) Execute(_ context.Context, ops []service.Op) ([]service.OpRes
 		m.lastKeys = append(m.lastKeys, string(op.Key))
 	}
 	return []service.OpResponse{{Kvs: []*kv.KeyValue{{Key: []byte("p/k")}}}}, nil
+}
+
+func (m *recBatch) Import(_ context.Context, _ io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	m.lastImportPrefix = opts.KeyPrefix
+	return &service.ImportResult{Total: 1, Succeeded: 1}, nil
 }
 
 func TestNamespacedBatch_PrefixesAndStrips(t *testing.T) {
@@ -448,12 +435,29 @@ func TestNamespacedBatch_PrefixesAndStrips(t *testing.T) {
 	}
 }
 
-func TestNamespacedBatch_ImportUnsupported(t *testing.T) {
-	w := newNamespacedBatchService(&recBatch{}, "p/")
-	_, err := w.Import(context.Background(), nil, service.ImportOptions{})
-	var ue *NamespacedImportUnsupportedError
-	if !errors.As(err, &ue) {
-		t.Fatalf("want NamespacedImportUnsupportedError, got %T: %v", err, err)
+func TestNamespacedBatch_ImportSetsPrefix(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "p/")
+	res, err := w.Import(context.Background(), nil, service.ImportOptions{})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rec.lastImportPrefix != "p/" {
+		t.Errorf("inner import KeyPrefix = %q, want p/", rec.lastImportPrefix)
+	}
+	if res.Succeeded != 1 {
+		t.Errorf("result Succeeded = %d, want 1", res.Succeeded)
+	}
+}
+
+func TestNamespacedBatch_ImportComposesPrefix(t *testing.T) {
+	rec := &recBatch{}
+	w := newNamespacedBatchService(rec, "t/db/")
+	if _, err := w.Import(context.Background(), nil, service.ImportOptions{KeyPrefix: "extra/"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if rec.lastImportPrefix != "t/db/extra/" {
+		t.Errorf("inner import KeyPrefix = %q, want t/db/extra/", rec.lastImportPrefix)
 	}
 }
 
@@ -619,5 +623,149 @@ func TestNamespacedVector_ListNamespacesStrips(t *testing.T) {
 	}
 	if resp.Namespaces[0].Namespace != "docs" {
 		t.Errorf("listed namespace = %q, want docs", resp.Namespaces[0].Namespace)
+	}
+}
+
+// TestPrefixBytes_AbsentKeyStaysNil pins the single-key-op contract: an
+// absent key — nil OR empty-but-non-nil (what wire decoders such as REST's
+// jsonToOps produce for an unset field) — must stay nil. Prefixing an empty
+// RangeEnd fabricated a bound equal to the bare namespace prefix, silently
+// turning a batch/txn single-key GET into an inverted (empty) range.
+func TestPrefixBytes_AbsentKeyStaysNil(t *testing.T) {
+	if got := prefixBytes(nil, "t/db/"); got != nil {
+		t.Fatalf("prefixBytes(nil) = %q, want nil", got)
+	}
+	if got := prefixBytes([]byte(""), "t/db/"); got != nil {
+		t.Fatalf("prefixBytes(empty) = %q, want nil", got)
+	}
+	if got := prefixBytes([]byte("k"), "t/db/"); string(got) != "t/db/k" {
+		t.Fatalf("prefixBytes(k) = %q, want t/db/k", got)
+	}
+}
+
+// TestNamespacedBatch_GetWithEmptyRangeEnd pins the end-to-end shape of the
+// batch fix: a GET op whose RangeEnd is empty-but-non-nil must reach the
+// inner BatchServicer as a single-key op (nil RangeEnd), not as a range.
+func TestNamespacedBatch_GetWithEmptyRangeEnd(t *testing.T) {
+	svc := newNamespacedBatchService(nil, "t/db/")
+	ops := svc.prefixOps([]service.Op{{
+		Type:     service.OpGet,
+		Key:      []byte("k"),
+		RangeEnd: []byte(""),
+	}})
+	if string(ops[0].Key) != "t/db/k" {
+		t.Fatalf("prefixed key = %q, want t/db/k", ops[0].Key)
+	}
+	if ops[0].RangeEnd != nil {
+		t.Fatalf("prefixed RangeEnd = %q, want nil (single-key op)", ops[0].RangeEnd)
+	}
+}
+
+// TestPrefixKeyBytes_EmptyKeyConfinedToBarePrefix pins the M6 fix: an absent
+// (nil or empty) single-key Op.Key must map to the bare namespace prefix, not
+// to nil. prefixBytes (used for the not-a-key RangeEnd) leaves an empty key
+// nil, and a nil single-key Op.Key is unconfined — it addresses the bare
+// store root, where two tenants'/databases' empty-key ops would collide.
+func TestPrefixKeyBytes_EmptyKeyConfinedToBarePrefix(t *testing.T) {
+	if got := prefixKeyBytes(nil, "t/db/"); string(got) != "t/db/" {
+		t.Fatalf("prefixKeyBytes(nil) = %q, want bare prefix %q", got, "t/db/")
+	}
+	if got := prefixKeyBytes([]byte(""), "t/db/"); string(got) != "t/db/" {
+		t.Fatalf("prefixKeyBytes(empty) = %q, want bare prefix %q", got, "t/db/")
+	}
+	if got := prefixKeyBytes([]byte("k"), "t/db/"); string(got) != "t/db/k" {
+		t.Fatalf("prefixKeyBytes(k) = %q, want t/db/k", got)
+	}
+}
+
+// TestNamespacedBatch_PutWithEmptyKeyConfinedToNamespace pins the M6 fix at
+// the batch service: a single-key op (e.g. a Put) with an empty key must be
+// confined to the bare "<tenant>/<db>/" namespace prefix rather than
+// forwarded as a nil key, which addresses the bare store root and collides
+// across tenants/databases. The (nil) RangeEnd stays nil, unaffected.
+func TestNamespacedBatch_PutWithEmptyKeyConfinedToNamespace(t *testing.T) {
+	svc := newNamespacedBatchService(nil, "t/db/")
+	ops := svc.prefixOps([]service.Op{{
+		Type: service.OpPut,
+		Key:  []byte(""),
+	}})
+	if string(ops[0].Key) != "t/db/" {
+		t.Fatalf("prefixed key = %q, want bare namespace prefix %q (confined, not escaped to store root)", ops[0].Key, "t/db/")
+	}
+	if ops[0].RangeEnd != nil {
+		t.Fatalf("RangeEnd = %q, want nil", ops[0].RangeEnd)
+	}
+}
+
+// TestNamespacedTransaction_GetWithEmptyRangeEnd mirrors
+// TestNamespacedBatch_GetWithEmptyRangeEnd for the transaction service: a
+// normal single-key GET's empty-but-non-nil RangeEnd must stay nil so it is
+// not misread as an inverted (empty) range.
+func TestNamespacedTransaction_GetWithEmptyRangeEnd(t *testing.T) {
+	svc := newNamespacedTransactionService(nil, "t/db/")
+	ops := svc.prefixOps([]service.Op{{
+		Type:     service.OpGet,
+		Key:      []byte("k"),
+		RangeEnd: []byte(""),
+	}})
+	if string(ops[0].Key) != "t/db/k" {
+		t.Fatalf("prefixed key = %q, want t/db/k", ops[0].Key)
+	}
+	if ops[0].RangeEnd != nil {
+		t.Fatalf("prefixed RangeEnd = %q, want nil (single-key op)", ops[0].RangeEnd)
+	}
+}
+
+// TestNamespacedTransaction_PutWithEmptyKeyConfinedToNamespace mirrors
+// TestNamespacedBatch_PutWithEmptyKeyConfinedToNamespace for the transaction
+// service's single-key ops (success/failure branches).
+func TestNamespacedTransaction_PutWithEmptyKeyConfinedToNamespace(t *testing.T) {
+	svc := newNamespacedTransactionService(nil, "t/db/")
+	ops := svc.prefixOps([]service.Op{{
+		Type: service.OpPut,
+		Key:  []byte(""),
+	}})
+	if string(ops[0].Key) != "t/db/" {
+		t.Fatalf("prefixed key = %q, want bare namespace prefix %q (confined, not escaped to store root)", ops[0].Key, "t/db/")
+	}
+	if ops[0].RangeEnd != nil {
+		t.Fatalf("RangeEnd = %q, want nil", ops[0].RangeEnd)
+	}
+}
+
+// TestNamespacedTransaction_EmptyCompareKeyRejected pins the L4 fix: an empty
+// transaction Compare key must be rejected with a typed error rather than
+// silently namespaced into a comparison against the literal bare-prefix key
+// "<tenant>/<db>/", which would change a malformed request's meaning instead
+// of preserving the state machine's own rejection of it.
+func TestNamespacedTransaction_EmptyCompareKeyRejected(t *testing.T) {
+	rec := &recTxn{}
+	w := newNamespacedTransactionService(rec, "t/db/")
+
+	_, err := w.Execute(context.Background(), []service.Compare{{Key: []byte("")}}, nil, nil)
+	if !errors.Is(err, ErrEmptyCompareKey) {
+		t.Fatalf("Execute err = %v, want ErrEmptyCompareKey", err)
+	}
+	if rec.cmpKey != "" {
+		t.Fatalf("inner Execute must not be called on a rejected compare, got cmpKey=%q", rec.cmpKey)
+	}
+
+	_, err = w.ExecuteWithMode(context.Background(), []service.Compare{{Key: nil}}, nil, nil, writemode.Sync)
+	if !errors.Is(err, ErrEmptyCompareKey) {
+		t.Fatalf("ExecuteWithMode err = %v, want ErrEmptyCompareKey", err)
+	}
+}
+
+// TestNamespacedTransaction_NonEmptyCompareKeyStillPrefixed guards against a
+// regression where the L4 fix over-corrects and stops prefixing well-formed
+// compare keys.
+func TestNamespacedTransaction_NonEmptyCompareKeyStillPrefixed(t *testing.T) {
+	rec := &recTxn{}
+	w := newNamespacedTransactionService(rec, "t/db/")
+	if _, err := w.Execute(context.Background(), []service.Compare{{Key: []byte("c")}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rec.cmpKey != "t/db/c" {
+		t.Fatalf("inner compare key = %q, want t/db/c", rec.cmpKey)
 	}
 }

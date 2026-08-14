@@ -22,6 +22,22 @@
 //
 //	db, err := sql.Open("qrdb", "embedded://memory?database=mydb")
 //	db, err := sql.Open("qrdb", "rest://localhost:63001/mydb")
+//
+// The embedded:// scheme is a KV-only in-process database: it builds a
+// storage backend directly and serves the KV/entity/collection tables over
+// it. It has no service.Registry, and therefore no relational-table catalog,
+// so CREATE TABLE fails with *pkg/sql/provider.RelationalCatalogUnavailableError
+// unless a registry is supplied programmatically via WithRegistry.
+//
+// For the full in-process stack -- Raft, the service registry, relational
+// tables, and interactive transactions -- use the node:// scheme, which is
+// registered by the sdk/go/driver/node subpackage:
+//
+//	import _ "github.com/jeremyhahn/go-qrdb/sdk/go/driver/node"
+//
+//	db, err := sql.Open("qrdb", "node://memory?database=mydb")
+//
+// Additional schemes register themselves the same way; see RegisterScheme.
 package driver
 
 import (
@@ -57,29 +73,21 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 }
 
 // OpenConnector parses the DSN and returns a Connector that can be used
-// with sql.OpenDB for connection pooling.
+// with sql.OpenDB for connection pooling. The connector is built by the
+// factory the DSN's scheme was registered with (see RegisterScheme).
 func (d *Driver) OpenConnector(dsn string) (driver.Connector, error) {
 	cfg, err := ParseDSN(dsn)
 	if err != nil {
 		return nil, err
 	}
 
-	connectors := map[string]func(*DSNConfig) (driver.Connector, error){
-		SchemeEmbedded: func(c *DSNConfig) (driver.Connector, error) {
-			return NewEmbeddedConnector(c), nil
-		},
-		SchemeREST: func(c *DSNConfig) (driver.Connector, error) {
-			return NewNetworkConnector(c), nil
-		},
-		SchemeGRPC: func(c *DSNConfig) (driver.Connector, error) {
-			return NewNetworkConnector(c), nil
-		},
-	}
-
-	factory, ok := connectors[cfg.Scheme]
+	// ParseDSN already rejected an unregistered scheme, so a miss here can
+	// only mean a scheme was unregistered between the two lookups -- which
+	// nothing can do today. It is still reported rather than dereferenced.
+	registered, ok := lookupScheme(cfg.Scheme)
 	if !ok {
 		return nil, &UnsupportedSchemeError{Scheme: cfg.Scheme}
 	}
 
-	return factory(cfg)
+	return registered.Connect(cfg)
 }

@@ -290,7 +290,7 @@ func (t *Transport) CredentialStore(ctx context.Context, name string, value []by
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
-	payload, err := proto.Marshal(&pb.CredentialStoreRequest{Name: name, Value: string(value)})
+	payload, err := proto.Marshal(&pb.CredentialStoreRequest{Name: name, Value: value})
 	if err != nil {
 		return &marshalError{Err: err}
 	}
@@ -317,5 +317,5 @@ func (t *Transport) CredentialRetrieve(ctx context.Context, name string) ([]byte
 	if err := proto.Unmarshal(respBytes, &resp); err != nil {
 		return nil, &unmarshalError{Err: err}
 	}
-	return []byte(resp.GetValue()), nil
+	return resp.GetValue(), nil
 }

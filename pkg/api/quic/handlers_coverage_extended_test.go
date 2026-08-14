@@ -292,6 +292,7 @@ type mockDbSvc struct {
 	updateRaftFn       func(name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error)
 	updateBarrierFn    func(name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error)
 	updateConnectionFn func(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+	scaleFn            func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
 
 var _ service.DatabaseServicer = (*mockDbSvc)(nil)
@@ -352,7 +353,7 @@ func (m *mockDbSvc) UpdateConnection(name string, conn *database.DatabaseConnect
 }
 func (m *mockDbSvc) SealDatabase(_ context.Context, _ string) error                       { return nil }
 func (m *mockDbSvc) UnsealDatabase(_ context.Context, _ string, _ seal.Credentials) error { return nil }
-func (m *mockDbSvc) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDbSvc) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return &seal.BarrierStatus{}, nil
 }
 func (m *mockDbSvc) CreateForTenant(_ context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
@@ -378,6 +379,12 @@ func (m *mockDbSvc) UpdateBarrierForTenant(_ context.Context, name string, _ *da
 	return &database.DatabaseInfo{Name: name}, nil
 }
 func (m *mockDbSvc) UpdateConnectionForTenant(_ context.Context, name string, _ *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
+	return &database.DatabaseInfo{Name: name}, nil
+}
+func (m *mockDbSvc) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	if m.scaleFn != nil {
+		return m.scaleFn(name, targetReplicas)
+	}
 	return &database.DatabaseInfo{Name: name}, nil
 }
 

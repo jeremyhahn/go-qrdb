@@ -114,13 +114,15 @@ func NewPebbleStateMachine(opts *pebble.Options) *PebbleStateMachine {
 func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler {
 	return map[byte]pebbleUpdateHandler{
 		// Base KV operations.
-		kv.OpPut:    pebbleHandlePut,
-		kv.OpGet:    pebbleHandleGet,
-		kv.OpDelete: pebbleHandleDelete,
+		kv.OpPut:         pebbleHandlePut,
+		kv.OpGet:         pebbleHandleGet,
+		kv.OpDelete:      pebbleHandleDelete,
+		kv.OpPutIfAbsent: pebbleHandlePutIfAbsent,
 
 		// MVCC-compatible Put/Delete (same semantics, no revision tracking).
-		protocol.OpMVCCPut:    pebbleHandleMVCCPut,
-		protocol.OpMVCCDelete: pebbleHandleMVCCDelete,
+		protocol.OpMVCCPut:         pebbleHandleMVCCPut,
+		protocol.OpMVCCPutIfAbsent: pebbleHandleMVCCPutIfAbsent,
+		protocol.OpMVCCDelete:      pebbleHandleMVCCDelete,
 
 		// Batch and transaction operations.
 		protocol.OpBatch:       pebbleHandleBatch,
@@ -272,7 +274,14 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 		return &NotOpenError{}
 	}
 
-	batch := s.db.NewBatch()
+	// The batch is INDEXED so that handlers can read their own writes: a
+	// conditional put's existence guard and a transaction's value precondition
+	// must observe the entries already applied into this same batch. The apply
+	// loop packs a timing-dependent number of committed entries into one Update
+	// call, so a guard that read committed storage instead would make that
+	// packing observable and two replicas that packed the same log differently
+	// would reach different states.
+	batch := s.db.NewIndexedBatch()
 	defer func() { _ = batch.Close() }()
 
 	var lastIndex uint64
@@ -289,15 +298,13 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 			return &protocol.UnknownOpError{Op: op}
 		}
 
-		// For base KV ops (1-3), payload starts at byte 1 (the full command
-		// is passed to the handler which decodes it). For extended ops (10+),
-		// payload starts at byte 1 as well (the op byte is stripped).
-		var payload []byte
-		if op <= kv.OpDelete {
-			// Base KV handlers receive the full command including the op byte.
-			payload = e.Cmd
-		} else {
-			// Extended protocol handlers receive payload after op byte.
+		// Base KV handlers decode through kv.DecodeCommand and therefore need
+		// the full command including its op byte; extended protocol handlers
+		// take the payload with the op byte stripped. The split is by decoder,
+		// not by numeric range: kv.OpPutIfAbsent sorts above kv.OpDelete but is
+		// still a base KV command.
+		payload := e.Cmd
+		if !isBaseKVOp(op) {
 			payload = e.Cmd[1:]
 		}
 
@@ -867,7 +874,7 @@ func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte)
 	// Capture previous value for watch notifications.
 	var prevKv *qrdbkv.KeyValue
 	if s.hub != nil {
-		if val, getErr := s.getKeyNoLock(cmd.Key); getErr == nil {
+		if val, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
 			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
 		}
 	}
@@ -889,6 +896,47 @@ func pebbleHandlePut(s *PebbleStateMachine, batch *pebble.Batch, payload []byte)
 	return sm.Result{Value: uint64(len(cmd.Value))}, notifs, nil
 }
 
+// pebbleHandlePutIfAbsent processes a base KV conditional put
+// (OpPutIfAbsent=4). The payload is the full encoded command including the op
+// byte.
+//
+// The existence check runs here, inside the Update path, against the state this
+// replica has applied up to this log position — the same input on every replica
+// producing the same decision, which is what keeps them identical. Doing the
+// check on the proposer and then sending an unconditional Put would be a
+// different operation with a window in which two proposers both observe
+// "absent".
+//
+// A declined write is a normal outcome reported through Result.Value, not an
+// error: the caller that lost the race received a correct answer, and returning
+// an error here would surface as a failed proposal instead.
+func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	cmd, err := kv.DecodeCommand(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if _, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
+		return sm.Result{Value: kv.ResultNotStored}, nil, nil
+	}
+
+	if err := batch.Set(cmd.Key, cmd.Value, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	// No prevKv: the key was absent, which is the only path that reaches here.
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventPut,
+			key:       cmd.Key,
+			kv:        &qrdbkv.KeyValue{Key: cmd.Key, Value: cmd.Value},
+		}}
+	}
+
+	return sm.Result{Value: kv.ResultStored}, notifs, nil
+}
+
 // pebbleHandleGet processes a base KV Get command (OpGet=2). Gets are
 // no-ops in the Update path (reads happen in Lookup).
 func pebbleHandleGet(_ *PebbleStateMachine, _ *pebble.Batch, _ []byte) (sm.Result, []pebbleNotification, error) {
@@ -906,7 +954,7 @@ func pebbleHandleDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []by
 	// Capture previous value for watch notifications.
 	var prevKv *qrdbkv.KeyValue
 	if s.hub != nil {
-		if val, getErr := s.getKeyNoLock(cmd.Key); getErr == nil {
+		if val, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
 			prevKv = &qrdbkv.KeyValue{Key: cmd.Key, Value: val}
 		}
 	}
@@ -944,7 +992,7 @@ func pebbleHandleMVCCPut(s *PebbleStateMachine, batch *pebble.Batch, payload []b
 	// Capture previous value for watch notifications.
 	var prevKv *qrdbkv.KeyValue
 	if s.hub != nil {
-		if val, getErr := s.getKeyNoLock(key); getErr == nil {
+		if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
 			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
 		}
 	}
@@ -971,6 +1019,45 @@ func pebbleHandleMVCCPut(s *PebbleStateMachine, batch *pebble.Batch, payload []b
 	return sm.Result{Value: uint64(len(value))}, notifs, nil
 }
 
+// pebbleHandleMVCCPutIfAbsent processes an MVCC conditional put
+// (OpMVCCPutIfAbsent=65), storing only when the key is absent.
+//
+// It shares DecodeMVCCPut with the unconditional handler because the payload
+// shape is identical; only the opcode and the guard differ. The guard runs
+// inside Update so every replica evaluates it against the same applied state.
+//
+// There is no prevKv on the notification: the write only happens when the key
+// was absent, so there is no previous value to report.
+func pebbleHandleMVCCPutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	key, value, leaseID, err := protocol.DecodeMVCCPut(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	if _, getErr := s.getKeyInBatch(batch, key); getErr == nil {
+		return sm.Result{Value: kv.ResultNotStored}, nil, nil
+	}
+
+	if err := batch.Set(key, value, pebble.Sync); err != nil {
+		return sm.Result{}, nil, &WriteError{Err: err}
+	}
+
+	if s.lessor != nil && leaseID > 0 {
+		s.lessor.AttachKey(leaseID, key)
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventPut,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key, Value: value, LeaseID: leaseID},
+		}}
+	}
+
+	return sm.Result{Value: kv.ResultStored}, notifs, nil
+}
+
 // pebbleHandleMVCCDelete processes an MVCC Delete command without
 // revision tracking. The key is deleted directly from PebbleDB.
 func pebbleHandleMVCCDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
@@ -982,7 +1069,7 @@ func pebbleHandleMVCCDelete(s *PebbleStateMachine, batch *pebble.Batch, payload 
 	// Capture previous value for watch notifications.
 	var prevKv *qrdbkv.KeyValue
 	if s.hub != nil {
-		if val, getErr := s.getKeyNoLock(key); getErr == nil {
+		if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
 			prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
 		}
 	}
@@ -1046,10 +1133,30 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 		return sm.Result{}, nil, err
 	}
 
+	// Reject revision-based compares BEFORE evaluating anything. This state
+	// machine keeps no MVCC revisions, so a create/mod-revision compare has
+	// nothing meaningful to compare against. Silently treating every key as
+	// revision 0 is the dangerous answer: a client written for the MVCC engine
+	// does read-then-CAS, reads revision 0 here, compares equal, and commits —
+	// so two concurrent writers both "succeed" and one update is lost with no
+	// signal. Failing the transaction with an actionable message turns that
+	// silent lost update into an obvious misconfiguration.
+	//
+	// This is a client-input outcome, so it is encoded into Result.Data as an
+	// application error rather than returned as a Go error: returning an error
+	// from Update() would stall the Raft apply loop for every client.
+	for _, dc := range txn.Compares {
+		if dc.Target == compareTargetCreateRevision || dc.Target == compareTargetModRevision {
+			return pebbleAppErrResult("transaction: create_revision/mod_revision compares require " +
+				"an MVCC state machine; this node runs a non-MVCC backend (set raft.sm_type: mvcc). " +
+				"Compare on value or version instead."), nil, nil
+		}
+	}
+
 	// Evaluate all compares against current state.
 	succeeded := true
 	for _, dc := range txn.Compares {
-		if !pebbleEvaluateCompare(s, dc) {
+		if !pebbleEvaluateCompare(s, batch, dc) {
 			succeeded = false
 			break
 		}
@@ -1081,15 +1188,31 @@ func pebbleHandleTransaction(s *PebbleStateMachine, batch *pebble.Batch, payload
 	return sm.Result{Value: uint64(len(ops)), Data: data[:]}, notifs, nil
 }
 
+// Transaction compare targets on the wire. The values mirror lock.CompareTarget
+// (CompareVersion, CompareCreateRevision, CompareModRevision, CompareValue in
+// iota order); they are duplicated here as untyped byte constants because
+// protocol.DecodedCompare carries Target as a raw byte and pkg/store does not
+// import pkg/lock.
+const (
+	compareTargetVersion        byte = 0
+	compareTargetCreateRevision byte = 1
+	compareTargetModRevision    byte = 2
+	compareTargetValue          byte = 3
+)
+
 // pebbleEvaluateCompare evaluates a single transaction compare against the
-// current PebbleDB state. Without MVCC, only value-based comparisons are
-// meaningful. Revision/version comparisons default to zero for all keys.
-func pebbleEvaluateCompare(s *PebbleStateMachine, dc protocol.DecodedCompare) bool {
-	val, err := s.getKeyNoLock(dc.Key)
+// current PebbleDB state. This state machine keeps no MVCC revisions, so only
+// value and version comparisons are meaningful: version degrades honestly (0
+// when the key is absent, 1 when present), while create/mod-revision compares
+// are rejected up front by pebbleHandleTransaction and therefore never reach
+// this function. They fall through to the fail-closed default rather than
+// silently comparing every key against revision 0.
+func pebbleEvaluateCompare(s *PebbleStateMachine, batch *pebble.Batch, dc protocol.DecodedCompare) bool {
+	val, err := s.getKeyInBatch(batch, dc.Key)
 
 	// Build the target value for comparison.
 	switch dc.Target {
-	case 3: // CompareValue
+	case compareTargetValue:
 		if err != nil {
 			// Key does not exist: only equal-to-zero-length succeeds.
 			return (dc.Result == 0) && len(dc.Value) == 0
@@ -1097,7 +1220,7 @@ func pebbleEvaluateCompare(s *PebbleStateMachine, dc protocol.DecodedCompare) bo
 		cmp := bytes.Compare(val, dc.Value)
 		return evaluateCompareResult(dc.Result, cmp)
 
-	case 0: // CompareVersion
+	case compareTargetVersion:
 		// Without MVCC, version is 0 if key doesn't exist, 1 if it does.
 		var version int64
 		if err == nil {
@@ -1105,15 +1228,10 @@ func pebbleEvaluateCompare(s *PebbleStateMachine, dc protocol.DecodedCompare) bo
 		}
 		return evaluateCompareInt(dc.Result, version, dc.Version)
 
-	case 1: // CompareCreateRevision
-		// Without MVCC, create revision is 0 for all keys.
-		return evaluateCompareInt(dc.Result, 0, dc.CreateRevision)
-
-	case 2: // CompareModRevision
-		// Without MVCC, mod revision is 0 for all keys.
-		return evaluateCompareInt(dc.Result, 0, dc.ModRevision)
-
 	default:
+		// Includes compareTargetCreateRevision and compareTargetModRevision,
+		// which pebbleHandleTransaction rejects before evaluation. Fail closed
+		// if one ever reaches here by another path.
 		return false
 	}
 }
@@ -1158,7 +1276,7 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 	case protocol.OpMVCCPut:
 		var prevKv *qrdbkv.KeyValue
 		if s.hub != nil {
-			if val, err := s.getKeyNoLock(op.Key); err == nil {
+			if val, err := s.getKeyInBatch(batch, op.Key); err == nil {
 				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
 			}
 		}
@@ -1185,7 +1303,7 @@ func pebbleExecuteOp(s *PebbleStateMachine, batch *pebble.Batch, op protocol.Dec
 	case protocol.OpMVCCDelete:
 		var prevKv *qrdbkv.KeyValue
 		if s.hub != nil {
-			if val, err := s.getKeyNoLock(op.Key); err == nil {
+			if val, err := s.getKeyInBatch(batch, op.Key); err == nil {
 				prevKv = &qrdbkv.KeyValue{Key: op.Key, Value: val}
 			}
 		}
@@ -1268,7 +1386,7 @@ func pebbleHandleLeaseRevoke(s *PebbleStateMachine, batch *pebble.Batch, payload
 	for _, key := range keys {
 		var prevKv *qrdbkv.KeyValue
 		if s.hub != nil {
-			if val, getErr := s.getKeyNoLock(key); getErr == nil {
+			if val, getErr := s.getKeyInBatch(batch, key); getErr == nil {
 				prevKv = &qrdbkv.KeyValue{Key: key, Value: val}
 			}
 		}
@@ -1508,12 +1626,31 @@ func (s *PebbleStateMachine) pebbleHandleTSSetRetention(_ *PebbleStateMachine, _
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// getKeyNoLock retrieves a single key's value without acquiring the mutex.
-// Must be called from code paths that already hold the lock (Update path).
-func (s *PebbleStateMachine) getKeyNoLock(key []byte) ([]byte, error) {
-	val, closer, err := s.db.Get(key)
+// baseKVOps is the set of opcodes whose handlers decode through
+// kv.DecodeCommand and therefore need the full command, op byte included.
+var baseKVOps = map[byte]struct{}{
+	kv.OpPut:         {},
+	kv.OpGet:         {},
+	kv.OpDelete:      {},
+	kv.OpPutIfAbsent: {},
+}
+
+// isBaseKVOp reports whether op belongs to the base KV protocol.
+func isBaseKVOp(op byte) bool {
+	_, ok := baseKVOps[op]
+	return ok
+}
+
+// getKeyInBatch retrieves a key's value as the apply batch sees it: the
+// batch's own uncommitted writes layered over the database. Every read taken
+// while applying entries must go through here, so that an entry observes the
+// writes of the entries the apply loop packed ahead of it in the same batch.
+// Reading the database directly would make that packing — which is decided by
+// each node's local timing — visible in the resulting state.
+func (s *PebbleStateMachine) getKeyInBatch(batch *pebble.Batch, key []byte) ([]byte, error) {
+	val, closer, err := batch.Get(key)
 	if err != nil {
-		if err == pebble.ErrNotFound {
+		if errors.Is(err, pebble.ErrNotFound) {
 			return nil, &kv.KeyNotFoundError{Key: string(key)}
 		}
 		return nil, &ReadError{Key: string(key), Err: err}

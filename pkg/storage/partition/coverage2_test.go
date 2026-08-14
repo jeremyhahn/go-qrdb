@@ -543,8 +543,12 @@ type failingBatch struct {
 	closed      bool
 }
 
-func (b *failingBatch) Set(key, value []byte) error { return nil }
-func (b *failingBatch) Delete(key []byte) error     { return nil }
+func (b *failingBatch) Set(key, value []byte) error    { return nil }
+func (b *failingBatch) Delete(key []byte) error        { return nil }
+func (b *failingBatch) Get(key []byte) ([]byte, error) { return nil, nil }
+func (b *failingBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return &errorIter{}
+}
 func (b *failingBatch) Commit() error {
 	if b.commitErr != nil {
 		return b.commitErr

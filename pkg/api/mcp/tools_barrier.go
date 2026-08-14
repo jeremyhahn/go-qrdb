@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -39,8 +41,12 @@ import (
 // barrier service, and handleBarrierRekey / handleBarrierRecoveryGenerate
 // verify the SO PIN. When nil the PIN-related arguments are ignored,
 // preserving dev-mode and unconfigured-deployment flows.
-func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend) []mcpserver.ServerTool {
-	return []mcpserver.ServerTool{
+//
+// encMigrator is optional: when supplied, the qrdb_barrier_enable_encryption
+// tool is available to migrate a previously-unencrypted barrier to a keyed
+// strategy, mirroring the REST/gRPC/QUIC BarrierEnableEncryption handlers.
+func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend, encMigrator service.EncryptionMigrator) []mcpserver.ServerTool {
+	tools := []mcpserver.ServerTool{
 		{Tool: toolBarrierInitialize(), Handler: handleBarrierInitialize(svc, pinBackend)},
 		{Tool: toolBarrierUnseal(), Handler: handleBarrierUnseal(svc)},
 		{Tool: toolBarrierSeal(), Handler: handleBarrierSeal(svc, pinBackend)},
@@ -65,17 +71,157 @@ func barrierTools(svc service.BarrierServicer, pinBackend pin.PINBackend) []mcps
 		{Tool: toolBarrierRecoveryShareClaimBegin(), Handler: handleBarrierRecoveryShareClaimBegin(svc)},
 		{Tool: toolBarrierRecoveryShareClaimComplete(), Handler: handleBarrierRecoveryShareClaimComplete(svc)},
 	}
+	if encMigrator != nil {
+		tools = append(tools, mcpserver.ServerTool{
+			Tool:    toolBarrierEnableEncryption(),
+			Handler: handleBarrierEnableEncryption(encMigrator),
+		})
+	}
+	return tools
+}
+
+// barrierEnableEncryptionMigrationAcceptWindow bounds how long the tool
+// handler waits for EncryptionMigrator.EnableEncryption to return before
+// giving up on delivering its outcome synchronously. Mirrors
+// migrationAcceptWindow / grpcMigrationAcceptWindow / quicMigrationAcceptWindow
+// on the REST/gRPC/QUIC transports — see the REST doc comment for the full
+// rationale: every synchronously-knowable rejection returns well within this
+// window, before the destructive Quiesce phase (which for a system-scope
+// migration recycles the serving MCP server) ever runs.
+const barrierEnableEncryptionMigrationAcceptWindow = 750 * time.Millisecond
+
+// toolBarrierEnableEncryption defines the qrdb_barrier_enable_encryption
+// tool schema.
+func toolBarrierEnableEncryption() mcp.Tool {
+	return mcp.NewTool("qrdb_barrier_enable_encryption",
+		mcp.WithDescription("Migrate a previously-unencrypted barrier to a keyed strategy (passphrase or shamir). Runs asynchronously; poll qrdb_barrier_status for completion."),
+		mcp.WithString("tenant_id",
+			mcp.Description("When set, scopes the migration to that tenant's dedicated barrier; empty means the system barrier (admin scope)."),
+		),
+		mcp.WithString("strategy",
+			mcp.Required(),
+			mcp.Description("Target keyed strategy: \"passphrase\" or \"shamir\"."),
+		),
+		mcp.WithString("mechanism",
+			mcp.Description("Migration mechanism: \"swap\" (default) or \"in-place\"."),
+		),
+		mcp.WithString("availability",
+			mcp.Description("Availability mode during migration: \"quiesced\" (default) or \"online\"."),
+		),
+		mcp.WithString("passphrase",
+			mcp.Description("Unseal credential for a passphrase target."),
+		),
+		mcp.WithNumber("shamir_threshold",
+			mcp.Description("Shamir threshold (M) when strategy is \"shamir\"."),
+		),
+		mcp.WithNumber("shamir_total",
+			mcp.Description("Shamir total share count (N) when strategy is \"shamir\"."),
+		),
+	)
+}
+
+// handleBarrierEnableEncryption returns a tool handler that delegates to
+// migrator.EnableEncryption. Like the REST/gRPC/QUIC handlers it validates
+// synchronously, then invokes the migrator and races its result against
+// barrierEnableEncryptionMigrationAcceptWindow: a synchronous rejection (bad
+// target, shared-barrier-immutable, insufficient officers, entitlement
+// denied, provider unavailable) is returned to the caller as a real tool
+// error, while a migration still running once the window elapses is
+// acknowledged with "migration_started"; clients poll qrdb_barrier_status.
+func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		strategy := mcp.ParseString(req, "strategy", "")
+		if strategy == "" {
+			return mcp.NewToolResultError("strategy is required"), nil
+		}
+
+		scope := service.BarrierScope{Kind: service.ScopeSystem}
+		if tenantID := mcp.ParseString(req, "tenant_id", ""); tenantID != "" {
+			scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: tenantID}
+		}
+
+		mechanism := seal.MechanismSwap
+		if seal.MigrationMechanism(mcp.ParseString(req, "mechanism", "")) == seal.MechanismInPlace {
+			mechanism = seal.MechanismInPlace
+		}
+		availability := seal.AvailabilityQuiesced
+		if seal.MigrationAvailability(mcp.ParseString(req, "availability", "")) == seal.AvailabilityOnline {
+			availability = seal.AvailabilityOnline
+		}
+
+		opts := seal.MigrationOptions{
+			TargetStrategy:  seal.StrategyID(strategy),
+			Mechanism:       mechanism,
+			Availability:    availability,
+			Credentials:     seal.Credentials{Secret: []byte(mcp.ParseString(req, "passphrase", ""))},
+			ShamirThreshold: mcp.ParseInt(req, "shamir_threshold", 0),
+			ShamirTotal:     mcp.ParseInt(req, "shamir_total", 0),
+		}
+		if err := opts.Validate(); err != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
+		}
+
+		// A background context is used because the request context is
+		// cancelled once the tool result returns, and the migration must
+		// continue independent of this call's lifetime.
+		resultCh := make(chan error, 1)
+		go func() {
+			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+		}()
+
+		select {
+		case err := <-resultCh:
+			if err != nil {
+				return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
+			}
+			// Completed within the window with no error: an unusually fast
+			// migration (e.g. an empty barrier) already finished. Fall
+			// through and report "migration_started" — qrdb_barrier_status
+			// already reflects the committed strategy, so the wording is
+			// accurate either way.
+		case <-time.After(barrierEnableEncryptionMigrationAcceptWindow):
+			// Still running past acceptance: no caller is left to deliver
+			// the eventual outcome to, so only log it.
+			go func() {
+				if err := <-resultCh; err != nil {
+					slog.Error("enable-encryption migration failed",
+						slog.String("scope", string(scope.Kind)),
+						slog.String("tenant", scope.TenantID),
+						slog.String("strategy", string(opts.TargetStrategy)),
+						slog.Any("error", err))
+				}
+			}()
+		}
+
+		data, jsonErr := json.Marshal(map[string]string{
+			"status": "migration_started",
+			"scope":  string(scope.Kind),
+		})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
 }
 
 // toolBarrierInitialize defines the qrdb_barrier_initialize tool schema.
 // so_pin and user_pin are optional and feed the configured pin.PINBackend
-// when supplied.
+// when supplied. secret is deliberately NOT mcp.Required(): the "none"
+// sealing strategy (identity passthrough, no secret material) is selected
+// entirely by the daemon's own boot-time seal config -- service.BarrierServicer.
+// BarrierInitialize takes only a secret string with no strategy parameter,
+// and every other transport (REST's handleBarrierInitialize, gRPC's
+// qrdbServiceServer.BarrierInitialize) passes an empty secret straight
+// through with no validation. Requiring a non-empty secret here would make
+// `barrier init --barrier-strategy none` (and the root `qrdb init`
+// single-admin path, which also initializes with a possibly-empty secret)
+// unreachable over MCP alone.
 func toolBarrierInitialize() mcp.Tool {
 	return mcp.NewTool("qrdb_barrier_initialize",
-		mcp.WithDescription("Initialize the cryptographic barrier with a secret. Optionally supply so_pin and user_pin to provision the PINBackend in the same call."),
+		mcp.WithDescription("Initialize the cryptographic barrier with a secret. The secret is empty for the \"none\" strategy. Optionally supply so_pin and user_pin to provision the PINBackend in the same call."),
 		mcp.WithString("secret",
-			mcp.Required(),
-			mcp.Description("Secret for barrier initialization (strategy wrapping passphrase)."),
+			mcp.Description("Secret for barrier initialization (strategy wrapping passphrase). Empty for the \"none\" strategy."),
 		),
 		mcp.WithString("so_pin",
 			mcp.Description("Optional Security Officer PIN routed to the configured pin.PINBackend."),
@@ -89,13 +235,12 @@ func toolBarrierInitialize() mcp.Tool {
 // handleBarrierInitialize returns a tool handler that delegates to
 // svc.BarrierInitialize. When pinBackend is non-nil and the request
 // supplies so_pin / user_pin, the PINs are persisted on the backend
-// before the barrier is initialized.
+// before the barrier is initialized. secret is passed through unchanged
+// (including empty) -- see toolBarrierInitialize's doc comment for why an
+// empty-secret guard here would break parity with every other transport.
 func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		secret := mcp.ParseString(req, "secret", "")
-		if secret == "" {
-			return mcp.NewToolResultError("secret is required"), nil
-		}
 
 		soPIN := mcp.ParseString(req, "so_pin", "")
 		userPIN := mcp.ParseString(req, "user_pin", "")

@@ -166,8 +166,8 @@ func TestMCP_Ceremony_ClosedPaths(t *testing.T) {
 	if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); err == nil {
 		t.Logf("CeremonyClaimCertComplete: no error (no closed guard)")
 	}
-	if _, err := tr.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{}); err == nil {
-		t.Logf("CeremonyClaimShare: no error (no closed guard)")
+	if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); err == nil {
+		t.Logf("CeremonyBeginClaimShare: no error (no closed guard)")
 	}
 	if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); err == nil {
 		t.Logf("CeremonySignCSR: no error (no closed guard)")

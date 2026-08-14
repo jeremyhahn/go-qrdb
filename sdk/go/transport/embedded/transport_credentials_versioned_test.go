@@ -237,7 +237,7 @@ func TestEmbeddedCredential_Rotate(t *testing.T) {
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:               "db-password",
-		NewValue:           "new-secret",
+		NewValue:           []byte("new-secret"),
 		GracePeriodSeconds: 7200,
 	})
 	if err != nil {
@@ -281,7 +281,7 @@ func TestEmbeddedCredential_Rotate_NoGrace(t *testing.T) {
 
 	resp, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{
 		Name:     "api-token",
-		NewValue: "v2",
+		NewValue: []byte("v2"),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -329,7 +329,7 @@ func TestEmbeddedCredential_Rotate_ServiceError(t *testing.T) {
 	}
 	tr := newCredentialTransport(t, svc)
 
-	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "x", NewValue: "y"})
+	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "x", NewValue: []byte("y")})
 	if !errors.Is(err, errCredential) {
 		t.Errorf("expected errCredential, got %v", err)
 	}
@@ -364,7 +364,7 @@ func TestEmbeddedCredential_RetrieveVersion(t *testing.T) {
 	if capturedVersion != 2 {
 		t.Errorf("captured version = %d, want 2", capturedVersion)
 	}
-	if resp.Value != "secret-v2" {
+	if string(resp.Value) != "secret-v2" {
 		t.Errorf("Value = %q, want %q", resp.Value, "secret-v2")
 	}
 }
@@ -386,7 +386,7 @@ func TestEmbeddedCredential_RetrieveVersion_Current(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Value != "current-secret" {
+	if string(resp.Value) != "current-secret" {
 		t.Errorf("Value = %q, want %q", resp.Value, "current-secret")
 	}
 }
@@ -645,7 +645,7 @@ func TestEmbeddedCredential_Dispatch_Rotate(t *testing.T) {
 	var resp *transport.CredentialRotateResponse
 	err := tr.Request(context.Background(), "CredentialRotate", &transport.CredentialRotateRequest{
 		Name:     "k",
-		NewValue: "v",
+		NewValue: []byte("v"),
 	}, &resp)
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
@@ -671,7 +671,7 @@ func TestEmbeddedCredential_Dispatch_RetrieveVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
 	}
-	if resp == nil || resp.Value != "payload" {
+	if resp == nil || string(resp.Value) != "payload" {
 		t.Fatalf("dispatch returned unexpected result: %+v", resp)
 	}
 }

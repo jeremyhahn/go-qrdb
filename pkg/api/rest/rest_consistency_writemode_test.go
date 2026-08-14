@@ -120,7 +120,7 @@ type captureMVCCService struct {
 
 	getRevisionWithConsistencyFn   func(ctx context.Context, key string, opts consistency.ReadOptions) (*kv.KeyValue, error)
 	getAtRevisionWithConsistencyFn func(ctx context.Context, key string, revision int64, opts consistency.ReadOptions) (*kv.KeyValue, error)
-	rangeWithConsistencyFn         func(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeWithConsistencyFn         func(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
 	putWithLeaseAndModeFn          func(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*kv.KeyValue, error)
 }
 
@@ -138,11 +138,11 @@ func (m *captureMVCCService) GetAtRevisionWithConsistency(ctx context.Context, k
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("atrev-cons")}, nil
 }
 
-func (m *captureMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *captureMVCCService) RangeWithConsistency(ctx context.Context, start, end []byte, opts consistency.ReadOptions, rangeOpts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeWithConsistencyFn != nil {
 		return m.rangeWithConsistencyFn(ctx, start, end, opts, rangeOpts...)
 	}
-	return []*kv.KeyValue{{Key: start, Value: []byte("range-cons")}}, 1, nil
+	return []*kv.KeyValue{{Key: start, Value: []byte("range-cons")}}, 1, 1, nil
 }
 
 func (m *captureMVCCService) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*kv.KeyValue, error) {
@@ -741,9 +741,9 @@ func TestHandleKVScan_InvalidConsistency_Returns400(t *testing.T) {
 func TestHandleRange_ConsistencyStrong_CallsRangeWithConsistency(t *testing.T) {
 	var capturedLevel consistency.Level
 	mvccSvc := &captureMVCCService{}
-	mvccSvc.rangeWithConsistencyFn = func(_ context.Context, start, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+	mvccSvc.rangeWithConsistencyFn = func(_ context.Context, start, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 		capturedLevel = opts.Consistency
-		return []*kv.KeyValue{{Key: start, Value: []byte("v")}}, 1, nil
+		return []*kv.KeyValue{{Key: start, Value: []byte("v")}}, 1, 1, nil
 	}
 	kvSvc := &captureKVService{}
 	srv := newCaptureSrv(kvSvc, mvccSvc)
@@ -761,9 +761,9 @@ func TestHandleRange_ConsistencyStrong_CallsRangeWithConsistency(t *testing.T) {
 func TestHandleRange_NoConsistency_CallsPlainRange(t *testing.T) {
 	plainCalled := false
 	mvccSvc := &captureMVCCService{}
-	mvccSvc.rangeFn = func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+	mvccSvc.rangeFn = func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 		plainCalled = true
-		return nil, 0, nil
+		return nil, 0, 0, nil
 	}
 	kvSvc := &captureKVService{}
 	srv := newCaptureSrv(kvSvc, mvccSvc)
@@ -788,4 +788,9 @@ func TestHandleRange_InvalidConsistency_Returns400(t *testing.T) {
 	srv.handleRange(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (c *captureMVCCService) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	return nil, nil
 }

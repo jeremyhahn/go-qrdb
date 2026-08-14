@@ -77,3 +77,14 @@ func WithRebalanceBarrierLookup(lookup RebalanceBarrierLookup) RebalanceServiceO
 func WithRebalanceSelfNodeID(nodeID string) RebalanceServiceOption {
 	return func(r *RebalanceService) { r.selfNodeID = nodeID }
 }
+
+// WithRebalanceRaftHost injects the Raft membership-change handle
+// moveTenantGroupShard uses to admit a MOVE's destination replica
+// observer-first and evict its source replica, and resolveMoveLeader uses to
+// route a MOVE to the dedicated group's current Raft leader. See
+// RebalanceService.SetRaftHost for the post-construction equivalent (used in
+// production, since the daemon builds the RaftHost adapter after
+// RebalanceService is constructed).
+func WithRebalanceRaftHost(h RaftHost) RebalanceServiceOption {
+	return func(r *RebalanceService) { r.raftHost = h }
+}

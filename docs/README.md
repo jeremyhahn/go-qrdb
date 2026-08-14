@@ -34,7 +34,6 @@ from the test suite.
 | [01-architecture.md](01-architecture.md) | System overview, three-layer store architecture (storage backends, store engines, state machines), package structure, data flow, dependency graph, and key design decisions |
 | [02-mvcc.md](02-mvcc.md) | MVCC engine internals, revision tracking, key encoding scheme, compaction, and historical reads |
 | [03-transactions.md](03-transactions.md) | Compare-and-swap transactions, snapshot isolation, conflict detection, and atomic multi-operation execution |
-| [04-watch.md](04-watch.md) | Real-time change notifications, event ordering guarantees, prefix watching, and delivery semantics |
 | [05-consistency.md](05-consistency.md) | Consistency levels (Strong, Linearizable, Eventual), routing behavior, and read path selection |
 | [06-leases.md](06-leases.md) | Distributed lease management, TTL enforcement, keep-alive protocol, and automatic key expiry |
 | [07-batch-operations.md](07-batch-operations.md) | Atomic multi-operation execution at the KV layer without conditional logic |
@@ -54,7 +53,8 @@ from the test suite.
 | [scoping.md](scoping.md) | Tenant & database scoping: tenant from the authenticated mTLS identity, X-QRDB-Database for multi-database isolation, keyspace + vector-namespace tenant-partitioning |
 | [embedding/README.md](embedding/README.md) | Embedding service: OpenAI-compatible providers (Ollama, OpenAI, vLLM), caching, batch processing |
 | [rag/README.md](rag/README.md) | Retrieval-Augmented Generation: document chunking, ingestion pipeline, semantic retrieval |
-| [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, PG syntax translation, multi-tenancy, index-accelerated WHERE clauses, and query optimization |
+| [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, PG syntax translation, multi-tenancy, relational tables (DDL, DML, secondary indexes, foreign keys), interactive transactions, index-accelerated WHERE clauses |
+| [sql/gorm.md](sql/gorm.md) | GORM provider (`sdk/go/gorm`): getting started, `node://` vs `embedded://` DSNs, migrations, transactions, error mapping (1062/1451/1452/1213), known limitations, conformance harness |
 | [etcd/README.md](etcd/README.md) | etcd protocol compatibility: per-database gRPC endpoint, Kubernetes integration, watch/lease/transaction support |
 
 ## Subsystem Documentation

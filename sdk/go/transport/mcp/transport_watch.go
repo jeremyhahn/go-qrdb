@@ -26,14 +26,55 @@ import (
 // Compile-time interface assertion.
 var _ transport.WatchClient = (*Transport)(nil)
 
-// defaultClientWatchTimeout is the default timeout for collecting watch
-// events before returning a batch. MCP is request/response, so watches
-// are polled in bounded intervals.
-const defaultClientWatchTimeout = 5 * time.Second
+// MCP is request/response, not streaming, so Watch/WatchPrefix are built on
+// top of the qrdb_watch tool by polling it in a loop (watchPoll). Each poll
+// is a bounded (watchPollTimeoutSeconds) qrdb_watch call that creates a
+// fresh server-side watcher, collects for the bound, and returns.
+//
+// An earlier version of this loop polled with no cursor: every call either
+// omitted start_revision entirely, or only carried one forward once an event
+// had already been observed. Any mutation landing in the gap between one
+// poll's watcher closing and the next poll's watcher being created — which,
+// with a ~500ms pollInterval plus the MCP round trip, is a real,
+// non-negligible window — was silently and permanently lost, because a
+// plain live-only watch (no start_revision) never replays anything that
+// happened before its own creation.
+//
+// This version is cursor-based: it tracks the highest revision observed
+// (nextRevision, primed to a real anchor before the very first poll — see
+// below) and requests start_revision = nextRevision on every poll,
+// unconditionally. The server-side qrdb_watch tool then always takes the
+// hub's replay-then-live-handoff path (pkg/watch.Hub.startReplay), which
+// guarantees every change since nextRevision is delivered exactly once
+// before the tool call returns — including the empty "Created" response
+// that arrives even when nothing changed, which is what lets the cursor
+// advance (and the gap stay closed) during idle periods. This makes the
+// polling loop as a whole gap-free for as long as it runs, independent of
+// how often it actually observes an event.
+//
+// Bootstrap: nextRevision must be a real revision before the first poll, not
+// merely "the next revision the caller happens to see" — otherwise the very
+// first poll (and every poll before the first event) would still omit
+// start_revision and reopen the same gap. If the caller supplied an
+// explicit opts.StartRevision, that is used as-is (inclusive, matching
+// pkg/watch.WithStartRevision semantics). Otherwise nextRevision is primed
+// with a CurrentRevision RPC before watchPoll's loop starts, so the window
+// between the caller invoking Watch/WatchPrefix and the first poll actually
+// running is covered by that first poll's replay rather than silently
+// dropped. If CurrentRevision is unsupported (a non-MVCC backend) or fails
+// for any other reason, the loop degrades to the old best-effort live-only
+// behavior for its first poll only; the cursor engages from the first
+// reported revision onward.
+var (
+	// watchPollInterval is the delay between successive watch tool calls.
+	// A package variable (not a const) so tests can shrink it.
+	watchPollInterval = 500 * time.Millisecond
 
-// pollInterval is the delay between successive watch tool calls when
-// polling for new events in the background goroutine.
-const pollInterval = 500 * time.Millisecond
+	// watchPollTimeoutSeconds is the collection window (timeout_seconds)
+	// requested on each qrdb_watch tool call. A package variable (not a
+	// const) so tests can shrink it.
+	watchPollTimeoutSeconds = 1.0
+)
 
 // ---------------------------------------------------------------------------
 // Server-side JSON decode types for watch responses
@@ -67,10 +108,10 @@ var watchEventTypeFromString = map[string]transport.EventType{
 // ---------------------------------------------------------------------------
 
 // Watch creates a watcher that delivers events for the specified key.
-// Since MCP is a request/response protocol without native streaming,
-// the transport polls the qrdb_watch tool at regular intervals and
-// delivers results to the returned channel. The caller must cancel the
-// context to stop watching.
+// Since MCP is a request/response protocol without native streaming, the
+// transport polls the qrdb_watch tool in a cursor-based loop (see the
+// package-level doc comment above) and delivers results to the returned
+// channel. The caller must cancel the context to stop watching.
 func (t *Transport) Watch(ctx context.Context, key string, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
 	return t.watchPoll(ctx, key, false, opts)
 }
@@ -82,10 +123,11 @@ func (t *Transport) WatchPrefix(ctx context.Context, prefix string, opts transpo
 	return t.watchPoll(ctx, prefix, true, opts)
 }
 
-// watchPoll starts a background goroutine that repeatedly calls the
-// qrdb_watch MCP tool, collecting events in bounded intervals and
-// delivering them on the returned channel. The goroutine terminates
-// and closes the channel when the context is canceled.
+// watchPoll starts a background goroutine that polls the qrdb_watch MCP
+// tool in a cursor-based loop, delivering results to the returned channel.
+// The goroutine terminates and closes the channel when the context is
+// canceled or the watch is terminally canceled by the server (a compacted
+// or unsupported start revision — see transport.ClassifyWatchError).
 func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts transport.WatchOptions) (<-chan transport.WatchResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -96,8 +138,7 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 	go func() {
 		defer close(ch)
 
-		// Track the revision to replay from.
-		nextRevision := opts.StartRevision
+		nextRevision := t.bootstrapWatchCursor(ctx, opts.StartRevision)
 
 		for {
 			select {
@@ -106,20 +147,31 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 			default:
 			}
 
+			// sentStartRevision records whether THIS poll's request carries
+			// start_revision, captured before nextRevision is potentially
+			// updated below. It gates the cursor-advancement step: only a
+			// poll that requested replay is guaranteed a "Created" response
+			// (with a trustworthy Revision, even 0 for an empty store) when
+			// no events occurred. A plain live-only poll (no start_revision)
+			// never gets a Created response, so its zero-value Revision
+			// field when no events occurred carries no information — it
+			// must not be mistaken for "confirmed revision 0" and used to
+			// spuriously pin the cursor.
+			sentStartRevision := nextRevision > 0
+
 			args := map[string]any{
-				"key": key,
+				"key":             key,
+				"timeout_seconds": watchPollTimeoutSeconds,
 			}
 			if prefix {
 				args["prefix"] = true
 			}
-			if nextRevision > 0 {
+			if sentStartRevision {
 				args["start_revision"] = nextRevision
 			}
 			if opts.PrevKV {
 				args["prev_kv"] = true
 			}
-			// Use a short timeout per poll to keep latency low.
-			args["timeout_seconds"] = 1.0
 
 			text, err := t.callTool(ctx, "qrdb_watch", args)
 			if err != nil {
@@ -127,13 +179,13 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 				if ctx.Err() != nil {
 					return
 				}
-				// Detect watch canceled from server side.
-				if isWatchCanceledError(err) {
+				// A terminal, server-reported watch condition (compacted or
+				// unsupported start revision, or an explicit watch-canceled
+				// failure) ends the watch rather than retrying forever
+				// against the same unrecoverable error.
+				if reason, terminal := classifyWatchPollError(err); terminal {
 					select {
-					case ch <- transport.WatchResponse{
-						Canceled:     true,
-						CancelReason: err.Error(),
-					}:
+					case ch <- transport.WatchResponse{Canceled: true, CancelReason: reason}:
 					case <-ctx.Done():
 					}
 					return
@@ -142,7 +194,7 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(pollInterval):
+				case <-time.After(watchPollInterval):
 					continue
 				}
 			}
@@ -152,14 +204,19 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(pollInterval):
+				case <-time.After(watchPollInterval):
 					continue
 				}
 			}
 
-			// Advance the revision for the next poll so events are
-			// not replayed.
-			if result.Revision > 0 {
+			// Advance the cursor past every revision the server reported.
+			// A replay poll (sentStartRevision) always gets a Created
+			// response even with zero events, so its Revision anchors the
+			// next poll's start_revision even when nothing changed — what
+			// keeps the loop gap-free while idle. A live-only poll's
+			// Revision is only trustworthy when it actually carried events
+			// (see sentStartRevision's comment above).
+			if (sentStartRevision || len(result.Events) > 0) && result.Revision+1 > nextRevision {
 				nextRevision = result.Revision + 1
 			}
 
@@ -203,12 +260,52 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(pollInterval):
+			case <-time.After(watchPollInterval):
 			}
 		}
 	}()
 
 	return ch, nil
+}
+
+// bootstrapWatchCursor resolves the start_revision to request on the very
+// first poll. An explicit caller-supplied start revision is used as-is
+// (inclusive, matching pkg/watch.WithStartRevision semantics). Otherwise it
+// anchors the cursor to "now" via a CurrentRevision call so the window
+// between this call and the first poll actually running is covered by that
+// poll's replay rather than dropped. If CurrentRevision is unsupported or
+// fails, it returns 0: the caller's first poll omits start_revision (the
+// pre-cursor, best-effort live-only behavior), and the cursor engages from
+// the first reported revision onward.
+func (t *Transport) bootstrapWatchCursor(ctx context.Context, explicit int64) int64 {
+	if explicit > 0 {
+		return explicit
+	}
+	cur, err := t.CurrentRevision(ctx)
+	if err != nil {
+		return 0
+	}
+	return cur + 1
+}
+
+// classifyWatchPollError reports whether err represents a terminal,
+// server-reported watch condition that should end the polling loop (rather
+// than being retried as transient), and the reason text to surface on the
+// resulting Canceled WatchResponse. Recognizes the watch-history conditions
+// pkg/watch surfaces (compacted / unsupported start revision, via
+// transport.ClassifyWatchError) plus the legacy "watch canceled" text some
+// server-side paths still use.
+func classifyWatchPollError(err error) (reason string, terminal bool) {
+	if err == nil {
+		return "", false
+	}
+	if typed := transport.ClassifyWatchError(err); typed != err {
+		return typed.Error(), true
+	}
+	if isWatchCanceledError(err) {
+		return err.Error(), true
+	}
+	return "", false
 }
 
 // isWatchCanceledError checks whether an error indicates that a watch

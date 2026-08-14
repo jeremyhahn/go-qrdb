@@ -16,6 +16,8 @@
 // backed by persistent storage for use as a Raft state machine.
 package statemachine
 
+import "github.com/jeremyhahn/go-qrdb/pkg/lock"
+
 // WatchManager receives notifications about key changes.
 type WatchManager interface {
 	// Notify sends a key-change event to registered watchers.
@@ -183,6 +185,23 @@ type MVCCStore interface {
 	// preconditions succeeded, the operation responses as an
 	// interface{}, and the resulting revision.
 	Transaction(compares []MVCCCompare, successOps, failureOps []MVCCOp) (succeeded bool, revision int64, responses interface{}, err error)
+
+	// ScanChanges returns the distinct keys mutated in the inclusive
+	// revision window [startRev, endRev], optionally restricted to those
+	// beginning with prefix, as an interface{} (expected to be a
+	// *service.MVCCScanChangesResult).
+	//
+	// Unlike Range, which enumerates only keys that are currently LIVE,
+	// this reads the durable revision index and therefore also reports keys
+	// that have been DELETED within the window. That is the distinction
+	// selective point-in-time restore depends on to recreate keys deleted
+	// since its target revision.
+	//
+	// Implementations that maintain no revision index must return an error
+	// rather than an empty or partial result: a caller cannot distinguish
+	// "nothing changed" from "this backend cannot tell you what changed",
+	// and the second answer must fail closed.
+	ScanChanges(startRev, endRev int64, prefix []byte, limit int64) (interface{}, error)
 }
 
 // MVCCCompare represents a conditional check in a transaction.
@@ -249,14 +268,61 @@ type MVCCGetAtRevisionQuery struct {
 }
 
 // MVCCRangeQuery queries a range of keys with optional parameters.
+//
+// SortOrder and SortTarget were added after the initial release of this
+// query type. Both are typed as lock.SortOrder/lock.SortTarget (the
+// canonical definitions pkg/service re-exports as service.SortOrder/
+// service.SortTarget) so callers can assign service.RangeOptions fields
+// directly. Their zero values (lock.SortNone, lock.SortByKey) reproduce the
+// pre-existing ascending scan-order behavior, so callers built before these
+// fields existed are unaffected. This query type is never serialized onto
+// the wire: SyncRead/ReadWithConsistency/StaleRead deliver it to
+// Lookup as a plain in-process Go value, so the addition carries no codec
+// compatibility concerns.
 type MVCCRangeQuery struct {
-	Start     []byte
-	End       []byte
-	Revision  int64
-	Limit     int64
-	CountOnly bool
-	KeysOnly  bool
+	Start      []byte
+	End        []byte
+	Revision   int64
+	Limit      int64
+	CountOnly  bool
+	KeysOnly   bool
+	SortOrder  lock.SortOrder
+	SortTarget lock.SortTarget
 }
 
 // MVCCRevisionQuery retrieves the current global MVCC revision.
 type MVCCRevisionQuery struct{}
+
+// MVCCScanChangesQuery enumerates the distinct keys mutated within an
+// inclusive revision window, read from the durable revision index.
+//
+// It answers a question no MVCCRangeQuery can: a range scan walks the LIVE
+// metadata namespace and so cannot see a key that has been deleted, whereas
+// the revision index records deletes as first-class changes. Selective
+// point-in-time restore uses this to find the keys it must RECREATE.
+//
+// Only keys are returned, never values. The keys mutated in a window are
+// metadata about the shape of the change; their historical values are read
+// individually, through the ordinary as-of read path, only for the keys a
+// restore plan actually acts on. Returning values here would make the query a
+// bulk export of arbitrary history.
+//
+// Like MVCCRangeQuery, this type is never serialized onto the wire:
+// SyncRead/ReadWithConsistency/StaleRead deliver it to Lookup as a plain
+// in-process Go value.
+type MVCCScanChangesQuery struct {
+	// StartRevision is the inclusive lower bound of the window.
+	StartRevision int64
+
+	// EndRevision is the inclusive upper bound of the window.
+	EndRevision int64
+
+	// Prefix restricts results to keys beginning with it. An empty Prefix
+	// matches every changed key.
+	Prefix []byte
+
+	// Limit caps the number of distinct keys returned. When the limit is
+	// reached the result is marked truncated rather than silently cut, so a
+	// caller that requires a complete set can refuse. Zero means no limit.
+	Limit int64
+}

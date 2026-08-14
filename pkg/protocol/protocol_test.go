@@ -16,12 +16,36 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// ---------------------------------------------------------------------------
+// Framing helpers for hand-built transaction/batch fixtures
+// ---------------------------------------------------------------------------
+
+// frame encodes a length or count prefix exactly as the transaction and batch
+// encoders do. Fixtures below build payloads through this helper rather than
+// spelling out raw bytes, so a change to the prefix width is picked up by the
+// tests instead of silently invalidating every fixture.
+func frame(v uint32) []byte {
+	b := make([]byte, frameSize)
+	binary.LittleEndian.PutUint32(b, v)
+	return b
+}
+
+// payloadOf concatenates fixture fragments into a single byte slice.
+func payloadOf(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
 
 // ---------------------------------------------------------------------------
 // Error type tests
@@ -1423,32 +1447,32 @@ func TestDecodeOp_Errors(t *testing.T) {
 		},
 		{
 			name:    "key exceeds data",
-			data:    []byte{OpMVCCPut, 0xFF, 0x00},
+			data:    payloadOf([]byte{OpMVCCPut}, frame(255)), // keyLen=255, no key bytes
 			wantMsg: "key exceeds data",
 		},
 		{
 			name:    "missing value length",
-			data:    []byte{OpMVCCPut, 0x00, 0x00}, // keyLen=0, no valLen
+			data:    payloadOf([]byte{OpMVCCPut}, frame(0)), // keyLen=0, no valLen
 			wantMsg: "missing value length",
 		},
 		{
 			name:    "value exceeds data",
-			data:    []byte{OpMVCCPut, 0x00, 0x00, 0xFF, 0x00}, // keyLen=0, valLen=255
+			data:    payloadOf([]byte{OpMVCCPut}, frame(0), frame(255)), // keyLen=0, valLen=255
 			wantMsg: "value exceeds data",
 		},
 		{
 			name:    "missing range end length",
-			data:    []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00}, // keyLen=0, valLen=0, no reLen
+			data:    payloadOf([]byte{OpMVCCPut}, frame(0), frame(0)), // keyLen=0, valLen=0, no reLen
 			wantMsg: "missing range end length",
 		},
 		{
 			name:    "range end exceeds data",
-			data:    []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00},
+			data:    payloadOf([]byte{OpMVCCPut}, frame(0), frame(0), frame(255)),
 			wantMsg: "range end exceeds data",
 		},
 		{
 			name:    "missing lease ID",
-			data:    []byte{OpMVCCPut, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+			data:    payloadOf([]byte{OpMVCCPut}, frame(0), frame(0), frame(0)),
 			wantMsg: "missing lease ID",
 		},
 	}
@@ -1579,27 +1603,27 @@ func TestDecodeCompare_Errors(t *testing.T) {
 		},
 		{
 			name:    "key exceeds data",
-			data:    []byte{0xFF, 0x00},
+			data:    frame(255), // keyLen=255, no key bytes
 			wantMsg: "key exceeds data",
 		},
 		{
 			name:    "missing target/result",
-			data:    []byte{0x00, 0x00}, // keyLen=0, no target/result
+			data:    frame(0), // keyLen=0, no target/result
 			wantMsg: "missing target/result",
 		},
 		{
 			name:    "missing value length",
-			data:    []byte{0x00, 0x00, 0x01, 0x02}, // keyLen=0, target=1, result=2, no valLen
+			data:    payloadOf(frame(0), []byte{0x01, 0x02}), // keyLen=0, target=1, result=2, no valLen
 			wantMsg: "missing value length",
 		},
 		{
 			name:    "value exceeds data",
-			data:    []byte{0x00, 0x00, 0x01, 0x02, 0xFF, 0x00}, // valLen=255
+			data:    payloadOf(frame(0), []byte{0x01, 0x02}, frame(255)), // valLen=255
 			wantMsg: "value exceeds data",
 		},
 		{
 			name:    "missing version/revisions",
-			data:    []byte{0x00, 0x00, 0x01, 0x02, 0x00, 0x00}, // keyLen=0, t, r, valLen=0, need 24 more
+			data:    payloadOf(frame(0), []byte{0x01, 0x02}, frame(0)), // valLen=0, need 24 more
 			wantMsg: "missing version/revisions",
 		},
 	}
@@ -1775,48 +1799,48 @@ func TestDecodeTransaction_Errors(t *testing.T) {
 		},
 		{
 			name:    "truncated compare length",
-			payload: []byte{0x01, 0x00}, // compareCount=1 but no compare data
+			payload: frame(1), // compareCount=1 but no compare data
 			wantMsg: "truncated compare length",
 		},
 		{
 			name:    "compare exceeds payload",
-			payload: []byte{0x01, 0x00, 0xFF, 0x00}, // compareCount=1, cLen=255
+			payload: payloadOf(frame(1), frame(255)), // compareCount=1, cLen=255
 			wantMsg: "compare exceeds payload",
 		},
 		{
 			name: "missing success count",
 			// compareCount=0, then no more data for success count
-			payload: []byte{0x00, 0x00},
+			payload: frame(0),
 			wantMsg: "missing success count",
 		},
 		{
 			name: "truncated success op length",
 			// compareCount=0, successCount=1, then nothing
-			payload: []byte{0x00, 0x00, 0x01, 0x00},
+			payload: payloadOf(frame(0), frame(1)),
 			wantMsg: "truncated success op length",
 		},
 		{
 			name: "success op exceeds payload",
 			// compareCount=0, successCount=1, opLen=255
-			payload: []byte{0x00, 0x00, 0x01, 0x00, 0xFF, 0x00},
+			payload: payloadOf(frame(0), frame(1), frame(255)),
 			wantMsg: "success op exceeds payload",
 		},
 		{
 			name: "missing failure count",
 			// compareCount=0, successCount=0, then nothing for failure count
-			payload: []byte{0x00, 0x00, 0x00, 0x00},
+			payload: payloadOf(frame(0), frame(0)),
 			wantMsg: "missing failure count",
 		},
 		{
 			name: "truncated failure op length",
 			// compareCount=0, successCount=0, failureCount=1, then nothing
-			payload: []byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x00},
+			payload: payloadOf(frame(0), frame(0), frame(1)),
 			wantMsg: "truncated failure op length",
 		},
 		{
 			name: "failure op exceeds payload",
 			// compareCount=0, successCount=0, failureCount=1, opLen=255
-			payload: []byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0xFF, 0x00},
+			payload: payloadOf(frame(0), frame(0), frame(1), frame(255)),
 			wantMsg: "failure op exceeds payload",
 		},
 	}
@@ -1978,12 +2002,12 @@ func TestDecodeBatch_Errors(t *testing.T) {
 		},
 		{
 			name:    "truncated op length",
-			payload: []byte{0x01, 0x00}, // opCount=1, no op data
+			payload: frame(1), // opCount=1, no op data
 			wantMsg: "truncated op length",
 		},
 		{
 			name:    "op exceeds payload",
-			payload: []byte{0x01, 0x00, 0xFF, 0x00}, // opCount=1, opLen=255
+			payload: payloadOf(frame(1), frame(255)), // opCount=1, opLen=255
 			wantMsg: "op exceeds payload",
 		},
 	}
@@ -2488,17 +2512,21 @@ func TestEncodeTSWrite_BufferSize(t *testing.T) {
 
 func TestEncodeOp_BufferSize(t *testing.T) {
 	encoded := EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), []byte("e"), 0)
-	// Expected: 1 (type) + 2 (keyLen) + 1 (key) + 2 (valLen) + 1 (val) + 2 (reLen) + 1 (re) + 8 (leaseID) = 18
-	if len(encoded) != 18 {
-		t.Errorf("encoded length = %d, want 18", len(encoded))
+	// 1 (type) + frameSize (keyLen) + 1 (key) + frameSize (valLen) + 1 (val)
+	// + frameSize (reLen) + 1 (re) + 8 (leaseID)
+	want := 1 + frameSize + 1 + frameSize + 1 + frameSize + 1 + 8
+	if len(encoded) != want {
+		t.Errorf("encoded length = %d, want %d", len(encoded), want)
 	}
 }
 
 func TestEncodeCompare_BufferSize(t *testing.T) {
 	encoded := EncodeCompare([]byte("k"), 0, 0, []byte("v"), 0, 0, 0)
-	// Expected: 2 (keyLen) + 1 (key) + 1 (target) + 1 (result) + 2 (valLen) + 1 (val) + 8 + 8 + 8 = 32
-	if len(encoded) != 32 {
-		t.Errorf("encoded length = %d, want 32", len(encoded))
+	// frameSize (keyLen) + 1 (key) + 1 (target) + 1 (result) + frameSize (valLen)
+	// + 1 (val) + 8 (version) + 8 (createRev) + 8 (modRev)
+	want := frameSize + 1 + 1 + 1 + frameSize + 1 + 8 + 8 + 8
+	if len(encoded) != want {
+		t.Errorf("encoded length = %d, want %d", len(encoded), want)
 	}
 }
 
@@ -2958,5 +2986,144 @@ func TestEncodeTSDeleteSeries_LargeTimestamps(t *testing.T) {
 	}
 	if decoded.EndNs != math.MaxInt64 {
 		t.Errorf("EndNs = %d, want MaxInt64", decoded.EndNs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Wide-frame capability tests
+//
+// These pin the behaviour the 4-byte framing exists to provide. Under the
+// previous 2-byte prefixes every one of them would have silently truncated a
+// length or count and produced a corrupt payload rather than an error, so they
+// are the regression guard for the whole encoding.
+// ---------------------------------------------------------------------------
+
+// TestEncodeOp_ValueBeyondUint16 verifies that an operation value larger than
+// the old 65535-byte ceiling round-trips intact.
+func TestEncodeOp_ValueBeyondUint16(t *testing.T) {
+	value := bytes.Repeat([]byte("v"), 1<<20) // 1 MiB
+	key := []byte("some/row/key")
+
+	encoded := EncodeOp(OpMVCCPut, key, value, nil, 0)
+	decoded, n, err := DecodeOp(encoded)
+	if err != nil {
+		t.Fatalf("DecodeOp: %v", err)
+	}
+	if n != len(encoded) {
+		t.Errorf("consumed = %d, want %d", n, len(encoded))
+	}
+	if !bytes.Equal(decoded.Key, key) {
+		t.Errorf("Key = %q, want %q", decoded.Key, key)
+	}
+	if !bytes.Equal(decoded.Value, value) {
+		t.Errorf("Value length = %d, want %d", len(decoded.Value), len(value))
+	}
+}
+
+// TestEncodeOp_KeyAndRangeEndBeyondUint16 verifies the key and range-end
+// frames are equally wide, not just the value frame.
+func TestEncodeOp_KeyAndRangeEndBeyondUint16(t *testing.T) {
+	key := bytes.Repeat([]byte("k"), 70000)
+	rangeEnd := bytes.Repeat([]byte("r"), 70000)
+
+	decoded, _, err := DecodeOp(EncodeOp(OpMVCCRange, key, nil, rangeEnd, 0))
+	if err != nil {
+		t.Fatalf("DecodeOp: %v", err)
+	}
+	if !bytes.Equal(decoded.Key, key) {
+		t.Errorf("Key length = %d, want %d", len(decoded.Key), len(key))
+	}
+	if !bytes.Equal(decoded.RangeEnd, rangeEnd) {
+		t.Errorf("RangeEnd length = %d, want %d", len(decoded.RangeEnd), len(rangeEnd))
+	}
+}
+
+// TestEncodeCompare_ValueBeyondUint16 verifies a compare can carry a value
+// larger than the old ceiling, which a compare-and-swap on a large row needs.
+func TestEncodeCompare_ValueBeyondUint16(t *testing.T) {
+	value := bytes.Repeat([]byte("c"), 1<<20)
+
+	decoded, _, err := DecodeCompare(EncodeCompare([]byte("k"), 1, 2, value, 3, 4, 5))
+	if err != nil {
+		t.Fatalf("DecodeCompare: %v", err)
+	}
+	if !bytes.Equal(decoded.Value, value) {
+		t.Errorf("Value length = %d, want %d", len(decoded.Value), len(value))
+	}
+	if decoded.ModRevision != 5 {
+		t.Errorf("ModRevision = %d, want 5", decoded.ModRevision)
+	}
+}
+
+// TestEncodeTransaction_OpCountBeyondUint16 verifies a transaction can carry
+// more than 65535 operations, which a large batch insert requires.
+func TestEncodeTransaction_OpCountBeyondUint16(t *testing.T) {
+	const count = 70000
+
+	ops := make([][]byte, count)
+	for i := range ops {
+		ops[i] = EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0)
+	}
+
+	decoded, err := DecodeTransaction(EncodeTransaction(nil, ops, nil)[1:])
+	if err != nil {
+		t.Fatalf("DecodeTransaction: %v", err)
+	}
+	if len(decoded.SuccessOps) != count {
+		t.Fatalf("SuccessOps = %d, want %d", len(decoded.SuccessOps), count)
+	}
+	if got := string(decoded.SuccessOps[count-1].Key); got != strconv.Itoa(count-1) {
+		t.Errorf("last op key = %q, want %q", got, strconv.Itoa(count-1))
+	}
+}
+
+// TestEncodeBatch_OpCountBeyondUint16 verifies the same for batches.
+func TestEncodeBatch_OpCountBeyondUint16(t *testing.T) {
+	const count = 70000
+
+	ops := make([][]byte, count)
+	for i := range ops {
+		ops[i] = EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0)
+	}
+
+	decoded, err := DecodeBatch(EncodeBatch(ops)[1:])
+	if err != nil {
+		t.Fatalf("DecodeBatch: %v", err)
+	}
+	if len(decoded) != count {
+		t.Fatalf("ops = %d, want %d", len(decoded), count)
+	}
+}
+
+// TestDecodeTransaction_HugeCountFailsCleanly verifies that a corrupt count
+// field is rejected with a typed error rather than driving a huge allocation.
+// The 4-byte count field makes this reachable in a way the 2-byte field was
+// not, so the bounded pre-allocation it exercises is load-bearing.
+func TestDecodeTransaction_HugeCountFailsCleanly(t *testing.T) {
+	// compareCount claims 4 billion elements; no element data follows.
+	payload := frame(math.MaxUint32)
+
+	_, err := DecodeTransaction(payload)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ice *InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *InvalidCommandError, got %T", err)
+	}
+	if !strings.Contains(ice.Reason, "truncated compare length") {
+		t.Errorf("reason = %q, want substring %q", ice.Reason, "truncated compare length")
+	}
+}
+
+// TestDecodeBatch_HugeCountFailsCleanly is the batch counterpart.
+func TestDecodeBatch_HugeCountFailsCleanly(t *testing.T) {
+	_, err := DecodeBatch(frame(math.MaxUint32))
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ice *InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *InvalidCommandError, got %T", err)
 	}
 }

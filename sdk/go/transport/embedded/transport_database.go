@@ -18,6 +18,8 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -31,7 +33,7 @@ var _ transport.DatabaseClient = (*Transport)(nil)
 // CreateDatabase creates a new database by delegating to the injected
 // DatabaseServicer. Returns NilServiceError when no database service
 // has been configured.
-func (t *Transport) CreateDatabase(_ context.Context, req transport.CreateDatabaseRequest) (*transport.DatabaseInfo, error) {
+func (t *Transport) CreateDatabase(ctx context.Context, req transport.CreateDatabaseRequest) (*transport.DatabaseInfo, error) {
 	if t.dbSvc == nil {
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
@@ -39,6 +41,7 @@ func (t *Transport) CreateDatabase(_ context.Context, req transport.CreateDataba
 		Name:     req.Name,
 		Engine:   database.EngineType(req.Engine),
 		Backend:  database.BackendType(req.Backend),
+		DataDir:  req.DataDir,
 		Mode:     database.DatabaseMode(req.Mode),
 		Replicas: req.Replicas,
 		Protocol: database.ProtocolConfig{
@@ -49,7 +52,19 @@ func (t *Transport) CreateDatabase(_ context.Context, req transport.CreateDataba
 		Barrier:    fromTransportBarrierConfig(req.Barrier),
 		Connection: fromTransportConnectionConfig(req.Connection),
 	}
-	info, err := t.dbSvc.Create(cfg)
+
+	var info *database.DatabaseInfo
+	var err error
+	if req.Barrier != nil {
+		creds := seal.Credentials{Secret: []byte(req.Barrier.Secret)}
+		if cc, ok := t.dbSvc.(service.DatabaseCredentialCreator); ok {
+			info, err = cc.CreateWithCredentials(ctx, cfg, creds)
+		} else {
+			info, err = t.dbSvc.Create(cfg)
+		}
+	} else {
+		info, err = t.dbSvc.Create(cfg)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +155,22 @@ func (t *Transport) UpdateDatabaseRaft(_ context.Context, req transport.UpdateDa
 		return nil, &NilServiceError{Service: "DatabaseServicer"}
 	}
 	info, err := t.dbSvc.UpdateRaft(req.Name, fromTransportRaftConfig(req.Raft))
+	if err != nil {
+		return nil, err
+	}
+	return toTransportDatabaseInfo(info), nil
+}
+
+// ScaleDatabase changes the replication factor of a dedicated-raft database
+// by delegating to the injected DatabaseServicer's tenant-scoped
+// ScaleForTenant (unlike UpdateDatabaseRaft/UpdateDatabaseBarrier, scaling
+// has no non-tenant plain variant on DatabaseServicer -- it always enforces
+// tenant quota, so ctx is threaded through here).
+func (t *Transport) ScaleDatabase(ctx context.Context, req transport.ScaleDatabaseRequest) (*transport.DatabaseInfo, error) {
+	if t.dbSvc == nil {
+		return nil, &NilServiceError{Service: "DatabaseServicer"}
+	}
+	info, err := t.dbSvc.ScaleForTenant(ctx, req.Name, req.TargetReplicas)
 	if err != nil {
 		return nil, err
 	}

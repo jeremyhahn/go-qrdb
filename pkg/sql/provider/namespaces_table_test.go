@@ -38,7 +38,7 @@ func TestNewNamespacesTable(t *testing.T) {
 func TestNamespacesTable_Schema(t *testing.T) {
 	tbl := NewNamespacesTable()
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	require.Len(t, schema, 4)
 

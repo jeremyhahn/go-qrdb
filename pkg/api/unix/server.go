@@ -14,11 +14,16 @@
 
 // Package unix provides a gRPC server over Unix domain sockets for QRDB.
 // It reuses the gRPC service implementation but listens on a local Unix
-// socket, providing efficient inter-process communication without TLS.
+// socket. The socket file mode (0700 directory) is defense-in-depth;
+// the transport is "verified TLS 1.3 only" with the same mTLS-derived
+// authentication and RBAC authorization as the TCP gRPC server, applied
+// via the identical interceptor chain.
 package unix
 
 import (
 	"context"
+	"crypto/tls"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -29,10 +34,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -46,8 +54,9 @@ import (
 
 // Server is a gRPC server that listens on a Unix domain socket. It
 // delegates all operations to the same service implementations used
-// by the TCP gRPC server, but communicates over a local socket path
-// without TLS.
+// by the TCP gRPC server, communicating over a local socket path secured
+// with the same optional TLS credentials and auth middleware (see WithTLS
+// and WithAuthMiddleware).
 type Server struct {
 	kvSvc             service.KVServicer
 	adminSvc          service.AdminServicer
@@ -56,8 +65,10 @@ type Server struct {
 	roleSvc           role.RoleServicer
 	certProv          cert.CertProvider
 	barrierSvc        service.BarrierServicer
+	encMigrator       service.EncryptionMigrator
 	pinBackend        pin.PINBackend
 	ceremonySvc       service.CeremonyServicer
+	ceremonyCA        ceremony.CeremonyCA
 	credentialSvc     service.CredentialServicer
 	collectionSvc     service.CollectionServicer
 	mvccSvc           service.MVCCKVServicer
@@ -79,7 +90,12 @@ type Server struct {
 	userAuthFactorSvc service.UserAuthFactorServicer
 	tenantBarrierSvc  tenant.TenantServicer
 	auditLogger       audit.AuditLogger
+	sqlSvc            service.SQLServicer
 	registry          service.Registry
+	tls               *tls.Config
+	tlsErr            error
+	authMW            *authmw.AuthMiddleware
+	sealedWindowProbe sealedWindowProbe
 	server            *grpc.Server
 	listener          net.Listener
 	serveWg           sync.WaitGroup
@@ -87,6 +103,65 @@ type Server struct {
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithTLS configures the Unix socket gRPC server with TLS credentials.
+// The Unix transport is "verified TLS 1.3 only": the socket-file mode
+// (0700 directory) is defense-in-depth, but the TLS client certificate
+// is the identity the auth middleware authenticates against, exactly as
+// on the TCP gRPC server.
+//
+// cfg is cloned — the caller's copy is never mutated or retained — and its
+// MinVersion is enforced: unset defaults to tls.VersionTLS13; an explicit
+// value below TLS 1.3 fails Start with a typed *WeakTLSVersionError. A nil
+// cfg leaves TLS unconfigured, identical to omitting WithTLS entirely: Start
+// then fails closed with a *TLSNotConfiguredError, because the Unix transport
+// is TLS-only and a caller must never end up with an unauthenticated plaintext
+// listener simply by forgetting to wire TLS. The orchestrator (pkg/server)
+// auto-provisions a certificate from the node's CeremonyCA so this is
+// transparent for every normal deployment shape.
+func WithTLS(cfg *tls.Config) ServerOption {
+	return func(s *Server) {
+		if cfg == nil {
+			return
+		}
+		clone := cfg.Clone()
+		switch {
+		case clone.MinVersion == 0:
+			clone.MinVersion = tls.VersionTLS13
+		case clone.MinVersion < tls.VersionTLS13:
+			s.tlsErr = &WeakTLSVersionError{MinVersion: clone.MinVersion}
+			return
+		}
+		s.tls = clone
+	}
+}
+
+// tlsVersionName renders a crypto/tls version constant (or 0 for "unset")
+// as a human-readable string for error messages.
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS10:
+		return "TLS 1.0"
+	case tls.VersionTLS11:
+		return "TLS 1.1"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	case 0:
+		return "unset"
+	default:
+		return fmt.Sprintf("0x%04x", v)
+	}
+}
+
+// WithAuthMiddleware configures the Unix socket gRPC server with the same
+// authentication and authorization middleware applied to the TCP gRPC
+// server, so unix RPCs are gated by RBAC exactly like every other
+// transport instead of bypassing it as a "local trust" shortcut.
+func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
+	return func(s *Server) { s.authMW = mw }
+}
 
 // WithUserService configures the Unix socket server with a user management service.
 func WithUserService(svc user.UserServicer) ServerOption {
@@ -108,6 +183,37 @@ func WithBarrierService(svc service.BarrierServicer) ServerOption {
 	return func(s *Server) { s.barrierSvc = svc }
 }
 
+// WithEncryptionMigrator configures the Unix socket server with the
+// enable-encryption migrator, exposing BarrierEnableEncryption over the
+// Unix socket the same way it is exposed over REST and TCP gRPC.
+func WithEncryptionMigrator(m service.EncryptionMigrator) ServerOption {
+	return func(s *Server) { s.encMigrator = m }
+}
+
+// WithSQLService configures the Unix socket server with a SQL query
+// service for ad-hoc SQL execution against a named database.
+func WithSQLService(svc service.SQLServicer) ServerOption {
+	return func(s *Server) { s.sqlSvc = svc }
+}
+
+// sealedWindowProbe is the abstraction the sealed-window interceptor needs
+// to know whether the storage barrier is currently sealed. Mirrors
+// grpcpkg's unexported interface of the same name; kept as a local type so
+// this package can declare a field of the right shape without importing an
+// unexported grpc-package type.
+type sealedWindowProbe interface {
+	IsSealed() bool
+}
+
+// WithSealedWindowProbe installs the sealed-window unary and streaming
+// interceptors on the Unix socket gRPC server, using the exact same
+// allowlist and semantics as the TCP gRPC server (grpcpkg.SealedWindowAllowlist).
+// While probe.IsSealed() returns true, every method whose trailing
+// component is not on the allowlist is rejected with codes.Unavailable.
+func WithSealedWindowProbe(probe sealedWindowProbe) ServerOption {
+	return func(s *Server) { s.sealedWindowProbe = probe }
+}
+
 // WithPINBackend configures the Unix socket server with the canonical
 // pin.PINBackend used for the optional SO PIN / User PIN compliance-gating
 // layer on barrier administrative operations.
@@ -118,6 +224,16 @@ func WithPINBackend(backend pin.PINBackend) ServerOption {
 // WithCeremonyService configures the Unix socket server with a ceremony service.
 func WithCeremonyService(svc service.CeremonyServicer) ServerOption {
 	return func(s *Server) { s.ceremonySvc = svc }
+}
+
+// WithCeremonyCA sets the CeremonyCA used by the ceremony initialization
+// handler to issue the TLS and SO certificates, mirroring the TCP gRPC, QUIC,
+// REST, and MCP transports. The CA cannot be serialized over the wire, so it
+// must be injected at server creation time and is held as a server-side
+// reference. When unset, CeremonyInitialize fails closed with a
+// *grpcpkg.CeremonyCANotConfiguredError instead of dereferencing a nil CA.
+func WithCeremonyCA(ca ceremony.CeremonyCA) ServerOption {
+	return func(s *Server) { s.ceremonyCA = ca }
 }
 
 // WithCredentialService configures the Unix socket server with a credential service.
@@ -272,6 +388,21 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, socketP
 // QRDB gRPC service, and starts serving in the background. The method
 // returns after the listener is bound.
 func (s *Server) Start() error {
+	// A WithTLS config with an explicitly weak MinVersion was rejected at
+	// option-application time; surface it now.
+	if s.tlsErr != nil {
+		return s.tlsErr
+	}
+	// The Unix transport is TLS-only: the mTLS client certificate is the
+	// identity the auth middleware authenticates against, so an absent TLS
+	// config would silently strip RBAC and identity checks from every caller
+	// that can reach the socket. Fail closed rather than bind a plaintext
+	// listener. The orchestrator (pkg/server) auto-provisions a certificate
+	// from the node's CeremonyCA, so a normal deployment never reaches here.
+	if s.tls == nil {
+		return &TLSNotConfiguredError{}
+	}
+
 	// Ensure the parent directory exists.
 	dir := filepath.Dir(s.socketPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -289,17 +420,51 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 
-	// Build server options with the same interceptor chain as the TCP
-	// gRPC server: recovery first, then logging.
+	// Build the interceptor chains with the SAME ordering as the TCP gRPC
+	// server (pkg/api/grpc/server.go Start): recovery, then logging, then
+	// the database-scope interceptor, then — when configured — the auth
+	// middleware. Unix previously omitted the auth middleware entirely,
+	// letting RBAC-gated RPCs bypass authorization on this transport; it
+	// is now applied identically to TCP gRPC.
+	unaryInterceptors := []grpc.UnaryServerInterceptor{
+		recoveryInterceptor,
+		loggingInterceptor,
+		grpcpkg.DatabaseScopeUnaryInterceptor,
+	}
+	if s.authMW != nil {
+		unaryInterceptors = append(unaryInterceptors, s.authMW.UnaryInterceptor())
+	}
+	if s.sealedWindowProbe != nil {
+		unaryInterceptors = append(unaryInterceptors,
+			grpcpkg.SealedWindowUnaryInterceptor(s.sealedWindowProbe, nil))
+	}
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		streamRecoveryInterceptor,
+		streamLoggingInterceptor,
+		grpcpkg.DatabaseScopeStreamInterceptor,
+	}
+	if s.authMW != nil {
+		streamInterceptors = append(streamInterceptors, s.authMW.StreamInterceptor())
+	}
+	if s.sealedWindowProbe != nil {
+		streamInterceptors = append(streamInterceptors,
+			grpcpkg.SealedWindowStreamInterceptor(s.sealedWindowProbe, nil))
+	}
+
 	serverOpts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			recoveryInterceptor,
-			loggingInterceptor,
-			grpcpkg.DatabaseScopeUnaryInterceptor,
-		),
-		grpc.ChainStreamInterceptor(
-			grpcpkg.DatabaseScopeStreamInterceptor,
-		),
+		grpc.ChainUnaryInterceptor(unaryInterceptors...),
+		grpc.ChainStreamInterceptor(streamInterceptors...),
+		grpc.MaxRecvMsgSize(grpcpkg.MaxImportMessageSize),
+	}
+
+	// Add TLS credentials when configured. The Unix transport is intended
+	// to run "verified TLS 1.3 only" in production (see cmd/qrdb and
+	// cmd/qrdbd CLAUDE.md); TLS is threaded in as an option, mirroring the
+	// TCP gRPC server, so tests and embedded callers that construct their
+	// own plaintext loopback may still opt out.
+	if s.tls != nil {
+		creds := credentials.NewTLS(s.tls)
+		serverOpts = append(serverOpts, grpc.Creds(creds))
 	}
 
 	s.server = grpc.NewServer(serverOpts...)
@@ -318,11 +483,17 @@ func (s *Server) Start() error {
 	if s.barrierSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterBarrierService(s.barrierSvc))
 	}
+	if s.encMigrator != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterEncryptionMigrator(s.encMigrator))
+	}
 	if s.pinBackend != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterPINBackend(s.pinBackend))
 	}
 	if s.ceremonySvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyService(s.ceremonySvc))
+	}
+	if s.ceremonyCA != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterCeremonyCA(s.ceremonyCA))
 	}
 	if s.credentialSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterCredentialService(s.credentialSvc))
@@ -375,6 +546,9 @@ func (s *Server) Start() error {
 	if s.rebalanceSvc != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterRebalanceService(s.rebalanceSvc))
 	}
+	if s.sqlSvc != nil {
+		regOpts = append(regOpts, grpcpkg.WithRegisterSQLService(s.sqlSvc))
+	}
 	if s.registry != nil {
 		regOpts = append(regOpts, grpcpkg.WithRegisterServiceRegistry(s.registry))
 	}
@@ -399,21 +573,24 @@ func (s *Server) Start() error {
 	// service, but the guard here keeps this call site consistent with the
 	// AuthFactorService one above.
 	if s.userAuthFactorSvc != nil {
-		grpcpkg.RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc)
+		grpcpkg.RegisterUserAuthFactorService(s.server, s.userAuthFactorSvc, s.userSvc)
 	}
 
 	// Register TenantBarrierService alongside QRDBService when configured.
 	// The same TenantServicer can be passed to both WithTenantService (for
 	// CRUD) and WithTenantBarrierService (for the per-tenant barrier
 	// lifecycle); they expose disjoint gRPC methods on disjoint service
-	// descriptors.
-	// The Unix socket is a local-trust transport with no auth middleware, so
-	// the tenant-scoped barrier gate is passed nil (no-op) here.
+	// descriptors. s.authMW (which may be nil) supplies the tenant-scoped
+	// authorization gate, exactly as on the TCP gRPC server.
 	if s.tenantBarrierSvc != nil {
-		grpcpkg.RegisterTenantBarrierService(s.server, s.tenantBarrierSvc, nil)
+		grpcpkg.RegisterTenantBarrierService(s.server, s.tenantBarrierSvc, s.authMW)
 	}
 
-	slog.Info("unix gRPC server started", "socket", s.socketPath)
+	proto := "unix"
+	if s.tls != nil {
+		proto = "unix+TLS"
+	}
+	slog.Info("unix gRPC server started", "socket", s.socketPath, "proto", proto)
 
 	s.serveWg.Add(1)
 	go func() {
@@ -506,4 +683,60 @@ func loggingInterceptor(
 	)
 
 	return resp, err
+}
+
+// streamRecoveryInterceptor catches panics in streaming gRPC handlers
+// and returns an Internal error instead of crashing the server. Mirrors
+// pkg/api/grpc's streamRecoveryInterceptor.
+func streamRecoveryInterceptor(
+	srv any,
+	ss grpc.ServerStream,
+	info *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("unix grpc: stream panic recovered",
+				"method", info.FullMethod,
+				"panic", r,
+				"stack", string(debug.Stack()),
+			)
+			err = status.Errorf(codes.Internal, "internal server error")
+		}
+	}()
+	return handler(srv, ss)
+}
+
+// streamLoggingInterceptor logs each streaming gRPC call with method,
+// duration, and any error code. Mirrors pkg/api/grpc's
+// streamLoggingInterceptor.
+func streamLoggingInterceptor(
+	srv any,
+	ss grpc.ServerStream,
+	info *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) error {
+	start := time.Now()
+	err := handler(srv, ss)
+	duration := time.Since(start)
+
+	code := codes.OK
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			code = st.Code()
+		}
+	}
+
+	level := slog.LevelDebug
+	if code != codes.OK {
+		level = slog.LevelWarn
+	}
+
+	slog.Log(ss.Context(), level, "unix grpc: stream",
+		"method", info.FullMethod,
+		"code", code.String(),
+		"duration", duration,
+	)
+
+	return err
 }

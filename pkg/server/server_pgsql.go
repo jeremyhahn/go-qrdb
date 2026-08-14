@@ -40,11 +40,29 @@ func startPgSQL(s *Server) error {
 	if s.opts.authMW != nil {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if s.opts.sealedWindowProbe != nil {
+		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.dbManager != nil {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseManager(s.opts.dbManager))
 	}
 	if s.config.SQL.DefaultDatabase != "" {
 		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase))
+	}
+	if s.opts.collectionSvc != nil {
+		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithCollectionService(s.opts.collectionSvc))
+	}
+	if s.opts.indexSvc != nil {
+		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithIndex(s.opts.indexSvc))
+	}
+	// The transport-neutral per-(tenant, database) service.Registry closes
+	// the isolation gap PostgreSQL wire-protocol sessions would otherwise
+	// have: without it, relational tables are invisible and every
+	// registry-backed resolution (barrier/quota/isolation enforcement,
+	// IsolationRaft/IsolationVolume routing) is bypassed entirely. See
+	// buildServiceRegistry.
+	if reg := s.buildServiceRegistry(); reg != nil {
+		pgsqlOpts = append(pgsqlOpts, pgsqlapi.WithServiceRegistry(reg))
 	}
 
 	s.pgsqlSrv = pgsqlapi.NewServer(s.kvSvc, s.adminSvc, addr, pgsqlOpts...)

@@ -74,6 +74,9 @@ embedded in-process instance.`,
 			cfg.coalescing, _ = pflags.GetBool("coalescing")
 			cfg.chunkSize, _ = pflags.GetInt("chunk-size")
 			cfg.debug, _ = pflags.GetBool("debug")
+			cfg.caFile, _ = pflags.GetString("ca-file")
+			cfg.certFile, _ = pflags.GetString("cert-file")
+			cfg.keyFile, _ = pflags.GetString("key-file")
 
 			if err := cfg.validate(); err != nil {
 				return err
@@ -101,10 +104,13 @@ embedded in-process instance.`,
 	pflags.String("config", "", "Path to qrdb YAML configuration file (required for embedded mode)")
 	pflags.String("transport", defaultTransport, "Transport type for client mode: rest, grpc, unix, mcp, quic")
 	pflags.String("consistency", defaultConsistency, "Default consistency level: linearizable, serializable, bounded-staleness, eventual")
-	pflags.String("write-mode", defaultWriteMode, "Default write routing: leader, local")
+	pflags.String("write-mode", defaultWriteMode, "Default write durability: sync, wal_durable, batched")
 	pflags.Bool("coalescing", false, "Enable coalescing transport to batch concurrent requests")
 	pflags.Int("chunk-size", defaultChunkSize, "Prefetch chunk size (rows) for virtual table scans")
 	pflags.Bool("debug", false, "Enable debug logging")
+	pflags.String("ca-file", "", "TLS CA certificate file (required for remote transports, including unix)")
+	pflags.String("cert-file", "", "TLS client certificate file")
+	pflags.String("key-file", "", "TLS client key file")
 
 	rootCmd.AddCommand(newShellCmd())
 	rootCmd.AddCommand(newVersionCmd())
@@ -142,6 +148,10 @@ func buildClient(ctx context.Context, c *gatewayConfig) (*sdk.Client, error) {
 
 	var opts []transport.Option
 	opts = append(opts, transport.WithAddress(address))
+
+	if c.caFile != "" || c.certFile != "" || c.keyFile != "" {
+		opts = append(opts, transport.WithTLS(c.certFile, c.keyFile, c.caFile))
+	}
 
 	builder, ok := transportBuilders[transportType]
 	if !ok {
@@ -352,7 +362,13 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	// Start the interactive REPL. The shell reads SQL from stdin and formats
 	// results to stdout. A non-nil return value indicates a genuine I/O error,
 	// not a SQL error (those are printed and the REPL continues).
+	//
+	// The shell shares the same pragma store instance used to build the
+	// adapters above, so a `.pragma qrdb_write_mode wal_durable` (or the
+	// equivalent SQL-form PRAGMA) takes effect on the very next query: the
+	// adapters read PragmaStore.Consistency()/WriteMode() on every call.
 	sh := newShell(db, os.Stdout)
+	sh.pragma = pragma
 	return sh.run(os.Stdin)
 }
 

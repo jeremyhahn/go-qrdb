@@ -43,9 +43,10 @@ type mockMVCCService struct {
 	putWithLeaseFn    func(ctx context.Context, key string, value []byte, leaseID int64) (*kv.KeyValue, error)
 	getRevisionFn     func(ctx context.Context, key string) (*kv.KeyValue, error)
 	getAtRevisionFn   func(ctx context.Context, key string, revision int64) (*kv.KeyValue, error)
-	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error)
+	rangeFn           func(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error)
 	compactFn         func(ctx context.Context, revision int64) error
 	currentRevisionFn func(ctx context.Context) (int64, error)
+	restoreFn         func(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error)
 }
 
 func newMockMVCCService() *mockMVCCService {
@@ -75,14 +76,14 @@ func (m *mockMVCCService) GetAtRevision(ctx context.Context, key string, revisio
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("old"), ModRevision: revision, CreateRevision: 1, Version: 1}, nil
 }
 
-func (m *mockMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) Range(ctx context.Context, start, end []byte, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	if m.rangeFn != nil {
 		return m.rangeFn(ctx, start, end, opts...)
 	}
 	kvs := []*kv.KeyValue{
 		{Key: start, Value: []byte("v1"), ModRevision: 1},
 	}
-	return kvs, 1, nil
+	return kvs, 1, 1, nil
 }
 
 func (m *mockMVCCService) Compact(ctx context.Context, revision int64) error {
@@ -127,11 +128,11 @@ func (m *mockMVCCService) GetAtRevisionWithConsistency(_ context.Context, key st
 	return &kv.KeyValue{Key: []byte(key), Value: []byte("old"), ModRevision: revision, CreateRevision: 1, Version: 1}, nil
 }
 
-func (m *mockMVCCService) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+func (m *mockMVCCService) RangeWithConsistency(_ context.Context, start, end []byte, _ consistency.ReadOptions, opts ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 	kvs := []*kv.KeyValue{
 		{Key: start, Value: []byte("v1"), ModRevision: 1},
 	}
-	return kvs, 1, nil
+	return kvs, 1, 1, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ func (m *mockTransactionService) ExecuteEntity(_ context.Context, _ *service.Tra
 
 type mockBatchService struct {
 	executeFn func(ctx context.Context, ops []service.Op) ([]service.OpResponse, error)
+	importFn  func(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error)
 }
 
 func (m *mockBatchService) Execute(ctx context.Context, ops []service.Op) ([]service.OpResponse, error) {
@@ -184,7 +186,10 @@ func (m *mockBatchService) ExecuteEntity(_ context.Context, _ *service.BatchEnti
 	return nil, nil
 }
 
-func (m *mockBatchService) Import(_ context.Context, _ io.Reader, _ service.ImportOptions) (*service.ImportResult, error) {
+func (m *mockBatchService) Import(ctx context.Context, file io.Reader, opts service.ImportOptions) (*service.ImportResult, error) {
+	if m.importFn != nil {
+		return m.importFn(ctx, file, opts)
+	}
 	return nil, nil
 }
 
@@ -484,7 +489,7 @@ func TestHandleMVCCPutWithLease_Success(t *testing.T) {
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"key":      "k1",
-		"value":    "v1",
+		"value":    "djE=",
 		"lease_id": float64(100),
 	}))
 	if err != nil {
@@ -515,7 +520,7 @@ func TestHandleMVCCPutWithLease_MissingKey(t *testing.T) {
 	}
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
-		"value":    "v1",
+		"value":    "djE=",
 		"lease_id": float64(100),
 	}))
 	if err != nil {
@@ -565,7 +570,7 @@ func TestHandleMVCCPutWithLease_ServiceError(t *testing.T) {
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"key":      "k1",
-		"value":    "v1",
+		"value":    "djE=",
 		"lease_id": float64(100),
 	}))
 	if err == nil {
@@ -770,8 +775,8 @@ func TestHandleMVCCRange_MissingEnd(t *testing.T) {
 
 func TestHandleMVCCRange_ServiceError(t *testing.T) {
 	svc := newMockMVCCService()
-	svc.rangeFn = func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
-		return nil, 0, &service.ReadError{Err: errors.New("read timeout")}
+	svc.rangeFn = func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
+		return nil, 0, 0, &service.ReadError{Err: errors.New("read timeout")}
 	}
 	handler := handleMVCCRange(svc)
 
@@ -2930,8 +2935,8 @@ func TestNewServer_AllOptions(t *testing.T) {
 
 	tools := s.MCPServer().ListTools()
 
-	// 5 KV + 7 admin + 1 capabilities + 4 shard-admin + 6 MVCC + 1 TX + 1 batch + 1 watch + 5 lease + 5 index + 10 TS = 46
-	expectedCount := 5 + 7 + 1 + 4 + 6 + 1 + 1 + 1 + 5 + 5 + 10
+	// 5 KV + 7 admin + 1 capabilities + 4 shard-admin + 7 MVCC + 1 TX + 2 batch + 1 watch + 5 lease + 5 index + 10 TS = 48
+	expectedCount := 5 + 7 + 1 + 4 + 7 + 1 + 2 + 1 + 5 + 5 + 10
 	if len(tools) != expectedCount {
 		t.Errorf("expected %d tools, got %d", expectedCount, len(tools))
 	}
@@ -2944,8 +2949,8 @@ func TestNewServer_AllOptions(t *testing.T) {
 func TestMvccTools_ReturnsCorrectCount(t *testing.T) {
 	svc := newMockMVCCService()
 	tools := mvccTools(svc)
-	if len(tools) != 6 {
-		t.Errorf("expected 6 mvcc tools, got %d", len(tools))
+	if len(tools) != 7 {
+		t.Errorf("expected 7 mvcc tools, got %d", len(tools))
 	}
 }
 
@@ -2960,8 +2965,8 @@ func TestTransactionTools_ReturnsCorrectCount(t *testing.T) {
 func TestBatchTools_ReturnsCorrectCount(t *testing.T) {
 	svc := &mockBatchService{}
 	tools := batchTools(svc)
-	if len(tools) != 1 {
-		t.Errorf("expected 1 batch tool, got %d", len(tools))
+	if len(tools) != 2 {
+		t.Errorf("expected 2 batch tools, got %d", len(tools))
 	}
 }
 
@@ -3931,4 +3936,12 @@ func TestHandleTSRichQuery_NoAggregation(t *testing.T) {
 	if captured.Aggregation != timeseries.AggNone {
 		t.Errorf("expected AggNone, got %d", captured.Aggregation)
 	}
+}
+
+// RestoreToRevision satisfies service.MVCCKVServicer.
+func (m *mockMVCCService) RestoreToRevision(ctx context.Context, req *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
+	if m.restoreFn != nil {
+		return m.restoreFn(ctx, req)
+	}
+	return nil, nil
 }

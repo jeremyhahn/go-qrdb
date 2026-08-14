@@ -16,20 +16,22 @@ qrdb
 │   ├── get <key>                   # Retrieve value (--revision, --at-revision N)
 │   ├── del <key>                   # Delete a key
 │   ├── list [prefix]               # List keys by prefix
-│   └── exists <key>                # Check key existence
-├── mvcc                            # MVCC operations
-│   ├── revision                    # Current revision number
+│   ├── exists <key>                # Check key existence
 │   ├── range <start> <end>         # Range query (--limit, --keys-only, --sort-order)
-│   └── compact <revision>          # Compact old revisions
+│   ├── revision                    # Current revision number
+│   ├── compact <revision>          # Compact old revisions
+│   └── restore                     # Selective point-in-time restore (--revision R, --prefix/--keys, --dry-run, --force)
 ├── watch                           # Real-time notifications
-│   ├── key <key>                   # Watch single key (--start-revision, --prev-kv)
-│   └── prefix <prefix>            # Watch prefix (--progress-notify)
-├── txn exec                        # Compare-and-swap transaction (--file <txn.json>)
-├── batch exec                      # Atomic multi-op batch (--file <ops.json>)
+│   └── watch <key>                 # Watch key or prefix (--prefix, --start-revision, --prev-kv)
+├── tx                              # Transaction operations
+│   └── execute                     # Execute transaction from JSON file (--file <txn.json>)
+├── batch                           # Batch operations
+│   ├── execute                     # Execute batch from JSON file (--file <ops.json>)
+│   └── import                      # Import batch data (--file, --format)
 ├── lease                           # Distributed leases
-│   ├── grant <ttl>                 # Create lease
+│   ├── grant                       # Create lease (--ttl)
 │   ├── revoke <id>                 # Revoke lease
-│   ├── keepalive <id>              # Reset TTL
+│   ├── keep-alive <id>             # Reset TTL
 │   ├── ttl <id>                    # Show remaining TTL
 │   └── list                        # List active leases
 ├── index                           # Secondary indexes
@@ -42,13 +44,6 @@ qrdb
 │   ├── write-batch                 # Batch write (--file)
 │   ├── query <metric>              # Query range (--start, --end, --tags)
 │   └── aggregate <metric>          # Aggregate (--func, --interval)
-├── barrier                         # Seal/unseal operations
-│   ├── init                        # Initialize (--shares N --threshold M)
-│   ├── seal / unseal / status      # Barrier lifecycle
-│   ├── rotate / rekey              # Key management
-│   ├── recovery generate|restore   # Disaster recovery
-│   ├── root-token generate         # One-time admin token
-│   └── tenant init|seal|unseal|status <tenantID>
 ├── database                        # Database management
 │   ├── create <name>               # Create database (--engine, --backend, --etcd, --etcd-listen-addr, --etcd-advertise-urls)
 │   ├── list                        # List all databases
@@ -59,6 +54,17 @@ qrdb
 │   ├── health / status / peers     # Node info
 │   ├── member add|remove           # Membership management
 │   ├── snapshot / drain            # Operational tasks
+├── tenant                          # Tenant management
+│   ├── list                        # List tenants
+│   ├── create <id>                 # Create tenant (--name, --isolation-type)
+│   ├── get <id>                    # Get tenant details
+│   ├── update <id>                 # Update tenant (--name, --isolation-type)
+│   ├── update-quotas <id>          # Update tenant quotas
+│   ├── set-entitlement <id>        # Set entitlements
+│   ├── delete <id>                 # Delete tenant
+│   ├── barrier-init <id>           # Initialize tenant barrier (--shares N --threshold M)
+│   ├── barrier-unseal <id>         # Unseal tenant barrier
+│   └── barrier-seal <id>           # Seal tenant barrier
 ├── users                           # User management
 │   ├── list [--tenant-id <id>]     # List users
 │   ├── create --username <name>    # Create user (--tenant-id, --roles)

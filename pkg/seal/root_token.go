@@ -166,7 +166,7 @@ func (b *StorageBarrier) verifyCredentialMode(ctx context.Context, secret []byte
 		return nil, ErrRootTokenVerificationFailed
 	}
 
-	strategy, ok := b.strategies[sealed.Strategy]
+	strategy, ok := b.strategyByID(sealed.Strategy)
 	if !ok {
 		return nil, ErrRootTokenVerificationFailed
 	}

@@ -17,6 +17,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -524,10 +525,23 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 		args["shard_id"] = req.ShardID
 	}
 
+	// REAL CROSS-TRANSPORT PARITY BUG (found + fixed): this used to swallow
+	// a not-found tool error into a synthetic Found:false success response.
+	// pkg/service/vector.go's GetVector never actually produces a
+	// Found:false response on its success path -- a missing ID is always a
+	// server-side error (ErrNotFound) -- and REST/gRPC/QUIC/Unix all
+	// propagate that error to the caller unmodified, so `vector get` of a
+	// missing ID fails closed on every other transport. This was the only
+	// GetVector*-style caller in this package using isNotFoundError to
+	// SYNTHESIZE a success value; every sibling caller (GetRevision,
+	// GetAtRevision, etc. in transport_mvcc.go/transport_auth.go) uses it
+	// to produce a more specific TYPED error while still returning err !=
+	// nil, which is the pattern this now follows with
+	// transport.VectorNotFoundError.
 	text, err := t.callTool(ctx, "qrdb_vector_get", args)
 	if err != nil {
 		if isNotFoundError(err) {
-			return &transport.GetVectorResponse{ID: req.ID, Found: false}, nil
+			return nil, &transport.VectorNotFoundError{Namespace: req.Namespace, ID: strconv.FormatUint(req.ID, 10)}
 		}
 		return nil, err
 	}

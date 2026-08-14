@@ -1257,8 +1257,20 @@ func (s *Server) handleVectorCompactNamespace(w http.ResponseWriter, r *http.Req
 // returns the current progress of a compaction job.
 // Query parameters:
 //   - namespace: namespace name (required)
-//   - job_id: compaction job identifier (required)
+//   - operation_id: compaction operation identifier (required)
 //   - shard_id: target shard (optional)
+//
+// NOTE: this previously read a "job_id" query parameter -- a copy-paste
+// holdover from the sibling GetRebuildProgress handler's JobID field --
+// which never matched the "operation_id" the SDK REST client
+// (sdk/go/transport/rest/transport_vector.go GetCompactionProgress) and the
+// CLI (`vector compact-progress --operation-id`) have always sent, and never
+// matched transport.GetCompactionProgressRequest/Response's OperationID
+// field or the JSON this same handler emits ("operation_id"). Every REST
+// call to this endpoint therefore failed closed with "missing required
+// parameter: job_id", exclusively on this one transport (gRPC, QUIC, Unix,
+// and MCP all key off the request's actual OperationID field). Renamed to
+// match the DTO and every other transport.
 func (s *Server) handleVectorGetCompactionProgress(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	vectorSvc := s.vectorSvcFor(w, ctx)
@@ -1277,9 +1289,9 @@ func (s *Server) handleVectorGetCompactionProgress(w http.ResponseWriter, r *htt
 		return
 	}
 
-	jobID := q.Get("job_id")
+	jobID := q.Get("operation_id")
 	if jobID == "" {
-		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "job_id"})
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "operation_id"})
 		return
 	}
 

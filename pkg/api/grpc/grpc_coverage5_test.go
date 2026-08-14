@@ -18,6 +18,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"testing"
 	"time"
@@ -28,7 +29,6 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	gogrpc "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -554,13 +554,14 @@ func TestDomainRaftConfigToProto_AllFields(t *testing.T) {
 
 func TestGRPC_Put_NilService(t *testing.T) {
 	// Use a server with nil KV service.
-	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn, err := newInsecureGRPCConn(srv.Addr())
+	conn, err := newTLSGRPCConn(t, srv.Addr(), tlsCfg)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -578,13 +579,14 @@ func TestGRPC_Put_NilService(t *testing.T) {
 }
 
 func TestGRPC_Get_NilService(t *testing.T) {
-	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn, err := newInsecureGRPCConn(srv.Addr())
+	conn, err := newTLSGRPCConn(t, srv.Addr(), tlsCfg)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -602,13 +604,14 @@ func TestGRPC_Get_NilService(t *testing.T) {
 }
 
 func TestGRPC_Delete_NilService(t *testing.T) {
-	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn, err := newInsecureGRPCConn(srv.Addr())
+	conn, err := newTLSGRPCConn(t, srv.Addr(), tlsCfg)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -626,13 +629,14 @@ func TestGRPC_Delete_NilService(t *testing.T) {
 }
 
 func TestGRPC_List_NilService(t *testing.T) {
-	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn, err := newInsecureGRPCConn(srv.Addr())
+	conn, err := newTLSGRPCConn(t, srv.Addr(), tlsCfg)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -646,13 +650,14 @@ func TestGRPC_List_NilService(t *testing.T) {
 }
 
 func TestGRPC_Scan_NilService(t *testing.T) {
-	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0")
+	tlsCfg := testServerTLSConfig(t)
+	srv := NewServer(nil, newMockAdminService(), "127.0.0.1:0", WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}
 	defer srv.Stop()
 
-	conn, err := newInsecureGRPCConn(srv.Addr())
+	conn, err := newTLSGRPCConn(t, srv.Addr(), tlsCfg)
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
@@ -669,9 +674,10 @@ func TestGRPC_Scan_NilService(t *testing.T) {
 	}
 }
 
-// newInsecureGRPCConn creates an insecure gRPC client connection.
-func newInsecureGRPCConn(addr string) (*gogrpc.ClientConn, error) {
-	return gogrpc.NewClient(addr, gogrpc.WithTransportCredentials(insecure.NewCredentials()))
+// newTLSGRPCConn creates a gRPC client connection that trusts the server
+// certificate in serverCfg, verifying it under the "localhost" server name.
+func newTLSGRPCConn(t *testing.T, addr string, serverCfg *tls.Config) (*gogrpc.ClientConn, error) {
+	return gogrpc.NewClient(addr, gogrpc.WithTransportCredentials(testClientCreds(t, serverCfg)))
 }
 
 // ---------------------------------------------------------------------------

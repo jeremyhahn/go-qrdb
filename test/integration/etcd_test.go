@@ -24,13 +24,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -40,37 +37,17 @@ import (
 // Build binary with etcd support
 // ---------------------------------------------------------------------------
 
-var (
-	buildEtcdOnce   sync.Once
-	builtEtcdBinary string
-	buildEtcdErr    error
-)
-
 // buildBinaryWithEtcd compiles the qrdbd daemon binary with the qrdb_etcd
-// build tag included. The binary is built once per test run using a separate
-// sync.Once from the standard buildBinary to avoid tag conflicts.
+// build tag included. The harness caches builds per tag set, so this binary
+// and the one buildBinary produces are compiled once each and never conflict.
 func buildBinaryWithEtcd(t *testing.T) string {
 	t.Helper()
-	buildEtcdOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "qrdbd-etcd-test-*")
-		if err != nil {
-			buildEtcdErr = fmt.Errorf("MkdirTemp: %v", err)
-			return
-		}
-		builtEtcdBinary = filepath.Join(dir, "qrdbd")
-		cmd := exec.Command("go", "build", "-buildvcs=false",
-			"-tags", "codec_json raft qrdb_ts qrdb_vector qrdb_mysql qrdb_pgsql qrdb_etcd",
-			"-o", builtEtcdBinary, "./cmd/qrdbd")
-		cmd.Dir = projectRoot()
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			buildEtcdErr = fmt.Errorf("go build (etcd): %v\n%s", err, out)
-		}
-	})
-	if buildEtcdErr != nil {
-		t.Fatalf("buildBinaryWithEtcd: %v", buildEtcdErr)
+	binary, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage,
+		qrdbdharness.WithBuildTags(qrdbdharness.DefaultBuildTags+" qrdb_etcd"))
+	if err != nil {
+		t.Fatalf("buildBinaryWithEtcd: %v", err)
 	}
-	return builtEtcdBinary
+	return binary
 }
 
 // ---------------------------------------------------------------------------

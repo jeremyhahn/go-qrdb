@@ -33,11 +33,12 @@ var _ transport.MVCCClient = (*Transport)(nil)
 // ---------------------------------------------------------------------------
 
 // mvccKVWireResponse matches the JSON shape returned by the REST server
-// for key-value responses with MVCC metadata. The server encodes key and
-// value as plain strings (not base64).
+// for key-value responses with MVCC metadata. The server encodes Key and
+// Value as []byte, which encoding/json represents as base64 (RFC 4648) on
+// the wire, so arbitrary binary values round-trip byte-identical.
 type mvccKVWireResponse struct {
-	Key            string `json:"key"`
-	Value          string `json:"value"`
+	Key            []byte `json:"key"`
+	Value          []byte `json:"value"`
 	CreateRevision int64  `json:"create_revision"`
 	ModRevision    int64  `json:"mod_revision"`
 	Version        int64  `json:"version"`
@@ -60,6 +61,40 @@ type mvccRevisionWireResponse struct {
 // mvccCompactWireRequest matches the JSON payload for POST /kv/compact.
 type mvccCompactWireRequest struct {
 	Revision int64 `json:"revision"`
+}
+
+// mvccRestoreWireRequest matches the JSON payload for POST /kv/restore.
+// Prefix and Keys are []byte / [][]byte, not string, so an arbitrary
+// byte-valued key or prefix round-trips byte-for-byte through the base64
+// (RFC 4648) encoding encoding/json applies to []byte.
+type mvccRestoreWireRequest struct {
+	Revision int64    `json:"revision"`
+	Prefix   []byte   `json:"prefix,omitempty"`
+	Keys     [][]byte `json:"keys,omitempty"`
+	DryRun   bool     `json:"dry_run,omitempty"`
+	Force    bool     `json:"force,omitempty"`
+}
+
+// mvccRestoreKeyChangeWireResponse matches the JSON shape of one restore
+// plan entry returned by POST /kv/restore.
+type mvccRestoreKeyChangeWireResponse struct {
+	Key          []byte                  `json:"key"`
+	Action       transport.RestoreAction `json:"action"`
+	FromRevision int64                   `json:"from_revision,omitempty"`
+	ToRevision   int64                   `json:"to_revision,omitempty"`
+	ValueBytes   int64                   `json:"value_bytes,omitempty"`
+}
+
+// mvccRestoreWireResponse matches the JSON shape returned by
+// POST /kv/restore.
+type mvccRestoreWireResponse struct {
+	Revision   int64                               `json:"revision"`
+	Changes    []*mvccRestoreKeyChangeWireResponse `json:"changes"`
+	Conflicts  []*mvccRestoreKeyChangeWireResponse `json:"conflicts,omitempty"`
+	Applied    int                                 `json:"applied"`
+	Skipped    int                                 `json:"skipped"`
+	Conflicted int                                 `json:"conflicted"`
+	DryRun     bool                                `json:"dry_run"`
 }
 
 // ---------------------------------------------------------------------------
@@ -267,8 +302,9 @@ func (t *Transport) Range(ctx context.Context, start, end []byte, rangeOpts tran
 	}
 
 	return &transport.RangeResponse{
-		Kvs:   kvs,
-		Count: wireResp.Count,
+		Kvs:      kvs,
+		Count:    wireResp.Count,
+		Revision: wireResp.Revision,
 	}, nil
 }
 
@@ -313,9 +349,96 @@ func (t *Transport) CurrentRevision(ctx context.Context) (int64, error) {
 	return wireResp.Revision, nil
 }
 
+// RestoreToRevision returns a bounded set of keys to the value they held at
+// an earlier MVCC revision -- a logical undo, never a Raft rewind. Maps to
+// POST /kv/restore with a JSON body. Exactly one of req.Prefix and req.Keys
+// must be set.
+func (t *Transport) RestoreToRevision(ctx context.Context, req *transport.RestoreRevisionRequest) (*transport.RestoreRevisionResult, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &transport.NilRequestError{}}
+	}
+
+	payload := mvccRestoreWireRequest{
+		Revision: req.Revision,
+		Prefix:   req.Prefix,
+		Keys:     req.Keys,
+		DryRun:   req.DryRun,
+		Force:    req.Force,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &jsonEncodeError{Err: err}}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/kv/restore", bytes.NewReader(data))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("RestoreToRevision", resp)
+	}
+
+	var wireResp mvccRestoreWireResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wireResp); err != nil {
+		return nil, &transport.RequestError{Method: "RestoreToRevision", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return wireRestoreResultToTransport(&wireResp), nil
+}
+
 // ---------------------------------------------------------------------------
 // Wire conversion helpers
 // ---------------------------------------------------------------------------
+
+// wireRestoreChangeToTransport converts a wire restore key-change response
+// to the transport RestoreKeyChange type.
+func wireRestoreChangeToTransport(c *mvccRestoreKeyChangeWireResponse) *transport.RestoreKeyChange {
+	if c == nil {
+		return nil
+	}
+	return &transport.RestoreKeyChange{
+		Key:          c.Key,
+		Action:       c.Action,
+		FromRevision: c.FromRevision,
+		ToRevision:   c.ToRevision,
+		ValueBytes:   c.ValueBytes,
+	}
+}
+
+// wireRestoreChangesToTransport converts a slice of wire restore key-change
+// responses to their transport representation.
+func wireRestoreChangesToTransport(changes []*mvccRestoreKeyChangeWireResponse) []*transport.RestoreKeyChange {
+	out := make([]*transport.RestoreKeyChange, len(changes))
+	for i, c := range changes {
+		out[i] = wireRestoreChangeToTransport(c)
+	}
+	return out
+}
+
+// wireRestoreResultToTransport converts a wire restore response to the
+// transport RestoreRevisionResult type.
+func wireRestoreResultToTransport(resp *mvccRestoreWireResponse) *transport.RestoreRevisionResult {
+	return &transport.RestoreRevisionResult{
+		Revision:   resp.Revision,
+		Changes:    wireRestoreChangesToTransport(resp.Changes),
+		Conflicts:  wireRestoreChangesToTransport(resp.Conflicts),
+		Applied:    resp.Applied,
+		Skipped:    resp.Skipped,
+		Conflicted: resp.Conflicted,
+		DryRun:     resp.DryRun,
+	}
+}
 
 // wireKVToTransport converts an MVCC wire key-value response to the
 // transport MVCCKeyValue type.
@@ -324,8 +447,8 @@ func wireKVToTransport(wkv *mvccKVWireResponse) *transport.MVCCKeyValue {
 		return nil
 	}
 	return &transport.MVCCKeyValue{
-		Key:            []byte(wkv.Key),
-		Value:          []byte(wkv.Value),
+		Key:            wkv.Key,
+		Value:          wkv.Value,
 		CreateRevision: wkv.CreateRevision,
 		ModRevision:    wkv.ModRevision,
 		Version:        wkv.Version,

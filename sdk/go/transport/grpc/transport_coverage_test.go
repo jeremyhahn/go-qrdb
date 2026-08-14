@@ -255,8 +255,12 @@ func TestGRPCCeremony_AllMethods_Closed(t *testing.T) {
 			_, e := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{})
 			return e
 		}},
-		{"CeremonyClaimShare", func() error {
-			_, e := tr.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{})
+		{"CeremonyBeginClaimShare", func() error {
+			_, e := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{})
+			return e
+		}},
+		{"CeremonyCompleteClaimShare", func() error {
+			_, e := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{})
 			return e
 		}},
 		{"CeremonySignCSR", func() error {

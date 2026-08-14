@@ -20,6 +20,7 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -269,7 +270,9 @@ func (t *Transport) Request(ctx context.Context, method string, req, resp any) e
 // ---------------------------------------------------------------------------
 
 // Put stores a key-value pair through Raft consensus. Calls the qrdb_put
-// MCP tool.
+// MCP tool. The value is sent base64-encoded (RFC 4648), matching the
+// server's binary-safe wire contract, so arbitrary binary content round-trips
+// byte-for-byte.
 func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...transport.WriteOption) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -277,7 +280,7 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 
 	args := map[string]any{
 		"key":   key,
-		"value": string(value),
+		"value": base64.StdEncoding.EncodeToString(value),
 	}
 
 	wo := transport.ResolveWriteOptions(opts...)
@@ -291,7 +294,8 @@ func (t *Transport) Put(ctx context.Context, key string, value []byte, opts ...t
 
 // Get retrieves a value by key with a linearizable read. Calls the
 // qrdb_get MCP tool. Returns KeyNotFoundError when the tool returns
-// a "not found" error.
+// a "not found" error. The server returns the value base64-encoded (RFC
+// 4648), so it is decoded here to recover the original bytes byte-for-byte.
 func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadOption) ([]byte, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -312,7 +316,12 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 		return nil, err
 	}
 
-	return []byte(text), nil
+	value, decodeErr := base64.StdEncoding.DecodeString(text)
+	if decodeErr != nil {
+		return nil, &transport.RequestError{Method: "Get", Err: &valueDecodeError{Err: decodeErr}}
+	}
+
+	return value, nil
 }
 
 // Delete removes a key through Raft consensus. Calls the qrdb_delete

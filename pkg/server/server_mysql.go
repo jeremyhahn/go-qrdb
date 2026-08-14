@@ -40,11 +40,28 @@ func startMySQL(s *Server) error {
 	if s.opts.authMW != nil {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithAuthMiddleware(s.opts.authMW))
 	}
+	if s.opts.sealedWindowProbe != nil {
+		mysqlOpts = append(mysqlOpts, mysqlapi.WithSealedWindowProbe(s.opts.sealedWindowProbe))
+	}
 	if s.opts.dbManager != nil {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithDatabaseManager(s.opts.dbManager))
 	}
 	if s.config.SQL.DefaultDatabase != "" {
 		mysqlOpts = append(mysqlOpts, mysqlapi.WithDatabaseName(s.config.SQL.DefaultDatabase))
+	}
+	if s.opts.collectionSvc != nil {
+		mysqlOpts = append(mysqlOpts, mysqlapi.WithCollectionService(s.opts.collectionSvc))
+	}
+	if s.opts.indexSvc != nil {
+		mysqlOpts = append(mysqlOpts, mysqlapi.WithIndex(s.opts.indexSvc))
+	}
+	// The transport-neutral per-(tenant, database) service.Registry closes
+	// the isolation gap MySQL wire-protocol sessions would otherwise have:
+	// without it, relational tables are invisible and every registry-backed
+	// resolution (barrier/quota/isolation enforcement, IsolationRaft/
+	// IsolationVolume routing) is bypassed entirely. See buildServiceRegistry.
+	if reg := s.buildServiceRegistry(); reg != nil {
+		mysqlOpts = append(mysqlOpts, mysqlapi.WithServiceRegistry(reg))
 	}
 
 	s.mysqlSrv = mysqlapi.NewServer(s.kvSvc, s.adminSvc, addr, mysqlOpts...)

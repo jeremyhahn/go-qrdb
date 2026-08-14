@@ -1004,10 +1004,14 @@ func (e *errBatch) Set(key, value []byte) error {
 	}
 	return e.inner.Set(key, value)
 }
-func (e *errBatch) Delete(key []byte) error { return e.inner.Delete(key) }
-func (e *errBatch) Commit() error           { return e.inner.Commit() }
-func (e *errBatch) Close() error            { return e.inner.Close() }
-func (e *errBatch) Rollback() error         { return e.inner.Rollback() }
+func (e *errBatch) Delete(key []byte) error        { return e.inner.Delete(key) }
+func (e *errBatch) Get(key []byte) ([]byte, error) { return e.inner.Get(key) }
+func (e *errBatch) Commit() error                  { return e.inner.Commit() }
+func (e *errBatch) Close() error                   { return e.inner.Close() }
+func (e *errBatch) Rollback() error                { return e.inner.Rollback() }
+func (e *errBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	return e.inner.NewIterator(opts)
+}
 
 // ---------------------------------------------------------------------------
 // getWithoutLock — DecodeMeta error path (corrupt metadata in RaftStorage.Get)

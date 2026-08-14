@@ -165,11 +165,11 @@ first `Rekey`, after which the original root-key shares are revoked.
 
 ## Recovery Keys
 
-Recovery keys are an independent Shamir split of the DEK (not root key) for
+Recovery keys are an independent Shamir split of the root key (not DEK) for
 disaster recovery. Recovery shares follow the same SO distribution model
 through a dedicated recovery distributor (`SetRecoveryDistributor`) and
-recovery officer registry (`POST /v1/barrier/recovery/officers` + claim flow);
-they are never returned in the generation response and never persisted.
+recovery officer registry; they are never returned in the generation response
+and never persisted on the server.
 
 ```go
 // Generate (barrier must be unsealed); response is share-free.

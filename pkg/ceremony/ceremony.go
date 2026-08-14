@@ -267,18 +267,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		return nil, ErrInitFailed
 	}
 
-	// Issue SO certificate.
-	soCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
-		CommonName:   "Security Officer",
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		ValidityDays: 365,
-	})
-	if err != nil {
-		s.logger.Error("failed to issue SO certificate", slog.String("error", err.Error()))
-		return nil, ErrInitFailed
-	}
-
 	// Compute SPKI pin from CA certificate.
 	caCert, err := ca.CACertificate()
 	if err != nil {
@@ -312,8 +300,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		SPKIPin:    pin,
 		CACertPEM:  caBundle,
 		TLSCertPEM: tlsCert.CertPEM,
-		SOCertPEM:  soCert.CertPEM,
-		SOKeyPEM:   soCert.KeyPEM,
 	}
 
 	// Determine M-of-N vs single admin mode.
@@ -450,54 +436,14 @@ func (s *CeremonyService) CompleteClaimCert(
 	}, nil
 }
 
-// ClaimShare retrieves the Shamir share for the given officer username
-// from the in-memory share store. If all officers have claimed both
-// their certificates and shares, the ceremony transitions to the
-// operational state.
-func (s *CeremonyService) ClaimShare(ctx context.Context, username string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state != StateEnrolling {
-		return nil, ErrNotInEnrollingState
-	}
-
-	if username == "" {
-		return nil, ErrMissingUsername
-	}
-
-	// Verify the user is a known officer.
-	if _, ok := s.pendingCerts[username]; !ok {
-		return nil, ErrUserNotFound
-	}
-
-	shareJSON, err := s.shareStore.Claim(username)
-	if err != nil {
-		return nil, err
-	}
-
-	// Best-effort: record the claim in the persistent registry. Failures
-	// are logged but do not invalidate the in-memory claim — the share
-	// has already been delivered out of the secure store.
-	if s.officerRegistry != nil {
-		if markErr := s.officerRegistry.MarkClaimed(ctx, username, time.Now().UTC()); markErr != nil {
-			s.logger.Warn("failed to record share claim in persistent registry",
-				slog.String("username", username),
-				slog.String("error", markErr.Error()))
-		}
-	}
-
-	s.logger.Info("share claimed",
-		slog.String("username", username))
-
-	// Check if all claims are complete.
-	if s.allClaimsComplete() {
-		s.state = StateOperational
-		s.logger.Info("all claims complete, ceremony operational")
-	}
-
-	return shareJSON, nil
-}
+// The username-only ClaimShare method that used to live here was DELETED.
+// It released an officer's Shamir share to anyone who could name an enrolled
+// officer, which defeats the M-of-N quorum the ceremony exists to enforce.
+// The only supported share-claim path is the challenge-response flow in
+// ceremony_officer.go: BeginClaimShare issues a single-use nonce bound to the
+// caller's mTLS certificate thumbprint, and CompleteClaimShare re-verifies
+// that thumbprint plus a signature over the nonce before releasing the share
+// exactly once.
 
 // SignCSRInit signs a CSR during the ceremony for an officer or service.
 // Requires the enrolling or operational state and valid SO PIN.

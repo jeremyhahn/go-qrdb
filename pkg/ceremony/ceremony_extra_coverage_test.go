@@ -72,12 +72,12 @@ func TestAllClaimsComplete_ShareNotClaimed(t *testing.T) {
 	_, err = svc.CompleteClaimCert(ctx, "officer-0", hex.EncodeToString(challenge.Nonce), sig)
 	require.NoError(t, err)
 
-	// Calling ClaimShare after cert claim transitions the state only when
+	// Claiming the share after the cert claim transitions the state only when
 	// all officers are done. Since officer-1 and officer-2 haven't claimed,
 	// allClaimsComplete returns false here. We confirm the state is still Enrolling.
-	shareJSON, err := svc.ClaimShare(ctx, "officer-0")
+	result, err := claimShare(t, svc, "officer-0", keys[0], officerThumbprint(t, svc, "officer-0"))
 	require.NoError(t, err)
-	require.NotEmpty(t, shareJSON)
+	require.NotEmpty(t, result.ShareBytes)
 
 	// State should still be enrolling because others haven't claimed.
 	assert.Equal(t, StateEnrolling, svc.State())

@@ -162,7 +162,7 @@ func WithStrictTenantIsolation(strict bool) VectorServiceOption {
 // empty-segment form "\x1f" + logical so that the system namespace is stable
 // and distinct from any user-created tenant.
 func scopedNamespace(tenantID, logical string) string {
-	if tenantID == "" || tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return namespaceSep + logical
 	}
 	return tenantID + namespaceSep + logical
@@ -470,7 +470,7 @@ func (v *vectorService) validateTenantCreate(ctx context.Context) error {
 	if !v.strictTenant {
 		return nil
 	}
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrForbidden,
 			Op:   "vector.validateTenantCreate",

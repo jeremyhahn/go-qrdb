@@ -67,6 +67,17 @@ func (m *mockKVService) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if m.putErr != nil {
+		return false, m.putErr
+	}
+	if _, exists := m.store[key]; exists {
+		return false, nil
+	}
+	m.store[key] = value
+	return true, nil
+}
+
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {
 	if m.getErr != nil {
 		return nil, m.getErr
@@ -337,7 +348,7 @@ var (
 func startGRPCTestServer(t *testing.T, kvSvc service.KVServicer, adminSvc service.AdminServicer) (string, func()) {
 	t.Helper()
 
-	srv := grpcserver.NewServer(kvSvc, adminSvc, "127.0.0.1:0")
+	srv := grpcserver.NewServer(kvSvc, adminSvc, "127.0.0.1:0", grpcserver.WithTLS(sharedGRPCServerTLS))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("failed to start gRPC server: %v", err)
 	}
@@ -353,7 +364,7 @@ func connectTransport(t *testing.T, kvSvc service.KVServicer, adminSvc service.A
 
 	addr, stopSrv := startGRPCTestServer(t, kvSvc, adminSvc)
 
-	tr, err := New(transport.WithAddress(addr))
+	tr, err := New(transport.WithAddress(addr), sharedGRPCClientTLSOption())
 	if err != nil {
 		stopSrv()
 		t.Fatalf("New: %v", err)

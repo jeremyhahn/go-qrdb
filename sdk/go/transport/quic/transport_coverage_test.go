@@ -174,8 +174,11 @@ func TestQUICCeremonyExtras_AfterClose(t *testing.T) {
 	if _, err := tr.CeremonyClaimCertComplete(ctx, &transport.ClaimCertCompleteRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CeremonyClaimCertComplete: %v", err)
 	}
-	if _, err := tr.CeremonyClaimShare(ctx, &transport.ClaimShareRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CeremonyClaimShare: %v", err)
+	if _, err := tr.CeremonyBeginClaimShare(ctx, &transport.BeginClaimShareRequest{}); !errors.As(err, &ce) {
+		t.Errorf("CeremonyBeginClaimShare: %v", err)
+	}
+	if _, err := tr.CeremonyCompleteClaimShare(ctx, &transport.CompleteClaimShareRequest{}); !errors.As(err, &ce) {
+		t.Errorf("CeremonyCompleteClaimShare: %v", err)
 	}
 	if _, err := tr.CeremonySignCSR(ctx, &transport.SignCSRInitRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CeremonySignCSR: %v", err)

@@ -521,14 +521,14 @@ func TestPebbleStateMachine_Snapshot_WithData(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PebbleStateMachine: getKeyNoLock — not found
+// PebbleStateMachine: getKeyInBatch — not found
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_GetKeyNoLock_NotFound(t *testing.T) {
+func TestPebbleStateMachine_GetKeyInBatch_NotFound(t *testing.T) {
 	s := openExtendedStore(t)
 
 	s.mu.Lock()
-	_, err := s.getKeyNoLock([]byte("nonexistent"))
+	_, err := s.getKeyInBatch(readBatch(t, s), []byte("nonexistent"))
 	s.mu.Unlock()
 
 	if err == nil {

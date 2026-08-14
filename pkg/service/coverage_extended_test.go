@@ -314,7 +314,7 @@ func TestDatabaseService_UnsealDatabase_NoBarrierManager(t *testing.T) {
 func TestDatabaseService_DatabaseBarrierStatus_NilBarrierMgrTyped(t *testing.T) {
 	// Use the typed struct directly to access unexported field.
 	s := &DatabaseService{manager: nil, barrierMgr: nil}
-	_, err := s.DatabaseBarrierStatus("db")
+	_, err := s.DatabaseBarrierStatus(context.Background(), "db")
 	var bmErr *BarrierManagerNotConfiguredError
 	if !errors.As(err, &bmErr) {
 		t.Fatalf("expected *BarrierManagerNotConfiguredError, got %T: %v", err, err)
@@ -561,20 +561,37 @@ func TestDatabaseService_UpdateRaftForTenant_SystemTenantRoutesToAdmin(t *testin
 	}
 }
 
+// TestDatabaseService_UpdateBarrierForTenant_Success verifies tenant-scoped
+// routing for UpdateBarrierForTenant. Enabling a barrier for the first time
+// via UpdateBarrier is a re-encryption migration this API does not perform
+// (database.BarrierMigrationNotSupportedError), so the database is created
+// WITH its barrier already active; the update below exercises the one safe
+// transition UpdateBarrier does perform: re-affirming an already-active
+// barrier (refreshing non-secret bookkeeping). A dedicated store is
+// required for any barrier, and since a caller-supplied DataDir is no
+// longer trusted on the tenant-scoped create path, the tenant is resolved
+// via an IsolationVolume TenantInfo with a real DataRoot so the Manager
+// computes a legitimate dedicated DataDir server-side.
 func TestDatabaseService_UpdateBarrierForTenant_Success(t *testing.T) {
-	svc := newTestDatabaseService(t)
+	base, mgr := newTestDatabaseServiceWithBarrier(t)
+	lookup := &fakeTenantInfoLookup{info: &tenant.TenantInfo{
+		ID:            "tenant-barrier",
+		IsolationType: tenant.IsolationVolume,
+		DataRoot:      t.TempDir(),
+	}}
+	svc, ok := NewDatabaseService(mgr, WithBarrierManager(base.barrierMgr), WithTenantInfoLookup(lookup)).(*DatabaseService)
+	if !ok {
+		t.Fatal("NewDatabaseService() did not return *DatabaseService")
+	}
 	ctx := tenantCtx("tenant-barrier")
 
-	if _, err := svc.CreateForTenant(ctx, testDBConfig("t-barrier-db")); err != nil {
-		t.Fatalf("CreateForTenant() error: %v", err)
+	cfg := testDBConfig("t-barrier-db")
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	if _, err := svc.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+		t.Fatalf("CreateForTenantWithCredentials() error: %v", err)
 	}
 
-	barrierCfg := &database.DatabaseBarrierConfig{
-		Enabled:        true,
-		Mode:           "shamir",
-		SharesRequired: 2,
-		SharesTotal:    3,
-	}
+	barrierCfg := &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
 	info, err := svc.UpdateBarrierForTenant(ctx, "t-barrier-db", barrierCfg)
 	if err != nil {
 		t.Fatalf("UpdateBarrierForTenant() error: %v", err)
@@ -587,17 +604,23 @@ func TestDatabaseService_UpdateBarrierForTenant_Success(t *testing.T) {
 	}
 }
 
+// TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin
+// verifies that an unscoped (system-tenant) context routes
+// UpdateBarrierForTenant to the admin path. As above, the database is
+// created WITH its barrier already active (enabling via UpdateBarrier is
+// not supported) and the update re-affirms that active state.
 func TestDatabaseService_UpdateBarrierForTenant_SystemTenantRoutesToAdmin(t *testing.T) {
-	svc := newTestDatabaseService(t)
+	svc, _ := newTestDatabaseServiceWithBarrier(t)
 
-	if _, err := svc.CreateForTenant(context.Background(), testDBConfig("sys-barrier-db")); err != nil {
-		t.Fatalf("CreateForTenant() as system error: %v", err)
+	cfg := testDBConfig("sys-barrier-db")
+	cfg.DataDir = t.TempDir()
+	cfg.Barrier = &database.DatabaseBarrierConfig{Enabled: true, Mode: database.BarrierModePassphrase}
+	if _, err := svc.CreateForTenantWithCredentials(context.Background(), cfg, seal.Credentials{Secret: []byte("s3cret")}); err != nil {
+		t.Fatalf("CreateForTenantWithCredentials() as system error: %v", err)
 	}
 	info, err := svc.UpdateBarrierForTenant(context.Background(), "sys-barrier-db", &database.DatabaseBarrierConfig{
-		Enabled:        true,
-		Mode:           "shamir",
-		SharesRequired: 2,
-		SharesTotal:    3,
+		Enabled: true,
+		Mode:    database.BarrierModePassphrase,
 	})
 	if err != nil {
 		t.Fatalf("UpdateBarrierForTenant() as system error: %v", err)
@@ -2060,21 +2083,67 @@ func TestMVCCKVService_RangeWithConsistency_Success(t *testing.T) {
 					{Key: []byte("a"), Value: []byte("1")},
 					{Key: []byte("b"), Value: []byte("2")},
 				},
+				// Count and Revision are deliberately different values so
+				// this test cannot pass by coincidence if
+				// RangeWithConsistency regresses to returning the revision
+				// in the count's place.
+				Count:    2,
 				Revision: 10,
 			}, nil
 		},
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	kvs, rev, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
+	kvs, count, revision, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(kvs) != 2 {
 		t.Fatalf("expected 2 kvs, got %d", len(kvs))
 	}
-	if rev != 10 {
-		t.Fatalf("expected Revision=10, got %d", rev)
+	// RangeWithConsistency's second return value is the match count, not
+	// the MVCC revision (see MVCCKVServicer.Range's doc comment, which
+	// RangeWithConsistency shares the contract of).
+	if count != 2 {
+		t.Fatalf("expected count 2, got %d", count)
+	}
+	// The third return value is the MVCC revision the read was performed
+	// at, threaded through distinctly from the count.
+	if revision != 10 {
+		t.Fatalf("expected revision 10, got %d", revision)
+	}
+}
+
+// TestMVCCKVService_RangeWithConsistency_ThreadsSortOptions verifies
+// WithSort's SortOrder and SortTarget are copied onto the MVCCRangeQuery
+// built by RangeWithConsistency, reproducing (as a regression guard) the
+// bug where these fields were silently dropped before ever reaching the
+// query.
+func TestMVCCKVService_RangeWithConsistency_ThreadsSortOptions(t *testing.T) {
+	var capturedQuery interface{}
+
+	host := &mockHost{
+		readWithConsistencyFn: func(_ context.Context, _ uint64, query interface{}, _ consistency.ReadOptions) (interface{}, error) {
+			capturedQuery = query
+			return &MVCCRangeResult{KeyValues: []*KeyValue{}}, nil
+		},
+	}
+
+	svc := NewMVCCKVService(host, 1)
+	_, _, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{}, WithSort(SortAscend, SortByValue))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rq, ok := capturedQuery.(MVCCRangeQuery)
+	if !ok {
+		t.Fatalf("expected MVCCRangeQuery, got %T", capturedQuery)
+	}
+	if rq.SortOrder != SortAscend {
+		t.Fatalf("expected SortOrder=SortAscend, got %v", rq.SortOrder)
+	}
+	if rq.SortTarget != SortByValue {
+		t.Fatalf("expected SortTarget=SortByValue, got %v", rq.SortTarget)
 	}
 }
 
@@ -2086,7 +2155,7 @@ func TestMVCCKVService_RangeWithConsistency_ReadError(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	_, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
+	_, _, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -2104,7 +2173,7 @@ func TestMVCCKVService_RangeWithConsistency_UnexpectedType(t *testing.T) {
 	}
 
 	svc := NewMVCCKVService(host, 1)
-	_, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
+	_, _, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

@@ -60,6 +60,13 @@ func (s *tenantBarrierKVStore) Put(ctx context.Context, key string, value []byte
 	return s.barrier.Put(ctx, key, value)
 }
 
+// PutIfAbsent encrypts and stores value under key only when the key is absent,
+// reporting whether this call created it. The atomicity is the tenant
+// barrier's; this type only adds the tenant scoping.
+func (s *tenantBarrierKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return s.barrier.PutIfAbsent(ctx, key, value)
+}
+
 // Get decrypts and returns the value for key. It translates the seal
 // subsystem's ErrSecretNotFound into (nil, nil) to satisfy the
 // kvstore.KVStore contract ("returns nil, nil when key does not exist").

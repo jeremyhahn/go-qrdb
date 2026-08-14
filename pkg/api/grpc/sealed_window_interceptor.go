@@ -20,6 +20,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
 // sealedWindowProbe is the abstraction the interceptor needs to know
@@ -30,47 +33,21 @@ type sealedWindowProbe interface {
 	IsSealed() bool
 }
 
-// SealedWindowAllowlist is the canonical set of QRDBService method
-// names that remain operative while the barrier is sealed. Each
-// entry is the trailing component of the gRPC method (the suffix
-// after the last "/"), matched case-sensitively against
-// info.FullMethod's tail. Methods not in this list return
+// SealedWindowAllowlist is the set of QRDBService methods that remain
+// operative while the barrier is sealed. Each entry is a fully-qualified
+// gRPC method path ("/qrdb.v1.QRDBService/Health"), matched case-sensitively
+// against info.FullMethod in full. Methods not in this list return
 // codes.Unavailable while the barrier is sealed.
 //
-// All Barrier* and Ceremony* methods are included here so operators
-// can drive the unseal flow over gRPC. Health and Status are also
-// allowlisted for liveness probes.
-var SealedWindowAllowlist = []string{
-	"Health",
-	"Status",
-	"BarrierStatus",
-	"BarrierInitialize",
-	"BarrierUnseal",
-	"BarrierShamirInitialize",
-	"BarrierShamirUnsealShare",
-	"BarrierShamirUnsealShares",
-	"BarrierRekey",
-	"BarrierRecoveryGenerate",
-	"BarrierRecoveryRecover",
-	"BarrierRecoveryDelete",
-	"BarrierRecoveryStatus",
-	"BarrierRootToken",
-	"BarrierOfficerRegister",
-	"BarrierOfficerList",
-	"BarrierOfficerClaimStatus",
-	"BarrierShareClaimBegin",
-	"BarrierShareClaimComplete",
-	"BarrierRecoveryOfficerRegister",
-	"BarrierRecoveryShareClaimBegin",
-	"BarrierRecoveryShareClaimComplete",
-	"CeremonyInitialize",
-	"CeremonyStatus",
-	"CeremonyClaimCertBegin",
-	"CeremonyClaimCertComplete",
-	"CeremonyClaimShare",
-	"CeremonySignCSR",
-	"CeremonyEnrollExternalOfficer",
-}
+// The list is derived from the canonical transport-neutral verb table in
+// pkg/api/sealedwindow so it cannot drift from the other transports (every
+// Barrier* and Ceremony* unseal-flow method, plus Health and Status for
+// liveness probes) and is qualified with the QRDBService service name taken
+// from the generated ServiceDesc. Matching on the full service-qualified path
+// — rather than the bare method tail — means a same-named method on any OTHER
+// co-registered gRPC service (e.g. "/qrdb.v1.TenantBarrierService/Status") is
+// NOT admitted through the sealed window.
+var SealedWindowAllowlist = sealedwindow.GRPCFullMethodAllowlist(pb.QRDBService_ServiceDesc.ServiceName)
 
 // SealedWindowUnaryInterceptor returns a grpc.UnaryServerInterceptor
 // that rejects every method NOT on the allowlist with
@@ -81,8 +58,8 @@ var SealedWindowAllowlist = []string{
 // lifetime of the process.
 //
 // allowlist may be nil, in which case SealedWindowAllowlist is
-// used. Methods are matched by their trailing component (everything
-// after the last "/" in info.FullMethod).
+// used. Entries are fully-qualified gRPC method paths
+// ("/qrdb.v1.QRDBService/Health") matched in full against info.FullMethod.
 func SealedWindowUnaryInterceptor(barrier sealedWindowProbe, allowlist []string) grpc.UnaryServerInterceptor {
 	if allowlist == nil {
 		allowlist = SealedWindowAllowlist
@@ -126,17 +103,11 @@ func SealedWindowStreamInterceptor(barrier sealedWindowProbe, allowlist []string
 	}
 }
 
-// methodAllowed checks whether the trailing component of
-// info.FullMethod (the part after the final "/") is in the
-// allowlist.
+// methodAllowed checks whether the fully-qualified info.FullMethod
+// ("/qrdb.v1.QRDBService/Health") is in the allowlist. The comparison is on
+// the FULL service-qualified path, not the bare method tail, so a same-named
+// method on a different co-registered gRPC service is not admitted.
 func methodAllowed(fullMethod string, allowSet map[string]struct{}) bool {
-	tail := fullMethod
-	for i := len(fullMethod) - 1; i >= 0; i-- {
-		if fullMethod[i] == '/' {
-			tail = fullMethod[i+1:]
-			break
-		}
-	}
-	_, ok := allowSet[tail]
+	_, ok := allowSet[fullMethod]
 	return ok
 }

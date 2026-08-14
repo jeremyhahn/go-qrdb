@@ -50,6 +50,11 @@ type createTenantRequest struct {
 	// system-managed auto-unseal key-management mode (entitlement-gated). The
 	// default (false) is the secure self-managed mode.
 	BarrierAutoUnseal bool `json:"barrier_auto_unseal,omitempty"`
+	// DataRoot pins an IsolationVolume/IsolationRaft tenant's dedicated
+	// filesystem DataRoot to this operator-supplied absolute path instead of
+	// pool allocation (see tenant.WithDataRoot). Empty (the default) lets the
+	// tenant service allocate one from the configured volume pool.
+	DataRoot string `json:"data_root,omitempty"`
 }
 
 // updateTenantRequest is the JSON payload for PUT /v1/tenants/{id}.
@@ -152,10 +157,14 @@ type tenantResponse struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
 	IsolationType tenant.IsolationType `json:"isolation_type"`
-	Quotas        *quota.Quotas        `json:"quotas,omitempty"`
-	Entitlements  *quota.Entitlements  `json:"entitlements,omitempty"`
-	CreatedAt     string               `json:"createdAt"`
-	UpdatedAt     string               `json:"updatedAt"`
+	// DataRoot is the dedicated filesystem root for an IsolationVolume /
+	// IsolationRaft tenant, whether pool-allocated or pinned via
+	// tenant.WithDataRoot. Empty for prefix/barrier tenants.
+	DataRoot     string              `json:"data_root,omitempty"`
+	Quotas       *quota.Quotas       `json:"quotas,omitempty"`
+	Entitlements *quota.Entitlements `json:"entitlements,omitempty"`
+	CreatedAt    string              `json:"createdAt"`
+	UpdatedAt    string              `json:"updatedAt"`
 }
 
 // listTenantsResponse is the JSON payload returned by GET /v1/tenants/list.
@@ -181,10 +190,14 @@ func (s *Server) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	opts := []tenant.CreateTenantOption{tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal)}
+	if req.DataRoot != "" {
+		opts = append(opts, tenant.WithDataRoot(req.DataRoot))
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType,
-		tenant.WithBarrierAutoUnseal(req.BarrierAutoUnseal))
+	info, err := s.tenantSvc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType, opts...)
 	if err != nil {
 		writeErrorJSON(w, mapTenantError(err), err)
 		return
@@ -681,6 +694,7 @@ func tenantToResponse(info *tenant.TenantInfo) *tenantResponse {
 		ID:            info.ID,
 		Name:          info.Name,
 		IsolationType: info.EffectiveIsolationType(),
+		DataRoot:      info.DataRoot,
 		Quotas:        info.Quotas,
 		Entitlements:  info.Entitlements,
 		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
@@ -935,10 +949,21 @@ func mapTenantError(err error) int {
 	var ite *tenant.InvalidTenantIDError
 	var ise *tenant.InvalidStrategyError
 	var tse *tenant.TenantScopeError
+	var idre *tenant.InvalidDataRootError
+	var dne *tenant.DataRootNotEmptyError
+	var dite *tenant.DataRootIsolationTypeError
 
 	switch {
 	case errors.As(err, &tse):
 		return http.StatusForbidden
+	case errors.Is(err, tenant.ErrEmptyDataRoot):
+		return http.StatusBadRequest
+	case errors.As(err, &idre):
+		return http.StatusBadRequest
+	case errors.As(err, &dite):
+		return http.StatusBadRequest
+	case errors.As(err, &dne):
+		return http.StatusConflict
 	case errors.Is(err, tenant.ErrEmptyTenantID):
 		return http.StatusBadRequest
 	case errors.Is(err, tenant.ErrEmptyTenantName):

@@ -940,6 +940,5 @@ return doWork(ctx)
 ## See Also
 
 - [06-leases.md](06-leases.md) -- Lease management and TTL enforcement
-- [04-watch.md](04-watch.md) -- Real-time change notifications
 - [03-transactions.md](03-transactions.md) -- Compare-and-swap transactions
 - [05-consistency.md](05-consistency.md) -- Consistency levels and routing

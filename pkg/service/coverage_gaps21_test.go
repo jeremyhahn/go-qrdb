@@ -173,7 +173,7 @@ func TestMVCCKVService_RangeWithConsistency_Error_v2(t *testing.T) {
 		},
 	}
 	svc := NewMVCCKVService(host, 1)
-	_, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
+	_, _, _, err := svc.RangeWithConsistency(context.Background(), []byte("a"), []byte("z"), consistency.ReadOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

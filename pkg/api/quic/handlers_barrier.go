@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -23,6 +24,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -214,6 +216,104 @@ func (s *Server) handleBarrierRekey(ctx context.Context, payload []byte) ([]byte
 		Threshold:   int32(info.Threshold),
 		TotalShares: int32(info.TotalShares),
 		ShareCount:  int32(info.ShareCount),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// quicMigrationAcceptWindow bounds how long the handler waits for
+// EncryptionMigrator.EnableEncryption to return before giving up on
+// delivering its outcome synchronously. Mirrors migrationAcceptWindow in
+// pkg/api/rest/handlers_barrier.go / grpcMigrationAcceptWindow in
+// pkg/api/grpc/service_barrier.go — see the former's doc comment for the
+// full rationale: every synchronously-knowable rejection returns well within
+// this window, before the destructive Quiesce phase (which for a
+// system-scope migration recycles the serving QUIC server) ever runs.
+const quicMigrationAcceptWindow = 750 * time.Millisecond
+
+// handleBarrierEnableEncryption migrates a previously-unencrypted barrier to
+// a keyed strategy. Like the REST/gRPC handlers it validates synchronously,
+// then invokes the migrator and races its result against
+// quicMigrationAcceptWindow: a synchronous rejection (bad target,
+// shared-barrier-immutable, insufficient officers, entitlement denied,
+// provider unavailable) is returned to the caller as a real error, while a
+// migration still running once the window elapses is acknowledged with
+// "migration_started"; clients poll BarrierStatus. Forwards every field
+// including tenant, strategy, mechanism, availability, passphrase, and
+// Shamir threshold/total.
+func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte) ([]byte, error) {
+	if s.encMigrator == nil {
+		return nil, &ServiceNotConfiguredError{Service: "encryption-migration"}
+	}
+
+	var req pb.BarrierEnableEncryptionRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	scope := service.BarrierScope{Kind: service.ScopeSystem}
+	if req.GetTenantId() != "" {
+		scope = service.BarrierScope{Kind: service.ScopeTenant, TenantID: req.GetTenantId()}
+	}
+
+	mechanism := seal.MechanismSwap
+	if req.GetMechanism() == string(seal.MechanismInPlace) {
+		mechanism = seal.MechanismInPlace
+	}
+	availability := seal.AvailabilityQuiesced
+	if req.GetAvailability() == string(seal.AvailabilityOnline) {
+		availability = seal.AvailabilityOnline
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
+		Mechanism:       mechanism,
+		Availability:    availability,
+		Credentials:     seal.Credentials{Secret: []byte(req.GetPassphrase())},
+		ShamirThreshold: int(req.GetShamirThreshold()),
+		ShamirTotal:     int(req.GetShamirTotal()),
+	}
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+
+	// A background context is used because the request context is cancelled
+	// once the response returns, and the migration must continue independent
+	// of this request's lifetime.
+	migrator := s.encMigrator
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
+	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			return nil, err
+		}
+		// Completed within the window with no error: an unusually fast
+		// migration (e.g. an empty barrier) already finished. Fall through
+		// and report "migration_started" — BarrierStatus already reflects
+		// the committed strategy, so the wording is accurate either way.
+	case <-time.After(quicMigrationAcceptWindow):
+		// Still running past acceptance: no client is left to deliver the
+		// eventual outcome to, so only log it.
+		go func() {
+			if err := <-resultCh; err != nil {
+				slog.Error("enable-encryption migration failed",
+					slog.String("scope", string(scope.Kind)),
+					slog.String("tenant", scope.TenantID),
+					slog.String("strategy", string(opts.TargetStrategy)),
+					slog.Any("error", err))
+			}
+		}()
+	}
+
+	resp, err := proto.Marshal(&pb.BarrierEnableEncryptionResponse{
+		Status: "migration_started",
+		Scope:  string(scope.Kind),
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}

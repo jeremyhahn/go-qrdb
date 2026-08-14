@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -68,7 +69,8 @@ var _ UserServicer = (*kvUserStore)(nil)
 type kvUserStore struct {
 	store        kvstore.KVStore
 	idgen        dao.IDGenerator
-	quotaChecker quota.Checker // optional; nil skips quota enforcement
+	quotaChecker quota.Checker     // optional; nil skips quota enforcement
+	audit        audit.AuditLogger // optional; nil disables audit emission
 }
 
 // NewStore creates a new KVStore-backed UserServicer. The provided kvstore
@@ -76,14 +78,18 @@ type kvUserStore struct {
 // source of uint64 user identifiers (a dao.SnowflakeGenerator seeded with the
 // node's Raft ReplicaID); there is no default because a node-unique seed is
 // required to keep IDs globally unique across a cluster.
-func NewStore(store kvstore.KVStore, idgen dao.IDGenerator) (UserServicer, error) {
+func NewStore(store kvstore.KVStore, idgen dao.IDGenerator, opts ...Option) (UserServicer, error) {
 	if store == nil {
 		return nil, &StoreError{Op: "new", Detail: "kvstore must not be nil"}
 	}
 	if idgen == nil {
 		return nil, &StoreError{Op: "new", Detail: "id generator must not be nil"}
 	}
-	return &kvUserStore{store: store, idgen: idgen}, nil
+	s := &kvUserStore{store: store, idgen: idgen}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // WithQuotaChecker returns a new kvUserStore with the given quota.Checker
@@ -163,6 +169,12 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	if err := s.store.Put(ctx, usernameKey, idBytes); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put username index", Err: err}
 	}
+
+	s.emitAudit(ctx, "create", user.ID, map[string]any{
+		"username": user.Username,
+		"tenantID": tenantID,
+		"role_ids": user.RoleIDs,
+	})
 
 	return user, nil
 }
@@ -398,6 +410,14 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*
 		return nil, &StoreError{Op: "update", Detail: "put primary", Err: err}
 	}
 
+	s.emitAudit(ctx, "update", existing.ID, map[string]any{
+		"username":         existing.Username,
+		"tenantID":         existing.TenantID,
+		"username_changed": usernameChanged,
+		"roles_changed":    req.RoleIDs != nil,
+		"role_ids":         existing.RoleIDs,
+	})
+
 	return existing, nil
 }
 
@@ -439,6 +459,11 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
 			return &StoreError{Op: "delete", Detail: "legacy cert index", Err: err}
 		}
 	}
+
+	s.emitAudit(ctx, "delete", id, map[string]any{
+		"username": existing.Username,
+		"tenantID": existing.TenantID,
+	})
 
 	return nil
 }
@@ -536,6 +561,11 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if err := s.store.Put(ctx, primaryKey(id), data); err != nil {
 		return &StoreError{Op: "enable", Detail: "put", Err: err}
 	}
+
+	s.emitAudit(ctx, "enable", id, map[string]any{
+		"username": user.Username,
+		"tenantID": user.TenantID,
+	})
 	return nil
 }
 
@@ -561,6 +591,11 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if err := s.store.Put(ctx, primaryKey(id), data); err != nil {
 		return &StoreError{Op: "disable", Detail: "put", Err: err}
 	}
+
+	s.emitAudit(ctx, "disable", id, map[string]any{
+		"username": user.Username,
+		"tenantID": user.TenantID,
+	})
 	return nil
 }
 

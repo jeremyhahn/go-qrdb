@@ -121,3 +121,8 @@ func TestErrorTypes_As(t *testing.T) {
 		assert.Equal(t, "SELECT", target.Query)
 	})
 }
+
+func TestUnsupportedParameterTypeError_Error(t *testing.T) {
+	err := &UnsupportedParameterTypeError{Value: struct{}{}}
+	assert.Equal(t, "sql/pgsql: unsupported parameter value type struct {}", err.Error())
+}

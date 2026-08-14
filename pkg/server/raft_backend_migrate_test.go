@@ -186,6 +186,100 @@ func TestRaftBackendFactory_MigrateTenantEncryption_NoneToPassphrase(t *testing.
 	assertPlaintextAbsent(t, filepath.Join(dataRoot, "databases", "appdata"), []byte("kv-value"))
 }
 
+// TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir proves the
+// IsolationRaft per-shard recycle produces a GENUINE M-of-N Shamir tenant
+// barrier (correct label, correct threshold/total, real usable shares) rather
+// than a silently mislabeled passphrase barrier. Like the IsolationVolume
+// path, the reopened keyed barrier is SEALED (Shamir never auto-unseals from
+// disk — see ReopenKeyed): the deferred shard re-attach correctly tolerates
+// the expected seal.ErrSealed instead of reporting it as a migration failure,
+// and the shards stay detached until a Security Officer quorum unseals the
+// barrier via UnsealWithShare(s), at which point the normal Attach retry
+// succeeds and every pre-migration datum is intact.
+func TestRaftBackendFactory_MigrateTenantEncryption_NoneToShamir(t *testing.T) {
+	ctx := context.Background()
+	s := newRaftMigrateStack(t)
+	s.createDedicatedRaftDB(t, "rt-shamir", "appdata")
+
+	tb, err := s.reg.GetTenant("rt-shamir")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	dist := &serverCaptureDist{}
+	tb.Barrier().SetCeremonyDistributor(dist)
+
+	svcs, err := s.raftReg.Services(ctx, "rt-shamir", "appdata")
+	if err != nil {
+		t.Fatalf("Services(pre-migrate): %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "kv-key", []byte("kv-value")); err != nil {
+		t.Fatalf("KV.Put: %v", err)
+	}
+
+	opts := seal.MigrationOptions{
+		TargetStrategy:  seal.StrategyShamir,
+		Mechanism:       seal.MechanismSwap,
+		Availability:    seal.AvailabilityQuiesced,
+		ShamirThreshold: 2,
+		ShamirTotal:     3,
+	}
+	if err := s.raftReg.MigrateTenantEncryption(ctx, "rt-shamir", opts); err != nil {
+		t.Fatalf("MigrateTenantEncryption(shamir): %v", err)
+	}
+	if len(dist.Shares()) != 3 {
+		t.Fatalf("distributor captured %d shares, want 3", len(dist.Shares()))
+	}
+
+	status := tenantStatus(t, s.reg, "rt-shamir")
+	if status.Strategy != seal.StrategyShamir {
+		t.Fatalf("post-migrate strategy = %q, want shamir (not silently downgraded to passphrase)", status.Strategy)
+	}
+	if !status.Sealed {
+		t.Fatal("post-migrate shamir tenant barrier must be sealed pending Security Officer quorum")
+	}
+	if status.ShamirThreshold != 2 || status.ShamirTotal != 3 {
+		t.Fatalf("post-migrate scheme = %d/%d, want 2/3", status.ShamirThreshold, status.ShamirTotal)
+	}
+
+	// The shard correctly stays detached: Services must fail with the typed
+	// seal.ErrSealed, not silently serve stale state and not have aborted the
+	// migration (already proven above — MigrateTenantEncryption returned nil).
+	if _, err := s.raftReg.Services(ctx, "rt-shamir", "appdata"); !errors.Is(err, seal.ErrSealed) {
+		t.Fatalf("Services on a sealed post-migration raft tenant = %v, want seal.ErrSealed", err)
+	}
+
+	// Submitting a 2-of-3 quorum of the REAL distributed shares unseals the
+	// migrated barrier — the "shares are usable" proof.
+	tb2, err := s.reg.GetTenant("rt-shamir")
+	if err != nil {
+		t.Fatalf("GetTenant(post-migrate): %v", err)
+	}
+	shares := dist.Shares()
+	if _, uerr := tb2.UnsealWithShare(ctx, shares[0]); uerr != nil {
+		t.Fatalf("UnsealWithShare(1/2): %v", uerr)
+	}
+	progress, uerr := tb2.UnsealWithShare(ctx, shares[1])
+	if uerr != nil {
+		t.Fatalf("UnsealWithShare(2/2): %v", uerr)
+	}
+	if !progress.Complete || tb2.IsSealed() {
+		t.Fatalf("barrier not unsealed after a 2-of-3 quorum: progress=%+v sealed=%v", progress, tb2.IsSealed())
+	}
+
+	// Every datum written before the migration survives, readable once the
+	// shard reattaches under the now-unsealed keyed barrier.
+	if err := s.raftReg.Attach(ctx, "rt-shamir", "appdata"); err != nil {
+		t.Fatalf("Attach(post-unseal): %v", err)
+	}
+	svcs, err = s.raftReg.Services(ctx, "rt-shamir", "appdata")
+	if err != nil {
+		t.Fatalf("Services(post-unseal): %v", err)
+	}
+	if got, gerr := getWhenReadable(ctx, t, svcs.KV.Get, "kv-key"); gerr != nil || string(got) != "kv-value" {
+		t.Fatalf("KV.Get(post-unseal) = %q, %v; want kv-value (DATA LOSS)", got, gerr)
+	}
+}
+
 // mustTenantDataRoot returns a tenant's DataRoot or fails the test.
 func mustTenantDataRoot(t *testing.T, tenants *tenant.TenantService, id string) string {
 	t.Helper()

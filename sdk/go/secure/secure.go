@@ -88,6 +88,14 @@ func NewCallbackProvider(fn func(ctx context.Context, prompt string) ([]byte, er
 // CatchInterrupt is the SDK re-export of secure.CatchInterrupt.
 func CatchInterrupt() { secure.CatchInterrupt() }
 
+// EnablePurge is the SDK re-export of secure.EnablePurge. It arms the secure
+// subsystem so Purge works WITHOUT installing memguard's process signal
+// handler. Daemons that own their own signal handling and drive a graceful
+// shutdown must use this instead of CatchInterrupt, whose handler hard
+// os.Exit(1)s from inside the signal handler and races ahead of the graceful
+// shutdown path (skipping store Close, and so dropping unflushed writes).
+func EnablePurge() { secure.EnablePurge() }
+
 // Purge is the SDK re-export of secure.Purge.
 func Purge() error { return secure.Purge() }
 

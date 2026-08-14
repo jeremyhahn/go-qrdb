@@ -18,7 +18,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,8 +34,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
+
+// Compile-time interface assertion: RaftBackendFactory satisfies
+// service.ShardRestarter, enabling ONLINE backup restore (stop -> import ->
+// restart) for the dedicated per-database Raft shards it manages.
+var _ service.ShardRestarter = (*RaftBackendFactory)(nil)
 
 // placementResolveTimeout bounds a placement-table lookup performed while
 // resolving a dedicated-raft database's shard, so a stalled read pipeline does
@@ -70,6 +78,20 @@ func (e *RaftBackendError) Error() string {
 
 // Unwrap returns the underlying error for errors.Is/As.
 func (e *RaftBackendError) Unwrap() error { return e.Err }
+
+// ShardNotManagedError is returned by RaftBackendFactory's
+// service.ShardRestarter methods (StopForRestore, RestartAfterRestore) when
+// shardID is not a dedicated per-database Raft shard this factory manages —
+// e.g. the system shard, a shard hosted on a different node, or (for
+// RestartAfterRestore) a shard with no pending StopForRestore call.
+type ShardNotManagedError struct {
+	ShardID uint64
+}
+
+// Error implements the error interface.
+func (e *ShardNotManagedError) Error() string {
+	return "server: shard " + strconv.FormatUint(e.ShardID, 10) + " is not a dedicated raft shard managed by this node"
+}
 
 // raftShardKey identifies a dedicated raft shard by its owning tenant and
 // database name. Two tenants may use the same database name; the composite key
@@ -150,6 +172,14 @@ type RaftBackendFactory struct {
 
 	mu     sync.Mutex
 	shards map[raftShardKey]*raftShard
+
+	// pendingRestore tracks shards evicted from shards by StopForRestore that
+	// have not yet been restarted by RestartAfterRestore, keyed by shard ID
+	// so RestartAfterRestore (which is given only the shard ID by
+	// service.RestoreShardOnline) can recover which (tenant, database) to
+	// re-Attach. An entry lives here only for the brief window between the
+	// two calls during an online backup restore.
+	pendingRestore map[uint64]raftShardKey
 
 	// migrating marks tenant IDs whose barrier is mid-encryption-recycle. While
 	// set, Services returns ErrShardMigrationInProgress for ANY of that tenant's
@@ -247,6 +277,7 @@ func NewRaftBackendFactory(
 		dbInfo:         dbInfo,
 		logger:         logger,
 		shards:         make(map[raftShardKey]*raftShard),
+		pendingRestore: make(map[uint64]raftShardKey),
 	}
 	for _, opt := range opts {
 		opt(f)
@@ -358,14 +389,30 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 	// data on whichever node happens to serve the request (the dedicated-group
 	// no-data-loss restart bug).
 	//
-	// NOTE (Phase 4c-2 follow-on, not yet implemented): the blanket join=false
-	// here is correct ONLY for founding members that bootstrap the group
-	// together (initial create + restart re-attach). A replica added DYNAMICALLY
-	// after group formation — e.g. via a 4c-2 rebalance / RequestAddNode — has no
-	// committed log of its own and MUST start with join=true so go-quicraft
-	// streams it a snapshot from the leader. When dynamic add is implemented,
-	// distinguish founding members from late joiners (e.g. a placement-entry flag)
-	// and pass join=true only for the latter; do not flip this blanket value.
+	// Phase 4c-2 (observer-first, see the elastic-scaling design doc
+	// §B.2/§D.4): a replica added DYNAMICALLY after group formation (via
+	// PlaceAdditional / DatabaseService.ScaleForTenant) has no committed log
+	// of its own and MUST start with join=true so go-quicraft streams it a
+	// snapshot from the leader — the leader admits it as a NON-VOTING
+	// observer (RaftHost.AddObserver) BEFORE this attach, so the join
+	// bootstrap window never changes the group's existing voting quorum.
+	// Founding members, and any replica that has already caught up from a
+	// prior join=true bootstrap (whether or not it has since been promoted
+	// to a full voter), always use join=false — this is the no-data-loss
+	// restart invariant, and it is orthogonal to voter/observer status: that
+	// status lives entirely in the committed Raft config, restored from
+	// LogDB on any join=false restart regardless of this flag. The
+	// placement-entry's Replica.State distinguishes the states: it is
+	// ReplicaStateObserver exactly once, for a replica's first attach after
+	// being placed by PlaceAdditional and admitted as an observer, and is
+	// promoted by TenantShardReconciler to ReplicaStateObserverReady once
+	// go-quicraft reports the join bootstrap window closed (see
+	// JoinObserver), then to ReplicaStateActive once the shard's current
+	// leader promotes the observer to a full voting member (see Promoter).
+	// ReplicaStateActive is the zero value, so every placement entry
+	// persisted before this field existed (no "state" key) and every
+	// Scheduler.Place-computed founding placement decodes to join=false
+	// unchanged.
 	// 4d Option C: resolve whether this shard opted into a per-tenant-KEY WAL.
 	// The placement entry is authoritative cluster-wide (so followers agree with
 	// the leader); the meta-derived source covers Phase-4b single-node databases.
@@ -380,8 +427,9 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		localReplica, rOK := pInfo.ReplicaForNode(f.localRaftAddr)
 		if rOK {
 			members := pInfo.Members()
+			join := localReplica.State == placement.ReplicaStateObserver
 			rs, merr := f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, false, members, dedicatedWAL)
+				localReplica.ReplicaID, join, members, dedicatedWAL)
 			if merr != nil {
 				return nil, merr
 			}
@@ -620,6 +668,53 @@ func (f *RaftBackendFactory) Close(tenantID, db string) error {
 	return f.stopShard(rs)
 }
 
+// CloseAndPurge stops the named tenant database's dedicated shard (as Close
+// does) and then removes its on-disk dataDir subtree. It is used by
+// TenantShardReconciler ONLY for demotion (placement says this node is no
+// longer a replica) and full-database-delete teardown — NEVER for graceful
+// process shutdown (CloseAll), which must leave data on disk for the next
+// restart's re-attach. Purging on demotion closes a pre-existing
+// encrypted-at-rest retention gap: a demoted replica's ciphertext previously
+// remained on disk indefinitely after RebalanceService MOVE, scale-down, or
+// DropForTenant. It is a no-op for an unknown (tenant, db) pair.
+func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
+	f.mu.Lock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	rs, ok := f.shards[key]
+	if ok {
+		delete(f.shards, key)
+	}
+	f.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	if err := f.stopShard(rs); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(rs.dataDir); err != nil {
+		return &RaftBackendError{TenantID: tenantID, Database: db, Op: "purge-data-dir", Err: err}
+	}
+	f.logger.Info("dedicated raft database shard data purged",
+		slog.String("tenant", tenantID),
+		slog.String("database", db),
+		slog.String("data_dir", rs.dataDir))
+	return nil
+}
+
+// IsShardJoining reports whether shardID is still in its join bootstrap
+// window on this host's shared quicraft.Host: started locally with
+// join=true and not yet given its first snapshot. Satisfies
+// server.JoinObserver so TenantShardReconciler can promote a locally hosted
+// ReplicaStateObserver replica to ReplicaStateObserverReady once it has
+// caught up. Returns false when no adapter is wired (e.g. a test double
+// factory).
+func (f *RaftBackendFactory) IsShardJoining(shardID uint64) bool {
+	if f.adapter == nil {
+		return false
+	}
+	return f.adapter.IsShardJoining(shardID)
+}
+
 // CloseAll stops every live dedicated shard. Errors are joined so a single
 // failing shard does not prevent the rest from stopping. The shared host is not
 // closed.
@@ -666,6 +761,82 @@ func (f *RaftBackendFactory) stopShard(rs *raftShard) error {
 		slog.Uint64("shard_id", rs.shardID),
 		slog.Bool("dedicated_wal", rs.dedicatedWAL != nil))
 	return nil
+}
+
+// shardOwner returns the (tenantID, database) pair owning the locally started
+// dedicated shard identified by shardID, or ok=false if this factory does not
+// manage it. Caller must hold f.mu.
+func (f *RaftBackendFactory) shardOwner(shardID uint64) (raftShardKey, bool) {
+	for k, rs := range f.shards {
+		if rs.shardID == shardID {
+			return k, true
+		}
+	}
+	return raftShardKey{}, false
+}
+
+// StopForRestore stops the dedicated shard identified by shardID, releasing
+// its lease-sweeper goroutine and (for a 4d Option C shard) unregistering and
+// closing its dedicated per-tenant-KEY WAL — exactly what a graceful Close
+// does — then evicts it from the factory's cache so a subsequent Attach/
+// Services call rebuilds it fresh rather than returning the now-stopped
+// cached service set. The (tenantID, database) owning shardID is stashed so
+// RestartAfterRestore can restart it with the same identity.
+//
+// It satisfies service.ShardRestarter for server.RaftBackendFactory's
+// dedicated per-database Raft shards. Returns ShardNotManagedError when
+// shardID is not one this factory manages (e.g. the system shard, or a shard
+// on a different node).
+func (f *RaftBackendFactory) StopForRestore(shardID uint64) error {
+	f.mu.Lock()
+	key, ok := f.shardOwner(shardID)
+	if !ok {
+		f.mu.Unlock()
+		return &ShardNotManagedError{ShardID: shardID}
+	}
+	rs := f.shards[key]
+	delete(f.shards, key)
+	f.mu.Unlock()
+
+	if err := f.stopShard(rs); err != nil {
+		// Restore the cache entry: the shard was never actually stopped, so
+		// the factory's view of "what is running" must not diverge from
+		// reality.
+		f.mu.Lock()
+		f.shards[key] = rs
+		f.mu.Unlock()
+		return err
+	}
+
+	f.mu.Lock()
+	f.pendingRestore[shardID] = key
+	f.mu.Unlock()
+	return nil
+}
+
+// RestartAfterRestore restarts the shard identified by shardID that a prior
+// StopForRestore call stopped, using its original (tenantID, database)
+// identity — Attach re-derives the exact start configuration (voting
+// membership, state-machine factory, on-disk paths) the same way a boot-time
+// re-attach does. It is also the rollback path for a failed snapshot import:
+// the caller invokes it whether or not the import between StopForRestore and
+// this call succeeded, so a failed online restore never leaves the shard
+// down.
+//
+// It satisfies service.ShardRestarter. Returns ShardNotManagedError when
+// shardID has no pending StopForRestore call (e.g. RestartAfterRestore
+// called twice, or called for a shard this factory never stopped).
+func (f *RaftBackendFactory) RestartAfterRestore(ctx context.Context, shardID uint64) error {
+	f.mu.Lock()
+	key, ok := f.pendingRestore[shardID]
+	if !ok {
+		f.mu.Unlock()
+		return &ShardNotManagedError{ShardID: shardID}
+	}
+	delete(f.pendingRestore, shardID)
+	f.mu.Unlock()
+
+	return f.Attach(ctx, key.tenantID, key.database)
 }
 
 // managerRaftInfoSource adapts a database.Manager to the raftDatabaseInfoSource

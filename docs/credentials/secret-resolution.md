@@ -87,7 +87,7 @@ prefix is stripped during resolution.
 ## Consuming it downstream
 
 Downstream projects consume this package through the SDK re-exports in
-`sdk/go/types_secret.go` (`ResolverRegistry`, `NewConfigProcessor`,
+`sdk/go/secret/` (`ResolverRegistry`, `NewConfigProcessor`,
 `NewCredentialResolver`, `SecretValue`, `WithFailClosed`, …), never by importing
 `go-qrdb/pkg/*` directly.
 

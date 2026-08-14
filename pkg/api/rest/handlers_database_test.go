@@ -17,6 +17,7 @@ package rest
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,6 +40,7 @@ type mockDatabaseService struct {
 	listFn           func() ([]database.DatabaseInfo, error)
 	dropFn           func(name string) error
 	updateProtocolFn func(name string, proto database.ProtocolConfig) (*database.DatabaseInfo, error)
+	scaleFn          func(name string, targetReplicas int) (*database.DatabaseInfo, error)
 }
 
 // Compile-time interface check.
@@ -131,7 +133,7 @@ func (m *mockDatabaseService) UnsealDatabase(_ context.Context, _ string, _ seal
 	return nil
 }
 
-func (m *mockDatabaseService) DatabaseBarrierStatus(_ string) (*seal.BarrierStatus, error) {
+func (m *mockDatabaseService) DatabaseBarrierStatus(_ context.Context, _ string) (*seal.BarrierStatus, error) {
 	return nil, nil
 }
 
@@ -174,6 +176,13 @@ func (m *mockDatabaseService) UpdateConnectionForTenant(_ context.Context, name 
 	return m.UpdateConnection(name, cfg)
 }
 
+func (m *mockDatabaseService) ScaleForTenant(_ context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	if m.scaleFn != nil {
+		return m.scaleFn(name, targetReplicas)
+	}
+	return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
+}
+
 // ---------------------------------------------------------------------------
 // handleCreateDatabase tests
 // ---------------------------------------------------------------------------
@@ -204,6 +213,147 @@ func TestHandleCreateDatabase_Success(t *testing.T) {
 	}
 	if resp.Status != "open" {
 		t.Fatalf("status = %q, want %q", resp.Status, "open")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mock: service.DatabaseCredentialCreator
+// ---------------------------------------------------------------------------
+
+// credentialedMockDatabaseService additionally implements
+// service.DatabaseCredentialCreator so handleCreateDatabase's type-assertion
+// succeeds and a request's barrier secret can be observed.
+type credentialedMockDatabaseService struct {
+	*mockDatabaseService
+
+	gotCfg     database.DatabaseConfig
+	gotCreds   seal.Credentials
+	calledWith string
+	err        error
+}
+
+func newCredentialedMockDatabaseService() *credentialedMockDatabaseService {
+	return &credentialedMockDatabaseService{mockDatabaseService: newMockDatabaseService()}
+}
+
+// Compile-time interface check.
+var _ service.DatabaseCredentialCreator = (*credentialedMockDatabaseService)(nil)
+
+func (m *credentialedMockDatabaseService) CreateWithCredentials(_ context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	m.gotCfg, m.gotCreds, m.calledWith = cfg, creds, "createWithCredentials"
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &database.DatabaseInfo{Name: cfg.Name, Engine: cfg.Engine, Backend: cfg.Backend, Status: database.StatusOpen, Barrier: cfg.Barrier}, nil
+}
+
+func (m *credentialedMockDatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	return m.CreateWithCredentials(ctx, cfg, creds)
+}
+
+// TestHandleCreateDatabase_BarrierSecretReachesCredentialedCreator verifies
+// that a POST /v1/databases body carrying a barrier.secret is decoded and
+// forwarded as seal.Credentials.Secret to
+// service.DatabaseCredentialCreator.CreateForTenantWithCredentials when the
+// resolved DatabaseServicer implements it, and that the secret never leaks
+// into the JSON response.
+func TestHandleCreateDatabase_BarrierSecretReachesCredentialedCreator(t *testing.T) {
+	dbSvc := newCredentialedMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"secure-db","engine":"kv","backend":"pebble","dataDir":"/data/secure-db",` +
+		`"barrier":{"enabled":true,"mode":"passphrase","secret":"correct-horse-battery-staple"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+
+	if dbSvc.calledWith != "createWithCredentials" {
+		t.Fatalf("calledWith = %q, want %q", dbSvc.calledWith, "createWithCredentials")
+	}
+	if dbSvc.gotCfg.DataDir != "/data/secure-db" {
+		t.Errorf("DataDir = %q, want %q", dbSvc.gotCfg.DataDir, "/data/secure-db")
+	}
+	if dbSvc.gotCfg.Barrier == nil || !dbSvc.gotCfg.Barrier.Enabled {
+		t.Fatal("Barrier.Enabled = false, want true")
+	}
+	if string(dbSvc.gotCreds.Secret) != "correct-horse-battery-staple" {
+		t.Errorf("Credentials.Secret = %q, want %q", dbSvc.gotCreds.Secret, "correct-horse-battery-staple")
+	}
+
+	// The response body must never echo the secret back to the caller.
+	if strings.Contains(rec.Body.String(), "correct-horse-battery-staple") {
+		t.Error("response body leaks the barrier secret")
+	}
+}
+
+// TestHandleCreateDatabase_NoBarrier_EmptyCredentials verifies that a request
+// with no barrier block still routes through CreateForTenantWithCredentials
+// (when the resolved service implements DatabaseCredentialCreator), carrying
+// empty seal.Credentials and no Barrier config -- confirming the credentialed
+// path is a strict superset of the plain path, not a behavior change for
+// non-barrier creates.
+func TestHandleCreateDatabase_NoBarrier_EmptyCredentials(t *testing.T) {
+	dbSvc := newCredentialedMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"plain-db","engine":"kv","backend":"pebble"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+	if dbSvc.calledWith != "createWithCredentials" {
+		t.Fatalf("calledWith = %q, want %q", dbSvc.calledWith, "createWithCredentials")
+	}
+	if dbSvc.gotCfg.Barrier != nil {
+		t.Errorf("Barrier = %+v, want nil", dbSvc.gotCfg.Barrier)
+	}
+	if len(dbSvc.gotCreds.Secret) != 0 {
+		t.Errorf("Credentials.Secret = %q, want empty", dbSvc.gotCreds.Secret)
+	}
+}
+
+// TestHandleCreateDatabase_NoBarrier_PlainServiceFallback verifies that a
+// DatabaseServicer which does NOT implement DatabaseCredentialCreator (the
+// pre-existing mockDatabaseService) is still usable for database creation --
+// the type-assertion fallback in createDatabaseForTenant is exercised.
+func TestHandleCreateDatabase_NoBarrier_PlainServiceFallback(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"legacy-mock-db","engine":"kv","backend":"pebble"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+}
+
+// TestHandleCreateDatabase_BarrierEnabled_SharedStoreRejected verifies a
+// SharedStoreBarrierUnsupportedError from the service surfaces as an HTTP
+// error response, not a 201.
+func TestHandleCreateDatabase_BarrierEnabled_SharedStoreRejected(t *testing.T) {
+	dbSvc := newCredentialedMockDatabaseService()
+	dbSvc.err = &database.SharedStoreBarrierUnsupportedError{Name: "shared-db", Backend: database.BackendPebble}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"shared-db","engine":"kv","backend":"pebble","barrier":{"enabled":true,"secret":"whatever"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("expected a non-201 status for a shared-store barrier rejection, got %d", rec.Code)
 	}
 }
 
@@ -1476,4 +1626,121 @@ func TestWithDatabaseService_Option(t *testing.T) {
 	if srv.databaseSvc == nil {
 		t.Fatal("databaseSvc should not be nil after WithDatabaseService")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// handleScaleDatabase tests
+// ---------------------------------------------------------------------------
+
+// TestHandleScaleDatabase_Success verifies a successful scale request
+// returns the updated DatabaseInfo.
+func TestHandleScaleDatabase_Success(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	dbSvc.scaleFn = func(name string, targetReplicas int) (*database.DatabaseInfo, error) {
+		return &database.DatabaseInfo{Name: name, Replicas: targetReplicas}, nil
+	}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"target_replicas":3}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/databases/mydb/scale", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp databaseInfoResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Replicas != 3 {
+		t.Errorf("resp.Replicas = %d, want 3", resp.Replicas)
+	}
+}
+
+// TestHandleScaleDatabase_ForwardToLeader_Success verifies that when
+// ScaleForTenant returns *service.NotLeaderError with a known leader
+// address, handleScaleDatabase forwards the original PATCH request (method,
+// path, and body intact) to the leader's REST server, mirroring the KV
+// PUT/DELETE leader-forwarding path (see TestHandler_KVPut_ForwardToLeader_Success).
+func TestHandleScaleDatabase_ForwardToLeader_Success(t *testing.T) {
+	leaderSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("leader received method %s, want PATCH", r.Method)
+		}
+		if r.URL.Path != "/v1/databases/mydb/scale" {
+			t.Fatalf("leader received path %s, want /v1/databases/mydb/scale", r.URL.Path)
+		}
+		fwd := r.Header.Get(headerForwardedBy)
+		if fwd == "" {
+			t.Fatal("leader did not receive X-Quicraft-Forwarded-By header")
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("leader read body: %v", err)
+		}
+		var req scaleDatabaseRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("leader decode body: %v", err)
+		}
+		if req.TargetReplicas != 3 {
+			t.Fatalf("leader received target_replicas=%d, want 3", req.TargetReplicas)
+		}
+		writeJSON(w, databaseInfoResponse{Name: "mydb", Replicas: 3})
+	}))
+	defer leaderSrv.Close()
+
+	dbSvc := newMockDatabaseService()
+	dbSvc.scaleFn = func(_ string, _ int) (*database.DatabaseInfo, error) {
+		return nil, &service.NotLeaderError{
+			ShardID:       7,
+			LeaderID:      2,
+			LeaderAddress: "10.0.0.2:63001",
+		}
+	}
+
+	reg := NewPeerAdminRegistry("63002")
+	reg.Register("10.0.0.2:63001", leaderSrv.URL)
+
+	host := &mockHost{addr: "10.0.0.1:63001"}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc), WithLeaderForwarding(reg), WithHost(host))
+
+	body := `{"target_replicas":3}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/databases/mydb/scale", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp databaseInfoResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal forwarded response: %v", err)
+	}
+	if resp.Replicas != 3 {
+		t.Errorf("resp.Replicas = %d, want 3", resp.Replicas)
+	}
+}
+
+// TestHandleScaleDatabase_NotLeader_NoResolver verifies that when
+// ScaleForTenant returns *service.NotLeaderError but no leader-forwarding
+// resolver is configured, handleScaleDatabase falls back to mapHTTPError's
+// 503 Service Unavailable rather than forwarding.
+func TestHandleScaleDatabase_NotLeader_NoResolver(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	dbSvc.scaleFn = func(_ string, _ int) (*database.DatabaseInfo, error) {
+		return nil, &service.NotLeaderError{ShardID: 7, LeaderID: 2, LeaderAddress: "10.0.0.2:63001"}
+	}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"target_replicas":3}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/databases/mydb/scale", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusServiceUnavailable)
 }

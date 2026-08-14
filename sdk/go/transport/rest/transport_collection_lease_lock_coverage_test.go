@@ -21,6 +21,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -788,11 +789,88 @@ func TestRESTBatch_ExecuteBatch_Closed(t *testing.T) {
 	}
 }
 
-func TestRESTBatch_ImportFile_NotImplemented(t *testing.T) {
+func TestRESTBatch_ImportFile_MultipartRoundTrip(t *testing.T) {
+	const fileBody = "key,val\nk1,v1\nk2,v2\n"
+
+	var gotFile, gotFormat, gotKeyField, gotValueMode, gotContentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		raw, _ := io.ReadAll(f)
+		gotFile = string(raw)
+		gotFormat = r.FormValue("format")
+		gotKeyField = r.FormValue("keyField")
+		gotValueMode = r.FormValue("valueMode")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 2, "succeeded": 2, "failed": 0,
+		})
+	}))
+	defer srv.Close()
+
+	rt := newWiredTransport(srv)
+	res, err := rt.ImportFile(context.Background(), "data.csv",
+		strings.NewReader(fileBody),
+		transport.ImportOptions{
+			Format:    "csv",
+			KeyField:  "key",
+			ValueMode: "field",
+		})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if res.Total != 2 || res.Succeeded != 2 || res.Failed != 0 {
+		t.Fatalf("result = %+v, want total=2 succeeded=2 failed=0", res)
+	}
+	if !strings.HasPrefix(gotContentType, "multipart/form-data") {
+		t.Errorf("Content-Type = %q, want multipart/form-data", gotContentType)
+	}
+	if gotFile != fileBody {
+		t.Errorf("uploaded file body = %q, want %q", gotFile, fileBody)
+	}
+	if gotFormat != "csv" || gotKeyField != "key" || gotValueMode != "field" {
+		t.Errorf("form fields format=%q keyField=%q valueMode=%q, want csv/key/field",
+			gotFormat, gotKeyField, gotValueMode)
+	}
+}
+
+func TestRESTBatch_ImportFile_EmptyFilenameStillUploadsAsFile(t *testing.T) {
+	// An empty filename (stdin imports) must still arrive as a multipart
+	// FILE part, not a value part: Go's ParseMultipartForm keys parts as
+	// files only when Content-Disposition carries a non-empty filename.
+	var sawFile bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		_, _, err := r.FormFile("file")
+		sawFile = err == nil
+		_ = json.NewEncoder(w).Encode(map[string]any{"total": 1, "succeeded": 1, "failed": 0})
+	}))
+	defer srv.Close()
+
+	rt := newWiredTransport(srv)
+	if _, err := rt.ImportFile(context.Background(), "", strings.NewReader("{\"id\":\"x\"}\n"),
+		transport.ImportOptions{Format: "ndjson", KeyField: "id", ValueMode: "row"}); err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if !sawFile {
+		t.Fatal("empty filename was not delivered as a multipart file part")
+	}
+}
+
+func TestRESTBatch_ImportFile_ClosedTransport(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
+	_ = rt.Close()
 	_, err := rt.ImportFile(context.Background(), "data.csv", strings.NewReader("k,v"), transport.ImportOptions{})
-	var nie *transport.NotImplementedError
-	if !errors.As(err, &nie) {
-		t.Fatalf("expected NotImplementedError, got %T", err)
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }

@@ -16,7 +16,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -496,6 +499,172 @@ func TestMarkUsed_emptyID(t *testing.T) {
 	err := svc.MarkUsed(context.Background(), "", time.Now())
 	if !errors.Is(err, auth.ErrInvalidFactor) {
 		t.Fatalf("want ErrInvalidFactor, got %v", err)
+	}
+}
+
+// gatingFactorKV wraps afMockKV with a mutex (the regression test below
+// drives the service from multiple goroutines) and a write gate that parks
+// MarkUsed's read-modify-write Put of the primary record — identified as a
+// primary-key Put carrying LastUsedAt but no RevokedAt — until the test
+// releases it. This deterministically reproduces the interleaving where the
+// async MarkUsed goroutine spawned by auth.LoginResolver.Resolve reads the
+// factor BEFORE a concurrent Remove revokes it and writes the stale
+// (still-active) record back AFTER, silently resurrecting the revoked
+// credential (lost update).
+type gatingFactorKV struct {
+	*afMockKV
+	mu sync.Mutex
+
+	// gateArmed is set (before any concurrent access) once the fixture
+	// records are in place, so setup writes pass through ungated.
+	gateArmed bool
+
+	// staleWriteBlocked is closed when the stale MarkUsed Put parks.
+	staleWriteBlocked chan struct{}
+
+	// releaseStaleWrite is closed by the test to unpark the stale Put.
+	releaseStaleWrite chan struct{}
+
+	// sawRevokingPut is closed after a RevokedAt-bearing Put is applied.
+	sawRevokingPut chan struct{}
+
+	blockOnce sync.Once
+	sawOnce   sync.Once
+}
+
+// newGatingFactorKV constructs the gate in the disarmed state.
+func newGatingFactorKV() *gatingFactorKV {
+	return &gatingFactorKV{
+		afMockKV:          newAFMockKV(),
+		staleWriteBlocked: make(chan struct{}),
+		releaseStaleWrite: make(chan struct{}),
+		sawRevokingPut:    make(chan struct{}),
+	}
+}
+
+// Put applies the gate on armed primary-record writes, then delegates to
+// the embedded store under the mutex.
+func (g *gatingFactorKV) Put(ctx context.Context, key string, val []byte) error {
+	revoking := false
+	if g.gateArmed && strings.HasPrefix(key, userFactorPrimaryPrefix) {
+		var f auth.AuthFactor
+		if err := json.Unmarshal(val, &f); err == nil {
+			switch {
+			case f.RevokedAt != nil:
+				revoking = true
+			case f.LastUsedAt != nil:
+				// MarkUsed's read-modify-write landing with a stale
+				// still-active record: park until the test releases it.
+				g.blockOnce.Do(func() { close(g.staleWriteBlocked) })
+				<-g.releaseStaleWrite
+			}
+		}
+	}
+	g.mu.Lock()
+	err := g.afMockKV.Put(ctx, key, val)
+	g.mu.Unlock()
+	if revoking && err == nil {
+		g.sawOnce.Do(func() { close(g.sawRevokingPut) })
+	}
+	return err
+}
+
+// Get delegates under the mutex.
+func (g *gatingFactorKV) Get(ctx context.Context, key string) ([]byte, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.afMockKV.Get(ctx, key)
+}
+
+// Delete delegates under the mutex.
+func (g *gatingFactorKV) Delete(ctx context.Context, key string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.afMockKV.Delete(ctx, key)
+}
+
+// List delegates under the mutex.
+func (g *gatingFactorKV) List(ctx context.Context, prefix string) ([]string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.afMockKV.List(ctx, prefix)
+}
+
+// Scan delegates under the mutex.
+func (g *gatingFactorKV) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.afMockKV.Scan(ctx, prefix)
+}
+
+// TestMarkUsed_ConcurrentRemove_CannotResurrectRevokedFactor pins the
+// fail-closed revocation contract at the MarkUsed/Remove seam: the async
+// best-effort LastUsedAt update spawned by every successful login
+// resolution (auth.LoginResolver.Resolve) must NEVER write a stale
+// still-active record over a concurrent revocation. Without MarkUsed
+// holding the service mutex, the interleaving
+//
+//	MarkUsed.Get(active) -> Remove persists RevokedAt -> MarkUsed.Put(stale)
+//
+// resurrects the revoked factor and a revoked credential resolves again —
+// the regression originally caught by the quicbaas M13 last-factor
+// integration test.
+func TestMarkUsed_ConcurrentRemove_CannotResurrectRevokedFactor(t *testing.T) {
+	kv := newGatingFactorKV()
+	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{
+		KV:               kv,
+		UserStateUpdater: newStubUserStateUpdater(),
+	})
+	if err != nil {
+		t.Fatalf("NewUserAuthFactorService: %v", err)
+	}
+	ctx := context.Background()
+
+	credential := []byte("piv-last-factor-credential")
+	if err := svc.Add(ctx, 1, pivFactor("last", 1, credential)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	// Arm the gate AFTER setup so only the contested writes are gated.
+	kv.gateArmed = true
+
+	// The login-side async update reads the ACTIVE record, then parks its
+	// stale write inside the KV.
+	markUsedDone := make(chan error, 1)
+	go func() { markUsedDone <- svc.MarkUsed(ctx, "last", time.Now().UTC()) }()
+	<-kv.staleWriteBlocked
+
+	// Concurrent force-revocation of the same factor.
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- svc.Remove(ctx, "last", true) }()
+
+	// Unlocked (buggy) MarkUsed lets Remove's revoking Put land while the
+	// stale write is parked — wait for it, then release the stale write so
+	// it clobbers the revocation. Correctly serialized MarkUsed makes that
+	// ordering impossible (Remove blocks on the service mutex), so the
+	// bounded wait lapses and the release simply unparks MarkUsed first.
+	select {
+	case <-kv.sawRevokingPut:
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(kv.releaseStaleWrite)
+
+	if err := <-markUsedDone; err != nil {
+		t.Fatalf("MarkUsed: %v", err)
+	}
+	if err := <-removeDone; err != nil {
+		t.Fatalf("Remove(force=true): %v", err)
+	}
+
+	got, err := svc.Get(ctx, "last")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.RevokedAt == nil {
+		t.Fatal("revoked factor resurrected: MarkUsed's stale write clobbered RevokedAt (lost update)")
+	}
+	if _, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorPIV, credential); !errors.Is(err, auth.ErrFactorRevoked) {
+		t.Fatalf("LookupByCredentialKey after Remove: want ErrFactorRevoked, got %v", err)
 	}
 }
 

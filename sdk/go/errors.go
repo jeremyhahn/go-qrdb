@@ -60,3 +60,34 @@ type ShardNotFoundError struct {
 func (e *ShardNotFoundError) Error() string {
 	return "sdk: shard not found in membership view: " + strconv.FormatUint(e.ShardID, 10)
 }
+
+// NoLeaderError is returned by leader-directed Cluster() operations when the
+// shard currently has no elected leader. It is distinct from
+// LeaderEndpointUnknownError: here there is nothing to address at all, so the
+// caller should retry after an election rather than fall back.
+type NoLeaderError struct {
+	ShardID uint64
+}
+
+// Error returns a human-readable description.
+func (e *NoLeaderError) Error() string {
+	return "sdk: no leader elected for shard " + strconv.FormatUint(e.ShardID, 10)
+}
+
+// LeaderEndpointUnknownError is returned by LeaderEndpoint when the shard has a
+// leader but that leader advertises no address for the requested protocol —
+// because it predates API advertisement, was configured without an advertise
+// address, or genuinely does not serve that protocol. Callers treat it as
+// "fall back to today's behavior", not as a hard failure.
+type LeaderEndpointUnknownError struct {
+	ShardID   uint64
+	ReplicaID uint64
+	Protocol  APIProtocol
+}
+
+// Error returns a human-readable description.
+func (e *LeaderEndpointUnknownError) Error() string {
+	return "sdk: leader replica " + strconv.FormatUint(e.ReplicaID, 10) +
+		" of shard " + strconv.FormatUint(e.ShardID, 10) +
+		" advertises no " + string(e.Protocol) + " api endpoint"
+}

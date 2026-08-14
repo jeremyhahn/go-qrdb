@@ -578,10 +578,10 @@ func TestHandleRange_WithConsistency_RoutesToRangeWithConsistency(t *testing.T) 
 	var rangeWithConsistencyCalled bool
 
 	mvccSvc := &mockMVCCKVService{
-		rangeWithConsistencyFn: func(_ context.Context, _, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeWithConsistencyFn: func(_ context.Context, _, _ []byte, opts consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			capturedOpts = opts
 			rangeWithConsistencyCalled = true
-			return []*kv.KeyValue{{Key: []byte("a"), Value: []byte("1")}}, 1, nil
+			return []*kv.KeyValue{{Key: []byte("a"), Value: []byte("1")}}, 1, 1, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))
@@ -611,13 +611,13 @@ func TestHandleRange_NoConsistency_RoutesToPlainRange(t *testing.T) {
 	var plainCalled bool
 
 	mvccSvc := &mockMVCCKVService{
-		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeFn: func(_ context.Context, _, _ []byte, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			plainCalled = true
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
-		rangeWithConsistencyFn: func(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, error) {
+		rangeWithConsistencyFn: func(_ context.Context, _, _ []byte, _ consistency.ReadOptions, _ ...service.RangeOption) ([]*kv.KeyValue, int64, int64, error) {
 			t.Error("RangeWithConsistency must not be called when ConsistencyLevel is UNSPECIFIED")
-			return nil, 0, nil
+			return nil, 0, 0, nil
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithMVCC(mvccSvc))

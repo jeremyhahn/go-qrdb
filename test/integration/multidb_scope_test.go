@@ -185,7 +185,13 @@ func TestMultiDB_Scope_AllTransports(t *testing.T) {
 	})
 
 	t.Run("unix", func(t *testing.T) {
-		ut, err := unixtransport.New(transport.WithAddress(node.unixSock))
+		// Unix (grpc-over-UDS) is "verified TLS 1.3 only", identical to the
+		// TCP gRPC transport: present the admin client certificate and
+		// verify the server, exactly like the "grpc" subtest above.
+		ut, err := unixtransport.New(
+			transport.WithAddress(node.unixSock),
+			transport.WithMTLS(node.certPath, node.keyPath, node.ca.CertPath),
+		)
 		if err != nil {
 			t.Fatalf("unix transport: %v", err)
 		}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
 // ---------------------------------------------------------------------------
@@ -514,5 +515,67 @@ func TestClientCertRequiredError_Error(t *testing.T) {
 	e := &ClientCertRequiredError{}
 	if e.Error() == "" {
 		t.Fatal("expected non-empty error message")
+	}
+}
+
+// TestMapServiceError_BarrierSealedError verifies that a data-plane
+// service.BarrierSealedError maps to wire.StatusUnavailable (not the
+// default StatusError), matching the gRPC (codes.Unavailable) and REST
+// (503) BarrierSealedError mapping. The SDK QUIC client interprets
+// StatusUnavailable as "barrier sealed".
+func TestMapServiceError_BarrierSealedError(t *testing.T) {
+	err := &service.BarrierSealedError{TenantID: "tenant-1"}
+	statusCode, payload := mapServiceError(err)
+	if statusCode != wire.StatusUnavailable {
+		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
+	}
+	if !strings.Contains(string(payload), "tenant-1") {
+		t.Fatalf("expected payload to contain tenant ID, got %q", string(payload))
+	}
+}
+
+// TestMapServiceError_WrappedBarrierSealedError verifies the BarrierSealedError
+// mapping follows the Unwrap chain via errors.As, matching the pattern used
+// for the other wrapped-error test cases in this file.
+func TestMapServiceError_WrappedBarrierSealedError(t *testing.T) {
+	inner := &service.BarrierSealedError{TenantID: "tenant-2"}
+	err := &HandlerError{Method: "kv.Get", Err: inner}
+	statusCode, payload := mapServiceError(err)
+	if statusCode != wire.StatusUnavailable {
+		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
+	}
+	if !strings.Contains(string(payload), "tenant-2") {
+		t.Fatalf("expected payload to contain tenant ID, got %q", string(payload))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// watch.ErrCompacted / watch.ErrStartRevisionUnsupported
+// ---------------------------------------------------------------------------
+
+// TestMapServiceError_WatchCompacted verifies a watch requesting a compacted
+// start revision maps to StatusError (the same status handleWatchStream
+// writes on any watcher error), with the sentinel's message text preserved
+// so the SDK client's ClassifyWatchError can recognize it downstream.
+func TestMapServiceError_WatchCompacted(t *testing.T) {
+	statusCode, payload := mapServiceError(watch.ErrCompacted)
+	if statusCode != wire.StatusError {
+		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	}
+	if string(payload) != watch.ErrCompacted.Error() {
+		t.Fatalf("payload = %q, want %q", string(payload), watch.ErrCompacted.Error())
+	}
+}
+
+// TestMapServiceError_WatchStartRevisionUnsupported verifies a watch
+// requesting a start revision against a store with no history replayer
+// attached maps to StatusUnimplemented.
+func TestMapServiceError_WatchStartRevisionUnsupported(t *testing.T) {
+	statusCode, payload := mapServiceError(watch.ErrStartRevisionUnsupported)
+	if statusCode != wire.StatusUnimplemented {
+		t.Fatalf("expected StatusUnimplemented (%d), got %d", wire.StatusUnimplemented, statusCode)
+	}
+	if string(payload) != watch.ErrStartRevisionUnsupported.Error() {
+		t.Fatalf("payload = %q, want %q", string(payload), watch.ErrStartRevisionUnsupported.Error())
 	}
 }

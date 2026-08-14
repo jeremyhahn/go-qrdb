@@ -26,6 +26,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // userAuthFactorServer implements the generated pb.UserAuthFactorServiceServer.
@@ -33,15 +34,21 @@ type userAuthFactorServer struct {
 	pb.UnimplementedUserAuthFactorServiceServer
 
 	svc service.UserAuthFactorServicer
+	// userSvc resolves the user record after a factor login so the response
+	// can be enriched with username, tenant, and role set. Optional: when nil
+	// the login response carries only the resolved user ID and factor.
+	userSvc user.UserServicer
 }
 
 // RegisterUserAuthFactorService registers the user-side auth factor service
-// with a gRPC server. When svc is nil, the service is not registered.
-func RegisterUserAuthFactorService(srv *grpc.Server, svc service.UserAuthFactorServicer) {
+// with a gRPC server. When svc is nil, the service is not registered. The
+// userSvc is optional and enriches the login response with the user's
+// username, tenant, and roles; a nil userSvc leaves those fields empty.
+func RegisterUserAuthFactorService(srv *grpc.Server, svc service.UserAuthFactorServicer, userSvc user.UserServicer) {
 	if svc == nil {
 		return
 	}
-	pb.RegisterUserAuthFactorServiceServer(srv, &userAuthFactorServer{svc: svc})
+	pb.RegisterUserAuthFactorServiceServer(srv, &userAuthFactorServer{svc: svc, userSvc: userSvc})
 }
 
 // Add handles the UserAuthFactorService.Add RPC.
@@ -113,11 +120,24 @@ func (s *userAuthFactorServer) Login(ctx context.Context, req *pb.UserAuthFactor
 	if err != nil {
 		return nil, mapUserAuthFactorGRPCError(err)
 	}
-	return &pb.UserAuthFactorLoginResponse{
+	resp := &pb.UserAuthFactorLoginResponse{
 		UserId: factor.UserID,
 		Active: true,
 		Factor: userFactorToProto(factor),
-	}, nil
+	}
+	// Enrich the response from the user service, when wired. The factor login
+	// yields only the user ID; resolve the full record so username, tenant,
+	// and roles reach the client. Best-effort: a lookup failure leaves the
+	// base identifiers intact rather than failing an authenticated login.
+	if s.userSvc != nil && factor.UserID != 0 {
+		if u, uErr := s.userSvc.GetUser(ctx, factor.UserID); uErr == nil && u != nil {
+			resp.Username = u.Username
+			resp.TenantId = u.TenantID
+			resp.Roles = u.RoleIDs
+			resp.Active = u.Enabled
+		}
+	}
+	return resp, nil
 }
 
 // ---------------------------------------------------------------------------

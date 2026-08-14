@@ -41,7 +41,7 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
                                registered into a qrdb StrategyRegistry at composition time
 ```
 
-- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection. It also owns the three software-shape strategies: `SoftwareStrategy`, `ShamirStrategy`, `NoneStrategy`.
+- **go-quicraft** defines the barrier interfaces (`Barrier`, `SnapshotBarrier`, `EpochTracker`) and a minimal default implementation with AES-256-GCM, epoch rotation, deployment ID isolation, brute-force protection, and memguard memory protection. It also owns the baseline software-shape strategies: `SoftwareStrategy` (passphrase-based) and `NoneStrategy` (no encryption).
 - **go-qrdb** wraps go-quicraft's barrier in `StorageBarrier`, adding all database-layer features. The `pkg/dek/` package provides cluster and tenant DEK management using `seal.EncryptionBarrier` for key wrapping.
 - **go-xkms** ships hardware `SealingStrategy` implementations and registers them into a qrdb `StrategyRegistry` so qrdb can resolve `--barrier-strategy <name>` at init time without importing any HSM SDK.
 
@@ -58,13 +58,7 @@ go-xkms/pkg/seal/              Hardware strategies (TPM2, PKCS#11, AWS KMS, GCP 
 
 Hardware strategies (`tpm2`, `pkcs11`, `aws-kms`, `gcp-kms`, `azure-kv`, `vault`) live in go-xkms and register themselves through `StrategyRegistry.Register` at composition time.
 
-The runtime selection priority for **active strategy** when multiple are registered:
-
-```
-TPM2 > PKCS#11 > Software
-```
-
-(see `pkg/seal/strategy.go:73-83` and `DefaultPreferenceOrder`). When only Software (or only None) is registered, that strategy is selected unconditionally.
+When multiple strategies are registered, the caller must specify which one to use at initialization via `--barrier-strategy <name>`. qrdb returns `ErrNoStrategySpecified` if multiple strategies are available but none was explicitly selected. When only one strategy is registered (e.g., Software or None in development), that strategy is selected unconditionally.
 
 ## StrategyRegistry — the canonical lookup table
 
@@ -85,7 +79,7 @@ type StrategyFactory func() (SealingStrategy, error)
 
 `NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-97`) returns a registry pre-populated with the two software strategies qrdb owns outright:
 
-- `StrategySoftware` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
+- `StrategyPassphrase` — built via `NewDeferredSoftwareStrategy()` so the passphrase can be supplied at Initialize/Unseal time rather than at construction.
 - `StrategyNone` — built via `NewNoneStrategy()`.
 
 `StrategyShamir` is intentionally NOT registered in the default registry because the Shamir strategy requires a `Threshold` and `Shares` configuration that only the daemon's init command can supply; the daemon constructs it inline at init time.
@@ -137,20 +131,14 @@ Pick one or the other; the registry is for name-based dispatch at `qrdbd init --
 
 ## StorageBarrier
 
-```go
-type StorageBarrier struct {
-    logger         *slog.Logger
-    base           StorageBackend     // optional storage wrapping
-    barrier        *quicraftseal.Barrier // embedded go-quicraft barrier
-    config         BarrierConfig
-    strategies     map[StrategyID]SealingStrategy
-    prefOrder      []StrategyID
-
-    state          atomic.Int32       // 0 = sealed, 1 = unsealed
-    activeStrategy atomic.Value       // StrategyID that sealed the root key
-    accumulator    atomic.Value       // *shamirAccumulator for quorum unsealing
-}
-```
+For field documentation and the complete struct definition, see `pkg/seal/barrier.go:113-160`. The key fields are:
+- `state` (atomic): 0 = sealed, 1 = unsealed
+- `activeStrategy` (atomic.Value): StrategyID that sealed the root key
+- `persistedStrategyCache` (atomic.Value): cached strategy ID from sealed root key blob
+- `accumulator` (atomic.Value): Shamir share accumulator for quorum unsealing
+- `initializedAt` (atomic.Value): initialization timestamp
+- `strategies` (map, RW-locked): all registered strategies
+- `strategiesMu`, `accumulatorMu` (sync.RWMutex, sync.Mutex): synchronization for concurrent access
 
 ### Dual-Mode Operation
 

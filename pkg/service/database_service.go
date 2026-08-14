@@ -16,14 +16,32 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
+	"sort"
+	"sync"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+)
+
+const (
+	// scaleUpKeyDeliveryMaxAttempts bounds
+	// deliverTenantKeyToReplicaWithRetry's retry loop.
+	scaleUpKeyDeliveryMaxAttempts = 8
+
+	// scaleUpKeyDeliveryRetryDelay is the fixed backoff between key-delivery
+	// retry attempts. 8 attempts * 300ms gives ~2.1s of retry budget,
+	// comfortably covering the sub-2s system-shard replication + apply
+	// latency observed in practice for a freshly scaled-up replica's own
+	// placement view to catch up to the leader's just-committed write (see
+	// deliverTenantKeyToReplicaWithRetry).
+	scaleUpKeyDeliveryRetryDelay = 300 * time.Millisecond
 )
 
 // DatabaseServicer defines CRUD operations for database management.
@@ -57,14 +75,19 @@ type DatabaseServicer interface {
 	// UpdateConnection updates the remote connection configuration for a database.
 	UpdateConnection(name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
 
-	// SealDatabase seals the encryption barrier for a database.
+	// SealDatabase seals the encryption barrier for a database after verifying
+	// the caller's tenant owns it (system tenant may target any database).
 	SealDatabase(ctx context.Context, name string) error
 
-	// UnsealDatabase unseals the encryption barrier for a database.
+	// UnsealDatabase unseals the encryption barrier for a database after
+	// verifying the caller's tenant owns it (system tenant may target any
+	// database).
 	UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error
 
-	// DatabaseBarrierStatus returns the barrier status for a database.
-	DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error)
+	// DatabaseBarrierStatus returns the barrier status for a database after
+	// verifying the caller's tenant owns it (system tenant may target any
+	// database).
+	DatabaseBarrierStatus(ctx context.Context, name string) (*seal.BarrierStatus, error)
 
 	// Tenant-scoped operations (context-based tenant enforcement)
 
@@ -94,6 +117,41 @@ type DatabaseServicer interface {
 
 	// UpdateConnectionForTenant updates connection config with tenant enforcement.
 	UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error)
+
+	// ScaleForTenant changes the replication factor of a dedicated-raft
+	// database after verifying tenant ownership and quota.
+	ScaleForTenant(ctx context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error)
+}
+
+// DatabaseCredentialCreator is implemented by DatabaseServicer implementations
+// that support supplying barrier credentials at create time (e.g.
+// --barrier-passphrase). Transport handlers should type-assert the resolved
+// DatabaseServicer for this interface before falling back to plain Create /
+// CreateForTenant when a caller supplies barrier credentials. *DatabaseService
+// implements this; it is additive rather than part of DatabaseServicer so
+// that existing DatabaseServicer mocks are unaffected.
+type DatabaseCredentialCreator interface {
+	CreateWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error)
+	CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error)
+}
+
+// Compile-time interface check.
+var _ DatabaseCredentialCreator = (*DatabaseService)(nil)
+
+// CreateDatabaseForTenantWithCredentials creates cfg via the tenant-scoped
+// path, threading creds through when svc supports credentialed creation
+// (DatabaseCredentialCreator). When svc does not implement the interface
+// (e.g. a test double), creds is silently dropped and the plain
+// CreateForTenant path is used; this only matters when cfg.Barrier.Enabled
+// is true, in which case EnsureBarrier initializes the barrier with an
+// empty secret. Shared by every transport handler (REST, gRPC, QUIC, MCP,
+// Unix) so the create-with-barrier-secret plumbing is implemented exactly
+// once.
+func CreateDatabaseForTenantWithCredentials(ctx context.Context, svc DatabaseServicer, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	if cc, ok := svc.(DatabaseCredentialCreator); ok {
+		return cc.CreateForTenantWithCredentials(ctx, cfg, creds)
+	}
+	return svc.CreateForTenant(ctx, cfg)
 }
 
 // DatabaseServiceOption configures optional DatabaseService behavior.
@@ -195,6 +253,22 @@ func WithRaftHost(h RaftHost) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.raftHost = h }
 }
 
+// WithScaleLeaderWaitTimeout overrides the bounded wait (default
+// defaultScaleLeaderWaitTimeout) that ScaleForTenant's scaleUp/scaleDown
+// apply for the dedicated shard to report a known Raft leader before issuing
+// a membership change. Primarily intended for tests exercising the
+// wait/timeout paths without the full production bound.
+func WithScaleLeaderWaitTimeout(timeout time.Duration) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.scaleLeaderWaitTimeout = timeout }
+}
+
+// WithScaleLeaderWaitInterval overrides the poll interval (default
+// defaultScaleLeaderWaitInterval) waitForShardLeaderKnown uses between
+// LeaderReplicaID calls.
+func WithScaleLeaderWaitInterval(interval time.Duration) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.scaleLeaderWaitInterval = interval }
+}
+
 // RaftHost is the narrow Raft membership-change interface needed by
 // DatabaseService to invite follower replicas immediately after a
 // dedicated-raft (IsolationRaft) database is placed.
@@ -209,7 +283,59 @@ type RaftHost interface {
 	// the shard identified by shardID. The call blocks until the config
 	// change commits or ctx is cancelled. An error does not fail database
 	// creation; the follower reconciler and raft retries converge.
+	//
+	// Used ONLY for founding members at create time (CreateForTenant), where
+	// every replica bootstraps together from the group's genesis
+	// configuration and there is no existing quorum to transiently break.
+	// scaleUp (adding a replica to an ALREADY-RUNNING group) deliberately
+	// does NOT use this method -- see AddObserver.
 	AddFollowerNode(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+
+	// AddObserver registers a NON-VOTING observer (replicaID, raftAddr) in
+	// the shard identified by shardID. The call blocks until the config
+	// change commits or ctx is cancelled. Used exclusively by
+	// DatabaseService.scaleUp to admit a dynamically added replica into an
+	// ALREADY-RUNNING group: because an observer does not count toward
+	// quorum, admitting it can never transiently change (and therefore never
+	// breaks) the group's existing voting majority -- unlike admitting it
+	// directly as a voter, which shrinks the effective majority the instant
+	// the config change commits, before the new replica has any data of its
+	// own to help satisfy it (the flaky quorum-break bug this method fixes;
+	// see the elastic-scaling design doc §B.2/§D.4). The observer is later
+	// promoted to a full voting member by TenantShardReconciler's Promoter,
+	// once it has caught up, on the shard's current leader -- see
+	// TenantShardReconciler.maybePromoteReadyObservers.
+	AddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr string) error
+
+	// RemoveFollowerNode evicts a voting replica from the shard identified by
+	// shardID. Blocks until the config change commits or ctx is cancelled.
+	// Used by ScaleForTenant's scale-down path; unlike AddFollowerNode, an
+	// error here fails the whole scale-down call (see selectReplicasToRemove
+	// and ScaleForTenant for the failure-ordering rationale).
+	RemoveFollowerNode(ctx context.Context, shardID, replicaID uint64) error
+
+	// LeaderReplicaID returns the shard's current leader replica ID and
+	// whether a leader is known. Used by ScaleForTenant's scale-down
+	// replica-selection policy so the current leader is removed last.
+	LeaderReplicaID(ctx context.Context, shardID uint64) (id uint64, ok bool, err error)
+
+	// RequestLeaderTransfer asks the shard's current leader to hand off
+	// leadership to targetReplicaID. Fire-and-forget: go-quicraft returns
+	// once the request is accepted, and the transfer itself completes
+	// asynchronously -- callers must poll LeaderReplicaID to observe
+	// completion. Used by removeReplicaFromGroup to move leadership away
+	// from a replica BEFORE evicting it: RemoveFollowerNode targeting the
+	// CURRENT LEADER is unsafe on its own -- go-quicraft applies the config
+	// change to the leader's own log and the leader steps down as soon as it
+	// applies the entry locally, without necessarily waiting for the entry
+	// to replicate to any surviving voter first. If the removed leader is
+	// then torn down (as the placement reconciler's demotion path does
+	// immediately once the placement update commits), a surviving voter
+	// that never received the entry is stranded believing the OLD (larger)
+	// configuration still applies, and can never win an election alone --
+	// see transferLeadershipAwayFromRemoved's doc comment for the concrete
+	// failure sequence this method exists to prevent.
+	RequestLeaderTransfer(ctx context.Context, shardID, targetReplicaID uint64) error
 }
 
 // TenantInfoLookup resolves tenant metadata needed to route IsolationVolume
@@ -240,6 +366,329 @@ type TenantBarrierLookup interface {
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
 }
 
+// deliverTenantKeyToReplica ships the tenant barrier key to dst via
+// deliverer, resolving the tenant's StorageBarrier through lookup. It
+// constructs a single-replica Placement containing only dst so that
+// DistributeTenantKey delivers to exactly that one recipient, skipping the
+// local node identified by selfNodeID (which already holds the key as the
+// current leader). Reached, via deliverTenantKeyToReplicaWithRetry, by both
+// DatabaseService.scaleUp and RebalanceService.moveTenantGroupShard (through
+// the shared addObserverReplica helper) so the single-replica key-delivery
+// step is defined exactly once; KeyDistributor/TenantBarrierLookup and
+// RebalanceKeyDeliverer/RebalanceBarrierLookup are structurally identical
+// interfaces, so both callers' fields satisfy this signature without
+// adaptation.
+func deliverTenantKeyToReplica(ctx context.Context, deliverer KeyDistributor, lookup TenantBarrierLookup, p *placement.Placement, dst placement.Replica, selfNodeID string) error {
+	tb, err := lookup.GetTenant(p.TenantID)
+	if err != nil {
+		return err
+	}
+	autoUnseal := tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier
+
+	singleReplica := &placement.Placement{
+		TenantID: p.TenantID,
+		Database: p.Database,
+		ShardID:  p.ShardID,
+		RF:       1,
+		Replicas: []placement.Replica{dst},
+	}
+	return deliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), selfNodeID, autoUnseal)
+}
+
+// deliverTenantKeyToReplicaWithRetry wraps deliverTenantKeyToReplica with a
+// bounded, fixed-delay retry to ride out a replication race that is unique
+// to a newly-admitted-as-observer replica (as opposed to CreateForTenant's
+// initial key delivery to a founding member, which does not retry): the
+// replica's OWN local placement view is replicated asynchronously via the
+// system Raft group, so clusterkeys' receiver-side placement gate (which
+// checks the follower's own just-applied placement snapshot) can reject a
+// key-delivery envelope sent immediately after the leader's placement.Put
+// -- even though that write already committed on the leader -- simply
+// because the follower has not yet applied it locally. This applies equally
+// to DatabaseService.scaleUp's new replicas and a RebalanceService MOVE's
+// destination replica (both reach this function via the shared
+// addObserverReplica helper). clusterkeys.Sender.Deliver collapses every
+// non-200 response (including this transient rejection) into a single
+// sentinel error, so this retries unconditionally rather than branching on
+// error type; that is safe because the call is already documented as
+// best-effort, and re-delivery of the same key is idempotent on the
+// receiver.
+//
+// Without this retry, a replica whose only delivery attempt loses this race
+// never receives its tenant key, so TenantShardReconciler's BarrierReadiness
+// gate defers starting its shard indefinitely. The leader admits that
+// replica as a non-voting OBSERVER (AddObserver happens after this call
+// within the same addObserverReplica invocation, see below) precisely so a
+// replica stuck waiting for its key can never strand the group's existing
+// voting quorum -- but it also never catches up or gets promoted to a voter
+// until the key arrives, so this retry still matters for scale-up (and a
+// MOVE's destination) to actually converge.
+func deliverTenantKeyToReplicaWithRetry(ctx context.Context, deliverer KeyDistributor, lookup TenantBarrierLookup, p *placement.Placement, dst placement.Replica, selfNodeID string) error {
+	var err error
+	for attempt := 1; attempt <= scaleUpKeyDeliveryMaxAttempts; attempt++ {
+		if err = deliverTenantKeyToReplica(ctx, deliverer, lookup, p, dst, selfNodeID); err == nil {
+			return nil
+		}
+		if attempt == scaleUpKeyDeliveryMaxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(scaleUpKeyDeliveryRetryDelay):
+		}
+	}
+	return err
+}
+
+// addObserverReplica is the observer-first "add one replica" step shared by
+// DatabaseService.scaleUp (adding a batch of replicas toward a scale-up
+// target, one at a time) and RebalanceService.moveTenantGroupShard (adding
+// exactly one destination replica for a MOVE): persist an updated placement
+// with r appended, best-effort deliver the tenant barrier key to r, then
+// admit r into the dedicated Raft group as a NON-VOTING observer.
+//
+// Placement MUST be persisted before key delivery is attempted: the
+// receiver's placement gate (pkg/clusterkeys/receiver.go) authorizes a
+// delivery only once its own replicated copy of the placement table lists
+// it as the assigned replica -- see deliverTenantKeyToReplicaWithRetry's doc
+// comment. r must already carry State == placement.ReplicaStateObserver (set
+// by the scheduler for scale-up, or explicitly by the caller for a MOVE) so
+// the reconciler's Observer -> ObserverReady -> Active promotion state
+// machine (TenantShardReconciler.maybePromoteToObserverReady /
+// maybePromoteReadyObservers) treats it identically to a scale-up replica.
+// An observer is never admitted directly as a voter: doing so can
+// transiently shrink the group's effective voting quorum below what the
+// already-established leader controls, before the new replica has any data
+// of its own to help satisfy it -- see the elastic-scaling design doc
+// §B.2/§D.4.
+//
+// Returns:
+//   - updated: current with r appended. Equal to current, unchanged, when
+//     the placement-put itself failed; otherwise reflects the just-persisted
+//     state even when AddObserver subsequently failed (placement already
+//     committed by that point, so a retry has something to converge from).
+//   - keyDeliveryErr: a non-fatal key-delivery failure for the caller to log
+//     (the destination's own reconciler pulls the key independently on its
+//     next pass); nil when delivery succeeded or was skipped (kd/bl nil).
+//   - placementFailed: true when err originated from the placement-put
+//     rather than AddObserver, letting a caller that reports a step name
+//     (RebalanceService.moveTenantGroupShard) distinguish the two failure
+//     points.
+//   - err: a fatal error from the placement-put or AddObserver. Non-nil err
+//     means the caller must fail the whole operation; unlike keyDeliveryErr,
+//     nothing else in the system retries a config change AddObserver itself
+//     reported as failed.
+func addObserverReplica(
+	ctx context.Context,
+	raftHost RaftHost,
+	ps *placement.Store,
+	kd KeyDistributor,
+	bl TenantBarrierLookup,
+	current *placement.Placement,
+	r placement.Replica,
+	selfNodeID string,
+) (updated *placement.Placement, keyDeliveryErr error, placementFailed bool, err error) {
+	updated = clonePlacementWithReplica(current, r)
+	if perr := ps.Put(ctx, updated); perr != nil {
+		return current, nil, true, perr
+	}
+
+	if kd != nil && bl != nil {
+		if kerr := deliverTenantKeyToReplicaWithRetry(ctx, kd, bl, updated, r, selfNodeID); kerr != nil {
+			keyDeliveryErr = kerr
+		}
+	}
+
+	if raftHost != nil {
+		if aerr := raftHost.AddObserver(ctx, updated.ShardID, r.ReplicaID, r.RaftAddr); aerr != nil {
+			return updated, keyDeliveryErr, false, aerr
+		}
+	}
+
+	return updated, keyDeliveryErr, false, nil
+}
+
+// removeReplicaFromGroup is the "remove one replica" step shared by
+// DatabaseService.scaleDown and RebalanceService.moveTenantGroupShard:
+// persist an updated placement with replicaID dropped, then evict it from
+// Raft consensus.
+//
+// Returns updated (current with replicaID dropped; unchanged on a
+// placement-put failure), placementFailed (true when err originated from the
+// placement-put rather than RemoveFollowerNode, letting a caller that
+// reports a step name distinguish the two failure points), and err (a fatal
+// error from either step -- the placement already reflects the intended
+// post-removal state by the time RemoveFollowerNode is attempted, so a
+// RemoveFollowerNode failure leaves the Raft config change for the
+// TenantShardReconciler to eventually converge, but still fails the call so
+// the caller can alert or retry).
+//
+// removeReplicaFromGroup deliberately does NOT attempt to transfer
+// leadership away from replicaID here, even though removing the CURRENT
+// LEADER via RemoveFollowerNode without first transferring leadership away
+// is unsafe (see transferLeadershipAwayFromRemoved's doc comment): RaftHost
+// only ever exposes the LOCAL executing node's Raft state, and every caller
+// of removeReplicaFromGroup only reaches it after confirming (via
+// resolveGroupLeader/resolveMoveLeader) that the LOCAL node IS the current
+// leader -- so "replicaID is the current leader" at this point can only
+// ever mean "replicaID is the LOCAL node itself". Transferring leadership
+// away from the local node HERE would make the local node no longer the
+// leader, and the very next line's RemoveFollowerNode call -- which can
+// only ever be issued by the current leader -- would then be rejected by
+// go-quicraft. This case must instead be handled by the CALLER, before any
+// mutation: see RebalanceService.resolveMoveLeader, which proactively
+// transfers leadership away and reports itself as NOT the leader whenever
+// the MOVE's source is the local node, so the whole request is forwarded
+// to (and re-executed in full by) the new leader instead.
+// DatabaseService.scaleDown never hits this case at all --
+// selectReplicasToRemove never selects the current leader for removal
+// unless it is the group's last remaining replica, which never happens
+// while the RF floor (>= 1) is enforced.
+func removeReplicaFromGroup(
+	ctx context.Context,
+	raftHost RaftHost,
+	ps *placement.Store,
+	current *placement.Placement,
+	replicaID uint64,
+) (updated *placement.Placement, placementFailed bool, err error) {
+	updated = dropReplicaFromPlacement(current, replicaID)
+	if perr := ps.Put(ctx, updated); perr != nil {
+		return current, true, perr
+	}
+	if raftHost != nil {
+		if rerr := raftHost.RemoveFollowerNode(ctx, updated.ShardID, replicaID); rerr != nil {
+			return updated, false, rerr
+		}
+	}
+	return updated, false, nil
+}
+
+const (
+	// defaultLeaderTransferWaitTimeout bounds how long
+	// transferLeadershipAwayFromRemoved waits for a requested leadership
+	// transfer to complete before giving up.
+	defaultLeaderTransferWaitTimeout = 5 * time.Second
+
+	// defaultLeaderTransferWaitInterval is the poll interval
+	// transferLeadershipAwayFromRemoved uses between LeaderReplicaID calls
+	// while waiting for a requested transfer to complete.
+	defaultLeaderTransferWaitInterval = 100 * time.Millisecond
+)
+
+// transferLeadershipAwayFromRemoved requests a leadership transfer away from
+// replicaID when it is currently shardID's leader, then blocks until the
+// transfer completes or defaultLeaderTransferWaitTimeout elapses.
+//
+// RemoveFollowerNode targeting the CURRENT LEADER is unsafe on its own:
+// go-quicraft applies the config change to the leader's own log and the
+// leader steps down as soon as it applies the entry locally, without
+// necessarily waiting for the entry to replicate to any surviving voter
+// first. The caller's demotion path (TenantShardReconciler, driven by the
+// placement update removeReplicaFromGroup already persisted) tears the
+// removed replica down almost immediately once the config change commits --
+// if that happens before the entry reaches a surviving voter, that voter is
+// stranded believing the OLD (larger) configuration still applies, and can
+// never win an election alone (this was observed directly: a 2-voter group
+// whose leader self-removed left the surviving voter campaigning forever
+// because it never received the RemoveNode entry). Transferring leadership
+// away FIRST avoids the race entirely: the entry is proposed and driven to
+// full replication by a leader that is NOT the one being removed.
+//
+// before is the placement snapshot BEFORE replicaID was dropped, used to
+// locate another ACTIVE (voting) replica to transfer to -- only a voting
+// member can become leader, so an OBSERVER or ObserverReady replica is
+// never a valid transfer target. A no-op (nil error) when replicaID is not
+// currently the leader, or when no other voting replica exists to transfer
+// to (every DatabaseService.scaleDown call site is provably unaffected:
+// selectReplicasToRemove never selects the current leader for removal
+// unless it is the sole remaining voter, which this function also treats as
+// a no-op since there is nowhere to transfer to).
+func transferLeadershipAwayFromRemoved(ctx context.Context, raftHost RaftHost, before *placement.Placement, shardID, replicaID uint64) error {
+	leaderID, ok, err := raftHost.LeaderReplicaID(ctx, shardID)
+	if err != nil || !ok || leaderID != replicaID {
+		return nil
+	}
+
+	var target uint64
+	for _, r := range before.Replicas {
+		if r.ReplicaID != replicaID && r.State == placement.ReplicaStateActive {
+			target = r.ReplicaID
+			break
+		}
+	}
+	if target == 0 {
+		return nil
+	}
+
+	if terr := raftHost.RequestLeaderTransfer(ctx, shardID, target); terr != nil {
+		return terr
+	}
+
+	deadline := time.Now().Add(defaultLeaderTransferWaitTimeout)
+	for {
+		if id, ok, lerr := raftHost.LeaderReplicaID(ctx, shardID); lerr == nil && ok && id != replicaID {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return &LeaderTransferTimeoutError{ShardID: shardID, FromReplicaID: replicaID, Timeout: defaultLeaderTransferWaitTimeout}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(defaultLeaderTransferWaitInterval):
+		}
+	}
+}
+
+// resolveGroupLeader determines whether selfNodeID is the current Raft
+// leader of the dedicated group behind placement p, consulting raftHost's
+// live leader state. Shared by DatabaseService.resolveScaleLeader and
+// RebalanceService.resolveMoveLeader so a scale or MOVE membership change is
+// routed to the correct node with identical semantics -- see
+// resolveScaleLeader's doc comment for the full return-value rationale,
+// which applies unchanged here.
+func resolveGroupLeader(ctx context.Context, raftHost RaftHost, selfNodeID string, p *placement.Placement) (isLocalLeader bool, leaderAddr string, err error) {
+	if raftHost == nil || selfNodeID == "" {
+		return true, "", nil
+	}
+
+	var local *placement.Replica
+	for i := range p.Replicas {
+		if p.Replicas[i].NodeID == selfNodeID {
+			local = &p.Replicas[i]
+			break
+		}
+	}
+	if local == nil {
+		// The local node is not a member of this dedicated group at all
+		// (e.g. an RF=1 placement landed its sole replica on a different
+		// node): raftHost has no local Raft state for the shard, so it
+		// cannot resolve a live leader either. Redirect to any placement
+		// member -- for RF=1 that member IS the leader; for RF>1 it is
+		// itself a member and will re-resolve (and re-forward if needed)
+		// using its own live state.
+		return false, p.Replicas[0].RaftAddr, nil
+	}
+
+	leaderID, ok, lerr := raftHost.LeaderReplicaID(ctx, p.ShardID)
+	if lerr != nil || !ok {
+		return true, "", nil
+	}
+	if leaderID == local.ReplicaID {
+		return true, "", nil
+	}
+	for i := range p.Replicas {
+		if p.Replicas[i].ReplicaID == leaderID {
+			return false, p.Replicas[i].RaftAddr, nil
+		}
+	}
+	// The live leader replica ID is not present in this (possibly stale)
+	// placement snapshot -- degrade to local execution rather than forward
+	// to an unresolvable address.
+	return true, "", nil
+}
+
 // DatabaseService implements DatabaseServicer using a database.Manager.
 type DatabaseService struct {
 	manager            *database.Manager
@@ -255,6 +704,21 @@ type DatabaseService struct {
 	localNodeID        string
 	raftHost           RaftHost
 	logger             *slog.Logger
+
+	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
+	// waitForShardLeaderKnown, called by scaleUp/scaleDown before issuing a
+	// membership change. Defaulted in NewDatabaseService and overridable via
+	// WithScaleLeaderWaitTimeout/WithScaleLeaderWaitInterval, primarily so
+	// tests can exercise the wait/timeout paths without the full production
+	// bound.
+	scaleLeaderWaitTimeout  time.Duration
+	scaleLeaderWaitInterval time.Duration
+
+	// scaleMu serializes concurrent ScaleForTenant calls to the same
+	// (tenant, database) on this node -- see ScaleForTenant for the
+	// concurrency rationale (§F of the elastic-scaling design). Keyed by
+	// tenantID+"/"+name, values are *sync.Mutex.
+	scaleMu sync.Map
 }
 
 // Compile-time interface check.
@@ -262,7 +726,12 @@ var _ DatabaseServicer = (*DatabaseService)(nil)
 
 // NewDatabaseService creates a new DatabaseService backed by the given manager.
 func NewDatabaseService(manager *database.Manager, opts ...DatabaseServiceOption) DatabaseServicer {
-	s := &DatabaseService{manager: manager, logger: slog.Default()}
+	s := &DatabaseService{
+		manager:                 manager,
+		logger:                  slog.Default(),
+		scaleLeaderWaitTimeout:  defaultScaleLeaderWaitTimeout,
+		scaleLeaderWaitInterval: defaultScaleLeaderWaitInterval,
+	}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -289,9 +758,26 @@ func (s *DatabaseService) SetDistributor(d KeyDistributor, lookup TenantBarrierL
 func (s *DatabaseService) SetRaftHost(h RaftHost) { s.raftHost = h }
 
 // Create creates a new database with the given configuration and returns
-// its runtime information.
+// its runtime information. Equivalent to CreateWithCredentials with an empty
+// seal.Credentials -- barrier initialization with an empty secret only
+// succeeds when cfg.Barrier is nil or not enabled.
 func (s *DatabaseService) Create(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	db, err := s.manager.Create(cfg)
+	return s.CreateWithCredentials(context.Background(), cfg, seal.Credentials{})
+}
+
+// CreateWithCredentials creates a new database with the given configuration,
+// using creds to initialize a barrier when cfg.Barrier.Enabled is true.
+//
+// This method is additive to DatabaseServicer (not part of the interface) so
+// existing DatabaseServicer implementers and mocks are unaffected. Transport
+// handlers that accept barrier credentials at create time (e.g.
+// --barrier-passphrase) should type-assert the resolved DatabaseServicer for
+// DatabaseCredentialCreator before falling back to plain Create.
+func (s *DatabaseService) CreateWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
+		return nil, err
+	}
+	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -389,24 +875,79 @@ func (s *DatabaseService) UpdateConnection(name string, conn *database.DatabaseC
 	return &info, nil
 }
 
+// authorizeDatabaseTenant verifies that the caller bound to ctx is permitted
+// to perform a per-database control operation on the named database. Database
+// names are a single global namespace, so a per-database barrier operation
+// addressed purely by name could otherwise reach another tenant's database;
+// transport RBAC scopes the caller but the service layer must independently
+// fail closed (mirroring the tenant-ownership check the database.Manager
+// applies to its *ForTenant methods, and the IAM cross-tenant rule).
+//
+// The system tenant is the store-global admin and may target any database. A
+// non-system caller may target only a database whose owning TenantID matches
+// its own; any mismatch — including an unowned/legacy database with an empty
+// TenantID — fails closed with *database.TenantAccessDeniedError. A database
+// that does not exist surfaces the manager's typed NotFoundError unchanged.
+func (s *DatabaseService) authorizeDatabaseTenant(ctx context.Context, name string) error {
+	tenantID := tenant.FromContext(ctx)
+	if tenant.IsSystemTenant(tenantID) {
+		return nil
+	}
+	db, err := s.manager.Get(name)
+	if err != nil {
+		return err
+	}
+	if db.TenantID() != tenantID {
+		return &database.TenantAccessDeniedError{TenantID: tenantID, DatabaseName: name}
+	}
+	return nil
+}
+
 // SealDatabase seals the encryption barrier for the named database.
 func (s *DatabaseService) SealDatabase(ctx context.Context, name string) error {
+	// Authorize ownership BEFORE consulting the barrier manager: a non-owning
+	// tenant must be refused with a cross-tenant access denial and must never
+	// learn whether the target database or its barrier even exists.
+	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+		return err
+	}
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	return s.barrierMgr.SealDatabase(name)
+	if err := s.barrierMgr.SealDatabase(name); err != nil {
+		return err
+	}
+	// Reflect the sealed state on the Database's own status so
+	// DatabaseInfo.Status (database info / database list) stays consistent
+	// with the barrier registry's authoritative sealed/unsealed state.
+	if db, err := s.manager.Get(name); err == nil {
+		db.SetStatus(database.StatusSealed)
+	}
+	return nil
 }
 
 // UnsealDatabase unseals the encryption barrier for the named database.
 func (s *DatabaseService) UnsealDatabase(ctx context.Context, name string, creds seal.Credentials) error {
+	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+		return err
+	}
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	return s.barrierMgr.UnsealDatabase(ctx, name, creds)
+	if err := s.barrierMgr.UnsealDatabase(ctx, name, creds); err != nil {
+		return err
+	}
+	if db, err := s.manager.Get(name); err == nil {
+		db.SetStatus(database.StatusOpen)
+	}
+	return nil
 }
 
 // DatabaseBarrierStatus returns the barrier status for the named database.
-func (s *DatabaseService) DatabaseBarrierStatus(name string) (*seal.BarrierStatus, error) {
+func (s *DatabaseService) DatabaseBarrierStatus(ctx context.Context, name string) (*seal.BarrierStatus, error) {
+	if err := s.authorizeDatabaseTenant(ctx, name); err != nil {
+		return nil, err
+	}
 	if s.barrierMgr == nil {
 		return nil, &BarrierManagerNotConfiguredError{}
 	}
@@ -414,12 +955,38 @@ func (s *DatabaseService) DatabaseBarrierStatus(name string) (*seal.BarrierStatu
 }
 
 // CreateForTenant creates a new database scoped to the context's tenant
-// and returns its runtime information.
+// and returns its runtime information. Equivalent to
+// CreateForTenantWithCredentials with an empty seal.Credentials -- barrier
+// initialization with an empty secret only succeeds when cfg.Barrier is nil
+// or not enabled.
 func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
-		return s.Create(cfg)
+	return s.CreateForTenantWithCredentials(ctx, cfg, seal.Credentials{})
+}
+
+// CreateForTenantWithCredentials creates a new database scoped to the
+// context's tenant, using creds to initialize a barrier when
+// cfg.Barrier.Enabled is true, and returns its runtime information.
+//
+// This method is additive to DatabaseServicer (not part of the interface);
+// see CreateWithCredentials and DatabaseCredentialCreator.
+func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
+		return s.CreateWithCredentials(ctx, cfg, creds)
 	}
 	tenantID := tenant.FromContext(ctx)
+
+	// A caller-supplied DataDir is never trusted for a tenant-scoped create:
+	// it is only ever set below, computed server-side from the tenant's own
+	// registered DataRoot for IsolationVolume/IsolationRaft tenants. Every
+	// other tenant (prefix/shared isolation, or an isolation tenant with no
+	// DataRoot yet allocated) falls through with DataDir cleared, which
+	// routes it to database.Manager's own default path. Discarding client
+	// input here closes a path-traversal vector where DataDir could
+	// otherwise be pointed at another database's directory, a reserved
+	// system path, or anywhere outside the intended storage tree;
+	// database.Manager.validateDataDir provides defense-in-depth on top of
+	// this for every caller, including the system-tenant path above.
+	cfg.DataDir = ""
 
 	// Entitlement plane (consulted before the numeric quota plane): verify the
 	// tenant's plan permits the requested isolation tier / dedicated feature.
@@ -488,6 +1055,12 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 			// Capture the barrier mode for the Phase 4c-1c key delivery below.
 			tenantBarrierAutoUnseal = info.BarrierAutoUnseal
 		}
+	}
+
+	// Reject an incoherent or unsupported raft topology request before any
+	// quota reservation, placement, or store I/O -- see validateRaftTopology.
+	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
+		return nil, err
 	}
 
 	// Replicas (replication factor) is meaningful only for a dedicated-raft
@@ -610,7 +1183,7 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 		}
 	}
 
-	db, err := s.manager.CreateForTenant(ctx, cfg)
+	db, err := s.manager.CreateForTenantWithCredentials(ctx, cfg, creds)
 	if err != nil {
 		releaseReservations()
 		return nil, err
@@ -688,6 +1261,45 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 	return &info, nil
 }
 
+// validateRaftTopology enforces that a raft-backed database's requested Raft
+// cluster-mode topology is coherent with this node's configuration. It is a
+// no-op for non-raft backends and for a raft-backed database with no explicit
+// Raft config (the IsolationRaft branch above always defaults one).
+//
+//   - RaftNone paired with Backend == BackendRaft is rejected: a dedicated
+//     Raft group inherently runs Raft consensus, so "none" (standalone,
+//     non-raft) is an incoherent combination with a dedicated Raft backend.
+//   - RaftDistributed requires the placement subsystem (WithPlacementStore +
+//     WithPlacementScheduler) to be wired on this node -- the multi-node
+//     replica placement, tenant-key distribution, and follower-invite
+//     pipeline (see persistPlacement) that actually materializes replicas
+//     across the cluster. Without it the request fails closed with
+//     RaftDistributedUnavailableError instead of silently collapsing to a
+//     single local replica.
+//   - RaftLocal (and the unset default, which the IsolationRaft branch fills
+//     in) runs the existing MVP path unchanged: when the placement subsystem
+//     happens to be wired and Replicas > 1 is also requested, the request is
+//     still honored via the same pipeline as today -- this method only adds
+//     new, additive validation and never changes existing accepted requests.
+func (s *DatabaseService) validateRaftTopology(name string, cfg *database.DatabaseConfig) error {
+	if cfg.Backend != database.BackendRaft || cfg.Raft == nil {
+		return nil
+	}
+	switch cfg.Raft.ClusterMode {
+	case database.RaftNone:
+		return &InvalidRaftTopologyError{
+			Database: name,
+			Mode:     string(cfg.Raft.ClusterMode),
+			Reason:   `a dedicated raft-backed database requires cluster mode "local" or "distributed", not "none"`,
+		}
+	case database.RaftDistributed:
+		if s.placementStore == nil || s.placementScheduler == nil {
+			return &RaftDistributedUnavailableError{Database: name}
+		}
+	}
+	return nil
+}
+
 // persistPlacement computes and stores the replica placement for a freshly
 // created dedicated-raft database. The leader's DataRoot (dataDir) is recorded
 // for the local node only; remote replicas receive an empty string so each
@@ -737,9 +1349,13 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 }
 
 // GetForTenant returns runtime information about a database after verifying
-// tenant ownership via the context.
+// tenant ownership via the context. For a dedicated-raft (distributed
+// placement) database, the reported Replicas is refreshed from the
+// replicated placement table (see refreshReplicasFromPlacement) so it stays
+// accurate cluster-wide after a ScaleForTenant call, which very often
+// executes on a different node than the one serving this read.
 func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.Get(name)
 	}
 	db, err := s.manager.GetForTenant(ctx, name)
@@ -747,16 +1363,49 @@ func (s *DatabaseService) GetForTenant(ctx context.Context, name string) (*datab
 		return nil, err
 	}
 	info := db.Info()
+	s.refreshReplicasFromPlacement(ctx, &info)
 	return &info, nil
 }
 
 // ListForTenant returns runtime information about databases owned by the
-// context's tenant, sorted by name.
+// context's tenant, sorted by name. Each dedicated-raft database's Replicas
+// is refreshed from the placement table; see refreshReplicasFromPlacement.
 func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.List()
 	}
-	return s.manager.ListForTenant(ctx)
+	infos, err := s.manager.ListForTenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range infos {
+		s.refreshReplicasFromPlacement(ctx, &infos[i])
+	}
+	return infos, nil
+}
+
+// refreshReplicasFromPlacement overrides info.Replicas (and info.ShardID)
+// with the replicated placement table's current values when a placement
+// entry exists for (info.TenantID, info.Name). The placement table is the
+// sole cluster-wide source of truth for a dedicated-raft database's
+// replication factor: info.Replicas as sourced from db.Info() only reflects
+// the local manager's meta.json, which is written once at create time on the
+// node that ran the create and is never touched by a ScaleForTenant call
+// executed on a different node (the dedicated group's current leader, which
+// commonly is not the create node -- see ScaleForTenant). A no-op when the
+// placement subsystem is not configured, the database is not raft-backed, or
+// the database has no placement entry (predates placement, or was created
+// with raft cluster mode "local").
+func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info *database.DatabaseInfo) {
+	if s.placementStore == nil || info.Backend != database.BackendRaft {
+		return
+	}
+	p, err := s.placementStore.Get(ctx, info.TenantID, info.Name)
+	if err != nil {
+		return
+	}
+	info.Replicas = p.RF
+	info.ShardID = p.ShardID
 }
 
 // DropForTenant drops a database after verifying tenant ownership via the
@@ -769,7 +1418,7 @@ func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.Databas
 // the quota slot.
 func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error {
 	tenantID := tenant.FromContext(ctx)
-	if tenantID == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenantID) {
 		return s.Drop(name)
 	}
 	// Capture the backend and replica count before dropping so the raft-group
@@ -812,7 +1461,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 // UpdateProtocolForTenant updates the wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name string, protocol database.ProtocolConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.UpdateProtocol(name, protocol)
 	}
 	if err := s.manager.UpdateProtocolForTenant(ctx, name, protocol); err != nil {
@@ -824,7 +1473,7 @@ func (s *DatabaseService) UpdateProtocolForTenant(ctx context.Context, name stri
 // UpdateEtcdForTenant updates the etcd wire protocol configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, etcd *database.EtcdConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.UpdateEtcd(name, etcd)
 	}
 	if err := s.manager.UpdateEtcdForTenant(ctx, name, etcd); err != nil {
@@ -836,7 +1485,7 @@ func (s *DatabaseService) UpdateEtcdForTenant(ctx context.Context, name string, 
 // UpdateRaftForTenant updates the Raft consensus configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, raft *database.DatabaseRaftConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.UpdateRaft(name, raft)
 	}
 	if err := s.manager.UpdateRaftForTenant(ctx, name, raft); err != nil {
@@ -848,7 +1497,7 @@ func (s *DatabaseService) UpdateRaftForTenant(ctx context.Context, name string, 
 // UpdateBarrierForTenant updates the encryption barrier configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name string, barrier *database.DatabaseBarrierConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.UpdateBarrier(name, barrier)
 	}
 	if err := s.manager.UpdateBarrierForTenant(ctx, name, barrier); err != nil {
@@ -860,11 +1509,441 @@ func (s *DatabaseService) UpdateBarrierForTenant(ctx context.Context, name strin
 // UpdateConnectionForTenant updates the remote connection configuration for the named
 // database with tenant enforcement and returns the updated runtime information.
 func (s *DatabaseService) UpdateConnectionForTenant(ctx context.Context, name string, conn *database.DatabaseConnectionConfig) (*database.DatabaseInfo, error) {
-	if tenant.FromContext(ctx) == tenant.SystemTenantID {
+	if tenant.IsSystemTenant(tenant.FromContext(ctx)) {
 		return s.UpdateConnection(name, conn)
 	}
 	if err := s.manager.UpdateConnectionForTenant(ctx, name, conn); err != nil {
 		return nil, err
 	}
 	return s.GetForTenant(ctx, name)
+}
+
+// ScaleForTenant changes the replication factor of an existing dedicated-raft
+// database owned by the context's tenant, adding or removing voting replicas
+// without recreating the database. It reuses the same quota-enforcement path
+// as CreateForTenant (quotaChecker.CheckN on ResourceReplicasPerGroup and
+// ResourceTotalReplicas) so a tenant can never scale past its own quota, and
+// the same placement/RaftHost primitives moveTenantGroupShard uses.
+//
+// targetReplicas < 1 is rejected with *ReplicaFloorError (use DropForTenant to
+// remove a database entirely). targetReplicas == the current replication
+// factor is an idempotent no-op that returns the current DatabaseInfo without
+// touching quota or placement -- this also makes a client-side retry of a
+// call that already succeeded server-side safe to repeat. A database with no
+// placement entry (predates placement, or was created with Raft cluster mode
+// "local") is rejected with *NotDedicatedRaftDatabaseError.
+//
+// Concurrent ScaleForTenant calls for the same (tenant, database) on this
+// node are serialized via scaleMu so PlaceAdditional's ReplicaID assignment
+// (based on the current placement's max ReplicaID) and selectReplicasToRemove
+// always observe a placement no other in-flight scale call is also mutating.
+// Cross-node races are excluded upstream: RequestAddNode/RequestRemoveNode are
+// hard-rejected on any non-leader node, and non-leader transports forward to
+// the leader rather than serving the request locally.
+// resolveScaleLeader determines whether the local node is the current Raft
+// leader of the dedicated group behind placement p, so ScaleForTenant can
+// either execute the membership change locally or return a *NotLeaderError
+// that lets the calling transport forward the request to a node that can.
+// This reuses the same leader-forwarding mechanism the KV PUT/DELETE paths
+// already use (REST's tryForwardWrite/forwardToLeader) rather than
+// inventing a second one.
+//
+// Unlike CreateForTenant's plan.Leader() check (which only ever needs the
+// STATIC founding leader, queried immediately after placement before any
+// election could have occurred), ScaleForTenant must consult the LIVE Raft
+// leader via raftHost.LeaderReplicaID: a prior scale-down may have removed
+// the founding leader, or an ordinary election may have moved leadership.
+//
+// Returns (true, "", nil) -- execute locally -- when raftHost or
+// localNodeID is unset (single-node / non-clustered deployments keep
+// today's local-execution behavior), when the local node is confirmed to be
+// the current leader, or when the current leader cannot be determined
+// locally (degrades to local execution so the underlying
+// RequestAddNode/RequestRemoveNode call, which performs its own leader
+// check, surfaces the definitive error). Returns (false, leaderAddr, nil)
+// when another node is the leader (or, when the local node is not even a
+// member of the group, the address of any member): leaderAddr is always a
+// RaftAddr taken from p.Replicas so the REST layer's peerAdminRegistry can
+// translate it to an admin URL.
+func (s *DatabaseService) resolveScaleLeader(ctx context.Context, p *placement.Placement) (isLocalLeader bool, leaderAddr string, err error) {
+	return resolveGroupLeader(ctx, s.raftHost, s.localNodeID, p)
+}
+
+const (
+	// defaultScaleLeaderWaitTimeout bounds how long scaleUp/scaleDown wait
+	// for the dedicated shard to report a known Raft leader before issuing a
+	// membership change (AddObserver/RemoveFollowerNode). At RF=1 -- the
+	// common scale-up starting point -- the sole replica has not necessarily
+	// campaigned and won its own single-voter election by the instant
+	// ScaleForTenant executes, and go-quicraft hard-rejects a membership
+	// change with "not leader for shard N, leader unknown" until that
+	// election completes. waitForShardLeaderKnown polls for it instead of
+	// racing it. Overridable via WithScaleLeaderWaitTimeout.
+	defaultScaleLeaderWaitTimeout = 10 * time.Second
+
+	// defaultScaleLeaderWaitInterval is the default poll interval used by
+	// waitForShardLeaderKnown. Overridable via WithScaleLeaderWaitInterval.
+	defaultScaleLeaderWaitInterval = 250 * time.Millisecond
+)
+
+// waitForShardLeaderKnown polls host.LeaderReplicaID for shardID until a
+// leader is known, ctx is cancelled, or timeout elapses. Returns
+// *ShardLeaderTimeoutError on timeout (not a silent success) so
+// scaleUp/scaleDown fail closed instead of proceeding to an
+// AddObserver/RemoveFollowerNode call that go-quicraft is certain to
+// reject while the shard's leader is unknown.
+func waitForShardLeaderKnown(ctx context.Context, host RaftHost, shardID uint64, timeout, interval time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, ok, err := host.LeaderReplicaID(ctx, shardID); err == nil && ok {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return &ShardLeaderTimeoutError{ShardID: shardID, Timeout: timeout}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targetReplicas int) (*database.DatabaseInfo, error) {
+	tenantID := tenant.FromContext(ctx)
+
+	// ScaleForTenant has no non-tenant-scoped counterpart, unlike the legacy
+	// Update*ForTenant methods, since scaling was never available before
+	// placement existed -- reject the system tenant explicitly rather than
+	// relying on a manager lookup to do it implicitly (see below).
+	if tenant.IsSystemTenant(tenantID) {
+		return nil, &database.TenantIDRequiredError{Operation: "ScaleForTenant"}
+	}
+
+	if s.placementStore == nil || s.placementScheduler == nil {
+		return nil, &RaftDistributedUnavailableError{Database: name}
+	}
+
+	muKey := tenantID + "/" + name
+	muAny, _ := s.scaleMu.LoadOrStore(muKey, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The replicated placement table is the sole cluster-wide authority for
+	// a dedicated-raft database's existence, tenant ownership, and current
+	// replication factor. A scale request is routed (via resolveScaleLeader
+	// + NotLeaderError below) to the dedicated group's CURRENT Raft leader,
+	// which is very often NOT the node that originally created the database
+	// -- that node's per-node singleton *database.Manager is the only place
+	// the database is registered, so requiring a manager lookup here (as a
+	// prior version of this method did) 404s on every node except the
+	// creator. placementStore.Get is itself tenant-scoped (keyed by
+	// tenantID+database), so a successful load already proves tenant
+	// ownership -- no separate manager-based ownership check is needed.
+	p, err := s.placementStore.Get(ctx, tenantID, name)
+	if err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return nil, &NotDedicatedRaftDatabaseError{Database: name}
+		}
+		return nil, err
+	}
+
+	// A membership change must be issued on the dedicated group's current
+	// Raft leader: go-quicraft rejects RequestAddNode/RequestRemoveNode on
+	// any other member, and a node that does not host the shard at all
+	// cannot even ask (quicraft.ErrShardNotFound). Resolve this ONCE, up
+	// front -- before quota reservation -- so a forwarded retry performs
+	// quota reservation, placement mutation, and the Raft config change all
+	// on the same (leader) node rather than splitting them across a forward.
+	// The REST layer's tryForwardWrite/forwardToLeader (the same mechanism
+	// already used for KV PUT/DELETE) proxies the request there.
+	if isLeader, leaderAddr, rerr := s.resolveScaleLeader(ctx, p); rerr != nil {
+		return nil, rerr
+	} else if !isLeader {
+		return nil, &NotLeaderError{ShardID: p.ShardID, LeaderAddress: leaderAddr}
+	}
+
+	// db is an OPTIONAL local-enrichment source, never a requirement: it is
+	// only non-nil on the node that originally created this database (or one
+	// that has otherwise loaded it into its own catalog). It is commonly nil
+	// on the dedicated group's leader node once a scale request has been
+	// forwarded here -- the normal, expected case for a distributed
+	// placement whose leader differs from the creator. scaleInfoFromPlacement
+	// builds a complete DatabaseInfo directly from placement when db is nil.
+	db, _ := s.manager.GetForTenant(ctx, name)
+
+	if targetReplicas < 1 {
+		return nil, &ReplicaFloorError{Database: name, Requested: targetReplicas}
+	}
+	if targetReplicas == p.RF {
+		return scaleInfoFromPlacement(db, p), nil
+	}
+
+	if targetReplicas > p.RF {
+		return s.scaleUp(ctx, tenantID, name, db, p, targetReplicas, targetReplicas-p.RF)
+	}
+	return s.scaleDown(ctx, tenantID, name, db, p, targetReplicas, p.RF-targetReplicas)
+}
+
+// scaleInfoFromPlacement builds the *database.DatabaseInfo returned by
+// ScaleForTenant (and its scaleUp/scaleDown helpers). When db is non-nil
+// (the local per-node manager singleton happens to hold this database), its
+// info is enriched with db.Info() and Replicas/ShardID are refreshed from p
+// so the response always reports the just-applied (or concurrently changed)
+// replication factor rather than a possibly stale local meta.json snapshot.
+// When db is nil -- the common case for a distributed dedicated-raft
+// database, since a scale request executes on the dedicated group's CURRENT
+// leader, which very often never created the database in its own singleton
+// manager -- info is built directly from placement, the sole cluster-wide
+// source of truth for this database's identity and replication factor.
+func scaleInfoFromPlacement(db *database.Database, p *placement.Placement) *database.DatabaseInfo {
+	if db != nil {
+		info := db.Info()
+		info.Replicas = p.RF
+		info.ShardID = p.ShardID
+		return &info
+	}
+	return &database.DatabaseInfo{
+		TenantID: p.TenantID,
+		Name:     p.Database,
+		Backend:  database.BackendRaft,
+		Status:   database.StatusOpen,
+		ShardID:  p.ShardID,
+		Replicas: p.RF,
+	}
+}
+
+// scaleUp implements the observer-first B.2 scale-up sequence (see the
+// elastic-scaling design doc §B.2/§D.4): quota check, quota reserve,
+// PlaceAdditional, then per new replica (ascending ReplicaID, one at a time)
+// placement-put -> key-delivery (bounded-retried, see
+// deliverTenantKeyToReplicaWithRetry) -> AddObserver. Each new replica is
+// admitted as a NON-VOTING observer, never directly as a voter: adding a
+// voter to a small group can transiently shrink the effective quorum below
+// what the ALREADY-established leader controls (RF=1 -> 2 requires 2/2
+// votes the instant the config change commits, but the brand-new replica
+// cannot vote until it has caught up), causing an election storm on every
+// scale-up that outraces the new replica's snapshot catch-up. An observer
+// never counts toward quorum, so admitting one can never break it. Promotion
+// to a full voting member happens asynchronously afterward, off this
+// request path, via TenantShardReconciler's Observer -> ObserverReady (self
+// -reported by the replica's own host once caught up) -> Active (performed
+// by the shard's current leader) state machine -- see
+// TenantShardReconciler.maybePromoteToObserverReady/maybePromoteReadyObservers.
+//
+// Placement MUST be persisted before key delivery is attempted -- the
+// receiver's placement gate (pkg/clusterkeys/receiver.go) only authorizes a
+// delivery once its own copy of the replicated placement table lists it as
+// the assigned replica, so delivering the key first would have the receiver
+// reject every attempt unconditionally (see the loop's own comment).
+// Key-delivery errors are logged non-fatally (the follower reconciles and
+// pulls the key during its own shard start sequence). A placement-put OR
+// AddObserver failure fails the call and stops processing further replicas:
+// unlike key delivery, nothing else in the system retries a config change
+// that RequestAddObserver itself reported as failed, so silently continuing
+// here would return a false success to the caller while the replica never
+// actually joined the group. Only the unconsumed portion of the quota
+// reservation (delta - the number of replicas actually persisted to
+// placement AND admitted as observers) is rolled back, so a
+// partially-applied scale-up plus a retry never double-reserves.
+func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, delta int) (*database.DatabaseInfo, error) {
+	if s.quotaChecker != nil {
+		if err := s.quotaChecker.CheckN(ctx, tenantID, quota.ResourceReplicasPerGroup, int64(targetReplicas)); err != nil {
+			return nil, err
+		}
+		if err := s.quotaChecker.CheckN(ctx, tenantID, quota.ResourceTotalReplicas, int64(delta)); err != nil {
+			return nil, err
+		}
+	}
+
+	// AddObserver below is hard-rejected by go-quicraft until the shard
+	// reports a known Raft leader. At RF=1 -- the common scale-up starting
+	// point -- the sole replica has not necessarily campaigned and won its
+	// own single-voter election by the instant ScaleForTenant executes, so
+	// wait for that election to complete before reserving quota or computing
+	// a placement plan that would otherwise go unused. Fails closed with a
+	// typed error (no quota reservation, no placement mutation) rather than
+	// racing an election that has not yet settled.
+	if s.raftHost != nil {
+		if err := waitForShardLeaderKnown(ctx, s.raftHost, p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+			return nil, err
+		}
+	}
+
+	reserved := false
+	if s.quotaUsage != nil {
+		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, int64(delta)); err != nil {
+			return nil, err
+		}
+		reserved = true
+	}
+
+	plan, err := s.placementScheduler.PlaceAdditional(ctx, p, delta)
+	if err != nil {
+		if reserved {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, int64(delta))
+		}
+		return nil, err
+	}
+
+	baseMaxID := placement.MaxReplicaID(p)
+	newReplicas := make([]placement.Replica, 0, delta)
+	for _, r := range plan.Replicas {
+		if r.ReplicaID > baseMaxID {
+			newReplicas = append(newReplicas, r)
+		}
+	}
+	sort.Slice(newReplicas, func(i, j int) bool { return newReplicas[i].ReplicaID < newReplicas[j].ReplicaID })
+
+	current := p
+	var added int
+	var loopErr error
+	for _, r := range newReplicas {
+		// Placement must be persisted BEFORE key delivery is attempted, not
+		// after -- see addObserverReplica's doc comment for the receiver
+		// placement-gate rationale this ordering satisfies.
+		updated, kerr, _, err := addObserverReplica(ctx, s.raftHost, s.placementStore, s.keyDistributor, s.barrierLookup, current, r, s.localNodeID)
+		current = updated
+		if kerr != nil {
+			s.logger.Warn("clusterkeys: key distribution failed for scale-up replica, follower will reconcile",
+				slog.String("tenant", tenantID),
+				slog.String("database", name),
+				slog.String("replica_node", r.NodeID),
+				slog.Any("error", kerr))
+		}
+		if err != nil {
+			loopErr = err
+			break
+		}
+		added++
+	}
+
+	if reserved {
+		if unconsumed := int64(delta - added); unconsumed > 0 {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, unconsumed)
+		}
+	}
+
+	// The local per-node manager singleton is a best-effort display cache,
+	// never a requirement: it is only non-nil on the node that originally
+	// created this database, which very often is not the node that just
+	// executed this scale (see ScaleForTenant). The placement table's RF
+	// (current.RF) is the authoritative, cluster-wide value; a missing local
+	// manager entry must never fail an otherwise-successful scale.
+	if added > 0 && db != nil {
+		if err := s.manager.UpdateReplicas(name, current.RF); err != nil {
+			s.logger.Warn("database: local manager UpdateReplicas failed after scale-up (best-effort; the placement table's RF is authoritative)",
+				slog.String("tenant", tenantID),
+				slog.String("database", name),
+				slog.Any("error", err))
+		}
+	}
+
+	if loopErr != nil {
+		return nil, loopErr
+	}
+
+	return scaleInfoFromPlacement(db, current), nil
+}
+
+// scaleDown implements the C.3 scale-down sequence: no quota check (freeing
+// capacity never violates a cap), selectReplicasToRemove picks removeCount
+// replicas (leader last), then per replica (one at a time) placement-update
+// -> RemoveFollowerNode. Unlike scale-up's AddObserver, a
+// RemoveFollowerNode error fails the whole call (the placement already
+// reflects the intended post-scale state and the reconciler will eventually
+// stop the removed replica locally; the caller retries). Whatever prefix of
+// removals did succeed is still persisted (manager.UpdateReplicas + quota
+// decrement for the actually-removed count), so a retry converges rather than
+// double-applying.
+func (s *DatabaseService) scaleDown(ctx context.Context, tenantID, name string, db *database.Database, p *placement.Placement, targetReplicas, removeCount int) (*database.DatabaseInfo, error) {
+	var leaderReplicaID uint64
+	if s.raftHost != nil {
+		// RemoveFollowerNode below is hard-rejected by go-quicraft until the
+		// shard reports a known Raft leader (see scaleUp's identical wait for
+		// the rationale). Fail closed with a typed error before any
+		// placement mutation rather than racing an election that has not yet
+		// settled.
+		if err := waitForShardLeaderKnown(ctx, s.raftHost, p.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+			return nil, err
+		}
+		if id, ok, err := s.raftHost.LeaderReplicaID(ctx, p.ShardID); err == nil && ok {
+			leaderReplicaID = id
+		}
+	}
+
+	toRemove := selectReplicasToRemove(p, removeCount, leaderReplicaID)
+
+	current := p
+	var removed int
+	var loopErr error
+	for _, r := range toRemove {
+		updated, _, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, current, r.ReplicaID)
+		current = updated
+		if err != nil {
+			loopErr = err
+			break
+		}
+		removed++
+	}
+
+	if removed > 0 {
+		// See scaleUp's identical comment: the local manager entry is a
+		// best-effort display cache, never a requirement -- the placement
+		// table's RF (current.RF) is authoritative.
+		if db != nil {
+			if err := s.manager.UpdateReplicas(name, current.RF); err != nil {
+				s.logger.Warn("database: local manager UpdateReplicas failed after scale-down (best-effort; the placement table's RF is authoritative)",
+					slog.String("tenant", tenantID),
+					slog.String("database", name),
+					slog.Any("error", err))
+			}
+		}
+		if s.quotaUsage != nil {
+			_, _ = s.quotaUsage.DecrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, int64(removed))
+		}
+	}
+
+	if loopErr != nil {
+		return nil, loopErr
+	}
+
+	return scaleInfoFromPlacement(db, current), nil
+}
+
+// selectReplicasToRemove picks removeCount replicas to evict from p, ordered
+// so every non-leader replica (descending ReplicaID -- newest-added-first,
+// naturally undoing the most recent scale-ups before touching founding
+// members) is removed before the current leader (leaderReplicaID, from
+// RaftHost.LeaderReplicaID). The leader is appended last and is only ever
+// actually selected when removeCount reaches the full replica count (out of
+// ScaleForTenant's reach: the floor validation in ScaleForTenant guarantees
+// removeCount <= len(p.Replicas)-1, so the leader is never returned by a
+// valid call -- it is simply guaranteed to be the very last candidate if the
+// caller ever did ask for all of them). leaderReplicaID == 0 (no known
+// leader) degrades gracefully to plain descending-ReplicaID order.
+func selectReplicasToRemove(p *placement.Placement, removeCount int, leaderReplicaID uint64) []placement.Replica {
+	candidates := make([]placement.Replica, len(p.Replicas))
+	copy(candidates, p.Replicas)
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ReplicaID > candidates[j].ReplicaID })
+
+	ordered := make([]placement.Replica, 0, len(candidates))
+	var leader *placement.Replica
+	for i := range candidates {
+		if candidates[i].ReplicaID == leaderReplicaID {
+			l := candidates[i]
+			leader = &l
+			continue
+		}
+		ordered = append(ordered, candidates[i])
+	}
+	if leader != nil {
+		ordered = append(ordered, *leader)
+	}
+
+	if removeCount > len(ordered) {
+		removeCount = len(ordered)
+	}
+	return ordered[:removeCount]
 }

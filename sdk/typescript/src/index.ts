@@ -56,6 +56,8 @@ export type {
     TenantClient,
     BackupClient,
     RebalanceClient,
+    CredentialClient,
+    AuditQueryClient,
     ServerConfigClient,
     ConnectionManagerClient,
 } from './interfaces.js';
@@ -125,6 +127,10 @@ export type {
     RangeResponse,
     PutWithLeaseResponse,
     CurrentRevisionResponse,
+    RestoreAction,
+    RestoreRevisionRequest,
+    RestoreKeyChange,
+    RestoreRevisionResult,
 
     // Transaction
     CompareTarget,
@@ -359,6 +365,10 @@ export type {
     RebalanceResult,
     NodeLoad,
     ImbalanceReport,
+
+    // Credentials
+    CredentialVersionInfo,
+    CredentialRotateResult,
 
     // Connection manager
     ConnectionProfile,

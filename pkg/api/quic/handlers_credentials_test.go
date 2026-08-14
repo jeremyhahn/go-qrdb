@@ -48,7 +48,7 @@ func newCredentialTestServer(t *testing.T, svc *mockCredentialService) *Server {
 
 func TestHandleCredentialSubmit_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: "secret"})
+	payload, _ := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: []byte("secret")})
 
 	_, err := srv.handleCredentialSubmit(context.Background(), payload)
 	if err == nil {
@@ -76,7 +76,7 @@ func TestHandleCredentialSubmit_Success(t *testing.T) {
 	}
 	srv := newCredentialTestServer(t, mock)
 
-	payload, err := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: "secret"})
+	payload, err := proto.Marshal(&pb.CredentialSubmitRequest{Name: "db", Value: []byte("secret")})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestHandleCredentialSubmit_ServiceError(t *testing.T) {
 		submitFn: func(_ context.Context, _ string, _ []byte) error { return svcErr },
 	}
 	srv := newCredentialTestServer(t, mock)
-	payload, _ := proto.Marshal(&pb.CredentialSubmitRequest{Name: "k", Value: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialSubmitRequest{Name: "k", Value: []byte("v")})
 
 	_, err := srv.handleCredentialSubmit(context.Background(), payload)
 	if err == nil {
@@ -274,7 +274,7 @@ func TestHandleCredentialList_ServiceError(t *testing.T) {
 
 func TestHandleCredentialRotate_NilService(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0")
-	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: []byte("v")})
 	_, err := srv.handleCredentialRotate(context.Background(), payload)
 	var sncErr *ServiceNotConfiguredError
 	if !errors.As(err, &sncErr) {
@@ -300,7 +300,7 @@ func TestHandleCredentialRotate_SuccessWithGrace(t *testing.T) {
 
 	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{
 		Name:               "db",
-		NewValue:           "secret-v2",
+		NewValue:           []byte("secret-v2"),
 		GracePeriodSeconds: 60,
 	})
 	resp, err := srv.handleCredentialRotate(context.Background(), payload)
@@ -338,7 +338,7 @@ func TestHandleCredentialRotate_ZeroGraceOmitsGraceUntil(t *testing.T) {
 		},
 	}
 	srv := newCredentialTestServer(t, mock)
-	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: []byte("v")})
 	resp, err := srv.handleCredentialRotate(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -360,7 +360,7 @@ func TestHandleCredentialRotate_ServiceError(t *testing.T) {
 		},
 	}
 	srv := newCredentialTestServer(t, mock)
-	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: "v"})
+	payload, _ := proto.Marshal(&pb.CredentialRotateRequest{Name: "k", NewValue: []byte("v")})
 	_, err := srv.handleCredentialRotate(context.Background(), payload)
 	var te *credentialTestError
 	if !errors.As(err, &te) {
@@ -401,7 +401,7 @@ func TestHandleCredentialRetrieveVersion_Success(t *testing.T) {
 	if err := proto.Unmarshal(resp, &pbResp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if pbResp.GetValue() != "plaintext-secret" {
+	if string(pbResp.GetValue()) != "plaintext-secret" {
 		t.Fatalf("value = %q, want plaintext-secret", pbResp.GetValue())
 	}
 }

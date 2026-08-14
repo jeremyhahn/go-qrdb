@@ -144,11 +144,14 @@ func (r *TestRunner) RunCommandWithProtocol(t *testing.T, protocol ProtocolType,
 		prefixArgs = append(prefixArgs, "--server", serverURL)
 	}
 
-	// Add TLS flags for protocols that use TLS.
+	// Add TLS flags for protocols that use TLS. Unix (grpc-over-UDS) is
+	// "verified TLS 1.3 only", identical to TCP gRPC, so it needs the same
+	// CA/cert/key flags as the other transports.
 	needsTLS := protocol == ProtocolREST && strings.HasPrefix(r.RESTBaseURL, "https://") ||
 		protocol == ProtocolGRPC ||
 		protocol == ProtocolMCP ||
-		protocol == ProtocolQUIC
+		protocol == ProtocolQUIC ||
+		protocol == ProtocolUnix
 
 	if needsTLS {
 		if r.TLSCACert != "" {

@@ -15,11 +15,9 @@
 package driver
 
 import (
+	"context"
 	"database/sql/driver"
-	"io"
 	"sync/atomic"
-
-	gmssql "github.com/dolthub/go-mysql-server/sql"
 )
 
 // Compile-time interface assertion.
@@ -50,28 +48,12 @@ func (tx *embeddedTx) Rollback() error {
 	return tx.execTxStmt("ROLLBACK")
 }
 
-// execTxStmt executes a transaction control statement (COMMIT or ROLLBACK).
+// execTxStmt executes a transaction control statement (COMMIT or ROLLBACK)
+// on the connection's own session, so the engine applies it to the
+// transaction that BeginTx started rather than to a fresh one.
 func (tx *embeddedTx) execTxStmt(query string) error {
-	sqlCtx := gmssql.NewEmptyContext()
-	sqlCtx.SetCurrentDatabase(tx.conn.database)
-
-	_, iter, _, err := tx.conn.engine.Query(sqlCtx, query)
-	if err != nil {
-		return &QueryExecError{Query: query, Err: err}
-	}
-
-	// Drain the iterator.
-	for {
-		_, rowErr := iter.Next(sqlCtx)
-		if rowErr == io.EOF {
-			break
-		}
-		if rowErr != nil {
-			_ = iter.Close(sqlCtx)
-			return &QueryExecError{Query: query, Err: rowErr}
-		}
-	}
-	return iter.Close(sqlCtx)
+	_, err := tx.conn.execInternal(context.Background(), query)
+	return err
 }
 
 // networkTx is a no-op transaction for network connections.

@@ -169,14 +169,26 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 		return nil, ErrInvalidGracePeriod
 	}
 
+	var result *RotateResult
+	var err error
 	switch s.strategy {
 	case StrategyManual:
-		return s.rotateManual(name, opts)
+		result, err = s.rotateManual(name, opts)
 	case StrategyBarrier:
-		return s.rotateBarrier(ctx, name, opts)
+		result, err = s.rotateBarrier(ctx, name, opts)
 	default:
 		return nil, ErrInvalidStrategy
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	s.emitAudit(ctx, "rotate", name, map[string]any{
+		"previous_version": result.PreviousVersion,
+		"new_version":      result.NewVersion,
+		"grace_period":     opts.GracePeriod.String(),
+	})
+	return result, nil
 }
 
 // RetrieveCredentialVersion returns the stored credential value for a
@@ -238,14 +250,24 @@ func (s *CredentialService) GCExpiredVersions(ctx context.Context, name string) 
 		return 0, err
 	}
 
+	var reaped int
+	var err error
 	switch s.strategy {
 	case StrategyManual:
-		return s.gcManual(name), nil
+		reaped = s.gcManual(name)
 	case StrategyBarrier:
-		return s.gcBarrier(ctx, name)
+		reaped, err = s.gcBarrier(ctx, name)
 	default:
 		return 0, ErrInvalidStrategy
 	}
+	if err != nil {
+		return reaped, err
+	}
+
+	if reaped > 0 {
+		s.emitAudit(ctx, "gc", name, map[string]any{"reaped": reaped})
+	}
+	return reaped, nil
 }
 
 // =============================================================================

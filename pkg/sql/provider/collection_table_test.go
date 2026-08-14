@@ -128,7 +128,7 @@ func TestCollectionTable_Schema(t *testing.T) {
 		"email": "VARCHAR",
 	}, nil)
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 
 	// _id + 3 fields = 4 columns
 	require.Len(t, schema, 4)
@@ -145,7 +145,7 @@ func TestCollectionTable_Schema(t *testing.T) {
 func TestCollectionTable_Schema_Empty(t *testing.T) {
 	tbl := NewCollectionTable(&mockCollectionService{}, "mydb", "empty", map[string]string{}, nil)
 
-	schema := tbl.Schema()
+	schema := tbl.Schema(newTestContext())
 	require.Len(t, schema, 1) // only _id
 	assert.Equal(t, "_id", schema[0].Name)
 }

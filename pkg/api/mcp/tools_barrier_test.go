@@ -209,7 +209,7 @@ func (m *mockBarrierService) BarrierRecoveryShareClaimComplete(_ context.Context
 
 func TestBarrierTools_Registration(t *testing.T) {
 	svc := newMockBarrierService()
-	tools := barrierTools(svc, nil)
+	tools := barrierTools(svc, nil, nil)
 
 	expectedNames := []string{
 		"qrdb_barrier_initialize",
@@ -290,8 +290,27 @@ func TestHandleBarrierInitialize_Success(t *testing.T) {
 	}
 }
 
+// TestHandleBarrierInitialize_MissingSecret proves an empty secret is
+// PASSED THROUGH to the service rather than rejected at the MCP handler,
+// matching REST's handleBarrierInitialize (pkg/api/rest/handlers_barrier.go,
+// no empty-secret check) and gRPC's qrdbServiceServer.BarrierInitialize
+// (pkg/api/grpc/service_barrier.go, same). The handler-level rejection this
+// test used to assert made `barrier init --barrier-strategy none` (which
+// sends an empty secret -- the "none" strategy has no secret material)
+// unreachable over MCP alone, breaking parity with every other transport.
+// The seal layer itself still rejects an empty secret for strategies that
+// require one (pkg/seal/errors.go's ErrInvalidPassphrase), so this is safe:
+// it only removes a redundant, transport-specific, strategy-blind
+// pre-check.
 func TestHandleBarrierInitialize_MissingSecret(t *testing.T) {
 	svc := newMockBarrierService()
+	var gotSecret string
+	gotCalled := false
+	svc.initializeFn = func(_ context.Context, secret string) error {
+		gotCalled = true
+		gotSecret = secret
+		return nil
+	}
 	handler := handleBarrierInitialize(svc, nil)
 
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{})
@@ -300,8 +319,14 @@ func TestHandleBarrierInitialize_MissingSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected error result for missing secret")
+	if result.IsError {
+		t.Errorf("expected success (empty secret passed through), got error result: %v", result)
+	}
+	if !gotCalled {
+		t.Fatal("expected the service's BarrierInitialize to be called with the empty secret")
+	}
+	if gotSecret != "" {
+		t.Errorf("expected the empty secret to reach the service unchanged, got %q", gotSecret)
 	}
 }
 

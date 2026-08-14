@@ -14,6 +14,8 @@
 
 package main
 
+import "strconv"
+
 // TransportError is returned when transport construction fails.
 type TransportError struct {
 	Transport string
@@ -291,6 +293,57 @@ type UserAbortError struct {
 // Error returns a human-readable description.
 func (e *UserAbortError) Error() string {
 	return "qrdb: " + e.Op + " aborted by user"
+}
+
+// RestorePartialFailureError is returned when a restore operation completes
+// but one or more shards failed to restore. The per-shard detail was already
+// printed by printRestoreResult; this error exists solely to give the CLI a
+// non-zero exit code so scripted/automation callers can detect the partial
+// failure (RestoreResult.Errors is populated with a nil Go error by the
+// service layer, since a partial restore is a legitimate, non-fatal outcome
+// worth reporting in full rather than aborting).
+type RestorePartialFailureError struct {
+	BackupID    string
+	FailedCount int
+}
+
+// Error returns a human-readable description.
+func (e *RestorePartialFailureError) Error() string {
+	return "qrdb: restore of backup " + e.BackupID + " completed with " +
+		strconv.Itoa(e.FailedCount) + " failed shard(s); see output above for detail"
+}
+
+// RebalancePartialFailureError is returned when a rebalance execution
+// completes but one or more shard moves failed. The per-move detail was
+// already printed by printRebalanceResult; this error exists solely to give
+// the CLI a non-zero exit code so scripted/automation callers can detect the
+// partial failure (RebalanceResult.MovesFailed is populated with a nil Go
+// error by the service layer, since a partial rebalance is a legitimate,
+// non-fatal outcome worth reporting in full rather than aborting).
+type RebalancePartialFailureError struct {
+	FailedCount int
+}
+
+// Error returns a human-readable description.
+func (e *RebalancePartialFailureError) Error() string {
+	return "qrdb: rebalance completed with " + strconv.Itoa(e.FailedCount) + " failed move(s); see output above for detail"
+}
+
+// RestoreConflictsError is returned when a "kv restore" apply completes but
+// leaves one or more keys unrestored because they changed since the restore
+// plan was computed and --force was not set. The conflicting keys were
+// already printed by printRestoreRevisionResult; this error exists solely
+// to give scripted/automation callers a non-zero exit code, since a
+// partially-applied restore that exits 0 reads as a complete undo.
+type RestoreConflictsError struct {
+	Revision   int64
+	Conflicted int
+}
+
+// Error returns a human-readable description.
+func (e *RestoreConflictsError) Error() string {
+	return "qrdb: restore to revision " + strconv.FormatInt(e.Revision, 10) + " left " +
+		strconv.Itoa(e.Conflicted) + " key(s) unrestored due to conflicts; see output above, or retry with --force"
 }
 
 // EmbeddedTransportUnavailableError is returned when the operator selects

@@ -59,6 +59,17 @@ func openExtendedStore(t *testing.T) *PebbleStateMachine {
 	return s
 }
 
+// readBatch returns an indexed batch usable as the reader argument of the
+// apply-path helpers, which take the batch they are writing into so they read
+// their own writes. A test that only wants to read committed state passes an
+// empty one.
+func readBatch(t *testing.T, s *PebbleStateMachine) *pebble.Batch {
+	t.Helper()
+	b := s.db.NewIndexedBatch()
+	t.Cleanup(func() { _ = b.Close() })
+	return b
+}
+
 // openStoreWithLessor creates a PebbleStateMachine with a Lessor attached.
 func openStoreWithLessor(t *testing.T) (*PebbleStateMachine, *lease.Lessor) {
 	t.Helper()

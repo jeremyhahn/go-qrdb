@@ -48,11 +48,19 @@ const (
 	// consistencyEventual allows eventual consistency reads.
 	consistencyEventual = "eventual"
 
-	// writeModeLeader routes all writes through the Raft leader.
-	writeModeLeader = "leader"
+	// writeModeSync commits every write through Raft with full fsync
+	// durability before acknowledging. This is qrdb's canonical write-mode
+	// vocabulary (shared with the qrdb CLI's --write-mode flag and the
+	// vtab qrdb_write_mode PRAGMA the gateway seeds from this setting).
+	writeModeSync = "sync"
 
-	// writeModeLocal allows writes to any node (forwarded internally).
-	writeModeLocal = "local"
+	// writeModeWALDurable acknowledges after the write is durable in the
+	// WAL but before full state-machine fsync.
+	writeModeWALDurable = "wal_durable"
+
+	// writeModeBatched coalesces writes for throughput at the cost of
+	// per-write durability guarantees.
+	writeModeBatched = "batched"
 
 	// defaultMode is the default gateway operating mode.
 	defaultMode = modeClient
@@ -64,7 +72,7 @@ const (
 	defaultConsistency = consistencyLinearizable
 
 	// defaultWriteMode is the default write mode.
-	defaultWriteMode = writeModeLeader
+	defaultWriteMode = writeModeSync
 
 	// defaultChunkSize is the default prefetch chunk size in rows.
 	defaultChunkSize = 256
@@ -93,10 +101,13 @@ var validConsistencyLevels = map[string]struct{}{
 	consistencyEventual:         {},
 }
 
-// validWriteModes is the set of accepted write modes for O(1) lookup.
+// validWriteModes is the set of accepted write modes for O(1) lookup. It
+// mirrors vtab's qrdb_write_mode PRAGMA vocabulary because runShell seeds
+// that PRAGMA from this flag.
 var validWriteModes = map[string]struct{}{
-	writeModeLeader: {},
-	writeModeLocal:  {},
+	writeModeSync:       {},
+	writeModeWALDurable: {},
+	writeModeBatched:    {},
 }
 
 // gatewayConfig holds the fully-resolved configuration for the qrdb-sqlite
@@ -138,6 +149,19 @@ type gatewayConfig struct {
 
 	// debug enables verbose debug logging.
 	debug bool
+
+	// caFile is the path to the TLS CA certificate used to verify the
+	// server. Required (together with the daemon's own TLS bundle) for
+	// every remote transport, including unix (grpc-over-UDS), which is
+	// "verified TLS 1.3 only" -- identical to gRPC, REST, QUIC, and MCP.
+	caFile string
+
+	// certFile is the path to the client TLS certificate presented for
+	// mutual TLS authentication.
+	certFile string
+
+	// keyFile is the path to the client TLS private key paired with certFile.
+	keyFile string
 }
 
 // validate checks that all fields contain accepted values and returns a
@@ -184,7 +208,7 @@ func (c *gatewayConfig) validate() error {
 	if _, ok := validWriteModes[c.writeMode]; !ok {
 		return &ConfigError{
 			Field:  "write-mode",
-			Reason: "must be one of: leader, local",
+			Reason: "must be one of: sync, wal_durable, batched",
 		}
 	}
 
