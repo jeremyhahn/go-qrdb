@@ -526,7 +526,7 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 	if b.distributor == nil {
 		return nil, nil, ErrCeremonyDistributorNotConfigured
 	}
-	strat, err := NewShamirStrategy(threshold, total)
+	strategy, err := NewShamirStrategy(threshold, total)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -534,7 +534,7 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
 		DeploymentID: b.config.DeploymentID,
 	}
-	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strat)
+	sib, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -701,9 +701,9 @@ func (b *StorageBarrier) AdoptMigratedRootKey(ctx context.Context, target *Stora
 	}
 
 	if targetStrategy == StrategyShamir {
-		if strat := target.ShamirStrategy(); strat != nil {
-			b.setStrategy(StrategyShamir, strat)
-			b.SetShamirConfig(&ShamirConfig{Threshold: strat.Threshold(), TotalShares: strat.TotalShares()})
+		if shamirStrategy := target.ShamirStrategy(); shamirStrategy != nil {
+			b.setStrategy(StrategyShamir, shamirStrategy)
+			b.SetShamirConfig(&ShamirConfig{Threshold: shamirStrategy.Threshold(), TotalShares: shamirStrategy.TotalShares()})
 		}
 	}
 

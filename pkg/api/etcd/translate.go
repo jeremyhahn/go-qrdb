@@ -15,9 +15,10 @@
 package etcd
 
 import (
-	kv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+
+	kv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 )
 
 // kvToEtcd converts a qrdb KeyValue to an etcd mvccpb.KeyValue.

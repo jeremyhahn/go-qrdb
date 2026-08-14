@@ -21,12 +21,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 )
 
 // ---------------------------------------------------------------------------

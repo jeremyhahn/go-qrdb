@@ -26,10 +26,11 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 const concurrentShardCount = 16
@@ -290,7 +291,7 @@ func (c *ConcurrentStateMachine) PrepareSnapshot() (interface{}, error) {
 
 // SaveSnapshot serializes the snapshot context captured by PrepareSnapshot
 // to the writer.
-// Format: [entryCount:4 LE][entries...]
+// Format: [entryCount:4 LE][entries...].
 // Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
 func (c *ConcurrentStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interface{}, w io.Writer, stopper <-chan struct{}) error {
 	data, ok := snapshotCtx.(map[string][]byte)

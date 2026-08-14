@@ -26,9 +26,10 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
+	qcsmkv "github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	qcsmkv "github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // ---------------------------------------------------------------------------
@@ -63,7 +64,7 @@ func newTestLockService(t *testing.T) LockServicer {
 		NewWatchService(&lockMockWatchHub{}),
 		NewMVCCKVService(&mockHost{
 			syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-				return nil, &mockKeyNotFoundErr{key: "k"}
+				return nil, &mockKeyNotFoundError{key: "k"}
 			},
 		}, 1),
 		logger,

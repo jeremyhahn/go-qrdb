@@ -580,7 +580,7 @@ func (md *MulticastDiscovery) sendAnnouncement() {
 
 // EncodeMulticastMessage encodes a discovery message with HMAC authentication
 // and a monotonic timestamp for replay protection.
-// Format: [deploymentID:8 LE][nodeID:8 LE][timestamp:8 LE][addrLen:2 LE][addr:addrLen][hmac:32]
+// Format: [deploymentID:8 LE][nodeID:8 LE][timestamp:8 LE][addrLen:2 LE][addr:addrLen][hmac:32].
 func EncodeMulticastMessage(deploymentID, nodeID uint64, addr string, secret []byte) ([]byte, error) {
 	addrBytes := []byte(addr)
 	if len(addrBytes) > maxAddrLen {

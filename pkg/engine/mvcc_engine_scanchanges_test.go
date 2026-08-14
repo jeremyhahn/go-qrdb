@@ -18,8 +18,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // ---------------------------------------------------------------------------

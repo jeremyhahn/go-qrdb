@@ -23,6 +23,8 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -30,7 +32,6 @@ import (
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // ---------------------------------------------------------------------------

@@ -322,17 +322,17 @@ func (m *mockCertProvider) CACertPEM() []byte {
 // Sentinel errors for testing
 // ---------------------------------------------------------------------------
 
-type errUserNotFound struct{ ID string }
+type userNotFoundError struct{ ID string }
 
-func (e *errUserNotFound) Error() string { return "user not found: " + e.ID }
+func (e *userNotFoundError) Error() string { return "user not found: " + e.ID }
 
-type errDuplicateRole struct{ Name string }
+type duplicateRoleError struct{ Name string }
 
-func (e *errDuplicateRole) Error() string { return "role already exists: " + e.Name }
+func (e *duplicateRoleError) Error() string { return "role already exists: " + e.Name }
 
-type errCertGenerate struct{ Msg string }
+type certGenerateError struct{ Msg string }
 
-func (e *errCertGenerate) Error() string { return "cert generation failed: " + e.Msg }
+func (e *certGenerateError) Error() string { return "cert generation failed: " + e.Msg }
 
 // ---------------------------------------------------------------------------
 // User tool tests
@@ -497,7 +497,7 @@ func TestUserGetTool_Uint64IDRoundTrip(t *testing.T) {
 func TestUserGetTool_NotFound(t *testing.T) {
 	svc := &mockUserService{
 		getUserFn: func(_ context.Context, id uint64) (*user.User, error) {
-			return nil, &errUserNotFound{ID: strconv.FormatUint(id, 10)}
+			return nil, &userNotFoundError{ID: strconv.FormatUint(id, 10)}
 		},
 	}
 	handler := handleUserGet(svc)
@@ -994,7 +994,7 @@ func TestRoleCreateTool_InvalidPermissionFormat(t *testing.T) {
 func TestRoleCreateTool_DuplicateName(t *testing.T) {
 	svc := &mockRoleService{
 		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
-			return nil, &errDuplicateRole{Name: "admin"}
+			return nil, &duplicateRoleError{Name: "admin"}
 		},
 	}
 	handler := handleRoleCreate(svc)
@@ -1398,7 +1398,7 @@ func TestRoleAssignTool_MissingRoleID(t *testing.T) {
 func TestRoleAssignTool_GetUserError(t *testing.T) {
 	userSvc := &mockUserService{
 		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
-			return nil, &errUserNotFound{ID: "u-999"}
+			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
 	handler := handleRoleAssign(&mockRoleService{}, userSvc)
@@ -1513,7 +1513,7 @@ func TestRoleUnassignTool_MissingRoleID(t *testing.T) {
 func TestRoleUnassignTool_GetUserError(t *testing.T) {
 	userSvc := &mockUserService{
 		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
-			return nil, &errUserNotFound{ID: "u-999"}
+			return nil, &userNotFoundError{ID: "u-999"}
 		},
 	}
 	handler := handleRoleUnassign(userSvc)
@@ -1925,7 +1925,7 @@ func TestCertGenerateTool_InvalidTTL(t *testing.T) {
 func TestCertGenerateTool_ServiceError(t *testing.T) {
 	svc := &mockCertProvider{
 		generateClientCertFn: func(_ context.Context, _ *cert.GenerateRequest) (*cert.CertBundle, error) {
-			return nil, &errCertGenerate{Msg: "CA key sealed"}
+			return nil, &certGenerateError{Msg: "CA key sealed"}
 		},
 	}
 	handler := handleCertGenerate(svc)

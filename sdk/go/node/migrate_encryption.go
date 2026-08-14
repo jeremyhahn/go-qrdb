@@ -184,7 +184,7 @@ func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope servi
 		return target, nil
 	}
 
-	strat, err := keyedStrategyFor(opts)
+	strategy, err := keyedStrategyFor(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,7 @@ func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope servi
 	// same RootKeyPath base). DeploymentID participates in DEK derivation, so
 	// minting via the source barrier guarantees the migrated data is reproducible
 	// by the normal boot path (which constructs the system barrier identically).
-	target, err := n.barrier.MintKeyedSibling(ctx, stagingRootKeySuffix, strat, opts.Credentials)
+	target, err := n.barrier.MintKeyedSibling(ctx, stagingRootKeySuffix, strategy, opts.Credentials)
 	if err != nil {
 		return nil, err
 	}

@@ -27,8 +27,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 )
 
 // TestSealShareTo_RoundTrip verifies that SealShareTo produces a ciphertext

@@ -18,8 +18,9 @@ import (
 	"strings"
 	"time"
 
-	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/spf13/cobra"
+
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
 
 // annotationSkipClient marks a command whose PersistentPreRunE must skip

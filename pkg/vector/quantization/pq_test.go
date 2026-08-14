@@ -20,9 +20,10 @@ import (
 	"math"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
 func TestPQ_TrainAndEncodeDecode(t *testing.T) {

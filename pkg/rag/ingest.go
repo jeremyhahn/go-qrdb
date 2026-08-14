@@ -25,13 +25,13 @@ import (
 )
 
 // chunkKVKey returns the KV key used to store chunk text.
-// Format: rag:{namespace}:{doc_id}:{chunk_idx}
+// Format: rag:{namespace}:{doc_id}:{chunk_idx}.
 func chunkKVKey(namespace, docID string, chunkIdx int) string {
 	return "rag:" + namespace + ":" + docID + ":" + strconv.Itoa(chunkIdx)
 }
 
 // docMetaKVKey returns the KV key used to store document metadata.
-// Format: rag:{namespace}:{doc_id}:meta
+// Format: rag:{namespace}:{doc_id}:meta.
 func docMetaKVKey(namespace, docID string) string {
 	return "rag:" + namespace + ":" + docID + ":meta"
 }

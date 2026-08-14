@@ -21,8 +21,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // tenantCaptureDist is a test-only CeremonyDistributor that captures generated

@@ -552,7 +552,6 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 	}
 
 	for _, def := range indexes {
-
 		// Compound indexes: multi-field.
 		if def.IsCompound() {
 			if err := e.registerCompoundIndex(entityType, def, log); err != nil {

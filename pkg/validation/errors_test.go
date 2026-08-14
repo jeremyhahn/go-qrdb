@@ -20,10 +20,10 @@ import (
 	"testing"
 )
 
-// errDomainField is a test double simulating a downstream domain error type
+// domainFieldError is a test double simulating a downstream domain error type
 // that embeds ErrValidation, mirroring how consuming packages are expected
 // to use the framework.
-type errDomainField struct {
+type domainFieldError struct {
 	ErrValidation
 }
 
@@ -112,9 +112,9 @@ func TestErrValidationAs(t *testing.T) {
 	})
 
 	t.Run("rejects unrelated target", func(t *testing.T) {
-		var other *errDomainField
+		var other *domainFieldError
 		if src.As(&other) {
-			t.Error("As(**errDomainField) = true, want false")
+			t.Error("As(**domainFieldError) = true, want false")
 		}
 		if other != nil {
 			t.Error("As mutated an unrelated target")
@@ -127,7 +127,7 @@ func TestErrValidationAs(t *testing.T) {
 // method — the core contract that lets callers handle all validation
 // failures uniformly.
 func TestErrValidationAsPromotion(t *testing.T) {
-	var err error = &errDomainField{
+	var err error = &domainFieldError{
 		ErrValidation: ErrValidation{
 			Field:      "user ID",
 			Constraint: ConstraintNullByte,
@@ -146,9 +146,9 @@ func TestErrValidationAsPromotion(t *testing.T) {
 	}
 
 	// The concrete domain type must still be matchable directly.
-	var domainErr *errDomainField
+	var domainErr *domainFieldError
 	if !errors.As(err, &domainErr) {
-		t.Fatalf("errors.As(%T, **errDomainField) = false, want true", err)
+		t.Fatalf("errors.As(%T, **domainFieldError) = false, want true", err)
 	}
 }
 

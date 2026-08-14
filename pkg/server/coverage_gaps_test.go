@@ -155,12 +155,12 @@ func TestTenantHostRegistry_Close_AbsentTenantEmpty(t *testing.T) {
 func TestCheckTenantBarrier_TenantNotFound(t *testing.T) {
 	t.Parallel()
 	system := seal.NewMemoryBackend()
-	strat, err := seal.NewSoftwareStrategy([]byte("check-barrier-pass"))
+	strategy, err := seal.NewSoftwareStrategy([]byte("check-barrier-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
 	sysBarrier, err := seal.NewStorageBarrier(nil, system,
-		seal.BarrierConfig{RootKeyPath: "sys/root"}, strat)
+		seal.BarrierConfig{RootKeyPath: "sys/root"}, strategy)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}

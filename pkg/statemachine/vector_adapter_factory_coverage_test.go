@@ -20,8 +20,9 @@ import (
 	"context"
 	"testing"
 
-	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 )
 
 // ---------------------------------------------------------------------------

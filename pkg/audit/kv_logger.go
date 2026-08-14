@@ -29,7 +29,7 @@ type kvLogger struct {
 }
 
 // Log serializes the entry as JSON and writes it to the KVStore.
-// The key format is: __sys:audit/{tenantID}/{timestamp_nano}
+// The key format is: __sys:audit/{tenantID}/{timestamp_nano}.
 func (l *kvLogger) Log(ctx context.Context, entry *Entry) error {
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now().UTC()

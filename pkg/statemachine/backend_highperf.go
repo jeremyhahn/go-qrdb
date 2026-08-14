@@ -197,7 +197,7 @@ func (b *HighPerfBackend) Scan(prefix []byte, limit int) (map[string][]byte, err
 // shards by locking them in order, then serializes to the writer.
 //
 // Format: [entryCount:4 LE][entries...]
-// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
+// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value].
 func (b *HighPerfBackend) SaveSnapshot(w io.Writer, stopper <-chan struct{}) error {
 	// Lock all shards in order for a consistent snapshot.
 	for i := range b.shards {

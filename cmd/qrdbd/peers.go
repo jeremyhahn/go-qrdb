@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 )
 
 // peersResponse is the JSON payload returned by GET /peers.

@@ -18,10 +18,11 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
-	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // newTestCompoundIndex creates a CompoundIndex backed by temporary PebbleDB.

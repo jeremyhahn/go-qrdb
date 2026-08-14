@@ -93,11 +93,11 @@ func TestGetCAMaterial_AutoInit_InitializeError(t *testing.T) {
 }
 
 // errInjected is a sentinel error used for injection.
-var errInjected = errorString("injected error")
+var errInjected = stringError("injected error")
 
-type errorString string
+type stringError string
 
-func (e errorString) Error() string { return string(e) }
+func (e stringError) Error() string { return string(e) }
 
 // ---------------------------------------------------------------------------
 // GenerateClientCert — auto-init via getCAMaterial (83.8%)

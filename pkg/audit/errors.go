@@ -52,28 +52,28 @@ func (e *ConfigError) Error() string {
 	return "audit: invalid config: " + e.Detail
 }
 
-// ErrChainBroken is returned by VerifyChain when a hash-chain link is broken.
+// ChainBrokenError is returned by VerifyChain when a hash-chain link is broken.
 // Index is the zero-based position of the first mismatching event.
-type ErrChainBroken struct {
+type ChainBrokenError struct {
 	Index    int
 	Expected string
 	Got      string
 }
 
 // Error returns a human-readable description of the chain break.
-func (e *ErrChainBroken) Error() string {
+func (e *ChainBrokenError) Error() string {
 	return "audit: chain broken at index " + itoa(e.Index) +
 		": expected prevHash " + e.Expected + ", got " + e.Got
 }
 
-// ErrFileLocked is returned when the audit file cannot be opened because
+// FileLockedError is returned when the audit file cannot be opened because
 // another process holds an exclusive lock.
-type ErrFileLocked struct {
+type FileLockedError struct {
 	Path string
 }
 
 // Error returns a human-readable description of the lock conflict.
-func (e *ErrFileLocked) Error() string {
+func (e *FileLockedError) Error() string {
 	return "audit: file locked: " + e.Path
 }
 

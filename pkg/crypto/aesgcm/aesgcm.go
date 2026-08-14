@@ -39,7 +39,7 @@ func defaultNewGCM(key []byte) (cipher.AEAD, error) {
 
 // Encrypt encrypts plaintext using AES-256-GCM with a random nonce.
 // The key must be exactly 32 bytes (AES-256).
-// Returns: [nonce (12 bytes)][ciphertext][tag (16 bytes)]
+// Returns: [nonce (12 bytes)][ciphertext][tag (16 bytes)].
 func Encrypt(key, plaintext []byte) ([]byte, error) {
 	if len(key) != 32 {
 		return nil, &InvalidKeyLengthError{Expected: 32, Actual: len(key)}

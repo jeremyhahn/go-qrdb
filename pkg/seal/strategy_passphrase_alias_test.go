@@ -52,12 +52,12 @@ func TestStrategyRegistry_PassphraseResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupFactory(%q): %v", StrategyPassphrase, err)
 	}
-	strat, err := factory()
+	strategy, err := factory()
 	if err != nil {
 		t.Fatalf("factory(%q): %v", StrategyPassphrase, err)
 	}
-	defer func() { _ = strat.Close() }()
-	if id := strat.ID(); id != StrategyPassphrase {
+	defer func() { _ = strategy.Close() }()
+	if id := strategy.ID(); id != StrategyPassphrase {
 		t.Errorf("strategy resolved via %q has ID %q, want %q",
 			StrategyPassphrase, id, StrategyPassphrase)
 	}
@@ -126,9 +126,9 @@ func buildRegisteredStrategy(t *testing.T, r StrategyRegistry, name StrategyID) 
 	if err != nil {
 		t.Fatalf("LookupFactory(%q): %v", name, err)
 	}
-	strat, err := factory()
+	strategy, err := factory()
 	if err != nil {
 		t.Fatalf("factory(%q): %v", name, err)
 	}
-	return strat
+	return strategy
 }

@@ -620,15 +620,15 @@ func TestShamirInitializeShamir_DirectMode_RequestParamsOverride(t *testing.T) {
 			}
 
 			// In-memory strategy must reflect the new params.
-			strat := b.ShamirStrategy()
-			if strat == nil {
+			shamirStrategy := b.ShamirStrategy()
+			if shamirStrategy == nil {
 				t.Fatal("ShamirStrategy() returned nil after override")
 			}
-			if strat.Threshold() != tc.requestThreshold {
-				t.Errorf("ShamirStrategy.Threshold() = %d, want %d", strat.Threshold(), tc.requestThreshold)
+			if shamirStrategy.Threshold() != tc.requestThreshold {
+				t.Errorf("ShamirStrategy.Threshold() = %d, want %d", shamirStrategy.Threshold(), tc.requestThreshold)
 			}
-			if strat.TotalShares() != tc.requestTotal {
-				t.Errorf("ShamirStrategy.TotalShares() = %d, want %d", strat.TotalShares(), tc.requestTotal)
+			if shamirStrategy.TotalShares() != tc.requestTotal {
+				t.Errorf("ShamirStrategy.TotalShares() = %d, want %d", shamirStrategy.TotalShares(), tc.requestTotal)
 			}
 		})
 	}
@@ -850,11 +850,11 @@ func TestUpdateSealedShamirParams_ParamsDiffer(t *testing.T) {
 	}
 
 	// Verify the in-memory strategy was updated.
-	strat := b.ShamirStrategy()
-	if strat == nil {
+	shamirStrategy := b.ShamirStrategy()
+	if shamirStrategy == nil {
 		t.Fatal("expected non-nil ShamirStrategy after update")
 	}
-	if strat.Threshold() != 3 || strat.TotalShares() != 5 {
-		t.Errorf("in-memory strategy: expected 3-of-5, got %d-of-%d", strat.Threshold(), strat.TotalShares())
+	if shamirStrategy.Threshold() != 3 || shamirStrategy.TotalShares() != 5 {
+		t.Errorf("in-memory strategy: expected 3-of-5, got %d-of-%d", shamirStrategy.Threshold(), shamirStrategy.TotalShares())
 	}
 }

@@ -367,7 +367,6 @@ func TestMembershipManager_NoReconfigurerTracksOnly(t *testing.T) {
 	// Give the watch loop time to process.
 	deadline := time.After(time.Second)
 	for len(m.Members()) != 2 {
-
 		select {
 		case <-deadline:
 			t.Fatalf("member not tracked; members = %+v", m.Members())

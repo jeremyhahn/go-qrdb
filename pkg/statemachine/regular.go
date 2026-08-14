@@ -26,9 +26,10 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // RegularOption configures a RegularStateMachine at construction time.
@@ -252,7 +253,7 @@ func (r *RegularStateMachine) Lookup(_ context.Context, query interface{}) (inte
 // A deep copy is taken under the read lock so serialization proceeds
 // without blocking concurrent operations.
 //
-// Format: [entryCount:4 LE][entries...]
+// Format: [entryCount:4 LE][entries...].
 // Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
 func (r *RegularStateMachine) SaveSnapshot(_ context.Context, w io.Writer, stopper <-chan struct{}) error {
 	// Deep-copy under read lock.

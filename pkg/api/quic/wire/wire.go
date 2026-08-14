@@ -53,7 +53,7 @@ const MaxPayloadSize = 64 * 1024 * 1024
 
 // WriteRequest writes a request frame to the writer.
 //
-// Frame layout: [methodLen:uint16][method:string][dbLen:uint16][database:string][requestID:uint64][payloadLen:uint32][payload:bytes]
+// Frame layout: [methodLen:uint16][method:string][dbLen:uint16][database:string][requestID:uint64][payloadLen:uint32][payload:bytes].
 func WriteRequest(w io.Writer, method, database string, requestID uint64, payload []byte) error {
 	methodBytes := []byte(method)
 	methodLen := len(methodBytes)
@@ -188,7 +188,7 @@ func ReadRequest(r io.Reader) (method, database string, requestID uint64, payloa
 
 // WriteResponse writes a response frame to the writer.
 //
-// Frame layout: [requestID:uint64][statusCode:uint16][payloadLen:uint32][payload:bytes]
+// Frame layout: [requestID:uint64][statusCode:uint16][payloadLen:uint32][payload:bytes].
 func WriteResponse(w io.Writer, requestID uint64, statusCode uint16, payload []byte) error {
 	payloadLen := len(payload)
 	if payloadLen > MaxPayloadSize {

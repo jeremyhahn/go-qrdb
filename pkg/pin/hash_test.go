@@ -190,9 +190,9 @@ func TestHashPINWithConfig_PBKDF2_UnsupportedHashRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("hashPINWithConfig with bogus hash: want err, got nil")
 	}
-	var bad *ErrUnsupportedPBKDF2Hash
+	var bad *UnsupportedPBKDF2HashError
 	if !errors.As(err, &bad) {
-		t.Fatalf("err = %v, want *ErrUnsupportedPBKDF2Hash", err)
+		t.Fatalf("err = %v, want *UnsupportedPBKDF2HashError", err)
 	}
 	if bad.Hash != "md5" {
 		t.Fatalf("bad.Hash = %q, want %q", bad.Hash, "md5")
@@ -288,8 +288,8 @@ func TestResolveHashFunc_Unsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("resolveHashFunc(bogus): want err, got nil")
 	}
-	var bad *ErrUnsupportedPBKDF2Hash
+	var bad *UnsupportedPBKDF2HashError
 	if !errors.As(err, &bad) {
-		t.Fatalf("err = %v, want *ErrUnsupportedPBKDF2Hash", err)
+		t.Fatalf("err = %v, want *UnsupportedPBKDF2HashError", err)
 	}
 }

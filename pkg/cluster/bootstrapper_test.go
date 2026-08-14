@@ -19,9 +19,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 )
 
 // mockDiscovery implements discovery.Method for testing.

@@ -21,9 +21,10 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/vector/hnsw"
 )
 
 func generateRandomVectors(n, dim int) [][]float32 {

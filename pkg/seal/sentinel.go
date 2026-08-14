@@ -42,16 +42,16 @@ const SentinelKey = "__sys/barrier_format_version"
 // migrate data through application-level export/import.
 var ErrLegacyDataDir = errors.New("qrdb/seal: data dir was created with a pre-barrier-refactor version; in-place upgrade is not supported")
 
-// ErrUnsupportedFormatVersion is returned when the sentinel is
+// UnsupportedFormatVersionError is returned when the sentinel is
 // present but carries a version number this build does not know how
 // to read. This typically means the operator deployed an older
 // binary against a data dir produced by a newer one.
-type ErrUnsupportedFormatVersion struct {
+type UnsupportedFormatVersionError struct {
 	OnDisk    uint32
 	Supported uint32
 }
 
-func (e *ErrUnsupportedFormatVersion) Error() string {
+func (e *UnsupportedFormatVersionError) Error() string {
 	return fmt.Sprintf("qrdb/seal: on-disk format version %d is newer than supported version %d", e.OnDisk, e.Supported)
 }
 
@@ -73,7 +73,7 @@ func WriteFormatSentinel(ctx context.Context, store StorageBackend) error {
 //
 //   - nil if the sentinel is present and matches CurrentFormatVersion;
 //   - ErrLegacyDataDir if the sentinel is absent;
-//   - *ErrUnsupportedFormatVersion if the sentinel is present but
+//   - *UnsupportedFormatVersionError if the sentinel is present but
 //     carries a version greater than CurrentFormatVersion.
 //
 // A version equal to CurrentFormatVersion succeeds. A future build
@@ -101,7 +101,7 @@ func ReadFormatSentinel(ctx context.Context, store StorageBackend) error {
 	}
 	onDisk := binary.LittleEndian.Uint32(value)
 	if onDisk > CurrentFormatVersion {
-		return &ErrUnsupportedFormatVersion{OnDisk: onDisk, Supported: CurrentFormatVersion}
+		return &UnsupportedFormatVersionError{OnDisk: onDisk, Supported: CurrentFormatVersion}
 	}
 	return nil
 }

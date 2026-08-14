@@ -19,9 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // collectWatch reads exactly n responses from a watcher or fails on timeout.

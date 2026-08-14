@@ -532,7 +532,7 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFetchError_ErrorAndUnwrap(t *testing.T) {
-	inner := errText("connection refused")
+	inner := textError("connection refused")
 	e := &FetchError{Method: "Noise", Err: inner}
 	want := "clusterenroll: bootstrap fetch failed via Noise: connection refused"
 	if e.Error() != want {
@@ -544,7 +544,7 @@ func TestFetchError_ErrorAndUnwrap(t *testing.T) {
 }
 
 func TestJoinError_ErrorAndUnwrap(t *testing.T) {
-	inner := errText("key parse failed")
+	inner := textError("key parse failed")
 	e := &JoinError{Err: inner}
 	want := "clusterenroll: TLS bootstrap failed: key parse failed"
 	if e.Error() != want {
@@ -556,7 +556,7 @@ func TestJoinError_ErrorAndUnwrap(t *testing.T) {
 }
 
 func TestServerError_ErrorAndUnwrap(t *testing.T) {
-	inner := errText("address in use")
+	inner := textError("address in use")
 	e := &ServerError{Protocol: "noise", Err: inner}
 	want := "clusterenroll: bootstrap server (noise) failed to start: address in use"
 	if e.Error() != want {
@@ -773,10 +773,10 @@ func writeTestFixtures(t *testing.T, dir string) *clustertls.Material {
 	return mat
 }
 
-// errText is a minimal error implementation for use in test assertions.
-type errText string
+// textError is a minimal error implementation for use in test assertions.
+type textError string
 
-func (e errText) Error() string { return string(e) }
+func (e textError) Error() string { return string(e) }
 
 // containsAll returns true when s contains every substring in subs.
 func containsAll(s string, subs ...string) bool {

@@ -22,9 +22,10 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // Factory is a function that produces an sm.CreateFunc. Each call may

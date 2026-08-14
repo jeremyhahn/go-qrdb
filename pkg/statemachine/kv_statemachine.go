@@ -20,9 +20,10 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // KVStateMachine is a unified key-value state machine that delegates

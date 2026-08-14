@@ -17,10 +17,11 @@ package statemachine
 import (
 	"sort"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // Lookup reads state without going through Raft. Supported query types:

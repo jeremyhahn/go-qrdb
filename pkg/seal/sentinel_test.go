@@ -61,9 +61,9 @@ func TestReadFormatSentinel_FutureVersionReturnsTypedError(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	err := ReadFormatSentinel(ctx, store)
-	var unsupported *ErrUnsupportedFormatVersion
+	var unsupported *UnsupportedFormatVersionError
 	if !errors.As(err, &unsupported) {
-		t.Fatalf("err = %v, want *ErrUnsupportedFormatVersion", err)
+		t.Fatalf("err = %v, want *UnsupportedFormatVersionError", err)
 	}
 	if unsupported.OnDisk != CurrentFormatVersion+1 {
 		t.Errorf("OnDisk = %d, want %d", unsupported.OnDisk, CurrentFormatVersion+1)
@@ -132,9 +132,9 @@ func TestEnsureFormatSentinel_FutureVersionPropagates(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	err := EnsureFormatSentinel(ctx, store, false)
-	var unsupported *ErrUnsupportedFormatVersion
+	var unsupported *UnsupportedFormatVersionError
 	if !errors.As(err, &unsupported) {
-		t.Errorf("err = %v, want *ErrUnsupportedFormatVersion", err)
+		t.Errorf("err = %v, want *UnsupportedFormatVersionError", err)
 	}
 }
 

@@ -26,10 +26,11 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 const shardCount = 256
@@ -261,7 +262,7 @@ func (f *FastStateMachine) Lookup(_ context.Context, query interface{}) (interfa
 }
 
 // SaveSnapshot serializes the in-memory cache to the writer.
-// Format: [entryCount:4 LE][entries...]
+// Format: [entryCount:4 LE][entries...].
 // Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
 func (f *FastStateMachine) SaveSnapshot(_ context.Context, w io.Writer, stopper <-chan struct{}) error {
 	// Collect all non-tombstoned entries from cache.

@@ -17,9 +17,10 @@ package objstore
 import (
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // --- Engine: Provider, error type, closed-state, empty-key ---

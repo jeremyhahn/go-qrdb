@@ -696,7 +696,7 @@ func (r *BarrierRegistry) LocalTenantDataRoot(ctx context.Context, tenantID stri
 // without a new pool.Pick call (which would advance the round-robin cursor).
 //
 // Key: tenantRootStorePrefix + tenantID
-// Value: JSON-encoded tenantRootRecord
+// Value: JSON-encoded tenantRootRecord.
 const tenantRootStorePrefix = "__registry:tenant_root/"
 
 // tenantRootRecord is the persisted form of a volume-tenant assignment.
@@ -1053,7 +1053,7 @@ func (r *BarrierRegistry) RegisterTenantPooledShamir(
 	threshold, total int,
 	ttl time.Duration,
 ) (*TenantBarrier, error) {
-	strat, err := NewShamirStrategy(threshold, total)
+	strategy, err := NewShamirStrategy(threshold, total)
 	if err != nil {
 		return nil, err
 	}
@@ -1063,7 +1063,7 @@ func (r *BarrierRegistry) RegisterTenantPooledShamir(
 		TotalShares: total,
 		QuorumTTL:   ttl,
 	}
-	return r.RegisterTenant(ctx, tenantID, nil, cfg, strat)
+	return r.RegisterTenant(ctx, tenantID, nil, cfg, strategy)
 }
 
 // InitializeTenantShamir initializes the tenant barrier identified by tenantID

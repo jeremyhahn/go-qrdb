@@ -51,10 +51,10 @@ const (
 )
 
 const (
-	// MVCC operations (10-19)
+	// MVCC operations (10-19).
 
 	// OpMVCCPut stores a key-value pair with MVCC revision tracking.
-	// Payload: [keyLen:2 LE][key][leaseID:8 LE][value]
+	// Payload: [keyLen:2 LE][key][leaseID:8 LE][value].
 	OpMVCCPut byte = 10
 
 	// OpMVCCPutIfAbsent stores a key-value pair with MVCC revision tracking
@@ -70,77 +70,77 @@ const (
 	OpMVCCPutIfAbsent byte = 65
 
 	// OpMVCCDelete removes a key with MVCC revision tracking.
-	// Payload: [keyLen:2 LE][key]
+	// Payload: [keyLen:2 LE][key].
 	OpMVCCDelete byte = 11
 
 	// OpMVCCRange queries a range of keys in the MVCC store.
-	// Payload: [startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1]
+	// Payload: [startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
 	OpMVCCRange byte = 12
 
 	// OpMVCCCompact compacts revisions up to the specified revision.
-	// Payload: [revision:8 LE]
+	// Payload: [revision:8 LE].
 	OpMVCCCompact byte = 13
 
-	// Transaction operations (20-29)
+	// Transaction operations (20-29).
 
 	// OpTransaction executes an atomic compare-and-swap transaction.
-	// Payload: [compareCount:2 LE][compares...][successCount:2 LE][successOps...][failureCount:2 LE][failureOps...]
+	// Payload: [compareCount:2 LE][compares...][successCount:2 LE][successOps...][failureCount:2 LE][failureOps...].
 	OpTransaction byte = 20
 
-	// Batch operations (30-39)
+	// Batch operations (30-39).
 
 	// OpBatch executes multiple operations atomically.
-	// Payload: [opCount:2 LE][ops...]
+	// Payload: [opCount:2 LE][ops...].
 	OpBatch byte = 30
 
-	// Lease operations (40-49)
+	// Lease operations (40-49).
 
 	// OpLeaseGrant creates a new lease.
-	// Payload: [ttl:8 LE]
+	// Payload: [ttl:8 LE].
 	OpLeaseGrant byte = 40
 
 	// OpLeaseRevoke expires a lease and deletes attached keys.
-	// Payload: [leaseID:8 LE]
+	// Payload: [leaseID:8 LE].
 	OpLeaseRevoke byte = 41
 
 	// OpLeaseKeepAlive resets a lease's TTL.
-	// Payload: [leaseID:8 LE]
+	// Payload: [leaseID:8 LE].
 	OpLeaseKeepAlive byte = 42
 
-	// Index operations (50-59)
+	// Index operations (50-59).
 
 	// OpIndexCreate creates a new secondary index.
-	// Payload: [nameLen:2 LE][name][fieldLen:2 LE][field][flags:1]
+	// Payload: [nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
 	OpIndexCreate byte = 50
 
 	// OpIndexDrop removes a secondary index.
-	// Payload: [nameLen:2 LE][name]
+	// Payload: [nameLen:2 LE][name].
 	OpIndexDrop byte = 51
 
-	// Time-series operations (60-69)
+	// Time-series operations (60-69).
 
 	// OpTSWrite stores a single time-series data point.
-	// Payload: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+	// Payload: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
 	OpTSWrite byte = 60
 
 	// OpTSWriteBatch stores multiple time-series data points.
-	// Payload: [pointCount:2 LE][points...]
+	// Payload: [pointCount:2 LE][points...].
 	OpTSWriteBatch byte = 61
 
 	// OpTSWritePoint stores a single validated time-series data point.
-	// Payload: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+	// Payload: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
 	OpTSWritePoint byte = 62
 
 	// OpTSDeleteSeries deletes time-series data matching the criteria.
-	// Payload: [metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...]
+	// Payload: [metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...].
 	OpTSDeleteSeries byte = 63
 
 	// OpTSSetRetention sets the retention policy for a metric.
-	// Payload: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1]
+	// Payload: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1].
 	OpTSSetRetention byte = 64
 )
 
-// Range flags (bit mask for OpMVCCRange)
+// Range flags (bit mask for OpMVCCRange).
 const (
 	// RangeFlagCountOnly returns only the count without values.
 	RangeFlagCountOnly byte = 1 << 0
@@ -149,7 +149,7 @@ const (
 	RangeFlagKeysOnly byte = 1 << 1
 )
 
-// Index flags (bit mask for OpIndexCreate)
+// Index flags (bit mask for OpIndexCreate).
 const (
 	// IndexFlagUnique enforces unique index values.
 	IndexFlagUnique byte = 1 << 0
@@ -196,7 +196,7 @@ const frameSize = FrameSize
 // ---------------------------------------------------------------------------
 
 // EncodeMVCCPut creates a binary MVCC Put command.
-// Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value]
+// Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value].
 func EncodeMVCCPut(key, value []byte, leaseID int64) []byte {
 	buf := make([]byte, headerSize+2+len(key)+8+len(value))
 	buf[0] = OpMVCCPut
@@ -221,7 +221,7 @@ func EncodeMVCCPutIfAbsent(key, value []byte, leaseID int64) []byte {
 }
 
 // EncodeMVCCDelete creates a binary MVCC Delete command.
-// Format: [op:1][keyLen:2 LE][key]
+// Format: [op:1][keyLen:2 LE][key].
 func EncodeMVCCDelete(key []byte) []byte {
 	buf := make([]byte, headerSize+2+len(key))
 	buf[0] = OpMVCCDelete
@@ -231,7 +231,7 @@ func EncodeMVCCDelete(key []byte) []byte {
 }
 
 // EncodeMVCCRange creates a binary MVCC Range command.
-// Format: [op:1][startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1]
+// Format: [op:1][startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
 func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOnly bool) []byte {
 	buf := make([]byte, headerSize+2+len(start)+2+len(end)+8+8+1)
 	off := 0
@@ -266,7 +266,7 @@ func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOn
 }
 
 // EncodeMVCCCompact creates a binary MVCC Compact command.
-// Format: [op:1][revision:8 LE]
+// Format: [op:1][revision:8 LE].
 func EncodeMVCCCompact(revision int64) []byte {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpMVCCCompact
@@ -279,7 +279,7 @@ func EncodeMVCCCompact(revision int64) []byte {
 // ---------------------------------------------------------------------------
 
 // EncodeLeaseGrant creates a binary Lease Grant command.
-// Format: [op:1][ttl:8 LE]
+// Format: [op:1][ttl:8 LE].
 func EncodeLeaseGrant(ttl int64) []byte {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseGrant
@@ -288,7 +288,7 @@ func EncodeLeaseGrant(ttl int64) []byte {
 }
 
 // EncodeLeaseRevoke creates a binary Lease Revoke command.
-// Format: [op:1][leaseID:8 LE]
+// Format: [op:1][leaseID:8 LE].
 func EncodeLeaseRevoke(leaseID int64) []byte {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseRevoke
@@ -297,7 +297,7 @@ func EncodeLeaseRevoke(leaseID int64) []byte {
 }
 
 // EncodeLeaseKeepAlive creates a binary Lease KeepAlive command.
-// Format: [op:1][leaseID:8 LE]
+// Format: [op:1][leaseID:8 LE].
 func EncodeLeaseKeepAlive(leaseID int64) []byte {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseKeepAlive
@@ -310,7 +310,7 @@ func EncodeLeaseKeepAlive(leaseID int64) []byte {
 // ---------------------------------------------------------------------------
 
 // EncodeIndexCreate creates a binary Index Create command.
-// Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1]
+// Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
 func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) []byte {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
@@ -346,7 +346,7 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) []b
 }
 
 // EncodeIndexDrop creates a binary Index Drop command.
-// Format: [op:1][nameLen:2 LE][name]
+// Format: [op:1][nameLen:2 LE][name].
 func EncodeIndexDrop(name string) []byte {
 	nameBytes := []byte(name)
 	buf := make([]byte, headerSize+2+len(nameBytes))
@@ -362,7 +362,7 @@ func EncodeIndexDrop(name string) []byte {
 
 // EncodeTSWrite creates a binary Time-Series Write command.
 // Format: [op:1][metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
-// Each tag: [keyLen:2 LE][key][valLen:2 LE][val]
+// Each tag: [keyLen:2 LE][key][valLen:2 LE][val].
 func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[string]string) []byte {
 	metricBytes := []byte(metric)
 
@@ -409,7 +409,7 @@ func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[strin
 
 // EncodeTSWriteBatch creates a binary Time-Series WriteBatch command.
 // Format: [op:1][pointCount:2 LE][points...]
-// Each point is encoded as: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
+// Each point is encoded as: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
 func EncodeTSWriteBatch(points []TSWriteParams) []byte {
 	// Calculate total size.
 	size := headerSize + 2
@@ -508,7 +508,7 @@ func DecodeTSWriteBatch(payload []byte) ([]TSWriteParams, error) {
 // ---------------------------------------------------------------------------
 
 // EncodeOp encodes a single operation for use in transaction and batch payloads.
-// Format: [opType:1][keyLen:4 LE][key][valLen:4 LE][value][rangeEndLen:4 LE][rangeEnd][leaseID:8 LE]
+// Format: [opType:1][keyLen:4 LE][key][valLen:4 LE][value][rangeEndLen:4 LE][rangeEnd][leaseID:8 LE].
 func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) []byte {
 	size := 1 + frameSize + len(key) + frameSize + len(value) + frameSize + len(rangeEnd) + 8
 	buf := make([]byte, size)
@@ -538,7 +538,7 @@ func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) []byte {
 }
 
 // EncodeCompare encodes a single compare for transaction payloads.
-// Format: [keyLen:4 LE][key][target:1][result:1][valLen:4 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE]
+// Format: [keyLen:4 LE][key][target:1][result:1][valLen:4 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE].
 func EncodeCompare(key []byte, target, result byte, value []byte, version, createRevision, modRevision int64) []byte {
 	size := frameSize + len(key) + 1 + 1 + frameSize + len(value) + 8 + 8 + 8
 	buf := make([]byte, size)
@@ -569,7 +569,7 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 }
 
 // EncodeTransaction creates a binary Transaction command.
-// Format: [op:1][compareCount:4 LE][compares...][successCount:4 LE][successOps...][failureCount:4 LE][failureOps...]
+// Format: [op:1][compareCount:4 LE][compares...][successCount:4 LE][successOps...][failureCount:4 LE][failureOps...].
 func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
 	size := headerSize + frameSize + frameSize + frameSize
 	for _, c := range compares {
@@ -596,7 +596,7 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
 }
 
 // EncodeBatch creates a binary Batch command.
-// Format: [op:1][opCount:4 LE][ops...]
+// Format: [op:1][opCount:4 LE][ops...].
 func EncodeBatch(ops [][]byte) []byte {
 	size := headerSize + frameSize
 	for _, op := range ops {
@@ -1167,7 +1167,7 @@ type TSDeleteParams struct {
 }
 
 // EncodeTSDeleteSeries creates a binary Time-Series DeleteSeries command.
-// Format: [op:1][metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...]
+// Format: [op:1][metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...].
 func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]string) []byte {
 	metricBytes := []byte(metric)
 
@@ -1283,7 +1283,7 @@ type TSRetentionParams struct {
 }
 
 // EncodeTSSetRetention creates a binary Time-Series SetRetention command.
-// Format: [op:1][metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1]
+// Format: [op:1][metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1].
 func EncodeTSSetRetention(metric string, durationNs, resolutionNs int64, aggregation byte) []byte {
 	metricBytes := []byte(metric)
 	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 1

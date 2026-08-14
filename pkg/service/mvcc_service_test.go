@@ -30,32 +30,32 @@ import (
 // Mock error types for cross-package error interface matching
 // ---------------------------------------------------------------------------
 
-// mockKeyNotFoundErr satisfies the keyNotFoundErr interface.
-type mockKeyNotFoundErr struct {
+// mockKeyNotFoundError satisfies the keyNotFoundErr interface.
+type mockKeyNotFoundError struct {
 	key string
 }
 
-func (e *mockKeyNotFoundErr) Error() string       { return "key not found: " + e.key }
-func (e *mockKeyNotFoundErr) KeyNotFound() string { return e.key }
+func (e *mockKeyNotFoundError) Error() string       { return "key not found: " + e.key }
+func (e *mockKeyNotFoundError) KeyNotFound() string { return e.key }
 
-// mockRevisionCompactedErr satisfies the revisionCompactedErr interface.
-type mockRevisionCompactedErr struct {
+// mockRevisionCompactedError satisfies the revisionCompactedErr interface.
+type mockRevisionCompactedError struct {
 	requested, compacted int64
 }
 
-func (e *mockRevisionCompactedErr) Error() string { return "revision compacted" }
-func (e *mockRevisionCompactedErr) RevisionCompacted() (int64, int64) {
+func (e *mockRevisionCompactedError) Error() string { return "revision compacted" }
+func (e *mockRevisionCompactedError) RevisionCompacted() (int64, int64) {
 	return e.requested, e.compacted
 }
 
-// mockRevisionNotFoundErr satisfies the revisionNotFoundErr interface.
-type mockRevisionNotFoundErr struct {
+// mockRevisionNotFoundError satisfies the revisionNotFoundErr interface.
+type mockRevisionNotFoundError struct {
 	key      string
 	revision int64
 }
 
-func (e *mockRevisionNotFoundErr) Error() string { return "revision not found" }
-func (e *mockRevisionNotFoundErr) RevisionNotFound() (string, int64) {
+func (e *mockRevisionNotFoundError) Error() string { return "revision not found" }
+func (e *mockRevisionNotFoundError) RevisionNotFound() (string, int64) {
 	return e.key, e.revision
 }
 
@@ -202,7 +202,7 @@ func TestMVCCKVService_Get_Success(t *testing.T) {
 func TestMVCCKVService_Get_KeyNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "missing"}
+			return nil, &mockKeyNotFoundError{key: "missing"}
 		},
 	}
 
@@ -724,7 +724,7 @@ func TestMVCCKVService_GetRevision_Success(t *testing.T) {
 func TestMVCCKVService_GetRevision_KeyNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "gone"}
+			return nil, &mockKeyNotFoundError{key: "gone"}
 		},
 	}
 
@@ -838,7 +838,7 @@ func TestMVCCKVService_GetAtRevision_Success(t *testing.T) {
 func TestMVCCKVService_GetAtRevision_RevisionCompacted(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockRevisionCompactedErr{requested: 5, compacted: 10}
+			return nil, &mockRevisionCompactedError{requested: 5, compacted: 10}
 		},
 	}
 
@@ -866,7 +866,7 @@ func TestMVCCKVService_GetAtRevision_RevisionCompacted(t *testing.T) {
 func TestMVCCKVService_GetAtRevision_RevisionNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockRevisionNotFoundErr{key: "mykey", revision: 999}
+			return nil, &mockRevisionNotFoundError{key: "mykey", revision: 999}
 		},
 	}
 
@@ -891,7 +891,7 @@ func TestMVCCKVService_GetAtRevision_RevisionNotFound(t *testing.T) {
 func TestMVCCKVService_GetAtRevision_KeyNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "nokey"}
+			return nil, &mockKeyNotFoundError{key: "nokey"}
 		},
 	}
 
@@ -1372,7 +1372,7 @@ func TestMVCCKVService_translateProposeError_Generic(t *testing.T) {
 
 func TestMVCCKVService_translateReadError_KeyNotFound(t *testing.T) {
 	svc := &MVCCKVService{host: &mockHost{}, shardID: 1}
-	err := svc.translateReadError(&mockKeyNotFoundErr{key: "testkey"})
+	err := svc.translateReadError(&mockKeyNotFoundError{key: "testkey"})
 
 	var knf *KeyNotFoundError
 	if !errors.As(err, &knf) {
@@ -1385,7 +1385,7 @@ func TestMVCCKVService_translateReadError_KeyNotFound(t *testing.T) {
 
 func TestMVCCKVService_translateReadError_RevisionCompacted(t *testing.T) {
 	svc := &MVCCKVService{host: &mockHost{}, shardID: 1}
-	err := svc.translateReadError(&mockRevisionCompactedErr{requested: 3, compacted: 8})
+	err := svc.translateReadError(&mockRevisionCompactedError{requested: 3, compacted: 8})
 
 	var rce *RevisionCompactedError
 	if !errors.As(err, &rce) {
@@ -1401,7 +1401,7 @@ func TestMVCCKVService_translateReadError_RevisionCompacted(t *testing.T) {
 
 func TestMVCCKVService_translateReadError_RevisionNotFound(t *testing.T) {
 	svc := &MVCCKVService{host: &mockHost{}, shardID: 1}
-	err := svc.translateReadError(&mockRevisionNotFoundErr{key: "rkey", revision: 123})
+	err := svc.translateReadError(&mockRevisionNotFoundError{key: "rkey", revision: 123})
 
 	var rnf *RevisionNotFoundError
 	if !errors.As(err, &rnf) {
@@ -1803,7 +1803,7 @@ func TestMVCCKVService_Put_LargeValue(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMockKeyNotFoundErr_ImplementsInterface(t *testing.T) {
-	var e keyNotFoundErr = &mockKeyNotFoundErr{key: "k"}
+	var e keyNotFoundErr = &mockKeyNotFoundError{key: "k"}
 	if e.KeyNotFound() != "k" {
 		t.Fatalf("expected k, got %s", e.KeyNotFound())
 	}
@@ -1813,7 +1813,7 @@ func TestMockKeyNotFoundErr_ImplementsInterface(t *testing.T) {
 }
 
 func TestMockRevisionCompactedErr_ImplementsInterface(t *testing.T) {
-	var e revisionCompactedErr = &mockRevisionCompactedErr{requested: 1, compacted: 5}
+	var e revisionCompactedErr = &mockRevisionCompactedError{requested: 1, compacted: 5}
 	req, comp := e.RevisionCompacted()
 	if req != 1 || comp != 5 {
 		t.Fatalf("expected (1, 5), got (%d, %d)", req, comp)
@@ -1821,7 +1821,7 @@ func TestMockRevisionCompactedErr_ImplementsInterface(t *testing.T) {
 }
 
 func TestMockRevisionNotFoundErr_ImplementsInterface(t *testing.T) {
-	var e revisionNotFoundErr = &mockRevisionNotFoundErr{key: "rk", revision: 77}
+	var e revisionNotFoundErr = &mockRevisionNotFoundError{key: "rk", revision: 77}
 	key, rev := e.RevisionNotFound()
 	if key != "rk" || rev != 77 {
 		t.Fatalf("expected (rk, 77), got (%s, %d)", key, rev)

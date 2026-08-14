@@ -35,11 +35,12 @@ import (
 	"net/http"
 	"sync/atomic"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 )
 
 // PlacementGetter retrieves a Placement for a (tenant, database) pair.

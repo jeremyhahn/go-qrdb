@@ -37,6 +37,12 @@ import (
 	"syscall"
 	"time"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/spf13/cobra"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -80,11 +86,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdkgo "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/spf13/cobra"
 )
 
 // startFlags holds the parsed CLI flags for the start command.

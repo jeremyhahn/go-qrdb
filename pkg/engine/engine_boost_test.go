@@ -19,6 +19,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -27,8 +30,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // ---------------------------------------------------------------------------
@@ -187,7 +188,7 @@ func TestCheckUniqueViolationsBatch_DeletedKeyFreesValue(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAsAppErrResult_NonUCE(t *testing.T) {
-	_, handled, _ := asAppErrResult(errBoost("some other error"))
+	_, handled, _ := asAppErrResult(boostError("some other error"))
 	if handled {
 		t.Error("expected handled=false for non-UCE error")
 	}
@@ -579,7 +580,7 @@ type errorOnGetIndex struct{}
 
 func (e *errorOnGetIndex) Put(_, _ []byte) error                         { return nil }
 func (e *errorOnGetIndex) Delete(_, _ []byte) error                      { return nil }
-func (e *errorOnGetIndex) Get(_ []byte) ([][]byte, error)                { return nil, errBoost("index read error") }
+func (e *errorOnGetIndex) Get(_ []byte) ([][]byte, error)                { return nil, boostError("index read error") }
 func (e *errorOnGetIndex) Scan(_, _ []byte) (map[string][][]byte, error) { return nil, nil }
 func (e *errorOnGetIndex) GetAll() ([][]byte, error)                     { return nil, nil }
 func (e *errorOnGetIndex) Clear() error                                  { return nil }
@@ -1209,9 +1210,9 @@ var _ storage.Storage
 // Helpers
 // ---------------------------------------------------------------------------
 
-type errBoost string
+type boostError string
 
-func (e errBoost) Error() string { return string(e) }
+func (e boostError) Error() string { return string(e) }
 
 func mapBoostKeys(m map[string][]byte) []string {
 	keys := make([]string, 0, len(m))

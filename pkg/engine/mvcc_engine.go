@@ -26,6 +26,9 @@ import (
 
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
@@ -35,8 +38,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // Notification captures a single change event for delivery to the watch hub

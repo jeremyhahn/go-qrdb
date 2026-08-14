@@ -663,7 +663,7 @@ func (s *Storage) updateTagIndexes(metric string, tags map[string]string) error 
 }
 
 // buildDataPointKey constructs a composite key for a data point.
-// Format: "ts:" + metric + ":" + timestamp_ns(8 bytes BE) + ":" + tag_hash(16 hex chars)
+// Format: "ts:" + metric + ":" + timestamp_ns(8 bytes BE) + ":" + tag_hash(16 hex chars).
 func buildDataPointKey(metric string, timestamp time.Time, tags map[string]string) []byte {
 	tagHash := hashTags(tags)
 
@@ -687,7 +687,7 @@ func buildDataPointKey(metric string, timestamp time.Time, tags map[string]strin
 
 // buildRangeStartKey constructs a key prefix for range scans starting at the
 // given metric and timestamp.
-// Format: "ts:" + metric + ":" + timestamp_ns(8 bytes BE)
+// Format: "ts:" + metric + ":" + timestamp_ns(8 bytes BE).
 func buildRangeStartKey(metric string, t time.Time) []byte {
 	keyLen := len(keyPrefix) + len(metric) + 1 + 8
 	key := make([]byte, 0, keyLen)
@@ -739,7 +739,7 @@ func appendHex(dst []byte, v uint64) []byte {
 
 // encodeDataPoint serializes a DataPoint to binary format:
 // [metricLen:2 LE][metric][value:8 LE float64][timestampNano:8 LE][tagCount:2 LE][tags...]
-// Each tag: [keyLen:2 LE][key][valLen:2 LE][val]
+// Each tag: [keyLen:2 LE][key][valLen:2 LE][val].
 func encodeDataPoint(dp *DataPoint) ([]byte, error) {
 	metricBytes := []byte(dp.Metric)
 	metricLen := len(metricBytes)

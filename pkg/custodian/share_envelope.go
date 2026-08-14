@@ -25,8 +25,9 @@ import (
 	"encoding/pem"
 	"io"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"golang.org/x/crypto/hkdf"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const (

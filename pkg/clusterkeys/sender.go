@@ -27,11 +27,12 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 )
 
 // AdminURLResolver resolves the admin HTTPS base URL for a given Raft address.

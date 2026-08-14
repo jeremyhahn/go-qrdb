@@ -225,6 +225,6 @@ func resolveHashFunc(name string) (func() hash.Hash, error) {
 	case HashSHA512256:
 		return sha512.New512_256, nil
 	default:
-		return nil, &ErrUnsupportedPBKDF2Hash{Hash: name}
+		return nil, &UnsupportedPBKDF2HashError{Hash: name}
 	}
 }

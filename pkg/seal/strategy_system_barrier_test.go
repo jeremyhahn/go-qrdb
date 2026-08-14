@@ -24,7 +24,7 @@ import (
 // suitable as the unseal authority for SystemBarrierStrategy tests.
 func newUnsealedSystemBarrier(t *testing.T) *seal.StorageBarrier {
 	t.Helper()
-	strat, err := seal.NewSoftwareStrategy([]byte("system-master-pass"))
+	strategy, err := seal.NewSoftwareStrategy([]byte("system-master-pass"))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
@@ -32,7 +32,7 @@ func newUnsealedSystemBarrier(t *testing.T) *seal.StorageBarrier {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		seal.NewMemoryBackend(),
 		seal.BarrierConfig{RootKeyPath: "system/root-key"},
-		strat,
+		strategy,
 	)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
@@ -48,16 +48,16 @@ func newUnsealedSystemBarrier(t *testing.T) *seal.StorageBarrier {
 // composing only the system barrier's existing AEAD (no new crypto).
 func TestSystemBarrierStrategy_SealUnsealRoundTrip(t *testing.T) {
 	system := newUnsealedSystemBarrier(t)
-	strat := seal.NewSystemBarrierStrategy(system)
+	strategy := seal.NewSystemBarrierStrategy(system)
 	ctx := context.Background()
 
-	if strat.ID() != seal.StrategySystemBarrier {
-		t.Fatalf("ID = %q, want %q", strat.ID(), seal.StrategySystemBarrier)
+	if strategy.ID() != seal.StrategySystemBarrier {
+		t.Fatalf("ID = %q, want %q", strategy.ID(), seal.StrategySystemBarrier)
 	}
-	if !strat.Available() {
+	if !strategy.Available() {
 		t.Fatal("strategy should be Available with an unsealed system barrier")
 	}
-	if strat.HardwareBacked() {
+	if strategy.HardwareBacked() {
 		t.Error("system-barrier strategy must not report HardwareBacked")
 	}
 
@@ -66,7 +66,7 @@ func TestSystemBarrierStrategy_SealUnsealRoundTrip(t *testing.T) {
 		t.Fatalf("rand: %v", err)
 	}
 
-	sealed, err := strat.SealRootKey(ctx, rootKey, seal.Credentials{})
+	sealed, err := strategy.SealRootKey(ctx, rootKey, seal.Credentials{})
 	if err != nil {
 		t.Fatalf("SealRootKey: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestSystemBarrierStrategy_SealUnsealRoundTrip(t *testing.T) {
 		t.Error("ciphertext must not equal the plaintext root key")
 	}
 
-	got, err := strat.UnsealRootKey(ctx, sealed, seal.Credentials{})
+	got, err := strategy.UnsealRootKey(ctx, sealed, seal.Credentials{})
 	if err != nil {
 		t.Fatalf("UnsealRootKey: %v", err)
 	}
@@ -119,9 +119,9 @@ func TestSystemBarrierStrategy_Unavailable(t *testing.T) {
 // UnsealRootKey returns ErrCorruptRootKey when passed a nil SealedRootKey.
 func TestSystemBarrierStrategy_UnsealRootKey_NilSealed(t *testing.T) {
 	system := newUnsealedSystemBarrier(t)
-	strat := seal.NewSystemBarrierStrategy(system)
+	strategy := seal.NewSystemBarrierStrategy(system)
 
-	_, err := strat.UnsealRootKey(context.Background(), nil, seal.Credentials{})
+	_, err := strategy.UnsealRootKey(context.Background(), nil, seal.Credentials{})
 	if err == nil {
 		t.Fatal("expected error for nil SealedRootKey, got nil")
 	}
@@ -135,7 +135,7 @@ func TestSystemBarrierStrategy_UnsealRootKey_NilSealed(t *testing.T) {
 // sealed by a different strategy.
 func TestSystemBarrierStrategy_UnsealRootKey_WrongStrategy(t *testing.T) {
 	system := newUnsealedSystemBarrier(t)
-	strat := seal.NewSystemBarrierStrategy(system)
+	strategy := seal.NewSystemBarrierStrategy(system)
 
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -152,7 +152,7 @@ func TestSystemBarrierStrategy_UnsealRootKey_WrongStrategy(t *testing.T) {
 	}
 
 	// Attempting to unseal with SystemBarrierStrategy must fail.
-	_, err = strat.UnsealRootKey(context.Background(), sealed, seal.Credentials{})
+	_, err = strategy.UnsealRootKey(context.Background(), sealed, seal.Credentials{})
 	if err == nil {
 		t.Fatal("expected ErrStrategyMismatch for wrong-strategy SealedRootKey, got nil")
 	}

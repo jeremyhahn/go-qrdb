@@ -287,7 +287,7 @@ func TestNormalizeLimit_Defaults(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestErrChainBroken_Error(t *testing.T) {
-	err := &ErrChainBroken{Index: 3, Expected: "abc", Got: "def"}
+	err := &ChainBrokenError{Index: 3, Expected: "abc", Got: "def"}
 	msg := err.Error()
 	if !strings.Contains(msg, "3") || !strings.Contains(msg, "abc") || !strings.Contains(msg, "def") {
 		t.Fatalf("unexpected error message: %s", msg)
@@ -296,7 +296,7 @@ func TestErrChainBroken_Error(t *testing.T) {
 
 func TestErrChainBroken_Error_Zero(t *testing.T) {
 	// Index 0 edge case for the itoa helper.
-	err := &ErrChainBroken{Index: 0, Expected: "0000", Got: "ffff"}
+	err := &ChainBrokenError{Index: 0, Expected: "0000", Got: "ffff"}
 	msg := err.Error()
 	if !strings.Contains(msg, "0") {
 		t.Fatalf("unexpected error message: %s", msg)
@@ -305,7 +305,7 @@ func TestErrChainBroken_Error_Zero(t *testing.T) {
 
 func TestErrChainBroken_Error_Negative(t *testing.T) {
 	// Negative index covers the neg branch in itoa.
-	err := &ErrChainBroken{Index: -1, Expected: "x", Got: "y"}
+	err := &ChainBrokenError{Index: -1, Expected: "x", Got: "y"}
 	msg := err.Error()
 	if !strings.Contains(msg, "-1") {
 		t.Fatalf("unexpected error message: %s", msg)
@@ -325,7 +325,7 @@ func TestRetentionError_Error(t *testing.T) {
 }
 
 func TestErrFileLocked_Error(t *testing.T) {
-	err := &ErrFileLocked{Path: "/tmp/audit.ndjson"}
+	err := &FileLockedError{Path: "/tmp/audit.ndjson"}
 	if !strings.Contains(err.Error(), "/tmp/audit.ndjson") {
 		t.Fatalf("unexpected error message: %s", err.Error())
 	}

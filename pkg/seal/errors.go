@@ -294,7 +294,7 @@ var (
 	// fresh node-local Pick; it is not surfaced to API callers.
 	ErrPoolSlotUnresolved = errors.New("qrdb/seal: recorded volume-pool slot cannot be resolved to a local candidate")
 
-	// --- Root-key import seam (multi-node tenant Raft groups) ---
+	// --- Root-key import seam (multi-node tenant Raft groups) ---.
 
 	// ErrImportedKeyNil is returned when a nil *ImportedKey is passed to
 	// ImportRootKey or Validate.

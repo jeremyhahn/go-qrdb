@@ -231,11 +231,11 @@ func (b *SoftwareBackend) loadRecord(key string, ptr *atomic.Pointer[PINRecord],
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
-		return &ErrStorageLoadFailed{Key: key, Cause: err}
+		return &StorageLoadFailedError{Key: key, Cause: err}
 	}
 	var record PINRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return &ErrStorageLoadFailed{Key: key, Cause: err}
+		return &StorageLoadFailedError{Key: key, Cause: err}
 	}
 	ptr.Store(&record)
 	flag.Store(true)
@@ -297,10 +297,10 @@ func (b *SoftwareBackend) hashAndStoreUserPIN(pin string) error {
 func (b *SoftwareBackend) persistRecord(key string, record *PINRecord) error {
 	data, err := json.Marshal(record)
 	if err != nil {
-		return &ErrStoragePersistFailed{Key: key, Cause: err}
+		return &StoragePersistFailedError{Key: key, Cause: err}
 	}
 	if err := b.store.Put(context.Background(), key, data); err != nil {
-		return &ErrStoragePersistFailed{Key: key, Cause: err}
+		return &StoragePersistFailedError{Key: key, Cause: err}
 	}
 	return nil
 }

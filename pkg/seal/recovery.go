@@ -12,8 +12,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 const recoveryMetaKey = "recovery-meta"

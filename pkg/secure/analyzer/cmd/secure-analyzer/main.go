@@ -15,8 +15,9 @@
 package main
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer"
 	"golang.org/x/tools/go/analysis/singlechecker"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure/analyzer"
 )
 
 func main() {

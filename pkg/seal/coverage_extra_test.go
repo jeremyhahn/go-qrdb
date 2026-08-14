@@ -213,7 +213,7 @@ func TestBarrierRegistry_RegisterTenant_WithStrategy(t *testing.T) {
 	}
 
 	tenantSW := testSoftwareStrategy(t)
-	tb, err := registry.RegisterTenant(context.Background(), "tenant-with-strat", NewMemoryBackend(), BarrierConfig{
+	tb, err := registry.RegisterTenant(context.Background(), "tenant-with-strategy", NewMemoryBackend(), BarrierConfig{
 		RootKeyPath: "t/root-key",
 	}, tenantSW)
 	if err != nil {

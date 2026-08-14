@@ -240,7 +240,7 @@ func (l *ChainFileLogger) Query(_ context.Context, f Filter) (*Page, error) {
 }
 
 // VerifyChain opens the file at path, recomputes the hash chain from the
-// first event, and returns ErrChainBroken if any event's PrevHash does not
+// first event, and returns ChainBrokenError if any event's PrevHash does not
 // match the expected value.
 func (l *ChainFileLogger) VerifyChain(_ context.Context) error {
 	l.mu.Lock()
@@ -506,7 +506,7 @@ func buildPage(events []AuditEvent, f Filter) *Page {
 }
 
 // verifyChainFile opens path and walks every event, recomputing the hash
-// chain. Returns ErrChainBroken on the first mismatch.
+// chain. Returns ChainBrokenError on the first mismatch.
 func verifyChainFile(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -536,7 +536,7 @@ func verifyChainFile(path string) error {
 		}
 
 		if ev.PrevHash != expectedPrevHash {
-			return &ErrChainBroken{
+			return &ChainBrokenError{
 				Index:    index,
 				Expected: expectedPrevHash,
 				Got:      ev.PrevHash,
@@ -545,7 +545,7 @@ func verifyChainFile(path string) error {
 
 		canonical, err := canonicalJSON(ev)
 		if err != nil {
-			return &ErrChainBroken{Index: index, Expected: "valid json", Got: "marshal error"}
+			return &ChainBrokenError{Index: index, Expected: "valid json", Got: "marshal error"}
 		}
 		prev = chainDigest(prev, canonical)
 		index++

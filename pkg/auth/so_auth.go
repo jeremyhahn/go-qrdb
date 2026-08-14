@@ -26,11 +26,12 @@ import (
 	"log/slog"
 	"os"
 
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/pbkdf2"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
-	"golang.org/x/crypto/argon2"
-	"golang.org/x/crypto/pbkdf2"
 )
 
 const (

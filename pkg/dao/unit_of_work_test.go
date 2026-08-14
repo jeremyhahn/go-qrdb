@@ -21,9 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // OrderEntity is a second entity type for cross-DAO UnitOfWork tests.

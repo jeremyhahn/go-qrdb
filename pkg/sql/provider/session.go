@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"

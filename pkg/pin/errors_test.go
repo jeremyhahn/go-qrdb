@@ -22,7 +22,7 @@ import (
 
 func TestErrStoragePersistFailed_Error(t *testing.T) {
 	cause := errors.New("disk full")
-	err := &ErrStoragePersistFailed{Key: "so-pin", Cause: cause}
+	err := &StoragePersistFailedError{Key: "so-pin", Cause: cause}
 	msg := err.Error()
 	if !strings.Contains(msg, "so-pin") {
 		t.Fatalf("Error() = %q, want it to contain the key", msg)
@@ -34,7 +34,7 @@ func TestErrStoragePersistFailed_Error(t *testing.T) {
 
 func TestErrStoragePersistFailed_Unwrap(t *testing.T) {
 	cause := errors.New("underlying")
-	err := &ErrStoragePersistFailed{Key: "k", Cause: cause}
+	err := &StoragePersistFailedError{Key: "k", Cause: cause}
 	if !errors.Is(err, cause) {
 		t.Fatal("errors.Is must surface wrapped cause")
 	}
@@ -45,7 +45,7 @@ func TestErrStoragePersistFailed_Unwrap(t *testing.T) {
 
 func TestErrStorageLoadFailed_Error(t *testing.T) {
 	cause := errors.New("io error")
-	err := &ErrStorageLoadFailed{Key: "user-pin", Cause: cause}
+	err := &StorageLoadFailedError{Key: "user-pin", Cause: cause}
 	msg := err.Error()
 	if !strings.Contains(msg, "user-pin") {
 		t.Fatalf("Error() = %q, want it to contain the key", msg)
@@ -57,14 +57,14 @@ func TestErrStorageLoadFailed_Error(t *testing.T) {
 
 func TestErrStorageLoadFailed_Unwrap(t *testing.T) {
 	cause := errors.New("backend down")
-	err := &ErrStorageLoadFailed{Key: "k", Cause: cause}
+	err := &StorageLoadFailedError{Key: "k", Cause: cause}
 	if !errors.Is(err, cause) {
 		t.Fatal("errors.Is must surface wrapped cause")
 	}
 }
 
 func TestErrUnsupportedPBKDF2Hash_Error(t *testing.T) {
-	err := &ErrUnsupportedPBKDF2Hash{Hash: "md4"}
+	err := &UnsupportedPBKDF2HashError{Hash: "md4"}
 	msg := err.Error()
 	if !strings.Contains(msg, "md4") {
 		t.Fatalf("Error() = %q, want it to contain hash name", msg)

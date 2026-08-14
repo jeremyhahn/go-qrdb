@@ -28,6 +28,9 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qrdbkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
@@ -36,8 +39,6 @@ import (
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // pebbleUpdateHandler processes a single decoded command within a PebbleDB

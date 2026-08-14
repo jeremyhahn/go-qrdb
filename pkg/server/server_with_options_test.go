@@ -26,11 +26,11 @@ import (
 // is reachable from the server's serverOptions for the lifecycle layer
 // to consume at barrier-initialization time.
 func TestWithSealStrategy_Applied(t *testing.T) {
-	strat := seal.NewNoneStrategy()
+	strategy := seal.NewNoneStrategy()
 	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
-		WithSealStrategy(strat),
+		WithSealStrategy(strategy),
 	)
-	if srv.opts.sealStrategy != strat {
+	if srv.opts.sealStrategy != strategy {
 		t.Fatal("sealStrategy not stored in opts")
 	}
 }
@@ -89,20 +89,20 @@ func TestWithFactorRegistry_Applied(t *testing.T) {
 // TestWithAllInjections_Compose asserts that all four Phase-3 injections
 // coexist on the same server without conflicting.
 func TestWithAllInjections_Compose(t *testing.T) {
-	strat := seal.NewNoneStrategy()
+	strategy := seal.NewNoneStrategy()
 	reg := seal.NewDefaultStrategyRegistry()
 	backend, _ := pin.NewSoftwareBackend(nil, pin.DefaultHashConfig())
 	factors := authfactors.NewFactorRegistry()
 
 	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
-		WithSealStrategy(strat),
+		WithSealStrategy(strategy),
 		WithStrategyRegistry(reg),
 		WithPINBackend(backend),
 		WithFactorRegistry(factors),
 	)
 
 	switch {
-	case srv.opts.sealStrategy != strat:
+	case srv.opts.sealStrategy != strategy:
 		t.Fatal("sealStrategy clobbered by other options")
 	case srv.opts.strategyRegistry != reg:
 		t.Fatal("strategyRegistry clobbered by other options")

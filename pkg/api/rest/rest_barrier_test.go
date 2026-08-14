@@ -24,9 +24,10 @@ import (
 	"testing"
 	"time"
 
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // ---------------------------------------------------------------------------

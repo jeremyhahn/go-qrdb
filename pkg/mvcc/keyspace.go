@@ -65,7 +65,7 @@ const (
 )
 
 // changeRecordSize is the fixed size of a serialized ChangeRecord in bytes.
-// Layout: [eventType:1][createRevision:8][version:8][leaseID:8]
+// Layout: [eventType:1][createRevision:8][version:8][leaseID:8].
 const changeRecordSize = 25
 
 // Entry flags distinguish live values from tombstones in data entries.
@@ -75,7 +75,7 @@ const (
 )
 
 // metaSize is the fixed size of serialized MVCC metadata in bytes.
-// Layout: [createRevision:8][modRevision:8][version:8][leaseID:8]
+// Layout: [createRevision:8][modRevision:8][version:8][leaseID:8].
 const metaSize = 32
 
 // KeyMeta holds per-key MVCC state persisted alongside metadata keys.

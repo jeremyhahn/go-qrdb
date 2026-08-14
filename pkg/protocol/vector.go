@@ -25,41 +25,41 @@ import (
 
 const (
 	// OpVectorUpsert stores or updates a vector in a namespace.
-	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id][dim:4 LE][vector:dim*4 bytes float32][metaLen:4 LE][metadata]
+	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id][dim:4 LE][vector:dim*4 bytes float32][metaLen:4 LE][metadata].
 	OpVectorUpsert byte = 70
 
 	// OpVectorDelete removes a vector from a namespace.
-	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id]
+	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id].
 	OpVectorDelete byte = 71
 
 	// OpVectorBatchUpsert stores multiple vectors in a single namespace.
 	// Payload: [nsLen:2 LE][namespace][count:2 LE][vectors...]
-	// Each vector: [idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata]
+	// Each vector: [idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata].
 	OpVectorBatchUpsert byte = 72
 
 	// OpVectorBatchDelete removes multiple vectors from a namespace.
 	// Payload: [nsLen:2 LE][namespace][count:2 LE][ids...]
-	// Each id: [idLen:2 LE][id]
+	// Each id: [idLen:2 LE][id].
 	OpVectorBatchDelete byte = 73
 
 	// OpNamespaceCreate creates a new vector namespace.
-	// Payload: [nsLen:2 LE][namespace][dimension:4 LE][distMetric:1][indexType:1]
+	// Payload: [nsLen:2 LE][namespace][dimension:4 LE][distMetric:1][indexType:1].
 	OpNamespaceCreate byte = 74
 
 	// OpNamespaceDelete removes a vector namespace.
-	// Payload: [nsLen:2 LE][namespace]
+	// Payload: [nsLen:2 LE][namespace].
 	OpNamespaceDelete byte = 75
 
 	// OpVectorUpdateMetadata updates a vector's metadata without modifying the vector data.
-	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id][metaLen:4 LE][metadata]
+	// Payload: [nsLen:2 LE][namespace][idLen:2 LE][id][metaLen:4 LE][metadata].
 	OpVectorUpdateMetadata byte = 76
 
 	// OpVectorRebuildIndex triggers an index rebuild for a namespace.
-	// Payload: [nsLen:2 LE][namespace]
+	// Payload: [nsLen:2 LE][namespace].
 	OpVectorRebuildIndex byte = 77
 
 	// OpVectorCompact triggers compaction for a namespace.
-	// Payload: [nsLen:2 LE][namespace]
+	// Payload: [nsLen:2 LE][namespace].
 	OpVectorCompact byte = 78
 )
 
@@ -76,7 +76,7 @@ type VectorUpsertParams struct {
 // ---------------------------------------------------------------------------
 
 // EncodeVectorUpsert creates a binary Vector Upsert command.
-// Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata]
+// Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata].
 func EncodeVectorUpsert(namespace, id string, vector []float32, metadata []byte) []byte {
 	nsBytes := []byte(namespace)
 	idBytes := []byte(id)
@@ -114,7 +114,7 @@ func EncodeVectorUpsert(namespace, id string, vector []float32, metadata []byte)
 }
 
 // EncodeVectorDelete creates a binary Vector Delete command.
-// Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id]
+// Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id].
 func EncodeVectorDelete(namespace, id string) []byte {
 	nsBytes := []byte(namespace)
 	idBytes := []byte(id)
@@ -138,7 +138,7 @@ func EncodeVectorDelete(namespace, id string) []byte {
 }
 
 // EncodeNamespaceCreate creates a binary Namespace Create command.
-// Format: [op:1][nsLen:2 LE][namespace][dimension:4 LE][distMetric:1][indexType:1]
+// Format: [op:1][nsLen:2 LE][namespace][dimension:4 LE][distMetric:1][indexType:1].
 func EncodeNamespaceCreate(namespace string, dimension uint32, distMetric, indexType byte) []byte {
 	nsBytes := []byte(namespace)
 
@@ -165,7 +165,7 @@ func EncodeNamespaceCreate(namespace string, dimension uint32, distMetric, index
 }
 
 // EncodeNamespaceDelete creates a binary Namespace Delete command.
-// Format: [op:1][nsLen:2 LE][namespace]
+// Format: [op:1][nsLen:2 LE][namespace].
 func EncodeNamespaceDelete(namespace string) []byte {
 	nsBytes := []byte(namespace)
 
@@ -179,7 +179,7 @@ func EncodeNamespaceDelete(namespace string) []byte {
 
 // EncodeVectorBatchUpsert creates a binary Vector Batch Upsert command.
 // Format: [op:1][nsLen:2 LE][namespace][count:2 LE][vectors...]
-// Each vector: [idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata]
+// Each vector: [idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata].
 func EncodeVectorBatchUpsert(namespace string, vectors []VectorUpsertParams) []byte {
 	nsBytes := []byte(namespace)
 

@@ -61,7 +61,7 @@ func TestMapServiceError_WatchStartRevisionUnsupported(t *testing.T) {
 // applies when the sentinel is wrapped (errors.Is semantics), matching how
 // it actually arrives from hub.Watch/WatchPrefix via the service layer.
 func TestMapServiceError_WatchCompacted_Wrapped(t *testing.T) {
-	err := mapServiceError(&watchCreateErrorForTest{cause: watch.ErrCompacted})
+	err := mapServiceError(&watchCreateTestError{cause: watch.ErrCompacted})
 
 	st, ok := status.FromError(err)
 	if !ok {
@@ -72,11 +72,11 @@ func TestMapServiceError_WatchCompacted_Wrapped(t *testing.T) {
 	}
 }
 
-// watchCreateErrorForTest is a minimal Unwrap-able wrapper used only to
+// watchCreateTestError is a minimal Unwrap-able wrapper used only to
 // exercise errors.Is-based matching in mapServiceError.
-type watchCreateErrorForTest struct {
+type watchCreateTestError struct {
 	cause error
 }
 
-func (e *watchCreateErrorForTest) Error() string { return "wrapped: " + e.cause.Error() }
-func (e *watchCreateErrorForTest) Unwrap() error { return e.cause }
+func (e *watchCreateTestError) Error() string { return "wrapped: " + e.cause.Error() }
+func (e *watchCreateTestError) Unwrap() error { return e.cause }

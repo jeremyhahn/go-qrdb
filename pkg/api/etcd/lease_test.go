@@ -22,11 +22,12 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
 
 // mockLeaseServicer implements lease.LeaseServicer with function fields

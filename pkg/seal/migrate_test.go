@@ -45,8 +45,8 @@ func TestMintKeyedSibling_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	src, _ := newNoneBarrier(t)
 
-	strat := NewDeferredSoftwareStrategy()
-	first, err := src.MintKeyedSibling(ctx, ".migrating", strat, Credentials{Secret: []byte("pw")})
+	strategy := NewDeferredSoftwareStrategy()
+	first, err := src.MintKeyedSibling(ctx, ".migrating", strategy, Credentials{Secret: []byte("pw")})
 	if err != nil {
 		t.Fatalf("first MintKeyedSibling: %v", err)
 	}

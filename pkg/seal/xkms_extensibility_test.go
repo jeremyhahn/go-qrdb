@@ -95,16 +95,16 @@ func xkmsTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Disc
 // strategy's BarrierEncryptor returns nil).
 func TestXKMS_HardwareStrategyThroughBarrier(t *testing.T) {
 	ctx := context.Background()
-	strat := newMockHSMStrategy(t, "mock-hsm")
+	strategy := newMockHSMStrategy(t, "mock-hsm")
 
 	// Envelope invariant: the hardware strategy does not supply a per-op
 	// encrypter; the barrier uses resident HKDF DEKs.
-	if enc, err := strat.BarrierEncryptor(ctx, nil); err != nil || enc != nil {
+	if enc, err := strategy.BarrierEncryptor(ctx, nil); err != nil || enc != nil {
 		t.Fatalf("BarrierEncryptor = (%v,%v), want (nil,nil) for the envelope invariant", enc, err)
 	}
 
 	b, err := NewStorageBarrier(xkmsTestLogger(), NewMemoryBackend(),
-		BarrierConfig{RootKeyPath: "hsm/root-key", PreferenceOrder: []StrategyID{"mock-hsm"}}, strat)
+		BarrierConfig{RootKeyPath: "hsm/root-key", PreferenceOrder: []StrategyID{"mock-hsm"}}, strategy)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}
@@ -140,8 +140,8 @@ func TestXKMS_HardwareStrategyThroughBarrier(t *testing.T) {
 // hardware strategy for tenants/system to select.
 func TestXKMS_HardwareStrategyViaRegistry(t *testing.T) {
 	reg := NewDefaultStrategyRegistry()
-	strat := newMockHSMStrategy(t, "mock-hsm-reg")
-	if err := reg.Register("mock-hsm-reg", func() (SealingStrategy, error) { return strat, nil }); err != nil {
+	strategy := newMockHSMStrategy(t, "mock-hsm-reg")
+	if err := reg.Register("mock-hsm-reg", func() (SealingStrategy, error) { return strategy, nil }); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	factory, err := reg.LookupFactory("mock-hsm-reg")

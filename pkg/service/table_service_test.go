@@ -23,9 +23,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // ---------------------------------------------------------------------------

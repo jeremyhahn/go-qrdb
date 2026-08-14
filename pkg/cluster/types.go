@@ -18,9 +18,10 @@
 package cluster
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 )
 
 // RaftNode is the interface that a Host must satisfy for bootstrap operations.

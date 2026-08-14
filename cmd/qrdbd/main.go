@@ -20,8 +20,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // version, gitCommit, and buildDate are set at build time via ldflags:

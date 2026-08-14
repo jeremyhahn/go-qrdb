@@ -41,12 +41,12 @@ func (p *fakeMigrationProvider) StoreDirs(_ context.Context, _ BarrierScope) ([]
 }
 
 func (p *fakeMigrationProvider) MintKeyedTarget(ctx context.Context, _ BarrierScope, opts seal.MigrationOptions) (*seal.StorageBarrier, error) {
-	strat, err := seal.NewSoftwareStrategy(opts.Credentials.Secret)
+	strategy, err := seal.NewSoftwareStrategy(opts.Credentials.Secret)
 	if err != nil {
 		return nil, err
 	}
 	b, err := seal.NewStorageBarrier(testLogger(), p.sealBackend,
-		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, strat)
+		seal.BarrierConfig{RootKeyPath: "root-key.migrating", DeploymentID: 1}, strategy)
 	if err != nil {
 		return nil, err
 	}
@@ -223,12 +223,12 @@ func TestEncryptionMigration_InvalidOptionsRejected(t *testing.T) {
 // initReopenKeyedService unseals an existing keyed root key (post-migration).
 func initReopenKeyedService(t *testing.T, backend seal.StorageBackend, rootKeyPath, passphrase string) *seal.StorageBarrier {
 	t.Helper()
-	strat, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
 	if err != nil {
 		t.Fatalf("strategy: %v", err)
 	}
 	b, err := seal.NewStorageBarrier(testLogger(), backend,
-		seal.BarrierConfig{RootKeyPath: rootKeyPath, DeploymentID: 1}, strat)
+		seal.BarrierConfig{RootKeyPath: rootKeyPath, DeploymentID: 1}, strategy)
 	if err != nil {
 		t.Fatalf("barrier: %v", err)
 	}

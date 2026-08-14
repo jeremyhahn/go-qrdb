@@ -21,9 +21,9 @@ func TestChangePassword_Success(t *testing.T) {
 	oldPassword := "old-password-123"
 	newPassword := "new-password-456"
 
-	strat := testSoftwareStrategy(t)
+	strategy := testSoftwareStrategy(t)
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, strat)
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, strategy)
 	require.NoError(t, err)
 
 	// Initialize with the old password.

@@ -20,12 +20,12 @@ import (
 // barrier.
 func newSoftwareBarrierWithPass(t *testing.T, pass string) *StorageBarrier {
 	t.Helper()
-	strat, err := NewSoftwareStrategy([]byte(pass))
+	strategy, err := NewSoftwareStrategy([]byte(pass))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
 	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
-		BarrierConfig{RootKeyPath: "node/root-key"}, strat)
+		BarrierConfig{RootKeyPath: "node/root-key"}, strategy)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier: %v", err)
 	}

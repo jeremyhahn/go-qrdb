@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/dolthub/vitess/go/vt/sqlparser"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 )
 

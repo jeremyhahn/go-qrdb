@@ -416,7 +416,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 // the caller is already authorized.
 //
 // Uses: Barriers (required), Logger (required).
-func InitializeTenantBarrier(ctx context.Context, tenantID string, strat seal.StrategyID, creds seal.Credentials, deps Dependencies) error {
+func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal.StrategyID, creds seal.Credentials, deps Dependencies) error {
 	if deps.Logger == nil {
 		return &MissingLoggerError{}
 	}
@@ -427,7 +427,6 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strat seal.St
 		return &EmptyTenantIDError{}
 	}
 
-	strategy := strat
 	if strategy == "" {
 		strategy = StrategyNone
 	}

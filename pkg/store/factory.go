@@ -17,11 +17,12 @@ package store
 import (
 	"github.com/cockroachdb/pebble/v2"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // Option configures the underlying PebbleDB database for state machine factories.

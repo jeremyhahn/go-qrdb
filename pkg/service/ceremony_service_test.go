@@ -28,10 +28,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // testCeremonyCA is an in-memory CA that implements ceremony.CeremonyCA

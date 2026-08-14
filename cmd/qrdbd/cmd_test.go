@@ -39,11 +39,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // ---------------------------------------------------------------------------

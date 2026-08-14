@@ -123,11 +123,11 @@ func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 
 	err = verifyChainFile(path)
 	if err == nil {
-		t.Fatal("expected ErrChainBroken, got nil")
+		t.Fatal("expected ChainBrokenError, got nil")
 	}
-	var chainErr *ErrChainBroken
+	var chainErr *ChainBrokenError
 	if !errors.As(err, &chainErr) {
-		t.Fatalf("expected *ErrChainBroken, got %T: %v", err, err)
+		t.Fatalf("expected *ChainBrokenError, got %T: %v", err, err)
 	}
 }
 
@@ -740,7 +740,7 @@ func TestVerifyChainFile_SkipsInvalidJSON(t *testing.T) {
 	_, _ = f.WriteString("not-valid-json\n")
 	_ = f.Close()
 
-	// verifyChainFile should skip the invalid line and not return ErrChainBroken.
+	// verifyChainFile should skip the invalid line and not return ChainBrokenError.
 	if err := verifyChainFile(path); err != nil {
 		t.Fatalf("verifyChainFile: unexpected error on invalid JSON line: %v", err)
 	}

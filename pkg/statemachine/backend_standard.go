@@ -127,7 +127,7 @@ func (b *StandardBackend) Scan(prefix []byte, limit int) (map[string][]byte, err
 // SaveSnapshot serializes the map to the writer under a read lock.
 //
 // Format: [entryCount:4 LE][entries...]
-// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value]
+// Each entry: [keyLen:4 LE][key][valueLen:4 LE][value].
 func (b *StandardBackend) SaveSnapshot(w io.Writer, stopper <-chan struct{}) error {
 	// Deep-copy under read lock.
 	b.mu.RLock()

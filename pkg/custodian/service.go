@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
@@ -30,11 +31,11 @@ const (
 	sysCustodianPrefix = "__sys:custodian/"
 
 	// sysCustodianIdxTenant is the tenant secondary index prefix.
-	// Key: __sys:custodian-idx/tenant/{tenantID}/{custodianID}
+	// Key: __sys:custodian-idx/tenant/{tenantID}/{custodianID}.
 	sysCustodianIdxTenant = "__sys:custodian-idx/tenant/"
 
 	// sysCustodianIdxUsername is the username secondary index prefix.
-	// Key: __sys:custodian-idx/username/{tenantID}/{username}
+	// Key: __sys:custodian-idx/username/{tenantID}/{username}.
 	sysCustodianIdxUsername = "__sys:custodian-idx/username/"
 )
 

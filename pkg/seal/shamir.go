@@ -16,8 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // InitializeShamir initializes the barrier using Shamir secret sharing.
@@ -50,8 +51,8 @@ func (b *StorageBarrier) InitializeShamir(ctx context.Context, creds Credentials
 	}
 
 	// Direct mode: ShamirStrategy splits the root key itself.
-	if strat := b.ShamirStrategy(); strat != nil {
-		return b.initializeShamirDirect(ctx, strat, threshold, total)
+	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
+		return b.initializeShamirDirect(ctx, shamirStrategy, threshold, total)
 	}
 
 	// Credential mode: initialize barrier with the credential, then
@@ -231,7 +232,7 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	defer secure.Wipe(secret)
 	acc.Reset()
 
-	if strat := b.ShamirStrategy(); strat != nil {
+	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		// Direct mode: the reconstructed secret is the unseal key (or, on
 		// legacy barriers, the root key itself); unsealDirect resolves it.
 		if err := b.unsealDirect(ctx, secret); err != nil {
@@ -303,7 +304,7 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 	// matching the single-share UnsealWithShare path.
 	defer secure.Wipe(secret)
 
-	if strat := b.ShamirStrategy(); strat != nil {
+	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		return b.unsealDirect(ctx, secret)
 	}
 

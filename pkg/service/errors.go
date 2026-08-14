@@ -18,8 +18,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // SMNotConfiguredError is returned when a proposal succeeds at the Raft level

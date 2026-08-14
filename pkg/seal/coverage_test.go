@@ -308,11 +308,11 @@ func TestRecoverWithKeys_ShamirStrategyPath(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestShamirStrategy_Close(t *testing.T) {
-	strat, err := NewShamirStrategy(2, 3)
+	strategy, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := strat.Close(); err != nil {
+	if err := strategy.Close(); err != nil {
 		t.Fatalf("ShamirStrategy.Close: %v", err)
 	}
 }
@@ -427,7 +427,7 @@ func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
 
 	// Register without providing any strategy. NewTenantBarrier calls
 	// NewStorageBarrier which requires at least one strategy.
-	_, err = registry.RegisterTenant(context.Background(), "tenant-no-strat", NewMemoryBackend(), BarrierConfig{
+	_, err = registry.RegisterTenant(context.Background(), "tenant-no-strategy", NewMemoryBackend(), BarrierConfig{
 		RootKeyPath: "t/root-key",
 	})
 	if !errors.Is(err, ErrNoAvailableStrategy) {

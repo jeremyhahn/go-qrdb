@@ -24,8 +24,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // testLogger returns a quiet logger for unit tests.

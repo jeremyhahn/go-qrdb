@@ -23,11 +23,12 @@ import (
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 )
 
 // MVCCKVServicer extends KVServicer with MVCC-aware operations that expose

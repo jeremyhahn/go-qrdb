@@ -24,11 +24,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // ---------------------------------------------------------------------------

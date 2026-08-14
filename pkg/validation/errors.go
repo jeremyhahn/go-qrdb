@@ -76,7 +76,7 @@ func (c Constraint) String() string {
 // **ErrValidation target matches any embedding wrapper, letting callers handle
 // all validation failures uniformly while still being able to match the
 // concrete domain type.
-type ErrValidation struct {
+type ErrValidation struct { //nolint:errname // exported API embedded by domain error types, rename is a breaking change
 	// Field is the name of the field that failed validation (e.g. "tenant ID").
 	Field string
 	// Constraint is the specific rule that was violated.

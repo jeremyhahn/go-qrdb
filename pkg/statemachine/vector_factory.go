@@ -17,9 +17,10 @@
 package statemachine
 
 import (
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	vectorStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // NewVectorRegularCreateFunc returns an sm.CreateFunc that creates

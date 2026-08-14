@@ -21,10 +21,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/codec"
-	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/codec"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 )
 
 // ---------------------------------------------------------------------------

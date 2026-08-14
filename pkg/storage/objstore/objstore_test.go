@@ -18,9 +18,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // newMemEngine returns an objstore Engine backed by the in-memory provider.

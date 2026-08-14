@@ -281,10 +281,10 @@ func (f *extraFailingKV) ListEntities(_ context.Context, _ *service.ListEntities
 
 var _ service.KVServicer = (*extraFailingKV)(nil)
 
-// extraKVErr is a typed error for error propagation assertions.
-type extraKVErr struct{ msg string }
+// extraKVError is a typed error for error propagation assertions.
+type extraKVError struct{ msg string }
 
-func (e *extraKVErr) Error() string { return e.msg }
+func (e *extraKVError) Error() string { return e.msg }
 
 // extraListEntitiesKV returns a fixed ListEntities response for prefix-strip tests.
 type extraListEntitiesKV struct {
@@ -328,12 +328,12 @@ func TestExtraNamespacedKV_Put_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_Put_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"put fail"}
+	sentinel := &extraKVError{"put fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	err := svc.Put(context.Background(), "k", []byte("v"))
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -353,12 +353,12 @@ func TestExtraNamespacedKV_Get_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_Get_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"get fail"}
+	sentinel := &extraKVError{"get fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.Get(context.Background(), "k")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -377,12 +377,12 @@ func TestExtraNamespacedKV_Delete_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_Delete_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"delete fail"}
+	sentinel := &extraKVError{"delete fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	err := svc.Delete(context.Background(), "k")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -407,12 +407,12 @@ func TestExtraNamespacedKV_List_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_List_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"list fail"}
+	sentinel := &extraKVError{"list fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.List(context.Background(), "")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -443,12 +443,12 @@ func TestExtraNamespacedKV_Scan_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_Scan_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"scan fail"}
+	sentinel := &extraKVError{"scan fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.Scan(context.Background(), "")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -469,12 +469,12 @@ func TestExtraNamespacedKV_GetStale_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_GetStale_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"stale get fail"}
+	sentinel := &extraKVError{"stale get fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.GetStale(context.Background(), "k")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -499,12 +499,12 @@ func TestExtraNamespacedKV_ListStale_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ListStale_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"stale list fail"}
+	sentinel := &extraKVError{"stale list fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ListStale(context.Background(), "")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -531,12 +531,12 @@ func TestExtraNamespacedKV_ScanStale_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ScanStale_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"stale scan fail"}
+	sentinel := &extraKVError{"stale scan fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ScanStale(context.Background(), "")
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -554,12 +554,12 @@ func TestExtraNamespacedKV_PutWithMode_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_PutWithMode_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"pwm fail"}
+	sentinel := &extraKVError{"pwm fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	err := svc.PutWithMode(context.Background(), "k", []byte("v"), writemode.Sync)
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -579,12 +579,12 @@ func TestExtraNamespacedKV_DeleteWithMode_PrependsPrefixToKey(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_DeleteWithMode_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"dwm fail"}
+	sentinel := &extraKVError{"dwm fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	err := svc.DeleteWithMode(context.Background(), "k", writemode.Sync)
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -606,12 +606,12 @@ func TestExtraNamespacedKV_GetWithConsistency_PrependsPrefixToKey(t *testing.T) 
 }
 
 func TestExtraNamespacedKV_GetWithConsistency_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"gwc fail"}
+	sentinel := &extraKVError{"gwc fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.GetWithConsistency(context.Background(), "k", consistency.ReadOptions{})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -635,12 +635,12 @@ func TestExtraNamespacedKV_ListWithConsistency_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ListWithConsistency_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"lwc fail"}
+	sentinel := &extraKVError{"lwc fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ListWithConsistency(context.Background(), "", consistency.ReadOptions{})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -667,12 +667,12 @@ func TestExtraNamespacedKV_ScanWithConsistency_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ScanWithConsistency_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"swc fail"}
+	sentinel := &extraKVError{"swc fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ScanWithConsistency(context.Background(), "", consistency.ReadOptions{})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -705,12 +705,12 @@ func TestExtraNamespacedKV_ExistsWithConsistency_NotFound(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ExistsWithConsistency_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"ewc fail"}
+	sentinel := &extraKVError{"ewc fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ExistsWithConsistency(context.Background(), "k", consistency.ReadOptions{})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -736,12 +736,12 @@ func TestExtraNamespacedKV_PutEntity_PrependsPrefixToID(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_PutEntity_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"pe fail"}
+	sentinel := &extraKVError{"pe fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.PutEntity(context.Background(), &service.PutEntityRequest{ID: "e/1", EntityType: "x"})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -766,12 +766,12 @@ func TestExtraNamespacedKV_GetEntity_PrependsPrefixToID(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_GetEntity_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"ge fail"}
+	sentinel := &extraKVError{"ge fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.GetEntity(context.Background(), &service.GetEntityRequest{ID: "e/1", EntityType: "x"})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -796,12 +796,12 @@ func TestExtraNamespacedKV_DeleteEntity_PrependsPrefixToID(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_DeleteEntity_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"de fail"}
+	sentinel := &extraKVError{"de fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.DeleteEntity(context.Background(), &service.DeleteEntityRequest{ID: "e/1", EntityType: "x"})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 
@@ -828,12 +828,12 @@ func TestExtraNamespacedKV_ListEntities_StripsPrefix(t *testing.T) {
 }
 
 func TestExtraNamespacedKV_ListEntities_PropagatesError(t *testing.T) {
-	sentinel := &extraKVErr{"le fail"}
+	sentinel := &extraKVError{"le fail"}
 	svc := newNamespacedKVService(&extraFailingKV{err: sentinel}, "ns")
 	_, err := svc.ListEntities(context.Background(), &service.ListEntitiesRequest{EntityType: "x"})
-	var te *extraKVErr
+	var te *extraKVError
 	if !errors.As(err, &te) {
-		t.Errorf("expected extraKVErr, got %T: %v", err, err)
+		t.Errorf("expected extraKVError, got %T: %v", err, err)
 	}
 }
 

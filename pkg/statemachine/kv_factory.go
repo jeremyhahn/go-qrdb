@@ -17,8 +17,9 @@ package statemachine
 import (
 	"log/slog"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // NewKVStandardCreateFunc returns an sm.CreateFunc that creates

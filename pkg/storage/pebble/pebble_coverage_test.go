@@ -89,7 +89,7 @@ func TestIterator_Error_WithStoredErr(t *testing.T) {
 		t.Fatalf("expected *pebbleIterator, got %T", iter)
 	}
 
-	sentinel := &testSentinelErr{}
+	sentinel := &testSentinelError{}
 	pi.err = sentinel
 
 	err := pi.Error()
@@ -98,7 +98,7 @@ func TestIterator_Error_WithStoredErr(t *testing.T) {
 	}
 }
 
-// testSentinelErr is a minimal error used as an injection target.
-type testSentinelErr struct{}
+// testSentinelError is a minimal error used as an injection target.
+type testSentinelError struct{}
 
-func (e *testSentinelErr) Error() string { return "sentinel iterator error" }
+func (e *testSentinelError) Error() string { return "sentinel iterator error" }

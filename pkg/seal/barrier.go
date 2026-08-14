@@ -18,8 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // stateSealed and stateUnsealed are the two possible states for the barrier.
@@ -604,9 +605,9 @@ func (b *StorageBarrier) Status() *BarrierStatus {
 	// Populate Shamir scheme fields. The in-memory ShamirStrategy is the
 	// most accurate source (it is replaced by initializeShamirDirect and
 	// Rekey); fall back to the config for cold-booted / sealed barriers.
-	if strat := b.ShamirStrategy(); strat != nil {
-		status.ShamirThreshold = strat.Threshold()
-		status.ShamirTotal = strat.TotalShares()
+	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
+		status.ShamirThreshold = shamirStrategy.Threshold()
+		status.ShamirTotal = shamirStrategy.TotalShares()
 	} else if b.config.Shamir != nil && b.config.Shamir.Threshold >= 2 {
 		status.ShamirThreshold = b.config.Shamir.Threshold
 		status.ShamirTotal = b.config.Shamir.TotalShares

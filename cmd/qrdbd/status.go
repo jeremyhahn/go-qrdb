@@ -18,8 +18,9 @@ import (
 	"crypto/tls"
 	"fmt"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 )
 
 // statusResponse is the JSON payload returned by GET /status. Field names

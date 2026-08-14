@@ -413,8 +413,8 @@ func (ws *WriteSet) Mark(name string) {
 // removing it entirely if the mark predates its first touch). The
 // savepoint itself remains valid -- a later statement may continue and a
 // subsequent RollbackTo the same name is still well-defined -- but any
-// savepoint marked after this one is discarded, matching MySQL: "any
-// savepoints that were set after that one are removed."
+// savepoint marked after this one is discarded, matching MySQL, which removes
+// any savepoints that were set after the one being rolled back to.
 func (ws *WriteSet) RollbackTo(name string) error {
 	mark, ok := ws.savepoints[name]
 	if !ok {

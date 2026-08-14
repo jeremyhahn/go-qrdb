@@ -15,11 +15,12 @@
 package mvccadapter
 
 import (
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // NewMVCCFastCreateFunc returns an sm.CreateFunc that produces a

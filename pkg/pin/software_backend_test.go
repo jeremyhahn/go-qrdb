@@ -296,9 +296,9 @@ func TestNewSoftwareBackend_LoadFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSoftwareBackend: want load error, got nil")
 	}
-	var loadErr *ErrStorageLoadFailed
+	var loadErr *StorageLoadFailedError
 	if !errors.As(err, &loadErr) {
-		t.Fatalf("err = %v, want *ErrStorageLoadFailed", err)
+		t.Fatalf("err = %v, want *StorageLoadFailedError", err)
 	}
 }
 
@@ -312,9 +312,9 @@ func TestNewSoftwareBackend_CorruptedRecord(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSoftwareBackend: want decode error, got nil")
 	}
-	var loadErr *ErrStorageLoadFailed
+	var loadErr *StorageLoadFailedError
 	if !errors.As(err, &loadErr) {
-		t.Fatalf("err = %v, want *ErrStorageLoadFailed", err)
+		t.Fatalf("err = %v, want *StorageLoadFailedError", err)
 	}
 }
 
@@ -329,9 +329,9 @@ func TestNewSoftwareBackend_UserPINLoadFailureOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewSoftwareBackend: want decode error, got nil")
 	}
-	var loadErr *ErrStorageLoadFailed
+	var loadErr *StorageLoadFailedError
 	if !errors.As(err, &loadErr) {
-		t.Fatalf("err = %v, want *ErrStorageLoadFailed", err)
+		t.Fatalf("err = %v, want *StorageLoadFailedError", err)
 	}
 	if loadErr.Key != userPINStorageKey {
 		t.Fatalf("Key = %q, want %q", loadErr.Key, userPINStorageKey)
@@ -353,9 +353,9 @@ func TestSetSOPIN_PersistFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("SetSOPIN: want persist error, got nil")
 	}
-	var persistErr *ErrStoragePersistFailed
+	var persistErr *StoragePersistFailedError
 	if !errors.As(err, &persistErr) {
-		t.Fatalf("err = %v, want *ErrStoragePersistFailed", err)
+		t.Fatalf("err = %v, want *StoragePersistFailedError", err)
 	}
 	if persistErr.Key != soPINStorageKey {
 		t.Fatalf("Key = %q, want %q", persistErr.Key, soPINStorageKey)
@@ -383,9 +383,9 @@ func TestSetUserPIN_PersistFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("SetUserPIN: want persist error, got nil")
 	}
-	var persistErr *ErrStoragePersistFailed
+	var persistErr *StoragePersistFailedError
 	if !errors.As(err, &persistErr) {
-		t.Fatalf("err = %v, want *ErrStoragePersistFailed", err)
+		t.Fatalf("err = %v, want *StoragePersistFailedError", err)
 	}
 	if b.UserPINSet() {
 		t.Fatal("UserPINSet must remain false when persist failed")

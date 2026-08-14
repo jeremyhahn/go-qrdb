@@ -53,12 +53,12 @@ func newNoneEncryptor(t *testing.T, rootKeyPath string) *atrest.Encryptor {
 func newKeyedEncryptor(t *testing.T, rootKeyPath, passphrase string) *atrest.Encryptor {
 	t.Helper()
 	ctx := context.Background()
-	strat, err := seal.NewSoftwareStrategy([]byte(passphrase))
+	strategy, err := seal.NewSoftwareStrategy([]byte(passphrase))
 	if err != nil {
 		t.Fatalf("NewSoftwareStrategy: %v", err)
 	}
 	b, err := seal.NewStorageBarrier(reencTestLogger(), seal.NewMemoryBackend(),
-		seal.BarrierConfig{RootKeyPath: rootKeyPath, DeploymentID: 1}, strat)
+		seal.BarrierConfig{RootKeyPath: rootKeyPath, DeploymentID: 1}, strategy)
 	if err != nil {
 		t.Fatalf("NewStorageBarrier(keyed): %v", err)
 	}

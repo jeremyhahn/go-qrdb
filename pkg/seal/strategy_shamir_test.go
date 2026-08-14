@@ -19,11 +19,11 @@ import (
 // --------------------------------------------------------------------------
 
 func TestShamirStrategy_UnsealRootKey_AlwaysErrors(t *testing.T) {
-	strat, err := NewShamirStrategy(2, 3)
+	strategy, err := NewShamirStrategy(2, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = strat.UnsealRootKey(context.Background(), &SealedRootKey{}, Credentials{})
+	_, err = strategy.UnsealRootKey(context.Background(), &SealedRootKey{}, Credentials{})
 	if !errors.Is(err, ErrShamirUnsealRequiresQuorum) {
 		t.Errorf("UnsealRootKey: got %v, want ErrShamirUnsealRequiresQuorum", err)
 	}

@@ -82,8 +82,8 @@ func TestStrategiesMap_ConcurrentStatusAndUnseal_NoRace(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryBackend()
 	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
-	strat := testSoftwareStrategy(t)
-	b, err := NewStorageBarrier(testLogger(), base, cfg, strat)
+	strategy := testSoftwareStrategy(t)
+	b, err := NewStorageBarrier(testLogger(), base, cfg, strategy)
 	require.NoError(t, err)
 	require.NoError(t, b.Initialize(ctx, Credentials{Secret: []byte("password")}))
 	require.NoError(t, b.Seal())

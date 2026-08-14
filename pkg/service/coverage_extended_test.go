@@ -895,7 +895,7 @@ func TestBatchService_executeGet_Success(t *testing.T) {
 func TestBatchService_executeGet_KeyNotFound(t *testing.T) {
 	host := &mockHost{
 		syncReadFn: func(_ context.Context, _ uint64, _ interface{}) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "absent"}
+			return nil, &mockKeyNotFoundError{key: "absent"}
 		},
 	}
 
@@ -1842,7 +1842,7 @@ func TestMVCCKVService_ExistsWithConsistency_Found(t *testing.T) {
 func TestMVCCKVService_ExistsWithConsistency_NotFound(t *testing.T) {
 	host := &mockHost{
 		readWithConsistencyFn: func(_ context.Context, _ uint64, _ interface{}, _ consistency.ReadOptions) (interface{}, error) {
-			return nil, &mockKeyNotFoundErr{key: "missing"}
+			return nil, &mockKeyNotFoundError{key: "missing"}
 		},
 	}
 

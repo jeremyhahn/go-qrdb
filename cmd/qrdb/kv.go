@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // readConsistencyOpts converts a --consistency flag string into SDK read

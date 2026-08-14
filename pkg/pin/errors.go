@@ -68,51 +68,51 @@ var (
 	ErrUnsupportedHashAlgorithm = errors.New("pin: unsupported hash algorithm")
 )
 
-// ErrStoragePersistFailed wraps a storage Put failure so callers can
+// StoragePersistFailedError wraps a storage Put failure so callers can
 // distinguish "couldn't write" from "couldn't hash".
-type ErrStoragePersistFailed struct {
+type StoragePersistFailedError struct {
 	Key   string
 	Cause error
 }
 
 // Error implements the error interface.
-func (e *ErrStoragePersistFailed) Error() string {
+func (e *StoragePersistFailedError) Error() string {
 	return fmt.Sprintf("pin: failed to persist %q to storage: %s", e.Key, e.Cause)
 }
 
 // Unwrap supports errors.Is / errors.As against the underlying cause.
-func (e *ErrStoragePersistFailed) Unwrap() error { return e.Cause }
+func (e *StoragePersistFailedError) Unwrap() error { return e.Cause }
 
-// ErrStorageLoadFailed wraps a storage Get failure for reasons other than
+// StorageLoadFailedError wraps a storage Get failure for reasons other than
 // not-found (callers treat not-found as "fresh install" — no error).
-type ErrStorageLoadFailed struct {
+type StorageLoadFailedError struct {
 	Key   string
 	Cause error
 }
 
 // Error implements the error interface.
-func (e *ErrStorageLoadFailed) Error() string {
+func (e *StorageLoadFailedError) Error() string {
 	return fmt.Sprintf("pin: failed to load %q from storage: %s", e.Key, e.Cause)
 }
 
 // Unwrap supports errors.Is / errors.As.
-func (e *ErrStorageLoadFailed) Unwrap() error { return e.Cause }
+func (e *StorageLoadFailedError) Unwrap() error { return e.Cause }
 
-// ErrUnsupportedPBKDF2Hash is returned when an unsupported hash function
+// UnsupportedPBKDF2HashError is returned when an unsupported hash function
 // is specified for PBKDF2 key derivation.
-type ErrUnsupportedPBKDF2Hash struct {
+type UnsupportedPBKDF2HashError struct {
 	Hash string
 }
 
 // Error implements the error interface.
-func (e *ErrUnsupportedPBKDF2Hash) Error() string {
+func (e *UnsupportedPBKDF2HashError) Error() string {
 	return fmt.Sprintf("pin: unsupported PBKDF2 hash function: %s", e.Hash)
 }
 
 // ErrTPMLocked is returned when a TPM backend is locked out due to
 // dictionary-attack protection. The wrapped LockoutStatus carries the
 // recovery time so callers can surface it to operators.
-type ErrTPMLocked struct {
+type ErrTPMLocked struct { //nolint:errname // exported API, rename is a breaking change
 	Status *LockoutStatus
 }
 
@@ -124,7 +124,7 @@ func (e *ErrTPMLocked) Error() string {
 // ErrPINInvalidWithStatus extends ErrPINInvalid with the remaining-attempts
 // information so backends with lockout counters can communicate progress
 // to the operator.
-type ErrPINInvalidWithStatus struct {
+type ErrPINInvalidWithStatus struct { //nolint:errname // exported API, rename is a breaking change
 	Status *LockoutStatus
 }
 

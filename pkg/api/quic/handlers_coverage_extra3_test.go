@@ -184,11 +184,11 @@ func TestHandleAuthFactorList_WithRevokedAt(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// errMissingFieldType.Error() and errMissingField
+// missingFieldTypeError.Error() and errMissingField
 // ---------------------------------------------------------------------------
 
 func TestErrMissingFieldType_Error(t *testing.T) {
-	e := &errMissingFieldType{msg: "field is required"}
+	e := &missingFieldTypeError{msg: "field is required"}
 	if e.Error() != "field is required" {
 		t.Errorf("expected 'field is required', got %q", e.Error())
 	}

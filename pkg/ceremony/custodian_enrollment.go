@@ -23,11 +23,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
-	quicraftShamir "github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
 
 const (

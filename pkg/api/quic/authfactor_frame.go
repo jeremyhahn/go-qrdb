@@ -223,8 +223,8 @@ func (s *Server) handleAuthFactorRevoke(ctx context.Context, payload []byte) ([]
 }
 
 // errMissingField wraps a missing-field message as an error type compatible with UnmarshalError.
-type errMissingFieldType struct{ msg string }
+type missingFieldTypeError struct{ msg string }
 
-func (e *errMissingFieldType) Error() string { return e.msg }
+func (e *missingFieldTypeError) Error() string { return e.msg }
 
-func errMissingField(msg string) error { return &errMissingFieldType{msg: msg} }
+func errMissingField(msg string) error { return &missingFieldTypeError{msg: msg} }
