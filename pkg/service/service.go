@@ -452,8 +452,8 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 }
 
 // List returns sorted keys matching the given prefix with a linearizable
-// read. An empty prefix returns all user keys. Internal system keys
-// (prefixed with "__sys:") are excluded from the results.
+// read. An empty prefix returns all user keys: keys in the internal namespace
+// (see IsInternalKey) are excluded from the results.
 func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 	result, err := s.host.SyncRead(ctx, s.shardID, kv.ListQuery{Prefix: prefix})
 	if err != nil {
@@ -473,8 +473,8 @@ func (s *KVService) List(ctx context.Context, prefix string) ([]string, error) {
 
 // Scan returns all key-value pairs matching the given prefix. Uses a
 // PrefixQuery for compatibility with the basic FastStateMachine. Internal
-// system keys (prefixed with "__sys:") are excluded from the results
-// unless the prefix itself targets the system key namespace.
+// keys in the internal namespace are excluded from the results unless the
+// prefix itself lies inside a namespace whose owning subsystem enumerates it.
 func (s *KVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
 	query := &statemachine.PrefixQuery{
 		Prefix: []byte(prefix),
@@ -618,7 +618,7 @@ func (s *KVService) GetWithConsistency(ctx context.Context, key string, opts con
 
 // ListWithConsistency returns sorted keys matching the given prefix with
 // the specified consistency level. An empty prefix returns all user keys.
-// Internal system keys (prefixed with "__sys:") are excluded from the
+// Keys in the internal namespace (see IsInternalKey) are excluded from the
 // results.
 func (s *KVService) ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error) {
 	result, err := s.host.ReadWithConsistency(ctx, s.shardID, kv.ListQuery{Prefix: prefix}, opts)
@@ -638,9 +638,9 @@ func (s *KVService) ListWithConsistency(ctx context.Context, prefix string, opts
 }
 
 // ScanWithConsistency returns all key-value pairs matching the given prefix
-// with the specified consistency level. Internal system keys (prefixed with
-// "__sys:") are excluded from the results unless the prefix itself targets
-// the system key namespace.
+// with the specified consistency level. Keys in the internal namespace are
+// excluded from the results unless the prefix itself lies inside a namespace
+// whose owning subsystem enumerates it.
 func (s *KVService) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
 	query := &statemachine.PrefixQuery{
 		Prefix: []byte(prefix),

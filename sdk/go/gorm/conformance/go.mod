@@ -13,7 +13,7 @@
 // which must list this directory in its `use` block. See README.md.
 module github.com/jeremyhahn/go-qrdb/sdk/go/gorm/conformance
 
-go 1.26.1
+go 1.26.5
 
 require (
 	github.com/go-sql-driver/mysql v1.9.3

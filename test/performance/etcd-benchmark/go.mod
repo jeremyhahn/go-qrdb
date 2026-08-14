@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/test/performance/etcd-benchmark
 
-go 1.26.1
+go 1.26.5
 
 require (
 	github.com/jeremyhahn/go-quicraft/test/performance v0.0.0

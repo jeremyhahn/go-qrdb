@@ -231,8 +231,9 @@ func (s *MVCCKVService) Delete(ctx context.Context, key string) error {
 }
 
 // List returns sorted keys matching the given prefix with a linearizable
-// read. Uses a range scan over metadata keys. Internal system keys are
-// excluded unless the prefix itself targets the system key namespace.
+// read. Uses a range scan over metadata keys. Keys in the internal namespace
+// (see IsInternalKey) are excluded unless the prefix itself lies inside a
+// namespace whose owning subsystem enumerates it (see SkipInternalKeyFilter).
 func (s *MVCCKVService) List(ctx context.Context, prefix string) ([]string, error) {
 	// For MVCC, use a range query with KeysOnly to get all keys.
 	var start, end []byte
@@ -263,8 +264,8 @@ func (s *MVCCKVService) List(ctx context.Context, prefix string) ([]string, erro
 
 // Scan returns all key-value pairs matching the given prefix. Uses a
 // PrefixQuery for compatibility with the basic FastStateMachine. Internal
-// system keys (prefixed with "__sys:") are excluded from the results
-// unless the prefix itself targets the system key namespace.
+// keys in the internal namespace are excluded from the results unless the
+// prefix itself lies inside a namespace whose owning subsystem enumerates it.
 func (s *MVCCKVService) Scan(ctx context.Context, prefix string) (map[string][]byte, error) {
 	query := &statemachine.PrefixQuery{
 		Prefix: []byte(prefix),
@@ -303,8 +304,9 @@ func (s *MVCCKVService) GetStale(ctx context.Context, key string) ([]byte, error
 
 // ListStale returns sorted keys matching the given prefix from the local
 // state machine without Raft coordination. Returns potentially stale data
-// but with sub-millisecond latency. Internal system keys are excluded
-// unless the prefix itself targets the system key namespace.
+// but with sub-millisecond latency. Keys in the internal namespace are
+// excluded unless the prefix itself lies inside a namespace whose owning
+// subsystem enumerates it.
 func (s *MVCCKVService) ListStale(ctx context.Context, prefix string) ([]string, error) {
 	var start, end []byte
 	if prefix == "" {
@@ -334,8 +336,9 @@ func (s *MVCCKVService) ListStale(ctx context.Context, prefix string) ([]string,
 
 // ScanStale returns all key-value pairs matching the given prefix from the
 // local state machine without Raft coordination. Returns potentially stale
-// data but with sub-millisecond latency. Internal system keys are excluded
-// unless the prefix itself targets the system key namespace.
+// data but with sub-millisecond latency. Keys in the internal namespace are
+// excluded unless the prefix itself lies inside a namespace whose owning
+// subsystem enumerates it.
 func (s *MVCCKVService) ScanStale(ctx context.Context, prefix string) (map[string][]byte, error) {
 	query := &statemachine.PrefixQuery{
 		Prefix: []byte(prefix),
@@ -406,8 +409,9 @@ func (s *MVCCKVService) GetWithConsistency(ctx context.Context, key string, opts
 }
 
 // ListWithConsistency returns sorted keys matching the given prefix with
-// the specified consistency level. Internal system keys are excluded unless
-// the prefix itself targets the system key namespace.
+// the specified consistency level. Keys in the internal namespace are excluded
+// unless the prefix itself lies inside a namespace whose owning subsystem
+// enumerates it.
 func (s *MVCCKVService) ListWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error) {
 	var start, end []byte
 	if prefix == "" {
@@ -436,8 +440,9 @@ func (s *MVCCKVService) ListWithConsistency(ctx context.Context, prefix string, 
 }
 
 // ScanWithConsistency returns all key-value pairs matching the given prefix
-// with the specified consistency level. Internal system keys are excluded
-// unless the prefix itself targets the system key namespace.
+// with the specified consistency level. Keys in the internal namespace are
+// excluded unless the prefix itself lies inside a namespace whose owning
+// subsystem enumerates it.
 func (s *MVCCKVService) ScanWithConsistency(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error) {
 	query := &statemachine.PrefixQuery{
 		Prefix: []byte(prefix),

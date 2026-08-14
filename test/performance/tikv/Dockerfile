@@ -6,7 +6,7 @@
 # dependency (github.com/jeremyhahn/go-quicraft/test/performance). Supply it
 # via a named BuildKit context:
 #   docker build --build-context go-quicraft=/path/to/go-quicraft ...
-FROM golang:1.26.1-bookworm AS builder
+FROM golang:1.26.5-bookworm AS builder
 
 WORKDIR /src
 
