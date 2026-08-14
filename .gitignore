@@ -38,3 +38,7 @@ cmd/qrdb/frontend/src/lib/wails/
 CLAUDE.md
 go.work
 go.work.sum
+
+# compiled binaries never enter the module tree
+cmd/qrdb-sqlite/qrdb-sqlite
+/bin/
