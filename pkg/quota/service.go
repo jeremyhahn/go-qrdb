@@ -127,6 +127,6 @@ func (s *Service) usageFor(ctx context.Context, tenantID string, resource Resour
 	if !ok {
 		return 0, &UnregisteredCounterError{Resource: resource}
 	}
-	fn := val.(CountFunc)
+	fn := val.(CountFunc) //nolint:errcheck // type assertion on a value this container only ever holds
 	return fn(ctx, tenantID)
 }

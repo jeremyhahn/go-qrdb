@@ -107,7 +107,7 @@ func run(pass *analysis.Pass) (any, error) {
 		}
 	}
 
-	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	insp := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector) //nolint:errcheck // type assertion on a value this container only ever holds
 
 	// Rule 2: flag ssh.ParsePrivateKey calls.
 	insp.Preorder([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node) {

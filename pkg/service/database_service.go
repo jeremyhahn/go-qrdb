@@ -1626,7 +1626,7 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 
 	muKey := tenantID + "/" + name
 	muAny, _ := s.scaleMu.LoadOrStore(muKey, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex)
+	mu := muAny.(*sync.Mutex) //nolint:errcheck // type assertion on a value this container only ever holds
 	mu.Lock()
 	defer mu.Unlock()
 

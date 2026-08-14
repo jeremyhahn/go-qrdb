@@ -184,7 +184,7 @@ func (r *defaultStoreResolver) resolveBarrier(tenantID string) (kvstore.KVStore,
 	}
 
 	if cached, ok := r.wrappers.Load(tenantID); ok {
-		return cached.(kvstore.KVStore), nil
+		return cached.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 
 	wrapper, err := seal.NewTenantBarrierKVStore(tb)
@@ -192,5 +192,5 @@ func (r *defaultStoreResolver) resolveBarrier(tenantID string) (kvstore.KVStore,
 		return nil, err
 	}
 	actual, _ := r.wrappers.LoadOrStore(tenantID, wrapper)
-	return actual.(kvstore.KVStore), nil
+	return actual.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }

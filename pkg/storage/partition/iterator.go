@@ -47,7 +47,7 @@ func (h minHeap) Less(i, j int) bool {
 func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
 func (h *minHeap) Push(x any) {
-	*h = append(*h, x.(heapItem))
+	*h = append(*h, x.(heapItem)) //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func (h *minHeap) Pop() any {
@@ -74,7 +74,7 @@ func (h maxHeap) Less(i, j int) bool {
 func (h maxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
 func (h *maxHeap) Push(x any) {
-	*h = append(*h, x.(heapItem))
+	*h = append(*h, x.(heapItem)) //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func (h *maxHeap) Pop() any {

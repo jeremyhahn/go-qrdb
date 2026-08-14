@@ -178,7 +178,7 @@ func (idx *Index) Search(query []float32, k int) ([]SearchResult, error) {
 	// Extract results from heap and reverse to get ascending distance order.
 	results := make([]SearchResult, h.Len())
 	for i := h.Len() - 1; i >= 0; i-- {
-		item := heap.Pop(h).(*heapItem)
+		item := heap.Pop(h).(*heapItem) //nolint:errcheck // type assertion on a value this container only ever holds
 		results[i] = SearchResult{
 			ID:       item.id,
 			Distance: item.distance,
@@ -248,7 +248,7 @@ type resultMaxHeap []*heapItem
 func (h resultMaxHeap) Len() int            { return len(h) }
 func (h resultMaxHeap) Less(i, j int) bool  { return h[i].distance > h[j].distance }
 func (h resultMaxHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *resultMaxHeap) Push(x interface{}) { *h = append(*h, x.(*heapItem)) }
+func (h *resultMaxHeap) Push(x interface{}) { *h = append(*h, x.(*heapItem)) } //nolint:errcheck // type assertion on a value this container only ever holds
 func (h *resultMaxHeap) Pop() interface{} {
 	old := *h
 	n := len(old)

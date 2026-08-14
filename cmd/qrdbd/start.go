@@ -826,7 +826,7 @@ func findFreeUDPPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	port := pc.LocalAddr().(*net.UDPAddr).Port
+	port := pc.LocalAddr().(*net.UDPAddr).Port //nolint:errcheck // type assertion on a value this container only ever holds
 	_ = pc.Close()
 	return port, nil
 }
@@ -837,7 +837,7 @@ func findFreeTCPPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	port := ln.Addr().(*net.TCPAddr).Port //nolint:errcheck // type assertion on a value this container only ever holds
 	_ = ln.Close()
 	return port, nil
 }

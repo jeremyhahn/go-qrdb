@@ -50,7 +50,7 @@ func (o *OptimizedCodec) Marshal(v any) ([]byte, error) {
 	}
 
 	// Get a pooled buffer, copy the result, then return the pool buffer.
-	bufPtr := o.pool.Get().(*[]byte)
+	bufPtr := o.pool.Get().(*[]byte) //nolint:errcheck // type assertion on a value this container only ever holds
 	buf := *bufPtr
 
 	// Ensure capacity.

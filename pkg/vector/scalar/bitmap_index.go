@@ -64,10 +64,10 @@ func (b *BitmapIndex) Add(vectorID uint64, value interface{}) error {
 
 	// Remove previous mapping if it exists.
 	if prev, loaded := b.ids.LoadAndDelete(vectorID); loaded {
-		prevKey := prev.(string)
+		prevKey := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if prevKey != key {
 			if bm, ok := b.bitmaps.Load(prevKey); ok {
-				bm.(*roaring64.Bitmap).Remove(vectorID)
+				bm.(*roaring64.Bitmap).Remove(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 			}
 		} else {
 			// Same value; re-store the reverse mapping and return.
@@ -80,7 +80,7 @@ func (b *BitmapIndex) Add(vectorID uint64, value interface{}) error {
 
 	// Get or create bitmap for this value.
 	actual, _ := b.bitmaps.LoadOrStore(key, roaring64.New())
-	actual.(*roaring64.Bitmap).Add(vectorID)
+	actual.(*roaring64.Bitmap).Add(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 	b.ids.Store(vectorID, key)
 	return nil
 }
@@ -94,9 +94,9 @@ func (b *BitmapIndex) Remove(vectorID uint64) error {
 	if !loaded {
 		return nil
 	}
-	key := prev.(string)
+	key := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 	if bm, ok := b.bitmaps.Load(key); ok {
-		bm.(*roaring64.Bitmap).Remove(vectorID)
+		bm.(*roaring64.Bitmap).Remove(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	b.count.Add(-1)
 	return nil
@@ -123,9 +123,9 @@ func (b *BitmapIndex) QueryRange(min, max interface{}) ([]uint64, error) {
 	maxStr := toString(max)
 	result := roaring64.New()
 	b.bitmaps.Range(func(key, val interface{}) bool {
-		k := key.(string)
+		k := key.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if compareStrings(k, minStr) >= 0 && compareStrings(k, maxStr) <= 0 {
-			result.Or(val.(*roaring64.Bitmap))
+			result.Or(val.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 		}
 		return true
 	})
@@ -152,7 +152,7 @@ func (b *BitmapIndex) Close() error {
 func (b *BitmapIndex) allBitmaps() *roaring64.Bitmap {
 	result := roaring64.New()
 	b.bitmaps.Range(func(_, val interface{}) bool {
-		result.Or(val.(*roaring64.Bitmap))
+		result.Or(val.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 		return true
 	})
 	return result
@@ -164,14 +164,14 @@ func bitmapQueryEqual(b *BitmapIndex, value interface{}) ([]uint64, error) {
 	if !ok {
 		return nil, nil
 	}
-	return bm.(*roaring64.Bitmap).ToArray(), nil
+	return bm.(*roaring64.Bitmap).ToArray(), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func bitmapQueryNotEqual(b *BitmapIndex, value interface{}) ([]uint64, error) {
 	key := toString(value)
 	all := b.allBitmaps()
 	if bm, ok := b.bitmaps.Load(key); ok {
-		all.AndNot(bm.(*roaring64.Bitmap))
+		all.AndNot(bm.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	return all.ToArray(), nil
 }
@@ -184,7 +184,7 @@ func bitmapQueryIn(b *BitmapIndex, value interface{}) ([]uint64, error) {
 	result := roaring64.New()
 	for _, v := range values {
 		if bm, ok := b.bitmaps.Load(v); ok {
-			result.Or(bm.(*roaring64.Bitmap))
+			result.Or(bm.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 		}
 	}
 	return result.ToArray(), nil
@@ -199,7 +199,7 @@ func bitmapQueryNotIn(b *BitmapIndex, value interface{}) ([]uint64, error) {
 	exclude := roaring64.New()
 	for _, v := range values {
 		if bm, ok := b.bitmaps.Load(v); ok {
-			exclude.Or(bm.(*roaring64.Bitmap))
+			exclude.Or(bm.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 		}
 	}
 	all.AndNot(exclude)
@@ -211,13 +211,13 @@ func bitmapQueryIsNull(b *BitmapIndex, _ interface{}) ([]uint64, error) {
 	if !ok {
 		return nil, nil
 	}
-	return bm.(*roaring64.Bitmap).ToArray(), nil
+	return bm.(*roaring64.Bitmap).ToArray(), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func bitmapQueryIsNotNull(b *BitmapIndex, _ interface{}) ([]uint64, error) {
 	all := b.allBitmaps()
 	if bm, ok := b.bitmaps.Load(nullKey); ok {
-		all.AndNot(bm.(*roaring64.Bitmap))
+		all.AndNot(bm.(*roaring64.Bitmap)) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	return all.ToArray(), nil
 }

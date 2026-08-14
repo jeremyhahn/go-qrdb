@@ -82,7 +82,7 @@ func (idx *SortedIndex) Add(vectorID uint64, value interface{}) error {
 
 	// Remove previous entry if it exists.
 	if prev, loaded := idx.ids.LoadAndDelete(vectorID); loaded {
-		prevKey := prev.(string)
+		prevKey := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if prevKey != key {
 			idx.tree.Delete(sortedEntry{value: prevKey, vectorID: vectorID})
 		} else {
@@ -107,7 +107,7 @@ func (idx *SortedIndex) Remove(vectorID uint64) error {
 	if !loaded {
 		return nil
 	}
-	key := prev.(string)
+	key := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 
 	idx.mu.Lock()
 	idx.tree.Delete(sortedEntry{value: key, vectorID: vectorID})

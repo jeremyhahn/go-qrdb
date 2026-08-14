@@ -82,7 +82,7 @@ func (r *EntityRouter) MapPrefix(prefix string, partitionID uint32) {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
 
-	old := r.mappings.Load().(map[string]uint32)
+	old := r.mappings.Load().(map[string]uint32) //nolint:errcheck // type assertion on a value this container only ever holds
 	next := make(map[string]uint32, len(old)+1)
 	for k, v := range old {
 		next[k] = v
@@ -94,7 +94,7 @@ func (r *EntityRouter) MapPrefix(prefix string, partitionID uint32) {
 // Route returns the partition ID for the given key. It checks mapped prefixes
 // first (longest prefix match) and falls back to the hash router for unmapped keys.
 func (r *EntityRouter) Route(key []byte) uint32 {
-	mappings := r.mappings.Load().(map[string]uint32)
+	mappings := r.mappings.Load().(map[string]uint32) //nolint:errcheck // type assertion on a value this container only ever holds
 
 	var bestPrefix string
 	var bestID uint32

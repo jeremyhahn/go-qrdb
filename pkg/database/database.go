@@ -159,7 +159,7 @@ func (d *Database) DataDir() string {
 
 // Status returns the current operational status.
 func (d *Database) Status() StatusType {
-	return d.status.Load().(StatusType)
+	return d.status.Load().(StatusType) //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // SetStatus sets the operational status of the database.

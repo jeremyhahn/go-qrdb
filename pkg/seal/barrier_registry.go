@@ -670,7 +670,7 @@ func (r *BarrierRegistry) LocalTenantDataRoot(ctx context.Context, tenantID stri
 		return "", ErrPoolNotConfigured
 	}
 	if v, ok := r.tenantDataRoots.Load(tenantID); ok {
-		return v.(string), nil
+		return v.(string), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	// In-memory map miss: the tenant was registered in a prior process run
 	// and the tenantDataRoots sync.Map was not yet populated (e.g. on a
@@ -1143,7 +1143,7 @@ func (r *BarrierRegistry) GetTenant(tenantID string) (*TenantBarrier, error) {
 	if !ok {
 		return nil, ErrTenantNotFound
 	}
-	return val.(*TenantBarrier), nil
+	return val.(*TenantBarrier), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // Tenant is a convenience alias for GetTenant.
@@ -1158,7 +1158,7 @@ func (r *BarrierRegistry) RemoveTenant(tenantID string) error {
 	if !ok {
 		return ErrTenantNotFound
 	}
-	return val.(*TenantBarrier).Close()
+	return val.(*TenantBarrier).Close() //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // UnregisterTenant is a convenience alias for RemoveTenant.
@@ -1256,7 +1256,7 @@ func (r *BarrierRegistry) ImportTenant(
 func (r *BarrierRegistry) ListTenants() []string {
 	ids := make([]string, 0)
 	r.tenants.Range(func(key, _ any) bool {
-		ids = append(ids, key.(string))
+		ids = append(ids, key.(string)) //nolint:errcheck // type assertion on a value this container only ever holds
 		return true
 	})
 	return ids
@@ -1269,7 +1269,7 @@ func (r *BarrierRegistry) ListTenants() []string {
 func (r *BarrierRegistry) SealAll() error {
 	var errs []error
 	r.tenants.Range(func(_, val any) bool {
-		if err := val.(*TenantBarrier).Seal(); err != nil {
+		if err := val.(*TenantBarrier).Seal(); err != nil { //nolint:errcheck // type assertion on a value this container only ever holds
 			errs = append(errs, err)
 		}
 		return true
@@ -1287,7 +1287,7 @@ func (r *BarrierRegistry) SealAll() error {
 func (r *BarrierRegistry) Close() error {
 	var errs []error
 	r.tenants.Range(func(_, val any) bool {
-		if err := val.(*TenantBarrier).Close(); err != nil {
+		if err := val.(*TenantBarrier).Close(); err != nil { //nolint:errcheck // type assertion on a value this container only ever holds
 			errs = append(errs, err)
 		}
 		return true

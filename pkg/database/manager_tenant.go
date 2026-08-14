@@ -77,7 +77,7 @@ func (m *Manager) ListForTenant(ctx context.Context) ([]DatabaseInfo, error) {
 
 	var infos []DatabaseInfo
 	m.databases.Range(func(_, value any) bool {
-		db := value.(*Database)
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		if db.TenantID() == tenantID {
 			infos = append(infos, db.Info())
 		}

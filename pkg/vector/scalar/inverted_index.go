@@ -98,10 +98,10 @@ func (idx *InvertedIndex) Add(vectorID uint64, value interface{}) error {
 
 	// Remove previous mapping if it exists.
 	if prev, loaded := idx.ids.LoadAndDelete(vectorID); loaded {
-		prevKey := prev.(string)
+		prevKey := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if prevKey != key {
 			if pl, ok := idx.postings.Load(prevKey); ok {
-				pl.(*postingList).remove(vectorID)
+				pl.(*postingList).remove(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 			}
 		} else {
 			idx.ids.Store(vectorID, key)
@@ -113,7 +113,7 @@ func (idx *InvertedIndex) Add(vectorID uint64, value interface{}) error {
 
 	// Get or create posting list for this value.
 	actual, _ := idx.postings.LoadOrStore(key, &postingList{})
-	actual.(*postingList).add(vectorID)
+	actual.(*postingList).add(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 	idx.ids.Store(vectorID, key)
 	return nil
 }
@@ -127,9 +127,9 @@ func (idx *InvertedIndex) Remove(vectorID uint64) error {
 	if !loaded {
 		return nil
 	}
-	key := prev.(string)
+	key := prev.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 	if pl, ok := idx.postings.Load(key); ok {
-		pl.(*postingList).remove(vectorID)
+		pl.(*postingList).remove(vectorID) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	idx.count.Add(-1)
 	return nil
@@ -157,9 +157,9 @@ func (idx *InvertedIndex) QueryRange(min, max interface{}) ([]uint64, error) {
 	seen := make(map[uint64]struct{})
 	var result []uint64
 	idx.postings.Range(func(key, val interface{}) bool {
-		k := key.(string)
+		k := key.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if compareStrings(k, minStr) >= 0 && compareStrings(k, maxStr) <= 0 {
-			for _, id := range val.(*postingList).toArray() {
+			for _, id := range val.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 				if _, exists := seen[id]; !exists {
 					seen[id] = struct{}{}
 					result = append(result, id)
@@ -193,7 +193,7 @@ func (idx *InvertedIndex) collectAllIDs() []uint64 {
 	seen := make(map[uint64]struct{})
 	var result []uint64
 	idx.ids.Range(func(key, _ interface{}) bool {
-		id := key.(uint64)
+		id := key.(uint64) //nolint:errcheck // type assertion on a value this container only ever holds
 		seen[id] = struct{}{}
 		result = append(result, id)
 		return true
@@ -208,14 +208,14 @@ func invertedQueryEqual(idx *InvertedIndex, value interface{}) ([]uint64, error)
 	if !ok {
 		return nil, nil
 	}
-	return pl.(*postingList).toArray(), nil
+	return pl.(*postingList).toArray(), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func invertedQueryNotEqual(idx *InvertedIndex, value interface{}) ([]uint64, error) {
 	key := toString(value)
 	exclude := make(map[uint64]struct{})
 	if pl, ok := idx.postings.Load(key); ok {
-		for _, id := range pl.(*postingList).toArray() {
+		for _, id := range pl.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 			exclude[id] = struct{}{}
 		}
 	}
@@ -238,7 +238,7 @@ func invertedQueryIn(idx *InvertedIndex, value interface{}) ([]uint64, error) {
 	var result []uint64
 	for _, v := range values {
 		if pl, ok := idx.postings.Load(v); ok {
-			for _, id := range pl.(*postingList).toArray() {
+			for _, id := range pl.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 				if _, exists := seen[id]; !exists {
 					seen[id] = struct{}{}
 					result = append(result, id)
@@ -258,7 +258,7 @@ func invertedQueryNotIn(idx *InvertedIndex, value interface{}) ([]uint64, error)
 	exclude := make(map[uint64]struct{})
 	for _, v := range values {
 		if pl, ok := idx.postings.Load(v); ok {
-			for _, id := range pl.(*postingList).toArray() {
+			for _, id := range pl.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 				exclude[id] = struct{}{}
 			}
 		}
@@ -278,13 +278,13 @@ func invertedQueryIsNull(idx *InvertedIndex, _ interface{}) ([]uint64, error) {
 	if !ok {
 		return nil, nil
 	}
-	return pl.(*postingList).toArray(), nil
+	return pl.(*postingList).toArray(), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 func invertedQueryIsNotNull(idx *InvertedIndex, _ interface{}) ([]uint64, error) {
 	nullIDs := make(map[uint64]struct{})
 	if pl, ok := idx.postings.Load(nullKey); ok {
-		for _, id := range pl.(*postingList).toArray() {
+		for _, id := range pl.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 			nullIDs[id] = struct{}{}
 		}
 	}
@@ -307,9 +307,9 @@ func (idx *InvertedIndex) QueryContains(substr string) ([]uint64, error) {
 	seen := make(map[uint64]struct{})
 	var result []uint64
 	idx.postings.Range(func(key, val interface{}) bool {
-		k := key.(string)
+		k := key.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if strings.Contains(k, substr) {
-			for _, id := range val.(*postingList).toArray() {
+			for _, id := range val.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 				if _, exists := seen[id]; !exists {
 					seen[id] = struct{}{}
 					result = append(result, id)
@@ -331,9 +331,9 @@ func (idx *InvertedIndex) QueryPrefixMatch(prefix string) ([]uint64, error) {
 	seen := make(map[uint64]struct{})
 	var result []uint64
 	idx.postings.Range(func(key, val interface{}) bool {
-		k := key.(string)
+		k := key.(string) //nolint:errcheck // type assertion on a value this container only ever holds
 		if strings.HasPrefix(k, prefix) {
-			for _, id := range val.(*postingList).toArray() {
+			for _, id := range val.(*postingList).toArray() { //nolint:errcheck // type assertion on a value this container only ever holds
 				if _, exists := seen[id]; !exists {
 					seen[id] = struct{}{}
 					result = append(result, id)

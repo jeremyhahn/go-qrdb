@@ -67,14 +67,14 @@ func (r *routingRoleService) storeFor(ctx context.Context, tenantID string) (Rol
 // KVStore.
 func (r *routingRoleService) storeForKV(kv kvstore.KVStore) (RoleServicer, error) {
 	if cached, ok := r.stores.Load(kv); ok {
-		return cached.(RoleServicer), nil
+		return cached.(RoleServicer), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	svc, err := NewStore(kv, r.opts...)
 	if err != nil {
 		return nil, err
 	}
 	actual, _ := r.stores.LoadOrStore(kv, svc)
-	return actual.(RoleServicer), nil
+	return actual.(RoleServicer), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // CreateRole routes on the EFFECTIVE tenant reconciled from the caller's

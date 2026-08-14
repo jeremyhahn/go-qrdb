@@ -107,10 +107,10 @@ func NewAccountant(cfg AccountantConfig) (*Accountant, error) {
 // counter returns the per-tenant storageCounter, creating it on first use.
 func (a *Accountant) counter(tenantID string) *storageCounter {
 	if v, ok := a.tenants.Load(tenantID); ok {
-		return v.(*storageCounter)
+		return v.(*storageCounter) //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	actual, _ := a.tenants.LoadOrStore(tenantID, &storageCounter{})
-	return actual.(*storageCounter)
+	return actual.(*storageCounter) //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // loadBase reads the persisted CurrentStorageBytes for a tenant. A lookup
@@ -202,7 +202,7 @@ func (a *Accountant) Usage(tenantID string) int64 {
 	if !ok {
 		return 0
 	}
-	c := v.(*storageCounter)
+	c := v.(*storageCounter) //nolint:errcheck // type assertion on a value this container only ever holds
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.effectiveLocked()
@@ -225,8 +225,8 @@ func (a *Accountant) Usage(tenantID string) int64 {
 // both mutations, leaving the delta pending for the next cycle.
 func (a *Accountant) Flush(ctx context.Context) {
 	a.tenants.Range(func(k, v any) bool {
-		tenantID := k.(string)
-		c := v.(*storageCounter)
+		tenantID := k.(string)   //nolint:errcheck // type assertion on a value this container only ever holds
+		c := v.(*storageCounter) //nolint:errcheck // type assertion on a value this container only ever holds
 
 		c.mu.Lock()
 		delta := c.pending

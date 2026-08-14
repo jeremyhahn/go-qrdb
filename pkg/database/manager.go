@@ -153,7 +153,7 @@ func (m *Manager) SetBarrierManager(bm *DatabaseBarrierManager) {
 	}
 	m.databases.Range(func(key, value any) bool {
 		name, _ := key.(string)
-		db := value.(*Database)
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		cfg := db.Config()
 		if cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.HasDedicatedStore() {
 			return true
@@ -316,7 +316,7 @@ func (m *Manager) CreateWithCredentials(ctx context.Context, cfg DatabaseConfig,
 func (m *Manager) Open(name string) (*Database, error) {
 	// Already open?
 	if val, ok := m.databases.Load(name); ok {
-		return val.(*Database), nil
+		return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 
 	dbDir := m.dbDir(name)
@@ -410,7 +410,7 @@ func (m *Manager) Open(name string) (*Database, error) {
 		if barrierMetaBackend != nil {
 			_ = barrierMetaBackend.Close()
 		}
-		return actual.(*Database), nil
+		return actual.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 
 	m.logger.Info("database opened",
@@ -427,7 +427,7 @@ func (m *Manager) Get(name string) (*Database, error) {
 	if !ok {
 		return nil, &NotFoundError{Name: name}
 	}
-	return val.(*Database), nil
+	return val.(*Database), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // Drop closes and removes a database, deleting its data directory.
@@ -437,7 +437,7 @@ func (m *Manager) Drop(name string) error {
 		return &NotFoundError{Name: name}
 	}
 
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
@@ -465,7 +465,7 @@ func (m *Manager) UpdateProtocol(name string, protocol ProtocolConfig) error {
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.UpdateProtocol(protocol)
 
 	// Rewrite meta.json with the updated protocol config.
@@ -508,7 +508,7 @@ func (m *Manager) UpdateEtcd(name string, etcd *EtcdConfig) error {
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.UpdateEtcd(etcd)
 
 	return m.rewriteMeta(name, db)
@@ -526,7 +526,7 @@ func (m *Manager) UpdateRaft(name string, raft *DatabaseRaftConfig) error {
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateRaft(raft)
 
 	return m.rewriteMeta(name, db)
@@ -545,7 +545,7 @@ func (m *Manager) UpdateReplicas(name string, replicas int) error {
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateReplicas(replicas)
 
 	return m.rewriteMeta(name, db)
@@ -573,7 +573,7 @@ func (m *Manager) UpdateBarrier(name string, barrier *DatabaseBarrierConfig) err
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 
 	wantEnabled := barrier != nil && barrier.Enabled
 	activeNow := db.BarrierEnabled()
@@ -610,7 +610,7 @@ func (m *Manager) UpdateConnection(name string, conn *DatabaseConnectionConfig) 
 	if !ok {
 		return &NotFoundError{Name: name}
 	}
-	db := val.(*Database)
+	db := val.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 	db.updateConnection(conn)
 
 	return m.rewriteMeta(name, db)
@@ -642,7 +642,7 @@ func (m *Manager) rewriteMeta(name string, db *Database) error {
 func (m *Manager) List() []DatabaseInfo {
 	var infos []DatabaseInfo
 	m.databases.Range(func(_, value any) bool {
-		db := value.(*Database)
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		infos = append(infos, db.Info())
 		return true
 	})
@@ -656,7 +656,7 @@ func (m *Manager) List() []DatabaseInfo {
 func (m *Manager) Close() error {
 	var firstErr error
 	m.databases.Range(func(key, value any) bool {
-		db := value.(*Database)
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 		status := db.Status()
 		if status == StatusOpen || status == StatusSealed {
 			if err := db.Close(); err != nil && firstErr == nil {
@@ -874,7 +874,7 @@ func (m *Manager) validateDataDir(name, dataDir string) error {
 		if otherName == name {
 			return true
 		}
-		db := value.(*Database)
+		db := value.(*Database) //nolint:errcheck // type assertion on a value this container only ever holds
 
 		if otherDBDir, derr := resolveDataDir(m.dbDir(otherName)); derr == nil {
 			if pathContains(resolved, otherDBDir) || pathContains(otherDBDir, resolved) {

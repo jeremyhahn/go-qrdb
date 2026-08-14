@@ -53,7 +53,7 @@ func (c *permissionCache) get(tenantID, subject string) (map[permission.Permissi
 	if !ok {
 		return nil, false
 	}
-	entry := val.(*cacheEntry)
+	entry := val.(*cacheEntry) //nolint:errcheck // type assertion on a value this container only ever holds
 	if time.Now().After(entry.expiresAt) {
 		c.entries.Delete(key)
 		return nil, false

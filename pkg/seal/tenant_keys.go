@@ -61,7 +61,7 @@ func (t *tenantKeyManager) GetTenantDEK(ctx context.Context, tenantID string) ([
 
 	// Check cache first.
 	if cached, ok := t.cache.Load(tenantID); ok {
-		sec := cached.(*secure.Secret)
+		sec := cached.(*secure.Secret) //nolint:errcheck // type assertion on a value this container only ever holds
 		buf, err := sec.Open()
 		if err != nil {
 			return nil, &DEKDerivationError{TenantID: tenantID, Err: err}

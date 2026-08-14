@@ -606,7 +606,7 @@ func formatInt8(t sqle.Type) string {
 
 // formatDecimal reconstructs DECIMAL(precision,scale).
 func formatDecimal(t sqle.Type) string {
-	dt := t.(sqle.DecimalType)
+	dt := t.(sqle.DecimalType) //nolint:errcheck // type assertion on a value this container only ever holds
 	return "DECIMAL(" + strconv.Itoa(int(dt.Precision())) + "," + strconv.Itoa(int(dt.Scale())) + ")"
 }
 
@@ -614,7 +614,7 @@ func formatDecimal(t sqle.Type) string {
 // CHAR(n), VARCHAR(n), BINARY(n), VARBINARY(n), and the TEXT/BLOB size
 // tiers.
 func formatStringType(t sqle.Type) string {
-	st := t.(sqle.StringType)
+	st := t.(sqle.StringType) //nolint:errcheck // type assertion on a value this container only ever holds
 	switch t.Type() {
 	case sqltypes.Char:
 		return "CHAR(" + strconv.FormatInt(st.Length(), 10) + ")"
@@ -652,7 +652,7 @@ func textBlobTierName(base string, maxByteLength int64) string {
 // that includes the fractional-seconds precision only when it is non-zero.
 func formatDatetime(name string) func(sqle.Type) string {
 	return func(t sqle.Type) string {
-		dt := t.(sqle.DatetimeType)
+		dt := t.(sqle.DatetimeType) //nolint:errcheck // type assertion on a value this container only ever holds
 		if dt.Precision() == 0 {
 			return name
 		}
@@ -662,19 +662,19 @@ func formatDatetime(name string) func(sqle.Type) string {
 
 // formatBit reconstructs BIT(n).
 func formatBit(t sqle.Type) string {
-	bt := t.(types.BitType)
+	bt := t.(types.BitType) //nolint:errcheck // type assertion on a value this container only ever holds
 	return "BIT(" + strconv.Itoa(int(bt.NumberOfBits())) + ")"
 }
 
 // formatEnum reconstructs ENUM('a','b',...).
 func formatEnum(t sqle.Type) string {
-	et := t.(sqle.EnumType)
+	et := t.(sqle.EnumType) //nolint:errcheck // type assertion on a value this container only ever holds
 	return "ENUM(" + quotedValueList(et.Values()) + ")"
 }
 
 // formatSet reconstructs SET('a','b',...).
 func formatSet(t sqle.Type) string {
-	st := t.(sqle.SetType)
+	st := t.(sqle.SetType) //nolint:errcheck // type assertion on a value this container only ever holds
 	return "SET(" + quotedValueList(st.Values()) + ")"
 }
 

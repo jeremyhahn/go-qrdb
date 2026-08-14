@@ -80,14 +80,14 @@ func (r *routingUserService) storeFor(ctx context.Context, tenantID string) (Use
 // to exactly one kvUserStore and each barrier tenant maps to its own.
 func (r *routingUserService) storeForKV(kv kvstore.KVStore) (UserServicer, error) {
 	if cached, ok := r.stores.Load(kv); ok {
-		return cached.(UserServicer), nil
+		return cached.(UserServicer), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 	svc, err := NewStore(kv, r.idgen, r.opts...)
 	if err != nil {
 		return nil, err
 	}
 	actual, _ := r.stores.LoadOrStore(kv, svc)
-	return actual.(UserServicer), nil
+	return actual.(UserServicer), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // CreateUser routes on the EFFECTIVE tenant reconciled from the caller's
