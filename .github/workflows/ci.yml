@@ -123,6 +123,41 @@ jobs:
       - name: Integration tests (sqlite gateway, race)
         run: make integration-test-sqlite-gateway
 
+  integration-standalone:
+    name: Integration (standalone stack)
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # The multi-protocol CLI suites against two real qrdbd servers in a
+      # compose stack. The image bakes the source: a bind mount cannot work
+      # here, because compose reaches the HOST daemon through the mounted
+      # socket and this checkout's path does not exist on the runner host.
+      #
+      # The variables are read straight from the shell environment, NOT
+      # through ${{ env.X }} -- that expression reads this workflow's own
+      # env: block, which does not define them, and would silently write
+      # blanks. The runner injects them into the job's process environment
+      # (dependency-resolution.md section 6). `make integration-image` does
+      # the staging and passes the file as a BuildKit secret; it writes an
+      # empty file when the variables are absent, which is what happens on
+      # GitHub, where these modules resolve from the public proxy instead.
+      - name: Integration tests (standalone stack)
+        run: make integration-test-standalone
+
+      # Compose leaks containers and volumes when a run is interrupted, and a
+      # leftover stack makes the NEXT run fail while attaching. Always tear
+      # down, and do not let the teardown itself fail the job.
+      - name: Tear down the stack
+        if: always()
+        run: cd test/integration/api && docker compose down -v || true
+
   security:
     name: Security
     runs-on: ubuntu-latest
@@ -232,7 +267,7 @@ jobs:
     # evaluates to an empty string on Gitea, so a gate built on it reports
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
-    needs: [lint, build, test, integration-sqlite, security, trivy]
+    needs: [lint, build, test, integration-sqlite, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
@@ -240,6 +275,7 @@ jobs:
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_INTEGRATION_SQLITE: ${{ needs.integration-sqlite.result }}
+          RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
@@ -261,6 +297,7 @@ jobs:
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
           check integration-sqlite "$RESULT_INTEGRATION_SQLITE"
+          check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
           check trivy "$RESULT_TRIVY"
           exit $status
