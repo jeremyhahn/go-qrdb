@@ -493,6 +493,15 @@ func assertContains(t *testing.T, s, substr, msg string) {
 	}
 }
 
+// assertNotContains is the negative twin of assertContains, for pinning which
+// failure a command reported rather than merely that it failed.
+func assertNotContains(t *testing.T, s, substr, msg string) {
+	t.Helper()
+	if strings.Contains(s, substr) {
+		t.Fatalf("%s: '%s' unexpectedly contains '%s'", msg, s, substr)
+	}
+}
+
 func assertEqual(t *testing.T, expected, actual interface{}, msg string) {
 	t.Helper()
 	if expected != actual {

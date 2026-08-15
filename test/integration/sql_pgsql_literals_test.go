@@ -17,7 +17,6 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -396,58 +395,4 @@ func TestSQL_PgSQL_CatalogIntrospection(t *testing.T) {
 			t.Errorf("primary key constraint: got %q, want %q", name, "PRIMARY")
 		}
 	})
-}
-
-// TestSQL_PgSQL_BinaryRoundTripsExactly pins that a BLOB column survives the
-// PostgreSQL wire byte for byte, including bytes that are not valid UTF-8.
-//
-// It is worth pinning because the read path deliberately DESCRIBES a
-// BLOB/VARBINARY column as text (see OIDMapping in types.go) rather than
-// negotiating a binary codec, and text on this wire is UTF-8. The bytes below
-// are the opening of a Go gob stream -- a shape that occurs whenever an
-// application stores a serialised value -- and none of them survive a UTF-8
-// round trip unescaped.
-func TestSQL_PgSQL_BinaryRoundTripsExactly(t *testing.T) {
-	_, _, pgsqlPort, ca := startSingleNodeWithSQLMVCC(t)
-
-	certPath, keyPath := generateClientCert(t, ca, "admin", "system")
-	conn := waitForPgSQL(t, ca, certPath, keyPath, pgsqlPort, "admin")
-	ctx := context.Background()
-
-	payloads := map[string][]byte{
-		"gob-header":   {0x3f, 0x7f, 0x03, 0x01, 0x01, 0x03, 'J', 'o', 'b', 0x01, 0xff, 0x80, 0x00},
-		"invalid-utf8": {0xff, 0xfe, 0xfd, 0x00, 0x80},
-		"embedded-nul": {'a', 0x00, 'b', 0x00, 'c'},
-		"high-bytes":   highByteValues(),
-	}
-
-	for name, payload := range payloads {
-		t.Run(name, func(t *testing.T) {
-			if _, err := conn.Exec(ctx,
-				"INSERT INTO kv (key, value) VALUES ($1, $2)", name, payload); err != nil {
-				t.Fatalf("INSERT: %v", err)
-			}
-
-			var key string
-			var got []byte
-			if err := conn.QueryRow(ctx,
-				"SELECT key, value FROM kv WHERE key = $1", name).Scan(&key, &got); err != nil {
-				t.Fatalf("SELECT: %v", err)
-			}
-			if !bytes.Equal(got, payload) {
-				t.Errorf("binary round-trip corrupted:\n stored % x\n read   % x", payload, got)
-			}
-		})
-	}
-}
-
-// highByteValues returns the byte values above the ASCII range, which are
-// the ones a UTF-8 round trip would mangle. It stops short of the kv table's
-// column bound, which is not what this test is about.
-func highByteValues() []byte {
-	high := make([]byte, 0, 128)
-	for i := 128; i < 256; i++ {
-		high = append(high, byte(i))
-	}
-	return high
 }

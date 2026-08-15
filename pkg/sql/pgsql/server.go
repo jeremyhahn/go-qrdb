@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/infoschema"
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/provider"
 )
 
@@ -227,6 +228,12 @@ func (s *Server) Start() error {
 			opt(dbProvider)
 		}
 	}
+	// Add the information_schema views go-mysql-server does not serve, before
+	// the engine below builds the catalog that copies them. See
+	// pkg/sql/infoschema for why this cannot go through the DatabaseProvider
+	// the way pg_catalog does.
+	infoschema.Register()
+
 	sqlEngine := engine.New(engine.Config{
 		Provider: dbProvider,
 		Dialect:  engine.DialectPostgreSQL,

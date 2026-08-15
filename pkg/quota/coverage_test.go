@@ -17,6 +17,7 @@ package quota
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,29 +230,30 @@ func TestReconciler_VolumeTenantWithoutDataRootSkipped(t *testing.T) {
 	}
 }
 
-// TestDirSize_WalkError surfaces a non-root walk error (a directory whose
-// children cannot be read) rather than silently under-counting.
+// TestDirSize_WalkError surfaces a walk error below the root rather than
+// silently under-counting: a short total is indistinguishable from an accurate
+// one, so a tenant whose usage cannot be read must not look under quota.
+//
+// The failure is injected through walkDirFn rather than by making a directory
+// unreadable, so that it holds for every uid — root walks a mode-0000
+// directory successfully (testing-guidelines.md, Fault Injection).
 func TestDirSize_WalkError(t *testing.T) {
 	root := t.TempDir()
-	blocked := filepath.Join(root, "blocked")
-	if err := os.MkdirAll(blocked, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(blocked, "f"), make([]byte, 8), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(blocked, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+	sentinel := errors.New("read dir: injected")
 
-	_, err := dirSize(root)
-	if os.Geteuid() == 0 {
-		// root bypasses the permission bits; the walk succeeds and the error
-		// branch is not reachable in this environment.
-		return
+	orig := walkDirFn
+	t.Cleanup(func() { walkDirFn = orig })
+	walkDirFn = func(r string, fn fs.WalkDirFunc) error {
+		// Report the failure against a child, which is the case dirSize
+		// propagates; an error on the root itself is deliberately tolerated.
+		return fn(filepath.Join(r, "blocked"), nil, sentinel)
 	}
-	if err == nil {
-		t.Fatalf("dirSize over an unreadable subdirectory returned nil error")
+
+	total, err := dirSize(root)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("dirSize error = %v, want the injected walk error", err)
+	}
+	if total != 0 {
+		t.Fatalf("dirSize total = %d on a failed walk, want 0", total)
 	}
 }

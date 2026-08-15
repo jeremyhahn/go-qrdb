@@ -16,7 +16,7 @@
 # in its go.mod, and the official golang images pin GOTOOLCHAIN=local so an
 # older base cannot satisfy that requirement (and cannot auto-upgrade).
 # This must stay >= the highest `go` directive across the workspace modules.
-FROM golang:1.26.6-bookworm
+FROM golang:1.26.6-bookworm AS toolchain
 
 # Install build, test, and debugging dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -74,41 +74,77 @@ RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && 
 
 WORKDIR /workspace/go-qrdb
 
-# Cache third-party module downloads in a separate layer to speed up
-# rebuilds. go.mod carries NO local replace directives (it builds against
-# upstream-published versions); the sibling repos (go-quicraft, go-truststrap,
-# go-objstore) are unpublished placeholders (v0.0.0) resolved by a Go
-# workspace at runtime. They are not in the build context here, so to build a
-# module graph that lets `go mod download` fetch the third-party deps we
-# create empty STUB modules for the siblings and a TEMPORARY go.work that
-# `use`s them. The workspace and stubs are discarded after caching; the real
-# siblings are mounted and resolved by /workspace/go.work at runtime.
-COPY go.mod go.sum* ./
-COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
-RUN mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap /tmp/stubs/go-objstore && \
-    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.4\n' > /tmp/stubs/go-quicraft/go.mod && \
-    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.4\n' > /tmp/stubs/go-truststrap/go.mod && \
-    printf 'module github.com/jeremyhahn/go-objstore\n\ngo 1.26.4\n' > /tmp/stubs/go-objstore/go.mod && \
-    printf 'go 1.26.4\n\nuse (\n\t.\n\t./sdk/go\n)\n\nreplace github.com/jeremyhahn/go-qrdb v0.0.0 => .\nreplace github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0 => ./sdk/go\nreplace github.com/jeremyhahn/go-quicraft => /tmp/stubs/go-quicraft\nreplace github.com/jeremyhahn/go-truststrap => /tmp/stubs/go-truststrap\nreplace github.com/jeremyhahn/go-objstore => /tmp/stubs/go-objstore\n' > go.work && \
-    GONOSUMCHECK='github.com/jeremyhahn/*' GONOSUMDB='github.com/jeremyhahn/*' \
-    GOFLAGS=-mod=mod go mod download 2>/dev/null || true; \
-    rm -f go.work go.work.sum
-
-# Bake the runtime Go workspace that resolves the locally-mounted modules.
-# go.mod carries no local replace directives, so this workspace is what wires
-# the in-tree sibling repos (go-quicraft, go-truststrap, go-objstore) and the
-# sdk/go submodule during integration/client builds. The referenced paths are
-# populated by the docker-compose volume mounts at runtime; every go build/test
-# runs from /workspace/go-qrdb and walks up to auto-discover this /workspace/go.work
-# (so do NOT pass GOWORK=off in the entrypoints).
-RUN printf 'go 1.26.4\n\nuse (\n\t./go-qrdb\n\t./go-qrdb/sdk/go\n)\n\nreplace github.com/jeremyhahn/go-qrdb v0.0.0 => ./go-qrdb\nreplace github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0 => ./go-qrdb/sdk/go\nreplace github.com/jeremyhahn/go-quicraft => ./go-quicraft\nreplace github.com/jeremyhahn/go-truststrap => ./go-truststrap\nreplace github.com/jeremyhahn/go-objstore => ./go-objstore\n' > /workspace/go.work
-
-# Copy the full project source tree.
-COPY . .
-
 # Entrypoint configures QUIC UDP buffer sizes at container startup.
 COPY .devcontainer/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
-# Default command runs all integration tests.
+# The image ends here for development: no source, so the devcontainer service's
+# bind mount supplies it and a developer's edits are live without a rebuild.
+CMD ["sleep", "infinity"]
+
+# ---------------------------------------------------------------------------
+# integration — the same toolchain with the code under test baked in.
+# ---------------------------------------------------------------------------
+#
+# CI uses this stage and mounts no source. Bind-mounting the checkout cannot
+# work from a Gitea job container: compose reaches the HOST daemon through the
+# mounted socket, so a host path resolves on the host, and the job's checkout
+# lives at /workspace/<owner>/<repo> inside the job container -- a path the
+# runner host does not have. Compose declares create_host_path, so the daemon
+# manufactures an empty directory and mounts that; nothing fails until the
+# build inside the container cannot find the tree.
+#
+# This stage also replaces the Go workspace this image used to bake. That
+# workspace `replace`d go-quicraft, go-truststrap and go-objstore to sibling
+# checkouts supplied by compose bind mounts, which is the resolution model
+# retired at the 2026-08 cutover and prohibited by
+# conventions/dependency-resolution.md section 2. Those modules now resolve
+# from their Gitea tags like every other dependency, which is why the
+# entrypoints no longer need to avoid GOWORK=off.
+FROM toolchain AS integration
+
+WORKDIR /workspace/go-qrdb
+
+# Pre-fetch the module graph so the finished image needs no credentials at run
+# time, and a credential problem fails the BUILD with a clear message instead
+# of surfacing halfway through a suite.
+#
+# The token arrives as a BuildKit secret, never a build arg or ENV: an arg is
+# recoverable from image metadata with `docker history`, while a secret is a
+# tmpfs mount for this RUN alone. It is sourced rather than exported so the
+# value never reaches a command line either. The mount is optional by design --
+# on GitHub no secret is supplied and these modules resolve from the public
+# proxy once tags are mirrored (dependency-resolution.md section 6).
+COPY go.mod go.sum* ./
+COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
+RUN --mount=type=secret,id=gomodauth \
+    set -eu; \
+    if [ -f /run/secrets/gomodauth ]; then . /run/secrets/gomodauth; fi; \
+    go mod download
+
+COPY . .
+
+# Build the binaries the stack runs, at image build time rather than at
+# container start.
+#
+# The entrypoints used to compile qrdbd on every boot, into a volume shared
+# with the healthcheck's grace period. That works on a workstation with a warm
+# build cache and does not on a runner, where the cache is empty every time:
+# the compile outruns start_period and compose reports only "container is
+# unhealthy", naming neither the build nor the clock. Baking them makes
+# container start a server start, so the health window measures what it is
+# supposed to measure.
+#
+# The feature tags match what the compose entrypoints used, and CGO is
+# required -- go-mysql-server's internal/regex has no pure-Go build.
+RUN CGO_ENABLED=1 go build -buildvcs=false \
+      -tags 'codec_json raft qrdb_ts qrdb_vector' \
+      -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+      -o /app/build/bin/qrdbd ./cmd/qrdbd \
+ && CGO_ENABLED=1 go build -buildvcs=false \
+      -tags 'qrdb_ts qrdb_vector' \
+      -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+      -o /app/build/bin/qrdb ./cmd/qrdb
+
+# The suite drives the servers; it does not sit idle.
 CMD ["make", "_integration-test"]

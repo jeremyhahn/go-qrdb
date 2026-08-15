@@ -1,3 +1,17 @@
+# Nothing here bind-mounts a host path — not the repository, not the siblings,
+# and not the two test configs. compose talks to the HOST daemon, so a relative
+# path is resolved there, and on a runner the job's checkout does not exist on
+# the host: `mkdir /workspace: file exists` is what a config mount produced
+# there, having worked on every developer machine. The image already carries
+# both configs via `COPY . .`, so the servers read them in place.
+#
+# No service declares container_name. A container name is global to the host, so
+# a second `docker compose up` claims the same names and SIGKILLs the first
+# run's containers — exit 137, truncated log, no failing test, which reads as
+# OOM and is not. Docker does not refuse the collision the way it refuses a
+# port. Nothing referenced those names: the tests address the servers by compose
+# SERVICE name (https://qrdbd:63002). The Makefile supplies a per-run project
+# name so containers, networks and volumes are namespaced together.
 services:
   # QRDB server with all protocols enabled.
   # Uses the devcontainer image and mounts source + sibling repos so the
@@ -6,9 +20,9 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
     hostname: qrdbd
-    container_name: qrdb-integration-server
     expose:
       - "63001/udp"  # Raft/QUIC (UDP)
       - "63001/tcp"  # Raft fallback (TCP)
@@ -19,16 +33,10 @@ services:
     # Required for QUIC UDP buffer settings
     privileged: true
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
-      - ./config.test.yaml:/etc/qrdb/qrdbd.yaml
-      - server-build:/app/build
     environment:
-      - QRDB_CONFIG=/etc/qrdb/qrdbd.yaml
+      - QRDB_CONFIG=/workspace/go-qrdb/test/integration/api/config.test.yaml
       - QRDB_LOG_LEVEL=debug
       - CGO_ENABLED=1
     healthcheck:
@@ -51,14 +59,9 @@ services:
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
         mkdir -p /var/run/qrdbd /data /app/build/bin
-        # Build server binary with all feature tags
-        echo "Building qrdbd server..."
-        CGO_ENABLED=1 go build -buildvcs=false \
-          -tags 'codec_json raft qrdb_ts qrdb_vector' \
-          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
-          -o /app/build/bin/qrdbd ./cmd/qrdbd
+        # qrdbd is built into the image; container start is a server start.
         echo "Starting qrdbd server..."
-        /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml &
+        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml &
         QRDBD_PID=$!
         # Wait for the admin endpoint to come up so we can initialize the barrier.
         # Wait for the admin-client certificate (written alongside the node
@@ -134,9 +137,9 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
     hostname: qrdbd-shamir
-    container_name: qrdb-integration-server-shamir
     expose:
       - "64001/udp"  # Raft/QUIC (UDP)
       - "64001/tcp"  # Raft fallback (TCP)
@@ -147,19 +150,10 @@ services:
     # Required for QUIC UDP buffer settings
     privileged: true
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-shamir-data:/data
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
-      - ./config.test.shamir.yaml:/etc/qrdb/qrdbd.yaml
-      # Dedicated build volume: must NOT share server-build with qrdbd, or the
-      # two servers race building /app/build/bin/qrdbd into the same path,
-      # corrupting the binary and causing intermittent startup failures.
-      - shamir-server-build:/app/build
     environment:
-      - QRDB_CONFIG=/etc/qrdb/qrdbd.yaml
+      - QRDB_CONFIG=/workspace/go-qrdb/test/integration/api/config.test.shamir.yaml
       - QRDB_LOG_LEVEL=debug
       - CGO_ENABLED=1
     healthcheck:
@@ -182,14 +176,9 @@ services:
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
         mkdir -p /var/run/qrdbd-shamir /data /app/build/bin
-        # Build server binary with all feature tags
-        echo "Building qrdbd server..."
-        CGO_ENABLED=1 go build -buildvcs=false \
-          -tags 'codec_json raft qrdb_ts qrdb_vector' \
-          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
-          -o /app/build/bin/qrdbd ./cmd/qrdbd
+        # qrdbd is built into the image; container start is a server start.
         echo "Starting qrdbd (shamir) server..."
-        /app/build/bin/qrdbd start --config /etc/qrdb/qrdbd.yaml &
+        /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.shamir.yaml &
         QRDBD_PID=$!
         # Wait for the admin-client certificate (written alongside the node
         # cert by qrdbd's single-node auto-TLS path) before attempting the
@@ -333,8 +322,8 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
-    container_name: qrdb-integration-tests
     privileged: true
     user: root
     depends_on:
@@ -343,16 +332,10 @@ services:
       qrdbd-shamir:
         condition: service_healthy
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-socket:/var/run/qrdbd
       - qrdb-data:/data:ro
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
       - qrdb-shamir-data:/data-shamir:ro
-      - cli-build:/app/build
-      - go-cache:/root/go
       - go-build-cache:/root/.cache/go-build
     environment:
       - CGO_ENABLED=1
@@ -403,9 +386,6 @@ services:
       ls -la /var/run/qrdbd/ || true &&
       echo 'Checking TLS certificates...' &&
       ls -la /data/raft/*.pem || true &&
-      echo 'Building CLI binary...' &&
-      mkdir -p /app/build/bin &&
-      CGO_ENABLED=0 go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
       echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN')...\" &&
       go test -p 1 -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
       "
@@ -418,14 +398,6 @@ volumes:
   qrdb-shamir-data:
     driver: local
   qrdb-shamir-socket:
-    driver: local
-  cli-build:
-    driver: local
-  server-build:
-    driver: local
-  shamir-server-build:
-    driver: local
-  go-cache:
     driver: local
   go-build-cache:
     driver: local

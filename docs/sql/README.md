@@ -53,7 +53,7 @@ a retry of the same SQL re-parses and succeeds.
 
 QRDB serves the subset of PostgreSQL's system catalogue that schema
 introspection reads — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
-`pg_indexes`, `pg_attribute` — from `pkg/sql/pgcatalog`, reachable both qualified
+`pg_indexes` — from `pkg/sql/pgcatalog`, reachable both qualified
 (`pg_catalog.pg_class`) and bare (`pg_type`), as PostgreSQL's implicit search
 path allows. The relations are computed per query, read-only (they implement no
 write-capability interface, so DDL against them fails during analysis), and
@@ -67,27 +67,15 @@ the name a client compares against; its `indexdef` is reconstructed from the
 index's own metadata, since nothing in the engine keeps the original statement
 text.
 
-`pg_attribute` is how a PostgreSQL client reads a table's columns without
-going through `information_schema`, and it is what GORM's Migrator uses. Its
-`attrelid` is the same OID `pg_class` reports, because the two are joined;
-columns are numbered from 1, since clients filter on `attnum > 0` to exclude
-system columns. The **`format_type(oid, typmod)`** function is registered
-alongside it, on the PostgreSQL engine only, and renders the SQL spelling a
-client expects — `bigint`, not the catalogue name `int8`.
-
 #### information_schema
 
 `information_schema` is go-mysql-server's own database — the analyzer's catalog
 resolves the name to its built-in instance and never consults the
 `DatabaseProvider` — so QRDB cannot contribute a view to it the way it
-contributes the `pg_catalog` schema. The PostgreSQL engine instead swaps in a
-wrapper (`pgcatalog.InfoSchema`, selected by dialect in `pkg/sql/engine`) that
-serves a PostgreSQL-shaped `columns` table and adds
-**`constraint_column_usage`**, delegating every other name to go-mysql-server.
-
-Doing it per dialect rather than process-wide is deliberate: the MySQL
-endpoint's `information_schema` stays byte-for-byte what go-mysql-server
-ships.
+contributes the `pg_catalog` schema. go-mysql-server exposes
+`NewInformationSchemaTablesToAdd` for exactly this, documented as the hook
+Doltgres injects PostgreSQL-specific tables through, and `pkg/sql/infoschema`
+uses it to add **`constraint_column_usage`**.
 
 That view is SQL-standard (PostgreSQL implements it; MySQL offers the
 overlapping `key_column_usage` instead), and GORM's PostgreSQL Migrator joins
@@ -547,30 +535,6 @@ ParameterStatus honest. Clients act on that parameter: having seen it, pgx
 escapes an interpolated value by doubling quotes alone, so without the rewrite
 a value ending in a backslash would escape its own closing quote and let the
 remainder of the statement be parsed as SQL.
-
-**Catalog-aware DDL.** Three PostgreSQL forms cannot be rewritten from the
-statement text alone, because each needs something only the catalog knows.
-They are resolved in `pkg/sql/pgsql` rather than in the string-level
-translator, beside the bind-parameter type resolution that reads the catalog
-for the same reason:
-
-| PostgreSQL | Resolved to | What the catalog supplies |
-|---|---|---|
-| `ALTER COLUMN c SET/DROP NOT NULL` | `MODIFY c <type> [NOT] NULL` | the column's current type — MySQL has no statement changing nullability alone |
-| `ALTER TABLE t DROP CONSTRAINT n` | `DROP INDEX n` or `DROP FOREIGN KEY n` | whether `n` is an index or a foreign key — PostgreSQL has one constraint namespace, MySQL has three |
-| `CREATE INDEX … ON t (c)` | `… (c(768))` for text columns | whether `c` is text-shaped — MySQL refuses to index TEXT without a prefix length |
-
-Each returns the statement unchanged when it cannot resolve what it needs, so
-an unresolvable statement is reported by the engine against what the caller
-actually wrote rather than against a guess.
-
-`ALTER COLUMN … TYPE` is deliberately **not** translated. It looks like the
-easiest of the three — MySQL's `MODIFY` says the same thing and the new type is
-right there in the statement — but adding it regressed the PostgreSQL
-conformance suite by 41 tests, because it routes migrations into a table
-rewrite path whose failures were previously unreachable from this wire. The
-syntax gap is the safer state until that path is understood; see
-[upstream-gaps.md](upstream-gaps.md).
 
 **Quoted row counts.** PostgreSQL types a bare `'5'` as `unknown` and coerces
 it to `bigint` in a row-count position; MySQL has no such coercion. This is not

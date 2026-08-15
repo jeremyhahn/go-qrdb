@@ -21,8 +21,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -500,14 +500,11 @@ func TestGenerateReplicaID_ConcurrentCallsDistinct(t *testing.T) {
 
 // TestRunStart_AuthDisabled_ServerStartFails covers the auth-disabled else-branch
 // (lines 1182-1184 and 1216-1218) plus the srv.Start() error return (1347-1350)
-// by using a privileged admin port (1) that fails to bind for non-root users.
+// by binding the admin port to a port that is already taken, so the listen
+// fails for every uid.
 // Also configures an embedding provider so svcNode.Embedding != nil (1315-1317).
 // This deterministically covers paths that timing-based tests miss.
 func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -525,7 +522,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		deploymentID:    1,
-		adminPort:       1,     // privileged port — bind fails for non-root
+		adminPort:       occupiedTCPPort(t),
 		grpcPort:        9999,  // safe high port (no bind in this test)
 		authEnabled:     false, // covers the else-branch at 1182
 		enableREST:      true,  // triggers bind attempt on adminPort=1
@@ -539,7 +536,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 
 	err = runStart(f)
 	require.Error(t, err,
-		"runStart must fail when admin server cannot bind to privileged port")
+		"runStart must fail when the admin server cannot bind")
 }
 
 // ---------------------------------------------------------------------------
@@ -550,10 +547,6 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 // directory is blocked (a file exists at dataDir/vector), lifecycle.BuildServices
 // returns an error that propagates via runStart:1065-1068 as a VectorStorageError.
 func TestRunStart_VectorStorageFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -594,14 +587,10 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestRunStart_SealEnabled_AwaitUnsealFails covers start.go:956-958 by
-// enabling the seal subsystem and using a privileged admin port (1) so that
+// enabling the seal subsystem and pointing the admin port at an occupied port so that
 // awaitUnseal's srv.Start() fails, returning a SealedListenerStartupError.
 // runStart then returns that error at line 957 (not as awaitUnsealCanceled).
 func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -618,7 +607,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		deploymentID:    1,
-		adminPort:       1, // privileged port — awaitUnseal's srv.Start fails
+		adminPort:       occupiedTCPPort(t),
 		grpcPort:        9999,
 		enableREST:      true,
 		authEnabled:     false,
@@ -630,7 +619,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 
 	err = runStart(f)
 	require.Error(t, err,
-		"runStart must fail when awaitUnseal server cannot bind to privileged port")
+		"runStart must fail when the awaitUnseal server cannot bind")
 	var listenerErr *SealedListenerStartupError
 	require.True(t, errors.As(err, &listenerErr),
 		"expected SealedListenerStartupError, got %T: %v", err, err)
@@ -642,13 +631,9 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 
 // TestRunStart_PebbleSMType_ServerStartFails verifies that the pebble SM
 // option callback (lines 934-938) is executed when a pebble SM instance is
-// created during shard start. The test uses a privileged admin port (1) to
+// created during shard start. The test uses an already-occupied admin port to
 // make srv.Start() fail after the SM callback runs.
 func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -666,7 +651,7 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		deploymentID:    1,
-		adminPort:       1, // privileged port — srv.Start fails for non-root
+		adminPort:       occupiedTCPPort(t),
 		grpcPort:        9999,
 		authEnabled:     false,
 		enableREST:      true,
@@ -674,7 +659,7 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 
 	err = runStart(f)
 	require.Error(t, err,
-		"runStart must fail when server cannot bind to privileged port")
+		"runStart must fail when the server cannot bind")
 }
 
 // ---------------------------------------------------------------------------
@@ -686,10 +671,6 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 // audit.New returns an error), runStart returns an AuthBootstrapError
 // covering start.go:1172-1178.
 func TestRunStart_BootstrapAuthEnforcementFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure")
-	}
-
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -711,7 +692,7 @@ func TestRunStart_BootstrapAuthEnforcementFails(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		deploymentID:    1,
-		adminPort:       1, // privileged port so server fails after auth
+		adminPort:       occupiedTCPPort(t),
 		grpcPort:        9999,
 		authEnabled:     true, // triggers bootstrapAuthEnforcement path
 		enableREST:      true,
@@ -878,7 +859,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -926,20 +907,16 @@ func TestAwaitUnseal_NilSealBarrier(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestAwaitUnseal_ServerStartFails verifies that a server bind failure (using
-// a privileged port, which non-root users cannot bind) causes awaitUnseal to
+// an occupied port, which no uid can bind) causes awaitUnseal to
 // return a SealedListenerStartupError (covers seal_subsystem.go:246-248).
 func TestAwaitUnseal_ServerStartFails(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 	f := &startFlags{
 		dataDir:      dir,
 		deploymentID: 1,
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
-		adminPort:    1,    // privileged port — bind fails for non-root
-		grpcPort:     2,    // privileged port
+		adminPort:    occupiedTCPPort(t),
+		grpcPort:     occupiedTCPPort(t),
 		enableREST:   true, // triggers bind attempt on adminPort
 		enableGRPC:   true, // triggers bind attempt on grpcPort
 	}
@@ -955,7 +932,7 @@ func TestAwaitUnseal_ServerStartFails(t *testing.T) {
 	defer cancel()
 
 	_, err = awaitUnseal(ctx, f, bundle, sub, nil)
-	// With privileged ports, srv.Start() should fail with a bind error
+	// With occupied ports, srv.Start() should fail with a bind error
 	// for non-root users, which wraps in SealedListenerStartupError.
 	if err != nil {
 		// The error may be SealedListenerStartupError or context timeout —
@@ -1055,15 +1032,10 @@ func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestStartBootstrapServers_StartFails verifies that when the Noise server
-// cannot bind to the requested port (privileged port 1 for non-root users),
+// cannot bind to the requested port (one that is already taken),
 // startBootstrapServers returns a BootstrapServerError wrapping the bind error
 // (covers bootstrap.go:376-378).
 func TestStartBootstrapServers_StartFails(t *testing.T) {
-	// Skip if running as root (port 1 would succeed as root).
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root to trigger bind failure on port 1")
-	}
-
 	dir := t.TempDir()
 
 	bundle, err := generateCATLS()
@@ -1071,7 +1043,7 @@ func TestStartBootstrapServers_StartFails(t *testing.T) {
 
 	f := &startFlags{
 		dataDir:            dir,
-		bootstrapNoisePort: 1, // privileged port — bind fails for non-root
+		bootstrapNoisePort: occupiedTCPPort(t),
 	}
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
@@ -1085,6 +1057,25 @@ func TestStartBootstrapServers_StartFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Helpers shared by tests in this file
 // ---------------------------------------------------------------------------
+
+// occupiedTCPPort binds a port and holds it for the lifetime of the test, so
+// that anything else asking to listen on it fails with EADDRINUSE.
+//
+// It replaces the privileged-port-1 idiom these tests used to force a bind
+// failure. Port 1 only refuses non-root, so under CI -- where job containers
+// run as root -- every test built on it skipped itself, and the runStart,
+// awaitUnseal and startBootstrapServers error paths they exist to cover were
+// never executed on the runner (testing-guidelines.md, Fault Injection).
+// A port that is genuinely taken refuses every uid alike.
+func occupiedTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "0.0.0.0:0")
+	require.NoError(t, err, "reserving a port to occupy")
+	t.Cleanup(func() { _ = l.Close() })
+	addr, ok := l.Addr().(*net.TCPAddr)
+	require.True(t, ok, "listener address is not TCP")
+	return addr.Port
+}
 
 // ---------------------------------------------------------------------------
 // start.go: startDynamicMembership — cover lines 1598-1618 via mock services

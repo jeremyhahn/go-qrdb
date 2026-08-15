@@ -1185,7 +1185,7 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,7 +1275,7 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,7 +1351,7 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1414,7 +1414,7 @@ func TestRunStart_SealConfig_SoftwareStrategy_FullStartup(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 func TestRunStart_SealConfig_ShamirStrategy_InvalidParams_ReturnsError(t *testing.T) {
@@ -1511,7 +1511,7 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1573,7 +1573,7 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1642,7 +1642,7 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 
-	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------

@@ -55,15 +55,6 @@ var infoSchemaByDialect = map[Dialect]func() sql.Database{
 	DialectPostgreSQL: pgcatalog.InfoSchema,
 }
 
-// functionsByDialect maps a dialect to the functions an engine of that
-// dialect serves beyond go-mysql-server's own registry. A dialect absent from
-// the map registers none, which is why DialectMySQL has no entry: the MySQL
-// endpoint must expose MySQL's function set and nothing else, exactly as
-// infoSchemaByDialect keeps its information_schema untouched.
-var functionsByDialect = map[Dialect][]sql.Function{
-	DialectPostgreSQL: {pgcatalog.NewFormatType()},
-}
-
 // Config holds configuration for the SQL engine.
 type Config struct {
 	// Provider is the QRDB database provider that supplies table and
@@ -118,9 +109,6 @@ func New(cfg Config) *sqle.Engine {
 		Build()
 	if newInfoSchema, ok := infoSchemaByDialect[cfg.Dialect]; ok {
 		a.Catalog.InfoSchema = newInfoSchema()
-	}
-	for _, fn := range functionsByDialect[cfg.Dialect] {
-		a.Catalog.RegisterFunction(sql.NewEmptyContext(), fn)
 	}
 	return sqle.New(a, nil)
 }

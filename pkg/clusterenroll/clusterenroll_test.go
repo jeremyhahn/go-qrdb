@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -502,6 +503,51 @@ func TestStartAdvertiser_InvalidExistingKey(t *testing.T) {
 	}
 	if _, ok := err.(*ServerError); !ok {
 		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+}
+
+// TestStartAdvertiser_KeyReadFails covers the branch between the two above:
+// the key file passes fileExists and then cannot be read. Reusing an existing
+// static key is what keeps a node's Noise identity stable across restarts, so
+// a read failure must surface rather than fall through to generating a second
+// identity and silently rotating the key joining nodes were told to expect.
+//
+// Injected through readFileFn because there is no uid-independent filesystem
+// shape for it: fileExists rejects a directory, so the ENOTDIR trick used by
+// the write test cannot reach this branch, and a mode-0000 file is read
+// successfully by root (testing-guidelines.md, Fault Injection).
+func TestStartAdvertiser_KeyReadFails(t *testing.T) {
+	dir := t.TempDir()
+	mat, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, NoiseKeyFile)
+	if err := os.WriteFile(keyPath, []byte("00"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sentinel := errors.New("read key: injected")
+	orig := readFileFn
+	t.Cleanup(func() { readFileFn = orig })
+	readFileFn = func(name string) ([]byte, error) {
+		if name == keyPath {
+			return nil, sentinel
+		}
+		return orig(name)
+	}
+
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: 0}, dir, discardLogger())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("StartAdvertiser error = %v, want the injected read error", err)
+	}
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	}
+	if serverErr.Protocol != "noise" {
+		t.Fatalf("ServerError.Protocol = %q, want %q", serverErr.Protocol, "noise")
 	}
 }
 

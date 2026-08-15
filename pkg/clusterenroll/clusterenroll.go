@@ -62,6 +62,12 @@ const (
 	NoiseKeyFile = "noise-key.hex"
 )
 
+// readFileFn is os.ReadFile, indirected so a test can inject a read failure
+// on a file that fileExists has already accepted. A mode-0000 file is not a
+// substitute: CI job containers run as root, and root reads it successfully
+// (conventions/testing-guidelines.md, Fault Injection).
+var readFileFn = os.ReadFile
+
 // Options holds the parameters for cluster-TLS enrollment orchestration.
 // Callers populate this from their own configuration (e.g., CLI flags or
 // YAML config) before calling Resolve.
@@ -484,7 +490,7 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 	var err error
 
 	if fileExists(keyPath) {
-		hexData, readErr := os.ReadFile(keyPath)
+		hexData, readErr := readFileFn(keyPath)
 		if readErr != nil {
 			return nil, &ServerError{Protocol: "noise", Err: readErr}
 		}

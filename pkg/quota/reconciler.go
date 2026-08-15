@@ -27,6 +27,12 @@ import (
 // when none is configured.
 const DefaultReconcileInterval = 5 * time.Minute
 
+// walkDirFn is filepath.WalkDir, indirected so a test can inject a walk
+// failure. Making a subdirectory unreadable is not a substitute: CI job
+// containers run as root, and root walks a mode-0000 directory successfully
+// (conventions/testing-guidelines.md, Fault Injection).
+var walkDirFn = filepath.WalkDir
+
 // StorageTenant is the projection of a tenant the Reconciler needs to correct
 // its storage-byte usage. Volume tenants store all their data under a dedicated
 // DataRoot, which can be walked for an accurate on-disk size; shared/prefix
@@ -183,7 +189,7 @@ func (r *Reconciler) runOnce(ctx context.Context) {
 // on-disk footprint). Directory entries and symlinks contribute nothing.
 func dirSize(root string) (int64, error) {
 	var total int64
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := walkDirFn(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// Tolerate a missing root entirely; surface other walk errors.
 			if path == root {

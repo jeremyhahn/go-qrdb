@@ -589,10 +589,72 @@ test-playwright: test-e2e
 # Integration tests (run in devcontainer with qrdbd server + all protocols)
 # ============================================================================
 
+# Compose project name for the integration harness. Everything compose creates
+# is namespaced by it, so two runs on one host cannot collide. Without it the
+# project name defaults to the compose file's directory, `api`, identical for
+# every checkout.
+#
+# Keyed on hostname rather than a random value, deliberately: stable means the
+# `down -v` below still clears a crashed run's leftovers instead of leaking a
+# volume set per run, and each CI job container has its own hostname so
+# concurrent jobs on one runner are isolated. It does NOT isolate two people on
+# the SAME machine — pass INT_PROJECT=... for that.
+INT_PROJECT ?= qrdb-int-$(shell hostname | tr -cd '[:alnum:]' | tail -c 16)
+
 # All integration tests run in a docker compose stack with a qrdbd server
 # that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
 # This is the single entry point for all integration tests.
 INT_COMPOSE := test/integration/api/docker-compose.yml
+INT_IMAGE   := go-qrdb-dev:latest
+
+# integration-image builds the image the stack runs, with the code under test
+# baked in. It is a separate target because the build needs credentials the
+# containers must NOT keep: go.mod pins first-party modules published only to
+# the internal Gitea, and a docker build inherits nothing from its caller's
+# environment.
+#
+# The four variables from dependency-resolution.md section 6 go into a file
+# mounted as a BuildKit secret for the single `go mod download`. Never a build
+# arg -- an arg is recoverable from image metadata with `docker history`. The
+# file is written under /tmp, deliberately OUTSIDE the build context, because
+# the Dockerfile ends with `COPY . .`; .dockerignore lists gomodauth* as a
+# second line of defence. It is removed on the way out, on success or failure.
+#
+# Two sources, in order: a CI job, where the runner injects the variables into
+# the process environment; or a developer box, where the token lives in the
+# gitignored .devcontainer/.env. With neither, the file is left empty and the
+# build resolves from the public proxy -- which is exactly what happens on
+# GitHub, where the Dockerfile's optional mount supplies nothing.
+#
+# The token is written by shell redirection rather than passed as an argument,
+# so it never appears in a command line that `ps` could show.
+.PHONY: integration-image
+integration-image:
+	@set -eu; \
+	umask 077; \
+	auth="$$(mktemp /tmp/qrdb-gomodauth.XXXXXX)"; \
+	trap 'rm -f "$$auth"' EXIT INT TERM; \
+	if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
+	  { echo "export GOPRIVATE=$${GOPRIVATE:-}"; \
+	    echo "export GIT_CONFIG_COUNT=$${GIT_CONFIG_COUNT:-}"; \
+	    echo "export GIT_CONFIG_KEY_0=$${GIT_CONFIG_KEY_0}"; \
+	    echo "export GIT_CONFIG_VALUE_0=$${GIT_CONFIG_VALUE_0:-}"; } > "$$auth"; \
+	  echo "==> module credentials: from the job environment"; \
+	elif [ -f .devcontainer/.env ]; then \
+	  . ./.devcontainer/.env; \
+	  { echo "export GOPRIVATE=github.com/jeremyhahn/*"; \
+	    echo "export GIT_CONFIG_COUNT=1"; \
+	    echo "export GIT_CONFIG_KEY_0=url.http://x:$${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf"; \
+	    echo "export GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/"; } > "$$auth"; \
+	  echo "==> module credentials: from .devcontainer/.env"; \
+	else \
+	  echo "==> no Gitea credentials here; resolving from the public proxy"; \
+	fi; \
+	DOCKER_BUILDKIT=1 docker build \
+	  --secret id=gomodauth,src="$$auth" \
+	  --target integration \
+	  -f .devcontainer/Dockerfile \
+	  -t $(INT_IMAGE) .
 
 # integration-test runs BOTH suites in isolated stages so the standalone
 # (multi-protocol CLI vs the single-node docker servers) and cluster
@@ -606,28 +668,40 @@ integration-test: integration-test-standalone integration-test-cluster
 # Standalone stage: the multi-protocol CLI suites in ./test/integration/api
 # exercised against the single-node software + Shamir docker servers.
 .PHONY: integration-test-standalone
-integration-test-standalone:
+integration-test-standalone: integration-image
 	@echo "==> Running STANDALONE integration tests (multi-protocol CLI vs single-node servers)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
-		docker compose up --build --abort-on-container-exit integration-tests; \
+		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		if [ $$rc -ne 0 ]; then $(MAKE) -s _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
+		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
+
+# --abort-on-container-exit attaches only to the tests container, so a server
+# that fails to start reports "dependency failed to start" or "is unhealthy"
+# and nothing else -- the reason stays inside a container nobody printed, and
+# the teardown below then removes it. Dump the servers while they still exist.
+.PHONY: _integration-server-logs
+_integration-server-logs:
+	@cd test/integration/api && for svc in qrdbd qrdbd-shamir; do \
+		echo "==> $$svc log (last 200 lines)"; \
+		docker compose -p $(INT_PROJECT) logs --no-color --tail=200 "$$svc" || true; \
+	done
 
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
 .PHONY: integration-test-cluster
-integration-test-cluster:
+integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
-		docker compose up --build --abort-on-container-exit integration-tests; \
+		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
 
 # Backward-compatible alias: the standalone multi-protocol suite.
@@ -643,7 +717,7 @@ HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 .PHONY: integration-test-gpu
 integration-test-gpu:
 	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
 			up --build --abort-on-container-exit integration-tests; \
@@ -1385,9 +1459,15 @@ build-sqlite-gateway:
 test-sqlite-gateway:
 	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -race -count=1 ./... 2>&1 | tee ../../test-sqlite-gateway.log
 
+# The suite drives a real qrdbd subprocess over five transports under -race and
+# takes well over ten minutes, so it needs an explicit timeout: go test's default
+# is 10m, and without this the run dies mid-suite with "panic: test timed out"
+# and no failing test to point at.
+SQLITE_INT_TIMEOUT := 40m
+
 .PHONY: integration-test-sqlite-gateway
 integration-test-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
+	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 -timeout $(SQLITE_INT_TIMEOUT) ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
 
 .PHONY: bench-sqlite-gateway
 bench-sqlite-gateway:
