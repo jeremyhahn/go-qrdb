@@ -6,6 +6,7 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
     hostname: qrdbd
     container_name: qrdb-integration-server
@@ -19,10 +20,6 @@ services:
     # Required for QUIC UDP buffer settings
     privileged: true
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
       - ./config.test.yaml:/etc/qrdb/qrdbd.yaml
@@ -134,6 +131,7 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
     hostname: qrdbd-shamir
     container_name: qrdb-integration-server-shamir
@@ -147,10 +145,6 @@ services:
     # Required for QUIC UDP buffer settings
     privileged: true
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-shamir-data:/data
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
       - ./config.test.shamir.yaml:/etc/qrdb/qrdbd.yaml
@@ -333,6 +327,7 @@ services:
     build:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
+      target: integration
     image: go-qrdb-dev:latest
     container_name: qrdb-integration-tests
     privileged: true
@@ -343,16 +338,11 @@ services:
       qrdbd-shamir:
         condition: service_healthy
     volumes:
-      - ../../..:/workspace/go-qrdb
-      - ../../../../go-quicraft:/workspace/go-quicraft
-      - ../../../../go-truststrap:/workspace/go-truststrap
-      - ../../../../go-objstore:/workspace/go-objstore
       - qrdb-socket:/var/run/qrdbd
       - qrdb-data:/data:ro
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
       - qrdb-shamir-data:/data-shamir:ro
       - cli-build:/app/build
-      - go-cache:/root/go
       - go-build-cache:/root/.cache/go-build
     environment:
       - CGO_ENABLED=1
@@ -405,7 +395,7 @@ services:
       ls -la /data/raft/*.pem || true &&
       echo 'Building CLI binary...' &&
       mkdir -p /app/build/bin &&
-      CGO_ENABLED=0 go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
+      go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
       echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN')...\" &&
       go test -p 1 -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
       "
@@ -424,8 +414,6 @@ volumes:
   server-build:
     driver: local
   shamir-server-build:
-    driver: local
-  go-cache:
     driver: local
   go-build-cache:
     driver: local

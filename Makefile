@@ -588,6 +588,56 @@ test-playwright: test-e2e
 # that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
 # This is the single entry point for all integration tests.
 INT_COMPOSE := test/integration/api/docker-compose.yml
+INT_IMAGE   := go-qrdb-dev:latest
+
+# integration-image builds the image the stack runs, with the code under test
+# baked in. It is a separate target because the build needs credentials the
+# containers must NOT keep: go.mod pins first-party modules published only to
+# the internal Gitea, and a docker build inherits nothing from its caller's
+# environment.
+#
+# The four variables from dependency-resolution.md section 6 go into a file
+# mounted as a BuildKit secret for the single `go mod download`. Never a build
+# arg -- an arg is recoverable from image metadata with `docker history`. The
+# file is written under /tmp, deliberately OUTSIDE the build context, because
+# the Dockerfile ends with `COPY . .`; .dockerignore lists gomodauth* as a
+# second line of defence. It is removed on the way out, on success or failure.
+#
+# Two sources, in order: a CI job, where the runner injects the variables into
+# the process environment; or a developer box, where the token lives in the
+# gitignored .devcontainer/.env. With neither, the file is left empty and the
+# build resolves from the public proxy -- which is exactly what happens on
+# GitHub, where the Dockerfile's optional mount supplies nothing.
+#
+# The token is written by shell redirection rather than passed as an argument,
+# so it never appears in a command line that `ps` could show.
+.PHONY: integration-image
+integration-image:
+	@set -eu; \
+	umask 077; \
+	auth="$$(mktemp /tmp/qrdb-gomodauth.XXXXXX)"; \
+	trap 'rm -f "$$auth"' EXIT INT TERM; \
+	if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
+	  { echo "export GOPRIVATE=$${GOPRIVATE:-}"; \
+	    echo "export GIT_CONFIG_COUNT=$${GIT_CONFIG_COUNT:-}"; \
+	    echo "export GIT_CONFIG_KEY_0=$${GIT_CONFIG_KEY_0}"; \
+	    echo "export GIT_CONFIG_VALUE_0=$${GIT_CONFIG_VALUE_0:-}"; } > "$$auth"; \
+	  echo "==> module credentials: from the job environment"; \
+	elif [ -f .devcontainer/.env ]; then \
+	  . ./.devcontainer/.env; \
+	  { echo "export GOPRIVATE=github.com/jeremyhahn/*"; \
+	    echo "export GIT_CONFIG_COUNT=1"; \
+	    echo "export GIT_CONFIG_KEY_0=url.http://x:$${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf"; \
+	    echo "export GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/"; } > "$$auth"; \
+	  echo "==> module credentials: from .devcontainer/.env"; \
+	else \
+	  echo "==> no Gitea credentials here; resolving from the public proxy"; \
+	fi; \
+	DOCKER_BUILDKIT=1 docker build \
+	  --secret id=gomodauth,src="$$auth" \
+	  --target integration \
+	  -f .devcontainer/Dockerfile \
+	  -t $(INT_IMAGE) .
 
 # integration-test runs BOTH suites in isolated stages so the standalone
 # (multi-protocol CLI vs the single-node docker servers) and cluster
@@ -601,12 +651,12 @@ integration-test: integration-test-standalone integration-test-cluster
 # Standalone stage: the multi-protocol CLI suites in ./test/integration/api
 # exercised against the single-node software + Shamir docker servers.
 .PHONY: integration-test-standalone
-integration-test-standalone:
+integration-test-standalone: integration-image
 	@echo "==> Running STANDALONE integration tests (multi-protocol CLI vs single-node servers)..."
 	@cd test/integration/api && docker compose down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
-		docker compose up --build --abort-on-container-exit integration-tests; \
+		docker compose up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		docker compose down -v; \
 		exit $$rc
@@ -615,12 +665,12 @@ integration-test-standalone:
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).
 # These start their own qrdbd nodes and do not use the docker servers.
 .PHONY: integration-test-cluster
-integration-test-cluster:
+integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
 	@cd test/integration/api && docker compose down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
-		docker compose up --build --abort-on-container-exit integration-tests; \
+		docker compose up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
 		docker compose down -v; \
 		exit $$rc

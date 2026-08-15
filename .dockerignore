@@ -1,0 +1,54 @@
+# Build context exclusions.
+#
+# The integration stage ends with `COPY . .`, so anything reachable here is
+# baked into an image layer and recoverable from it. Secrets first, bulk
+# second.
+
+# Credentials. .devcontainer/.env carries the Gitea module-fetch token and is
+# gitignored; without this line the bake-in would put it in a layer. The
+# gomodauth* entry is defence in depth -- the CI credentials file is written
+# outside the build context on purpose, and this catches a future mistake.
+.devcontainer/.env
+gomodauth*
+
+# Runtime state a locally-run daemon leaves behind, including the CA, node and
+# admin keys it issues itself.
+cmd/qrdbd/data/
+~/
+
+# Version control and CI metadata. .git alone is hundreds of megabytes here.
+.git
+.github
+.gitea
+
+# Build output and caches. The image rebuilds all of this from source.
+bin/
+/qrdb
+/qrdbd
+/kvcompare
+test/performance/kvcompare
+*.exe
+*.test
+*.out
+coverage/
+*.log
+gosec.sarif
+trivy-results.sarif
+
+# Node and frontend artifacts. The Go integration suite needs none of it, and
+# node_modules alone dwarfs the rest of the context.
+cmd/qrdb/frontend/node_modules/
+cmd/qrdb/frontend/dist/
+cmd/qrdb/frontend/src/lib/wails/
+cmd/qrdb/frontend/playwright-report*/
+cmd/qrdb/frontend/test-results/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
+sdk/typescript/test-results/
+cmd/qrdbd/webui_dist/
+
+# Agent and editor scratch.
+.serena
+.claude
+.idea/
+.vscode/

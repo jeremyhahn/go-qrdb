@@ -121,18 +121,25 @@ func ensureShardSnapshot(t *testing.T, cfg *TestConfig, proto ProtocolType) {
 // snapshot the shard, create a backup, get/list/verify it, mutate the
 // source data, restore, and delete.
 //
-// IMPORTANT semantics verified from go-quicraft/pkg/host.go: ImportSnapshot
-// refuses to import into a shard that is currently running
-// ("Verify shard is NOT running" -> ErrInvalidOperation). On this
-// single-node integration deployment shard 1 is always the live shard
-// serving the request, so the restore step cannot actually apply the
-// snapshot. RestoreBackup does not treat that as a top-level failure: it
-// records a per-shard ShardError and continues, returning a
-// RestoreResult with ShardsRestored == 0 and a non-empty Errors slice. The
-// CLI call itself succeeds (exit 0). This is the well-defined, code-verified
-// behavior on a single live-shard deployment, not a guess -- see
-// pkg/service/shard_snapshot_provider.go and go-quicraft's
-// Host.ImportSnapshot.
+// IMPORTANT semantics, re-verified 2026-08-14 on the suite's first run under
+// the rebuilt harness. Restore cannot apply on this deployment, and the
+// service now refuses it deliberately rather than incidentally: shard 1 hosts
+// the system tenant, and stopping it while serving would take down auth for
+// every subsequent admin call including the one that would restart it, so the
+// service directs the caller to the offline `qrdbd start --restore-backup-id`
+// boot flow. RestoreBackup still records a per-shard error and returns a
+// RestoreResult with ShardsRestored == 0 and a non-empty Errors slice, but
+// the CLI now exits NON-ZERO when any shard failed.
+//
+// Both of those are changes from what this test was written against — it
+// expected an incidental ErrInvalidOperation from go-quicraft's ImportSnapshot
+// and an exit status of 0 — and neither was caught until the suite ran again,
+// because it had no CI job. The assertions below pin the current contract,
+// including the reason for the refusal, so a regression in the guard is a test
+// failure rather than a silent loss of the property.
+//
+// A successful restore needs a shard that does not host the system tenant, so
+// it belongs to the cluster-stage harness, not here.
 func TestCLIMultiProtocolBackupCreateGetListVerifyRestoreDeleteLifecycle(t *testing.T) {
 	cfg := LoadTestConfig()
 	requireCLI(t, cfg)
@@ -222,17 +229,16 @@ func TestCLIMultiProtocolBackupCreateGetListVerifyRestoreDeleteLifecycle(t *test
 			}
 
 			// Step 5: restore with --validate. See the function doc comment
-			// for why this succeeds at the CLI level but restores zero
-			// shards on this single live-shard deployment.
+			// for why the server refuses this on a single live-shard
+			// deployment and why the CLI exits non-zero when it does.
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "backup", "restore",
 				"--id", id, "--validate",
 			)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] backup restore failed: %v", proto, err)
-			}
+			assertError(t, err, fmt.Sprintf(
+				"[%s] restoring into the live system-tenant shard must fail the command, not just the shard", proto))
+			assertContains(t, stderr, "failed shard",
+				fmt.Sprintf("[%s] restore stderr should name the failed shard", proto))
 			rr := parseBackupRestoreResult(t, proto, stdout)
 			assertEqual(t, id, rr.BackupID, fmt.Sprintf("[%s] restore result backup ID mismatch", proto))
 			assertEqual(t, 0, rr.ShardsRestored,
@@ -379,18 +385,18 @@ func TestCLIMultiProtocolBackupRestoreEncryptedRequiresDecryptionKey(t *testing.
 			_, _, err = execCLIWithProtocol(t, cfg, proto, "backup", "restore", "--id", info.ID)
 			assertError(t, err, fmt.Sprintf("[%s] restoring an encrypted backup without --decryption-key should error", proto))
 
-			// Supplying a decryption key clears that gate; the shard import
-			// still fails per-shard (live single-node shard), but the
-			// request itself succeeds.
+			// Supplying a decryption key clears the missing-key gate, which
+			// is what this test is about. The restore then still fails on
+			// the live system-tenant shard, so the distinction being pinned
+			// here is the reason: no longer "decryption key required".
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
 				"--output", "json", "backup", "restore",
 				"--id", info.ID, "--decryption-key", "integration-test-key-material",
 			)
-			if err != nil {
-				t.Logf("stdout: %s", stdout)
-				t.Logf("stderr: %s", stderr)
-				t.Fatalf("[%s] backup restore with --decryption-key failed: %v", proto, err)
-			}
+			assertError(t, err, fmt.Sprintf(
+				"[%s] restoring into the live system-tenant shard must fail the command", proto))
+			assertNotContains(t, stderr, "decryption key",
+				fmt.Sprintf("[%s] with a key supplied, the failure must not be about the key", proto))
 			rr := parseBackupRestoreResult(t, proto, stdout)
 			assertEqual(t, 0, rr.ShardsRestored,
 				fmt.Sprintf("[%s] restore of a live single-node shard must report 0 shards restored", proto))
