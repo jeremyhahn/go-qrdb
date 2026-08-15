@@ -148,15 +148,44 @@ jobs:
       # the staging and passes the file as a BuildKit secret; it writes an
       # empty file when the variables are absent, which is what happens on
       # GitHub, where these modules resolve from the public proxy instead.
+      # INT_PROJECT namespaces the containers, networks and volumes. Its
+      # default is per-HOST, which is not enough here: a runner with capacity 4
+      # can land two go-qrdb jobs on the same daemon, and compose would then
+      # evict the other run's containers by name. The run id makes it per-run.
+      #
+      # Read from the shell rather than through a ${{ }} expression: that
+      # context has resolved empty before and would hand compose a bare
+      # "qrdb-int-" shared by every job, which is the collision this avoids.
       - name: Integration tests (standalone stack)
-        run: make integration-test-standalone
+        run: |
+          export INT_PROJECT="qrdb-int-${GITHUB_RUN_ID:-local}"
+          echo "compose project: $INT_PROJECT"
+          make integration-test-standalone INT_PROJECT="$INT_PROJECT"
+
+      # compose --abort-on-container-exit attaches only to the tests container,
+      # so when a SERVER fails to start the run reports "dependency failed to
+      # start" and nothing else -- the reason stays inside a container nobody
+      # printed. Dump both servers' logs on failure, before the teardown below
+      # removes them.
+      - name: Server logs (on failure)
+        if: failure()
+        run: |
+          cd test/integration/api
+          project="qrdb-int-${GITHUB_RUN_ID:-local}"
+          for svc in qrdbd qrdbd-shamir; do
+            echo "::group::$svc"
+            docker compose -p "$project" logs --no-color --tail=200 "$svc" || true
+            echo "::endgroup::"
+          done
 
       # Compose leaks containers and volumes when a run is interrupted, and a
       # leftover stack makes the NEXT run fail while attaching. Always tear
       # down, and do not let the teardown itself fail the job.
       - name: Tear down the stack
         if: always()
-        run: cd test/integration/api && docker compose down -v || true
+        run: |
+          cd test/integration/api
+          docker compose -p "qrdb-int-${GITHUB_RUN_ID:-local}" down -v || true
 
   security:
     name: Security
