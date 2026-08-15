@@ -718,6 +718,10 @@ func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
 func TestNewStartCmd_ValidConfigFileApplied(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.yaml")
+	// data_dir must be test-private: a shared path (the old /tmp/qrdb-test)
+	// collides with any concurrently running test holding the Pebble lock,
+	// and the resulting storage error preempts the UnknownSMError this test
+	// asserts on.
 	yaml := `
 server:
   host: "0.0.0.0"
@@ -726,7 +730,7 @@ server:
   quic_port: 9300
 raft:
   raft_address: "10.0.0.99:63001"
-  data_dir: "/tmp/qrdb-test"
+  data_dir: "` + filepath.Join(dir, "data") + `"
   deployment_id: 5
   shard_id: 3
   replica_id: 7
