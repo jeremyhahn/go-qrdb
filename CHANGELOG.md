@@ -11,6 +11,38 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.4.0-alpha] - 2026-08-15
+
+### Added
+
+- **ServiceModule MCP tool authorization** (`apimodule.MCPToolPermissioner`):
+  a module that registers MCP tools may now declare each tool's required
+  permission; the unified server feeds the declarations into the same MCP
+  tool registry the built-in tools use, so module tool calls are authorized
+  by the one middleware path instead of being unconditionally denied. A
+  module tool registered without a declaration remains fail-closed.
+- **SDK re-exports for module hosts**: `qrdbsdk.WithServerTLS` (the
+  TLS-only transports' certificate source, required by hosts that terminate
+  TLS with their own material), `qrdbsdk.NewModuleHTTPRegistrar` (capture
+  registrar for module tests), `qrdbsdk.ModuleMCPToolPermissioner`, and
+  `qrdbsdk.PermissionIdentityGated` (the identity-gated sentinel).
+
+### Fixed
+
+- `pkg/api/mcp` default-tag test builds: the shared `CredentialServicer`
+  mock lived in a file constrained to the full feature-tag set while an
+  untagged test file used it; the mock now lives untagged so every tag
+  combination compiles.
+
+## [0.3.0-alpha] - 2026-08-14
+
+Released without a changelog entry (recorded retroactively): the
+unified-API-server foundation — chi as the REST router with the
+default-deny route registry, proto-option (`qrdb.v1.permission`) gRPC
+authorization via the reflection interceptor, the QUIC/MCP method
+registries, and the `ServiceModule` seam (`pkg/apimodule`, `WithModule`,
+SDK re-exports) through which capability providers extend the server.
+
 ## [0.2.1-alpha] - 2026-08-14
 
 ### Fixed

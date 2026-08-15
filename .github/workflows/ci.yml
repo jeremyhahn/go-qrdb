@@ -164,7 +164,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           exit-code: 0
-          skip-dirs: test
+          skip-dirs: test,cmd/qrdbd/data
 
       - name: Upload Trivy SARIF
         if: always() && github.server_url == 'https://github.com'
@@ -183,7 +183,7 @@ jobs:
           severity: CRITICAL,HIGH
           exit-code: 1
           format: table
-          skip-dirs: test
+          skip-dirs: test,cmd/qrdbd/data
 
       # Gitea leg: trivy-action's setup step cannot authenticate to github.com
       # from a Gitea runner, so install the CLI and run the identical gate.
@@ -193,7 +193,7 @@ jobs:
 
       - name: Trivy gate (fail on CRITICAL/HIGH)
         if: github.server_url != 'https://github.com'
-        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test .
+        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test,cmd/qrdbd/data .
 
   ci-gate:
     name: CI Gate

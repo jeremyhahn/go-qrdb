@@ -162,6 +162,14 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 		return nil, &TranslationError{Query: trimmed, Err: err}
 	}
 
+	// A few PostgreSQL DDL forms cannot be rewritten from the statement text
+	// alone -- they need a column's type, or whether a name is an index --
+	// so they are resolved against the catalog here rather than in
+	// pkg/sql/engine's translator. Any other statement passes straight
+	// through.
+	translated = rewriteCatalogAwareDDL(
+		h.buildSQLContext(ctx), h.sqlEngine.Analyzer.Catalog, h.dbName, translated)
+
 	// Parameterized queries must defer execution until BIND/EXECUTE
 	// when the wire protocol delivers parameter values. Non-parameterized
 	// queries execute eagerly for lower latency.

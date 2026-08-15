@@ -747,9 +747,10 @@ func (e *errorBackend) Close() error { return nil }
 
 // failingKVStore wraps a KVStore and injects errors on specific operations.
 type failingKVStore struct {
-	inner  *memoryKVStore
-	putErr error
-	getErr error
+	inner     *memoryKVStore
+	putErr    error
+	getErr    error
+	deleteErr error
 }
 
 func (f *failingKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -767,6 +768,9 @@ func (f *failingKVStore) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 func (f *failingKVStore) Delete(ctx context.Context, key string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	return f.inner.Delete(ctx, key)
 }
 

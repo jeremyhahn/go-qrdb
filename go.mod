@@ -2,12 +2,17 @@ module github.com/jeremyhahn/go-qrdb
 
 go 1.26.6
 
-// No local-path replace directives are committed in this module: it builds
-// against upstream-published versions of its dependencies. Local development
-// resolution (sibling repos and the in-repo sdk/go submodule) is provided
-// entirely by a Go workspace (go.work) — the top-level workspace during
-// in-tree development, and a generated /workspace/go.work inside the
-// integration-test / client-build Docker stack.
+// This module builds against upstream-published versions of its SIBLING
+// dependencies (go-quicraft, go-objstore, go-truststrap); local development
+// resolution for those is provided by a Go workspace when one is in use — a
+// generated /workspace/go.work inside the integration-test / client-build
+// Docker stack, for instance.
+//
+// The one committed replace directive, at the bottom of this file, is for the
+// in-repo sdk/go submodule. That is not a sibling repo but part of this
+// working tree, so resolving it to a published version would build the tree
+// against a different copy of its own code. sdk/go carries the mirror-image
+// replace for this module, and sdk/go/gorm/conformance carries both.
 
 require github.com/jeremyhahn/go-truststrap v0.1.2-alpha
 
@@ -27,7 +32,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha
-	github.com/jeremyhahn/go-quicraft v0.3.1-alpha
+	github.com/jeremyhahn/go-quicraft v0.4.2-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/prometheus/client_golang v1.23.2
@@ -196,7 +201,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.2.1-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.4.0-alpha
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

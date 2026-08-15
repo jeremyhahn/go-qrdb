@@ -35,6 +35,7 @@ const (
 	NamespaceRelation   = "pg_namespace"
 	DescriptionRelation = "pg_description"
 	IndexesRelation     = "pg_indexes"
+	AttributeRelation   = "pg_attribute"
 )
 
 // oidType is the column type used for every OID-valued column. PostgreSQL's
@@ -66,7 +67,8 @@ var relationSchemas = map[string]sqle.Schema{
 		{Name: "objsubid", Type: types.Int32, Nullable: false, Source: DescriptionRelation},
 		{Name: "description", Type: types.LongText, Nullable: true, Source: DescriptionRelation},
 	},
-	IndexesRelation: indexesSchema,
+	IndexesRelation:   indexesSchema,
+	AttributeRelation: attributeSchema,
 }
 
 // relationRows maps each served relation to the function that computes its
@@ -80,6 +82,7 @@ var relationRows = map[string]rowsFunc{
 	NamespaceRelation:   namespaceRows,
 	DescriptionRelation: descriptionRows,
 	IndexesRelation:     indexesRows,
+	AttributeRelation:   attributeRows,
 }
 
 // Compile-time interface assertion. database implements sqle.Database and

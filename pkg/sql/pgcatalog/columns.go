@@ -123,6 +123,9 @@ func (d infoSchema) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Ta
 	if strings.EqualFold(name, information_schema.ColumnsTableName) {
 		return NewColumnsTable(), true, nil
 	}
+	if strings.EqualFold(name, ConstraintColumnUsageTableName) {
+		return NewConstraintColumnUsageTable(), true, nil
+	}
 	return d.Database.GetTableInsensitive(ctx, name)
 }
 

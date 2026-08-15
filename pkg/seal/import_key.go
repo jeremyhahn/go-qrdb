@@ -21,6 +21,8 @@ import (
 	"log/slog"
 	"time"
 
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -176,6 +178,19 @@ func (b *StorageBarrier) ImportRootKey(ctx context.Context, imported *ImportedKe
 	copy(epochs, imported.KnownEpochs)
 	sealed.KnownEpochs = epochs
 	sealed.HKDFVersion = imported.HKDFVersion
+
+	// Authenticate the metadata under the imported root key. SealRootKey
+	// produces no MAC and every field set just above is covered by one, so an
+	// unstamped blob would be refused by the Unseal at the end of this
+	// function. The barrier is still sealed here — there is no unsealed
+	// barrier to stamp with until this very blob has been persisted and
+	// read back — so the stamp comes from the key in hand.
+	if err := quicraftseal.StampSealedStateMACWithRootKey(
+		imported.RootKey, b.config.DeploymentID, sealed); err != nil {
+		emitAudit(b.config.AuditLogger, "import-root-key", "barrier", b.config.RootKeyPath,
+			"deny", map[string]string{"error": err.Error(), "strategy": string(strategy.ID())})
+		return err
+	}
 
 	blob, err := json.Marshal(sealed)
 	if err != nil {

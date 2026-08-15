@@ -39,20 +39,29 @@ module also means:
   the Makefile's "GORM Conformance Suite" section) — a red run here can
   never fail a build that isn't explicitly asking for it.
 
-### go.work
+### Module resolution
 
-Like every other nested module in this workspace (`sdk/go`,
-`cmd/qrdb-sqlite`, ...), local development resolution against `sdk/go` and
-the root `go-qrdb` module is provided entirely by the top-level Go
-workspace at `/home/jhahn/sources/go.work`, **not** by local `replace`
-directives in this module's `go.mod` (see its header comment). That means
-`./sdk/go/gorm/conformance` **must** be listed in `go.work`'s `use` block —
-without it, Go refuses to build this module at all
-(`directory prefix . does not contain modules listed in go.work or their
-selected dependencies`), and outside workspace mode entirely there is no
+This module resolves `sdk/go` and the root `go-qrdb` module through local
+`replace` directives in its own `go.mod`, mirroring what those two modules
+already do for each other:
+
+```
+replace (
+	github.com/jeremyhahn/go-qrdb         => ../../../..
+	github.com/jeremyhahn/go-qrdb/sdk/go  => ../..
+)
+```
+
+Both are required. This module exists only to run the upstream GORM suite
+against the working tree, so resolving either to a published version would
+test something other than the code under development — and there is no
 publishable version of `github.com/jeremyhahn/go-qrdb/sdk/go` to resolve
-against. This entry was added as part of building this harness, immediately
-next to the existing `./go-qrdb/sdk/go` line.
+against in any case.
+
+It therefore builds with or without a Go workspace. It previously depended on
+being listed in a top-level `go.work`, and building it was impossible without
+one; that is no longer true, and nothing outside this module needs to know it
+exists.
 
 ## Layout
 

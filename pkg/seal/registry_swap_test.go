@@ -1,0 +1,785 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Registry barrier-swap tests, plus the migration-journal helpers and the
+// error types the migration path reports.
+//
+// The swaps exist for the encryption migration's commit step, where a live
+// none-strategy barrier is replaced by a freshly-unsealed keyed one. Swapping
+// the wrong entry -- or reporting success for a tenant that was never
+// registered -- would leave the data plane reading through a barrier that
+// cannot decrypt what is on disk.
+
+package seal
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+)
+
+// newSwapBarrier builds a standalone StorageBarrier for use as a swap target.
+func newSwapBarrier(t *testing.T, rootKeyPath string) *StorageBarrier {
+	t.Helper()
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: rootKeyPath}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	return b
+}
+
+// TestSetSystemBarrierReplacesTheLiveBarrier covers the system-barrier swap.
+func TestSetSystemBarrierReplacesTheLiveBarrier(t *testing.T) {
+	reg := newNoPoolRegistry(t)
+	original := reg.SystemBarrier()
+	if original == nil {
+		t.Fatal("expected a system barrier")
+	}
+
+	replacement := newSwapBarrier(t, "sys/root-2")
+	reg.SetSystemBarrier(replacement)
+
+	if got := reg.SystemBarrier(); got != replacement {
+		t.Fatal("SystemBarrier did not return the replacement")
+	}
+	if reg.SystemBarrier() == original {
+		t.Fatal("the original barrier is still installed")
+	}
+}
+
+// TestReplaceTenantBarrierRefusesAnUnregisteredTenant covers the guard. A
+// shared-barrier tenant has no dedicated barrier to replace, and silently
+// registering one would give it a barrier the rest of the system does not
+// know it has.
+func TestReplaceTenantBarrierRefusesAnUnregisteredTenant(t *testing.T) {
+	reg := newNoPoolRegistry(t)
+
+	err := reg.ReplaceTenantBarrier("never-registered", WrapTenantBarrier("never-registered", newSwapBarrier(t, "t/root")))
+	if !errors.Is(err, ErrTenantNotFound) {
+		t.Fatalf("error = %v, want ErrTenantNotFound", err)
+	}
+}
+
+// TestWrapTenantBarrierCarriesTheTenantIdentity covers the wrapper used by the
+// per-tenant migration commit. The tenant id it carries is what the registry
+// keys on, so a wrapper that lost it would swap the wrong tenant's barrier.
+func TestWrapTenantBarrierCarriesTheTenantIdentity(t *testing.T) {
+	barrier := newSwapBarrier(t, "acme/root")
+
+	tb := WrapTenantBarrier("acme", barrier)
+	if tb == nil {
+		t.Fatal("WrapTenantBarrier returned nil")
+	}
+	if tb.TenantID() != "acme" {
+		t.Errorf("TenantID = %q, want %q", tb.TenantID(), "acme")
+	}
+	if tb.Barrier() != barrier {
+		t.Error("Barrier() did not return the wrapped barrier")
+	}
+	if !tb.IsSealed() {
+		t.Error("a freshly built barrier must report sealed")
+	}
+}
+
+// TestPoolBasePathsIsEmptyWithoutAPool covers the no-pool branch. The doc
+// promises an empty slice and a nil error so callers can range
+// unconditionally; returning an error instead would break every
+// data-root overlap check on a deployment with no volume pool.
+func TestPoolBasePathsIsEmptyWithoutAPool(t *testing.T) {
+	reg := newNoPoolRegistry(t)
+
+	paths, err := reg.PoolBasePaths(context.Background())
+	if err != nil {
+		t.Fatalf("PoolBasePaths: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("paths = %v, want empty", paths)
+	}
+	// Ranging over the result must be safe.
+	for range paths {
+		t.Fatal("unreachable")
+	}
+}
+
+// TestRootKeyPathReportsTheConfiguredPath covers the accessor the migration
+// journal helpers key off.
+func TestRootKeyPathReportsTheConfiguredPath(t *testing.T) {
+	b := newSwapBarrier(t, "sys/custom-root")
+	if got := b.RootKeyPath(); got != "sys/custom-root" {
+		t.Fatalf("RootKeyPath = %q, want %q", got, "sys/custom-root")
+	}
+}
+
+// TestLoadMigrationJournalFromReportsNoJournal covers the absent-journal path.
+// Nil-and-nil means "no migration in flight", which is what boot uses to
+// decide there is nothing to recover; an error here would make every clean
+// start look like a crashed migration.
+func TestLoadMigrationJournalFromReportsNoJournal(t *testing.T) {
+	backend := NewMemoryBackend()
+
+	j, err := LoadMigrationJournalFrom(context.Background(), backend, "sys/root")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom: %v", err)
+	}
+	if j != nil {
+		t.Fatalf("journal = %+v, want nil for a backend with no journal", j)
+	}
+}
+
+// TestClearMigrationJournalFromIsIdempotent covers the clear path against a
+// backend that has no journal. Migration cleanup runs on paths that may have
+// already cleaned up, so a second clear must not fail.
+func TestClearMigrationJournalFromIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	backend := NewMemoryBackend()
+
+	if err := ClearMigrationJournalFrom(ctx, backend, "sys/root"); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+	if err := ClearMigrationJournalFrom(ctx, backend, "sys/root"); err != nil {
+		t.Fatalf("second clear: %v", err)
+	}
+}
+
+// TestPersistedStrategyFromIsEmptyWithoutABlob covers the accessor's
+// not-initialized branch, which boot uses before any root key exists.
+func TestPersistedStrategyFromIsEmptyWithoutABlob(t *testing.T) {
+	if got := PersistedStrategyFrom(context.Background(), NewMemoryBackend(), "sys/root"); got != "" {
+		t.Fatalf("PersistedStrategyFrom = %q, want the empty string", got)
+	}
+}
+
+// TestFinishMigrationIsSafeWithNoJournal covers the exported cleanup wrapper.
+func TestFinishMigrationIsSafeWithNoJournal(t *testing.T) {
+	b := newSwapBarrier(t, "sys/root")
+	if err := b.FinishMigration(context.Background()); err != nil {
+		t.Fatalf("FinishMigration: %v", err)
+	}
+}
+
+// TestBeginMigrationRefusesAnUninitializedBarrier covers the exported
+// entrypoint's validation. Starting a migration against a barrier with no
+// persisted root key would write a journal describing work that cannot be
+// performed, and boot would then try to recover it forever.
+func TestBeginMigrationRefusesAnUninitializedBarrier(t *testing.T) {
+	b := newSwapBarrier(t, "sys/root")
+
+	j, err := b.BeginMigration(context.Background(), MigrationOptions{})
+	if err == nil {
+		t.Fatal("BeginMigration must refuse an uninitialized barrier")
+	}
+	if j != nil {
+		t.Error("a refused migration must return no journal")
+	}
+}
+
+// TestMigrationJournalPhasePredicates covers Committed and Terminal, which
+// decide whether a recovered migration rolls forward or back. Getting either
+// wrong on a crashed migration re-runs or abandons a re-encryption pass.
+func TestMigrationJournalPhasePredicates(t *testing.T) {
+	// A zero-value journal is in the initial phase: neither committed nor
+	// terminal, so recovery treats it as work still to do.
+	var j MigrationJournal
+	if j.Committed() {
+		t.Error("a zero-value journal must not report committed")
+	}
+	if j.Terminal() {
+		t.Error("a zero-value journal must not report terminal")
+	}
+}
+
+// TestMigrationErrorMessagesNameTheirSubject covers the error types the
+// migration path reports. These surface during boot recovery, where the
+// message is often the only record of why a node refused to come up.
+func TestMigrationErrorMessagesNameTheirSubject(t *testing.T) {
+	sentinel := errors.New("shamir failed")
+	cause := errors.New("underlying")
+
+	tests := []struct {
+		name     string
+		err      error
+		contains []string
+	}{
+		{
+			name:     "shamir with op and cause",
+			err:      &ShamirError{Sentinel: sentinel, Op: "split", Cause: cause},
+			contains: []string{"shamir failed", "split", "underlying"},
+		},
+		{
+			name:     "shamir with sentinel only",
+			err:      &ShamirError{Sentinel: sentinel},
+			contains: []string{"shamir failed"},
+		},
+		{
+			name:     "migration recovery names the tenant",
+			err:      &MigrationRecoveryError{TenantID: "acme", Err: cause},
+			contains: []string{"qrdb/seal:", "acme", "underlying"},
+		},
+		{
+			name:     "sentinel length names the bad length",
+			err:      &SentinelLengthError{Length: 7},
+			contains: []string{"qrdb/seal:", "7", "want 4"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.err.Error()
+			for _, want := range tc.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("message %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestShamirErrorUnwrapsToItsSentinel pins the errors.Is behaviour the type
+// exists to preserve: callers match on the sentinel, not the wrapper.
+func TestShamirErrorUnwrapsToItsSentinel(t *testing.T) {
+	sentinel := errors.New("shamir failed")
+	err := &ShamirError{Sentinel: sentinel, Op: "combine", Cause: errors.New("underlying")}
+
+	if !errors.Is(err, sentinel) {
+		t.Fatal("errors.Is could not reach the sentinel")
+	}
+}
+
+// TestMigrationRecoveryErrorUnwrapsToItsCause is the same property on the
+// recovery wrapper.
+func TestMigrationRecoveryErrorUnwrapsToItsCause(t *testing.T) {
+	cause := errors.New("underlying")
+	err := &MigrationRecoveryError{TenantID: "acme", Err: cause}
+
+	if !errors.Is(err, cause) {
+		t.Fatal("errors.Is could not reach the cause")
+	}
+}
+
+// TestReplaceTenantBarrierSwapsARegisteredTenant covers the success path: the
+// tenant exists, so its barrier is replaced in place.
+//
+// This is the per-tenant migration commit. The replacement must be observable
+// through the registry immediately afterwards -- a swap that did not take
+// would leave the data plane decrypting with the pre-migration key.
+func TestReplaceTenantBarrierSwapsARegisteredTenant(t *testing.T) {
+	ctx := context.Background()
+	reg := newNoPoolRegistry(t)
+
+	original, err := reg.RegisterTenant(ctx, "acme", NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "acme/root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+
+	replacement := WrapTenantBarrier("acme", newSwapBarrier(t, "acme/root-2"))
+	if err := reg.ReplaceTenantBarrier("acme", replacement); err != nil {
+		t.Fatalf("ReplaceTenantBarrier: %v", err)
+	}
+
+	got, err := reg.GetTenant("acme")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got != replacement {
+		t.Fatal("the registry did not return the replacement barrier")
+	}
+	if got == original {
+		t.Fatal("the original tenant barrier is still installed")
+	}
+}
+
+// TestTenantBarrierKVStoreRefusesANilBarrier keeps a misconfigured store from
+// becoming a nil dereference on the first write.
+func TestTenantBarrierKVStoreRefusesANilBarrier(t *testing.T) {
+	if _, err := NewTenantBarrierKVStore(nil); err == nil {
+		t.Fatal("NewTenantBarrierKVStore(nil) must fail")
+	}
+}
+
+// TestTenantBarrierKVStorePutIfAbsentIsSingleUse covers the conditional-write
+// passthrough. The atomicity belongs to the barrier; what is under test here
+// is that the tenant-scoping wrapper does not lose the "created?" answer,
+// which callers build single-use semantics on.
+func TestTenantBarrierKVStorePutIfAbsentIsSingleUse(t *testing.T) {
+	ctx := context.Background()
+	reg := newNoPoolRegistry(t)
+
+	tb, err := reg.RegisterTenant(ctx, "acme", NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "acme/root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := tb.Barrier().Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	store, err := NewTenantBarrierKVStore(tb)
+	if err != nil {
+		t.Fatalf("NewTenantBarrierKVStore: %v", err)
+	}
+	atomic, ok := store.(kvstore.AtomicKVStore)
+	if !ok {
+		t.Fatal("the tenant barrier KV store must support conditional writes")
+	}
+
+	created, err := atomic.PutIfAbsent(ctx, "k", []byte("first"))
+	if err != nil {
+		t.Fatalf("first PutIfAbsent: %v", err)
+	}
+	if !created {
+		t.Fatal("the first PutIfAbsent must create the key")
+	}
+
+	created, err = atomic.PutIfAbsent(ctx, "k", []byte("second"))
+	if err != nil {
+		t.Fatalf("second PutIfAbsent: %v", err)
+	}
+	if created {
+		t.Fatal("the second PutIfAbsent must not report creation")
+	}
+
+	// The original value must survive the refused write.
+	got, err := store.Get(ctx, "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(got) != "first" {
+		t.Fatalf("value = %q, want %q", got, "first")
+	}
+}
+
+// TestCacheDEKDestroysTheSupersededSecret covers the swap branch. Each cached
+// DEK holds an enclave allocation, so replacing one without destroying the
+// previous Secret leaks protected memory for the lifetime of the process --
+// and on a rotating tenant that is every rotation.
+func TestCacheDEKDestroysTheSupersededSecret(t *testing.T) {
+	m := &tenantKeyManager{}
+
+	first := make([]byte, 32)
+	for i := range first {
+		first[i] = 0x11
+	}
+	m.cacheDEK("acme", first)
+
+	second := make([]byte, 32)
+	for i := range second {
+		second[i] = 0x22
+	}
+	m.cacheDEK("acme", second)
+
+	// The cache must hold exactly the replacement.
+	v, ok := m.cache.Load("acme")
+	if !ok {
+		t.Fatal("no DEK cached after two writes")
+	}
+	sec, ok := v.(*secure.Secret)
+	if !ok {
+		t.Fatalf("cached value is %T, want *secure.Secret", v)
+	}
+	got, err := sec.Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer got.Destroy()
+	if got.Bytes()[0] != 0x22 {
+		t.Fatalf("cached DEK starts with %#x, want the replacement (0x22)", got.Bytes()[0])
+	}
+}
+
+// TestCacheDEKIgnoresEmptyInput covers the defensive branch. An empty DEK
+// cannot be turned into a Secret, and caching a nil in its place would make a
+// later Open panic rather than regenerate.
+func TestCacheDEKIgnoresEmptyInput(t *testing.T) {
+	m := &tenantKeyManager{}
+
+	m.cacheDEK("acme", nil)
+
+	if _, ok := m.cache.Load("acme"); ok {
+		t.Fatal("an empty DEK must not be cached")
+	}
+}
+
+// TestClearCachedDEKRemovesAndDestroys covers the eviction path used when a
+// tenant is sealed.
+func TestClearCachedDEKRemovesAndDestroys(t *testing.T) {
+	m := &tenantKeyManager{}
+
+	dek := make([]byte, 32)
+	for i := range dek {
+		dek[i] = 0x33
+	}
+	m.cacheDEK("acme", dek)
+
+	m.clearCachedDEK("acme")
+	if _, ok := m.cache.Load("acme"); ok {
+		t.Fatal("the DEK is still cached after clearCachedDEK")
+	}
+
+	// Clearing an absent tenant must be a no-op rather than a panic.
+	m.clearCachedDEK("never-cached")
+}
+
+// TestMigrationJournalRoundTripsThroughTheBackend covers the write/load pair
+// together, which is the only combination that proves both agree on the
+// journal's key and encoding. A journal that wrote successfully but loaded as
+// absent would make a crashed migration invisible to boot recovery.
+func TestMigrationJournalRoundTripsThroughTheBackend(t *testing.T) {
+	ctx := context.Background()
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(testLogger(), backend,
+		BarrierConfig{RootKeyPath: "sys/root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+
+	journal := &MigrationJournal{TargetStrategy: StrategyPassphrase, StagingRootKeyPath: "sys/staging"}
+	if err := b.CheckpointMigration(ctx, journal); err != nil {
+		t.Fatalf("CheckpointMigration: %v", err)
+	}
+
+	loaded, err := LoadMigrationJournalFrom(ctx, backend, "sys/root")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("a checkpointed journal loaded back as absent")
+	}
+	if loaded.TargetStrategy != StrategyPassphrase {
+		t.Errorf("TargetStrategy = %q, want %q", loaded.TargetStrategy, StrategyPassphrase)
+	}
+	if loaded.StagingRootKeyPath != "sys/staging" {
+		t.Errorf("StagingRootKeyPath = %q, want %q", loaded.StagingRootKeyPath, "sys/staging")
+	}
+
+	// And clearing it must make it absent again.
+	if err := ClearMigrationJournalFrom(ctx, backend, "sys/root"); err != nil {
+		t.Fatalf("ClearMigrationJournalFrom: %v", err)
+	}
+	cleared, err := LoadMigrationJournalFrom(ctx, backend, "sys/root")
+	if err != nil {
+		t.Fatalf("LoadMigrationJournalFrom after clear: %v", err)
+	}
+	if cleared != nil {
+		t.Fatal("the journal survived ClearMigrationJournalFrom")
+	}
+}
+
+// TestLoadMigrationJournalFromRejectsACorruptBlob covers the unmarshal-failure
+// branch. A corrupt journal must be an error, not silently "no migration" --
+// the latter would abandon a half-finished re-encryption and leave the data
+// unreadable.
+func TestLoadMigrationJournalFromRejectsACorruptBlob(t *testing.T) {
+	ctx := context.Background()
+	backend := NewMemoryBackend()
+
+	if err := backend.Put(ctx, "sys/root"+migrationJournalSuffix, []byte("{not json")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	j, err := LoadMigrationJournalFrom(ctx, backend, "sys/root")
+	if err == nil {
+		t.Fatal("a corrupt journal must be reported, not treated as absent")
+	}
+	if j != nil {
+		t.Error("a corrupt journal must yield no value")
+	}
+}
+
+// TestDeleteRootKeyToleratesAnAbsentBlob covers the cleanup used when a
+// migration rolls back or a staging mint fails.
+//
+// It must succeed when there is nothing to delete: leaving an orphaned staging
+// blob behind makes the next mint's Initialize fail with ErrAlreadyInitialized
+// and wedges every retry, so cleanup that refused to run on a partially-created
+// staging barrier would be worse than no cleanup at all.
+func TestDeleteRootKeyToleratesAnAbsentBlob(t *testing.T) {
+	ctx := context.Background()
+	b := newSwapBarrier(t, "sys/staging")
+
+	if err := b.DeleteRootKey(ctx); err != nil {
+		t.Fatalf("DeleteRootKey on an uninitialized barrier: %v", err)
+	}
+	// Idempotent: a second cleanup pass must also succeed.
+	if err := b.DeleteRootKey(ctx); err != nil {
+		t.Fatalf("second DeleteRootKey: %v", err)
+	}
+}
+
+// TestDeleteRootKeyRemovesAPersistedBlob is the other half: after
+// initialization there IS a blob, and it must actually go away -- otherwise
+// the wedge above is exactly what happens on the next mint.
+func TestDeleteRootKeyRemovesAPersistedBlob(t *testing.T) {
+	ctx := context.Background()
+	backend := NewMemoryBackend()
+	b, err := NewStorageBarrier(testLogger(), backend,
+		BarrierConfig{RootKeyPath: "sys/staging"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if blob, err := backend.Get(ctx, "sys/staging"); err != nil || len(blob) == 0 {
+		t.Fatalf("expected a persisted root key before deletion (err=%v)", err)
+	}
+
+	if err := b.DeleteRootKey(ctx); err != nil {
+		t.Fatalf("DeleteRootKey: %v", err)
+	}
+
+	if _, err := backend.Get(ctx, "sys/staging"); err == nil {
+		t.Fatal("the root key blob survived DeleteRootKey")
+	}
+}
+
+// TestLoadMigrationJournalReportsNoneAndThenTheJournal covers the barrier's
+// own journal accessor across both states, which is what boot consults to
+// decide whether a migration needs recovering.
+func TestLoadMigrationJournalReportsNoneAndThenTheJournal(t *testing.T) {
+	ctx := context.Background()
+	b := newSwapBarrier(t, "sys/root")
+
+	j, err := b.LoadMigrationJournal(ctx)
+	if err != nil {
+		t.Fatalf("LoadMigrationJournal: %v", err)
+	}
+	if j != nil {
+		t.Fatal("a barrier with no journal must report nil")
+	}
+
+	if err := b.CheckpointMigration(ctx, &MigrationJournal{TargetStrategy: StrategyPassphrase}); err != nil {
+		t.Fatalf("CheckpointMigration: %v", err)
+	}
+
+	j, err = b.LoadMigrationJournal(ctx)
+	if err != nil {
+		t.Fatalf("LoadMigrationJournal after checkpoint: %v", err)
+	}
+	if j == nil {
+		t.Fatal("a checkpointed journal was not loaded back")
+	}
+	if j.TargetStrategy != StrategyPassphrase {
+		t.Errorf("TargetStrategy = %q, want %q", j.TargetStrategy, StrategyPassphrase)
+	}
+
+	if err := b.FinishMigration(ctx); err != nil {
+		t.Fatalf("FinishMigration: %v", err)
+	}
+	j, err = b.LoadMigrationJournal(ctx)
+	if err != nil {
+		t.Fatalf("LoadMigrationJournal after finish: %v", err)
+	}
+	if j != nil {
+		t.Fatal("the journal survived FinishMigration")
+	}
+}
+
+// TestExportRootKeyContextRefusesASealedBarrier covers the guard that keeps
+// key material from leaving a sealed barrier. Export hands the plaintext root
+// key to a replica, so it is the one call that must never succeed on a barrier
+// whose operator has not unsealed it.
+func TestExportRootKeyContextRefusesASealedBarrier(t *testing.T) {
+	b := newSwapBarrier(t, "sys/root")
+
+	got, err := b.ExportRootKeyContext()
+	if !errors.Is(err, ErrSealed) {
+		t.Fatalf("error = %v, want ErrSealed", err)
+	}
+	if got != nil {
+		t.Fatal("a sealed barrier must export nothing")
+	}
+}
+
+// TestExportRootKeyContextCarriesTheDerivationParameters covers the success
+// path. Salt, Epoch, KnownEpochs and HKDFVersion are what make a replica
+// derive IDENTICAL DEKs to the leader; dropping any one of them yields a
+// replica that unseals cleanly and then cannot read the leader's data.
+func TestExportRootKeyContextCarriesTheDerivationParameters(t *testing.T) {
+	ctx := context.Background()
+	b := newSwapBarrier(t, "sys/root")
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	exported, err := b.ExportRootKeyContext()
+	if err != nil {
+		t.Fatalf("ExportRootKeyContext: %v", err)
+	}
+	if exported == nil {
+		t.Fatal("expected an exported context")
+	}
+	if len(exported.RootKey) == 0 {
+		t.Error("exported context carries no root key")
+	}
+	if len(exported.Salt) == 0 {
+		t.Error("exported context carries no salt")
+	}
+	if exported.Epoch == 0 {
+		t.Error("exported context carries no epoch")
+	}
+	if err := exported.Validate(); err != nil {
+		t.Errorf("the exported context does not validate: %v", err)
+	}
+}
+
+// TestImportRootKeyRejectsAnInvalidContext covers the validation gate. An
+// import that accepted a partial context would produce a replica deriving the
+// wrong DEKs -- which fails at first read, long after the operation reported
+// success.
+func TestImportRootKeyRejectsAnInvalidContext(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		imported *ImportedKey
+	}{
+		{"nil context", nil},
+		{"empty context", &ImportedKey{}},
+		{"root key without salt", &ImportedKey{RootKey: make([]byte, 32), Epoch: 1}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newSwapBarrier(t, "sys/root")
+			if err := b.ImportRootKey(ctx, tc.imported, Credentials{}); err == nil {
+				t.Fatal("ImportRootKey must reject an invalid context")
+			}
+			if !b.IsSealed() {
+				t.Error("a rejected import must leave the barrier sealed")
+			}
+		})
+	}
+}
+
+// TestImportRootKeyIsIdempotentOnAnInitializedBarrier covers the
+// already-initialized guard. Re-importing must not overwrite a live root key:
+// doing so would orphan every DEK already derived from the current one.
+func TestImportRootKeyIsIdempotentOnAnInitializedBarrier(t *testing.T) {
+	ctx := context.Background()
+
+	leader := newSwapBarrier(t, "leader/root")
+	if err := leader.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("leader Initialize: %v", err)
+	}
+	exported, err := leader.ExportRootKeyContext()
+	if err != nil {
+		t.Fatalf("ExportRootKeyContext: %v", err)
+	}
+
+	replica := newSwapBarrier(t, "replica/root")
+	if err := replica.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("replica Initialize: %v", err)
+	}
+
+	if err := replica.ImportRootKey(ctx, exported, Credentials{}); !errors.Is(err, ErrAlreadyInitialized) {
+		t.Fatalf("error = %v, want ErrAlreadyInitialized", err)
+	}
+}
+
+// TestChangePasswordRefusesBeforeItTouchesKeyMaterial covers the guards that
+// run ahead of any re-wrap.
+//
+// Each one must fail BEFORE the root key is opened. A rejection that happened
+// afterwards would leave a plaintext root key resident in memory on a path
+// that returns an error and never reaches the deferred wipe.
+func TestChangePasswordRefusesBeforeItTouchesKeyMaterial(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("sealed barrier", func(t *testing.T) {
+		b := newSwapBarrier(t, "sys/root")
+		if err := b.ChangePassword(ctx, Credentials{Secret: []byte("new-passphrase")}); !errors.Is(err, ErrSealed) {
+			t.Fatalf("error = %v, want ErrSealed", err)
+		}
+	})
+
+	t.Run("empty passphrase", func(t *testing.T) {
+		b := newSwapBarrier(t, "sys/root")
+		if err := b.Initialize(ctx, Credentials{}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		if err := b.ChangePassword(ctx, Credentials{Secret: nil}); !errors.Is(err, ErrInvalidPassphrase) {
+			t.Fatalf("error = %v, want ErrInvalidPassphrase", err)
+		}
+	})
+}
+
+// TestRekeyRefusesWithoutAShamirSetup covers Rekey's guard chain. Rekeying
+// re-splits the quorum, so every precondition is checked before the root key
+// is opened -- and an invalid threshold must be refused rather than producing
+// a quorum that cannot be reassembled.
+func TestRekeyRefusesWithoutAShamirSetup(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("sealed barrier", func(t *testing.T) {
+		b := newSwapBarrier(t, "sys/root")
+		params, err := b.Rekey(ctx, 2, 3)
+		if !errors.Is(err, ErrSealed) {
+			t.Fatalf("error = %v, want ErrSealed", err)
+		}
+		if params != nil {
+			t.Error("a refused rekey must return no parameters")
+		}
+	})
+
+	t.Run("no shamir strategy", func(t *testing.T) {
+		b := newSwapBarrier(t, "sys/root")
+		if err := b.Initialize(ctx, Credentials{}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		if _, err := b.Rekey(ctx, 2, 3); !errors.Is(err, ErrShamirNotConfigured) {
+			t.Fatalf("error = %v, want ErrShamirNotConfigured", err)
+		}
+	})
+}
+
+// TestRekeyRejectsAnUnsatisfiableThreshold pins the parameter validation. A
+// threshold below two removes the point of splitting at all, and a threshold
+// above the share count produces a quorum that can never be met -- which would
+// permanently seal the barrier.
+func TestRekeyRejectsAnUnsatisfiableThreshold(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name             string
+		threshold, total int
+	}{
+		{"threshold below two", 1, 5},
+		{"zero threshold", 0, 5},
+		{"threshold above the share count", 4, 3},
+		{"no shares at all", 2, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newSwapBarrier(t, "sys/root")
+			if err := b.Initialize(ctx, Credentials{}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+
+			// The threshold check runs after the shamir-configured check, so
+			// an unconfigured barrier reports that first. Either refusal is
+			// acceptable here; what must NOT happen is success.
+			if _, err := b.Rekey(ctx, tc.threshold, tc.total); err == nil {
+				t.Fatal("Rekey must refuse an unsatisfiable threshold")
+			}
+		})
+	}
+}

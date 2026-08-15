@@ -76,7 +76,18 @@ func (t *tenantKeyManager) GetTenantDEK(ctx context.Context, tenantID string) ([
 	key := tenantDEKStoreKey(tenantID)
 	wrapped, err := t.store.Get(ctx, key)
 	if err != nil {
-		// Key not found: generate a new DEK.
+		// ONLY a genuine miss may fall through to generation. Any other
+		// failure must be reported: generateAndStoreDEK PERSISTS the new
+		// DEK over the existing one, so treating a transient store error as
+		// "no DEK yet" silently and permanently destroys access to
+		// everything this tenant has already encrypted.
+		//
+		// A missing key normally arrives as (nil, nil) per the KVStore
+		// contract and is handled just below; this branch covers stores that
+		// signal absence with the seal sentinel instead.
+		if !isSecretNotFound(err) {
+			return nil, &DEKDerivationError{TenantID: tenantID, Err: err}
+		}
 		return t.generateAndStoreDEK(ctx, tenantID)
 	}
 	if wrapped == nil {

@@ -71,7 +71,24 @@ type BaseModule = apimodule.BaseModule
 // genuine first-contact surfaces. It embeds the live chi.Router.
 type ModuleHTTPRegistrar = apimodule.HTTPRegistrar
 
+// ModuleMCPToolPermissioner is the optional ServiceModule extension through
+// which a module declares its MCP tools' permissions, admitting them into
+// the unified server's single MCP authorization path.
+type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
+
 // WithModule registers a capability module into the embedded qrdb server. Its
 // gRPC/REST/MCP surfaces are attached to every transport at startup and its
 // Start/Stop lifecycle runs with the server's.
 var WithModule = qrdbserver.WithModule
+
+// NewModuleHTTPRegistrar builds the permission-recording registrar the server
+// passes to ServiceModule.RegisterHTTP. Exported for module hosts and module
+// tests that need a capture registrar without importing pkg/apimodule.
+var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
+
+// WithServerTLS supplies the TLS configuration the embedded server's
+// network transports serve with. qrdb transports are TLS-only: without this
+// option (and without a CeremonyCA to auto-provision a certificate) the
+// server refuses to start a network transport. Module hosts that terminate
+// TLS with their own certificate material pass it here.
+var WithServerTLS = qrdbserver.WithTLS

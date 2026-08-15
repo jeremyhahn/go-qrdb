@@ -12,26 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package infoschema supplies the information_schema views QRDB serves that
-// go-mysql-server does not.
-//
-// information_schema is go-mysql-server's own database -- the analyzer's
-// catalog resolves the name to its built-in instance and never consults the
-// DatabaseProvider -- so a view cannot be contributed the way pkg/sql/pgcatalog
-// contributes the pg_catalog schema. go-mysql-server exposes
-// information_schema.NewInformationSchemaTablesToAdd for exactly this purpose,
-// documented as the hook Doltgres injects PostgreSQL-specific tables and views
-// through, and that is the seam used here.
-package infoschema
+package pgcatalog
 
 import (
-	"strings"
-
 	sqle "github.com/dolthub/go-mysql-server/sql"
 	"github.com/dolthub/go-mysql-server/sql/information_schema"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/sqltypes"
 )
+
+// constraint_column_usage is the SQL-standard view listing the columns a
+// constraint covers. PostgreSQL implements it; go-mysql-server does not,
+// offering the overlapping key_column_usage instead.
+//
+// It is served here rather than registered into go-mysql-server's
+// information_schema globally, because that database is shared by every
+// engine in the process and the MySQL endpoint's information_schema must stay
+// byte-for-byte what go-mysql-server ships (see infoSchemaByDialect in
+// pkg/sql/engine). The wrapper in columns.go is the dialect-scoped seam, and
+// this view goes through it for the same reason the PostgreSQL-shaped columns
+// table does.
+//
+// gorm.io/driver/postgres's Migrator joins this view against
+// table_constraints and columns to resolve a table's primary-key and unique
+// constraints; without it every such migration failed with
+// "table not found: constraint_column_usage".
 
 // ConstraintColumnUsageTableName is the name of the view this package adds.
 const ConstraintColumnUsageTableName = "constraint_column_usage"
@@ -52,38 +57,6 @@ var constraintColumnUsageSchema = sqle.Schema{
 	{Name: "TABLE_SCHEMA", Type: nameColumnType, Nullable: true, Source: ConstraintColumnUsageTableName},
 	{Name: "TABLE_NAME", Type: nameColumnType, Nullable: true, Source: ConstraintColumnUsageTableName},
 	{Name: "COLUMN_NAME", Type: nameColumnType, Nullable: true, Source: ConstraintColumnUsageTableName},
-}
-
-// Register adds constraint_column_usage to the set of tables every
-// information_schema database built afterwards will serve. It is idempotent,
-// and must run before the engine whose catalog should carry the view is
-// constructed: NewInformationSchemaDatabase copies this map once, at
-// construction.
-//
-// # Why the view is needed
-//
-// It is how a PostgreSQL client asks which columns a constraint covers.
-// gorm.io/driver/postgres's Migrator resolves a table's primary-key and unique
-// constraints by joining information_schema.table_constraints against this view
-// and information_schema.columns, so without it every such migration failed
-// with "table not found: constraint_column_usage" -- 29 tests of the upstream
-// GORM suite, the second-largest cause of failure on the PostgreSQL wire.
-//
-// # Why it belongs in information_schema rather than pg_catalog
-//
-// constraint_column_usage is SQL-standard, not a PostgreSQL extension.
-// PostgreSQL implements it; MySQL does not, offering the overlapping
-// key_column_usage instead. Adding it is therefore filling in the standard
-// namespace rather than teaching MySQL's namespace a foreign concept, which is
-// also why registering it process-wide is harmless: a MySQL client that finds
-// it finds a standard view holding a projection of data key_column_usage
-// already exposes.
-func Register() {
-	information_schema.NewInformationSchemaTablesToAdd[ConstraintColumnUsageTableName] = &information_schema.InformationSchemaTable{
-		TableName:   ConstraintColumnUsageTableName,
-		TableSchema: constraintColumnUsageSchema,
-		Reader:      constraintColumnUsageRowIter,
-	}
 }
 
 // constraintColumnUsageRowIter computes the view's rows from the catalog.
@@ -152,19 +125,16 @@ func constraintColumnUsageRowIter(ctx *sqle.Context, catalog sqle.Catalog) (sqle
 	return sqle.RowsToRowIter(rows...), nil
 }
 
-// indexColumnNames returns the bare column names an index covers.
+// NewConstraintColumnUsageTable returns the view as a table the
+// information_schema wrapper serves.
 //
-// sql.Index.Expressions reports each column qualified by its table
-// ("users.id") and, for an expression index, something that is not a column
-// reference at all. Only the qualified-column form is meaningful here, so a
-// prefix that does not match this table is left whole rather than truncated at
-// an arbitrary dot -- a column name is never invented.
-func indexColumnNames(index sqle.Index, tableName string) []string {
-	prefix := tableName + "."
-	expressions := index.Expressions()
-	names := make([]string, 0, len(expressions))
-	for _, expression := range expressions {
-		names = append(names, strings.TrimPrefix(expression, prefix))
+// It is built per call for the same reason Relation is: go-mysql-server
+// assigns the engine catalog onto the table it resolves, and two sessions on
+// two engines must not share one.
+func NewConstraintColumnUsageTable() sqle.Table {
+	return &information_schema.InformationSchemaTable{
+		TableName:   ConstraintColumnUsageTableName,
+		TableSchema: constraintColumnUsageSchema,
+		Reader:      constraintColumnUsageRowIter,
 	}
-	return names
 }

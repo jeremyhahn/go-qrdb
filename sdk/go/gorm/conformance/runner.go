@@ -74,11 +74,13 @@ const dumpAllowlistEnvVar = "GORM_QRDB_DUMP_ALLOWLIST"
 // this is deliberately kept in exact field-for-field sync with the JSON
 // dumpAllowlistAndExit produces from the real, compiled table.
 type expectedFailure struct {
-	Test    string    `json:"test"`
-	Targets []string  `json:"targets"`
-	Reason  string    `json:"reason"`
-	Issue   string    `json:"issue"`
-	Retire  time.Time `json:"retire"`
+	Test      string    `json:"test"`
+	Targets   []string  `json:"targets"`
+	Reason    string    `json:"reason"`
+	Issue     string    `json:"issue"`
+	Retire    time.Time `json:"retire"`
+	AbortsRun bool      `json:"aborts_run"`
+	Unstable  bool      `json:"unstable"`
 }
 
 // lockFile is the subset of GORM_SUITE.lock this program reads.
@@ -124,12 +126,17 @@ func main() {
 	}
 	entries := forTarget(allEntries, *target)
 
-	outcomes, err := runTests(*target, *timeout)
+	declared, err := listTests(*target)
+	if err != nil {
+		fatalf("list tests: %v", err)
+	}
+
+	outcomes, _, err := runTests(*target, *timeout, abortingTests(entries))
 	if err != nil {
 		fatalf("run tests: %v", err)
 	}
 
-	report := reconcile(*target, entries, outcomes, budget.MaxExpected)
+	report := reconcile(*target, entries, outcomes, declared, budget.MaxExpected)
 
 	if err := writeSummary(moduleDir, report); err != nil {
 		fatalf("write summary: %v", err)
@@ -216,6 +223,53 @@ type testEvent2 struct {
 	Output string `json:"Output"`
 }
 
+// listTests returns every top-level Test the suite declares, by asking the
+// test binary rather than inferring it from a run.
+//
+// It is what makes the difference between "this entry names a test that no
+// longer exists" and "this entry names a test the run never reached"
+// observable at all. Without it, a run truncated by a panic reports every
+// test after the panic as a missing entry, which reads as 35 stale entries
+// when the truth is one aborted process.
+func listTests(target string) (map[string]struct{}, error) {
+	cmd := exec.Command("go", "test", "-tags", "gormconformance", "-list", ".*", "./...")
+	cmd.Env = append(os.Environ(), targetEnvVar+"="+target)
+	cmd.Stderr = os.Stderr
+
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go test -list: %w", err)
+	}
+
+	names := make(map[string]struct{})
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Test") && !strings.Contains(line, " ") {
+			names[line] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("go test -list reported no tests")
+	}
+	return names, nil
+}
+
+// abortingTests returns the names of the entries marked AbortsRun, which the
+// runner excludes from the run with `go test -skip`. See the AbortsRun
+// field's doc comment in qrdb_allowlist_test.go: one of these stops the test
+// process from finishing, so leaving them in means measuring a prefix of the
+// suite and reporting it as the whole.
+func abortingTests(entries []expectedFailure) []string {
+	var names []string
+	for _, e := range entries {
+		if e.AbortsRun {
+			names = append(names, e.Test)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // forTarget returns the entries whose Targets include target.
 func forTarget(entries []expectedFailure, target string) []expectedFailure {
 	var out []expectedFailure
@@ -242,20 +296,34 @@ type outcome struct {
 // outcome of every TOP-LEVEL Test (no "/" in the name) it reported. Output
 // is streamed rather than buffered whole so a hung test still surfaces
 // partial progress if the run is killed externally.
-func runTests(target, timeout string) (map[string]outcome, error) {
-	cmd := exec.Command("go", "test", "-tags", "gormconformance", "-json", "-count=1", "-timeout", timeout, "./...")
+func runTests(target, timeout string, exclude []string) (map[string]outcome, string, error) {
+	args := []string{"test", "-tags", "gormconformance", "-json", "-count=1", "-timeout", timeout}
+	if len(exclude) > 0 {
+		args = append(args, "-skip", "^("+strings.Join(exclude, "|")+")$")
+	}
+	args = append(args, "./...")
+
+	cmd := exec.Command("go", args...)
 	cmd.Env = append(os.Environ(), targetEnvVar+"="+target)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("StdoutPipe: %w", err)
+		return nil, "", fmt.Errorf("StdoutPipe: %w", err)
 	}
 	cmd.Stderr = os.Stderr // qrdbd subprocess logs (wire targets) and go test's own diagnostics
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start: %w", err)
+		return nil, "", fmt.Errorf("start: %w", err)
 	}
 
+	// started holds tests that have begun but not yet reported a terminal
+	// action. A panic kills the process mid-test, so anything left here at
+	// the end names the test that aborted the run -- and every test after it
+	// went unreported. Tracking it is what lets the reconciliation say the
+	// run was TRUNCATED rather than silently presenting a partial result as
+	// a complete one. It is derived from the events already being decoded,
+	// so testEvent stays lean (see its doc comment).
+	started := make(map[string]struct{})
 	outcomes := make(map[string]outcome)
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // a few upstream tests log large SQL statements
@@ -268,13 +336,16 @@ func runTests(target, timeout string) (map[string]outcome, error) {
 			continue // top-level only — see runTests' doc comment
 		}
 		switch ev.Action {
+		case "run":
+			started[ev.Test] = struct{}{}
 		case "pass", "fail", "skip":
 			outcomes[ev.Test] = outcome{Test: ev.Test, Action: ev.Action}
+			delete(started, ev.Test)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		cmd.Wait()
-		return nil, fmt.Errorf("scan output: %w", err)
+		return nil, "", fmt.Errorf("scan output: %w", err)
 	}
 
 	// go test itself exits non-zero whenever any test failed — expected
@@ -283,7 +354,12 @@ func runTests(target, timeout string) (map[string]outcome, error) {
 	// reconciliation below is what decides success or failure.
 	_ = cmd.Wait()
 
-	return outcomes, nil
+	abortedOn := ""
+	for name := range started {
+		abortedOn = name // at most one: the process died inside it
+	}
+
+	return outcomes, abortedOn, nil
 }
 
 // report is the reconciliation result for one target.
@@ -296,9 +372,15 @@ type report struct {
 	UnexpectedFail int       `json:"unexpected_fail"`
 	Skipped        int       `json:"skipped"`
 	StaleCount     int       `json:"stale"`
-	BudgetMax      int       `json:"budget_max"`
-	BudgetUsed     int       `json:"budget_used"`
-	BudgetExceeded bool      `json:"budget_exceeded"`
+	Unstable       int       `json:"unstable_passed"`
+	AbortSkipped   int       `json:"abort_skipped"`
+	// Unmeasured names every declared test that produced no terminal outcome
+	// and was not deliberately excluded. A non-empty list means the run ended
+	// early, so every count above describes a prefix of the suite.
+	Unmeasured     []string `json:"unmeasured,omitempty"`
+	BudgetMax      int      `json:"budget_max"`
+	BudgetUsed     int      `json:"budget_used"`
+	BudgetExceeded bool     `json:"budget_exceeded"`
 
 	UnexpectedFailures []string `json:"unexpected_failures,omitempty"`
 	StalePasses        []string `json:"stale_passes,omitempty"`
@@ -307,10 +389,15 @@ type report struct {
 }
 
 func (r report) hasViolations() bool {
-	return r.UnexpectedFail > 0 || r.StaleCount > 0 || len(r.ExpiredRetire) > 0 || r.BudgetExceeded
+	// A truncated run is a violation in its own right. Its counts describe a
+	// prefix of the suite, so passing it would be reporting coverage the run
+	// did not have -- the failure mode the Panics field exists to prevent,
+	// reappearing for a test not yet marked with it.
+	return r.UnexpectedFail > 0 || r.StaleCount > 0 || len(r.ExpiredRetire) > 0 ||
+		r.BudgetExceeded || len(r.Unmeasured) > 0
 }
 
-func reconcile(target string, entries []expectedFailure, outcomes map[string]outcome, maxExpected int) report {
+func reconcile(target string, entries []expectedFailure, outcomes map[string]outcome, declared map[string]struct{}, maxExpected int) report {
 	allowed := make(map[string]expectedFailure, len(entries))
 	for _, e := range entries {
 		allowed[e.Test] = e
@@ -324,22 +411,39 @@ func reconcile(target string, entries []expectedFailure, outcomes map[string]out
 	}
 	r.BudgetExceeded = len(entries) > maxExpected
 
+	// A test excluded from the run because it aborts the process can be
+	// neither a stale pass nor a missing entry: it did not run. It is
+	// counted and printed on its own line instead.
+	skipped := make(map[string]struct{})
+	for _, e := range entries {
+		if e.AbortsRun {
+			skipped[e.Test] = struct{}{}
+		}
+	}
+	r.AbortSkipped = len(skipped)
+
 	seen := make(map[string]struct{}, len(entries))
 	for name, oc := range outcomes {
 		r.Ran++
-		_, isAllowed := allowed[name]
 		switch oc.Action {
 		case "skip":
 			r.Skipped++
 		case "pass":
-			if isAllowed {
+			// An Unstable entry passing is not evidence that it is fixed --
+			// see the field's doc comment -- so it is counted as a pass and
+			// left in place rather than reported stale.
+			if entry, ok := allowed[name]; ok && !entry.Unstable {
 				r.StalePasses = append(r.StalePasses, name)
 				seen[name] = struct{}{}
 			} else {
+				if ok {
+					r.Unstable++
+					seen[name] = struct{}{}
+				}
 				r.Passed++
 			}
 		case "fail":
-			if isAllowed {
+			if _, isAllowed := allowed[name]; isAllowed {
 				r.ExpectedFail++
 				seen[name] = struct{}{}
 			} else {
@@ -348,10 +452,25 @@ func reconcile(target string, entries []expectedFailure, outcomes map[string]out
 		}
 	}
 
+	// A declared test with no terminal outcome, that was not deliberately
+	// excluded, was never measured -- the run ended before reaching it.
+	for name := range declared {
+		if _, ok := outcomes[name]; ok {
+			continue
+		}
+		if _, excluded := skipped[name]; excluded {
+			continue
+		}
+		r.Unmeasured = append(r.Unmeasured, name)
+	}
+
 	now := time.Now()
 	for _, e := range entries {
-		if _, ok := seen[e.Test]; !ok {
-			if _, ranAtAll := outcomes[e.Test]; !ranAtAll {
+		if _, ok := seen[e.Test]; !ok && !e.AbortsRun {
+			// "Not observed" now means exactly one thing: the suite does not
+			// declare this test at all. A test that exists but went
+			// unmeasured is reported as truncation instead, above.
+			if _, exists := declared[e.Test]; !exists {
 				r.StaleNotObserved = append(r.StaleNotObserved, e.Test)
 			}
 		}
@@ -360,6 +479,7 @@ func reconcile(target string, entries []expectedFailure, outcomes map[string]out
 		}
 	}
 
+	sort.Strings(r.Unmeasured)
 	sort.Strings(r.UnexpectedFailures)
 	sort.Strings(r.StalePasses)
 	sort.Strings(r.StaleNotObserved)
@@ -389,8 +509,15 @@ func writeSummary(moduleDir string, r report) error {
 
 func printSummary(r report) {
 	w := os.Stdout
-	fmt.Fprintf(w, "\ngorm-conformance[%s]: ran=%d passed=%d expected-fail=%d unexpected-fail=%d skipped=%d stale=%d budget=%d/%d\n",
-		r.Target, r.Ran, r.Passed, r.ExpectedFail, r.UnexpectedFail, r.Skipped, r.StaleCount, r.BudgetUsed, r.BudgetMax)
+	fmt.Fprintf(w, "\ngorm-conformance[%s]: ran=%d passed=%d expected-fail=%d unexpected-fail=%d skipped=%d abort-skipped=%d unstable-passed=%d stale=%d budget=%d/%d\n",
+		r.Target, r.Ran, r.Passed, r.ExpectedFail, r.UnexpectedFail, r.Skipped, r.AbortSkipped, r.Unstable, r.StaleCount, r.BudgetUsed, r.BudgetMax)
+
+	if len(r.Unmeasured) > 0 {
+		fmt.Fprintf(w, "  RUN TRUNCATED: %d declared tests produced no result, so every count above\n", len(r.Unmeasured))
+		fmt.Fprintf(w, "    describes a PREFIX of the suite. A test that aborts the process rather than\n")
+		fmt.Fprintf(w, "    failing must be marked AbortsRun: true in qrdb_allowlist_test.go.\n")
+		printList(w, "unmeasured", r.Unmeasured)
+	}
 
 	printList(w, "unexpected failures (not in allowlist)", r.UnexpectedFailures)
 	printList(w, "stale allowlist entries now PASSING (remove from qrdb_allowlist_test.go)", r.StalePasses)

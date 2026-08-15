@@ -199,6 +199,7 @@ PKG_SQL_PGSQL      := ./pkg/sql/pgsql/...
 PKG_SQL_QUERY      := ./pkg/sql/query/...
 PKG_SQL_CATALOG    := ./pkg/sql/catalog/...
 PKG_SQL_PRIVILEGE  := ./pkg/sql/privilege/...
+PKG_SQL_PGCATALOG  := ./pkg/sql/pgcatalog/...
 PKG_CODEC          := ./pkg/codec/...
 PKG_ETCD           := ./pkg/api/etcd/...
 PKG_DATABASE       := ./pkg/database/...
@@ -488,6 +489,10 @@ test-sql-catalog:
 test-sql-privilege:
 	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PRIVILEGE)
 
+.PHONY: test-sql-pgcatalog
+test-sql-pgcatalog:
+	$(GOTEST) $(TAG_FLAG) $(PKG_SQL_PGCATALOG)
+
 .PHONY: test-codec
 test-codec:
 	$(GOTEST) $(TAG_FLAG) $(PKG_CODEC)
@@ -509,7 +514,7 @@ test-mcp:
 	$(GOTEST) $(TAG_FLAG) $(PKG_MCP)
 
 .PHONY: test-sql
-test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege
+test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
 
 .PHONY: test-sdk
 test-sdk:
@@ -947,6 +952,11 @@ coverage-sql-privilege: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-privilege.out $(PKG_SQL_PRIVILEGE)
 	$(call check-coverage,$(COVER_DIR)/sql-privilege.out,sql-privilege)
 
+.PHONY: coverage-sql-pgcatalog
+coverage-sql-pgcatalog: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/sql-pgcatalog.out $(PKG_SQL_PGCATALOG)
+	$(call check-coverage,$(COVER_DIR)/sql-pgcatalog.out,sql-pgcatalog)
+
 .PHONY: coverage-codec
 coverage-codec: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/codec.out $(PKG_CODEC)
@@ -973,7 +983,7 @@ coverage-mcp: | _cover-dir
 	$(call check-coverage,$(COVER_DIR)/mcp.out,mcp)
 
 .PHONY: coverage-sql
-coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql coverage-sql-query coverage-sql-catalog coverage-sql-privilege
+coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql coverage-sql-pgsql coverage-sql-query coverage-sql-catalog coverage-sql-privilege coverage-sql-pgcatalog
 
 .PHONY: coverage-sdk
 coverage-sdk: | _cover-dir
@@ -1069,8 +1079,13 @@ mod-verify:
 # Directories excluded from the filesystem scan, kept identical to the
 # skip-dirs list in .github/workflows/ci.yml so `make trivy` and CI agree
 # (devops.md §4). test/ holds benchmark harnesses that ship in no release.
+# cmd/qrdbd/data/ is the daemon's runtime data directory: gitignored, created
+# by running qrdbd locally, and full of the dev CA/node/admin keys it mints on
+# first boot. Nothing there can reach history, so scanning it only makes the
+# local gate fail for every developer who has ever started the daemon while
+# CI -- which scans a fresh clone -- passes.
 # Suppressions belong in a .trivyignore with a reason and a date, not here.
-TRIVY_SKIP_DIRS := --skip-dirs test
+TRIVY_SKIP_DIRS := --skip-dirs test,cmd/qrdbd/data
 
 .PHONY: trivy
 trivy:

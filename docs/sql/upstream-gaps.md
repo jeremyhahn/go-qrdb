@@ -132,10 +132,43 @@ serve PostgreSQL's *other* introspection namespace itself — see
 
 **Fix.** Implement the view in GMS's `sql/information_schema`.
 
-**Worked around in QRDB, so this one is no longer a live gap here.**
-go-mysql-server exposes `NewInformationSchemaTablesToAdd`, documented as the
-hook Doltgres injects PostgreSQL-specific tables and views through, and
-`pkg/sql/infoschema` uses it to serve `constraint_column_usage` built from the
-same catalog traversal go-mysql-server's own `key_column_usage` uses. Upstream
-would still be the better home for a standard view, but nothing here is
-blocked on it.
+**Served by QRDB, so this one is no longer a live gap here.** The PostgreSQL
+engine swaps in `pgcatalog.InfoSchema`, a wrapper that adds
+`constraint_column_usage` (built from the same catalog traversal
+go-mysql-server's own `key_column_usage` uses) and delegates everything else.
+It is scoped to the PostgreSQL dialect, so the MySQL endpoint's
+information_schema is untouched. Upstream would still be the better home for a
+SQL-standard view, but nothing here is blocked on it.
+
+---
+
+## 5. A scalar subquery in HAVING is evaluated against the wrong row set
+
+**Severity: medium — a correct query is rejected.**
+
+```sql
+SELECT AVG(age) AS avgage FROM users
+GROUP BY name
+HAVING AVG(age) > (SELECT AVG(age) FROM users)
+```
+
+fails with `the subquery returned more than 1 row`, even though the subquery is
+an ungrouped aggregate that returns exactly one row — `SELECT AVG(age) FROM
+users` on its own returns `[[20]]`.
+
+Reproduced on a **stock in-memory go-mysql-server engine with no QRDB code in
+the path**, so this is not an artifact of QRDB's tables or provider:
+
+| query | result |
+|---|---|
+| `SELECT AVG(age) FROM users` | 1 row, `20` |
+| `… GROUP BY name HAVING AVG(age) > 15` | 2 rows |
+| `… GROUP BY name HAVING AVG(age) > (SELECT AVG(age) FROM users)` | **error** |
+
+HAVING itself works and the subquery itself works; only the combination fails,
+which points at the subquery being evaluated against the pre-aggregation row
+set rather than being executed once as the scalar it is.
+
+**Impact.** It is the only unexpected failure the `node` target has, and it
+fails identically on `mysql`. Upstream test: `TestSubQueryWithHaving`.
+

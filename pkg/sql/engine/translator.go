@@ -253,7 +253,7 @@ func (t *Translator) Translate(query string) (string, error) {
 	// 4. Backtick-quote MySQL/GMS reserved words that appear as bare
 	// identifiers. This must run after double-quote conversion (step 3)
 	// so that already-backtick-quoted identifiers are skipped, and before
-	// cast conversion (step 9) so the cast regex recognizes the backtick-
+	// cast conversion (step 8) so the cast regex recognizes the backtick-
 	// quoted identifiers.
 	result = quoteReservedWords(result)
 
@@ -289,7 +289,7 @@ func (t *Translator) Translate(query string) (string, error) {
 	}
 
 	// 8. Convert E'...' escape strings to regular string literals. Must
-	// run before cast conversion (step 9): a leading E left in place on
+	// run before cast conversion (step 8): a leading E left in place on
 	// E'2024-01-01'::date would strand the E in front of the CAST(...)
 	// this step produces.
 	result = applyEscapeStrings(result)

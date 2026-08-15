@@ -60,10 +60,10 @@ func TestPQ_TrainAndEncodeDecode(t *testing.T) {
 	}
 }
 
-func TestPQ_RecallAccuracy(t *testing.T) {
-	dim := 64
-	m := 8
-	nbits := 8
+// pqRecallAt10 trains a fresh quantizer and returns how many of the true
+// top-10 neighbours its asymmetric distance table recovers.
+func pqRecallAt10(t *testing.T, dim, m, nbits int) int {
+	t.Helper()
 
 	pq, err := NewPQQuantizer(dim, m, nbits)
 	require.NoError(t, err)
@@ -74,29 +74,33 @@ func TestPQ_RecallAccuracy(t *testing.T) {
 	queryVec := trainingVecs[0]
 	dbVectors := trainingVecs[1:201] // 200 database vectors
 
-	// Compute true top-10 using float32.
-	distFn := hnsw.GetDistanceFunc(hnsw.L2Distance)
 	type result struct {
 		idx  int
 		dist float32
 	}
+	rank := func(rs []result) {
+		for i := 0; i < len(rs); i++ {
+			for j := i + 1; j < len(rs); j++ {
+				if rs[j].dist < rs[i].dist {
+					rs[i], rs[j] = rs[j], rs[i]
+				}
+			}
+		}
+	}
+
+	// True top-10 in float32.
+	distFn := hnsw.GetDistanceFunc(hnsw.L2Distance)
 	trueResults := make([]result, len(dbVectors))
 	for i, v := range dbVectors {
 		trueResults[i] = result{idx: i, dist: distFn(queryVec, v)}
 	}
-	for i := 0; i < len(trueResults); i++ {
-		for j := i + 1; j < len(trueResults); j++ {
-			if trueResults[j].dist < trueResults[i].dist {
-				trueResults[i], trueResults[j] = trueResults[j], trueResults[i]
-			}
-		}
-	}
-	trueTop10 := make(map[int]bool)
+	rank(trueResults)
+	trueTop10 := make(map[int]bool, 10)
 	for _, r := range trueResults[:10] {
 		trueTop10[r.idx] = true
 	}
 
-	// Compute PQ top-10 using distance table.
+	// PQ top-10 via the distance table.
 	table, err := pq.ComputeDistanceTable(queryVec, hnsw.L2Distance)
 	require.NoError(t, err)
 
@@ -104,16 +108,9 @@ func TestPQ_RecallAccuracy(t *testing.T) {
 	for i, v := range dbVectors {
 		codes, err := pq.Encode(v)
 		require.NoError(t, err)
-		d := pq.AsymmetricDistanceFromTable(table, codes)
-		pqResults[i] = result{idx: i, dist: d}
+		pqResults[i] = result{idx: i, dist: pq.AsymmetricDistanceFromTable(table, codes)}
 	}
-	for i := 0; i < len(pqResults); i++ {
-		for j := i + 1; j < len(pqResults); j++ {
-			if pqResults[j].dist < pqResults[i].dist {
-				pqResults[i], pqResults[j] = pqResults[j], pqResults[i]
-			}
-		}
-	}
+	rank(pqResults)
 
 	recall := 0
 	for _, r := range pqResults[:10] {
@@ -121,10 +118,38 @@ func TestPQ_RecallAccuracy(t *testing.T) {
 			recall++
 		}
 	}
+	return recall
+}
 
-	// PQ with random data has inherent variance in recall. A threshold
-	// of 30% avoids flakiness while still validating the core algorithm.
-	assert.GreaterOrEqual(t, recall, 3, "PQ recall@10 should be >= 30%%, got %d/10", recall)
+// TestPQ_RecallAccuracy checks that product quantization retains most of the
+// true nearest neighbours.
+//
+// It averages over several independent trials rather than asserting on one.
+// PQ's k-means++ initialization draws from the GLOBAL rand source
+// (pq.go), so each training run produces a different codebook and a
+// single-trial recall varies widely: measured over 30 runs the distribution
+// was {2:1, 3:4, 4:8, 5:8, 6:8, 7:1}. A one-shot `recall >= 3` therefore
+// failed roughly 3% of the time -- which is exactly what happened in a full
+// suite run on 2026-08-15, passing five times in isolation straight after.
+//
+// Averaging keeps the assertion meaningful: a genuinely broken quantizer
+// returns essentially random neighbours (expected recall 0.5/10), which is far
+// below the bound, while ordinary codebook variance no longer trips it.
+func TestPQ_RecallAccuracy(t *testing.T) {
+	const (
+		dim, m, nbits = 64, 8, 8
+		trials        = 5
+		minMeanRecall = 3.0
+	)
+
+	total := 0
+	for i := 0; i < trials; i++ {
+		total += pqRecallAt10(t, dim, m, nbits)
+	}
+	mean := float64(total) / float64(trials)
+
+	assert.GreaterOrEqual(t, mean, minMeanRecall,
+		"PQ mean recall@10 over %d trials should be >= %.1f, got %.1f", trials, minMeanRecall, mean)
 }
 
 func TestPQ_DistanceTable(t *testing.T) {

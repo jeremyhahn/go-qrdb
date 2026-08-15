@@ -85,6 +85,17 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 		sealed.HKDFVersion = existing.HKDFVersion
 	}
 
+	// Re-authenticate the metadata under the root key. SealRootKey produced
+	// a fresh ciphertext and carries no MAC, and the epoch state above was
+	// copied in from a different blob — so without this the persisted blob
+	// fails authentication on the next Unseal. It must be the last mutation
+	// before marshalling: the MAC covers the ciphertext as well as the
+	// metadata carried forward.
+	if err := b.barrier.StampSealedStateMAC(sealed); err != nil {
+		_ = newStrat.Close()
+		return err
+	}
+
 	// Persist the new sealed root key blob.
 	blob, err := json.Marshal(sealed)
 	if err != nil {

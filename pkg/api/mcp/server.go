@@ -528,14 +528,19 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 
 	// Register module tools last so they layer on top of the built-in tool
-	// sets on the same real mcp-go server. NOTE: RegisterMCP registers tools
-	// directly on the mcp-go server, bypassing the toolPerms registry — so
-	// when auth middleware is configured, a module tool is DENIED by
-	// AuthorizeMCP (default-deny) until it gains registry coverage. This is
-	// deliberate fail-closed behavior; module tools currently require
-	// registry coverage to become callable on an authenticated server.
+	// sets on the same real mcp-go server. A module that implements
+	// MCPToolPermissioner declares each tool's permission, which is fed into
+	// the same toolPerms registry the built-in tools use — one authorization
+	// path for every tool on the server. A module tool registered WITHOUT a
+	// declaration stays fail-closed: when auth middleware is configured,
+	// AuthorizeMCP default-denies any tool absent from the registry.
 	for _, m := range s.modules {
 		m.RegisterMCP(s.mcpSrv)
+		if tp, ok := m.(apimodule.MCPToolPermissioner); ok {
+			for name, perm := range tp.MCPToolPermissions() {
+				s.toolPerms.Register(name, perm)
+			}
+		}
 	}
 
 	return s

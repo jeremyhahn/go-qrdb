@@ -291,6 +291,13 @@ func (s *DAOStore) find(ctx context.Context, token string) (*Entity, error) {
 	probe := &Entity{TokenHash: TokenDigest(token)}
 	entity, err := s.invites.Get(ctx, s.inviteIDs.NextID(probe))
 	if err != nil {
+		// Every failure collapses to ErrNotFound, including a storage
+		// outage. That is lossy and cannot be fixed at this layer:
+		// KVStore.Get returns (nil, nil) for a missing key, so a miss
+		// reaches the DAO as a deserialize-empty error rather than a
+		// distinguishable not-found -- indistinguishable, in turn, from a
+		// genuine read failure. Separating them needs a not-found signal in
+		// the KVStore contract. See docs/invite-notfound-ambiguity.md.
 		return nil, ErrNotFound
 	}
 

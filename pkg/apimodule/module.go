@@ -111,6 +111,18 @@ type ServiceModule interface {
 	Stop(ctx context.Context) error
 }
 
+// MCPToolPermissioner is an optional ServiceModule extension. A module that
+// registers MCP tools implements it to declare each tool's required
+// permission; the unified server feeds the declarations into its MCP tool
+// registry so the authorization middleware can authorize module tool calls
+// instead of default-denying them. Use permission.IdentityGated for tools
+// whose authorization is deferred to the module's own handler. A module
+// tool registered via RegisterMCP without a matching declaration here stays
+// fail-closed on an authenticated server.
+type MCPToolPermissioner interface {
+	MCPToolPermissions() map[string]permission.Permission
+}
+
 // BaseModule provides no-op defaults for every hook except Name, so a module
 // embeds it and overrides only what applies. It does not implement Name, forcing
 // each module to supply its own identity.

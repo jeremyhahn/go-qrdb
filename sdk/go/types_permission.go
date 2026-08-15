@@ -99,6 +99,12 @@ var PermissionCategories = permission.Categories
 // PermissionResource returns the resource component of a permission string.
 var PermissionResource = permission.Resource
 
+// PermissionIdentityGated is the sentinel permission for operations whose
+// authorization is deferred to the handler: the caller must be
+// authenticated, but no RBAC grant is evaluated at the gate. It is
+// deliberately not registered in the permission registry.
+const PermissionIdentityGated = permission.IdentityGated
+
 // PermissionAction returns the action component of a permission string.
 var PermissionAction = permission.Action
 

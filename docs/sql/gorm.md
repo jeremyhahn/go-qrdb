@@ -417,6 +417,32 @@ compiled allowlist that **ratchets**: a test in the allowlist that starts
 passing fails the run, so no entry can silently keep excusing a test that was
 actually fixed.
 
+Two allowlist fields exist because a run has to be able to finish and to mean
+something:
+
+- **`AbortsRun`** — the test ends the `go test` process rather than failing
+  (most nil-deref after a call they did not expect to fail; one hangs). The
+  runner excludes these with `-skip`, because one of them truncates the suite
+  and turns a partial measurement into a reported result. The runner also
+  compares its results against `go test -list`, so a truncated run is reported
+  as **RUN TRUNCATED** rather than as a pile of missing entries.
+- **`Unstable`** — the outcome tracks what an earlier test left behind rather
+  than anything about this test. The upstream suite shares one set of models,
+  its migration tests drop and re-create them, and when a re-creation partially
+  fails the shared tables stay dropped. These are exempt from the stale-pass
+  check because a passing run says nothing about them either.
+
+Current measurements (2026-08-14), each verified stable across repeated runs:
+
+| target | pass | expected-fail | skip | excluded |
+|---|---:|---:|---:|---:|
+| node (native dialector) | 371 | 6 | 18 | 3 |
+| mysql wire | 373 | 6 | 18 | 1 |
+| pgsql wire | 255 | 119 | 17 | 7 |
+
+Over half the PostgreSQL failures are two defects in go-mysql-server's
+RETURNING support; see [upstream-gaps.md](upstream-gaps.md).
+
 **This harness is infrastructure, not a gate**, and a tracked fraction of the
 suite is expected to fail. For the current numbers, the tracked failure list,
 and the qrdb-side bugs it has found, read
