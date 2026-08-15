@@ -584,6 +584,18 @@ test-playwright: test-e2e
 # Integration tests (run in devcontainer with qrdbd server + all protocols)
 # ============================================================================
 
+# Compose project name for the integration harness. Everything compose creates
+# is namespaced by it, so two runs on one host cannot collide. Without it the
+# project name defaults to the compose file's directory, `api`, identical for
+# every checkout.
+#
+# Keyed on hostname rather than a random value, deliberately: stable means the
+# `down -v` below still clears a crashed run's leftovers instead of leaking a
+# volume set per run, and each CI job container has its own hostname so
+# concurrent jobs on one runner are isolated. It does NOT isolate two people on
+# the SAME machine — pass INT_PROJECT=... for that.
+INT_PROJECT ?= qrdb-int-$(shell hostname | tr -cd '[:alnum:]' | tail -c 16)
+
 # All integration tests run in a docker compose stack with a qrdbd server
 # that has ALL protocols enabled (REST, gRPC, QUIC, Unix, MCP).
 # This is the single entry point for all integration tests.
@@ -653,12 +665,12 @@ integration-test: integration-test-standalone integration-test-cluster
 .PHONY: integration-test-standalone
 integration-test-standalone: integration-image
 	@echo "==> Running STANDALONE integration tests (multi-protocol CLI vs single-node servers)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
-		docker compose up --abort-on-container-exit integration-tests; \
+		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
 
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
@@ -667,12 +679,12 @@ integration-test-standalone: integration-image
 .PHONY: integration-test-cluster
 integration-test-cluster: integration-image
 	@echo "==> Running CLUSTER integration tests (self-spawned single-node + 3-node clusters)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		INTEGRATION_TEST_PKGS='./test/integration/' \
-		docker compose up --abort-on-container-exit integration-tests; \
+		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		docker compose down -v; \
+		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
 
 # Backward-compatible alias: the standalone multi-protocol suite.
@@ -688,7 +700,7 @@ HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 .PHONY: integration-test-gpu
 integration-test-gpu:
 	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
-	@cd test/integration/api && docker compose down -v 2>/dev/null; true
+	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
 	@cd test/integration/api && \
 		docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
 			up --build --abort-on-container-exit integration-tests; \
