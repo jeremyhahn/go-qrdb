@@ -670,8 +670,20 @@ integration-test-standalone: integration-image
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
+		if [ $$rc -ne 0 ]; then $(MAKE) -s _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
 		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
+
+# --abort-on-container-exit attaches only to the tests container, so a server
+# that fails to start reports "dependency failed to start" or "is unhealthy"
+# and nothing else -- the reason stays inside a container nobody printed, and
+# the teardown below then removes it. Dump the servers while they still exist.
+.PHONY: _integration-server-logs
+_integration-server-logs:
+	@cd test/integration/api && for svc in qrdbd qrdbd-shamir; do \
+		echo "==> $$svc log (last 200 lines)"; \
+		docker compose -p $(INT_PROJECT) logs --no-color --tail=200 "$$svc" || true; \
+	done
 
 # Cluster stage: the self-spawning tests in ./test/integration (single-node +
 # real 3-node Raft clusters, leader election, restart/durability, snapshots).

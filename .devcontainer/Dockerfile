@@ -124,5 +124,27 @@ RUN --mount=type=secret,id=gomodauth \
 
 COPY . .
 
+# Build the binaries the stack runs, at image build time rather than at
+# container start.
+#
+# The entrypoints used to compile qrdbd on every boot, into a volume shared
+# with the healthcheck's grace period. That works on a workstation with a warm
+# build cache and does not on a runner, where the cache is empty every time:
+# the compile outruns start_period and compose reports only "container is
+# unhealthy", naming neither the build nor the clock. Baking them makes
+# container start a server start, so the health window measures what it is
+# supposed to measure.
+#
+# The feature tags match what the compose entrypoints used, and CGO is
+# required -- go-mysql-server's internal/regex has no pure-Go build.
+RUN CGO_ENABLED=1 go build -buildvcs=false \
+      -tags 'codec_json raft qrdb_ts qrdb_vector' \
+      -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+      -o /app/build/bin/qrdbd ./cmd/qrdbd \
+ && CGO_ENABLED=1 go build -buildvcs=false \
+      -tags 'qrdb_ts qrdb_vector' \
+      -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
+      -o /app/build/bin/qrdb ./cmd/qrdb
+
 # The suite drives the servers; it does not sit idle.
 CMD ["make", "_integration-test"]

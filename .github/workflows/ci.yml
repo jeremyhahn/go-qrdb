@@ -162,21 +162,10 @@ jobs:
           echo "compose project: $INT_PROJECT"
           make integration-test-standalone INT_PROJECT="$INT_PROJECT"
 
-      # compose --abort-on-container-exit attaches only to the tests container,
-      # so when a SERVER fails to start the run reports "dependency failed to
-      # start" and nothing else -- the reason stays inside a container nobody
-      # printed. Dump both servers' logs on failure, before the teardown below
-      # removes them.
-      - name: Server logs (on failure)
-        if: failure()
-        run: |
-          cd test/integration/api
-          project="qrdb-int-${GITHUB_RUN_ID:-local}"
-          for svc in qrdbd qrdbd-shamir; do
-            echo "::group::$svc"
-            docker compose -p "$project" logs --no-color --tail=200 "$svc" || true
-            echo "::endgroup::"
-          done
+      # The server logs are dumped by the make target itself, which is the only
+      # place that runs before its own teardown -- a workflow step here fires
+      # after the containers are already gone and prints nothing, which is what
+      # the first attempt did.
 
       # Compose leaks containers and volumes when a run is interrupted, and a
       # leftover stack makes the NEXT run fail while attaching. Always tear

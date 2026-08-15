@@ -35,7 +35,6 @@ services:
     volumes:
       - qrdb-data:/data
       - qrdb-socket:/var/run/qrdbd
-      - server-build:/app/build
     environment:
       - QRDB_CONFIG=/workspace/go-qrdb/test/integration/api/config.test.yaml
       - QRDB_LOG_LEVEL=debug
@@ -60,12 +59,7 @@ services:
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
         mkdir -p /var/run/qrdbd /data /app/build/bin
-        # Build server binary with all feature tags
-        echo "Building qrdbd server..."
-        CGO_ENABLED=1 go build -buildvcs=false \
-          -tags 'codec_json raft qrdb_ts qrdb_vector' \
-          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
-          -o /app/build/bin/qrdbd ./cmd/qrdbd
+        # qrdbd is built into the image; container start is a server start.
         echo "Starting qrdbd server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.yaml &
         QRDBD_PID=$!
@@ -158,10 +152,6 @@ services:
     volumes:
       - qrdb-shamir-data:/data
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
-      # Dedicated build volume: must NOT share server-build with qrdbd, or the
-      # two servers race building /app/build/bin/qrdbd into the same path,
-      # corrupting the binary and causing intermittent startup failures.
-      - shamir-server-build:/app/build
     environment:
       - QRDB_CONFIG=/workspace/go-qrdb/test/integration/api/config.test.shamir.yaml
       - QRDB_LOG_LEVEL=debug
@@ -186,12 +176,7 @@ services:
         echo 2500000 > /proc/sys/net/core/wmem_max 2>/dev/null || echo "Warning: Could not set wmem_max"
         # Ensure directories exist
         mkdir -p /var/run/qrdbd-shamir /data /app/build/bin
-        # Build server binary with all feature tags
-        echo "Building qrdbd server..."
-        CGO_ENABLED=1 go build -buildvcs=false \
-          -tags 'codec_json raft qrdb_ts qrdb_vector' \
-          -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' \
-          -o /app/build/bin/qrdbd ./cmd/qrdbd
+        # qrdbd is built into the image; container start is a server start.
         echo "Starting qrdbd (shamir) server..."
         /app/build/bin/qrdbd start --config /workspace/go-qrdb/test/integration/api/config.test.shamir.yaml &
         QRDBD_PID=$!
@@ -351,7 +336,6 @@ services:
       - qrdb-data:/data:ro
       - qrdb-shamir-socket:/var/run/qrdbd-shamir
       - qrdb-shamir-data:/data-shamir:ro
-      - cli-build:/app/build
       - go-build-cache:/root/.cache/go-build
     environment:
       - CGO_ENABLED=1
@@ -402,9 +386,6 @@ services:
       ls -la /var/run/qrdbd/ || true &&
       echo 'Checking TLS certificates...' &&
       ls -la /data/raft/*.pem || true &&
-      echo 'Building CLI binary...' &&
-      mkdir -p /app/build/bin &&
-      go build -buildvcs=false -tags 'qrdb_ts qrdb_vector' -ldflags '-X main.version=test -X main.gitCommit=test -X main.buildDate=test' -o /app/build/bin/qrdb ./cmd/qrdb &&
       echo \"Running integration tests ($$INTEGRATION_TEST_PKGS, tags='$$INTEGRATION_TAGS', run='$$INTEGRATION_RUN')...\" &&
       go test -p 1 -v -tags=$$INTEGRATION_TAGS $$INTEGRATION_TEST_PKGS -run \"$$INTEGRATION_RUN\" -timeout 45m
       "
@@ -417,12 +398,6 @@ volumes:
   qrdb-shamir-data:
     driver: local
   qrdb-shamir-socket:
-    driver: local
-  cli-build:
-    driver: local
-  server-build:
-    driver: local
-  shamir-server-build:
     driver: local
   go-build-cache:
     driver: local
