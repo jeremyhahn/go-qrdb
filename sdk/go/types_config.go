@@ -110,6 +110,10 @@ type DaemonBatchConfig = config.BatchConfig
 // DaemonAuthConfig configures authentication and RBAC.
 type DaemonAuthConfig = config.AuthConfig
 
+// DaemonAuthABACConfig configures the ABAC authorization decorator layered
+// over RBAC (auth.abac in the daemon YAML).
+type DaemonAuthABACConfig = config.AuthABACConfig
+
 // DaemonAuditConfig configures the audit log.
 type DaemonAuditConfig = config.AuditConfig
 

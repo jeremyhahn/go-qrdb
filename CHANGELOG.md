@@ -11,6 +11,59 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.0-alpha] - 2026-08-16
+
+### Added
+
+- **ABAC authorization decorator** (`pkg/auth/abac`): attribute-based
+  access control layered over the RBAC authorizer, porting the core of
+  go-quicbaas's IAM policy engine (YAML policy schema, compiler, resource
+  trie, condition parser, evaluator) into its canonical qrdb home. Hybrid
+  semantics: explicit deny overrides RBAC allow, explicit allow grants
+  beyond RBAC, unmatched requests delegate to RBAC. Policies are
+  tenant-scoped; the reserved system tenant's policies apply platform-wide
+  as guardrails. Enabled in qrdbd via `auth.abac.{enabled,policy_dir}`
+  (fail-closed validation and boot) and in embedded nodes via
+  `node.WithABACPolicyDir` / `node.WithABACPolicies`. SDK re-exports in
+  `sdk/go/types_abac.go` (`ABACPolicy`, `DecorateAuthorizer`, ...) plus
+  `qrdbsdk.DaemonAuthABACConfig`. Policies load once at construction;
+  hot-reload is a documented follow-up. See `docs/auth/abac.md`.
+
+- **Embedded-node auth enforcement** (`pkg/auth/wiring`): the SDK node
+  (`NewStandaloneNode`/`NewClusteredNode`) now constructs the SAME auth
+  middleware qrdbd builds — RBAC authorizer (+ABAC decoration), mTLS/SPKI
+  authenticator, adaptive/enforced mode — and passes it to the unified
+  multi-protocol server. Previously an embedded node served every
+  permission-gated route unauthenticated. `BuildAuthMiddleware` /
+  `BuildAuthorizer` are shared by `cmd/qrdbd` and the SDK node (one
+  construction path, no divergence).
+
+- **Per-RPC public affordance for module gRPC services**
+  (`apimodule.GRPCPublicMethodLister`, re-exported as
+  `qrdbsdk.ModuleGRPCPublicMethodLister`): modules may declare exact gRPC
+  methods that bypass authentication, symmetric with REST's
+  `HandlePublic`. Registered method names are validated at startup
+  (typed error on malformed names). Built-in health/reflection exemptions
+  now genuinely bypass authentication rather than only the permission
+  lookup.
+
+- **Module MCP tool permissions** (`apimodule.MCPToolPermissioner`): the
+  unified MCP server consumes per-tool permission declarations from
+  registered modules.
+
+### Fixed
+
+- **Sealed store crash durability (data-loss grade)**: the seal store —
+  the only persisted copy of the barrier root key and epoch state — was
+  opened with `SyncWrites: false` (a rationale valid only for
+  Raft-replicated stores). A crash could lose the root-key write; the
+  next boot silently minted a fresh root key, permanently orphaning every
+  file encrypted under the lost key (`quicraft/seal: decryption failed`
+  on the data-plane and raft snapshot stores). All seal/DEK stores now
+  force `SyncWrites: true`; SIGKILL-subprocess regression tests prove a
+  killed node reboots and serves its data (`pkg/seal/encfs`,
+  `sdk/go/node`).
+
 ## [0.4.0-alpha] - 2026-08-15
 
 ### Added

@@ -90,7 +90,12 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 		return nil, &SealStorageError{Err: err}
 	}
 
-	sealStore, err := pebblestore.New(&pebblestore.Config{DataDir: sealDataDir})
+	// SyncWrites is forced on: this store is the sole persisted copy of the
+	// root-key blob and epoch/rotation state, not a Raft-replicated store,
+	// so an unsynced write can be lost on crash even though it appeared to
+	// succeed — orphaning every file the lost root key had encrypted. See
+	// the equivalent comment in sdk/go/node's buildNodeSealSubsystem.
+	sealStore, err := pebblestore.New(&pebblestore.Config{DataDir: sealDataDir, SyncWrites: true})
 	if err != nil {
 		return nil, &SealStorageError{Err: err}
 	}

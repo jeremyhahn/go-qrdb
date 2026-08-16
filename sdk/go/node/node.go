@@ -95,7 +95,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -191,6 +193,16 @@ type nodeOptions struct {
 	// allows the isolation modes and features needed by the embedder. When nil
 	// the TenantService uses quota.DefaultEntitlements (prefix isolation only).
 	defaultTenantEntitlements *quota.Entitlements
+
+	// abacPolicies are caller-supplied ABAC policies that decorate the RBAC
+	// authorizer built in buildEmbeddedOpts. When both abacPolicies and
+	// abacPolicyDir are empty the RBAC authorizer is used undecorated.
+	abacPolicies []*abac.Policy
+
+	// abacPolicyDir is a directory of YAML ABAC policy files loaded when the
+	// embedded RBAC authorizer is constructed. Load or compile failures
+	// abort the boot (fail closed).
+	abacPolicyDir string
 }
 
 // NodeOption is a functional option for NewStandaloneNode / NewClusteredNode.
@@ -294,6 +306,21 @@ func WithTenantIsolation() NodeOption {
 // standing up a separate TenantService. A nil argument is accepted (no-op).
 func WithDefaultTenantEntitlements(ent *quota.Entitlements) NodeOption {
 	return func(o *nodeOptions) { o.defaultTenantEntitlements = ent }
+}
+
+// WithABACPolicies injects programmatically constructed ABAC policies that
+// decorate the node's RBAC authorizer (abac.Decorate). Explicit denies
+// override RBAC allows, explicit allows grant beyond RBAC, and unmatched
+// requests delegate to RBAC. May be combined with WithABACPolicyDir.
+func WithABACPolicies(policies []*abac.Policy) NodeOption {
+	return func(o *nodeOptions) { o.abacPolicies = append(o.abacPolicies, policies...) }
+}
+
+// WithABACPolicyDir loads ABAC policies from a directory of YAML files
+// (*.yaml, *.yml) when the node's RBAC authorizer is constructed. Load or
+// compile failures abort the boot. May be combined with WithABACPolicies.
+func WithABACPolicyDir(dir string) NodeOption {
+	return func(o *nodeOptions) { o.abacPolicyDir = dir }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +436,12 @@ type Node struct {
 	// present) even when these are absent.
 	sessionIssuer        embedded.SessionIssuer
 	loginFactorVerifiers []embedded.FactorVerifier
+
+	// abacPolicies / abacPolicyDir carry the ABAC decorator configuration
+	// from the node constructor to buildEmbeddedOpts, which wraps the RBAC
+	// authorizer via abac.Decorate. Both empty means RBAC only.
+	abacPolicies  []*abac.Policy
+	abacPolicyDir string
 
 	// auditLogger is the caller-supplied compliance audit logger resolved
 	// from the server.ServerOptions. It is shared with the multi-protocol
@@ -1104,6 +1137,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
+		abacPolicies:              nOpts.abacPolicies,
+		abacPolicyDir:             nOpts.abacPolicyDir,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -1258,6 +1293,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		loginFactorVerifiers:      nOpts.loginFactorVerifiers,
 		tenantIsolation:           nOpts.tenantIsolation,
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
+		abacPolicies:              nOpts.abacPolicies,
+		abacPolicyDir:             nOpts.abacPolicyDir,
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -1384,7 +1421,19 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 // hardware (tpm2, pkcs11) strategies constructed by higher-level composers.
 func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir string, log *slog.Logger, nOpts *nodeOptions, clustered bool) (*nodeSealSubsystem, error) {
 	sealDataDir := filepath.Join(dataDir, "seal")
-	sealStore, err := pebbleStorage.New(pebbleStorage.DefaultConfig(sealDataDir))
+	// SyncWrites is forced on for the seal store: DefaultConfig defaults it
+	// to false on the premise that the Raft WAL provides durability, but the
+	// seal store is NOT replicated through Raft — it is the sole persisted
+	// copy of the root-key blob and epoch/rotation state. An unsynced write
+	// here (e.g. the PutIfAbsent that lands the root key during Initialize,
+	// or the StatePersister write from an epoch rotation) can survive only
+	// in the page cache; a crash before the next flush silently reverts the
+	// on-disk blob, and the next boot's Initialize succeeds against a fresh
+	// random root key instead of failing closed — permanently orphaning
+	// every file the previous root key encrypted.
+	sealCfg := pebbleStorage.DefaultConfig(sealDataDir)
+	sealCfg.SyncWrites = true
+	sealStore, err := pebbleStorage.New(sealCfg)
 	if err != nil {
 		return nil, &StorageCreateError{Backend: "seal", Err: err}
 	}
@@ -1650,9 +1699,61 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	n.client = client
 
+	// Build the canonical RBAC[+ABAC]-authorized, mTLS-authenticated auth
+	// middleware and install it on the multi-protocol server so every
+	// permission-gated route (REST, gRPC, unix, QUIC, MCP, MySQL,
+	// PostgreSQL) enforces authn/authz exactly like the standalone daemon
+	// (cmd/qrdbd/start.go bootstrapAuthEnforcement) — both call the SAME
+	// pkg/auth/wiring.BuildAuthMiddleware constructor. Without this an
+	// embedded node answered every RBAC-gated route unauthenticated (200
+	// with no credential presented) because the multi-protocol server
+	// never received server.WithAuthMiddleware, even though the
+	// in-process embedded transport (buildEmbeddedOpts, above) already
+	// enforced RBAC via node.Client().RBAC().
+	//
+	// cfg.Auth.Enabled mirrors the operator's --auth-enabled posture from
+	// the same DaemonConfig re-export qrdbd itself loads; when false, auth
+	// is explicitly disabled by configuration and BuildAuthMiddleware
+	// returns (nil, nil) — no middleware is installed, matching qrdbd's
+	// own posture. When true, RoleService/UserService MUST be present
+	// (lifecycle.BuildServices always constructs both); their absence
+	// aborts node construction with a typed AuthMiddlewareWiringError
+	// rather than silently serving unauthenticated.
+	//
+	// The ABAC decoration mirrors buildEmbeddedOpts/decorateABAC exactly
+	// (n.abacPolicyDir / n.abacPolicies, the WithABACPolicies /
+	// WithABACPolicyDir node options) so the network transports and the
+	// in-process embedded transport authorize identically.
+	// n.auditLogger is a compliance-grade audit.AuditLogger (Emit/Query),
+	// not the audit.Logger (Log/Close) the middleware's per-decision audit
+	// trail expects — the two are distinct sinks in cmd/qrdbd/start.go too
+	// (complianceAudit vs. bootstrapAuthEnforcement's own audit.New file
+	// logger). Wiring a dedicated middleware audit.Logger for an embedded
+	// node needs its own KV-backed store and is left for a follow-up
+	// (AuditLogger stays nil here); it does not affect authn/authz
+	// enforcement.
+	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
+		Enabled:           cfg.Auth.Enabled,
+		RoleService:       svcNode.Role,
+		UserService:       svcNode.User,
+		StrictSeparation:  strictSoD,
+		SPIFFETrustDomain: cfg.Auth.SPIFFETrustDomain,
+		ABACEnabled:       n.abacPolicyDir != "" || len(n.abacPolicies) > 0,
+		ABACPolicyDir:     n.abacPolicyDir,
+		ABACPolicies:      n.abacPolicies,
+	})
+	if err != nil {
+		_ = client.Close()
+		n.client = nil
+		return &AuthMiddlewareWiringError{Err: err}
+	}
+
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
 	allOpts := buildServerOpts(svcNode, callerOpts)
+	if authMW != nil {
+		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
+	}
 	if n.barrier != nil {
 		allOpts = append(allOpts, server.WithSealedWindowProbe(n.barrier))
 	}
@@ -1751,7 +1852,16 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 		// transient-read failover, never which requests are admitted, so
 		// authorize decisions remain identical.
 		rbacAuthz := rbac.New(svcNode.Role, rbac.WithStrictSeparation(strictSoD))
-		opts = append(opts, embedded.WithRBACAuthorizer(rbacAuthz))
+		// Optionally decorate the RBAC authorizer with ABAC policy
+		// evaluation, mirroring qrdbd's decorateWithABAC. The wrapped
+		// authorizer is the SINGLE provider handed to the embedded
+		// transport, so every embedded consumer sees the composed
+		// decision. Load/compile failures abort the boot (fail closed).
+		authorizer, err := n.decorateABAC(rbacAuthz)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))
 	}
 	if svcNode.Barrier != nil {
 		opts = append(opts, embedded.WithBarrierService(svcNode.Barrier))
@@ -1778,6 +1888,29 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 		opts = append(opts, loginOpts...)
 	}
 	return opts, nil
+}
+
+// decorateABAC wraps the given authorizer with the ABAC policy decorator
+// when the node was constructed with WithABACPolicies or WithABACPolicyDir.
+// With neither configured the inner authorizer is returned unchanged. Any
+// load or compilation failure is wrapped in *ABACWiringError so the caller
+// aborts the boot rather than running with a partial policy set.
+func (n *Node) decorateABAC(inner auth.Authorizer) (auth.Authorizer, error) {
+	if len(n.abacPolicies) == 0 && n.abacPolicyDir == "" {
+		return inner, nil
+	}
+	decoratorOpts := make([]abac.Option, 0, 2)
+	if n.abacPolicyDir != "" {
+		decoratorOpts = append(decoratorOpts, abac.WithPolicyDir(n.abacPolicyDir))
+	}
+	if len(n.abacPolicies) > 0 {
+		decoratorOpts = append(decoratorOpts, abac.WithPolicies(n.abacPolicies))
+	}
+	authorizer, err := abac.Decorate(inner, decoratorOpts...)
+	if err != nil {
+		return nil, &ABACWiringError{Err: err}
+	}
+	return authorizer, nil
 }
 
 // buildLoginOpts constructs the embedded options that wire the unified-login

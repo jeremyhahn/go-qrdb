@@ -123,6 +123,23 @@ type MCPToolPermissioner interface {
 	MCPToolPermissions() map[string]permission.Permission
 }
 
+// GRPCPublicMethodLister is an optional ServiceModule extension. A module
+// whose gRPC surface (registered via RegisterGRPC) includes methods that must
+// be reachable without authentication implements it to declare those methods
+// by their full gRPC method name ("/package.Service/Method", the same string
+// grpc.UnaryServerInfo.FullMethod / grpc.StreamServerInfo.FullMethod carry).
+// The unified server feeds the declarations into the gRPC auth middleware
+// (AuthMiddleware.RegisterPublicGRPCMethods) so those exact methods bypass
+// both authentication and authorization on the gRPC and unix transports,
+// symmetric with HTTPRegistrar.HandlePublic on REST. Reserve it for genuine
+// first-contact or legacy-unauthenticated surfaces (health, version);
+// everything else is reached through the RPC's (qrdb.v1.permission) proto
+// option. A malformed method name is rejected at registration time so a typo
+// fails server startup loudly instead of silently staying auth-gated.
+type GRPCPublicMethodLister interface {
+	PublicGRPCMethods() []string
+}
+
 // BaseModule provides no-op defaults for every hook except Name, so a module
 // embeds it and overrides only what applies. It does not implement Name, forcing
 // each module to supply its own identity.

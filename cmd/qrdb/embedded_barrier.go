@@ -65,7 +65,13 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig) (
 	// Persistent on-disk seal store. Mirrors the layout used by the SDK
 	// embedded server (sdk/go/transport/embedded/server.go::setupBarrier).
 	sealDir := filepath.Join(dataDir, "seal")
-	sealStore, storeErr := pebbleStorage.New(pebbleStorage.DefaultConfig(sealDir))
+	// SyncWrites is forced on: this store is the sole persisted copy of the
+	// root-key blob and epoch/rotation state, not a Raft-replicated store,
+	// so an unsynced write can be lost on crash even though it appeared to
+	// succeed — orphaning every file the lost root key had encrypted.
+	sealStoreCfg := pebbleStorage.DefaultConfig(sealDir)
+	sealStoreCfg.SyncWrites = true
+	sealStore, storeErr := pebbleStorage.New(sealStoreCfg)
 	if storeErr != nil {
 		return nil, nil, nil, "", &EmbeddedBarrierError{Step: "sealstore", Err: storeErr}
 	}

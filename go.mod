@@ -32,6 +32,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0-00010101000000-000000000000
 	github.com/jeremyhahn/go-quicraft v0.4.2-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
@@ -201,7 +202,6 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.4.0-alpha
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

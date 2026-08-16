@@ -32,7 +32,8 @@ import (
 // authentication and authorization for each unary RPC. The required
 // permission is declared once on the RPC's proto descriptor via the
 // (qrdb.v1.permission) method option; methods without the option are
-// denied unless they belong to an infrastructure service.
+// denied unless they belong to an infrastructure service or were declared
+// public via RegisterPublicGRPCMethods.
 func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -40,6 +41,15 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		// A public method (infrastructure service or module-declared via
+		// RegisterPublicGRPCMethods) bypasses authentication AND
+		// authorization entirely — this is checked first, before
+		// authenticate() runs, so a caller with no credentials at all can
+		// reach it. See isPublicGRPCMethod and isRegisteredPublicGRPCMethod.
+		if isPublicGRPCMethod(info.FullMethod) || m.isRegisteredPublicGRPCMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
+
 		// Inject TLS state from gRPC peer info so the mTLS
 		// authenticator can extract peer certificate identity.
 		ctx = injectTLSState(ctx)
@@ -54,13 +64,9 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 		// descriptor's (qrdb.v1.permission) option. DEFAULT-DENY: a method
 		// without the option that reaches a service handler is rejected
 		// rather than treated as public, so a newly-added RPC cannot
-		// silently become unauthorized. Only infrastructure services
-		// (health/reflection) are exempt.
+		// silently become unauthorized.
 		perm, ok := LookupGRPCFromDescriptor(info.FullMethod)
 		if !ok {
-			if isPublicGRPCMethod(info.FullMethod) {
-				return handler(ctx, req)
-			}
 			return nil, mapGRPCAuthError(&auth.AuthError{
 				Code:    "unauthorized",
 				Message: "grpc: method not authorized (no permission mapping): " + info.FullMethod,
@@ -80,7 +86,8 @@ func (m *AuthMiddleware) UnaryInterceptor() grpc.UnaryServerInterceptor {
 // infrastructure service (health checking, server reflection) that is
 // intentionally reachable without an application permission. Application
 // services (QRDBService, TenantBarrierService) are NOT public — every method
-// must carry a permission mapping or it is denied.
+// must carry a permission mapping, or be declared public by a capability
+// module via RegisterPublicGRPCMethods, or it is denied.
 func isPublicGRPCMethod(fullMethod string) bool {
 	switch {
 	case strings.HasPrefix(fullMethod, "/grpc.health.v1.Health/"):
@@ -90,6 +97,74 @@ func isPublicGRPCMethod(fullMethod string) bool {
 	default:
 		return false
 	}
+}
+
+// RegisterPublicGRPCMethods declares gRPC full method names that must be
+// reachable without authentication or authorization, on top of the built-in
+// infrastructure services isPublicGRPCMethod already exempts. It is how a
+// capability module's apimodule.GRPCPublicMethodLister declaration reaches
+// the interceptors: the unified server's gRPC and unix transports call this
+// once per qualifying module during Start, before the server accepts
+// connections, symmetric with HTTPRegistrar.HandlePublic on REST.
+//
+// Each method must be a full gRPC method name in the "/package.Service/
+// Method" form gRPC hands the interceptors via info.FullMethod; a malformed
+// name is rejected with InvalidPublicGRPCMethodError so a typo in a module's
+// declaration fails server startup loudly instead of silently leaving the
+// intended RPC auth-gated. len(methods) == 0 is a no-op, not an error, so a
+// module without any public RPCs can still implement the interface trivially.
+//
+// Safe to call more than once (e.g. once per transport sharing the same
+// AuthMiddleware instance, or with a second module's declarations): the
+// method set only grows. Safe to call concurrently with in-flight requests —
+// the underlying set is replaced with a new map in one atomic store, so an
+// interceptor already serving traffic observes either the pre- or
+// post-registration set, never a partially-populated one.
+func (m *AuthMiddleware) RegisterPublicGRPCMethods(methods []string) error {
+	if len(methods) == 0 {
+		return nil
+	}
+	for _, method := range methods {
+		if !isValidGRPCMethodName(method) {
+			return &InvalidPublicGRPCMethodError{Method: method}
+		}
+	}
+
+	next := make(map[string]struct{}, len(methods))
+	if existing := m.publicGRPCMethods.Load(); existing != nil {
+		for method := range *existing {
+			next[method] = struct{}{}
+		}
+	}
+	for _, method := range methods {
+		next[method] = struct{}{}
+	}
+	m.publicGRPCMethods.Store(&next)
+	return nil
+}
+
+// isValidGRPCMethodName reports whether method has the full gRPC method name
+// shape ("/package.Service/Method") that grpc.UnaryServerInfo.FullMethod and
+// grpc.StreamServerInfo.FullMethod use: a leading slash, a non-empty service
+// component, a separating slash, and a non-empty method component.
+func isValidGRPCMethodName(method string) bool {
+	if !strings.HasPrefix(method, "/") {
+		return false
+	}
+	rest := strings.TrimPrefix(method, "/")
+	idx := strings.LastIndex(rest, "/")
+	return idx > 0 && idx < len(rest)-1
+}
+
+// isRegisteredPublicGRPCMethod reports whether fullMethod was declared
+// public by a capability module via RegisterPublicGRPCMethods.
+func (m *AuthMiddleware) isRegisteredPublicGRPCMethod(fullMethod string) bool {
+	methods := m.publicGRPCMethods.Load()
+	if methods == nil {
+		return false
+	}
+	_, ok := (*methods)[fullMethod]
+	return ok
 }
 
 // StreamInterceptor returns a grpc.StreamServerInterceptor that performs
@@ -103,6 +178,12 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		// See UnaryInterceptor: a public method bypasses authentication AND
+		// authorization entirely, checked before authenticate() runs.
+		if isPublicGRPCMethod(info.FullMethod) || m.isRegisteredPublicGRPCMethod(info.FullMethod) {
+			return handler(srv, ss)
+		}
+
 		ctx := ss.Context()
 
 		// Inject TLS state from gRPC peer info so the mTLS
@@ -117,13 +198,10 @@ func (m *AuthMiddleware) StreamInterceptor() grpc.StreamServerInterceptor {
 
 		// Look up the required permission for this stream method from its
 		// proto descriptor's (qrdb.v1.permission) option. DEFAULT-DENY (see
-		// UnaryInterceptor): a non-infrastructure method without the option
-		// is rejected rather than treated as public.
+		// UnaryInterceptor): a non-infrastructure, non-declared-public method
+		// without the option is rejected rather than treated as public.
 		perm, ok := LookupGRPCFromDescriptor(info.FullMethod)
 		if !ok {
-			if isPublicGRPCMethod(info.FullMethod) {
-				return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})
-			}
 			return mapGRPCAuthError(&auth.AuthError{
 				Code:    "unauthorized",
 				Message: "grpc: method not authorized (no permission mapping): " + info.FullMethod,

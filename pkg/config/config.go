@@ -748,6 +748,24 @@ type AuthConfig struct {
 	// used as YAML map keys to be parsed as nested path components, corrupting
 	// the decoded value.
 	PeerAdminURLs []PeerAdminEntry `yaml:"peer_admin_urls"`
+
+	// ABAC configures the optional attribute-based access control decorator
+	// layered over the RBAC authorizer. When enabled, YAML policies from
+	// PolicyDir are evaluated before RBAC: an explicit deny overrides an
+	// RBAC allow, an explicit allow grants beyond RBAC, and unmatched
+	// requests fall through to RBAC. Default: disabled.
+	ABAC AuthABACConfig `yaml:"abac"`
+}
+
+// AuthABACConfig configures the ABAC authorization decorator.
+type AuthABACConfig struct {
+	// Enabled activates ABAC policy evaluation on top of RBAC.
+	// Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// PolicyDir is the directory containing YAML policy files (*.yaml,
+	// *.yml), loaded once at startup. Required when Enabled is true.
+	PolicyDir string `yaml:"policy_dir"`
 }
 
 // PeerAdminEntry maps a single peer's Raft address to its admin HTTPS base URL.
@@ -1520,6 +1538,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.PermCacheTTL < 0 {
 		return &ValidationError{Field: "auth.perm_cache_ttl", Reason: "must not be negative"}
+	}
+	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
+		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}
 	}
 
 	// Audit validation.

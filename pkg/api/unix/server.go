@@ -432,6 +432,27 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 
+	// Feed module-declared public gRPC methods into the auth middleware
+	// before building the interceptor chain below: a module implementing
+	// apimodule.GRPCPublicMethodLister declares RPCs that must be reachable
+	// without authentication, symmetric with HTTPRegistrar.HandlePublic on
+	// REST. s.authMW is the SAME *authmw.AuthMiddleware instance the TCP
+	// gRPC server is configured with (see pkg/server wiring), so in the
+	// common case where both transports are enabled this registration is
+	// idempotent with the TCP gRPC server's own; registering here too keeps
+	// the Unix transport correct standalone (Unix enabled without TCP gRPC).
+	if s.authMW != nil {
+		for _, m := range s.modules {
+			lister, ok := m.(apimodule.GRPCPublicMethodLister)
+			if !ok {
+				continue
+			}
+			if err := s.authMW.RegisterPublicGRPCMethods(lister.PublicGRPCMethods()); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Build the interceptor chains with the SAME ordering as the TCP gRPC
 	// server (pkg/api/grpc/server.go Start): recovery, then logging, then
 	// the database-scope interceptor, then — when configured — the auth

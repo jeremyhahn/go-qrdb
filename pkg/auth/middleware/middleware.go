@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -41,6 +42,16 @@ type AuthMiddleware struct {
 	users          user.UserServicer
 	usersFallback  user.UserServicer
 	audit          audit.Logger
+
+	// publicGRPCMethods holds the gRPC full method names ("/package.Service/
+	// Method") that bypass both authentication and authorization, declared by
+	// ServiceModules that implement apimodule.GRPCPublicMethodLister via
+	// RegisterPublicGRPCMethods. It is a *map behind an atomic.Pointer so
+	// registration (server startup, and possibly re-registration from a
+	// second transport sharing this same middleware instance) replaces the
+	// whole set in one atomic store, and the interceptors' per-request lookup
+	// stays lock-free.
+	publicGRPCMethods atomic.Pointer[map[string]struct{}]
 }
 
 // authLookupSyncTimeout bounds the per-request linearizable user lookup. A

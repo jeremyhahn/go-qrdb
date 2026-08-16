@@ -48,7 +48,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
@@ -141,6 +141,8 @@ type startFlags struct {
 	authEnabled          bool
 	separationOfDuties   bool
 	spiffeTrustDomain    string
+	abacEnabled          bool
+	abacPolicyDir        string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -635,6 +637,10 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
+	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
+	// trust domain above.
+	f.abacEnabled = cfg.Auth.ABAC.Enabled
+	f.abacPolicyDir = cfg.Auth.ABAC.PolicyDir
 	if !cmd.Flags().Changed("cluster-trust-domain") && cfg.Auth.ClusterTrustDomain != "" {
 		f.clusterTrustDomain = cfg.Auth.ClusterTrustDomain
 	}
@@ -1213,7 +1219,10 @@ func runStart(f *startFlags) error {
 					_ = shutdownNode(host)
 					return &DEKStorageError{Err: err}
 				}
-				dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir})
+				// SyncWrites is forced on: the wrapped per-tenant DEKs persisted here
+				// have no Raft-replicated backstop, so an unsynced write can be lost
+				// on crash while appearing to have succeeded.
+				dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir, SyncWrites: true})
 				if dekStoreErr != nil {
 					_ = shutdownNode(host)
 					return &DEKStorageError{Err: dekStoreErr}
@@ -1418,7 +1427,7 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
 				if err != nil {
 					_ = shutdownNode(host)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -2722,7 +2731,13 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // initialized user and role stores from mgmtResult. Called only when
 // --auth-enabled=true. The complianceAudit parameter is the compliance-grade
 // AuditLogger constructed earlier (always present regardless of auth flag).
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string) (*authBootstrapResult, error) {
+//
+// The RBAC[+ABAC] authorizer, mTLS authenticator, and AuthMiddleware are
+// built through pkg/auth/wiring.BuildAuthMiddleware — the SAME constructor
+// sdk/go/node.Node calls when wiring an embedded unified server — so a
+// daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
+// quicbaasd) enforce authn/authz identically.
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -2738,37 +2753,34 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		return nil, &AuthBootstrapError{Step: "audit logger", Err: err}
 	}
 
-	// Create RBAC authorizer backed by the runtime role store. The strict
-	// flag voids the Owner convenience role under FIPS 140-3 / configured
-	// separation of duties, so a strict binary enforces least-privilege
-	// even on a role store bootstrapped under the standard posture. The
-	// StaleRead fallback keeps authorization working when linearizable
-	// reads are unavailable (ReadIndex cold, or host draining) — e.g. so an
-	// authorized Drain request can still be admitted on a draining node.
-	rbacAuth := rbac.New(mgmt.roleSvc,
-		rbac.WithStrictSeparation(strictSoD),
-		rbac.WithRoleServiceFallback(mgmt.bootRoleSvc),
-	)
-
-	// Create auth middleware with mTLS authenticator, user-store
-	// enrichment, and audit logging. The fallback user service uses
-	// StaleRead (local state machine) which is safe because bootstrap
-	// ensures user/role data is replicated before servers start. This
-	// handles the window after restart where SyncRead (ReadIndex) is
-	// not yet operational.
-	// Pin the operator-configured SPIFFE trust domain when set so the mTLS
-	// authenticator derives the tenant from the peer certificate's
-	// tenant-scoped SPIFFE SAN and rejects foreign trust domains (fail-closed).
-	mtlsAuthenticator := auth.NewMTLSAuthenticator()
-	if spiffeTrustDomain != "" {
-		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(spiffeTrustDomain)
+	// Build the RBAC[+ABAC]-authorized, mTLS-authenticated auth middleware.
+	// The strict flag voids the Owner convenience role under FIPS 140-3 /
+	// configured separation of duties, so a strict binary enforces
+	// least-privilege even on a role store bootstrapped under the standard
+	// posture. The StaleRead fallbacks keep authorization/authentication
+	// working when linearizable reads are unavailable (ReadIndex cold, or
+	// host draining) — e.g. so an authorized Drain request can still be
+	// admitted on a draining node. Pin the operator-configured SPIFFE trust
+	// domain when set so the mTLS authenticator derives the tenant from the
+	// peer certificate's tenant-scoped SPIFFE SAN and rejects foreign trust
+	// domains (fail-closed). ABAC decoration wraps the SINGLE authorizer
+	// handed to the middleware, so every transport gets the composed
+	// provider; a load or compile failure aborts the boot (fail closed).
+	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
+		Enabled:             true,
+		RoleService:         mgmt.roleSvc,
+		RoleServiceFallback: mgmt.bootRoleSvc,
+		UserService:         mgmt.userSvc,
+		UserServiceFallback: mgmt.bootUserSvc,
+		StrictSeparation:    strictSoD,
+		SPIFFETrustDomain:   spiffeTrustDomain,
+		ABACEnabled:         abacCfg.Enabled,
+		ABACPolicyDir:       abacCfg.PolicyDir,
+		AuditLogger:         auditLogger,
+	})
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}
 	}
-	authMW := middleware.New(rbacAuth,
-		middleware.WithAuthenticator(mtlsAuthenticator),
-		middleware.WithUserService(mgmt.userSvc),
-		middleware.WithUserServiceFallback(mgmt.bootUserSvc),
-		middleware.WithAuditLogger(auditLogger),
-	)
 
 	// Custodian service: persists non-secret custodian metadata under
 	// __sys:custodian/<id>. Shares are never persisted -- they live in
@@ -2792,6 +2804,18 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		custodianSvc:    custodianSvc,
 		soAuthenticator: soAuthenticator,
 	}, nil
+}
+
+// decorateWithABAC wraps the given authorizer with the ABAC policy
+// decorator when ABAC is enabled in the configuration. When disabled it
+// returns the inner authorizer unchanged. Policies are loaded from the
+// configured policy directory at construction; any load or compilation
+// error is returned so the caller can abort the boot rather than run with
+// a partially applied policy set. Delegates to the shared
+// pkg/auth/wiring.DecorateABAC helper (also used by sdk/go/node.Node) so
+// the two embedders decorate identically.
+func decorateWithABAC(inner auth.Authorizer, cfg qrdbconfig.AuthABACConfig) (auth.Authorizer, error) {
+	return wiring.DecorateABAC(inner, cfg.Enabled, cfg.PolicyDir, nil)
 }
 
 // defaultAuthFactors returns the auth factor implementations to register

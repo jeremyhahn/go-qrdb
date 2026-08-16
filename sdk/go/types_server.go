@@ -76,6 +76,13 @@ type ModuleHTTPRegistrar = apimodule.HTTPRegistrar
 // the unified server's single MCP authorization path.
 type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
 
+// ModuleGRPCPublicMethodLister is the optional ServiceModule extension
+// through which a module declares which of its gRPC methods (registered via
+// RegisterGRPC) must be reachable without authentication, admitting them
+// into the unified server's gRPC and unix transports the same way
+// HTTPRegistrar.HandlePublic admits unauthenticated REST routes.
+type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
+
 // WithModule registers a capability module into the embedded qrdb server. Its
 // gRPC/REST/MCP surfaces are attached to every transport at startup and its
 // Start/Stop lifecycle runs with the server's.

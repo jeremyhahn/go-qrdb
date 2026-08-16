@@ -213,3 +213,47 @@ func TestMCPToolPermissionerIsOptional(t *testing.T) {
 		t.Error("a module without MCPToolPermissions must not satisfy MCPToolPermissioner")
 	}
 }
+
+// grpcPublicModule declares public gRPC methods, exercising the optional
+// GRPCPublicMethodLister extension interface.
+type grpcPublicModule struct {
+	apimodule.BaseModule
+}
+
+func (grpcPublicModule) Name() string { return "grpc-public" }
+
+func (grpcPublicModule) PublicGRPCMethods() []string {
+	return []string{
+		"/quicbaas.v1.HealthService/Check",
+		"/quicbaas.v1.HealthService/Version",
+	}
+}
+
+// TestGRPCPublicMethodListerIsOptional pins the extension's shape: a module
+// that declares public gRPC methods is detected by type assertion, and one
+// that does not is simply absent rather than an error. A gRPC method with no
+// declaration stays auth-gated, so the distinction decides whether the RPC is
+// reachable without credentials at all.
+func TestGRPCPublicMethodListerIsOptional(t *testing.T) {
+	var withDecls apimodule.ServiceModule = grpcPublicModule{}
+	var withoutDecls apimodule.ServiceModule = nameOnlyModule{}
+
+	l, ok := withDecls.(apimodule.GRPCPublicMethodLister)
+	if !ok {
+		t.Fatal("a module declaring PublicGRPCMethods must satisfy GRPCPublicMethodLister")
+	}
+	methods := l.PublicGRPCMethods()
+	if len(methods) != 2 {
+		t.Fatalf("PublicGRPCMethods returned %d methods, want 2", len(methods))
+	}
+	if methods[0] != "/quicbaas.v1.HealthService/Check" {
+		t.Errorf("methods[0] = %q, want %q", methods[0], "/quicbaas.v1.HealthService/Check")
+	}
+	if methods[1] != "/quicbaas.v1.HealthService/Version" {
+		t.Errorf("methods[1] = %q, want %q", methods[1], "/quicbaas.v1.HealthService/Version")
+	}
+
+	if _, ok := withoutDecls.(apimodule.GRPCPublicMethodLister); ok {
+		t.Error("a module without PublicGRPCMethods must not satisfy GRPCPublicMethodLister")
+	}
+}

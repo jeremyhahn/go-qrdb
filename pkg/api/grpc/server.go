@@ -417,6 +417,26 @@ func (s *Server) Start() error {
 	}
 	s.listener = ln
 
+	// Feed module-declared public gRPC methods into the auth middleware
+	// before building the interceptor chain below: a module implementing
+	// apimodule.GRPCPublicMethodLister declares RPCs that must be reachable
+	// without authentication (e.g. a legacy unauthenticated health/version
+	// endpoint), symmetric with HTTPRegistrar.HandlePublic on REST. The
+	// interceptor closures read the registration through s.authMW at
+	// request time, so populating it here (before Serve is called below)
+	// is sufficient even though module RegisterGRPC calls happen later.
+	if s.authMW != nil {
+		for _, m := range s.modules {
+			lister, ok := m.(apimodule.GRPCPublicMethodLister)
+			if !ok {
+				continue
+			}
+			if err := s.authMW.RegisterPublicGRPCMethods(lister.PublicGRPCMethods()); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Build interceptor chains for both unary and streaming RPCs.
 	// Auth interceptors are inserted after logging when configured.
 	// The sealed-window interceptor sits AFTER auth so non-allowlisted

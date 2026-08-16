@@ -201,6 +201,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		audit.NewNoopLogger(),
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
+		qrdbconfig.AuthABACConfig{},
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -232,6 +233,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		context.Background(), mgmt, mock, dataDir, node,
 		nil, // nil complianceAudit
 		false, "",
+		qrdbconfig.AuthABACConfig{},
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

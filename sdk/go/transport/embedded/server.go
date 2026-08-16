@@ -584,7 +584,13 @@ func (s *Server) setupBarrier(
 	logger *slog.Logger,
 ) (service.BarrierServicer, vfs.FS, error) {
 	sealDir := filepath.Join(config.DataDir, "seal")
-	sealStore, err := pebbleStorage.New(pebbleStorage.DefaultConfig(sealDir))
+	// SyncWrites is forced on: this store is the sole persisted copy of the
+	// root-key blob and epoch/rotation state, not a Raft-replicated store,
+	// so an unsynced write can be lost on crash even though it appeared to
+	// succeed — orphaning every file the lost root key had encrypted.
+	sealCfg := pebbleStorage.DefaultConfig(sealDir)
+	sealCfg.SyncWrites = true
+	sealStore, err := pebbleStorage.New(sealCfg)
 	if err != nil {
 		return nil, nil, &BarrierCreateError{Err: err}
 	}

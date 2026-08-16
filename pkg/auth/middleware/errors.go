@@ -81,3 +81,19 @@ func (e *AuditError) Error() string {
 func (e *AuditError) Unwrap() error {
 	return e.Err
 }
+
+// InvalidPublicGRPCMethodError is returned by RegisterPublicGRPCMethods when
+// a declared method name does not have the full gRPC method name shape
+// ("/package.Service/Method") that grpc.UnaryServerInfo.FullMethod and
+// grpc.StreamServerInfo.FullMethod use. Rejecting the malformed name at
+// registration (server startup) makes a typo in a module's
+// apimodule.GRPCPublicMethodLister declaration fail loudly instead of
+// silently leaving the intended RPC auth-gated.
+type InvalidPublicGRPCMethodError struct {
+	Method string
+}
+
+// Error returns a human-readable description of the malformed method name.
+func (e *InvalidPublicGRPCMethodError) Error() string {
+	return "auth/middleware: invalid public gRPC method name (want \"/package.Service/Method\"): " + e.Method
+}

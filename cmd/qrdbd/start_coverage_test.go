@@ -998,7 +998,7 @@ func TestBootstrapAuth_Success(t *testing.T) {
 	require.NotNil(t, mgmt.userSvc)
 	require.NotNil(t, mgmt.roleSvc)
 
-	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, dataDir, node, audit.NewNoopLogger(), false, "")
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
 	require.NotNil(t, authResult.auditLogger)
@@ -1063,7 +1063,7 @@ func TestBootstrapAuth_AuditLoggerError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Then bootstrap auth enforcement with the bad dataDir (this fails).
-	_, err = bootstrapAuthEnforcement(context.Background(), mgmt, mock, nonexistentDir, node, audit.NewNoopLogger(), false, "")
+	_, err = bootstrapAuthEnforcement(context.Background(), mgmt, mock, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

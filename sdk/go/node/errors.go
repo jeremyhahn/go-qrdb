@@ -171,3 +171,37 @@ func (e *TenantInfraError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *TenantInfraError) Unwrap() error { return e.Err }
+
+// ABACWiringError indicates that the ABAC authorization decorator could
+// not be constructed from the configured policies or policy directory.
+type ABACWiringError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *ABACWiringError) Error() string {
+	return "node: failed to wire ABAC authorization decorator: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *ABACWiringError) Unwrap() error { return e.Err }
+
+// AuthMiddlewareWiringError indicates that the multi-protocol server's
+// production auth-enforcement middleware (pkg/auth/wiring.BuildAuthMiddleware
+// — the RBAC[+ABAC] authorizer, mTLS authenticator, and user-store
+// enrichment shared with cmd/qrdbd) could not be constructed. This aborts
+// node construction rather than silently starting the server unauthenticated:
+// auth is enabled (cfg.Auth.Enabled) but a required dependency (the role or
+// user service) was unavailable, or the configured ABAC policies failed to
+// load/compile.
+type AuthMiddlewareWiringError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *AuthMiddlewareWiringError) Error() string {
+	return "node: failed to wire auth middleware for the multi-protocol server: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *AuthMiddlewareWiringError) Unwrap() error { return e.Err }
