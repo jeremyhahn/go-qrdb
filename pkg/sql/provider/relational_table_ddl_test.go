@@ -463,3 +463,102 @@ func TestRelationalTable_ImplementsDDLInterfaces(t *testing.T) {
 	_, ok = st.(sqle.CommentedTable)
 	assert.True(t, ok)
 }
+
+// ---------------------------------------------------------------------------
+// ModifyColumn as RENAME COLUMN
+// ---------------------------------------------------------------------------
+
+// TestRelationalTable_ModifyColumn_RenameOnlyIsMetadataOnly covers the one
+// shape go-mysql-server routes to ModifyColumn directly: RENAME COLUMN, whose
+// executor copies the existing column, swaps the name, and never consults
+// ShouldRewriteTable. A pure rename must succeed as a catalog-only change --
+// the row codec is positional, so no stored row needs touching -- and the
+// rename must follow through into key structures that name the column.
+func TestRelationalTable_ModifyColumn_RenameOnlyIsMetadataOnly(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop", Name: "users",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED"},
+			{Name: "email", Type: "VARCHAR(255)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
+	require.NoError(t, err)
+
+	// What buildRenameColumn constructs: the SAME column, new name.
+	emailType, terr := catalog.ColumnTypeOf(service.ColumnDef{Name: "email", Type: "VARCHAR(255)", Nullable: true})
+	require.NoError(t, terr)
+	renamed := &sqle.Column{Name: "email_address", Type: emailType, Nullable: true, Source: "users"}
+	require.NoError(t, tbl.ModifyColumn(newTestContext(), "email", renamed, nil))
+
+	got, err := h.tableSvc.GetTable(context.Background(), "shop", "users")
+	require.NoError(t, err)
+	names := make([]string, len(got.Columns))
+	for i, c := range got.Columns {
+		names[i] = c.Name
+	}
+	assert.Equal(t, []string{"id", "email_address"}, names)
+}
+
+// TestRelationalTable_ModifyColumn_RenamePrimaryKeyColumnFollowsThrough pins
+// that renaming a column the PRIMARY KEY names updates the key's reference as
+// well. Without that, the definition's PrimaryKey names a column that no
+// longer exists and the key codec refuses to serve the table at all -- a
+// rename that bricks the table.
+func TestRelationalTable_ModifyColumn_RenamePrimaryKeyColumnFollowsThrough(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop", Name: "orders",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED"},
+			{Name: "note", Type: "VARCHAR(64)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
+	require.NoError(t, err)
+
+	renamed := &sqle.Column{Name: "order_id", Type: types.Uint64, Source: "orders"}
+	require.NoError(t, tbl.ModifyColumn(newTestContext(), "id", renamed, nil))
+
+	got, err := h.tableSvc.GetTable(context.Background(), "shop", "orders")
+	require.NoError(t, err)
+	require.Len(t, got.PrimaryKey, 1)
+	assert.Equal(t, "order_id", got.PrimaryKey[0].Name)
+
+	// The table must still be servable: building a RelationalTable over the
+	// renamed definition exercises the key codec against the new name.
+	_, err = NewRelationalTable(got, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
+	require.NoError(t, err)
+}
+
+// TestRelationalTable_ModifyColumn_TypeChangeStillRefused pins that anything
+// beyond a pure rename keeps the fail-closed posture: a type change reaching
+// ModifyColumn directly means something bypassed the rewrite path, and
+// applying it as metadata would leave stored rows in a mixed encoding.
+func TestRelationalTable_ModifyColumn_TypeChangeStillRefused(t *testing.T) {
+	h := newDDLHarness()
+	def, err := h.tableSvc.CreateTable(context.Background(), &service.CreateTableRequest{
+		Database: "shop", Name: "things",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED"},
+			{Name: "email", Type: "VARCHAR(255)", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+	})
+	require.NoError(t, err)
+
+	tbl, err := NewRelationalTable(def, h.kvSvc, h.mvccSvc, WithTableService(h.tableSvc))
+	require.NoError(t, err)
+
+	// Same name, different type: NOT a rename.
+	err = tbl.ModifyColumn(newTestContext(), "email", &sqle.Column{Name: "email", Type: types.Int64, Source: "things"}, nil)
+	var e *RewriteRequiredError
+	require.ErrorAs(t, err, &e)
+}

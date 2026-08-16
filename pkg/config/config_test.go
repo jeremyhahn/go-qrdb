@@ -71,6 +71,14 @@ func validConfig() *Config {
 			REST: true,
 			GRPC: true,
 		},
+		// Auth is enabled by default (zero value = enabled, the fail-safe);
+		// a valid config therefore carries the admin identity fields.
+		Auth: AuthConfig{
+			AdminUsername: "admin",
+			DefaultTenant: "system",
+			CertTTL:       "8760h",
+			PermCacheTTL:  30,
+		},
 		Raft: RaftConfig{
 			DataDir:     "/tmp/data",
 			ShardID:     1,
@@ -2259,7 +2267,7 @@ tls:
 func TestDefaultConfig_AuthDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if !cfg.Auth.Enabled {
+	if !cfg.Auth.IsEnabled() {
 		t.Error("Auth.Enabled: want true")
 	}
 	if cfg.Auth.AdminUsername != "admin" {
@@ -2278,7 +2286,7 @@ func TestDefaultConfig_AuthDefaults(t *testing.T) {
 
 func TestValidate_Auth_EmptyAdminUsername(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.Enabled = true
+	cfg.Auth.Enabled = BoolPtr(true)
 	cfg.Auth.AdminUsername = ""
 	cfg.Auth.DefaultTenant = "system"
 	err := cfg.Validate()
@@ -2296,7 +2304,7 @@ func TestValidate_Auth_EmptyAdminUsername(t *testing.T) {
 
 func TestValidate_Auth_EmptyDefaultTenant(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.Enabled = true
+	cfg.Auth.Enabled = BoolPtr(true)
 	cfg.Auth.AdminUsername = "admin"
 	cfg.Auth.DefaultTenant = ""
 	err := cfg.Validate()
@@ -2314,7 +2322,7 @@ func TestValidate_Auth_EmptyDefaultTenant(t *testing.T) {
 
 func TestValidate_Auth_InvalidCertTTL(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.Enabled = true
+	cfg.Auth.Enabled = BoolPtr(true)
 	cfg.Auth.AdminUsername = "admin"
 	cfg.Auth.DefaultTenant = "system"
 	cfg.Auth.CertTTL = "not-a-duration"
@@ -2333,7 +2341,7 @@ func TestValidate_Auth_InvalidCertTTL(t *testing.T) {
 
 func TestValidate_Auth_ValidCertTTL(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.Enabled = true
+	cfg.Auth.Enabled = BoolPtr(true)
 	cfg.Auth.AdminUsername = "admin"
 	cfg.Auth.DefaultTenant = "system"
 	cfg.Auth.CertTTL = "720h"
@@ -2360,7 +2368,7 @@ func TestValidate_Auth_NegativePermCacheTTL(t *testing.T) {
 
 func TestValidate_Auth_DisabledSkipsValidation(t *testing.T) {
 	cfg := validConfig()
-	cfg.Auth.Enabled = false
+	cfg.Auth.Enabled = BoolPtr(false)
 	cfg.Auth.AdminUsername = ""
 	cfg.Auth.DefaultTenant = ""
 	cfg.Auth.CertTTL = "garbage"
@@ -2495,7 +2503,7 @@ auth:
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if !cfg.Auth.Enabled {
+	if !cfg.Auth.IsEnabled() {
 		t.Error("Auth.Enabled: want true")
 	}
 	if cfg.Auth.AdminUsername != "operator" {
@@ -2793,5 +2801,25 @@ func TestValidate_Codec_AllValidTypes(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("expected no error for codec type %q, got %v", ct, err)
 		}
+	}
+}
+
+// TestAuthConfig_IsEnabled_ZeroValueIsSecure pins the fail-safe that closed
+// the unified-server regression: an embedder that builds a bare Config (or
+// DaemonConfig) literal without touching the Auth block MUST get an
+// authenticated server. Only an explicit false disables authentication.
+func TestAuthConfig_IsEnabled_ZeroValueIsSecure(t *testing.T) {
+	var zero AuthConfig
+	if !zero.IsEnabled() {
+		t.Fatal("zero-value AuthConfig must report enabled: security is the default")
+	}
+	if !(AuthConfig{Enabled: BoolPtr(true)}).IsEnabled() {
+		t.Fatal("explicit true must report enabled")
+	}
+	if (AuthConfig{Enabled: BoolPtr(false)}).IsEnabled() {
+		t.Fatal("explicit false must report disabled")
+	}
+	if !DefaultConfig().Auth.IsEnabled() {
+		t.Fatal("DefaultConfig must enable auth")
 	}
 }

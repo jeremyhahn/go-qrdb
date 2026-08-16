@@ -451,3 +451,63 @@ func (e *SequenceConflictError) Error() string {
 	return "service: sequence " + e.Database + "/" + e.Name +
 		": too many concurrent modifications"
 }
+
+// ViewAlreadyExistsError indicates a CREATE VIEW named a view that already
+// exists in the database.
+type ViewAlreadyExistsError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *ViewAlreadyExistsError) Error() string {
+	return "service: view already exists: " + e.Database + "/" + e.Name
+}
+
+// ViewNotFoundError indicates the named view does not exist.
+type ViewNotFoundError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *ViewNotFoundError) Error() string {
+	return "service: view not found: " + e.Database + "/" + e.Name
+}
+
+// ViewDefinitionEmptyError indicates a CREATE VIEW carried no defining
+// SELECT. A view with no definition can never be served, so it is refused at
+// creation rather than discovered at first use.
+type ViewDefinitionEmptyError struct {
+	Database string
+	Name     string
+}
+
+// Error returns a human-readable description.
+func (e *ViewDefinitionEmptyError) Error() string {
+	return "service: view definition is empty: " + e.Database + "/" + e.Name
+}
+
+// TableCheckAlreadyExistsError indicates an ADD CHECK named a constraint the
+// table already carries.
+type TableCheckAlreadyExistsError struct {
+	Table string
+	Check string
+}
+
+// Error returns a human-readable description.
+func (e *TableCheckAlreadyExistsError) Error() string {
+	return "service: check constraint already exists: " + e.Table + "/" + e.Check
+}
+
+// TableCheckNotFoundError indicates a DROP CHECK named a constraint the table
+// does not carry.
+type TableCheckNotFoundError struct {
+	Table string
+	Check string
+}
+
+// Error returns a human-readable description.
+func (e *TableCheckNotFoundError) Error() string {
+	return "service: check constraint not found: " + e.Table + "/" + e.Check
+}

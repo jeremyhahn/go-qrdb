@@ -11,6 +11,27 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.2-alpha] - 2026-08-16
+
+### Changed — SECURITY
+
+- **Authentication is now the zero value.** `AuthConfig.Enabled` became a
+  pointer (`*bool`) with `IsEnabled()`: an embedder that builds a
+  `DaemonConfig` literal without touching the Auth block gets an
+  AUTHENTICATED unified server; only an explicit `false` disables. This
+  closes a live regression where both downstream daemons (xkmsd,
+  quicbaasd) served every qrdb-native plane unauthenticated because the
+  plain-bool zero value silently disabled the middleware. Use
+  `config.BoolPtr` / `qrdbsdk.BoolPtr` for explicit values.
+
+### Added
+
+- **Per-decision audit on embedded nodes** (`audit.NewDecisionLogger`):
+  the auth middleware's decision trail now bridges onto the node's
+  chained compliance event log — authorization decisions land in the
+  same tamper-evident chain as every other audited operation, matching
+  qrdbd. Closes the documented SDK-node TODO.
+
 ## [0.5.1-alpha] - 2026-08-16
 
 ### Fixed

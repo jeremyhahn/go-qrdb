@@ -156,10 +156,34 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 		return h.emptyResult()
 	}
 
-	// Translate PG-specific syntax to GMS-compatible SQL.
-	translated, err := h.translator.Translate(trimmed)
-	if err != nil {
-		return nil, &TranslationError{Query: trimmed, Err: err}
+	// The catalog-aware rewrites must resolve tables in the database THIS
+	// CONNECTION selected, which lives on the session context -- h.dbName is
+	// only the server-wide default a startup message may override. Passing
+	// h.dbName here made every rewrite silently miss its table lookup (and
+	// fall through to a parser error) for any connection whose dbname
+	// differed from the default, which is every conformance connection.
+	rewriteCtx := h.buildSQLContext(ctx)
+	rewriteDB := rewriteCtx.GetCurrentDatabase()
+
+	// DROP TABLE ... CASCADE acts by side effect: PostgreSQL's CASCADE drops
+	// the foreign keys other tables aim at the dropped table, which the
+	// engine's referenced-by validation would otherwise refuse. The statement
+	// text itself passes through unchanged.
+	applyDropTableCascade(rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, trimmed)
+
+	// A few PostgreSQL-only DDL forms must be rewritten BEFORE the
+	// translator runs: it has no rule for them and mangles them instead
+	// (see rewritePGOnlyDDL). When one fires, its output is already
+	// complete MySQL and skips the translator entirely.
+	translated, rewrote := rewritePGOnlyDDL(
+		rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, trimmed)
+	if !rewrote {
+		// Translate PG-specific syntax to GMS-compatible SQL.
+		var err error
+		translated, err = h.translator.Translate(trimmed)
+		if err != nil {
+			return nil, &TranslationError{Query: trimmed, Err: err}
+		}
 	}
 
 	// A few PostgreSQL DDL forms cannot be rewritten from the statement text
@@ -168,7 +192,7 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	// pkg/sql/engine's translator. Any other statement passes straight
 	// through.
 	translated = rewriteCatalogAwareDDL(
-		h.buildSQLContext(ctx), h.sqlEngine.Analyzer.Catalog, h.dbName, translated)
+		rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, translated)
 
 	// Parameterized queries must defer execution until BIND/EXECUTE
 	// when the wire protocol delivers parameter values. Non-parameterized
@@ -191,7 +215,7 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	// Execute the query through go-mysql-server.
 	schema, rowIter, _, err := h.sqlEngine.Query(sqlCtx, translated)
 	if err != nil {
-		return nil, &QueryError{Query: trimmed, Err: err}
+		return nil, wireQueryError(trimmed, err)
 	}
 
 	// Convert GMS schema to PG wire columns.
@@ -201,7 +225,7 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	// from the PreparedStatementFn callback.
 	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
-		return nil, &QueryError{Query: trimmed, Err: err}
+		return nil, wireQueryError(trimmed, err)
 	}
 
 	// Build the PreparedStatement with a callback that writes
@@ -348,7 +372,7 @@ func (h *ParseHandler) executeDeferredCallback(
 	// here (see the note below).
 	schema, rowIter, _, err := h.sqlEngine.QueryWithBindings(sqlCtx, translated, parsedStmt, bindings, nil)
 	if err != nil {
-		return &QueryError{Query: trimmed, Err: err}
+		return wireQueryError(trimmed, err)
 	}
 
 	// The client is still decoding against the RowDescription this statement
@@ -368,7 +392,7 @@ func (h *ParseHandler) executeDeferredCallback(
 	// Collect and write result.
 	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
-		return &QueryError{Query: trimmed, Err: err}
+		return wireQueryError(trimmed, err)
 	}
 
 	return writeRows(writer, result, trimmed)

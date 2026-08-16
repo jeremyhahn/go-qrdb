@@ -335,6 +335,14 @@ const (
 
 	// AlterRenameColumn changes a column's name. Metadata-only.
 	AlterRenameColumn AlterAction = "rename_column"
+
+	// AlterAddCheck adds a CHECK constraint. Metadata-only: the SQL engine
+	// enforces the expression on every subsequent write by reading it back
+	// through CheckTable.GetChecks; no stored row is touched.
+	AlterAddCheck AlterAction = "add_check"
+
+	// AlterDropCheck removes a CHECK constraint. Metadata-only.
+	AlterDropCheck AlterAction = "drop_check"
 )
 
 // AlterTableChange is one column mutation.
@@ -349,6 +357,9 @@ type AlterTableChange struct {
 
 	// NewName is the replacement name for rename.
 	NewName string `json:"new_name,omitempty"`
+
+	// Check is the constraint definition for AlterAddCheck.
+	Check CheckDef `json:"check,omitempty"`
 }
 
 // AlterTableRequest contains parameters for altering a relational table.

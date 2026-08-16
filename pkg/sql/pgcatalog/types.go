@@ -150,8 +150,18 @@ var udtNameByDataType = map[string]string{
 // type yields DefaultUDTName rather than an error -- see DefaultUDTName for
 // why silence is not an option here.
 func UDTName(dataType string) string {
-	if name, ok := udtNameByDataType[strings.ToLower(dataType)]; ok {
-		return name
+	name := strings.ToLower(dataType)
+	// A go-mysql-server type renders its modifier into String() -- datetime(6),
+	// varchar(64), decimal(9,0) -- while this map is keyed by the bare name.
+	// The modifier never changes WHICH PostgreSQL type the column reports, only
+	// its width/precision, so it is stripped before lookup. Without this a
+	// datetime(6) column (the substitution for every unmodified PostgreSQL
+	// timestamp) fell through to DefaultUDTName and introspected as text.
+	if i := strings.IndexByte(name, '('); i >= 0 {
+		name = strings.TrimSpace(name[:i])
+	}
+	if mapped, ok := udtNameByDataType[name]; ok {
+		return mapped
 	}
 	return DefaultUDTName
 }

@@ -660,8 +660,13 @@ type BatchConfig struct {
 // RBAC authorization system.
 type AuthConfig struct {
 	// Enabled controls whether authentication and authorization are active.
-	// Default: true.
-	Enabled bool `yaml:"enabled"`
+	// The field is a pointer so the zero value of the struct is SECURE BY
+	// DEFAULT: nil means "not configured" and IsEnabled treats it as
+	// enabled. Embedders that build a DaemonConfig literal without an Auth
+	// block therefore get an authenticated server, not a silently open one
+	// — the exact regression that shipped when this was a plain bool.
+	// Set it explicitly to false to opt out.
+	Enabled *bool `yaml:"enabled"`
 
 	// AdminUsername is the certificate CN for the bootstrap admin user.
 	// Default: "admin".
@@ -756,6 +761,19 @@ type AuthConfig struct {
 	// requests fall through to RBAC. Default: disabled.
 	ABAC AuthABACConfig `yaml:"abac"`
 }
+
+// IsEnabled reports whether authentication and authorization are active.
+// A nil Enabled — the zero value, an omitted YAML key, an embedder that
+// never touched the Auth block — means ENABLED: security is the default
+// and disabling it requires an explicit false.
+func (c AuthConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
+}
+
+// BoolPtr returns a pointer to b, for the explicit-value configuration
+// fields whose zero value must be distinguishable from "not configured"
+// (AuthConfig.Enabled).
+func BoolPtr(b bool) *bool { return &b }
 
 // AuthABACConfig configures the ABAC authorization decorator.
 type AuthABACConfig struct {
@@ -1046,7 +1064,7 @@ func DefaultConfig() *Config {
 			QuotaReconcileInterval: DefaultQuotaReconcileIntervalString,
 		},
 		Auth: AuthConfig{
-			Enabled:       true,
+			Enabled:       BoolPtr(true),
 			AdminUsername: "admin",
 			DefaultTenant: "system",
 			CertTTL:       "8760h",
@@ -1523,7 +1541,7 @@ func (c *Config) Validate() error {
 	}
 
 	// Auth validation.
-	if c.Auth.Enabled {
+	if c.Auth.IsEnabled() {
 		if c.Auth.AdminUsername == "" {
 			return &ValidationError{Field: "auth.admin_username", Reason: "must not be empty when auth is enabled"}
 		}
@@ -1571,7 +1589,7 @@ func (c *Config) Validate() error {
 				Reason: "TLS must be enabled when MySQL or PostgreSQL protocols are active",
 			}
 		}
-		if !c.Auth.Enabled {
+		if !c.Auth.IsEnabled() {
 			return &ValidationError{
 				Field:  "auth.enabled",
 				Reason: "auth must be enabled when MySQL or PostgreSQL protocols are active",

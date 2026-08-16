@@ -16,6 +16,7 @@ package provider
 
 import (
 	"errors"
+	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
 
@@ -29,6 +30,8 @@ var (
 	_ sqle.IndexBuildingTable  = (*RelationalTable)(nil)
 	_ sqle.RewritableTable     = (*RelationalTable)(nil)
 	_ sqle.CommentedTable      = (*RelationalTable)(nil)
+	_ sqle.CheckTable          = (*RelationalTable)(nil)
+	_ sqle.CheckAlterableTable = (*RelationalTable)(nil)
 )
 
 // ---------------------------------------------------------------------------
@@ -92,12 +95,73 @@ func (t *RelationalTable) DropColumn(_ *sqle.Context, columnName string) error {
 	return &RewriteRequiredError{Table: t.def.Name, Column: columnName, Operation: "DROP COLUMN"}
 }
 
-// ModifyColumn is unreachable in normal operation for the same reason as
-// DropColumn: ShouldRewriteTable requests a rewrite for every MODIFY COLUMN
-// (oldColumn != nil), so go-mysql-server drives the change through
-// RewriteInserter instead.
-func (t *RelationalTable) ModifyColumn(_ *sqle.Context, columnName string, _ *sqle.Column, _ *sqle.ColumnOrder) error {
-	return &RewriteRequiredError{Table: t.def.Name, Column: columnName, Operation: "MODIFY COLUMN"}
+// ModifyColumn handles the one shape go-mysql-server routes here DIRECTLY
+// rather than through RewriteInserter: RENAME COLUMN. Its executor
+// (rowexec/ddl.go, buildRenameColumn) copies the existing column, swaps the
+// name, and calls ModifyColumn without ever consulting ShouldRewriteTable.
+//
+// A pure rename is metadata-only for this table's physical row format:
+// RowCodec encodes rows positionally against the column LIST, never against
+// column names, so no stored row changes meaning when a column's name does.
+// It is therefore applied as the catalog's AlterRenameColumn.
+//
+// Anything else that reaches this method changed more than the name, which
+// means something bypassed RewritableTable (ShouldRewriteTable requests a
+// rewrite for every genuine MODIFY), and it is refused with
+// RewriteRequiredError rather than silently leaving rows in a mixed
+// encoding -- same posture as DropColumn above.
+func (t *RelationalTable) ModifyColumn(ctx *sqle.Context, columnName string, column *sqle.Column, order *sqle.ColumnOrder) error {
+	if order != nil || column == nil {
+		return &RewriteRequiredError{Table: t.def.Name, Column: columnName, Operation: "MODIFY COLUMN"}
+	}
+
+	var current *service.ColumnDef
+	for i := range t.def.Columns {
+		if strings.EqualFold(t.def.Columns[i].Name, columnName) {
+			current = &t.def.Columns[i]
+			break
+		}
+	}
+	if current == nil {
+		return &RewriteRequiredError{Table: t.def.Name, Column: columnName, Operation: "MODIFY COLUMN"}
+	}
+
+	proposed, err := columnDefFromSQL(column)
+	if err != nil {
+		return err
+	}
+
+	// Metadata-only means the LAYOUT fields -- type, nullability,
+	// auto-increment -- are unchanged; only the name, default, comment, or
+	// collation moved. The row codec encodes positionally against type and
+	// order, so none of those change any stored row's meaning, and the
+	// catalog applies the restatement without a rewrite (see the
+	// AlterModifyColumn case in pkg/service's applyAlterChanges). Anything
+	// touching layout is refused: it means something bypassed
+	// RewritableTable, and applying it as metadata would leave rows in a
+	// mixed encoding.
+	if !strings.EqualFold(current.Type, proposed.Type) ||
+		current.Nullable != proposed.Nullable ||
+		current.AutoIncrement != proposed.AutoIncrement {
+		return &RewriteRequiredError{Table: t.def.Name, Column: columnName, Operation: "MODIFY COLUMN"}
+	}
+
+	if t.tableSvc == nil {
+		return &TableServiceUnavailableError{Table: t.def.Name}
+	}
+	if err := flushPendingWriteSet(ctx); err != nil {
+		return err
+	}
+	_, err = t.tableSvc.AlterTable(ctx, &service.AlterTableRequest{
+		Database: t.def.Database,
+		Name:     t.def.Name,
+		Changes: []service.AlterTableChange{{
+			Action: service.AlterModifyColumn,
+			Name:   columnName,
+			Column: proposed,
+		}},
+	})
+	return err
 }
 
 // AlterableTable embeds UpdatableTable, which requires an Updater method;
@@ -369,8 +433,16 @@ func (t *RelationalTable) RewriteInserter(
 		Name:     t.def.Name,
 		Changes:  []service.AlterTableChange{change},
 	})
+	if err == nil {
+		// The catalog applied the change WITHOUT journaling a rewrite: the
+		// modify touched no layout field (a SET DEFAULT, a comment, a
+		// restatement go-mysql-server routed here anyway). There is nothing
+		// to migrate, so the streamed rows are discarded exactly as in the
+		// ADD COLUMN case above.
+		return &noopRowInserter{}, nil
+	}
 	var rewriteRequired *service.TableRewriteRequiredError
-	if err != nil && !errors.As(err, &rewriteRequired) {
+	if !errors.As(err, &rewriteRequired) {
 		return nil, err
 	}
 
@@ -436,4 +508,92 @@ func alterChangeFromColumns(oldColumn, newColumn *sqle.Column) (service.AlterTab
 		return service.AlterTableChange{}, err
 	}
 	return service.AlterTableChange{Action: service.AlterModifyColumn, Name: oldColumn.Name, Column: cd}, nil
+}
+
+// ---------------------------------------------------------------------------
+// CheckTable / CheckAlterableTable
+// ---------------------------------------------------------------------------
+
+// GetChecks returns the table's CHECK constraints. go-mysql-server reads them
+// while planning every INSERT/UPDATE, so a persisted constraint is ENFORCED
+// on writes, not merely displayed.
+func (t *RelationalTable) GetChecks(_ *sqle.Context) ([]sqle.CheckDefinition, error) {
+	checks := make([]sqle.CheckDefinition, len(t.def.Checks))
+	for i, c := range t.def.Checks {
+		checks[i] = sqle.CheckDefinition{
+			Name:            c.Name,
+			CheckExpression: c.Expression,
+			Enforced:        c.Enforced,
+		}
+	}
+	return checks, nil
+}
+
+// CreateCheck persists a CHECK constraint as catalog metadata.
+func (t *RelationalTable) CreateCheck(ctx *sqle.Context, check *sqle.CheckDefinition) error {
+	if t.tableSvc == nil {
+		return &TableServiceUnavailableError{Table: t.def.Name}
+	}
+	if err := flushPendingWriteSet(ctx); err != nil {
+		return err
+	}
+	_, err := t.tableSvc.AlterTable(ctx, &service.AlterTableRequest{
+		Database: t.def.Database,
+		Name:     t.def.Name,
+		Changes: []service.AlterTableChange{{
+			Action: service.AlterAddCheck,
+			Check: service.CheckDef{
+				Name:       check.Name,
+				Expression: check.CheckExpression,
+				Enforced:   check.Enforced,
+			},
+		}},
+	})
+	return err
+}
+
+// DropCheck removes the named constraint, resolving the name the way
+// PostgreSQL's single constraint namespace demands.
+//
+// go-mysql-server's grammar routes ALTER TABLE ... DROP CONSTRAINT <name>
+// here whenever the name is not obviously an index or foreign key at parse
+// time — but a PostgreSQL client (gorm.io/driver/postgres's migrator above
+// all) uses DROP CONSTRAINT for UNIQUE constraints and foreign keys too,
+// because in PostgreSQL those all share one namespace. So the name is
+// resolved against everything it could denote, in the order most specific to
+// this method's own contract: a CHECK constraint, then a unique index, then
+// a foreign key. Refusing the latter two here would leave a PostgreSQL
+// client with no way to drop a constraint it legitimately created.
+func (t *RelationalTable) DropCheck(ctx *sqle.Context, chName string) error {
+	if t.tableSvc == nil {
+		return &TableServiceUnavailableError{Table: t.def.Name}
+	}
+	if err := flushPendingWriteSet(ctx); err != nil {
+		return err
+	}
+
+	for _, c := range t.def.Checks {
+		if strings.EqualFold(c.Name, chName) {
+			_, err := t.tableSvc.AlterTable(ctx, &service.AlterTableRequest{
+				Database: t.def.Database,
+				Name:     t.def.Name,
+				Changes: []service.AlterTableChange{{
+					Action: service.AlterDropCheck,
+					Name:   chName,
+				}},
+			})
+			return err
+		}
+	}
+	for _, idx := range t.def.Indexes {
+		if strings.EqualFold(idx.Name, chName) {
+			return t.DropIndex(ctx, idx.Name)
+		}
+	}
+	for _, fk := range t.def.ForeignKeys {
+		if strings.EqualFold(fk.Name, chName) {
+			return t.DropForeignKey(ctx, fk.Name, "", "")
+		}
+	}
+	return &service.TableCheckNotFoundError{Table: t.def.Name, Check: chName}
 }

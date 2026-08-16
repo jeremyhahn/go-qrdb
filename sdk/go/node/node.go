@@ -1724,16 +1724,18 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (n.abacPolicyDir / n.abacPolicies, the WithABACPolicies /
 	// WithABACPolicyDir node options) so the network transports and the
 	// in-process embedded transport authorize identically.
-	// n.auditLogger is a compliance-grade audit.AuditLogger (Emit/Query),
-	// not the audit.Logger (Log/Close) the middleware's per-decision audit
-	// trail expects — the two are distinct sinks in cmd/qrdbd/start.go too
-	// (complianceAudit vs. bootstrapAuthEnforcement's own audit.New file
-	// logger). Wiring a dedicated middleware audit.Logger for an embedded
-	// node needs its own KV-backed store and is left for a follow-up
-	// (AuditLogger stays nil here); it does not affect authn/authz
-	// enforcement.
+	// The middleware's per-decision audit trail (audit.Logger, Log/Close)
+	// bridges onto the node's chained compliance sink (audit.AuditLogger,
+	// Emit/Query) via audit.NewDecisionLogger, so authorization decisions
+	// land in the SAME tamper-evident event log as every other audited
+	// operation — one audit plane, matching qrdbd's posture without a
+	// second store.
+	var decisionAudit audit.Logger
+	if n.auditLogger != nil {
+		decisionAudit = audit.NewDecisionLogger(n.auditLogger)
+	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
-		Enabled:           cfg.Auth.Enabled,
+		Enabled:           cfg.Auth.IsEnabled(),
 		RoleService:       svcNode.Role,
 		UserService:       svcNode.User,
 		StrictSeparation:  strictSoD,
@@ -1741,6 +1743,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		ABACEnabled:       n.abacPolicyDir != "" || len(n.abacPolicies) > 0,
 		ABACPolicyDir:     n.abacPolicyDir,
 		ABACPolicies:      n.abacPolicies,
+		AuditLogger:       decisionAudit,
 	})
 	if err != nil {
 		_ = client.Close()

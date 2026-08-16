@@ -55,6 +55,26 @@ var infoSchemaByDialect = map[Dialect]func() sql.Database{
 	DialectPostgreSQL: pgcatalog.InfoSchema,
 }
 
+// functionsByDialect maps a dialect to the SQL functions that dialect serves
+// beyond go-mysql-server's built-ins. Registration is per-CATALOG, exactly
+// like infoSchemaByDialect above, so a PostgreSQL engine's extra functions are
+// invisible to the MySQL engine built alongside it -- these are PostgreSQL
+// system-catalog functions, and teaching them to the MySQL endpoint would be
+// wrong rather than merely untidy.
+//
+// format_type is not optional for the PostgreSQL wire: gorm.io/driver/postgres's
+// Migrator resolves every column's type with
+//
+//	SELECT a.attname, format_type(a.atttypid, a.atttypmod) FROM pg_attribute a ...
+//
+// so without it AutoMigrate cannot read a table's columns at all. Losing this
+// registration produced `function: 'format_type' not found` on 78 of the pgsql
+// conformance failures -- the single largest cluster -- because every
+// migration that reached column introspection died there.
+var functionsByDialect = map[Dialect][]sql.Function{
+	DialectPostgreSQL: {pgcatalog.NewFormatType()},
+}
+
 // Config holds configuration for the SQL engine.
 type Config struct {
 	// Provider is the QRDB database provider that supplies table and
@@ -106,9 +126,22 @@ type Config struct {
 func New(cfg Config) *sqle.Engine {
 	a := analyzer.NewBuilder(cfg.Provider).
 		AddPostAnalyzeRule(privilege.RewriteRuleID, privilege.Rewrite).
+		AddOverrides(sql.EngineOverrides{Builder: sql.BuilderOverrides{
+			// Repair the bind-time HAVING-subquery aggregation collision on
+			// every entry path; see having_subquery.go.
+			Parser: newHavingSubqueryParser(sql.NewMysqlParser()),
+		}}).
 		Build()
 	if newInfoSchema, ok := infoSchemaByDialect[cfg.Dialect]; ok {
 		a.Catalog.InfoSchema = newInfoSchema()
 	}
+	for _, fn := range functionsByDialect[cfg.Dialect] {
+		a.Catalog.RegisterFunction(sql.NewEmptyContext(), fn)
+	}
+	// Repair the two upstream DML-RETURNING defects through the exec
+	// builder's priority hook; see dml_returning.go. Installed for every
+	// dialect: the broken shapes are the MySQL-dialect statements the
+	// PostgreSQL translator emits, and the MySQL wire serves them too.
+	a.ExecBuilder.PriorityBuilder = &dmlReturningBuilder{base: a.ExecBuilder}
 	return sqle.New(a, nil)
 }

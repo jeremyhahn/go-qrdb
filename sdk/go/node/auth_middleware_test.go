@@ -201,7 +201,7 @@ func TestEmbeddedNode_RESTAuthMiddleware_Disabled(t *testing.T) {
 	cfg.Protocols.MCP = false
 	cfg.Server.Host = "127.0.0.1"
 	cfg.Server.AdminPort = freeTCPPort(t)
-	cfg.Auth = qrdbconfig.AuthConfig{Enabled: false}
+	cfg.Auth = qrdbconfig.AuthConfig{Enabled: qrdbconfig.BoolPtr(false)}
 
 	n, err := NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithTLS(tlsCfg)})
 	require.NoError(t, err)

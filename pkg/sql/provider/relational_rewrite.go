@@ -77,6 +77,27 @@ func (r *rewriteRowInserter) Insert(_ *sqle.Context, _ sqle.Row) error { return 
 // r.journal.Target and finishes with TableServicer.CompleteRewrite.
 func (r *rewriteRowInserter) Close(ctx *sqle.Context) error {
 	if err := runRewrite(ctx, r.kvSvc, r.database, r.current, r.journal.Target, r.journal.Changes); err != nil {
+		// A RowRewriteError is the DETERMINISTIC class: the data cannot
+		// satisfy the new definition, and every retry fails identically.
+		// Abort the journal so the table stays servable under its pre-ALTER
+		// definition -- runRewrite converts every row before writing any,
+		// so no row was touched -- and PostgreSQL's atomic-ALTER promise
+		// holds: the statement failed, the table did not change. Any other
+		// error is treated as transient and keeps the journal, which is
+		// what makes a crash-interrupted write phase resumable.
+		var rowErr *RowRewriteError
+		if errors.As(err, &rowErr) {
+			if aborter, ok := r.tableSvc.(interface {
+				AbortRewrite(ctx context.Context, database, name string) error
+			}); ok {
+				if abortErr := aborter.AbortRewrite(ctx, r.database, r.name); abortErr != nil {
+					var none *service.TableNoRewriteInProgressError
+					if !errors.As(abortErr, &none) {
+						return errors.Join(err, abortErr)
+					}
+				}
+			}
+		}
 		return err
 	}
 	_, err := r.tableSvc.CompleteRewrite(ctx, r.database, r.name)
@@ -140,6 +161,18 @@ func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, 
 		return err
 	}
 
+	// Convert EVERY row before writing ANY. A conversion failure is
+	// deterministic -- 'company-belongs-to' will never become a bigint, on
+	// this attempt or any retry -- so discovering it after some rows were
+	// already re-encoded would leave the table with mixed encodings that no
+	// single codec can read. Converting first makes a data-incompatible
+	// ALTER fail with the table's rows untouched, which is what lets the
+	// caller abort the journal and restore the pre-ALTER definition exactly
+	// as PostgreSQL's atomic ALTER semantics promise. (The write phase can
+	// still be interrupted by a crash or storage error; that path keeps the
+	// journal and resumes, exactly as before -- already-migrated rows are
+	// recognized and skipped.)
+	converted := make(map[string][]byte, len(data))
 	for key, raw := range data {
 		alreadyMigrated, verr := catalog.RowSchemaVersionAtLeast(target.Name, raw, target.SchemaVersion)
 		if verr != nil {
@@ -175,6 +208,10 @@ func runRewrite(ctx context.Context, kvSvc service.KVServicer, database string, 
 		if eerr != nil {
 			return &RowRewriteError{Key: key, Err: eerr}
 		}
+		converted[key] = encoded
+	}
+
+	for key, encoded := range converted {
 		if perr := kvSvc.Put(ctx, key, encoded); perr != nil {
 			return perr
 		}

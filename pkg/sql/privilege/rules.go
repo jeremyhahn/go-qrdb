@@ -57,13 +57,23 @@ var authRules = map[string]authRule{
 	// are where those are governed.
 	ast.AuthType_SHOW: permitStatement,
 
-	ast.AuthType_SELECT:      requirePrivileges("SELECT", service.PrivilegeSelect),
-	ast.AuthType_INSERT:      requirePrivileges("INSERT", service.PrivilegeInsert),
-	ast.AuthType_UPDATE:      requirePrivileges("UPDATE", service.PrivilegeUpdate),
-	ast.AuthType_DELETE:      requirePrivileges("DELETE", service.PrivilegeDelete),
-	ast.AuthType_REPLACE:     requirePrivileges("REPLACE", service.PrivilegeInsert|service.PrivilegeDelete),
-	ast.AuthType_CREATE:      requirePrivileges("CREATE", service.PrivilegeCreate),
-	ast.AuthType_DROP:        requirePrivileges("DROP", service.PrivilegeDrop),
+	ast.AuthType_SELECT:  requirePrivileges("SELECT", service.PrivilegeSelect),
+	ast.AuthType_INSERT:  requirePrivileges("INSERT", service.PrivilegeInsert),
+	ast.AuthType_UPDATE:  requirePrivileges("UPDATE", service.PrivilegeUpdate),
+	ast.AuthType_DELETE:  requirePrivileges("DELETE", service.PrivilegeDelete),
+	ast.AuthType_REPLACE: requirePrivileges("REPLACE", service.PrivilegeInsert|service.PrivilegeDelete),
+	ast.AuthType_CREATE:  requirePrivileges("CREATE", service.PrivilegeCreate),
+	ast.AuthType_DROP:    requirePrivileges("DROP", service.PrivilegeDrop),
+
+	// CREATE VIEW authorizes under the same CREATE bit that authorizes
+	// CREATE TABLE. MySQL keeps a distinct CREATE VIEW privilege; this plane
+	// deliberately models the smaller set its catalog can persist (see
+	// privilegeNames in rewrite.go, where GRANT CREATE VIEW is still refused
+	// by name), and a grantee entitled to create tables in a database being
+	// entitled to create views over those tables is the conservative
+	// containment: a view grants access to nothing its SELECT could not
+	// already read, and reading it is separately gated by AuthType_SELECT.
+	ast.AuthType_CREATE_VIEW: requirePrivileges("CREATE VIEW", service.PrivilegeCreate),
 	ast.AuthType_ALTER:       requirePrivileges("ALTER", service.PrivilegeAlter),
 	ast.AuthType_INDEX:       requirePrivileges("INDEX", service.PrivilegeIndex),
 	ast.AuthType_FOREIGN_KEY: requirePrivileges("REFERENCES", service.PrivilegeReferences),

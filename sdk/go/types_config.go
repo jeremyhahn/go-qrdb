@@ -156,3 +156,7 @@ var (
 	// YAML file (honoring QRDB_ environment overrides and defaults).
 	LoadDaemonConfig = config.Load
 )
+
+// BoolPtr returns a pointer to b, for DaemonConfig fields whose zero value
+// must be distinguishable from "not configured" (DaemonAuthConfig.Enabled).
+var BoolPtr = config.BoolPtr

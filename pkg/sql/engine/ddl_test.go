@@ -55,7 +55,7 @@ func TestTranslateDDLTypes_CreateTable(t *testing.T) {
 		{
 			name:     "timestamptz",
 			input:    "CREATE TABLE `t` (`created_at` timestamptz)",
-			expected: "CREATE TABLE `t` (`created_at` DATETIME)",
+			expected: "CREATE TABLE `t` (`created_at` DATETIME(6))",
 		},
 		{
 			name:     "timestamptz_with_precision",
@@ -65,22 +65,22 @@ func TestTranslateDDLTypes_CreateTable(t *testing.T) {
 		{
 			name:     "timestamp_without_time_zone",
 			input:    "CREATE TABLE `t` (`created_at` TIMESTAMP WITHOUT TIME ZONE)",
-			expected: "CREATE TABLE `t` (`created_at` DATETIME)",
+			expected: "CREATE TABLE `t` (`created_at` DATETIME(6))",
 		},
 		{
 			name:     "timestamp_with_time_zone",
 			input:    "CREATE TABLE `t` (`created_at` TIMESTAMP WITH TIME ZONE)",
-			expected: "CREATE TABLE `t` (`created_at` DATETIME)",
+			expected: "CREATE TABLE `t` (`created_at` DATETIME(6))",
 		},
 		{
 			name:     "timestamp_without_time_zone_keeps_default",
 			input:    "CREATE TABLE `t` (`updated_at` TIMESTAMP WITHOUT TIME ZONE DEFAULT current_timestamp)",
-			expected: "CREATE TABLE `t` (`updated_at` DATETIME DEFAULT current_timestamp)",
+			expected: "CREATE TABLE `t` (`updated_at` DATETIME(6) DEFAULT current_timestamp)",
 		},
 		{
 			name:     "bare_timestamp",
 			input:    "CREATE TABLE `t` (`a` timestamp)",
-			expected: "CREATE TABLE `t` (`a` DATETIME)",
+			expected: "CREATE TABLE `t` (`a` DATETIME(6))",
 		},
 		{
 			name:     "bytea",
@@ -215,7 +215,7 @@ func TestTranslateDDLTypes_AlterTable(t *testing.T) {
 		{
 			name:     "add_column_explicit",
 			input:    "ALTER TABLE `t` ADD COLUMN `a` timestamptz",
-			expected: "ALTER TABLE `t` ADD COLUMN `a` DATETIME",
+			expected: "ALTER TABLE `t` ADD COLUMN `a` DATETIME(6)",
 		},
 		{
 			name:     "modify_column",
@@ -230,7 +230,7 @@ func TestTranslateDDLTypes_AlterTable(t *testing.T) {
 		{
 			name:     "multiple_clauses",
 			input:    "ALTER TABLE `t` ADD `a` text, ADD `b` timestamptz",
-			expected: "ALTER TABLE `t` ADD `a` LONGTEXT, ADD `b` DATETIME",
+			expected: "ALTER TABLE `t` ADD `a` LONGTEXT, ADD `b` DATETIME(6)",
 		},
 		{
 			name:     "add_constraint_untouched",
@@ -464,7 +464,7 @@ func TestTranslator_Translate_DDLTypes(t *testing.T) {
 		{
 			name:     "gorm_users",
 			input:    `CREATE TABLE "users" ("id" bigserial,"created_at" timestamptz,"name" text,"age" bigint,"active" boolean,PRIMARY KEY ("id"))`,
-			expected: "CREATE TABLE `users` (`id` BIGINT AUTO_INCREMENT,`created_at` DATETIME,`name` LONGTEXT,`age` bigint,`active` boolean,PRIMARY KEY (`id`))",
+			expected: "CREATE TABLE `users` (`id` BIGINT AUTO_INCREMENT,`created_at` DATETIME(6),`name` LONGTEXT,`age` bigint,`active` boolean,PRIMARY KEY (`id`))",
 		},
 		{
 			name:     "reserved_word_column_name",
@@ -1094,7 +1094,7 @@ func TestTranslateDDLTypes_AlterTableMultipleClauses(t *testing.T) {
 		"ALTER TABLE `t` ADD COLUMN `a` text, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` timestamptz, DROP COLUMN `d`")
 	require.NoError(t, err)
 	assert.Equal(t,
-		"ALTER TABLE `t` ADD COLUMN `a` LONGTEXT, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` DATETIME, DROP COLUMN `d`",
+		"ALTER TABLE `t` ADD COLUMN `a` LONGTEXT, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` DATETIME(6), DROP COLUMN `d`",
 		result)
 }
 

@@ -201,6 +201,43 @@ func classRows(ctx *sqle.Context, cat sqle.Catalog) ([]sqle.Row, error) {
 // which nobody has issued one has an empty pg_description too. Schema
 // introspection LEFT JOINs this relation, so empty means every column
 // reports a NULL comment -- which is the true answer.
-func descriptionRows(_ *sqle.Context, _ sqle.Catalog) ([]sqle.Row, error) {
-	return nil, nil
+// descriptionRows serves pg_description from the comments the catalog
+// actually stores: one row per commented column (objsubid = the column's
+// 1-based attnum, matching pg_attribute), and one per commented table
+// (objsubid = 0, PostgreSQL's spelling for "the object itself").
+//
+// gorm.io/driver/postgres reads column comments through exactly this
+// relation -- its ColumnTypes query LEFT JOINs pg_description on
+// (objoid = pg_class.oid, objsubid = ordinal_position) -- so an empty
+// relation made every comment written by COMMENT ON COLUMN unreadable, and
+// its migrator re-issued the statement on every AutoMigrate.
+func descriptionRows(ctx *sqle.Context, cat sqle.Catalog) ([]sqle.Row, error) {
+	var rows []sqle.Row
+	for _, db := range cat.AllDatabases(ctx) {
+		dbName := db.Name()
+		tableNames, err := db.GetTableNames(ctx)
+		if err != nil {
+			continue
+		}
+		for _, tableName := range tableNames {
+			table, _, err := cat.DatabaseTable(ctx, db, tableName)
+			if err != nil {
+				continue
+			}
+			relOID := ClassOID(dbName, table.Name())
+
+			if commented, ok := table.(sqle.CommentedTable); ok {
+				if comment := commented.Comment(); comment != "" {
+					rows = append(rows, sqle.Row{relOID, int32(0), comment})
+				}
+			}
+			for i, col := range table.Schema(ctx) {
+				if col.Comment == "" {
+					continue
+				}
+				rows = append(rows, sqle.Row{relOID, int32(i + 1), col.Comment})
+			}
+		}
+	}
+	return rows, nil
 }

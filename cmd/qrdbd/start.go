@@ -631,7 +631,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 		f.mcpEndpoint = cfg.MCP.Endpoint
 	}
 	if !cmd.Flags().Changed("auth-enabled") {
-		f.authEnabled = cfg.Auth.Enabled
+		f.authEnabled = cfg.Auth.IsEnabled()
 	}
 	// RBAC posture: config can only raise strictness; a FIPS 140-3 build
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
@@ -2180,7 +2180,7 @@ func buildServerConfig(f *startFlags) *qrdbconfig.Config {
 			Endpoint: f.mcpEndpoint,
 		},
 		Auth: qrdbconfig.AuthConfig{
-			Enabled: f.authEnabled,
+			Enabled: qrdbconfig.BoolPtr(f.authEnabled),
 		},
 		SQL: qrdbconfig.SQLConfig{
 			DefaultDatabase: f.sqlDatabase,

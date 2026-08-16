@@ -64,7 +64,17 @@ func (f *fakeTableService) ListTables(ctx context.Context, database string) ([]s
 	}
 	return nil, nil
 }
-func (f *fakeTableService) AlterTable(context.Context, *service.AlterTableRequest) (*service.TableDef, error) {
+func (f *fakeTableService) AlterTable(_ context.Context, req *service.AlterTableRequest) (*service.TableDef, error) {
+	// Mirror the real catalog's contract: a layout-touching change answers
+	// with TableRewriteRequiredError and a journaled rewrite. RewriteInserter
+	// treats a nil error as "metadata-only, nothing to migrate" and never
+	// consults the journal, so a fake that returned nil here would silently
+	// bypass the code paths these tests exist to reach.
+	for _, change := range req.Changes {
+		if change.Action == service.AlterDropColumn || change.Action == service.AlterModifyColumn {
+			return nil, &service.TableRewriteRequiredError{Database: req.Database, Name: req.Name}
+		}
+	}
 	return nil, nil
 }
 func (f *fakeTableService) CreateIndex(context.Context, *service.CreateTableIndexRequest) error {

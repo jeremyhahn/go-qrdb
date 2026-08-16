@@ -49,6 +49,16 @@ type pgColumnType struct {
 	// rewrite fails with a typed error rather than dropping a modifier the
 	// substituted type cannot express.
 	KeepModifier bool
+
+	// DefaultModifier is the modifier applied when KeepModifier is set and
+	// the source names none. It exists because the two dialects disagree on
+	// what an ABSENT modifier means: an unmodified PostgreSQL timestamp is
+	// microsecond-precision (6), while an unmodified MySQL DATETIME is
+	// SECOND-precision (0). Substituting bare DATETIME for bare timestamptz
+	// therefore silently truncated every round-tripped time.Time to whole
+	// seconds -- GORM's TestSave caught it as an updated_at that came back
+	// shorter than it went in.
+	DefaultModifier string
 }
 
 // pgColumnTypes maps a PostgreSQL type name, lowercased and with interior
@@ -94,10 +104,10 @@ var pgColumnTypes = map[string]pgColumnType{
 	"text":                        {Name: "LONGTEXT", KeyedName: keyedTextType},
 	"bytea":                       {Name: "LONGBLOB", KeyedName: keyedBlobType},
 	"uuid":                        {Name: "CHAR(36)"},
-	"timestamptz":                 {Name: "DATETIME", KeepModifier: true},
-	"timestamp":                   {Name: "DATETIME", KeepModifier: true},
-	"timestamp without time zone": {Name: "DATETIME", KeepModifier: true},
-	"timestamp with time zone":    {Name: "DATETIME", KeepModifier: true},
+	"timestamptz":                 {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
+	"timestamp":                   {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
+	"timestamp without time zone": {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
+	"timestamp with time zone":    {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
 }
 
 // maxTypePhraseWords is the greatest number of whitespace-separated words
@@ -694,6 +704,9 @@ func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool) (d
 		replacement = mapped.KeyedName
 	}
 	if mapped.KeepModifier {
+		if modifier == "" {
+			modifier = mapped.DefaultModifier
+		}
 		replacement += modifier
 	}
 	if mapped.AutoIncrement {
@@ -761,4 +774,42 @@ func columnTypeModifier(query string, toks []ddlToken, at, limit int) (string, i
 		}
 	}
 	return "", at
+}
+
+// TranslateColumnTypeText translates a single PostgreSQL column-type phrase
+// -- "text", "timestamptz", "varchar(20)", "numeric(10,2)" -- into the
+// go-mysql-server spelling, using the same substitution table CREATE TABLE
+// translation uses (pgColumnTypes, including DefaultModifier semantics). A
+// type with no entry is returned unchanged: the shared MySQL-dialect types
+// (varchar, bigint, numeric, ...) are already what the engine speaks.
+//
+// It exists for pkg/sql/pgsql's catalog-aware DDL rewrites, which synthesize
+// MODIFY COLUMN statements AFTER the whole-statement translator has run and
+// therefore cannot lean on it for the type text they splice in.
+func TranslateColumnTypeText(typeText string) string {
+	trimmed := strings.TrimSpace(typeText)
+
+	name := trimmed
+	modifier := ""
+	if i := strings.IndexByte(trimmed, '('); i >= 0 {
+		name = strings.TrimSpace(trimmed[:i])
+		modifier = strings.TrimSpace(trimmed[i:])
+	}
+
+	mapped, ok := pgColumnTypes[strings.ToLower(strings.Join(strings.Fields(name), " "))]
+	if !ok || mapped.Name == "" {
+		return trimmed
+	}
+
+	out := mapped.Name
+	if mapped.KeepModifier {
+		if modifier == "" {
+			modifier = mapped.DefaultModifier
+		}
+		out += modifier
+	}
+	if mapped.AutoIncrement {
+		out += " AUTO_INCREMENT"
+	}
+	return out
 }

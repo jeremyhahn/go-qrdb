@@ -193,6 +193,22 @@ var sqlKeywordPairs = map[string]map[string]bool{
 		"foreign": true,
 		"unique":  true,
 	},
+	// COLUMN directly after one of ALTER TABLE's clause verbs is the
+	// optional keyword of that clause (ADD COLUMN, DROP COLUMN,
+	// ALTER COLUMN, MODIFY COLUMN, CHANGE COLUMN), never an identifier.
+	// Backticking it there turned every such clause into a syntax error --
+	// DROP COLUMN was unusable from the PostgreSQL wire. The one ambiguity
+	// this creates (a bare column literally NAMED "column" right after one
+	// of these verbs) is resolved exactly as MySQL itself resolves it: as
+	// the keyword; a client that means the identifier quotes it.
+	"column": {
+		"add":    true,
+		"drop":   true,
+		"alter":  true,
+		"modify": true,
+		"change": true,
+		"rename": true,
+	},
 }
 
 // Translator converts PostgreSQL-specific SQL syntax into go-mysql-server

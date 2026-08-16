@@ -29,7 +29,7 @@ func validSQLConfig() *Config {
 	cfg.TLS.Enabled = true
 	cfg.TLS.CertFile = "/etc/tls/cert.pem"
 	cfg.TLS.KeyFile = "/etc/tls/key.pem"
-	cfg.Auth.Enabled = true
+	cfg.Auth.Enabled = BoolPtr(true)
 	cfg.Auth.AdminUsername = "admin"
 	cfg.Auth.DefaultTenant = "system"
 	cfg.SQL.DefaultDatabase = "qrdb"
@@ -94,7 +94,7 @@ func TestValidate_PgSQL_RequiresTLS(t *testing.T) {
 func TestValidate_MySQL_RequiresAuth(t *testing.T) {
 	cfg := validSQLConfig()
 	cfg.Protocols.MySQL = true
-	cfg.Auth.Enabled = false
+	cfg.Auth.Enabled = BoolPtr(false)
 
 	err := cfg.Validate()
 	if err == nil {
@@ -117,7 +117,7 @@ func TestValidate_PgSQL_RequiresAuth(t *testing.T) {
 	cfg := validSQLConfig()
 	cfg.Protocols.MySQL = false
 	cfg.Protocols.PostgreSQL = true
-	cfg.Auth.Enabled = false
+	cfg.Auth.Enabled = BoolPtr(false)
 
 	err := cfg.Validate()
 	if err == nil {

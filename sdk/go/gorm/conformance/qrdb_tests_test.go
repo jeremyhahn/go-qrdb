@@ -212,7 +212,16 @@ func openMySQL(cfg *gorm.Config) (*gorm.DB, error) {
 	if shared == nil {
 		return nil, &wireServerNotStartedError{Target: targetMySQL}
 	}
-	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%d)/%s?tls=%s&parseTime=true",
+	// loc=Local is required, not cosmetic. go-sql-driver/mysql defaults loc to
+	// UTC, and gorm.io/driver/mysql renders time.Time values in the CONNECTION
+	// location when it builds SQL -- so without it a time carrying a local
+	// zone comes out converted: TestToSQL builds its fixture with
+	// time.ParseInLocation(..., time.Local), expects '2021-10-18 00:00:00',
+	// and got '2021-10-18 04:00:00' on a UTC-4 host. That is the upstream
+	// suite's own DSN convention (GORM's mysql config uses loc=Local), and
+	// leaving it off made a host-timezone-dependent failure look like a qrdb
+	// timestamp defect.
+	dsn := fmt.Sprintf("%s@tcp(127.0.0.1:%d)/%s?tls=%s&parseTime=true&loc=Local",
 		sqlUser, shared.mysqlPort, sqlDatabase, shared.mysqlTLSConfigName)
 	return gorm.Open(mysql.Open(dsn), cfg)
 }

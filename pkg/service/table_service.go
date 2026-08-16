@@ -535,6 +535,24 @@ func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewri
 			if !isSupportedColumnType(newCol.Type) {
 				return false, false, &TableUnsupportedColumnTypeError{Column: newCol.Name, Type: newCol.Type}
 			}
+			// A modify whose LAYOUT fields (type, nullability,
+			// auto-increment) are unchanged only restates metadata --
+			// default, comment, collation, or the name itself. The row
+			// codec encodes positionally against type and order, so no
+			// stored row's meaning changes and no rewrite is journaled:
+			// ALTER ... SET DEFAULT and column restatements apply in the
+			// same compare-and-swap as every other metadata change.
+			current := def.Columns[idx]
+			layoutUnchanged := strings.EqualFold(current.Type, newCol.Type) &&
+				current.Nullable == newCol.Nullable &&
+				current.AutoIncrement == newCol.AutoIncrement
+			if layoutUnchanged {
+				if !strings.EqualFold(current.Name, newCol.Name) {
+					renameColumnReferences(def, current.Name, newCol.Name)
+				}
+				def.Columns[idx] = newCol
+				break
+			}
 			def.Columns[idx] = newCol
 			requiresRewrite = true
 			layoutChanged = true
@@ -552,7 +570,34 @@ func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewri
 					return false, false, &TableDuplicateColumnError{Column: change.NewName}
 				}
 			}
+			renameColumnReferences(def, change.Name, change.NewName)
 			def.Columns[idx].Name = change.NewName
+
+		case AlterAddCheck:
+			if err := validateIdentifier("check constraint", change.Check.Name); err != nil {
+				return false, false, err
+			}
+			for _, c := range def.Checks {
+				if strings.EqualFold(c.Name, change.Check.Name) {
+					return false, false, &TableCheckAlreadyExistsError{Table: def.Name, Check: change.Check.Name}
+				}
+			}
+			def.Checks = append(def.Checks, change.Check)
+
+		case AlterDropCheck:
+			dropped := false
+			kept := def.Checks[:0]
+			for _, c := range def.Checks {
+				if strings.EqualFold(c.Name, change.Name) {
+					dropped = true
+					continue
+				}
+				kept = append(kept, c)
+			}
+			if !dropped {
+				return false, false, &TableCheckNotFoundError{Table: def.Name, Check: change.Name}
+			}
+			def.Checks = kept
 
 		default:
 			return false, false, &TableUnsupportedAlterActionError{Action: string(change.Action)}
@@ -573,6 +618,45 @@ func applyAlterChanges(def *TableDef, changes []AlterTableChange) (requiresRewri
 	def.AutoIncColumn = autoIncName
 
 	return requiresRewrite, layoutChanged, nil
+}
+
+// renameColumnReferences follows a column rename through every catalog
+// structure that names the column: the primary key, each index, and each
+// foreign key (both its own key columns and, for a self-referential
+// constraint, its parent columns). It is the rename counterpart of
+// dropColumnReferences, and exists for the same reason: a definition whose
+// PrimaryKey or Indexes name a column that no longer exists fails
+// catalog.NewKeyCodec/PrimaryKeySchemaOf with a column-not-found error the
+// next time the table is served -- a rename that only touched def.Columns
+// would break every table whose renamed column participates in a key.
+func renameColumnReferences(def *TableDef, oldName, newName string) {
+	for i := range def.PrimaryKey {
+		if strings.EqualFold(def.PrimaryKey[i].Name, oldName) {
+			def.PrimaryKey[i].Name = newName
+		}
+	}
+	for i := range def.Indexes {
+		for j := range def.Indexes[i].Columns {
+			if strings.EqualFold(def.Indexes[i].Columns[j].Name, oldName) {
+				def.Indexes[i].Columns[j].Name = newName
+			}
+		}
+	}
+	for i := range def.ForeignKeys {
+		fk := &def.ForeignKeys[i]
+		for j := range fk.Columns {
+			if strings.EqualFold(fk.Columns[j], oldName) {
+				fk.Columns[j] = newName
+			}
+		}
+		if strings.EqualFold(fk.ParentTable, def.Name) {
+			for j := range fk.ParentColumns {
+				if strings.EqualFold(fk.ParentColumns[j], oldName) {
+					fk.ParentColumns[j] = newName
+				}
+			}
+		}
+	}
 }
 
 // dropColumnReferences removes name (matched case-insensitively) from
@@ -780,6 +864,36 @@ func (s *TableService) RewriteJournal(ctx context.Context, database, name string
 	}
 
 	return &journal, &current, nil
+}
+
+// AbortRewrite discards an in-flight rewrite's journal, restoring the table
+// to exactly its pre-ALTER definition — which the journal never touched, so
+// the abort is a single conditional delete of the journal record.
+//
+// It exists for the DETERMINISTIC failure class: a rewrite that failed
+// because the data cannot satisfy the new definition ('company-x' will never
+// convert to bigint) fails identically on every retry, so keeping the
+// journal for crash-resume semantics turns one bad ALTER into a permanently
+// wedged table — every subsequent access re-attempts the impossible rewrite
+// and fails. Transient failures (a storage error mid-write, a crash) must
+// NOT abort: their journal is what makes the interrupted rewrite resumable.
+// The caller is the one who can tell the two apart.
+func (s *TableService) AbortRewrite(ctx context.Context, database, name string) error {
+	if err := validateTableRef(database, name); err != nil {
+		return err
+	}
+	journalKey := tableDDLJournalKey(database, name)
+	return s.runCatalogCAS(ctx, database, name, func() ([]Compare, []Op, error) {
+		rev, err := s.mvcc.GetRevision(ctx, journalKey)
+		if err != nil {
+			return nil, nil, &TableNoRewriteInProgressError{Database: database, Name: name}
+		}
+		compares := []Compare{{
+			Key: []byte(journalKey), Target: CompareModRevision, Result: CompareEqual, ModRevision: rev.ModRevision,
+		}}
+		ops := []Op{{Type: OpDelete, Key: []byte(journalKey)}}
+		return compares, ops, nil
+	})
 }
 
 // CompleteRewrite finalizes an in-flight rewrite. See the doc comment on

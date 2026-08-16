@@ -22,7 +22,9 @@ import (
 	"strings"
 
 	"github.com/dolthub/go-mysql-server/sql"
+
 	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 )
 
 // rewriteCatalogAwareDDL applies each catalog-aware PostgreSQL DDL rewrite in
@@ -96,20 +98,213 @@ func rewriteAlterColumnNullability(sqlCtx *sql.Context, catalog sql.Catalog, dbN
 		if !strings.EqualFold(col.Name, columnName) {
 			continue
 		}
-		nullability := "NULL"
-		if strings.EqualFold(action, "SET") {
-			nullability = "NOT NULL"
-		}
+		nullable := !strings.EqualFold(action, "SET")
 		return "ALTER TABLE " + groups[1] + " MODIFY " + groups[2] + " " +
-			col.Type.String() + " " + nullability
+			modifyColumnClause(col, col.Type.String(), nullable, col.Comment)
 	}
 	return translated
 }
 
-// unquoteIdentifier strips the backticks pkg/sql/engine's translator puts
-// around a quoted identifier, leaving a bare name unchanged.
+// modifyColumnClause renders everything after "MODIFY <col> " for a column:
+// the type, the nullability, and -- because MySQL's MODIFY REPLACES the whole
+// column definition rather than patching one attribute -- the existing
+// DEFAULT, AUTO_INCREMENT, and COMMENT, which would otherwise be silently
+// dropped by a statement that only meant to change one of the others.
+func modifyColumnClause(col *sql.Column, typeText string, nullable bool, comment string) string {
+	clause := typeText
+	if nullable {
+		clause += " NULL"
+	} else {
+		clause += " NOT NULL"
+	}
+	if col.Default != nil {
+		clause += " DEFAULT " + col.Default.String()
+	}
+	if col.AutoIncrement {
+		clause += " AUTO_INCREMENT"
+	}
+	if comment != "" {
+		clause += " COMMENT " + quoteSQLString(comment)
+	}
+	return clause
+}
+
+// quoteSQLString renders s as a single-quoted SQL string literal.
+func quoteSQLString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// pgIdent matches a PostgreSQL identifier as the client wrote it: a
+// double-quoted form or a bare name. These pre-translation rewrites run on
+// the RAW statement text, before pkg/sql/engine's translator has converted
+// quoting -- see rewritePGOnlyDDL for why they cannot run after it.
+const pgIdent = `"[^"]+"|[A-Za-z_][A-Za-z0-9_]*`
+
+// alterColumnTypeRe matches PostgreSQL's
+// ALTER TABLE <t> ALTER [COLUMN] <c> [SET DATA] TYPE <type> [USING <expr>],
+// which MySQL has no spelling for at all -- its counterpart is MODIFY with a
+// full column definition. gorm.io/driver/postgres emits exactly this for
+// every column-type migration, always with a USING clause casting the column
+// to the new type.
+var alterColumnTypeRe = regexp.MustCompile(
+	`(?i)^\s*ALTER\s+TABLE\s+(` + pgIdent + `)` +
+		`\s+ALTER\s+(?:COLUMN\s+)?(` + pgIdent + `)` +
+		`\s+(?:SET\s+DATA\s+)?TYPE\s+([A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?)` +
+		`(?:\s+USING\s+(.+?))?\s*;?\s*$`)
+
+// usingPlainCastRe recognises the USING expressions that are a plain cast of
+// the column itself -- "col"::type or CAST(col AS type) -- which carry no
+// semantics beyond what MODIFY's own conversion performs.
+var usingPlainCastRe = regexp.MustCompile(
+	`(?i)^\s*(?:(` + pgIdent + `)\s*::\s*[A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?` +
+		`|CAST\s*\(\s*(` + pgIdent + `)\s+AS\s+[A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?\s*\))\s*$`)
+
+// rewriteAlterColumnType rewrites PostgreSQL's ALTER COLUMN ... TYPE into
+// MySQL's MODIFY, preserving the column's current nullability, default,
+// auto-increment, and comment (see modifyColumnClause -- MODIFY replaces the
+// whole definition). It runs PRE-translation: the translator has no rule for
+// this statement shape and mangles it instead (backticking the COLUMN and
+// TYPE keywords as identifiers, and rewriting the USING cast into a CAST
+// whose modifier lands outside the parentheses), so the raw text is the only
+// form that can be matched reliably.
+//
+// The USING clause is honoured only when it is a plain cast of the same
+// column, which is what MODIFY's own conversion already performs and the only
+// form gorm emits. A USING carrying any other expression changes row VALUES
+// in a way MODIFY cannot express, so the statement is left untouched for the
+// engine to reject rather than silently altered to mean something else.
+//
+// The engine executes the produced MODIFY through the provider's
+// RewriteInserter path, re-encoding every existing row under the new type --
+// see pkg/sql/provider/relational_rewrite.go.
+func rewriteAlterColumnType(sqlCtx *sql.Context, catalog sql.Catalog, dbName, translated string) string {
+	groups := alterColumnTypeRe.FindStringSubmatch(translated)
+	if groups == nil {
+		return translated
+	}
+	tableName, columnName := unquoteIdentifier(groups[1]), unquoteIdentifier(groups[2])
+	typeText, usingExpr := strings.TrimSpace(groups[3]), strings.TrimSpace(groups[4])
+
+	if usingExpr != "" {
+		castGroups := usingPlainCastRe.FindStringSubmatch(usingExpr)
+		if castGroups == nil {
+			return translated
+		}
+		castCol := castGroups[1]
+		if castCol == "" {
+			castCol = castGroups[2]
+		}
+		if !strings.EqualFold(unquoteIdentifier(castCol), columnName) {
+			return translated
+		}
+	}
+
+	table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+	if !ok {
+		return translated
+	}
+	for _, col := range table.Schema(sqlCtx) {
+		if !strings.EqualFold(col.Name, columnName) {
+			continue
+		}
+		newType := engine.TranslateColumnTypeText(typeText)
+		return "ALTER TABLE " + backtick(tableName) + " MODIFY " + backtick(columnName) + " " +
+			modifyColumnClause(col, newType, col.Nullable, col.Comment)
+	}
+	return translated
+}
+
+// backtick renders a bare identifier in MySQL quoting.
+func backtick(name string) string {
+	return "`" + name + "`"
+}
+
+// commentOnColumnRe matches PostgreSQL's COMMENT ON COLUMN <t>.<c> IS
+// <'text'|NULL>. MySQL spells the same thing as a MODIFY carrying a COMMENT
+// attribute, so the rewrite restates the column with everything it already
+// has plus the new comment; IS NULL clears it.
+var commentOnColumnRe = regexp.MustCompile(
+	`(?i)^\s*COMMENT\s+ON\s+COLUMN\s+` +
+		`(` + pgIdent + `)\.(` + pgIdent + `)` +
+		`\s+IS\s+('(?:[^']|'')*'|NULL)\s*;?\s*$`)
+
+// rewriteCommentOnColumn rewrites COMMENT ON COLUMN into the MODIFY MySQL
+// requires. The comment text keeps its quoted form verbatim (PostgreSQL and
+// MySQL agree on ” as the escape for a quote inside a single-quoted
+// literal).
+func rewriteCommentOnColumn(sqlCtx *sql.Context, catalog sql.Catalog, dbName, translated string) string {
+	groups := commentOnColumnRe.FindStringSubmatch(translated)
+	if groups == nil {
+		return translated
+	}
+	tableName, columnName := unquoteIdentifier(groups[1]), unquoteIdentifier(groups[2])
+	commentLit := groups[3]
+
+	table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+	if !ok {
+		return translated
+	}
+	for _, col := range table.Schema(sqlCtx) {
+		if !strings.EqualFold(col.Name, columnName) {
+			continue
+		}
+		clause := modifyColumnClause(col, col.Type.String(), col.Nullable, "")
+		if !strings.EqualFold(commentLit, "NULL") {
+			clause += " COMMENT " + commentLit
+		}
+		return "ALTER TABLE " + backtick(tableName) + " MODIFY " + backtick(columnName) + " " + clause
+	}
+	return translated
+}
+
+// alterColumnDefaultRe matches PostgreSQL's
+// ALTER TABLE <t> ALTER [COLUMN] <c> {SET DEFAULT <expr> | DROP DEFAULT}.
+// go-mysql-server's grammar accepts exactly this statement -- the only reason
+// it cannot pass through untouched is the translator's reserved-word step,
+// which backticks the COLUMN keyword as if it were an identifier. The rewrite
+// re-emits the statement in MySQL quoting with the optional COLUMN keyword
+// omitted, leaving the default expression verbatim.
+var alterColumnDefaultRe = regexp.MustCompile(
+	`(?i)^\s*ALTER\s+TABLE\s+(` + pgIdent + `)` +
+		`\s+ALTER\s+(?:COLUMN\s+)?(` + pgIdent + `)` +
+		`\s+(SET\s+DEFAULT\s+.+?|DROP\s+DEFAULT)\s*;?\s*$`)
+
+// rewriteAlterColumnDefault re-quotes the SET/DROP DEFAULT form. It needs no
+// catalog: nothing about the column is restated.
+func rewriteAlterColumnDefault(_ *sql.Context, _ sql.Catalog, _ string, raw string) string {
+	groups := alterColumnDefaultRe.FindStringSubmatch(raw)
+	if groups == nil {
+		return raw
+	}
+	return "ALTER TABLE " + backtick(unquoteIdentifier(groups[1])) +
+		" ALTER " + backtick(unquoteIdentifier(groups[2])) + " " + strings.TrimSpace(groups[3])
+}
+
+// rewritePGOnlyDDL applies the rewrites that must see the RAW statement,
+// before the translator touches it. The second return reports whether a
+// rewrite fired; when it did, the produced statement is complete MySQL and
+// the caller must NOT run the translator over it -- the translator would
+// backtick its keywords all over again.
+func rewritePGOnlyDDL(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw string) (string, bool) {
+	for _, rewrite := range []func(*sql.Context, sql.Catalog, string, string) string{
+		rewriteAlterColumnType,
+		rewriteAlterColumnDefault,
+		rewriteCommentOnColumn,
+		rewriteDropIndex,
+	} {
+		if out := rewrite(sqlCtx, catalog, dbName, raw); out != raw {
+			return out, true
+		}
+	}
+	return raw, false
+}
+
+// unquoteIdentifier strips the quoting from an identifier -- the backticks
+// pkg/sql/engine's translator puts around one, or the double quotes a
+// PostgreSQL client wrote (the pre-translation rewrites match the raw text).
+// A bare name passes through unchanged.
 func unquoteIdentifier(name string) string {
-	return strings.Trim(name, "`")
+	return strings.Trim(name, "`\"")
 }
 
 // dropConstraintRe matches PostgreSQL's
@@ -239,4 +434,121 @@ func columnNeedsKeyPrefix(schema sql.Schema, name string) bool {
 		return types.IsTextBlob(col.Type)
 	}
 	return false
+}
+
+// dropTableCascadeRe matches DROP TABLE [IF EXISTS] <table>[, <table>...]
+// CASCADE. Only the CASCADE form is matched: a plain DROP TABLE keeps
+// engine (RESTRICT) semantics, which refuse to drop a table other tables
+// still reference.
+var dropTableCascadeRe = regexp.MustCompile(
+	`(?i)^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*))*)\s+CASCADE\s*;?\s*$`)
+
+// applyDropTableCascade implements the CASCADE half of PostgreSQL's DROP
+// TABLE: every foreign key on OTHER tables that references a table being
+// dropped is dropped first, so the DROP itself then passes the engine's
+// referenced-by validation.
+//
+// It acts by side effect and leaves the statement text untouched -- the
+// engine parses the trailing CASCADE fine; it is only the incoming
+// references that made execution refuse. Failures resolving or dropping a
+// constraint are deliberately swallowed: the DROP TABLE that follows will
+// then fail with the engine's own referenced-by error, which is strictly
+// more informative than anything this helper could synthesize.
+func applyDropTableCascade(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw string) {
+	groups := dropTableCascadeRe.FindStringSubmatch(raw)
+	if groups == nil {
+		return
+	}
+
+	dropped := make(map[string]bool)
+	for _, name := range strings.Split(groups[1], ",") {
+		dropped[strings.ToLower(unquoteIdentifier(strings.TrimSpace(name)))] = true
+	}
+
+	db, err := catalog.Database(sqlCtx, dbName)
+	if err != nil {
+		return
+	}
+	tableNames, err := db.GetTableNames(sqlCtx)
+	if err != nil {
+		return
+	}
+	for _, tableName := range tableNames {
+		if dropped[strings.ToLower(tableName)] {
+			// The table is going away with the DROP; its outgoing
+			// constraints die with it.
+			continue
+		}
+		table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+		if !ok {
+			continue
+		}
+		fkTable, ok := table.(sql.ForeignKeyTable)
+		if !ok {
+			continue
+		}
+		fks, err := fkTable.GetDeclaredForeignKeys(sqlCtx)
+		if err != nil {
+			continue
+		}
+		for _, fk := range fks {
+			if dropped[strings.ToLower(fk.ParentTable)] {
+				_ = fkTable.DropForeignKey(sqlCtx, fk.Name, "", "")
+			}
+		}
+	}
+}
+
+// dropIndexRe matches PostgreSQL's DROP INDEX [CONCURRENTLY] [IF EXISTS]
+// [<schema>.]<name>, capturing the index name. The schema qualifier
+// gorm.io/driver/postgres writes is the literal call CURRENT_SCHEMA(),
+// which the translator would mangle to DATABASE(), so this rewrite must
+// run before translation.
+var dropIndexRe = regexp.MustCompile(
+	`(?i)^\s*DROP\s+INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+EXISTS\s+)?` +
+		`(?:(?:CURRENT_SCHEMA\(\)|"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?` +
+		`("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*;?\s*$`)
+
+// rewriteDropIndex rewrites PostgreSQL's DROP INDEX into MySQL's
+// table-scoped form. PostgreSQL indexes live in a schema-wide namespace, so
+// the statement names no table; MySQL's DROP INDEX needs one. The owning
+// table is resolved by searching the database's tables for the index name.
+// An index that resolves to no table is left alone so the engine reports
+// its own error for the original statement.
+func rewriteDropIndex(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw string) string {
+	groups := dropIndexRe.FindStringSubmatch(raw)
+	if groups == nil {
+		return raw
+	}
+	indexName := unquoteIdentifier(groups[1])
+
+	db, err := catalog.Database(sqlCtx, dbName)
+	if err != nil {
+		return raw
+	}
+	tableNames, err := db.GetTableNames(sqlCtx)
+	if err != nil {
+		return raw
+	}
+	for _, tableName := range tableNames {
+		table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+		if !ok {
+			continue
+		}
+		indexed, ok := table.(sql.IndexAddressableTable)
+		if !ok {
+			continue
+		}
+		indexes, err := indexed.GetIndexes(sqlCtx)
+		if err != nil {
+			continue
+		}
+		for _, idx := range indexes {
+			if strings.EqualFold(idx.ID(), indexName) {
+				return "ALTER TABLE " + backtick(tableName) +
+					" DROP INDEX " + backtick(indexName)
+			}
+		}
+	}
+	return raw
 }

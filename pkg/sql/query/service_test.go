@@ -160,6 +160,13 @@ func (m *mockRegistry) KVService(tenantID, db string) (service.KVServicer, error
 	return m.kvServiceFn(tenantID, db)
 }
 
+// TableService reports the relational catalog unavailable, which the
+// provider's view resolution treats as "no views" -- the embedded nil
+// service.Registry would nil-panic instead of erroring.
+func (m *mockRegistry) TableService(tenantID, db string) (service.TableServicer, error) {
+	return nil, &service.SubsystemNotConfiguredError{Subsystem: "table"}
+}
+
 func (m *mockRegistry) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
 	if m.privilegeServiceFn != nil {
 		return m.privilegeServiceFn(tenantID, db)
