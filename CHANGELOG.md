@@ -11,6 +11,16 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.1-alpha] - 2026-08-16
+
+### Fixed
+
+- **SDK error exports restored**: `sdk/go/types_errors.go` was accidentally
+  truncated in 0.5.0-alpha to only the new `NotLeaderError` re-export,
+  dropping `QRDBError`, `ErrorCode`, the error constructors and every
+  other error alias. The full surface is restored with `NotLeaderError`
+  appended. 0.5.0-alpha should not be depended upon.
+
 ## [0.5.0-alpha] - 2026-08-16
 
 ### Added
