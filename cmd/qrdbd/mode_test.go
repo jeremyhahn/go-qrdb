@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -100,4 +101,35 @@ func TestLocalDataPlaneCloser_ClosesBackendThenStorage(t *testing.T) {
 	// Storage is closed: subsequent operations must fail.
 	_, err = stg.Get([]byte("k"))
 	assert.Error(t, err, "storage must be closed by the closer")
+}
+
+// TestValidateSMStorageFlags mirrors the config-level sm_storage rules on
+// the flags-only boot path.
+func TestValidateSMStorageFlags(t *testing.T) {
+	t.Parallel()
+
+	if err := validateSMStorageFlags("pebble", "", ""); err != nil {
+		t.Fatalf("empty sm-storage must validate: %v", err)
+	}
+	if err := validateSMStorageFlags("disk", "", "file"); err != nil {
+		t.Fatalf("disk+file must validate: %v", err)
+	}
+	if err := validateSMStorageFlags("standard", "fast", "memory"); err != nil {
+		t.Fatalf("composite fast backend must validate: %v", err)
+	}
+
+	err := validateSMStorageFlags("disk", "", "objstore")
+	var unknown *UnknownSMStorageError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("objstore: got %v, want *UnknownSMStorageError", err)
+	}
+	if !strings.Contains(err.Error(), "snapshot/backup tier") {
+		t.Errorf("objstore refusal %q must explain the tier positioning", err.Error())
+	}
+
+	err = validateSMStorageFlags("mvcc", "", "file")
+	var mismatch *SMStorageTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("pebble-native mismatch: got %v, want *SMStorageTypeMismatchError", err)
+	}
 }

@@ -25,6 +25,8 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	filestore "github.com/jeremyhahn/go-qrdb/pkg/storage/file"
+	memstore "github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -286,7 +288,7 @@ func newDefaultRegistry() *Registry {
 	// "fast" is the high-performance 256-shard cache SM with async
 	// PebbleDB write-through, backed by FastBackend.
 	r.RegisterWithDescriptor("fast", func() sm.CreateFunc {
-		return NewKVFastCreateFunc(defaultPebbleStorageFactory())
+		return NewKVFastCreateFunc(defaultStorageFactory())
 	}, Descriptor{
 		Description: "High-performance 256-shard cache SM with PebbleDB write-through",
 		Persistence: PersistenceHybrid,
@@ -301,7 +303,7 @@ func newDefaultRegistry() *Registry {
 	// "disk" is a synchronous disk-backed KV state machine using
 	// DiskBackend with direct PebbleDB I/O.
 	r.RegisterWithDescriptor("disk", func() sm.CreateFunc {
-		return NewKVDiskCreateFunc(defaultPebbleStorageFactory())
+		return NewKVDiskCreateFunc(defaultStorageFactory())
 	}, Descriptor{
 		Description: "Synchronous disk-backed KV SM with direct PebbleDB I/O",
 		Persistence: PersistenceDisk,
@@ -352,6 +354,7 @@ func newDefaultRegistry() *Registry {
 var (
 	dataDirMu   sync.RWMutex
 	dataDirRoot string
+	smStorage   string
 )
 
 // SetDataDirRoot anchors the default registry storage factory under dir
@@ -366,32 +369,71 @@ func SetDataDirRoot(dir string) {
 	dataDirMu.Unlock()
 }
 
-// defaultPebbleStorageFactory returns a storage factory that creates
-// PebbleDB storage instances in per-(shard, replica) directories. When
+// SetSMStorage selects the storage backend the default registry factory
+// composes under storage-generic state machines (raft.sm_storage):
+// "pebble" (the default when empty), "file", or "memory". Objstore is
+// deliberately NOT accepted here — it is a snapshot/backup tier, never
+// the hot apply path — and config validation refuses it before boot.
+// Composition roots call this alongside SetDataDirRoot before resolving
+// state machines from the registry.
+func SetSMStorage(kind string) {
+	dataDirMu.Lock()
+	smStorage = kind
+	dataDirMu.Unlock()
+}
+
+// defaultStorageFactory returns a storage factory that creates storage
+// instances in per-(shard, replica) directories on the backend selected
+// via SetSMStorage (pebble when unset). When
 // SetDataDirRoot has anchored a real data directory, paths are stable
 // across restarts ({root}/sm/shard-S-replica-R) and opened with the
 // production Pebble configuration; otherwise it falls back to a fresh
 // temp directory with the test configuration (tests only — see
 // SetDataDirRoot).
-func defaultPebbleStorageFactory() func(shardID, replicaID uint64) storage.Storage {
+func defaultStorageFactory() func(shardID, replicaID uint64) storage.Storage {
 	return func(shardID, replicaID uint64) storage.Storage {
 		dataDirMu.RLock()
 		root := dataDirRoot
+		kind := smStorage
 		dataDirMu.RUnlock()
 
-		var cfg *pebblestore.Config
+		if kind == "memory" {
+			return memstore.NewStorage()
+		}
+
+		// Resolve the per-replica directory: stable under the data dir
+		// when anchored, a fresh temp dir otherwise (tests only — a
+		// production replica started that way loses its state on every
+		// restart).
+		var dir string
+		test := false
 		if root != "" {
-			dir := filepath.Join(root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
+			dir = filepath.Join(root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				panic("statemachine: failed to create sm storage dir: " + err.Error())
 			}
-			cfg = pebblestore.DefaultConfig(dir)
 		} else {
-			dir, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
+			tmp, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
 			if err != nil {
 				panic("statemachine: failed to create temp dir for storage: " + err.Error())
 			}
-			cfg = pebblestore.TestConfig(filepath.Join(dir, "data"))
+			dir = filepath.Join(tmp, "data")
+			test = true
+		}
+
+		if kind == "file" {
+			s, err := filestore.New(dir)
+			if err != nil {
+				panic("statemachine: failed to create file storage: " + err.Error())
+			}
+			return s
+		}
+
+		var cfg *pebblestore.Config
+		if test {
+			cfg = pebblestore.TestConfig(dir)
+		} else {
+			cfg = pebblestore.DefaultConfig(dir)
 		}
 		s, err := pebblestore.New(cfg)
 		if err != nil {

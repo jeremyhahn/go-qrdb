@@ -18,15 +18,39 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// newBatch creates a batch that buffers writes, serves reads through them, and
-// applies them to the directory in order on Commit. The filesystem offers no
-// multi-file atomicity, so a mid-commit failure may leave a partial result;
-// that is the backend's long-standing best-effort contract.
+// newBatch creates a batch that buffers writes, serves reads through
+// them, and commits them atomically via the commit journal: the whole
+// batch is durably published to a single journal file BEFORE any per-key
+// file is touched, then applied, then the journal is cleared. A crash at
+// any point leaves either none of the batch (journal never published) or,
+// after Open-time recovery, all of it (journal replayed) — the
+// all-or-nothing contract raft state-machine storage requires.
 func newBatch(e *Engine) storage.Batch {
-	return storage.NewBufferedBatch(e, e.applyBufferedOps)
+	return storage.NewBufferedBatch(e, e.commitBufferedOps)
+}
+
+// commitBufferedOps runs the journaled commit protocol for one batch.
+func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+
+	if err := e.writeJournal(encodeJournal(ops)); err != nil {
+		return err
+	}
+	if err := e.applyBufferedOps(ops); err != nil {
+		// The journal stays in place: recovery at next open completes
+		// the commit, preserving all-or-nothing semantics even when the
+		// in-process apply failed midway.
+		return err
+	}
+	return e.clearJournal()
 }
 
 // applyBufferedOps writes a batch's operations to the engine in order.
+// Each Set/Delete is individually durable (see Engine.Set).
 func (e *Engine) applyBufferedOps(ops []storage.BufferedOp) error {
 	for _, op := range ops {
 		if op.Deleted {

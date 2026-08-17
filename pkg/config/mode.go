@@ -76,6 +76,46 @@ func (c *Config) ValidateCapabilities() error {
 	return nil
 }
 
+// smStorageFactoryTypes are the storage-generic state machine families
+// that compose the registry storage factory and therefore honor
+// raft.sm_storage. The pebble-native SMs ("pebble", "mvcc", ...) carry
+// their own dedicated Pebble store.
+var smStorageFactoryTypes = map[string]struct{}{
+	"disk": {},
+	"fast": {},
+}
+
+// validateSMStorage enforces the raft.sm_storage contract: a valid
+// backend name, objstore refused as the hot apply path, and a non-pebble
+// selection only combined with a storage-generic state machine.
+func (c *Config) validateSMStorage() error {
+	switch c.Raft.SMStorage {
+	case "", "pebble", "file", "memory":
+	case "objstore":
+		return &ValidationError{
+			Field:  "raft.sm_storage",
+			Reason: "objstore is a snapshot/backup tier and cannot back the state machine hot apply path; use pebble, file, or memory",
+		}
+	default:
+		return &ValidationError{
+			Field:  "raft.sm_storage",
+			Reason: "must be one of: pebble, file, memory",
+		}
+	}
+	if c.Raft.SMStorage == "" || c.Raft.SMStorage == "pebble" {
+		return nil
+	}
+	_, typeOK := smStorageFactoryTypes[c.Raft.SMType]
+	_, backendOK := smStorageFactoryTypes[c.Raft.SMBackend]
+	if !typeOK && !backendOK {
+		return &ValidationError{
+			Field:  "raft.sm_storage",
+			Reason: "applies to the storage-generic state machines only; set raft.sm_type (or sm_backend) to disk or fast",
+		}
+	}
+	return nil
+}
+
 // peerCount counts non-empty entries in a comma-separated raft peer list.
 func peerCount(peers string) int {
 	n := 0

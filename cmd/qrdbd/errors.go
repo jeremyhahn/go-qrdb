@@ -68,6 +68,30 @@ func (e *StandaloneMigrationError) Error() string {
 	return "cli: system encryption migration requires mode: raft"
 }
 
+// UnknownSMStorageError is returned when --sm-storage names an
+// unsupported state machine storage backend. Objstore is deliberately
+// unsupported: it is a snapshot/backup tier, never the hot apply path.
+type UnknownSMStorageError struct {
+	Name string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownSMStorageError) Error() string {
+	return "cli: unknown state machine storage " + strconv.Quote(e.Name) + " (objstore is a snapshot/backup tier; use pebble, file, or memory)"
+}
+
+// SMStorageTypeMismatchError is returned when --sm-storage selects a
+// non-pebble backend for a pebble-native state machine type.
+type SMStorageTypeMismatchError struct {
+	Storage string
+	SMType  string
+}
+
+// Error returns a human-readable description.
+func (e *SMStorageTypeMismatchError) Error() string {
+	return "cli: sm-storage " + strconv.Quote(e.Storage) + " applies to the storage-generic state machines only; use --sm disk or --sm fast (got " + strconv.Quote(e.SMType) + ")"
+}
+
 // UnknownSMError is returned when the --sm flag specifies an unknown
 // state machine type.
 type UnknownSMError struct {

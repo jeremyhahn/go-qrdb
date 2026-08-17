@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
@@ -73,6 +74,11 @@ func (it *fileIterator) load(e *Engine) {
 	var entries []fileEntry
 	_ = filepath.Walk(e.dir, func(path string, info os.FileInfo, err error) error { // #nosec G122 -- internal storage directory, no symlink risk
 		if err != nil || info.IsDir() {
+			return nil
+		}
+		// Skip the commit journal and temp files (dot-prefixed; no
+		// encoded key segment can start with '.').
+		if strings.HasPrefix(info.Name(), ".") {
 			return nil
 		}
 		rel, relErr := filepath.Rel(e.dir, path)

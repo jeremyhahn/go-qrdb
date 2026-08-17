@@ -51,10 +51,15 @@ transactions, etcd compatibility (`qrdb_etcd`), cluster
 membership/topology, rebalance, shard backup/restore, IsolationRaft and
 IsolationVolume tenancy.
 
-*(planned, final phase)* `raft.sm_storage` selects the state machine's
-storage backend (memory/file/pebble). The file backend requires durability
-work first (atomic batch commit, fsync); objstore is positioned as a
-snapshot/backup tier and is refused as a hot apply path.
+`raft.sm_storage` selects the storage backend the storage-generic state
+machines (`sm_type: disk` or `fast`) compose: `pebble` (default), `file`,
+or `memory`. The file backend earned the hot-apply role with real
+durability: atomic temp-file+rename+fsync writes and an all-or-nothing
+commit journal replayed at open (`pkg/storage/file/journal.go`), plus the
+`storage.Syncer` seam. Objstore is a snapshot/backup tier and is refused
+as a hot apply path with a pointed validation error. The pebble-native
+state machines (`pebble`, `mvcc`) carry their own dedicated Pebble store
+and reject a non-pebble `sm_storage`.
 
 ## The feature model: three gates, one truth
 

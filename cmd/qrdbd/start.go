@@ -103,6 +103,7 @@ type startFlags struct {
 	deploymentID    uint64
 	smType          string
 	smBackend       string
+	smStorage       string
 	discoveryMethod string
 	peers           []string
 	// shardID is deprecated. System services always use shard.ShardKV (1).
@@ -435,6 +436,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
 	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble, memory, concurrent")
 	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk")
+	cmd.Flags().StringVar(&f.smStorage, "sm-storage", "", "Storage backend for the storage-generic state machines (sm type disk/fast): pebble (default), file, memory")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
 	cmd.Flags().StringSliceVar(&f.peers, "peers", nil, "Static peers, format id=address (e.g., 1=127.0.0.1:63001)")
 	cmd.Flags().Uint64Var(&f.shardID, "shard-id", shard.ShardKV, "Shard ID (deprecated: system services always use the system shard)")
@@ -537,6 +539,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("sm") {
 		f.smType = cfg.Raft.SMType
+	}
+	if !cmd.Flags().Changed("sm-storage") && cfg.Raft.SMStorage != "" {
+		f.smStorage = cfg.Raft.SMStorage
 	}
 	if !cmd.Flags().Changed("sm-backend") {
 		f.smBackend = cfg.Raft.SMBackend
@@ -2341,7 +2346,11 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	// restart-stable per-replica paths instead of fresh temp directories.
 	createFn := f.createFn
 	if createFn == nil {
+		if err := validateSMStorageFlags(f.smType, f.smBackend, f.smStorage); err != nil {
+			return nil, err
+		}
 		statemachine.SetDataDirRoot(f.dataDir)
+		statemachine.SetSMStorage(f.smStorage)
 		var err error
 		createFn, err = resolveCreateFunc(f.smType, f.smBackend)
 		if err != nil {
@@ -2569,6 +2578,25 @@ func shutdownNode(node io.Closer) error {
 // optional backend in the centralized statemachine.Registry and returns
 // the CreateFunc, or a local UnknownSMError if the combination is not
 // registered.
+// validateSMStorageFlags mirrors config.validateSMStorage for flags-only
+// boots: --sm-storage must name a supported hot-apply backend (objstore
+// is a snapshot/backup tier) and a non-pebble selection only combines
+// with the storage-generic state machine families (disk, fast).
+func validateSMStorageFlags(smType, smBackend, smStorage string) error {
+	switch smStorage {
+	case "", "pebble", "file", "memory":
+	default:
+		return &UnknownSMStorageError{Name: smStorage}
+	}
+	if smStorage == "" || smStorage == "pebble" {
+		return nil
+	}
+	if smType != "disk" && smType != "fast" && smBackend != "disk" && smBackend != "fast" {
+		return &SMStorageTypeMismatchError{Storage: smStorage, SMType: smType}
+	}
+	return nil
+}
+
 func resolveCreateFunc(smType, smBackend string) (sm.CreateFunc, error) {
 	createFn, err := statemachine.ResolveTyped(smType, smBackend)
 	if err != nil {

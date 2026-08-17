@@ -19,13 +19,18 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// Compile-time interface check.
-var _ storage.Storage = (*Engine)(nil)
+// Compile-time interface checks.
+var (
+	_ storage.Storage = (*Engine)(nil)
+	_ storage.Syncer  = (*Engine)(nil)
+)
 
 // Engine is a file-based storage engine that stores each key-value pair
 // as a separate file under a base directory. Keys containing "/" are
@@ -33,10 +38,18 @@ var _ storage.Storage = (*Engine)(nil)
 type Engine struct {
 	dir    string
 	closed atomic.Bool
+
+	// journalMu serializes batch commits: the commit journal is a single
+	// file in the engine root, so two concurrent commits must not
+	// interleave publish/apply/clear.
+	journalMu sync.Mutex
 }
 
-// New creates a new file-based storage engine rooted at dir.
-// The directory is created if it does not exist.
+// New creates a new file-based storage engine rooted at dir. The
+// directory is created if it does not exist. An interrupted batch commit
+// from a previous process is completed here (see recoverJournal); a
+// corrupt journal fails the open rather than silently serving a
+// half-applied batch.
 func New(dir string) (*Engine, error) {
 	if dir == "" {
 		return nil, storage.ErrInvalidPath
@@ -44,7 +57,11 @@ func New(dir string) (*Engine, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Engine{dir: dir}, nil
+	e := &Engine{dir: dir}
+	if err := e.recoverJournal(); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 func (e *Engine) keyPath(key []byte) string {
@@ -70,7 +87,12 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 	return data, nil
 }
 
-// Set stores a key-value pair as a file on disk.
+// Set durably stores a key-value pair as a file on disk: the value is
+// written to a temp file in the destination directory, fsynced, and
+// atomically renamed into place, then the parent directory is fsynced. A
+// crash therefore leaves either the old value or the new value, never a
+// torn file — the durability contract the raft state-machine storage
+// seam (raft.sm_storage: file) relies on.
 func (e *Engine) Set(key, value []byte) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
@@ -79,10 +101,38 @@ func (e *Engine) Set(key, value []byte) error {
 		return storage.ErrEmptyKey
 	}
 	path := e.keyPath(key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, value, 0o600)
+	tmp, err := os.CreateTemp(dir, ".tmp-set-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(value); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return fsyncDir(dir)
 }
 
 // Delete removes a key from storage.
@@ -93,11 +143,17 @@ func (e *Engine) Delete(key []byte) error {
 	if len(key) == 0 {
 		return storage.ErrEmptyKey
 	}
-	err := os.Remove(e.keyPath(key))
-	if err != nil && !os.IsNotExist(err) {
+	path := e.keyPath(key)
+	err := os.Remove(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	// Make the removal durable: fsync the parent directory so a crash
+	// cannot resurrect the deleted key.
+	return fsyncDir(filepath.Dir(path))
 }
 
 // List returns all keys matching the given prefix.
@@ -111,6 +167,11 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 			return err
 		}
 		if info.IsDir() {
+			return nil
+		}
+		// Skip the commit journal and temp files (dot-prefixed; no
+		// encoded key segment can start with '.').
+		if strings.HasPrefix(info.Name(), ".") {
 			return nil
 		}
 		rel, relErr := filepath.Rel(e.dir, path)
@@ -163,6 +224,16 @@ func (e *Engine) Snapshot() (storage.Snapshot, error) {
 		return nil, &storage.ClosedError{}
 	}
 	return newSnapshot(e)
+}
+
+// Sync fsyncs the engine root directory. Individual Set/Delete/Batch
+// operations are already durable on their own; Sync exists to satisfy the
+// storage.Syncer seam for callers that checkpoint explicitly.
+func (e *Engine) Sync() error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	return fsyncDir(e.dir)
 }
 
 // Close marks the engine as closed. Subsequent operations return ClosedError.

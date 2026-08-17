@@ -24,7 +24,7 @@ or clustered) adds MVCC/watch/lease/lock/transactions/etcd/cluster ops.
 | **Standalone daemon** (`mode: standalone`) | **none — raft-free** | ✅ implemented: `qrdbd` composes the same LocalBackend stack the SDK uses; raft-only features refused with "requires mode: raft" | [`qrdb-standalone-pebble.yaml`](qrdb-standalone-pebble.yaml) / [`memory`](qrdb-standalone-memory.yaml) / [`file`](qrdb-standalone-file.yaml) |
 | Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (today's default; full feature set incl. MVCC) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-raft-single-mvcc.yaml`](qrdb-raft-single-mvcc.yaml) (mvcc SM), [`qrdb-dev.yaml`](qrdb-dev.yaml) (memory, dev) |
 | Raft clustered daemon (3 nodes) | multi-replica Raft | ✅ implemented | [`qrdb-cluster-node1.yaml`](qrdb-cluster-node1.yaml) / [`node2`](qrdb-cluster-node2.yaml) / [`node3`](qrdb-cluster-node3.yaml) |
-| Raft SM over file/objstore storage (`raft.sm_storage`) | Raft | 🚧 planned (final phase): file needs atomic-batch + fsync durability work first; objstore is a snapshot/backup tier, never the hot apply path | — |
+| Raft SM over file/memory storage (`raft.sm_storage`, with `sm_type: disk`/`fast`) | Raft | ✅ implemented: file backend upgraded to durable atomic writes + all-or-nothing commit journal; objstore remains a snapshot/backup tier and is refused as the hot apply path | flags: `--sm disk --sm-storage file` |
 
 Per-backend nuances for standalone: pebble/memory serve the full standard
 set; file/objstore compose the plain KV engine, so timeseries is

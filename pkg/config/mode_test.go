@@ -229,3 +229,48 @@ func TestEffectiveCapabilities_TagFeaturesTrackRegistration(t *testing.T) {
 		}
 	}
 }
+
+// TestValidate_SMStorage covers the raft.sm_storage contract: valid
+// backends, the objstore snapshot-tier refusal, and the pebble-native
+// mismatch rule.
+func TestValidate_SMStorage(t *testing.T) {
+	cases := []struct {
+		name      string
+		storage   string
+		smType    string
+		smBackend string
+		wantErr   bool
+		wantSub   string
+	}{
+		{name: "empty-default", storage: "", smType: "pebble"},
+		{name: "pebble-any-type", storage: "pebble", smType: "mvcc"},
+		{name: "file-disk", storage: "file", smType: "disk"},
+		{name: "memory-fast", storage: "memory", smType: "fast"},
+		{name: "file-composite-backend", storage: "file", smType: "standard", smBackend: "disk"},
+		{name: "objstore-refused", storage: "objstore", smType: "disk", wantErr: true, wantSub: "snapshot/backup tier"},
+		{name: "unknown", storage: "s3", smType: "disk", wantErr: true, wantSub: "must be one of"},
+		{name: "file-pebble-native", storage: "file", smType: "mvcc", wantErr: true, wantSub: "storage-generic"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Raft.SMType = tc.smType
+			cfg.Raft.SMBackend = tc.smBackend
+			cfg.Raft.SMStorage = tc.storage
+			err := cfg.Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("want valid, got %v", err)
+				}
+				return
+			}
+			var verr *ValidationError
+			if !errors.As(err, &verr) || verr.Field != "raft.sm_storage" {
+				t.Fatalf("got %v, want ValidationError on raft.sm_storage", err)
+			}
+			if !strings.Contains(verr.Reason, tc.wantSub) {
+				t.Errorf("Reason %q missing %q", verr.Reason, tc.wantSub)
+			}
+		})
+	}
+}

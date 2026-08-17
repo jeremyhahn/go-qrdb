@@ -66,6 +66,10 @@ raft:
   max_in_mem_log_size: 0
   max_total_in_mem_log_size: 0
   sm_type: "pebble"
+  # sm_storage: storage backend for the storage-generic state machines
+  # (sm_type disk/fast): pebble (default), file, memory. Objstore is a
+  # snapshot/backup tier and is refused as the hot apply path.
+  # sm_storage: "pebble"
 
 storage:
   backend: "pebble"
@@ -923,6 +927,10 @@ raft:
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
+  # sm_storage: storage backend for the storage-generic state machines
+  # (sm_type disk/fast): pebble (default), file, memory. Objstore is a
+  # snapshot/backup tier and is refused as the hot apply path.
+  # sm_storage: "pebble"
 
 storage:
   backend: "pebble"
@@ -964,6 +972,10 @@ raft:
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
+  # sm_storage: storage backend for the storage-generic state machines
+  # (sm_type disk/fast): pebble (default), file, memory. Objstore is a
+  # snapshot/backup tier and is refused as the hot apply path.
+  # sm_storage: "pebble"
 
 storage:
   backend: "pebble"
@@ -1005,6 +1017,10 @@ raft:
   snapshot_entries: 10000
   compaction_overhead: 5000
   sm_type: "pebble"
+  # sm_storage: storage backend for the storage-generic state machines
+  # (sm_type disk/fast): pebble (default), file, memory. Objstore is a
+  # snapshot/backup tier and is refused as the hot apply path.
+  # sm_storage: "pebble"
 
 storage:
   backend: "pebble"

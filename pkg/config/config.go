@@ -327,6 +327,14 @@ type RaftConfig struct {
 	// registry lookup).
 	SMBackend string `yaml:"sm_backend"`
 
+	// SMStorage selects the storage backend the storage-generic state
+	// machines (sm_type "disk" or "fast") compose: "pebble" (default),
+	// "file", or "memory". Objstore is refused — it is a snapshot/backup
+	// tier, never the hot apply path. The pebble-native state machines
+	// ("pebble", "mvcc") ignore this knob and validation rejects a
+	// non-pebble value combined with them.
+	SMStorage string `yaml:"sm_storage"`
+
 	// LeaseRead enables lease-based linearizable reads. When true, the Raft
 	// leader serves ReadIndex requests immediately when its leadership lease
 	// is still valid, without a heartbeat round-trip. Requires CheckQuorum.
@@ -1422,6 +1430,9 @@ func (c *Config) Validate() error {
 				Reason: "must be one of: standard, concurrent, fast, disk",
 			}
 		}
+	}
+	if err := c.validateSMStorage(); err != nil {
+		return err
 	}
 
 	if c.Storage.Backend != "" {

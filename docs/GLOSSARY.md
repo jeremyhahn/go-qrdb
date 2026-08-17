@@ -109,7 +109,9 @@ committed entries. Deterministic across replicas by contract.
 | `concurrent` | Concurrent in-memory SM variant. |
 
 `raft.sm_backend` further selects a variant when `sm_type` names a logical
-engine: `standard`, `concurrent`, `fast`, `disk`.
+engine: `standard`, `concurrent`, `fast`, `disk`. `raft.sm_storage`
+selects the storage backend under the storage-generic SMs (`disk`/`fast`):
+`pebble` (default), `file`, `memory`.
 
 ### Store engine — `pkg/engine` (internal)
 
@@ -157,9 +159,11 @@ part of the approved run-modes plan):
 | Raft clustered (3+ nodes) | ✅ | ✅ | ⚠ volatile¹ | ⚠ volatile¹ |
 
 ¹ Valid (used in tests), but a restarted replica has no local state and
-must be re-fed by snapshot; never production. *(Planned: `raft.sm_storage`
-selects the SM's storage backend — memory/file/pebble — with objstore
-positioned as a snapshot/backup tier, never the hot apply path.)*
+must be re-fed by snapshot; never production. `raft.sm_storage` selects
+the storage backend of the storage-generic SMs (`sm_type: disk`/`fast`):
+pebble (default), file (durable: atomic writes + commit journal), or
+memory; objstore is a snapshot/backup tier and refused as the hot apply
+path.
 
 **State machine × capability:**
 

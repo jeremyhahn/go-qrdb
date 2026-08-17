@@ -64,6 +64,22 @@ type Storage interface {
 	Close() error
 }
 
+// Syncer is optionally implemented by backends that can flush pending
+// writes to stable storage on demand. Callers that checkpoint explicitly
+// (e.g. raft state-machine adapters before reporting an applied index)
+// type-assert for it:
+//
+//	if s, ok := stg.(storage.Syncer); ok { err = s.Sync() }
+//
+// It is deliberately not part of Storage: backends whose every write is
+// already durable (or that have no durability at all, like memory) have
+// nothing meaningful to add, and widening the core interface would break
+// every existing implementation for a capability only some possess.
+type Syncer interface {
+	// Sync flushes pending writes to stable storage.
+	Sync() error
+}
+
 // Batch groups multiple writes into an atomic operation.
 //
 // A Batch is also a Reader, and it reads its own writes: Get and NewIterator

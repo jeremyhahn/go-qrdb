@@ -13,6 +13,23 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Raft state machines over any storage backend (run-modes phase 5).**
+  New `raft.sm_storage` (`--sm-storage`) selects the storage backend the
+  storage-generic state machines (`sm_type: disk`/`fast`) compose:
+  `pebble` (default), `file`, or `memory`, rooted per-(shard, replica)
+  under the data dir. Objstore is refused as the hot apply path with a
+  pointed error — it is a snapshot/backup tier. The pebble-native SMs
+  (`pebble`, `mvcc`) reject a non-pebble selection.
+- **File storage backend durability.** `pkg/storage/file` writes are now
+  crash-safe: Set is temp-file + fsync + atomic rename + directory fsync;
+  Delete fsyncs the parent; batch commits are all-or-nothing via a
+  CRC-verified commit journal published before any per-key file is
+  touched and replayed at open (a corrupt journal fails the open rather
+  than serving a half-applied batch). New optional `storage.Syncer` seam.
+  Acceptance: raft single-node survives a hard kill + restart over
+  `--sm disk --sm-storage file`, and a 3-node cluster replicates over
+  file-backed SM storage (test/integration/sm_storage_file_test.go).
+
 - **Run-modes requirements ratified** ([docs/run-modes.md](docs/run-modes.md)):
   standalone = no Raft (standard database operations + always-on security
   core over any non-raft storage backend); raft (single- or multi-node) =
