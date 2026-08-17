@@ -33,7 +33,7 @@ consensus", not a fifth storage technology.
 | **Embedded** | qrdb linked as a Go library inside the host application's process. No daemon, no network transport required. Constructed via `sdk/go/node` (`NewStandaloneNode` / `NewClusteredNode`) or reached in-process through the SDK's embedded transport. |
 | **`embedded://` (DSN)** | The SDK's fast in-process KV-only transport: engines wired directly, minimal stack. **No relational/SQL surface** — `CREATE TABLE` fails by design. Use for pure KV embedding. |
 | **`node://` (DSN)** | The SDK's full in-process node: the complete stack (Raft host, services, SQL/relational catalog, tenants, seal) inside the caller's process. Required for relational/SQL work when embedding. |
-| **Standalone** | One `qrdbd` daemon process, serving all network transports. It is still a Raft deployment — a **single-replica Raft group** (see *Single-node Raft* below). This is what `configs/qrdb.yaml` describes. |
+| **Standalone** | One `qrdbd` daemon process, serving all network transports. It is still a Raft deployment — a **single-replica Raft group** (see *Single-node Raft* below). This is what `configs/qrdb.yaml` describes. A Raft-FREE standalone daemon (plain memory/file/pebble storage with the full non-Raft feature set) is a **tracked gap, not implemented**: `qrdbd` unconditionally builds the QuicRaft host; the only Raft-free path today is the embedded `embedded://` driver. See `configs/README.md` for the full implemented-vs-gap matrix. |
 | **Clustered** (Raft-replicated) | Three or more `qrdbd` peers forming one Raft group per shard, replicating every write through consensus. Tolerates minority failures (`2f+1` members tolerate `f` failures). |
 
 ### Single-node Raft (why a 1-peer config is valid)

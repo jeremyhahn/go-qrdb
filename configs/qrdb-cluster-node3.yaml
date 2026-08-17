@@ -1,0 +1,59 @@
+# Clustered daemon — node 3 of a 3-node Raft cluster.
+#
+# Run mode:      clustered (3 voting replicas; quorum = 2, tolerates the
+#                loss of 1 node)
+# State machine: pebble (switch every node to "mvcc" together if MVCC
+#                features are needed — sm_type must MATCH across replicas)
+# Storage:       pebble
+#
+# Per-node deltas vs. the other two files: replica_id and this node's own
+# raft/listen addresses. `peers` is the IDENTICAL full founding member set
+# on every node, and every FOUNDING node uses join: false. A node added
+# after formation uses join: true (snapshot-fed) — and an existing member
+# must NEVER be restarted with join: true.
+#
+# Production requires real mTLS material on every node; node certificates
+# carry a SPIFFE SAN (spiffe://{trust_domain}/node/{raftAddr}). See
+# docs/deployment-multi-node-raft.md.
+
+server:
+  admin_port: 8443
+  grpc_port: 9443
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+
+raft:
+  data_dir: "/var/lib/qrdb/data"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 3
+  raft_address: "node3.qrdb.internal:63001"
+  listen_address: "0.0.0.0:63001"
+  peers: "1=node1.qrdb.internal:63001,2=node2.qrdb.internal:63001,3=node3.qrdb.internal:63001"
+  join: false
+  sm_type: "pebble"
+  lease_read: true
+  check_quorum: true
+
+storage:
+  backend: "pebble"
+
+tls:
+  enabled: true
+  cert_file: "/etc/qrdb/tls/node3-cert.pem"
+  key_file: "/etc/qrdb/tls/node3-key.pem"
+  client_auth: "require_and_verify"
+  min_version: "TLS1.3"
+
+auth:
+  cluster_trust_domain: "qrdb.cluster"
+
+logging:
+  level: "info"
+  format: "text"
+
+discovery:
+  method: "static"
