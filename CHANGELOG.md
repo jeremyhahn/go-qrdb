@@ -11,6 +11,28 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Run-modes requirements ratified** ([docs/run-modes.md](docs/run-modes.md)):
+  standalone = no Raft (standard database operations + always-on security
+  core over any non-raft storage backend); raft (single- or multi-node) =
+  MVCC/watch/lease/lock/transactions/etcd/cluster ops. Feature availability
+  follows a three-gate model (build tag > run mode > config) with an
+  explicit always-compiled CORE. The daemon's `mode: standalone` and the
+  capabilities upgrade land in subsequent phases of the approved plan.
+
+### Changed (upcoming, announced here first)
+
+- **Capabilities will stop hardcoding `mvcc`/`watch`/`lease`/`transaction`
+  (and the rest of the former "core seven") to `true`.** Once the feature
+  profile lands, `admin capabilities` reflects the sealed per-deployment
+  profile — a `false` can mean not-compiled, mode-gated, or
+  config-disabled — and gains a `mode` field. Wire shapes are additive.
+- **SDK standalone (`NewStandaloneNode`) will stop composing MVCC, lease,
+  and transaction services**: those become raft-mode-only per the ratified
+  requirements. Downstream consumers are being notified via their repo
+  issue trackers.
+
 ## [0.5.8-alpha] - 2026-08-17
 
 ### Added

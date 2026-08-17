@@ -10,31 +10,26 @@ Terminology is defined in [docs/GLOSSARY.md](../docs/GLOSSARY.md) — read it
 first; "storage backend", "state machine type", and "run mode" are three
 different knobs.
 
-## The matrix: implemented vs. gaps
+## The matrix: implemented vs. planned
 
-| Run mode | Replication | SM type | Storage backend | Status | Exemplar |
-|---|---|---|---|---|---|
-| Embedded, `embedded://` (SQL driver DSN) | **none — no Raft at all** | n/a (plain `database.Backend`) | memory \| file \| pebble | ✅ implemented | DSNs below (not YAML) |
-| Embedded, `node://` / `sdk/go/node` | single-replica Raft, in-process | pebble (default) \| mvcc \| memory \| concurrent | pebble \| memory \| file | ✅ implemented | programmatic (`qrdbconfig.Config`), same keys as the YAMLs here |
-| Standalone daemon | single-replica Raft (quorum of 1) | pebble (default) | pebble | ✅ implemented | [`qrdb.yaml`](qrdb.yaml) |
-| Standalone daemon | single-replica Raft | **mvcc** (required for MVCC features) | pebble | ✅ implemented | [`qrdb-standalone-mvcc.yaml`](qrdb-standalone-mvcc.yaml) |
-| Standalone daemon | single-replica Raft | memory (volatile, dev/test) | memory | ✅ implemented | [`qrdb-dev.yaml`](qrdb-dev.yaml) |
-| Clustered daemon (3 nodes) | multi-replica Raft | pebble or mvcc | pebble | ✅ implemented | [`qrdb-cluster-node1.yaml`](qrdb-cluster-node1.yaml) /  [`node2`](qrdb-cluster-node2.yaml) / [`node3`](qrdb-cluster-node3.yaml) |
-| **Standalone daemon WITHOUT Raft** (memory/file/pebble only, full non-Raft feature set) | none | n/a | memory \| file \| pebble | ❌ **GAP — not implemented.** `qrdbd` unconditionally builds the QuicRaft host; every daemon data-plane service rides the system shard. Tracked on the production-readiness backlog. | — |
+Run modes follow the ratified split (see the glossary): **standalone = no
+Raft**, standard database operations + the security core; **raft** (single
+or clustered) adds MVCC/watch/lease/lock/transactions/etcd/cluster ops.
 
-Additional truths behind the matrix:
+| Run mode | Replication | Status | Exemplar |
+|---|---|---|---|
+| Embedded, `embedded://` (SQL driver DSN) | none — raft-free | ✅ implemented (KV + GMS SQL subset; no daemon services) | DSNs below (not YAML) |
+| Embedded, `node://` / `sdk/go/node.NewStandaloneNode` | none — raft-free (`backend.LocalBackend`) | ✅ implemented (full in-process service stack) | programmatic (`qrdbconfig.Config`) |
+| Embedded, `sdk/go/node.NewClusteredNode` | multi-replica Raft, in-process | ✅ implemented | programmatic |
+| **Standalone daemon** (`mode: standalone`) | **none — raft-free** | 🚧 **approved plan, in progress**: composition branch in `qrdbd` over the same LocalBackend stack the SDK uses; raft-only features refused with "requires mode: raft" | `qrdb-standalone-*.yaml` (added when the mode lands) |
+| Raft single-node daemon | single-replica Raft (quorum of 1) | ✅ implemented (today's default; full feature set incl. MVCC) | [`qrdb.yaml`](qrdb.yaml) (pebble SM), [`qrdb-standalone-mvcc.yaml`](qrdb-standalone-mvcc.yaml) (mvcc SM — file will be RENAMED to `qrdb-raft-single-mvcc.yaml` with the mode work), [`qrdb-dev.yaml`](qrdb-dev.yaml) (memory, dev) |
+| Raft clustered daemon (3 nodes) | multi-replica Raft | ✅ implemented | [`qrdb-cluster-node1.yaml`](qrdb-cluster-node1.yaml) / [`node2`](qrdb-cluster-node2.yaml) / [`node3`](qrdb-cluster-node3.yaml) |
+| Raft SM over file/objstore storage (`raft.sm_storage`) | Raft | 🚧 planned (final phase): file needs atomic-batch + fsync durability work first; objstore is a snapshot/backup tier, never the hot apply path | — |
 
-- **Per-database backends inside a daemon** (`database create --backend
-  memory|file|pebble`) open a node-local `StandaloneBackend` at the manager
-  level, but the daemon's SERVED data plane currently routes all databases
-  through the system shard's services (see the registry construction in
-  `cmd/qrdbd/start.go`); dedicated-Raft (IsolationRaft) databases are the
-  exception with their own shards. A non-Raft SERVING path in the daemon is
-  part of the same gap noted above.
-- The only fully Raft-free path today is the embedded `embedded://` driver:
-  a plain storage backend + engine in your process — KV and the GMS SQL
-  query engine, but no Raft, no daemon services (IAM/tenants/watch/lease/
-  seal), and no relational-table catalog unless a registry is supplied.
+Per-backend nuances for standalone: pebble/memory serve the full standard
+set; file/objstore compose the plain KV engine, so timeseries is
+additionally unavailable there (documented engine boundary,
+`pkg/engine/kv_engine.go`).
 
 ## Embedded DSN examples (`database/sql` driver)
 

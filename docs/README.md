@@ -21,6 +21,8 @@ limitations under the License.
 > **Start with the [Glossary](GLOSSARY.md)** — the standard terminology for
 > run modes, storage backends, state machines, and engines. These terms are
 > easy to conflate and every other document assumes the glossary's usage.
+> The run-mode and feature-model **requirements** live in
+> [run-modes.md](run-modes.md).
 
 Technical documentation for the QRDB distributed transactional key-value
 store. These documents describe the system as implemented, with references

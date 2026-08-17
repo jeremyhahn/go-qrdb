@@ -69,13 +69,13 @@ func NewKVFastCreateFunc(storageFactory func(shardID, replicaID uint64) storage.
 // KVStateMachine instances backed by DiskBackend. The storageFactory
 // provides the backing storage.Storage for each shard/replica pair.
 func NewKVDiskCreateFunc(storageFactory func(shardID, replicaID uint64) storage.Storage, opts ...KVOption) sm.CreateFunc {
-	return sm.NewDiskCreateFunc(func(_, _ uint64) sm.DiskStateMachine {
-		// The actual storage is opened in DiskAdapter.Open, but we
-		// need a factory-provided store here for the backend.
-		// For now, we create with a nil store and expect Open to
-		// initialize it. However, to maintain the existing pattern,
-		// we create the store eagerly.
-		store := storageFactory(0, 0)
+	return sm.NewDiskCreateFunc(func(shardID, replicaID uint64) sm.DiskStateMachine {
+		// The shard/replica identity MUST reach the storage factory: every
+		// replica needs its own storage path, and a restarted replica must
+		// reopen the SAME path (DiskAdapter.Open resumes from the persisted
+		// applied index there). The previous hardcoded (0, 0) gave every
+		// shard on a node one shared, unreusable location.
+		store := storageFactory(shardID, replicaID)
 		backend := NewDiskBackend(store)
 		kvsm := NewKVStateMachine(backend, opts...)
 		return &DiskAdapter{KVStateMachine: kvsm, store: store}

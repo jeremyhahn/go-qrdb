@@ -19,10 +19,26 @@ conversation comes from mixing them. The four load-bearing distinctions:
 4. **Database engine** — WHAT data model a database speaks
    (`engine`: kv / timeseries / vector).
 
-"Raft" is none of these four: it is the **replication layer**. Every qrdbd
-node — including a single-node deployment — runs Raft. When a per-database
-`backend: raft` appears, it means "replicate this database through
-consensus", not a fifth storage technology.
+"Raft" is none of these four: it is the **replication layer**, selected by
+the run mode. When a per-database `backend: raft` appears, it means
+"replicate this database through consensus", not a fifth storage
+technology.
+
+**The intended run-mode split (ratified 2026-08-17):**
+
+- **Standalone** = NO Raft. Standard database operations (KV, batch,
+  collections, indexes, database management, SQL, timeseries, vector) over
+  any non-raft storage backend, plus the always-on security core
+  (mTLS+RBAC IAM, seal barrier, audit).
+- **Raft** (single- or multi-node) = adds every consensus-dependent
+  feature: MVCC revisions, watch, lease, lock, transactions (etcd-style
+  Txn is revision-based), etcd compatibility, cluster
+  membership/rebalance/shard operations.
+
+Implementation status: the raft-free stack exists and serves the SDK's
+in-process paths today; the `qrdbd` daemon's `mode: standalone` is being
+implemented per the approved run-modes plan. Where this glossary marks
+something *(planned)*, the code has not landed yet.
 
 ---
 
@@ -32,9 +48,10 @@ consensus", not a fifth storage technology.
 |---|---|
 | **Embedded** | qrdb linked as a Go library inside the host application's process. No daemon, no network transport required. Constructed via `sdk/go/node` (`NewStandaloneNode` / `NewClusteredNode`) or reached in-process through the SDK's embedded transport. |
 | **`embedded://` (DSN)** | The SDK's fast in-process KV-only transport: engines wired directly, minimal stack. **No relational/SQL surface** — `CREATE TABLE` fails by design. Use for pure KV embedding. |
-| **`node://` (DSN)** | The SDK's full in-process node: the complete stack (Raft host, services, SQL/relational catalog, tenants, seal) inside the caller's process. Required for relational/SQL work when embedding. |
-| **Standalone** | One `qrdbd` daemon process, serving all network transports. It is still a Raft deployment — a **single-replica Raft group** (see *Single-node Raft* below). This is what `configs/qrdb.yaml` describes. A Raft-FREE standalone daemon (plain memory/file/pebble storage with the full non-Raft feature set) is a **tracked gap, not implemented**: `qrdbd` unconditionally builds the QuicRaft host; the only Raft-free path today is the embedded `embedded://` driver. See `configs/README.md` for the full implemented-vs-gap matrix. |
-| **Clustered** (Raft-replicated) | Three or more `qrdbd` peers forming one Raft group per shard, replicating every write through consensus. Tolerates minority failures (`2f+1` members tolerate `f` failures). |
+| **`node://` (DSN)** | The SDK's full in-process node: the complete service stack (SQL/relational catalog, tenants, seal, IAM) inside the caller's process — **raft-free**: `sdk/go/node.NewStandaloneNode` composes `backend.LocalBackend` (a `service.Host` over an engine, no consensus). `NewClusteredNode` is the raft counterpart. Required for relational/SQL work when embedding. |
+| **Standalone** *(daemon support planned)* | One `qrdb` process with **no Raft**: services composed over `backend.LocalBackend` + an engine on a local storage backend. Serves standard database operations + the security core; refuses raft-only features with a typed "requires mode: raft" error. Implemented today in the SDK (`node://`, `NewStandaloneNode`) and the `embedded://` driver; the daemon gains it via `mode: standalone` (approved plan, in progress). |
+| **Raft single-node** | One `qrdbd` daemon running a **single-replica Raft group** (quorum of one — see *Single-node Raft* below). The full feature set including MVCC/watch/lease, with a clean scale-out path. This is what `configs/qrdb.yaml` describes, and what `qrdbd` runs today by default (`mode: raft`). |
+| **Raft clustered** | Three or more `qrdbd` peers forming one Raft group per shard, replicating every write through consensus. Tolerates minority failures (`2f+1` members tolerate `f` failures). |
 
 ### Single-node Raft (why a 1-peer config is valid)
 
@@ -93,7 +110,7 @@ committed entries. Deterministic across replicas by contract.
 | `concurrent` | Concurrent in-memory SM variant. |
 
 `raft.sm_backend` further selects a variant when `sm_type` names a logical
-engine: `standard`, `concurrent`, `fast`, `disk`, `cached-disk`.
+engine: `standard`, `concurrent`, `fast`, `disk`.
 
 ### Store engine — `pkg/engine` (internal)
 
@@ -121,17 +138,29 @@ names replication, not a storage technology.
 
 ## Support matrix
 
-**Run mode × state machine (`raft.sm_type`)** — what each deployment can run:
+**Run mode × feature set** (the requirement's matrix; *(planned)* items are
+part of the approved run-modes plan):
+
+| Feature | Standalone (no raft) | Raft (single or cluster) |
+|---|---|---|
+| KV, batch, collections, indexes, database mgmt | ✅ | ✅ |
+| SQL, timeseries, vector (build-tag gated) | ✅ | ✅ |
+| Auth (mTLS+RBAC IAM), seal barrier, audit | ✅ always-on core | ✅ always-on core |
+| MVCC revisions, watch, lease, lock, transactions | ❌ requires raft | ✅ |
+| etcd compatibility | ❌ requires raft | ✅ (qrdb_etcd tag) |
+| Cluster membership, rebalance, shard backup | ❌ requires raft | ✅ |
+
+**Raft mode × state machine (`raft.sm_type`)**:
 
 | | `pebble` | `mvcc` | `memory` | `concurrent` |
 |---|---|---|---|---|
-| Embedded `embedded://` (KV fast path) | ✅ | ✅ | ✅ | ✅ |
-| Embedded `node://` (full stack) | ✅ (default) | ✅ | ✅ | ✅ |
-| Standalone daemon | ✅ (default) | ✅ | ✅ | ✅ |
-| Clustered (3+ nodes) | ✅ | ✅ | ⚠ volatile¹ | ⚠ volatile¹ |
+| Raft single-node | ✅ (default) | ✅ | ✅ | ✅ |
+| Raft clustered (3+ nodes) | ✅ | ✅ | ⚠ volatile¹ | ⚠ volatile¹ |
 
 ¹ Valid (used in tests), but a restarted replica has no local state and
-must be re-fed by snapshot; never production.
+must be re-fed by snapshot; never production. *(Planned: `raft.sm_storage`
+selects the SM's storage backend — memory/file/pebble — with objstore
+positioned as a snapshot/backup tier, never the hot apply path.)*
 
 **State machine × capability:**
 

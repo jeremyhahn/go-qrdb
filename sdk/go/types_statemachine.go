@@ -40,9 +40,6 @@ type StandardBackend = statemachine.StandardBackend
 // DiskBackend is a disk-backed state machine backend.
 type DiskBackend = statemachine.DiskBackend
 
-// CachedDiskBackend wraps a DiskBackend with a read-through cache.
-type CachedDiskBackend = statemachine.CachedDiskBackend
-
 // FastBackend is a high-performance sharded state machine backend.
 type FastBackend = statemachine.FastBackend
 
@@ -185,9 +182,6 @@ var NewStandardBackend = statemachine.NewStandardBackend
 
 // NewDiskBackend creates a new DiskBackend.
 var NewDiskBackend = statemachine.NewDiskBackend
-
-// NewCachedDiskBackend creates a new CachedDiskBackend.
-var NewCachedDiskBackend = statemachine.NewCachedDiskBackend
 
 // NewFastBackend creates a new FastBackend.
 var NewFastBackend = statemachine.NewFastBackend

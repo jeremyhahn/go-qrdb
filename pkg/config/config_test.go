@@ -639,7 +639,7 @@ func TestValidate_InvalidFields(t *testing.T) {
 			name:   "sm_backend_invalid",
 			mutate: func(c *Config) { c.Raft.SMBackend = "invalid-backend" },
 			field:  "raft.sm_backend",
-			reason: "standard, concurrent, fast, disk, cached-disk",
+			reason: "standard, concurrent, fast, disk",
 		},
 		// storage.backend
 		{
@@ -977,8 +977,8 @@ func TestValidate_TLSEnabled_ManualCerts_Valid(t *testing.T) {
 
 func TestValidate_AllValidSMTypes(t *testing.T) {
 	allTypes := []string{
-		"pebble", "memory", "mvcc", "kv", "timeseries", "vector",
-		"standard", "concurrent", "fast", "disk", "cached-disk",
+		"pebble", "memory", "mvcc", "mvcc-fast",
+		"standard", "concurrent", "fast", "disk", "highperf", "regular",
 	}
 	for _, smType := range allTypes {
 		t.Run(smType, func(t *testing.T) {
@@ -992,7 +992,7 @@ func TestValidate_AllValidSMTypes(t *testing.T) {
 }
 
 func TestValidate_AllValidSMBackends(t *testing.T) {
-	allBackends := []string{"standard", "concurrent", "fast", "disk", "cached-disk"}
+	allBackends := []string{"standard", "concurrent", "fast", "disk"}
 	for _, backend := range allBackends {
 		t.Run(backend, func(t *testing.T) {
 			cfg := validConfig()
@@ -2549,7 +2549,7 @@ raft:
   shard_id: 1
   replica_id: 1
   raft_address: "127.0.0.1:63001"
-  sm_type: "kv"
+  sm_type: "pebble"
   sm_backend: "concurrent"
 storage:
   backend: "memory"
@@ -2566,8 +2566,8 @@ discovery:
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if cfg.Raft.SMType != "kv" {
-		t.Errorf("SMType: got %q, want %q", cfg.Raft.SMType, "kv")
+	if cfg.Raft.SMType != "pebble" {
+		t.Errorf("SMType: got %q, want %q", cfg.Raft.SMType, "pebble")
 	}
 	if cfg.Raft.SMBackend != "concurrent" {
 		t.Errorf("SMBackend: got %q, want %q", cfg.Raft.SMBackend, "concurrent")

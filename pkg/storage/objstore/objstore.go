@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync/atomic"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
@@ -133,11 +134,23 @@ func (e *Engine) Delete(key []byte) error {
 }
 
 // List returns all keys matching prefix. An empty prefix returns all keys.
+//
+// Providers are only asked to narrow by the directory-aligned portion of the
+// prefix (up to the last '/'): object-store providers use path semantics, and
+// e.g. go-objstore's local provider stats the joined path and returns an empty
+// list for a partial key component like "k0". The byte-prefix contract of
+// storage.Storage is enforced by the client-side filter below.
 func (e *Engine) List(prefix []byte) ([][]byte, error) {
 	if e.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
-	names, err := e.store.List(string(prefix))
+	providerPrefix := string(prefix)
+	if i := strings.LastIndexByte(providerPrefix, '/'); i >= 0 {
+		providerPrefix = providerPrefix[:i+1]
+	} else {
+		providerPrefix = ""
+	}
+	names, err := e.store.List(providerPrefix)
 	if err != nil {
 		return nil, err
 	}

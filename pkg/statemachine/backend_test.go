@@ -441,19 +441,3 @@ func testBackendScanLimit(t *testing.T, b Backend) {
 		t.Fatalf("expected at most 3 entries, got %d", len(m))
 	}
 }
-
-// ---------------------------------------------------------------------------
-// CachedDiskBackend placeholder test
-// ---------------------------------------------------------------------------
-
-func TestCachedDiskBackend_Constructor(t *testing.T) {
-	store := newMemStorage()
-	disk := NewDiskBackend(store)
-	cached := NewCachedDiskBackend(disk)
-	if cached == nil {
-		t.Fatal("expected non-nil CachedDiskBackend")
-	}
-	if cached.disk != disk {
-		t.Fatal("expected disk backend to be set")
-	}
-}

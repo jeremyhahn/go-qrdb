@@ -316,9 +316,9 @@ type RaftConfig struct {
 	SMType string `yaml:"sm_type"`
 
 	// SMBackend selects the state machine backend variant when SMType
-	// identifies a logical engine (e.g., "kv", "timeseries", "vector").
-	// Valid values: "standard", "concurrent", "fast", "disk", "cached-disk",
-	// or empty (which means use SMType directly for registry lookup).
+	// identifies a logical engine. Valid values: "standard", "concurrent",
+	// "fast", "disk", or empty (which means use SMType directly for
+	// registry lookup).
 	SMBackend string `yaml:"sm_backend"`
 
 	// LeaseRead enables lease-based linearizable reads. When true, the Raft
@@ -1187,28 +1187,33 @@ var validLogFormats = map[string]struct{}{
 	"json": {},
 }
 
-// validSMTypes contains the accepted state machine type strings.
+// validSMTypes contains the accepted state machine type strings. This list
+// mirrors what the state machine registry actually provides (the registry's
+// built-ins plus the daemon-registered "pebble"/"mvcc"/"mvcc-fast") — a
+// value accepted here but absent from the registry would pass validation
+// and then fail at startup with UnknownSMError, which is exactly the
+// phantom-entry trap ("kv", "timeseries", "vector", "cached-disk") this
+// list previously contained.
 var validSMTypes = map[string]struct{}{
-	"pebble":      {},
-	"memory":      {},
-	"mvcc":        {},
-	"kv":          {},
-	"timeseries":  {},
-	"vector":      {},
-	"standard":    {},
-	"concurrent":  {},
-	"fast":        {},
-	"disk":        {},
-	"cached-disk": {},
+	"pebble":     {},
+	"memory":     {},
+	"mvcc":       {},
+	"mvcc-fast":  {},
+	"standard":   {},
+	"concurrent": {},
+	"fast":       {},
+	"disk":       {},
+	"highperf":   {},
+	"regular":    {},
 }
 
 // validSMBackends contains the accepted state machine backend strings.
+// Same registry-mirroring rule as validSMTypes.
 var validSMBackends = map[string]struct{}{
-	"standard":    {},
-	"concurrent":  {},
-	"fast":        {},
-	"disk":        {},
-	"cached-disk": {},
+	"standard":   {},
+	"concurrent": {},
+	"fast":       {},
+	"disk":       {},
 }
 
 // validBackends contains the accepted storage backend strings.
@@ -1380,7 +1385,7 @@ func (c *Config) Validate() error {
 		if _, ok := validSMTypes[c.Raft.SMType]; !ok {
 			return &ValidationError{
 				Field:  "raft.sm_type",
-				Reason: "must be one of: pebble, memory, mvcc, kv, timeseries, vector, standard, concurrent, fast, disk, cached-disk",
+				Reason: "must be one of: pebble, memory, mvcc, mvcc-fast, standard, concurrent, fast, disk, highperf, regular",
 			}
 		}
 	}
@@ -1388,7 +1393,7 @@ func (c *Config) Validate() error {
 		if _, ok := validSMBackends[c.Raft.SMBackend]; !ok {
 			return &ValidationError{
 				Field:  "raft.sm_backend",
-				Reason: "must be one of: standard, concurrent, fast, disk, cached-disk",
+				Reason: "must be one of: standard, concurrent, fast, disk",
 			}
 		}
 	}

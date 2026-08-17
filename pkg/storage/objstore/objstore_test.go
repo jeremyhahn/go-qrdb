@@ -101,6 +101,31 @@ func TestList_Prefix(t *testing.T) {
 	}
 }
 
+// TestList_PartialComponentPrefix_LocalProvider pins the byte-prefix contract
+// of storage.Storage against path-semantic providers: the local provider stats
+// the joined path and reports nothing for a prefix that is not a full path
+// component (e.g. "k0" matching keys k01..k03), so the engine must narrow only
+// by the directory-aligned portion and filter the remainder client-side.
+func TestList_PartialComponentPrefix_LocalProvider(t *testing.T) {
+	e, err := New("local", map[string]string{"path": t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+
+	require.NoError(t, e.Set([]byte("k01"), []byte("1")))
+	require.NoError(t, e.Set([]byte("k02"), []byte("2")))
+	require.NoError(t, e.Set([]byte("x/k03"), []byte("3")))
+	require.NoError(t, e.Set([]byte("x/j04"), []byte("4")))
+
+	top, err := e.List([]byte("k0"))
+	require.NoError(t, err)
+	assert.Len(t, top, 2, "partial top-level prefix must match k01 and k02")
+
+	nested, err := e.List([]byte("x/k"))
+	require.NoError(t, err)
+	require.Len(t, nested, 1, "partial nested prefix must match x/k03 only")
+	assert.Equal(t, []byte("x/k03"), nested[0])
+}
+
 func TestBatch_Commit(t *testing.T) {
 	e := newMemEngine(t)
 	b := e.Batch()

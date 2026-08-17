@@ -424,7 +424,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
 	cmd.Flags().Uint64Var(&f.deploymentID, "deployment-id", 1, "Deployment ID for cluster isolation")
 	cmd.Flags().StringVar(&f.smType, "sm", "pebble", "State machine type: pebble, memory, concurrent")
-	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk, cached-disk")
+	cmd.Flags().StringVar(&f.smBackend, "sm-backend", "", "State machine backend: standard, concurrent, fast, disk")
 	cmd.Flags().StringVar(&f.discoveryMethod, "discovery", "static", "Discovery method: static (default, single-node), multicast, dns, token")
 	cmd.Flags().StringSliceVar(&f.peers, "peers", nil, "Static peers, format id=address (e.g., 1=127.0.0.1:63001)")
 	cmd.Flags().Uint64Var(&f.shardID, "shard-id", shard.ShardKV, "Shard ID (deprecated: system services always use the system shard)")
@@ -2246,9 +2246,13 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 
 	// Resolve the state machine factory. Use the pre-built factory if
 	// one was injected (e.g. with subsystem options), otherwise look
-	// up the default factory from the registry.
+	// up the default factory from the registry — anchoring the registry's
+	// default storage factory under the real data dir FIRST, so
+	// disk-persistent registry SMs ("disk", "fast") open durable,
+	// restart-stable per-replica paths instead of fresh temp directories.
 	createFn := f.createFn
 	if createFn == nil {
+		statemachine.SetDataDirRoot(f.dataDir)
 		var err error
 		createFn, err = resolveCreateFunc(f.smType, f.smBackend)
 		if err != nil {

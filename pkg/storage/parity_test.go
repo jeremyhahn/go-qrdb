@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // parity_test.go is a differential-oracle test: it drives the file, pebble,
-// and memory storage backends through an identical sequence of operations and
+// memory, and objstore (local provider) storage backends through an identical
+// sequence of operations and
 // asserts every observable result is byte-for-byte identical. This guards the
 // cross-backend consistency that lets a filesystem-backed app (e.g. xkey
 // during development) serve as a reference implementation for the pebble
@@ -28,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -51,11 +53,16 @@ func newParityBackends(t *testing.T) []namedBackend {
 		t.Fatalf("file.New: %v", err)
 	}
 	mem := memory.NewStorage()
+	odb, err := objstore.New("local", map[string]string{"path": t.TempDir()})
+	if err != nil {
+		t.Fatalf("objstore.New: %v", err)
+	}
 
 	backends := []namedBackend{
 		{"memory", mem},
 		{"pebble", pdb},
 		{"file", fdb},
+		{"objstore", odb},
 	}
 	t.Cleanup(func() {
 		for _, b := range backends {

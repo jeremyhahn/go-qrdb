@@ -16,6 +16,8 @@ package statemachine
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"io"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -130,6 +132,14 @@ func (a *ConcurrentAdapter) GetHash() (uint64, error) {
 // DiskAdapter: sm.DiskStateMachine + sm.Hasher + sm.NALookup
 // ---------------------------------------------------------------------------
 
+// diskMetaKeyLastApplied is the reserved storage key under which the
+// DiskAdapter persists the last applied Raft index. The leading NUL keeps
+// it out of every legitimate user keyspace, and its value is identical on
+// every replica at the same applied index (the same log produces the same
+// sequence of writes), so its presence in snapshots and state hashes is
+// deterministic.
+const diskMetaKeyLastApplied = "\x00__qrdb_sm_last_applied__"
+
 // DiskAdapter wraps a KVStateMachine to implement sm.DiskStateMachine,
 // sm.Hasher, and sm.NALookup. It provides synchronous disk-backed
 // storage for Raft state.
@@ -145,16 +155,49 @@ var (
 	_ sm.NALookup         = (*DiskAdapter)(nil)
 )
 
-// Open implements sm.DiskStateMachine.Open. For the disk adapter, this
-// initializes the storage and returns the last applied index (0 for a
-// fresh start).
+// Open implements sm.DiskStateMachine.Open. It reads the persisted last
+// applied index so a restarted replica resumes from where its storage
+// actually is instead of reporting "fresh" and replaying the whole log
+// over non-empty state (the defect this fixes). An absent key means a
+// genuinely fresh store and returns 0.
 func (a *DiskAdapter) Open(_ context.Context, _ string, _ <-chan struct{}) (uint64, error) {
-	return 0, nil
+	val, err := a.store.Get([]byte(diskMetaKeyLastApplied))
+	if err != nil {
+		// Some backends report a missing key as an error rather than the
+		// interface's (nil, nil) contract; both mean a fresh store.
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if val == nil {
+		// storage.Storage.Get returns (nil, nil) for an absent key: a
+		// genuinely fresh store.
+		return 0, nil
+	}
+	if len(val) != 8 {
+		return 0, &IncompleteDataError{Reason: "last-applied marker has invalid length"}
+	}
+	return binary.BigEndian.Uint64(val), nil
 }
 
-// Update implements sm.DiskStateMachine.Update.
+// Update implements sm.DiskStateMachine.Update. After the entries apply it
+// persists the last entry's index under diskMetaKeyLastApplied. The marker
+// is written AFTER the data (the Backend interface offers no cross-key
+// batch), so a crash between the two leaves the marker at most one Update
+// batch behind — Raft then replays that suffix, and every KV operation this
+// state machine serves is an idempotent overwrite, so the replay converges
+// to the identical state.
 func (a *DiskAdapter) Update(_ context.Context, entries []sm.Entry, results []sm.Result) error {
-	return a.KVStateMachine.Update(entries, results)
+	if err := a.KVStateMachine.Update(entries, results); err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], entries[len(entries)-1].Index)
+	return a.store.Set([]byte(diskMetaKeyLastApplied), buf[:])
 }
 
 // Lookup implements sm.DiskStateMachine.Lookup.

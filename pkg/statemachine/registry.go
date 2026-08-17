@@ -346,17 +346,53 @@ func newDefaultRegistry() *Registry {
 	return r
 }
 
+// dataDirRoot, when set via SetDataDirRoot, anchors the default storage
+// factory's per-replica directories under the deployment's real data
+// directory so they are DURABLE and REUSED across restarts.
+var (
+	dataDirMu   sync.RWMutex
+	dataDirRoot string
+)
+
+// SetDataDirRoot anchors the default registry storage factory under dir
+// (typically the daemon's --data-dir). Composition roots MUST call this
+// before resolving a disk-persistent state machine from the registry;
+// without it the factory falls back to a fresh temp directory per process,
+// which is acceptable only for tests — a production replica started that
+// way loses its state on every restart.
+func SetDataDirRoot(dir string) {
+	dataDirMu.Lock()
+	dataDirRoot = dir
+	dataDirMu.Unlock()
+}
+
 // defaultPebbleStorageFactory returns a storage factory that creates
-// PebbleDB storage instances using per-shard temp directories. This
-// is suitable for development and testing. Production deployments
-// should provide a factory with a configured data directory.
+// PebbleDB storage instances in per-(shard, replica) directories. When
+// SetDataDirRoot has anchored a real data directory, paths are stable
+// across restarts ({root}/sm/shard-S-replica-R) and opened with the
+// production Pebble configuration; otherwise it falls back to a fresh
+// temp directory with the test configuration (tests only — see
+// SetDataDirRoot).
 func defaultPebbleStorageFactory() func(shardID, replicaID uint64) storage.Storage {
 	return func(shardID, replicaID uint64) storage.Storage {
-		dir, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
-		if err != nil {
-			panic("statemachine: failed to create temp dir for storage: " + err.Error())
+		dataDirMu.RLock()
+		root := dataDirRoot
+		dataDirMu.RUnlock()
+
+		var cfg *pebblestore.Config
+		if root != "" {
+			dir := filepath.Join(root, "sm", fmt.Sprintf("shard-%d-replica-%d", shardID, replicaID))
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				panic("statemachine: failed to create sm storage dir: " + err.Error())
+			}
+			cfg = pebblestore.DefaultConfig(dir)
+		} else {
+			dir, err := os.MkdirTemp("", fmt.Sprintf("qrdb-sm-%d-%d-*", shardID, replicaID))
+			if err != nil {
+				panic("statemachine: failed to create temp dir for storage: " + err.Error())
+			}
+			cfg = pebblestore.TestConfig(filepath.Join(dir, "data"))
 		}
-		cfg := pebblestore.TestConfig(filepath.Join(dir, "data"))
 		s, err := pebblestore.New(cfg)
 		if err != nil {
 			panic("statemachine: failed to create pebble storage: " + err.Error())

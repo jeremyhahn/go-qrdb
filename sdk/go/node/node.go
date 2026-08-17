@@ -732,7 +732,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb)
+	watchHub := watch.NewHub()
+	smAdapter, err := createNodeEngine(pending.backendType, stg, pdb, watchHub)
 	if err != nil {
 		_ = n.stg.Close()
 		n.stg = nil
@@ -740,7 +741,6 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	}
 
 	localHost := backend.NewLocalBackend(smAdapter)
-	watchHub := watch.NewHub()
 
 	var encryptor *atrest.Encryptor
 	if n.barrier != nil {
@@ -1294,14 +1294,14 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	n.stg = stg
 	n.pebbleDB = pdb
 
-	smAdapter, err := createNodeEngine(backendType, stg, pdb)
+	watchHub := watch.NewHub()
+	smAdapter, err := createNodeEngine(backendType, stg, pdb, watchHub)
 	if err != nil {
 		_ = n.stg.Close()
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
 	}
 
 	localHost := backend.NewLocalBackend(smAdapter)
-	watchHub := watch.NewHub()
 
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:      localHost,
@@ -2265,13 +2265,26 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 
 // createNodeEngine creates the appropriate store engine, mirroring
 // embedded/server.go createServerEngine.
-func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB) (backend.SMAdapter, error) {
+//
+// hub is the node's watch hub and MUST be the same instance handed to
+// lifecycle.Infra.WatchHub: the engine is the only publisher of change
+// events, so an engine built without the hub leaves the WatchService
+// subscribed to a hub nothing ever writes to — watches then "work" but
+// never deliver, which is exactly the silent defect this parameter fixes.
+func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub) (backend.SMAdapter, error) {
 	if backendType == database.BackendFile || backendType == database.BackendObjstore {
-		return engine.NewKVEngine(stg), nil
+		kvOpts := []engine.KVOption{}
+		if hub != nil {
+			kvOpts = append(kvOpts, engine.WithKVWatchHub(hub))
+		}
+		return engine.NewKVEngine(stg, kvOpts...), nil
 	}
 
 	mvccOpts := []engine.MVCCOption{
 		engine.WithMVCCLessor(lease.NewLessor()),
+	}
+	if hub != nil {
+		mvccOpts = append(mvccOpts, engine.WithMVCCWatchHub(hub))
 	}
 	if pdb != nil {
 		mvccOpts = append(mvccOpts, engine.WithMVCCPebbleDB(pdb))
