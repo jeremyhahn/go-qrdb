@@ -98,14 +98,20 @@ func (e *HandlerError) Unwrap() error {
 }
 
 // ServiceNotConfiguredError is returned when a handler is invoked for a
-// service that was not provided during server construction.
+// service that was not provided during server construction. Hint, when
+// set, names the remedy (e.g. "requires mode: raft").
 type ServiceNotConfiguredError struct {
 	Service string
+	Hint    string
 }
 
 // Error returns a human-readable description.
 func (e *ServiceNotConfiguredError) Error() string {
-	return "quic: " + e.Service + " service is not configured"
+	msg := "quic: " + e.Service + " service is not configured"
+	if e.Hint != "" {
+		msg += ": " + e.Hint
+	}
+	return msg
 }
 
 // CeremonyCANotConfiguredError is returned when CeremonyInitialize is

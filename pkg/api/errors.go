@@ -280,13 +280,19 @@ func NewBatchItemMessageError(index int, message string) *dberrors.QRDBError {
 }
 
 // ServiceNotConfiguredError indicates a service dependency is not configured.
+// Hint, when set, names the remedy (e.g. "requires mode: raft").
 type ServiceNotConfiguredError struct {
 	Service string
+	Hint    string
 }
 
 // Error implements the error interface.
 func (e *ServiceNotConfiguredError) Error() string {
-	return e.Service + " service not configured"
+	msg := e.Service + " service not configured"
+	if e.Hint != "" {
+		msg += ": " + e.Hint
+	}
+	return msg
 }
 
 // NewServiceNotConfiguredError creates a QRDBError for a service that is not configured.

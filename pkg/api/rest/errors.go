@@ -204,13 +204,19 @@ func (e *SnapshotRequestError) Unwrap() error {
 // that was not configured on the server. Optional services (MVCC,
 // Transaction, Batch, Watch, Lease, Index, TimeSeries) return this when
 // their corresponding ServerOption was not applied.
+// Hint, when set, names the remedy (e.g. "requires mode: raft").
 type ServiceNotImplementedError struct {
 	Service string
+	Hint    string
 }
 
 // Error returns a human-readable description.
 func (e *ServiceNotImplementedError) Error() string {
-	return "rest: service not implemented: " + e.Service
+	msg := "rest: service not implemented: " + e.Service
+	if e.Hint != "" {
+		msg += ": " + e.Hint
+	}
+	return msg
 }
 
 // MissingParameterError is returned when a required query parameter is

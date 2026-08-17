@@ -297,7 +297,7 @@ func newAdminTopologyCmd() *cobra.Command {
 func newAdminCapabilitiesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",
-		Short: "Show the compile-time feature set of the connected node",
+		Short: "Show the effective feature set of the connected node (build tags x run mode x config)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resp, err := client.Admin().Capabilities(cmd.Context())
@@ -313,15 +313,25 @@ func newAdminCapabilitiesCmd() *cobra.Command {
 			default:
 				headers := []string{"FEATURE", "ENABLED"}
 				rows := [][]string{
+					{"mode", resp.Mode},
 					{"kv", strconv.FormatBool(resp.KV)},
 					{"mvcc", strconv.FormatBool(resp.MVCC)},
 					{"transaction", strconv.FormatBool(resp.Transaction)},
 					{"batch", strconv.FormatBool(resp.Batch)},
 					{"watch", strconv.FormatBool(resp.Watch)},
 					{"lease", strconv.FormatBool(resp.Lease)},
+					{"lock", strconv.FormatBool(resp.Lock)},
 					{"index", strconv.FormatBool(resp.Index)},
+					{"cluster", strconv.FormatBool(resp.Cluster)},
+					{"backup", strconv.FormatBool(resp.Backup)},
+					{"rebalance", strconv.FormatBool(resp.Rebalance)},
 					{"timeSeries", strconv.FormatBool(resp.TimeSeries)},
 					{"vector", strconv.FormatBool(resp.Vector)},
+					{"sql", strconv.FormatBool(resp.SQL)},
+					{"mysql", strconv.FormatBool(resp.MySQL)},
+					{"postgresql", strconv.FormatBool(resp.PostgreSQL)},
+					{"etcd", strconv.FormatBool(resp.Etcd)},
+					{"fts", strconv.FormatBool(resp.FTS)},
 				}
 				printTable(headers, rows)
 				return nil

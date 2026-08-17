@@ -48,6 +48,17 @@ type MissingFlagError = cluster.MissingFlagError
 // discovery. Aliased from pkg/cluster.
 type NoPeersError = cluster.NoPeersError
 
+// StandaloneModeNotSupportedError is returned when a configuration with
+// mode "standalone" is passed to the daemon before the standalone
+// composition branch lands (run-modes plan, phase 3). Refusing is safer
+// than silently booting the raft stack against a raft-free intent.
+type StandaloneModeNotSupportedError struct{}
+
+// Error returns a human-readable description.
+func (e *StandaloneModeNotSupportedError) Error() string {
+	return "cli: mode \"standalone\" is not yet supported by qrdbd; run mode \"raft\" (the default), or embed via sdk/go/node.NewStandaloneNode"
+}
+
 // UnknownSMError is returned when the --sm flag specifies an unknown
 // state machine type.
 type UnknownSMError struct {

@@ -1895,7 +1895,9 @@ message RequestSnapshotMessage {
 // CapabilitiesRequest is the request payload for Capabilities.
 message CapabilitiesRequest {}
 
-// CapabilitiesResponse describes the compile-time feature set of the node.
+// CapabilitiesResponse describes the effective feature set of the node:
+// the intersection of build tags, run mode, and configuration. A false
+// value may mean not-compiled, mode-gated, or config-disabled.
 message CapabilitiesResponse {
     bool kv = 1;
     bool mvcc = 2;
@@ -1906,6 +1908,17 @@ message CapabilitiesResponse {
     bool index = 7;
     bool time_series = 8;
     bool vector = 9;
+    // mode is the run mode: "standalone" or "raft".
+    string mode = 10;
+    bool lock = 11;
+    bool cluster = 12;
+    bool backup = 13;
+    bool rebalance = 14;
+    bool sql = 15;
+    bool mysql = 16;
+    bool postgresql = 17;
+    bool etcd = 18;
+    bool fts = 19;
 }
 
 // StartShardRequest is the request payload for StartShard.

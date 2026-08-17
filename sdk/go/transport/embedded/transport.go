@@ -743,15 +743,25 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 		return nil, translateError(err)
 	}
 	return &transport.CapabilitiesResponse{
+		Mode:        caps.Mode,
 		KV:          caps.KV,
 		MVCC:        caps.MVCC,
 		Transaction: caps.Transaction,
 		Batch:       caps.Batch,
 		Watch:       caps.Watch,
 		Lease:       caps.Lease,
+		Lock:        caps.Lock,
 		Index:       caps.Index,
+		Cluster:     caps.Cluster,
+		Backup:      caps.Backup,
+		Rebalance:   caps.Rebalance,
 		TimeSeries:  caps.TimeSeries,
 		Vector:      caps.Vector,
+		SQL:         caps.SQL,
+		MySQL:       caps.MySQL,
+		PostgreSQL:  caps.PostgreSQL,
+		Etcd:        caps.Etcd,
+		FTS:         caps.FTS,
 	}, nil
 }
 

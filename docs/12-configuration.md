@@ -21,6 +21,19 @@ single-node deployment.
 # QRDB Configuration Reference - All Defaults
 # =============================================================================
 
+# Run mode: "standalone" (no raft — standard database operations plus the
+# always-on security core) or "raft" (single- or multi-node consensus, the
+# full feature set). Empty means "raft" for full backward compatibility.
+# Under "standalone", explicitly enabling a raft-only feature
+# (mvcc.enabled / watch.enabled / lease.enabled: true), raft.join, or a
+# multi-member raft.peers list is a validation error whose text names the
+# remedy: "requires mode: raft". See docs/run-modes.md for the three-gate
+# feature model (build tag > run mode > config).
+# NOTE: the qrdbd daemon refuses "standalone" until its raft-free
+# composition branch lands (run-modes plan, phase 3); the SDK's
+# node.NewStandaloneNode is the raft-free path today.
+mode: "raft"
+
 server:
   admin_port: 63002
   grpc_port: 63003
@@ -81,14 +94,21 @@ discovery:
   token_cluster_size: 0
 
 mvcc:
+  # enabled: raft-only toggle. Omitted (null) means enabled in raft mode.
+  # Explicit true under mode "standalone" fails validation.
+  # enabled: true
   compaction_retention: 1000
   revision_limit: 0
 
 watch:
+  # enabled: raft-only toggle, same semantics as mvcc.enabled.
+  # enabled: true
   buffer_size: 1024
   max_watchers: 0
 
 lease:
+  # enabled: raft-only toggle, same semantics as mvcc.enabled.
+  # enabled: true
   min_ttl: 5
   max_ttl: 0
   check_interval: 1

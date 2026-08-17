@@ -52,6 +52,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
@@ -392,7 +393,14 @@ func newStartCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if err := cfg.ValidateCapabilities(); err != nil {
+					return err
+				}
+				if cfg.IsStandalone() {
+					return &StandaloneModeNotSupportedError{}
+				}
 				applyConfigToFlags(cmd, f, cfg)
+				capabilities.Seal(cfg.EffectiveCapabilities())
 			}
 
 			// Configure the global logger early so all pre-host log

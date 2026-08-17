@@ -461,15 +461,25 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 	}
 
 	return &transport.CapabilitiesResponse{
+		Mode:        resp.GetMode(),
 		KV:          resp.GetKv(),
 		MVCC:        resp.GetMvcc(),
 		Transaction: resp.GetTransaction(),
 		Batch:       resp.GetBatch(),
 		Watch:       resp.GetWatch(),
 		Lease:       resp.GetLease(),
+		Lock:        resp.GetLock(),
 		Index:       resp.GetIndex(),
+		Cluster:     resp.GetCluster(),
+		Backup:      resp.GetBackup(),
+		Rebalance:   resp.GetRebalance(),
 		TimeSeries:  resp.GetTimeSeries(),
 		Vector:      resp.GetVector(),
+		SQL:         resp.GetSql(),
+		MySQL:       resp.GetMysql(),
+		PostgreSQL:  resp.GetPostgresql(),
+		Etcd:        resp.GetEtcd(),
+		FTS:         resp.GetFts(),
 	}, nil
 }
 

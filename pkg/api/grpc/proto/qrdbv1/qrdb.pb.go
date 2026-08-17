@@ -21,13 +21,12 @@
 package qrdbv1
 
 import (
-	reflect "reflect"
-	sync "sync"
-	unsafe "unsafe"
-
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	reflect "reflect"
+	sync "sync"
+	unsafe "unsafe"
 )
 
 const (
@@ -6200,18 +6199,31 @@ func (*CapabilitiesRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{92}
 }
 
-// CapabilitiesResponse describes the compile-time feature set of the node.
+// CapabilitiesResponse describes the effective feature set of the node:
+// the intersection of build tags, run mode, and configuration. A false
+// value may mean not-compiled, mode-gated, or config-disabled.
 type CapabilitiesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kv            bool                   `protobuf:"varint,1,opt,name=kv,proto3" json:"kv,omitempty"`
-	Mvcc          bool                   `protobuf:"varint,2,opt,name=mvcc,proto3" json:"mvcc,omitempty"`
-	Transaction   bool                   `protobuf:"varint,3,opt,name=transaction,proto3" json:"transaction,omitempty"`
-	Batch         bool                   `protobuf:"varint,4,opt,name=batch,proto3" json:"batch,omitempty"`
-	Watch         bool                   `protobuf:"varint,5,opt,name=watch,proto3" json:"watch,omitempty"`
-	Lease         bool                   `protobuf:"varint,6,opt,name=lease,proto3" json:"lease,omitempty"`
-	Index         bool                   `protobuf:"varint,7,opt,name=index,proto3" json:"index,omitempty"`
-	TimeSeries    bool                   `protobuf:"varint,8,opt,name=time_series,json=timeSeries,proto3" json:"time_series,omitempty"`
-	Vector        bool                   `protobuf:"varint,9,opt,name=vector,proto3" json:"vector,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Kv          bool                   `protobuf:"varint,1,opt,name=kv,proto3" json:"kv,omitempty"`
+	Mvcc        bool                   `protobuf:"varint,2,opt,name=mvcc,proto3" json:"mvcc,omitempty"`
+	Transaction bool                   `protobuf:"varint,3,opt,name=transaction,proto3" json:"transaction,omitempty"`
+	Batch       bool                   `protobuf:"varint,4,opt,name=batch,proto3" json:"batch,omitempty"`
+	Watch       bool                   `protobuf:"varint,5,opt,name=watch,proto3" json:"watch,omitempty"`
+	Lease       bool                   `protobuf:"varint,6,opt,name=lease,proto3" json:"lease,omitempty"`
+	Index       bool                   `protobuf:"varint,7,opt,name=index,proto3" json:"index,omitempty"`
+	TimeSeries  bool                   `protobuf:"varint,8,opt,name=time_series,json=timeSeries,proto3" json:"time_series,omitempty"`
+	Vector      bool                   `protobuf:"varint,9,opt,name=vector,proto3" json:"vector,omitempty"`
+	// mode is the run mode: "standalone" or "raft".
+	Mode          string `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
+	Lock          bool   `protobuf:"varint,11,opt,name=lock,proto3" json:"lock,omitempty"`
+	Cluster       bool   `protobuf:"varint,12,opt,name=cluster,proto3" json:"cluster,omitempty"`
+	Backup        bool   `protobuf:"varint,13,opt,name=backup,proto3" json:"backup,omitempty"`
+	Rebalance     bool   `protobuf:"varint,14,opt,name=rebalance,proto3" json:"rebalance,omitempty"`
+	Sql           bool   `protobuf:"varint,15,opt,name=sql,proto3" json:"sql,omitempty"`
+	Mysql         bool   `protobuf:"varint,16,opt,name=mysql,proto3" json:"mysql,omitempty"`
+	Postgresql    bool   `protobuf:"varint,17,opt,name=postgresql,proto3" json:"postgresql,omitempty"`
+	Etcd          bool   `protobuf:"varint,18,opt,name=etcd,proto3" json:"etcd,omitempty"`
+	Fts           bool   `protobuf:"varint,19,opt,name=fts,proto3" json:"fts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6305,6 +6317,76 @@ func (x *CapabilitiesResponse) GetTimeSeries() bool {
 func (x *CapabilitiesResponse) GetVector() bool {
 	if x != nil {
 		return x.Vector
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *CapabilitiesResponse) GetLock() bool {
+	if x != nil {
+		return x.Lock
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetCluster() bool {
+	if x != nil {
+		return x.Cluster
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetBackup() bool {
+	if x != nil {
+		return x.Backup
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetRebalance() bool {
+	if x != nil {
+		return x.Rebalance
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetSql() bool {
+	if x != nil {
+		return x.Sql
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetMysql() bool {
+	if x != nil {
+		return x.Mysql
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetPostgresql() bool {
+	if x != nil {
+		return x.Postgresql
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetEtcd() bool {
+	if x != nil {
+		return x.Etcd
+	}
+	return false
+}
+
+func (x *CapabilitiesResponse) GetFts() bool {
+	if x != nil {
+		return x.Fts
 	}
 	return false
 }
@@ -24332,7 +24414,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"replica_id\x18\x02 \x01(\x04R\treplicaId\"3\n" +
 	"\x16RequestSnapshotMessage\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\"\x15\n" +
-	"\x13CapabilitiesRequest\"\xed\x01\n" +
+	"\x13CapabilitiesRequest\"\xd3\x03\n" +
 	"\x14CapabilitiesResponse\x12\x0e\n" +
 	"\x02kv\x18\x01 \x01(\bR\x02kv\x12\x12\n" +
 	"\x04mvcc\x18\x02 \x01(\bR\x04mvcc\x12 \n" +
@@ -24343,7 +24425,20 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x05index\x18\a \x01(\bR\x05index\x12\x1f\n" +
 	"\vtime_series\x18\b \x01(\bR\n" +
 	"timeSeries\x12\x16\n" +
-	"\x06vector\x18\t \x01(\bR\x06vector\"\xe0\x01\n" +
+	"\x06vector\x18\t \x01(\bR\x06vector\x12\x12\n" +
+	"\x04mode\x18\n" +
+	" \x01(\tR\x04mode\x12\x12\n" +
+	"\x04lock\x18\v \x01(\bR\x04lock\x12\x18\n" +
+	"\acluster\x18\f \x01(\bR\acluster\x12\x16\n" +
+	"\x06backup\x18\r \x01(\bR\x06backup\x12\x1c\n" +
+	"\trebalance\x18\x0e \x01(\bR\trebalance\x12\x10\n" +
+	"\x03sql\x18\x0f \x01(\bR\x03sql\x12\x14\n" +
+	"\x05mysql\x18\x10 \x01(\bR\x05mysql\x12\x1e\n" +
+	"\n" +
+	"postgresql\x18\x11 \x01(\bR\n" +
+	"postgresql\x12\x12\n" +
+	"\x04etcd\x18\x12 \x01(\bR\x04etcd\x12\x10\n" +
+	"\x03fts\x18\x13 \x01(\bR\x03fts\"\xe0\x01\n" +
 	"\x11StartShardRequest\x12\x19\n" +
 	"\bshard_id\x18\x01 \x01(\x04R\ashardId\x12\x1d\n" +
 	"\n" +

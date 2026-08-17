@@ -21,13 +21,29 @@ are not reconstructed here — their history is in the git log.
   explicit always-compiled CORE. The daemon's `mode: standalone` and the
   capabilities upgrade land in subsequent phases of the approved plan.
 
-### Changed (upcoming, announced here first)
+- **Feature profile system (run-modes phase 2).** `pkg/capabilities` now
+  seals an effective per-deployment profile at boot
+  (`capabilities.Seal(cfg.EffectiveCapabilities())`): the intersection of
+  build tags, run mode, and config. `Capabilities` gains `mode` plus
+  `lock`/`cluster`/`backup`/`rebalance`; the proto, REST/gRPC/QUIC/MCP/
+  embedded transports, SDK DTO, and `qrdb admin capabilities` all carry
+  the new fields (additive wire shapes). Before a composition root seals,
+  `Get` keeps the historical compile-time fallback.
+- **`mode` config key** (`"standalone"`/`"raft"`, empty = raft) with
+  validation: under standalone, explicitly enabling `mvcc`/`watch`/
+  `lease`, `raft.join`, or a multi-member `raft.peers` list fails with
+  `requires mode: raft`; standalone skips the raft identity requirements
+  (only `raft.data_dir` stays mandatory). New optional `enabled` toggles
+  on `mvcc`/`watch`/`lease` narrow the raft profile.
+- **Boot-time build gate** `Config.ValidateCapabilities()`: a wire
+  protocol enabled in config but not compiled in is refused with an error
+  naming the build tag. The daemon refuses `mode: standalone` with a
+  pointed error until its raft-free composition branch lands (phase 3).
+- **Typed refusal hints.** REST `ServiceNotImplementedError` and the
+  gRPC/QUIC/service `ServiceNotConfiguredError` gained an optional `Hint`
+  appended to the message (e.g. `requires mode: raft`).
 
-- **Capabilities will stop hardcoding `mvcc`/`watch`/`lease`/`transaction`
-  (and the rest of the former "core seven") to `true`.** Once the feature
-  profile lands, `admin capabilities` reflects the sealed per-deployment
-  profile — a `false` can mean not-compiled, mode-gated, or
-  config-disabled — and gains a `mode` field. Wire shapes are additive.
+### Changed (upcoming, announced here first)
 - **SDK standalone (`NewStandaloneNode`) will stop composing MVCC, lease,
   and transaction services**: those become raft-mode-only per the ratified
   requirements. Downstream consumers are being notified via their repo

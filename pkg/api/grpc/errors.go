@@ -472,14 +472,20 @@ func (e *StartError) Unwrap() error {
 }
 
 // ServiceNotConfiguredError is returned when a gRPC handler is invoked
-// for a service that was not provided during server construction.
+// for a service that was not provided during server construction. Hint,
+// when set, names the remedy (e.g. "requires mode: raft").
 type ServiceNotConfiguredError struct {
 	Service string
+	Hint    string
 }
 
 // Error returns a human-readable description.
 func (e *ServiceNotConfiguredError) Error() string {
-	return "grpc: " + e.Service + " service is not configured"
+	msg := "grpc: " + e.Service + " service is not configured"
+	if e.Hint != "" {
+		msg += ": " + e.Hint
+	}
+	return msg
 }
 
 // CeremonyCANotConfiguredError is returned when CeremonyInitialize is

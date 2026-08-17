@@ -64,18 +64,20 @@ errors, not silent no-ops).
 | Gate | Question | Mechanism |
 |---|---|---|
 | Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (existing: `qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`, `codec_*`) |
-| Run mode | Structurally possible? | `mode: standalone \| raft` *(planned)*; raft-only features are not composed in standalone |
-| Config | Operator-enabled? | Existing sections; *(planned)* `enabled` on `mvcc`/`watch`/`lease` to disable even in raft mode |
+| Run mode | Structurally possible? | `mode: standalone \| raft` (config key implemented; daemon composition lands in phase 3); raft-only features are not composed in standalone |
+| Config | Operator-enabled? | Existing sections plus `enabled` on `mvcc`/`watch`/`lease` to disable even in raft mode (implemented) |
 
 There is deliberately **no `qrdb_raft` build tag**: raft code is always
 compiled and the mode selects it at runtime — a tag would bifurcate the
 release matrix for no gain.
 
-`pkg/capabilities` is the single runtime truth *(planned upgrade)*: the
-hardcoded-true core list is removed; at boot each composition root seals
-the effective profile (build tags ∩ mode ∩ config), and
+`pkg/capabilities` is the single runtime truth (implemented): at boot the
+composition root seals the effective profile (build tags ∩ mode ∩ config)
+via `capabilities.Seal(cfg.EffectiveCapabilities())`, and
 `admin capabilities` reports it faithfully, including a `mode` field. A
 `false` can therefore mean not-compiled, mode-gated, or config-disabled.
+Before sealing, `Get` keeps the historical compile-time fallback for
+library embeddings.
 
 ## The always-compiled CORE
 
@@ -94,18 +96,24 @@ security posture or breaks a dependency of everything else:
 | Audit (`pkg/audit`) | Compliance posture; services emit unconditionally |
 | REST + gRPC transports | A server with no transport is unusable; enabled per `protocols.*` |
 
-## Configuration *(planned)*
+## Configuration (config gate implemented; daemon branch in phase 3)
 
 ```yaml
 mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 ```
 
 - `mode: standalone` + explicit `mvcc.enabled`/`watch.enabled`/
-  `lease.enabled: true`, raft cluster settings, or `protocols.etcd` →
+  `lease.enabled: true`, `raft.join`, or a multi-member `raft.peers` list →
   validation error: `requires mode: raft (standalone serves standard
-  database operations only)`.
-- Enabling a feature whose build tag is absent → validation error naming
-  the tag.
+  database operations only)`. Standalone skips the raft identity
+  requirements (only `raft.data_dir` stays mandatory). Etcd is enabled
+  per-database at runtime, so its mode gate lives at service composition.
+- Enabling a wire protocol whose build tag is absent → boot-time error
+  naming the tag (`Config.ValidateCapabilities`, called by composition
+  roots — a deliberate separate gate so pure-config validation stays
+  build-independent).
+- The daemon currently refuses `mode: standalone` with a pointed error;
+  its raft-free composition branch is phase 3.
 - Refusals at runtime surface through the existing per-transport typed
   errors (REST 501 / gRPC & QUIC Unimplemented) with the
   `requires mode: raft` hint.

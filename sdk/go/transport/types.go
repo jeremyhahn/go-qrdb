@@ -99,15 +99,25 @@ type SnapshotRequest struct {
 
 // CapabilitiesResponse describes the compile-time feature set of the QRDB binary.
 type CapabilitiesResponse struct {
-	KV          bool `json:"kv"`
-	MVCC        bool `json:"mvcc"`
-	Transaction bool `json:"transaction"`
-	Batch       bool `json:"batch"`
-	Watch       bool `json:"watch"`
-	Lease       bool `json:"lease"`
-	Index       bool `json:"index"`
-	TimeSeries  bool `json:"timeSeries"`
-	Vector      bool `json:"vector"`
+	Mode        string `json:"mode"`
+	KV          bool   `json:"kv"`
+	MVCC        bool   `json:"mvcc"`
+	Transaction bool   `json:"transaction"`
+	Batch       bool   `json:"batch"`
+	Watch       bool   `json:"watch"`
+	Lease       bool   `json:"lease"`
+	Lock        bool   `json:"lock"`
+	Index       bool   `json:"index"`
+	Cluster     bool   `json:"cluster"`
+	Backup      bool   `json:"backup"`
+	Rebalance   bool   `json:"rebalance"`
+	TimeSeries  bool   `json:"timeSeries"`
+	Vector      bool   `json:"vector"`
+	SQL         bool   `json:"sql"`
+	MySQL       bool   `json:"mysql"`
+	PostgreSQL  bool   `json:"postgresql"`
+	Etcd        bool   `json:"etcd"`
+	FTS         bool   `json:"fts"`
 }
 
 // ---------------------------------------------------------------------------

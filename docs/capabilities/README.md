@@ -5,62 +5,91 @@ Licensed under the Apache License, Version 2.0
 
 # Capabilities API
 
-The `pkg/capabilities/` package provides compile-time feature registration that flows from build tags through the service layer to all API protocols, SDKs, and the frontend UI. Core features are always enabled; optional features register themselves via `init()` in build-tagged source files.
+The `pkg/capabilities/` package is the runtime feature truth of a QRDB
+process. Build-tagged features register themselves via `init()`; at boot the
+composition root **seals** the effective profile — the intersection of build
+tags, run mode, and configuration (`config.EffectiveCapabilities` →
+`capabilities.Seal`) — and every transport reports it through the single
+service funnel (`service.AdminService.Capabilities`). **A `false` value can
+therefore mean not-compiled, mode-gated, or config-disabled.** Before a
+composition root seals (library embeddings, tests), `Get` falls back to the
+historical compile-time view: raft mode, core features true, tag features
+per registration. See [docs/run-modes.md](../run-modes.md) for the
+three-gate model (build tag > run mode > config).
 
 ## Package API
 
 Source: `pkg/capabilities/capabilities.go`
 
 ```go
-// Capabilities describes the compile-time feature set of the QRDB binary.
+// Capabilities describes the effective feature set of the QRDB process.
 type Capabilities struct {
-    KV          bool `json:"kv"`
-    MVCC        bool `json:"mvcc"`
-    Transaction bool `json:"transaction"`
-    Batch       bool `json:"batch"`
-    Watch       bool `json:"watch"`
-    Lease       bool `json:"lease"`
-    Index       bool `json:"index"`
-    TimeSeries  bool `json:"timeSeries"`
-    Vector      bool `json:"vector"`
-    SQL         bool `json:"sql"`
-    MySQL       bool `json:"mysql"`
-    PostgreSQL  bool `json:"postgresql"`
-    Etcd        bool `json:"etcd"`
-    FTS         bool `json:"fts"`
+    Mode        string `json:"mode"` // "standalone" | "raft"
+    KV          bool   `json:"kv"`
+    MVCC        bool   `json:"mvcc"`
+    Transaction bool   `json:"transaction"`
+    Batch       bool   `json:"batch"`
+    Watch       bool   `json:"watch"`
+    Lease       bool   `json:"lease"`
+    Lock        bool   `json:"lock"`
+    Index       bool   `json:"index"`
+    Cluster     bool   `json:"cluster"`
+    Backup      bool   `json:"backup"`
+    Rebalance   bool   `json:"rebalance"`
+    TimeSeries  bool   `json:"timeSeries"`
+    Vector      bool   `json:"vector"`
+    SQL         bool   `json:"sql"`
+    MySQL       bool   `json:"mysql"`
+    PostgreSQL  bool   `json:"postgresql"`
+    Etcd        bool   `json:"etcd"`
+    FTS         bool   `json:"fts"`
 }
 
-// Register records a feature as available. Called from init() in
+// Register records a feature as compiled in. Called from init() in
 // build-tagged files.
 func Register(feature string)
 
-// Get returns the current set of registered capabilities.
+// Seal stores the effective profile computed by the composition root at
+// boot (build tags ∩ run mode ∩ config). After Seal, Get returns exactly
+// this profile.
+func Seal(c Capabilities)
+
+// Sealed reports whether a composition root has sealed the profile.
+func Sealed() bool
+
+// Get returns the effective profile (sealed), or the legacy compile-time
+// fallback before sealing.
 func Get() Capabilities
 
-// Has reports whether the named feature has been registered.
+// Has reports whether the named feature has been registered ("compiled
+// in?", not "effective?").
 func Has(feature string) bool
 
-// Reset clears all registered features (testing only).
+// Reset clears registrations and any sealed profile (testing only).
 func Reset()
 ```
 
 ## Feature Classification
 
-| Feature | Type | Always Available |
+| Feature | Type | Available |
 |---------|------|-----------------|
-| KV | Core | Yes |
-| MVCC | Core | Yes |
-| Transaction | Core | Yes |
-| Batch | Core | Yes |
-| Watch | Core | Yes |
-| Lease | Core | Yes |
-| Index | Core | Yes |
+| KV | Core | Always |
+| Batch | Core | Always |
+| Index | Core | Always |
+| MVCC | Raft-only | mode `raft` (narrowable via `mvcc.enabled`) |
+| Transaction | Raft-only | mode `raft` |
+| Watch | Raft-only | mode `raft` (narrowable via `watch.enabled`) |
+| Lease | Raft-only | mode `raft` (narrowable via `lease.enabled`) |
+| Lock | Raft-only | mode `raft` |
+| Cluster | Raft-only | mode `raft` |
+| Backup | Raft-only | mode `raft` |
+| Rebalance | Raft-only | mode `raft` |
 | TimeSeries | Optional | No (requires `qrdb_ts` build tag) |
 | Vector | Optional | No (requires `qrdb_vector` build tag) |
 | SQL | Optional | No (requires `qrdb_sql` build tag) |
 | MySQL | Optional | No (requires `qrdb_mysql` build tag, implies `qrdb_sql`) |
 | PostgreSQL | Optional | No (requires `qrdb_pgsql` build tag, implies `qrdb_sql`) |
-| Etcd | Optional | No (requires `qrdb_etcd` build tag) |
+| Etcd | Optional + raft-only | No (requires `qrdb_etcd` build tag AND mode `raft`) |
 | FTS | Optional | No (requires `qrdb_fts` build tag) |
 
 ## Build Tags

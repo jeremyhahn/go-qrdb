@@ -43,6 +43,12 @@ func parseDuration(s string) (time.Duration, error) {
 // Config is the top-level QRDB configuration. It is loaded from a YAML
 // file and validated before use.
 type Config struct {
+	// Mode selects the run mode: "standalone" (no raft — standard
+	// database operations plus the always-on security core) or "raft"
+	// (single- or multi-node consensus with the full feature set).
+	// Empty means "raft" for full backward compatibility.
+	Mode string `yaml:"mode"`
+
 	Server     ServerConfig     `yaml:"server"`
 	Protocols  ProtocolsConfig  `yaml:"protocols"`
 	Raft       RaftConfig       `yaml:"raft"`
@@ -571,6 +577,11 @@ type DiscoveryConfig struct {
 
 // MVCCConfig configures the MVCC versioned key-value engine.
 type MVCCConfig struct {
+	// Enabled toggles the MVCC service. Nil means enabled (in raft
+	// mode). Explicitly setting true under mode "standalone" is a
+	// validation error: MVCC requires mode "raft".
+	Enabled *bool `yaml:"enabled"`
+
 	// CompactionRetention is the minimum number of revisions to retain
 	// after compaction. Zero disables automatic compaction retention.
 	CompactionRetention int64 `yaml:"compaction_retention"`
@@ -582,6 +593,11 @@ type MVCCConfig struct {
 
 // WatchConfig configures the real-time watch notification system.
 type WatchConfig struct {
+	// Enabled toggles the watch service. Nil means enabled (in raft
+	// mode). Explicitly setting true under mode "standalone" is a
+	// validation error: watch requires mode "raft".
+	Enabled *bool `yaml:"enabled"`
+
 	// BufferSize is the per-watcher event channel buffer size. Larger
 	// values reduce back-pressure at the cost of memory.
 	BufferSize int `yaml:"buffer_size"`
@@ -593,6 +609,11 @@ type WatchConfig struct {
 
 // LeaseConfig configures the distributed lease management system.
 type LeaseConfig struct {
+	// Enabled toggles the lease service. Nil means enabled (in raft
+	// mode). Explicitly setting true under mode "standalone" is a
+	// validation error: lease requires mode "raft".
+	Enabled *bool `yaml:"enabled"`
+
 	// MinTTL is the minimum lease TTL in seconds that the server
 	// will accept. Requests for shorter TTLs are clamped to this value.
 	MinTTL int64 `yaml:"min_ttl"`
@@ -1350,6 +1371,9 @@ var validDatabaseBackends = map[string]struct{}{
 // It returns the first validation error encountered, or nil if the
 // configuration is valid.
 func (c *Config) Validate() error {
+	if err := c.validateMode(); err != nil {
+		return err
+	}
 	if c.Server.AdminPort <= 0 || c.Server.AdminPort > 65535 {
 		return &ValidationError{Field: "server.admin_port", Reason: "must be between 1 and 65535"}
 	}
@@ -1372,14 +1396,16 @@ func (c *Config) Validate() error {
 	if c.Raft.DataDir == "" {
 		return &ValidationError{Field: "raft.data_dir", Reason: "must not be empty"}
 	}
-	if c.Raft.ShardID == 0 {
-		return &ValidationError{Field: "raft.shard_id", Reason: "must be greater than 0"}
-	}
-	if c.Raft.ReplicaID == 0 {
-		return &ValidationError{Field: "raft.replica_id", Reason: "must be greater than 0"}
-	}
-	if c.Raft.RaftAddress == "" {
-		return &ValidationError{Field: "raft.raft_address", Reason: "must not be empty"}
+	if !c.IsStandalone() {
+		if c.Raft.ShardID == 0 {
+			return &ValidationError{Field: "raft.shard_id", Reason: "must be greater than 0"}
+		}
+		if c.Raft.ReplicaID == 0 {
+			return &ValidationError{Field: "raft.replica_id", Reason: "must be greater than 0"}
+		}
+		if c.Raft.RaftAddress == "" {
+			return &ValidationError{Field: "raft.raft_address", Reason: "must not be empty"}
+		}
 	}
 	if c.Raft.SMType != "" {
 		if _, ok := validSMTypes[c.Raft.SMType]; !ok {

@@ -551,15 +551,25 @@ func (s *qrdbServiceServer) Capabilities(ctx context.Context, _ *pb.Capabilities
 		return nil, mapServiceError(err)
 	}
 	return &pb.CapabilitiesResponse{
+		Mode:        caps.Mode,
 		Kv:          caps.KV,
 		Mvcc:        caps.MVCC,
 		Transaction: caps.Transaction,
 		Batch:       caps.Batch,
 		Watch:       caps.Watch,
 		Lease:       caps.Lease,
+		Lock:        caps.Lock,
 		Index:       caps.Index,
+		Cluster:     caps.Cluster,
+		Backup:      caps.Backup,
+		Rebalance:   caps.Rebalance,
 		TimeSeries:  caps.TimeSeries,
 		Vector:      caps.Vector,
+		Sql:         caps.SQL,
+		Mysql:       caps.MySQL,
+		Postgresql:  caps.PostgreSQL,
+		Etcd:        caps.Etcd,
+		Fts:         caps.FTS,
 	}, nil
 }
 

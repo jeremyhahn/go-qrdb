@@ -575,15 +575,25 @@ func (t *Transport) Capabilities(ctx context.Context) (*transport.CapabilitiesRe
 	}
 
 	return &transport.CapabilitiesResponse{
+		Mode:        raw.Mode,
 		KV:          raw.KV,
 		MVCC:        raw.MVCC,
 		Transaction: raw.Transaction,
 		Batch:       raw.Batch,
 		Watch:       raw.Watch,
 		Lease:       raw.Lease,
+		Lock:        raw.Lock,
 		Index:       raw.Index,
+		Cluster:     raw.Cluster,
+		Backup:      raw.Backup,
+		Rebalance:   raw.Rebalance,
 		TimeSeries:  raw.TimeSeries,
 		Vector:      raw.Vector,
+		SQL:         raw.SQL,
+		MySQL:       raw.MySQL,
+		PostgreSQL:  raw.PostgreSQL,
+		Etcd:        raw.Etcd,
+		FTS:         raw.FTS,
 	}, nil
 }
 
@@ -743,15 +753,25 @@ type serverPeerInfo struct {
 // The capabilities package uses json tags with camelCase, matching the
 // SDK transport's CapabilitiesResponse field names.
 type serverCapabilities struct {
-	KV          bool `json:"kv"`
-	MVCC        bool `json:"mvcc"`
-	Transaction bool `json:"transaction"`
-	Batch       bool `json:"batch"`
-	Watch       bool `json:"watch"`
-	Lease       bool `json:"lease"`
-	Index       bool `json:"index"`
-	TimeSeries  bool `json:"timeSeries"`
-	Vector      bool `json:"vector"`
+	Mode        string `json:"mode"`
+	KV          bool   `json:"kv"`
+	MVCC        bool   `json:"mvcc"`
+	Transaction bool   `json:"transaction"`
+	Batch       bool   `json:"batch"`
+	Watch       bool   `json:"watch"`
+	Lease       bool   `json:"lease"`
+	Lock        bool   `json:"lock"`
+	Index       bool   `json:"index"`
+	Cluster     bool   `json:"cluster"`
+	Backup      bool   `json:"backup"`
+	Rebalance   bool   `json:"rebalance"`
+	TimeSeries  bool   `json:"timeSeries"`
+	Vector      bool   `json:"vector"`
+	SQL         bool   `json:"sql"`
+	MySQL       bool   `json:"mysql"`
+	PostgreSQL  bool   `json:"postgresql"`
+	Etcd        bool   `json:"etcd"`
+	FTS         bool   `json:"fts"`
 }
 
 // serverShardState mirrors service.ShardStateResponse for JSON decoding.

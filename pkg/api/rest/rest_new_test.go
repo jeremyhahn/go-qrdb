@@ -3375,3 +3375,16 @@ func (m *mockMVCCService) RestoreToRevision(ctx context.Context, req *service.Re
 	}
 	return nil, nil
 }
+
+// TestRESTServiceNotImplementedErrorHint verifies the optional Hint is appended to the message
+// so refusals can name the remedy (e.g. "requires mode: raft").
+func TestRESTServiceNotImplementedErrorHint(t *testing.T) {
+	err := &ServiceNotImplementedError{Service: "watch", Hint: "requires mode: raft"}
+	if got := err.Error(); !strings.Contains(got, "watch") || !strings.Contains(got, "requires mode: raft") {
+		t.Fatalf("Error() = %q, want the service name and the hint", got)
+	}
+	bare := &ServiceNotImplementedError{Service: "watch"}
+	if strings.Contains(bare.Error(), ":  ") || strings.HasSuffix(bare.Error(), ": ") {
+		t.Fatalf("Error() without hint = %q, must not carry a dangling separator", bare.Error())
+	}
+}

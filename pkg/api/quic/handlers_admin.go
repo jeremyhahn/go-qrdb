@@ -200,15 +200,25 @@ func (s *Server) handleCapabilities(ctx context.Context, _ []byte) ([]byte, erro
 	}
 
 	resp, err := proto.Marshal(&pb.CapabilitiesResponse{
+		Mode:        caps.Mode,
 		Kv:          caps.KV,
 		Mvcc:        caps.MVCC,
 		Transaction: caps.Transaction,
 		Batch:       caps.Batch,
 		Watch:       caps.Watch,
 		Lease:       caps.Lease,
+		Lock:        caps.Lock,
 		Index:       caps.Index,
+		Cluster:     caps.Cluster,
+		Backup:      caps.Backup,
+		Rebalance:   caps.Rebalance,
 		TimeSeries:  caps.TimeSeries,
 		Vector:      caps.Vector,
+		Sql:         caps.SQL,
+		Mysql:       caps.MySQL,
+		Postgresql:  caps.PostgreSQL,
+		Etcd:        caps.Etcd,
+		Fts:         caps.FTS,
 	})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
