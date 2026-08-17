@@ -161,6 +161,15 @@ jobs:
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
 
+      # gosec type-loads every package, so the full module graph must be in
+      # the local cache BEFORE it runs: on a cold cache its loader surfaces
+      # each missing module as `could not import ... (invalid package name)`
+      # and fails the job with zero actual findings. `go build` warms the
+      # cache as a side effect on the build job, but each job runs in its
+      # own container — download explicitly here.
+      - name: Download modules
+        run: go mod download all
+
       # `make gosec` carries GOSEC_EXCLUDE and its written justifications in the
       # Makefile, so the exclusion list is single-sourced rather than copied
       # into this file (devops.md §8).
