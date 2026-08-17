@@ -2741,16 +2741,19 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	_ = ctx
 	_ = node
 
-	// Create a runtime KV adapter for the audit logger store.
+	// Create a runtime KV adapter for the custodian service store.
 	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
 
-	// Create audit logger with default config. The file backend writes
-	// to the data directory so audit entries survive restarts.
-	auditCfg := audit.DefaultConfig()
-	auditCfg.FilePath = filepath.Join(dataDir, "audit.log")
-	auditLogger, err := audit.New(auditCfg, runtimeStore)
-	if err != nil {
-		return nil, &AuthBootstrapError{Step: "audit logger", Err: err}
+	// Per-decision audit rides the SAME tamper-evident chained event log as
+	// every other audited operation, via the decision bridge — one audit
+	// plane, no unchained side file. This is the identical wiring the SDK
+	// node uses (sdk/go/node), so a daemon-run node and an embedded node
+	// audit authorization decisions identically. A nil compliance logger is
+	// rejected below by the custodian service (fail closed); the decision
+	// bridge is constructed only over a real sink.
+	var auditLogger audit.Logger
+	if complianceAudit != nil {
+		auditLogger = audit.NewDecisionLogger(complianceAudit)
 	}
 
 	// Build the RBAC[+ABAC]-authorized, mTLS-authenticated auth middleware.

@@ -93,9 +93,40 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			ctx, identity, authnErr = m.authenticate(ctx)
 		}
 		if authnErr != nil {
-			code := mapHTTPAuthError(authnErr)
-			writeJSONError(w, code, authnErr.Error())
-			return
+			// qrdb's own authenticators produced no identity. If the matched
+			// route belongs to a capability module that registered an
+			// authentication fallback (a session-token plane qrdb does not
+			// speak — e.g. the JWT pairs xkms's FIDO2/PIV logins mint), give
+			// the OWNING module one chance to authenticate the request. The
+			// fallback identity then flows through finalizeIdentity — the
+			// SAME store-resolved role enrichment and disabled-user check as
+			// an mTLS identity — and on to the one authorizer below; the
+			// fallback only ever replaces the "who is this" step, never the
+			// authorization decision. Routes without a fallback keep the
+			// original failure verbatim.
+			fb := routes.FallbackFor(r.Method, r.URL.Path)
+			if fb == nil {
+				code := mapHTTPAuthError(authnErr)
+				writeJSONError(w, code, authnErr.Error())
+				return
+			}
+			fbIdentity, fbErr := fb.AuthenticateHTTP(r.WithContext(ctx))
+			if fbErr != nil || fbIdentity == nil {
+				code := mapHTTPAuthError(authnErr)
+				if fbErr != nil {
+					code = mapHTTPAuthError(fbErr)
+					writeJSONError(w, code, fbErr.Error())
+					return
+				}
+				writeJSONError(w, code, authnErr.Error())
+				return
+			}
+			ctx, identity, authnErr = m.finalizeIdentity(ctx, fbIdentity)
+			if authnErr != nil {
+				code := mapHTTPAuthError(authnErr)
+				writeJSONError(w, code, authnErr.Error())
+				return
+			}
 		}
 
 		// Resolve the route's registered authorization contract. The registry

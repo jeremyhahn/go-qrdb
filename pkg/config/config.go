@@ -60,7 +60,6 @@ type Config struct {
 	TimeSeries TimeSeriesConfig `yaml:"timeseries"`
 	WriteMode  WriteModeConfig  `yaml:"write_mode"`
 	Auth       AuthConfig       `yaml:"auth"`
-	Audit      AuditConfig      `yaml:"audit"`
 	CORS       CORSConfig       `yaml:"cors"`
 	SQL        SQLConfig        `yaml:"sql"`
 	Codec      CodecConfig      `yaml:"codec"`
@@ -795,27 +794,6 @@ type PeerAdminEntry struct {
 	AdminURL string `yaml:"admin_url"`
 }
 
-// AuditConfig configures the dual-backend audit logging system.
-type AuditConfig struct {
-	// Enabled controls whether audit logging is active.
-	// Default: true.
-	Enabled bool `yaml:"enabled"`
-
-	// KVBackend enables the KVStore audit backend. Audit entries are
-	// stored at __sys:audit/{tenantID}/{timestamp_nano}.
-	// Default: false.
-	KVBackend bool `yaml:"kv_backend"`
-
-	// FileBackend enables the file-based audit backend using slog
-	// JSON format.
-	// Default: true.
-	FileBackend bool `yaml:"file_backend"`
-
-	// FilePath is the path to the audit log file. When empty, defaults
-	// to "{dataDir}/audit.log".
-	FilePath string `yaml:"file_path"`
-}
-
 // CORSConfig configures Cross-Origin Resource Sharing for the REST API,
 // enabling browser-based access.
 type CORSConfig struct {
@@ -1069,11 +1047,6 @@ func DefaultConfig() *Config {
 			DefaultTenant: "system",
 			CertTTL:       "8760h",
 			PermCacheTTL:  30,
-		},
-		Audit: AuditConfig{
-			Enabled:     true,
-			KVBackend:   false,
-			FileBackend: true,
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: []string{"*"},
@@ -1559,11 +1532,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
 		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}
-	}
-
-	// Audit validation.
-	if c.Audit.Enabled && !c.Audit.KVBackend && !c.Audit.FileBackend {
-		return &ValidationError{Field: "audit", Reason: "at least one backend must be enabled when audit is enabled"}
 	}
 
 	// CORS validation.

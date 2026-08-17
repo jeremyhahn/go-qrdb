@@ -2378,70 +2378,6 @@ func TestValidate_Auth_DisabledSkipsValidation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Audit config validation
-// ---------------------------------------------------------------------------
-
-func TestDefaultConfig_AuditDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-
-	if !cfg.Audit.Enabled {
-		t.Error("Audit.Enabled: want true")
-	}
-	if cfg.Audit.KVBackend {
-		t.Error("Audit.KVBackend: want false")
-	}
-	if !cfg.Audit.FileBackend {
-		t.Error("Audit.FileBackend: want true")
-	}
-}
-
-func TestValidate_Audit_NoBackendsEnabled(t *testing.T) {
-	cfg := validConfig()
-	cfg.Audit.Enabled = true
-	cfg.Audit.KVBackend = false
-	cfg.Audit.FileBackend = false
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected validation error when no audit backends enabled")
-	}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Fatalf("expected *ValidationError, got %T", err)
-	}
-	if ve.Field != "audit" {
-		t.Errorf("Field: got %q, want %q", ve.Field, "audit")
-	}
-}
-
-func TestValidate_Audit_DisabledSkipsBackendCheck(t *testing.T) {
-	cfg := validConfig()
-	cfg.Audit.Enabled = false
-	cfg.Audit.KVBackend = false
-	cfg.Audit.FileBackend = false
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected disabled audit to skip validation, got %v", err)
-	}
-}
-
-func TestValidate_Audit_KVBackendOnly(t *testing.T) {
-	cfg := validConfig()
-	cfg.Audit.Enabled = true
-	cfg.Audit.KVBackend = true
-	cfg.Audit.FileBackend = false
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected valid with only kv backend, got %v", err)
-	}
-}
-
-func TestValidate_Audit_FileBackendOnly(t *testing.T) {
-	cfg := validConfig()
-	cfg.Audit.Enabled = true
-	cfg.Audit.KVBackend = false
-	cfg.Audit.FileBackend = true
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("expected valid with only file backend, got %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // CORS config validation
@@ -2517,33 +2453,6 @@ auth:
 	}
 	if cfg.Auth.PermCacheTTL != 60 {
 		t.Errorf("Auth.PermCacheTTL: got %d, want %d", cfg.Auth.PermCacheTTL, 60)
-	}
-}
-
-func TestLoad_AuditConfigFromYAML(t *testing.T) {
-	yamlContent := validYAML + `
-audit:
-  enabled: true
-  kv_backend: true
-  file_backend: true
-  file_path: "/var/log/qrdb/audit.log"
-`
-	path := writeTemp(t, yamlContent)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: unexpected error: %v", err)
-	}
-	if !cfg.Audit.Enabled {
-		t.Error("Audit.Enabled: want true")
-	}
-	if !cfg.Audit.KVBackend {
-		t.Error("Audit.KVBackend: want true")
-	}
-	if !cfg.Audit.FileBackend {
-		t.Error("Audit.FileBackend: want true")
-	}
-	if cfg.Audit.FilePath != "/var/log/qrdb/audit.log" {
-		t.Errorf("Audit.FilePath: got %q, want %q", cfg.Audit.FilePath, "/var/log/qrdb/audit.log")
 	}
 }
 

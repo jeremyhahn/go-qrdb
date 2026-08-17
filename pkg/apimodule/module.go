@@ -19,6 +19,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -121,6 +122,24 @@ type ServiceModule interface {
 // fail-closed on an authenticated server.
 type MCPToolPermissioner interface {
 	MCPToolPermissions() map[string]permission.Permission
+}
+
+// ModuleAuthFallback is implemented by modules whose HTTP surface accepts
+// credentials the host's own authenticators do not understand — a
+// capability's session-token plane (e.g. the JWT access/refresh pairs
+// go-xkms's FIDO2/PIV login ceremonies mint, or go-quicbaas's platform
+// tokens). When the unified server's REST middleware authenticates a
+// request targeting one of the module's routes and the host's
+// authenticator chain produces no identity, it invokes the OWNING module's
+// fallback. A returned identity is finalized and authorized by the host's
+// single enrichment + authorizer path, exactly like an mTLS identity:
+// roles come from the store, never from the token, and the ONE Authorizer
+// renders the decision. Implementations must fail closed.
+//
+// The method set intentionally matches middleware.RESTAuthFallback so a
+// module value satisfies the middleware seam structurally.
+type ModuleAuthFallback interface {
+	AuthenticateHTTP(r *http.Request) (*auth.Identity, error)
 }
 
 // GRPCPublicMethodLister is an optional ServiceModule extension. A module

@@ -36,22 +36,3 @@ type Entry struct {
 	Result    string            `json:"result"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
-
-// Config configures the audit logging system.
-type Config struct {
-	Enabled     bool   `yaml:"enabled"`
-	KVBackend   bool   `yaml:"kv_backend"`
-	FileBackend bool   `yaml:"file_backend"`
-	FilePath    string `yaml:"file_path"`
-}
-
-// DefaultConfig returns a Config with sensible defaults: file backend
-// enabled, KV backend disabled, writing to "audit.log".
-func DefaultConfig() Config {
-	return Config{
-		Enabled:     true,
-		KVBackend:   false,
-		FileBackend: true,
-		FilePath:    "audit.log",
-	}
-}

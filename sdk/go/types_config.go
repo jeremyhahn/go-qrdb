@@ -114,9 +114,6 @@ type DaemonAuthConfig = config.AuthConfig
 // over RBAC (auth.abac in the daemon YAML).
 type DaemonAuthABACConfig = config.AuthABACConfig
 
-// DaemonAuditConfig configures the audit log.
-type DaemonAuditConfig = config.AuditConfig
-
 // DaemonCORSConfig configures cross-origin resource sharing for the REST API.
 type DaemonCORSConfig = config.CORSConfig
 

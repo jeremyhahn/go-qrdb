@@ -11,6 +11,33 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.3-alpha] - 2026-08-16
+
+### Added
+
+- **Module authentication fallback** (`apimodule.ModuleAuthFallback`, SDK
+  `qrdbsdk.ModuleAuthFallback`): a capability module whose HTTP surface
+  accepts credentials qrdb's own authenticators do not understand (a
+  session-token plane) may authenticate the request when the host chain
+  produces no identity. The fallback identity flows through the SAME
+  store-resolved enrichment and the ONE authorizer as an mTLS identity.
+- **REST route-collision guard**: registering the same method+pattern
+  twice (two modules, or a module and the built-in surface) fails
+  construction with a descriptive panic instead of silently shadowing.
+
+### Changed — one audit plane
+
+- qrdbd's per-decision auth audit now rides the tamper-evident chained
+  event log via the decision bridge — identical wiring to embedded nodes;
+  the unchained side file is gone.
+- The legacy second audit system (`audit.New`, kv/file/multi backends,
+  the `audit:` config block, `DaemonAuditConfig`) is DELETED. The chained
+  `AuditLogger` (Emit/Query) is the only audit sink; the `Logger`/`Entry`
+  middleware contract remains as the decision-bridge interface.
+- Audit wire tags are snake_case (`tenant_id`, `client_ip`,
+  `request_id`, `prev_hash`), closing the documented cross-project
+  serialization mismatch.
+
 ## [0.5.2-alpha] - 2026-08-16
 
 ### Changed — SECURITY

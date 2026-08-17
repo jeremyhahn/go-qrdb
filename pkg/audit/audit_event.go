@@ -27,7 +27,7 @@ type AuditEvent struct {
 	Actor string `json:"actor"`
 
 	// TenantID is the tenant that owns the resource (empty for cluster-level ops).
-	TenantID string `json:"tenantID,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 
 	// Role is the actor's role at the time of the event.
 	Role string `json:"role,omitempty"`
@@ -45,14 +45,14 @@ type AuditEvent struct {
 	Attributes map[string]any `json:"attributes,omitempty"`
 
 	// ClientIP is the source IP address of the client.
-	ClientIP string `json:"clientIP,omitempty"`
+	ClientIP string `json:"client_ip,omitempty"`
 
 	// RequestID is a trace correlation ID for cross-log correlation.
-	RequestID string `json:"requestID,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 
 	// PrevHash is the SHA-256 hex digest of the previous AuditEvent in the chain.
 	// Format: hex-encoded SHA-256, empty for the first event.
-	PrevHash string `json:"prevHash,omitempty"`
+	PrevHash string `json:"prev_hash,omitempty"`
 }
 
 // Filter specifies criteria for querying audit events.
@@ -74,7 +74,7 @@ type Filter struct {
 	Outcome string `json:"outcome,omitempty"`
 
 	// TenantID filters to events for a specific tenant.
-	TenantID string `json:"tenantID,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
 
 	// Limit caps the number of events returned. Default 100, max 1000.
 	Limit int `json:"limit,omitempty"`

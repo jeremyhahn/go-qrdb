@@ -52,16 +52,16 @@ func (s *SlogSink) Emit(_ context.Context, ev AuditEvent) {
 		slog.String("outcome", ev.Outcome),
 	}
 	if ev.TenantID != "" {
-		attrs = append(attrs, slog.String("tenantID", ev.TenantID))
+		attrs = append(attrs, slog.String("tenant_id", ev.TenantID))
 	}
 	if ev.Role != "" {
 		attrs = append(attrs, slog.String("role", ev.Role))
 	}
 	if ev.ClientIP != "" {
-		attrs = append(attrs, slog.String("clientIP", ev.ClientIP))
+		attrs = append(attrs, slog.String("client_ip", ev.ClientIP))
 	}
 	if ev.RequestID != "" {
-		attrs = append(attrs, slog.String("requestID", ev.RequestID))
+		attrs = append(attrs, slog.String("request_id", ev.RequestID))
 	}
 	if len(ev.Attributes) > 0 {
 		attrs = append(attrs, slog.Any("attributes", ev.Attributes))

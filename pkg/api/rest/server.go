@@ -665,10 +665,21 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 
 	// Modules register through the same permission-recording helpers the
 	// built-in routes use, so their routes feed routePerms and the default-deny
-	// assertion identically.
-	moduleRegistrar := apimodule.NewHTTPRegistrar(r, s.route, s.public)
+	// assertion identically. A module implementing ModuleAuthFallback gets its
+	// fallback attached to every non-public route it registers: the REST
+	// middleware invokes it only when qrdb's own authenticators produce no
+	// identity for a request on that module's routes (the module's
+	// session-token plane), and the resulting identity flows through the SAME
+	// enrichment and authorizer as an mTLS identity.
 	for _, m := range s.modules {
-		m.RegisterHTTP(moduleRegistrar)
+		routeFn := s.route
+		if fb, ok := m.(apimodule.ModuleAuthFallback); ok {
+			routeFn = func(method, pattern string, perm permission.Permission, h http.HandlerFunc) {
+				s.route(method, pattern, perm, h)
+				s.routePerms.SetFallback(method, pattern, fb)
+			}
+		}
+		m.RegisterHTTP(apimodule.NewHTTPRegistrar(r, routeFn, s.public))
 	}
 	s.registerRoutes()
 

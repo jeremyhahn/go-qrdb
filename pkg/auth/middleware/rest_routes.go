@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -43,10 +44,24 @@ const (
 	RESTRouteAuthenticated
 )
 
+// RESTAuthFallback authenticates a request whose credentials qrdb's own
+// authenticators do not understand (a capability module's session tokens).
+// The unified server's REST middleware invokes it ONLY when qrdb's
+// authenticator chain produced no identity for a request that matched one
+// of the fallback owner's routes; a returned identity is finalized and
+// authorized by the SAME enrichment and authorizer path as an mTLS
+// identity — roles are resolved from the store, never trusted from the
+// token. Implementations must fail closed: (nil, error) for anything they
+// cannot positively authenticate.
+type RESTAuthFallback interface {
+	AuthenticateHTTP(r *http.Request) (*auth.Identity, error)
+}
+
 // restRouteEntry records the authorization contract of one registered route.
 type restRouteEntry struct {
-	kind RESTRouteKind
-	perm permission.Permission
+	kind     RESTRouteKind
+	perm     permission.Permission
+	fallback RESTAuthFallback
 }
 
 // RESTRouteRegistry is the single source of truth for REST route
@@ -80,10 +95,24 @@ func NewRESTRouteRegistry() *RESTRouteRegistry {
 // the matcher is only ever used for pattern resolution, never for serving.
 func restRouteNoop(http.ResponseWriter, *http.Request) {}
 
+// assertNotRegistered panics with a descriptive message when (method,
+// pattern) is already registered. Route collisions are construction-time
+// programmer errors — two modules (or a module and the built-in surface)
+// claiming the same route must fail startup loudly and by name, not
+// silently shadow each other. The panic-at-construction posture matches
+// the default-deny startup assertion.
+func (rr *RESTRouteRegistry) assertNotRegistered(method, pattern string) {
+	if _, exists := rr.entries[method+" "+pattern]; exists {
+		panic("middleware: duplicate REST route registration: " + method + " " + pattern +
+			" is already registered (module/route collision)")
+	}
+}
+
 // Register declares that (method, pattern) requires perm. The pattern uses
 // chi syntax ("/users/{id}", "/kv/*"). Registering the same method+pattern
-// twice panics (via chi), surfacing duplicate registrations at construction.
+// twice panics with a descriptive collision message.
 func (rr *RESTRouteRegistry) Register(method, pattern string, perm permission.Permission) {
+	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
 	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRoutePermission, perm: perm}
 }
@@ -93,6 +122,7 @@ func (rr *RESTRouteRegistry) Register(method, pattern string, perm permission.Pe
 // pre-authentication allowlist; this marker makes the exemption explicit at
 // the registration site for the default-deny startup assertion.
 func (rr *RESTRouteRegistry) RegisterPublic(method, pattern string) {
+	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
 	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRoutePublic}
 }
@@ -100,6 +130,7 @@ func (rr *RESTRouteRegistry) RegisterPublic(method, pattern string) {
 // RegisterAuthenticated declares that (method, pattern) requires an
 // authenticated caller but no specific permission (e.g. /metrics).
 func (rr *RESTRouteRegistry) RegisterAuthenticated(method, pattern string) {
+	rr.assertNotRegistered(method, pattern)
 	rr.matcher.Method(method, pattern, http.HandlerFunc(restRouteNoop))
 	rr.entries[method+" "+pattern] = restRouteEntry{kind: RESTRouteAuthenticated}
 }
@@ -167,4 +198,33 @@ func (rr *RESTRouteRegistry) Covered(method, pattern string) bool {
 	}
 	_, ok := rr.entries[method+" "+pattern]
 	return ok
+}
+
+// SetFallback attaches a module authentication fallback to an
+// already-registered route. The unified server calls this for every route a
+// fallback-bearing module registers, at registration time. Attaching a
+// fallback to an unregistered route is a programmer error and panics, the
+// same construction-time posture as a route collision.
+func (rr *RESTRouteRegistry) SetFallback(method, pattern string, fb RESTAuthFallback) {
+	key := method + " " + pattern
+	e, ok := rr.entries[key]
+	if !ok {
+		panic("middleware: SetFallback on unregistered route: " + key)
+	}
+	e.fallback = fb
+	rr.entries[key] = e
+}
+
+// FallbackFor resolves the module authentication fallback for a concrete
+// request, or nil when the matched route has none.
+func (rr *RESTRouteRegistry) FallbackFor(method, path string) RESTAuthFallback {
+	if rr == nil {
+		return nil
+	}
+	rctx := chi.NewRouteContext()
+	pattern := rr.matcher.Find(rctx, method, path)
+	if pattern == "" {
+		return nil
+	}
+	return rr.entries[method+" "+pattern].fallback
 }

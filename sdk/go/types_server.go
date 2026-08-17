@@ -99,3 +99,10 @@ var NewModuleHTTPRegistrar = apimodule.NewHTTPRegistrar
 // server refuses to start a network transport. Module hosts that terminate
 // TLS with their own certificate material pass it here.
 var WithServerTLS = qrdbserver.WithTLS
+
+// ModuleAuthFallback is the optional ServiceModule extension for capability
+// session-token planes: when the unified server's REST middleware finds no
+// qrdb identity on a request targeting the module's routes, it invokes the
+// owning module's fallback; the returned identity is enriched and
+// authorized by the same store-resolved path as an mTLS identity.
+type ModuleAuthFallback = apimodule.ModuleAuthFallback

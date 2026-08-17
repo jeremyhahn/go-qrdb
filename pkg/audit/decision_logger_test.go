@@ -25,7 +25,9 @@ type recordingAuditLogger struct {
 	events []AuditEvent
 }
 
-func (r *recordingAuditLogger) Emit(_ context.Context, ev AuditEvent) { r.events = append(r.events, ev) }
+func (r *recordingAuditLogger) Emit(_ context.Context, ev AuditEvent) {
+	r.events = append(r.events, ev)
+}
 func (r *recordingAuditLogger) Query(context.Context, Filter) (*Page, error) {
 	return &Page{}, nil
 }
