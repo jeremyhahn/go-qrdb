@@ -18,6 +18,10 @@ limitations under the License.
 
 ![QuicRaft DB Logo](../assets/logo.svg)
 
+> **Start with the [Glossary](GLOSSARY.md)** — the standard terminology for
+> run modes, storage backends, state machines, and engines. These terms are
+> easy to conflate and every other document assumes the glossary's usage.
+
 Technical documentation for the QRDB distributed transactional key-value
 store. These documents describe the system as implemented, with references
 to source code locations, actual struct definitions, and verified behavior
