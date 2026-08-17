@@ -11,6 +11,20 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.6-alpha] - 2026-08-17
+
+### Added
+
+- **Pre-resolved scope permissions** (`auth.Identity.ScopePermissions`):
+  a TRUSTED in-process issuance path (a module authentication fallback
+  validating a platform token) may carry the token's `scp`-derived
+  `resource:action` set on the identity. The RBAC authorizer unions them
+  with store-resolved role permissions — additive only, SO deny-list
+  still overrides — so client-credential/app tokens whose subject has no
+  user record authorize for exactly what the token was issued for. Never
+  wire-deserialized; the on-behalf path constructs fresh identities and
+  cannot carry them.
+
 ## [0.5.5-alpha] - 2026-08-17
 
 ### Changed

@@ -403,6 +403,23 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		}
 	}
 
+	// Union in the identity's pre-resolved scope permissions (platform
+	// tokens whose subject has no user record — see
+	// auth.Identity.ScopePermissions). Additive only: they can grant, never
+	// revoke, and the SO deny-list above already had its say. The set was
+	// stamped at token issuance by the same permission vocabulary, so no
+	// re-mapping is needed.
+	if len(identity.ScopePermissions) > 0 {
+		merged := make(map[permission.Permission]struct{}, len(permSet)+len(identity.ScopePermissions))
+		for p := range permSet {
+			merged[p] = struct{}{}
+		}
+		for _, p := range identity.ScopePermissions {
+			merged[permission.Permission(p)] = struct{}{}
+		}
+		permSet = merged
+	}
+
 	required := permission.Permission(resource + ":" + action)
 	if !permissionGranted(permSet, resource, action) {
 		return &PermissionDeniedError{

@@ -35,6 +35,23 @@ type Identity struct {
 	// Roles contains the roles assigned to this identity.
 	Roles []string
 
+	// ScopePermissions carries permissions that were pre-resolved by a
+	// TRUSTED in-process issuance path — the "resource:action" set stamped
+	// into a platform token's scp claim at token issuance, projected here
+	// by a capability module's authentication fallback after validating
+	// the token. It exists for principals that hold a token but no user
+	// record (client-credential/app tokens): store-resolved roles come up
+	// empty for them, and these permissions are what the token was issued
+	// FOR. The authorizer treats them as an additive grant set alongside
+	// role-resolved permissions; the SO deny-list still overrides.
+	//
+	// SECURITY: this field must only ever be populated in-process from a
+	// validated token by the middleware/fallback layer — never
+	// deserialized from a wire request and never trusted from a
+	// forwarded assertion (authenticateOnBehalf re-resolves identity and
+	// does not carry it).
+	ScopePermissions []string
+
 	// Metadata holds additional identity attributes.
 	Metadata map[string]string
 }
