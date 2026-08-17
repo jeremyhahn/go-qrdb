@@ -1413,7 +1413,7 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 	err := runStart(f)
 	require.Error(t, err)
 	var writeErr *BootstrapWriteError
-	require.True(t, errors.As(err, &writeErr))
+	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,10 +1425,15 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 
 func TestRunStart_CACertWriteFileError(t *testing.T) {
 	dataDir := t.TempDir()
-	// Place a directory at the ca.pem path so WriteFile fails
-	// (works even as root, unlike chmod).
-	caPath := filepath.Join(dataDir, "ca.pem")
-	require.NoError(t, os.MkdirAll(caPath, 0o700))
+	// A directory squatting at the ca-key.pem path fails the atomic persist
+	// (rename onto a directory is EISDIR — for root too) while staying
+	// invisible to the cached-material probe: LoadFromDir early-returns "no
+	// cache" when ca.pem/node-cert.pem/node-key.pem are all absent, before
+	// it ever consults ca-key.pem. A directory at ca.pem no longer reaches
+	// the write branch at all: clustertls.fileExists deliberately reports
+	// any existing entry, so the LOAD fails closed first.
+	caKeyPath := filepath.Join(dataDir, "ca-key.pem")
+	require.NoError(t, os.MkdirAll(caKeyPath, 0o700))
 
 	f := &startFlags{
 		dataDir: dataDir,
@@ -1438,7 +1443,7 @@ func TestRunStart_CACertWriteFileError(t *testing.T) {
 	err := runStart(f)
 	require.Error(t, err)
 	var writeErr *BootstrapWriteError
-	require.True(t, errors.As(err, &writeErr))
+	require.True(t, errors.As(err, &writeErr), "err = %v (%T)", err, err)
 }
 
 // ---------------------------------------------------------------------------
