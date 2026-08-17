@@ -899,6 +899,15 @@ func WithStateMachineFactory(factory sm.CreateFunc) AdminServiceOption {
 // WithDefaultShardConfig sets the base Raft configuration used when starting
 // new shards. ShardID and ReplicaID are overridden per request from the
 // StartShardRequest fields.
+// WithCapabilityProfile pins this AdminService instance to an explicit
+// effective capability profile (build tags x run mode x config) instead of
+// the process-global sealed profile. Composition roots that can host more
+// than one node per process (the SDK) use this so each node reports its
+// own truth.
+func WithCapabilityProfile(profile capabilities.Capabilities) AdminServiceOption {
+	return func(s *AdminService) { s.profile = &profile }
+}
+
 func WithDefaultShardConfig(cfg config.Config) AdminServiceOption {
 	return func(s *AdminService) {
 		s.defaultCfg = cfg
@@ -910,6 +919,7 @@ type AdminService struct {
 	host       Host
 	smFactory  sm.CreateFunc
 	defaultCfg config.Config
+	profile    *capabilities.Capabilities
 }
 
 // NewAdminService creates a new AdminServicer backed by the given host.
@@ -1070,10 +1080,15 @@ func (s *AdminService) Drain(_ context.Context) error {
 	return nil
 }
 
-// Capabilities returns the compile-time feature set of the running binary.
-// Core features are always enabled; optional features (TimeSeries, Vector)
-// depend on build tags.
+// Capabilities returns the effective feature set of this node: the
+// per-instance profile when one was pinned (WithCapabilityProfile), else
+// the process-global view from the capabilities package (the sealed
+// profile after a composition root seals, or the compile-time fallback).
 func (s *AdminService) Capabilities(_ context.Context) (*capabilities.Capabilities, error) {
+	if s.profile != nil {
+		caps := *s.profile
+		return &caps, nil
+	}
 	caps := capabilities.Get()
 	return &caps, nil
 }

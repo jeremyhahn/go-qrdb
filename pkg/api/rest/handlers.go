@@ -95,15 +95,25 @@ type healthResponse struct {
 
 // capabilitiesResponse is the JSON payload returned by GET /capabilities.
 type capabilitiesResponse struct {
-	KV          bool `json:"kv"`
-	MVCC        bool `json:"mvcc"`
-	Transaction bool `json:"transaction"`
-	Batch       bool `json:"batch"`
-	Watch       bool `json:"watch"`
-	Lease       bool `json:"lease"`
-	Index       bool `json:"index"`
-	TimeSeries  bool `json:"timeSeries"`
-	Vector      bool `json:"vector"`
+	Mode        string `json:"mode"`
+	KV          bool   `json:"kv"`
+	MVCC        bool   `json:"mvcc"`
+	Transaction bool   `json:"transaction"`
+	Batch       bool   `json:"batch"`
+	Watch       bool   `json:"watch"`
+	Lease       bool   `json:"lease"`
+	Lock        bool   `json:"lock"`
+	Index       bool   `json:"index"`
+	Cluster     bool   `json:"cluster"`
+	Backup      bool   `json:"backup"`
+	Rebalance   bool   `json:"rebalance"`
+	TimeSeries  bool   `json:"timeSeries"`
+	Vector      bool   `json:"vector"`
+	SQL         bool   `json:"sql"`
+	MySQL       bool   `json:"mysql"`
+	PostgreSQL  bool   `json:"postgresql"`
+	Etcd        bool   `json:"etcd"`
+	FTS         bool   `json:"fts"`
 }
 
 // drainResponse is the JSON payload returned by POST /drain.
@@ -261,7 +271,8 @@ func (s *Server) handleDrain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, drainResponse{Status: "drained"})
 }
 
-// handleCapabilities returns the compile-time feature set of the QRDB binary.
+// handleCapabilities returns the effective feature set of the node
+// (build tags x run mode x config).
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
@@ -273,15 +284,25 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, capabilitiesResponse{
+		Mode:        caps.Mode,
 		KV:          caps.KV,
 		MVCC:        caps.MVCC,
 		Transaction: caps.Transaction,
 		Batch:       caps.Batch,
 		Watch:       caps.Watch,
 		Lease:       caps.Lease,
+		Lock:        caps.Lock,
 		Index:       caps.Index,
+		Cluster:     caps.Cluster,
+		Backup:      caps.Backup,
+		Rebalance:   caps.Rebalance,
 		TimeSeries:  caps.TimeSeries,
 		Vector:      caps.Vector,
+		SQL:         caps.SQL,
+		MySQL:       caps.MySQL,
+		PostgreSQL:  caps.PostgreSQL,
+		Etcd:        caps.Etcd,
+		FTS:         caps.FTS,
 	})
 }
 
@@ -1097,7 +1118,11 @@ func mapHTTPError(err error) int {
 	var rupe *service.RestoreUnboundedPrefixError
 	var rae *service.RestoreApplyError
 
+	var sni *ServiceNotImplementedError
+
 	switch {
+	case errors.As(err, &sni):
+		return http.StatusNotImplemented
 	case errors.As(err, &knf):
 		return http.StatusNotFound
 	case errors.As(err, &rce):

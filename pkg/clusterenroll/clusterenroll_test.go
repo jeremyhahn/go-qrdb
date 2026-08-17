@@ -272,7 +272,7 @@ func TestResolve_Path5_FirstNode_ReturnsAdvertiser(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: 0}, // OS-assigned port
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // 0 would map to DefaultNoisePort and flake when occupied
 	}
 
 	got, adv, err := Resolve(context.Background(), opts, discardLogger())
@@ -308,7 +308,7 @@ func TestResolve_Path5_FirstNode_ReloadsExistingKey(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: 0},
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t)},
 	}
 
 	// First call: generates key and starts server.
@@ -497,7 +497,7 @@ func TestStartAdvertiser_InvalidExistingKey(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: 0}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error for invalid noise key file")
 	}
@@ -538,7 +538,7 @@ func TestStartAdvertiser_KeyReadFails(t *testing.T) {
 		return orig(name)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: 0}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("StartAdvertiser error = %v, want the injected read error", err)
 	}
@@ -564,7 +564,7 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: 0}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error when noise key path is a directory")
 	}
@@ -669,7 +669,7 @@ func TestResolveCA_FirstNode_ReturnsAdvertiser(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: 0}, // OS-assigned port
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // 0 would map to DefaultNoisePort and flake when occupied
 	}
 
 	caCertPEM, caKeyPEM, adv, err := ResolveCA(context.Background(), opts, discardLogger())

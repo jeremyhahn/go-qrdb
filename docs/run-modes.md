@@ -35,9 +35,11 @@ MVCC revisions, watch, lease, lock, transactions, etcd compatibility,
 cluster operations — is refused with a typed error whose text names the
 remedy: `requires mode: raft`.
 
-Status: implemented in the SDK today (`node://` /
-`sdk/go/node.NewStandaloneNode`, and the flat `embedded://` driver);
-*(planned)* in the daemon via `mode: standalone`.
+Status: implemented everywhere — the SDK (`node://` /
+`sdk/go/node.NewStandaloneNode`, the flat `embedded://` driver) and the
+daemon (`mode: standalone` in YAML or `--mode standalone`). All three
+roots share one canonical composition
+(`lifecycle.NewLocalStorage`/`NewLocalEngine` → `backend.LocalBackend`).
 
 ### Raft — single- or multi-node
 
@@ -64,7 +66,7 @@ errors, not silent no-ops).
 | Gate | Question | Mechanism |
 |---|---|---|
 | Build tag | Compiled in? | Tag-gated `init()` → `capabilities.Register` (existing: `qrdb_sql`, `qrdb_mysql`, `qrdb_pgsql`, `qrdb_etcd`, `qrdb_fts`, `qrdb_vector`, `qrdb_ts`, `codec_*`) |
-| Run mode | Structurally possible? | `mode: standalone \| raft` (config key implemented; daemon composition lands in phase 3); raft-only features are not composed in standalone |
+| Run mode | Structurally possible? | `mode: standalone \| raft` (implemented in config, daemon, and SDK); raft-only features are not composed in standalone |
 | Config | Operator-enabled? | Existing sections plus `enabled` on `mvcc`/`watch`/`lease` to disable even in raft mode (implemented) |
 
 There is deliberately **no `qrdb_raft` build tag**: raft code is always
@@ -96,7 +98,7 @@ security posture or breaks a dependency of everything else:
 | Audit (`pkg/audit`) | Compliance posture; services emit unconditionally |
 | REST + gRPC transports | A server with no transport is unusable; enabled per `protocols.*` |
 
-## Configuration (config gate implemented; daemon branch in phase 3)
+## Configuration
 
 ```yaml
 mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
@@ -112,8 +114,11 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
   naming the tag (`Config.ValidateCapabilities`, called by composition
   roots — a deliberate separate gate so pure-config validation stays
   build-independent).
-- The daemon currently refuses `mode: standalone` with a pointed error;
-  its raft-free composition branch is phase 3.
+- The daemon serves `mode: standalone` natively: raft-only endpoint
+  families answer 501/Unimplemented with the `requires mode: raft` hint
+  on every transport (nil singletons plus the gated per-database service
+  registry, `pkg/server/standalone_gate.go`), while the SQL catalog keeps
+  its internal MVCC/transaction plumbing.
 - Refusals at runtime surface through the existing per-transport typed
   errors (REST 501 / gRPC & QUIC Unimplemented) with the
   `requires mode: raft` hint.

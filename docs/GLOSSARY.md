@@ -35,10 +35,9 @@ technology.
   Txn is revision-based), etcd compatibility, cluster
   membership/rebalance/shard operations.
 
-Implementation status: the raft-free stack exists and serves the SDK's
-in-process paths today; the `qrdbd` daemon's `mode: standalone` is being
-implemented per the approved run-modes plan. Where this glossary marks
-something *(planned)*, the code has not landed yet.
+Implementation status: the raft-free stack serves the SDK's in-process
+paths AND the `qrdbd` daemon (`mode: standalone`). Where this glossary
+marks something *(planned)*, the code has not landed yet.
 
 ---
 
@@ -49,7 +48,7 @@ something *(planned)*, the code has not landed yet.
 | **Embedded** | qrdb linked as a Go library inside the host application's process. No daemon, no network transport required. Constructed via `sdk/go/node` (`NewStandaloneNode` / `NewClusteredNode`) or reached in-process through the SDK's embedded transport. |
 | **`embedded://` (DSN)** | The SDK's fast in-process KV-only transport: engines wired directly, minimal stack. **No relational/SQL surface** — `CREATE TABLE` fails by design. Use for pure KV embedding. |
 | **`node://` (DSN)** | The SDK's full in-process node: the complete service stack (SQL/relational catalog, tenants, seal, IAM) inside the caller's process — **raft-free**: `sdk/go/node.NewStandaloneNode` composes `backend.LocalBackend` (a `service.Host` over an engine, no consensus). `NewClusteredNode` is the raft counterpart. Required for relational/SQL work when embedding. |
-| **Standalone** *(daemon support planned)* | One `qrdb` process with **no Raft**: services composed over `backend.LocalBackend` + an engine on a local storage backend. Serves standard database operations + the security core; refuses raft-only features with a typed "requires mode: raft" error. Implemented today in the SDK (`node://`, `NewStandaloneNode`) and the `embedded://` driver; the daemon gains it via `mode: standalone` (approved plan, in progress). |
+| **Standalone** | One `qrdb` process with **no Raft**: services composed over `backend.LocalBackend` + an engine on a local storage backend. Serves standard database operations + the security core; refuses raft-only features with a typed "requires mode: raft" error. Implemented in the SDK (`node://`, `NewStandaloneNode`), the `embedded://` driver, AND the daemon (`mode: standalone` in YAML or `--mode standalone`). |
 | **Raft single-node** | One `qrdbd` daemon running a **single-replica Raft group** (quorum of one — see *Single-node Raft* below). The full feature set including MVCC/watch/lease, with a clean scale-out path. This is what `configs/qrdb.yaml` describes, and what `qrdbd` runs today by default (`mode: raft`). |
 | **Raft clustered** | Three or more `qrdbd` peers forming one Raft group per shard, replicating every write through consensus. Tolerates minority failures (`2f+1` members tolerate `f` failures). |
 

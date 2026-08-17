@@ -43,6 +43,33 @@ are not reconstructed here — their history is in the git log.
   gRPC/QUIC/service `ServiceNotConfiguredError` gained an optional `Hint`
   appended to the message (e.g. `requires mode: raft`).
 
+- **`mode: standalone` in the daemon (run-modes phase 3).** `qrdbd` now
+  composes the raft-free data plane (`lifecycle.NewLocalStorage`/
+  `NewLocalEngine` → `backend.LocalBackend`) when `mode: standalone` (or
+  `--mode standalone`) is set: no raft host, no WAL, no election — boot
+  drops from seconds to milliseconds. Standard database operations plus
+  the always-on security core (mTLS/RBAC/IAM, seal barrier incl. encfs,
+  audit) serve as in raft mode; raft-only endpoint families (MVCC
+  revisions, watch, lease, lock, etcd-style Txn, cluster/backup/
+  rebalance, encryption migration) are refused on every transport with
+  501/Unimplemented naming the remedy `requires mode: raft`. The SQL
+  catalog keeps its internal MVCC/transaction plumbing (standard ops).
+- **One canonical local composition.** The three duplicate
+  storage/engine composition sites (SDK node, embedded transport, and
+  now the daemon) collapse into `lifecycle.NewLocalStorage`/
+  `NewLocalEngine`; the embedded `database/sql` driver gains objstore
+  support as a side effect.
+- **SDK standalone gating (behavior change, as announced below).**
+  `NewStandaloneNode` no longer exposes the MVCC/watch/lease/transaction/
+  lock service families; standalone nodes report `mode: standalone` in
+  capabilities with those features false. `NewClusteredNode` is
+  unchanged. `service.AdminService` gains `WithCapabilityProfile` /
+  `lifecycle.Infra.Profile` so each node in a multi-node process reports
+  its own truth.
+- REST's `capabilitiesResponse` now carries the full profile (a phase-2
+  funnel gap), and REST maps `ServiceNotImplementedError` to 501 from
+  registry-resolved paths (previously 500).
+
 ### Changed (upcoming, announced here first)
 - **SDK standalone (`NewStandaloneNode`) will stop composing MVCC, lease,
   and transaction services**: those become raft-mode-only per the ratified

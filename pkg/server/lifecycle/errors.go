@@ -14,6 +14,12 @@
 
 package lifecycle
 
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+)
+
 // NilHostError is returned when Infra.Host is nil.
 type NilHostError struct{}
 
@@ -270,5 +276,51 @@ func (e *EmbeddingProviderError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *EmbeddingProviderError) Unwrap() error {
+	return e.Err
+}
+
+// LocalStorageError is returned when NewLocalStorage fails to open the
+// node-local storage backend for a raft-free composition.
+type LocalStorageError struct {
+	// Backend is the storage backend that failed to open.
+	Backend database.BackendType
+	Err     error
+}
+
+// Error returns a human-readable description.
+func (e *LocalStorageError) Error() string {
+	return "lifecycle: local " + string(e.Backend) + " storage: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *LocalStorageError) Unwrap() error {
+	return e.Err
+}
+
+// UnsupportedLocalBackendError is returned when NewLocalStorage is asked
+// for a backend type it does not recognize.
+type UnsupportedLocalBackendError struct {
+	// Backend is the unrecognized backend type.
+	Backend database.BackendType
+}
+
+// Error returns a human-readable description.
+func (e *UnsupportedLocalBackendError) Error() string {
+	return "lifecycle: unsupported local storage backend " + strconv.Quote(string(e.Backend))
+}
+
+// LocalEngineError is returned when NewLocalEngine fails to construct the
+// store engine for a raft-free composition.
+type LocalEngineError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *LocalEngineError) Error() string {
+	return "lifecycle: local engine: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *LocalEngineError) Unwrap() error {
 	return e.Err
 }

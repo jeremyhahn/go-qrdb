@@ -1,0 +1,173 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
+
+// stubRegistry records which resolutions were forwarded to the inner
+// registry.
+type stubRegistry struct {
+	service.Registry
+	calls []string
+}
+
+func (s *stubRegistry) KVService(tenant, db string) (service.KVServicer, error) {
+	s.calls = append(s.calls, "kv")
+	return nil, nil
+}
+
+func (s *stubRegistry) IndexService(tenant, db string) (service.IndexServicer, error) {
+	s.calls = append(s.calls, "index")
+	return nil, nil
+}
+
+func (s *stubRegistry) TimeSeriesService(tenant, db string) (service.TimeSeriesServicer, error) {
+	s.calls = append(s.calls, "timeseries")
+	return nil, nil
+}
+
+func (s *stubRegistry) VectorService(tenant, db string) (service.VectorServicer, error) {
+	s.calls = append(s.calls, "vector")
+	return nil, nil
+}
+
+func (s *stubRegistry) BatchService(tenant, db string) (service.BatchServicer, error) {
+	s.calls = append(s.calls, "batch")
+	return nil, nil
+}
+
+func (s *stubRegistry) TableService(tenant, db string) (service.TableServicer, error) {
+	s.calls = append(s.calls, "table")
+	return nil, nil
+}
+
+func (s *stubRegistry) SequenceService(tenant, db string) (service.SequenceServicer, error) {
+	s.calls = append(s.calls, "sequence")
+	return nil, nil
+}
+
+func (s *stubRegistry) PrivilegeService(tenant, db string) (service.PrivilegeServicer, error) {
+	s.calls = append(s.calls, "privilege")
+	return nil, nil
+}
+
+// TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies pins the standalone
+// API gate: the raft-only registry resolutions are refused with the typed
+// hinted error and NEVER reach the inner registry.
+func TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies(t *testing.T) {
+	inner := &stubRegistry{}
+	gated := &raftOnlyGatedRegistry{inner: inner}
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"mvcc", func() error { _, err := gated.MVCCService("t", "db"); return err }},
+		{"watch", func() error { _, err := gated.WatchService("t", "db"); return err }},
+		{"lease", func() error { _, err := gated.LeaseService("t", "db"); return err }},
+		{"transaction", func() error { _, err := gated.TransactionService("t", "db"); return err }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			var nie *rest.ServiceNotImplementedError
+			if !errors.As(err, &nie) {
+				t.Fatalf("got %v, want *rest.ServiceNotImplementedError", err)
+			}
+			if nie.Service != tc.name {
+				t.Errorf("Service = %q, want %q", nie.Service, tc.name)
+			}
+			if !strings.Contains(err.Error(), StandaloneModeHint) {
+				t.Errorf("error %q must carry the hint %q", err.Error(), StandaloneModeHint)
+			}
+		})
+	}
+	if len(inner.calls) != 0 {
+		t.Fatalf("raft-only resolutions leaked to the inner registry: %v", inner.calls)
+	}
+}
+
+// TestRaftOnlyGatedRegistry_PassesThroughStandardAndSQL pins the flip
+// side: standard operations AND the SQL catalog resolutions (which
+// consume MVCC/transaction internally) flow through untouched.
+func TestRaftOnlyGatedRegistry_PassesThroughStandardAndSQL(t *testing.T) {
+	inner := &stubRegistry{}
+	gated := &raftOnlyGatedRegistry{inner: inner}
+
+	if _, err := gated.KVService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.BatchService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.IndexService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.TimeSeriesService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.VectorService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.TableService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.SequenceService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gated.PrivilegeService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"kv", "batch", "index", "timeseries", "vector", "table", "sequence", "privilege"}
+	if len(inner.calls) != len(want) {
+		t.Fatalf("inner calls = %v, want %v", inner.calls, want)
+	}
+	for i, w := range want {
+		if inner.calls[i] != w {
+			t.Fatalf("inner calls = %v, want %v", inner.calls, want)
+		}
+	}
+}
+
+// TestTransportServiceRegistry_ModeSelection verifies the server hands the
+// gated registry to transports only under WithStandaloneMode.
+func TestTransportServiceRegistry_ModeSelection(t *testing.T) {
+	dbRegistry := NewDatabaseServiceRegistry("system")
+	dbRegistry.Register("system", &DatabaseServices{Name: "system"})
+
+	base := []ServerOption{WithDatabaseServiceRegistry(dbRegistry)}
+
+	raftSrv := New(testConfig(false, false), nil, nil, base...)
+	if _, gated := raftSrv.transportServiceRegistry().(*raftOnlyGatedRegistry); gated {
+		t.Fatal("raft mode must hand transports the ungated registry")
+	}
+
+	saSrv := New(testConfig(false, false), nil, nil, append(base, WithStandaloneMode())...)
+	if _, gated := saSrv.transportServiceRegistry().(*raftOnlyGatedRegistry); !gated {
+		t.Fatal("standalone mode must hand transports the gated registry")
+	}
+	// SQL keeps the ungated registry in both modes.
+	if _, gated := saSrv.buildServiceRegistry().(*raftOnlyGatedRegistry); gated {
+		t.Fatal("the SQL-facing registry must stay ungated in standalone mode")
+	}
+}

@@ -37,6 +37,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cockroachdb/pebble/v2/vfs"
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 	"github.com/jeremyhahn/go-quicraft/pkg/logdb/waldb"
@@ -52,6 +53,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -72,6 +75,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -91,6 +95,7 @@ import (
 
 // startFlags holds the parsed CLI flags for the start command.
 type startFlags struct {
+	mode            string
 	configFile      string
 	listen          string
 	raftAddress     string
@@ -396,11 +401,7 @@ func newStartCmd() *cobra.Command {
 				if err := cfg.ValidateCapabilities(); err != nil {
 					return err
 				}
-				if cfg.IsStandalone() {
-					return &StandaloneModeNotSupportedError{}
-				}
 				applyConfigToFlags(cmd, f, cfg)
-				capabilities.Seal(cfg.EffectiveCapabilities())
 			}
 
 			// Configure the global logger early so all pre-host log
@@ -427,6 +428,7 @@ func newStartCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&f.configFile, "config", "", "Path to YAML configuration file")
+	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft, standard database operations only)")
 	cmd.Flags().StringVar(&f.listen, "listen", "0.0.0.0:63001", "Listen address (host:port)")
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
@@ -509,6 +511,9 @@ func newStartCmd() *cobra.Command {
 // fields that were not explicitly set via CLI flags. CLI flags always take
 // precedence over YAML values.
 func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Config) {
+	if !cmd.Flags().Changed("mode") && cfg.Mode != "" {
+		f.mode = cfg.Mode
+	}
 	if !cmd.Flags().Changed("listen") {
 		// f.listen is the Raft host bind address (HostConfig/RaftConfig
 		// ListenAddress), not the admin HTTP listener. Source it from the Raft
@@ -1172,9 +1177,52 @@ func runStart(f *startFlags) error {
 				sealedWindowNode = sealNode
 			}
 
-			host, err := initializeNode(sigCtx, f, bundle)
-			if err != nil {
-				return err
+			// Run-mode branch: raft mode constructs the QuicRaft host; mode
+			// "standalone" composes the canonical raft-free data plane
+			// (lifecycle.NewLocalStorage/NewLocalEngine -> backend.LocalBackend)
+			// shared with sdk/go/node.NewStandaloneNode. host stays nil in
+			// standalone and every raft-only stage below is guarded on it.
+			standalone := f.mode == capabilities.ModeStandalone
+			var host *quicraft.Host
+			var svcHost service.Host
+			var rnode raftNode
+			var nodeCloser io.Closer
+			if standalone {
+				localBackend := database.BackendPebble
+				if len(f.databases) > 0 && f.databases[0].Backend != "" {
+					localBackend = database.BackendType(f.databases[0].Backend)
+				}
+				if localBackend == database.BackendRaft {
+					return &StandaloneRaftBackendError{}
+				}
+				var dataPlaneFS vfs.FS
+				if sealSub != nil && !sealSub.SealBarrier.IsSealed() && localBackend == database.BackendPebble {
+					dataPlaneFS = encfs.New(vfs.Default, sealSub.SealBarrier)
+				}
+				stg, pdb, lerr := lifecycle.NewLocalStorage(localBackend, f.dataDir, dataPlaneFS, f.storageConfig.Objstore)
+				if lerr != nil {
+					return lerr
+				}
+				eng, lerr := lifecycle.NewLocalEngine(localBackend, stg, pdb, watchHub)
+				if lerr != nil {
+					_ = stg.Close()
+					return lerr
+				}
+				local := backend.NewLocalBackend(eng)
+				svcHost = local
+				rnode = local
+				nodeCloser = localDataPlaneCloser{local: local, storage: stg}
+				slog.Info("standalone mode: raft-free data plane composed",
+					slog.String("backend", string(localBackend)))
+			} else {
+				h, err := initializeNode(sigCtx, f, bundle)
+				if err != nil {
+					return err
+				}
+				host = h
+				svcHost = newHostAdapter(host)
+				rnode = host
+				nodeCloser = host
 			}
 
 			// SIGHUP triggers manual TLS certificate reload (for scripted rotation).
@@ -1187,15 +1235,17 @@ func runStart(f *startFlags) error {
 			}()
 			defer signal.Stop(sighupCh)
 
-			// Build the service layer.
-			adapter := newHostAdapter(host)
-
-			// Use a bootstrap-specific adapter that reads from the local SM
-			// (StaleRead) instead of going through ReadIndex. This avoids
-			// a startup deadlock where the Raft ReadIndex pipeline is not
-			// yet warmed up after leader election.
-			bootAdapter := newBootstrapHostAdapter(adapter)
-			bootKVSvc := service.NewKVService(bootAdapter, shard.ShardKV)
+			// Build the service layer over the mode-resolved host. In raft
+			// mode a bootstrap-specific adapter reads from the local SM
+			// (StaleRead) instead of going through ReadIndex, avoiding a
+			// startup deadlock where the ReadIndex pipeline is not yet
+			// warmed up after leader election; the LocalBackend has no
+			// ReadIndex pipeline, so standalone uses it directly.
+			bootHost := svcHost
+			if host != nil {
+				bootHost = newBootstrapHostAdapter(newHostAdapter(host))
+			}
+			bootKVSvc := service.NewKVService(bootHost, shard.ShardKV)
 
 			// The seal subsystem (barrier, credential service, barrier registry)
 			// was constructed earlier, before host initialization, so the data
@@ -1219,12 +1269,12 @@ func runStart(f *startFlags) error {
 			if sealBarrier != nil && barrierRegistry != nil {
 				clusterDEKMgr, cdErr := dek.NewClusterDEKManager(sealBarrier, slog.Default())
 				if cdErr != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return &ClusterDEKError{Err: cdErr}
 				}
 				dekDataDir := filepath.Join(f.dataDir, "dek")
 				if err := os.MkdirAll(dekDataDir, 0o700); err != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return &DEKStorageError{Err: err}
 				}
 				// SyncWrites is forced on: the wrapped per-tenant DEKs persisted here
@@ -1232,14 +1282,14 @@ func runStart(f *startFlags) error {
 				// on crash while appearing to have succeeded.
 				dekStore, dekStoreErr := pebblestore.New(&pebblestore.Config{DataDir: dekDataDir, SyncWrites: true})
 				if dekStoreErr != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return &DEKStorageError{Err: dekStoreErr}
 				}
 				defer func() { _ = dekStore.Close() }()
 				dekBackend := seal.NewStorageAdapter(dekStore)
 				tdm, tdmErr := dek.NewTenantDEKManager(clusterDEKMgr, dekBackend, slog.Default(), nil)
 				if tdmErr != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return &TenantDEKError{Err: tdmErr}
 				}
 				tenantDEKMgr = tdm
@@ -1285,15 +1335,23 @@ func runStart(f *startFlags) error {
 			if f.backupDir != "" {
 				backupFileStore, berr := file.New(f.backupDir)
 				if berr != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return &RestoreBackupError{Phase: "open-backup-store", Err: berr}
 				}
 				defer func() { _ = backupFileStore.Close() }()
 				backupSink = backupsink.New(backupFileStore)
 			}
 
+			// Seal the effective capability profile (build tags x mode x
+			// config) once per boot, before the service graph and any
+			// transport exists; the same profile is pinned per-instance on
+			// the AdminService below.
+			profile := buildServerConfig(f).EffectiveCapabilities()
+			capabilities.Seal(profile)
+
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
-				Host:                      adapter,
+				Host:                      svcHost,
+				Profile:                   &profile,
 				WatchHub:                  watchHub,
 				BackupSink:                backupSink,
 				DataDir:                   f.dataDir,
@@ -1314,7 +1372,7 @@ func runStart(f *startFlags) error {
 				Encryptor:                 enc,
 			})
 			if err != nil {
-				_ = shutdownNode(host)
+				_ = shutdownNode(nodeCloser)
 				return err
 			}
 			// Guarded so the system-migration path (which closes svcNode early to
@@ -1350,7 +1408,7 @@ func runStart(f *startFlags) error {
 			// (user, role, audit) write raw JSON — they must NOT go through the
 			// storage/wire codec pipeline, which expects user data to be encoded
 			// in the configured storage codec (e.g. msgpack).
-			authKVSvc := service.NewKVService(adapter, shard.ShardKV)
+			authKVSvc := service.NewKVService(svcHost, shard.ShardKV)
 
 			// Always bootstrap user and role stores. These are organizational
 			// primitives that operators may need regardless of whether auth
@@ -1401,7 +1459,7 @@ func runStart(f *startFlags) error {
 			runtimeKVAdapter := newKVServiceAdapter(authKVSvc, nil, nil)
 			chainFile, err := audit.NewFileLogger(filepath.Join(f.dataDir, "audit-events.ndjson"))
 			if err != nil {
-				_ = shutdownNode(host)
+				_ = shutdownNode(nodeCloser)
 				return &AuthBootstrapError{Step: "compliance audit file", Err: err}
 			}
 			complianceAudit := audit.NewAggregateLogger(
@@ -1412,9 +1470,9 @@ func runStart(f *startFlags) error {
 			defer func() { _ = complianceAudit.Close() }()
 			_ = runtimeKVAdapter // used below when auth is enabled
 
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, host, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, rnode, shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit)
 			if err != nil {
-				_ = shutdownNode(host)
+				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
 					slog.Info("user/role store bootstrap canceled by shutdown signal")
 					return nil
@@ -1435,9 +1493,9 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, host, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
 				if err != nil {
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
 					if sigCtx.Err() != nil {
 						slog.Info("auth bootstrap canceled by shutdown signal")
@@ -1497,7 +1555,7 @@ func runStart(f *startFlags) error {
 				MultiplexLogDB: f.walMux,
 			})
 			if err != nil {
-				_ = shutdownNode(host)
+				_ = shutdownNode(nodeCloser)
 				return err
 			}
 			tenantHostReg := ti.Hosts
@@ -1565,7 +1623,7 @@ func runStart(f *startFlags) error {
 			// enable-encryption coordination (below) can reuse the node's HPKE key
 			// for sealing/opening per-node migration credentials.
 			var nodePriv *ecdsa.PrivateKey
-			if barrierRegistry != nil && svcNode.PlacementStore != nil {
+			if host != nil && barrierRegistry != nil && svcNode.PlacementStore != nil {
 				// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
 				// the same key that the node certificate was issued for, making it the
 				// HPKE recipient key (DHKEM-P-256). A parse failure disables key transport
@@ -1696,7 +1754,7 @@ func runStart(f *startFlags) error {
 			// credentials) via clusterMig and every node's reconciler performs its
 			// local recycle; otherwise the direct system migrator is used unchanged.
 			var clusterMig *clusterCoordinatorMigrator
-			if svcNode.ClusterMigStore != nil && nodePriv != nil && barrierRegistry != nil {
+			if host != nil && svcNode.ClusterMigStore != nil && nodePriv != nil && barrierRegistry != nil {
 				localMig := server.NewScopedEncryptionMigrator(
 					sysMigrator, tenantHostReg, raftBackendReg, barrierRegistry, tenantSvcInst)
 				topology := service.NewHostTopologyProvider(raftbackend.New(host), svcNode.Rebalance)
@@ -1760,19 +1818,31 @@ func runStart(f *startFlags) error {
 				server.WithTLS(bundle.TLSConfig),
 				server.WithCACertPool(bundle.CACertPool),
 				server.WithLeaderForwarding(registry),
-				server.WithHost(host),
 				server.WithBatch(batchSvc),
-				server.WithTransaction(txSvc),
-				server.WithMVCC(mvccSvc),
-				server.WithLease(leaseSvc),
-				server.WithLockService(lockSvc),
 				server.WithTimeSeries(tsSvc),
 				server.WithIndex(indexSvc),
-				server.WithWatch(watchSvc),
 				server.WithVector(vectorSvc),
 				server.WithCollectionService(collectionSvc),
 				server.WithDatabaseService(dbSvc),
 				server.WithDatabaseManager(dbManager),
+			}
+			// The raft-only API surface is composed only in raft mode; in
+			// standalone the transports refuse these families with a typed
+			// "requires mode: raft" error (nil singletons + the gated
+			// per-database registry, see server.WithStandaloneMode). The
+			// underlying engine still serves MVCC/transaction operations
+			// internally for the SQL catalog and collections.
+			if standalone {
+				serverOpts = append(serverOpts, server.WithStandaloneMode())
+			} else {
+				serverOpts = append(serverOpts,
+					server.WithHost(host),
+					server.WithTransaction(txSvc),
+					server.WithMVCC(mvccSvc),
+					server.WithLease(leaseSvc),
+					server.WithLockService(lockSvc),
+					server.WithWatch(watchSvc),
+				)
 			}
 			// User and role management services are always wired — they are
 			// organizational primitives independent of auth enforcement. The
@@ -1859,7 +1929,9 @@ func runStart(f *startFlags) error {
 			// System-scope enable-encryption migrator. The server's scoped-migrator
 			// composite routes ScopeSystem here (in-process recycle via the boot loop)
 			// and ScopeTenant to the tenant Host registry above.
-			serverOpts = append(serverOpts, server.WithEncryptionMigrator(sysMigrator))
+			if !standalone {
+				serverOpts = append(serverOpts, server.WithEncryptionMigrator(sysMigrator))
+			}
 			// Phase D: when cluster coordination is wired, the transports hit the
 			// coordinator (write replicated intent + seal per-node credentials)
 			// instead of recycling locally; the per-node reconcilers do the recycle.
@@ -1882,10 +1954,10 @@ func runStart(f *startFlags) error {
 				// bootstrapUserRoleStores). No additional CreateTenant call is
 				// needed here; first-boot is idempotent across daemon restarts.
 			}
-			if svcNode.Backup != nil {
+			if svcNode.Backup != nil && !standalone {
 				serverOpts = append(serverOpts, server.WithBackupService(svcNode.Backup))
 			}
-			if svcNode.Rebalance != nil {
+			if svcNode.Rebalance != nil && !standalone {
 				serverOpts = append(serverOpts, server.WithRebalanceService(svcNode.Rebalance))
 			}
 			if bootServers != nil {
@@ -1924,7 +1996,7 @@ func runStart(f *startFlags) error {
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
 			if err := srv.Start(); err != nil {
-				_ = shutdownNode(host)
+				_ = shutdownNode(nodeCloser)
 				return err
 			}
 
@@ -1935,7 +2007,7 @@ func runStart(f *startFlags) error {
 			// applies it. The leadership gate is re-evaluated each tick, so the loop is
 			// correct across elections and a no-op on followers. Skipped when the lease
 			// service is absent (embeddable deployments without lease support).
-			if leaseSvc != nil {
+			if leaseSvc != nil && host != nil {
 				go lr.RunExpiry(bootCtx, lease.DefaultExpiryInterval,
 					func() bool {
 						leaderID, ok, lerr := host.GetLeaderID(shard.ShardKV)
@@ -1963,11 +2035,14 @@ func runStart(f *startFlags) error {
 			// Opt-in dynamic Raft membership: register self under a lease and, on the
 			// leader, reconcile the Raft group as nodes join and leave. OFF by default.
 			var membershipMgr *cluster.MembershipManager
-			if f.dynamicMembership {
+			if f.dynamicMembership && standalone {
+				slog.Warn("dynamic membership ignored: requires mode: raft")
+			}
+			if f.dynamicMembership && !standalone {
 				membershipMgr, err = startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 				if err != nil {
 					srv.Stop()
-					_ = shutdownNode(host)
+					_ = shutdownNode(nodeCloser)
 					return err
 				}
 				slog.Info("dynamic membership manager started",
@@ -2030,8 +2105,13 @@ func runStart(f *startFlags) error {
 				}
 
 				srv.Stop()
-				return shutdownNode(host)
+				return shutdownNode(nodeCloser)
 			case req := <-migrateCh:
+				if host == nil {
+					// Unreachable: the migrator is not wired in standalone.
+					slog.Error("system encryption migration is not supported in standalone mode")
+					return &StandaloneMigrationError{}
+				}
 				// In-process system encryption migration: quiesce, re-encrypt the
 				// system host's stores, adopt the keyed root key, and signal the boot
 				// loop to re-initialize (the barrier comes back up sealed, pending
@@ -2163,6 +2243,7 @@ func buildQuotaReconciler(acct *quota.Accountant, tenantSvc tenant.TenantService
 // flags for use by the multi-protocol server orchestrator.
 func buildServerConfig(f *startFlags) *qrdbconfig.Config {
 	return &qrdbconfig.Config{
+		Mode: f.mode,
 		Server: qrdbconfig.ServerConfig{
 			AdminPort: f.adminPort,
 			GRPCPort:  f.grpcPort,
@@ -2457,6 +2538,24 @@ func waitForSignal() {
 }
 
 // shutdownNode gracefully closes the node and logs the result.
+// localDataPlaneCloser tears down the standalone (raft-free) data plane:
+// the LocalBackend first (stops accepting applies), then the storage it
+// wraps. It satisfies the io.Closer contract shutdownNode expects from the
+// raft host in raft mode.
+type localDataPlaneCloser struct {
+	local   *backend.LocalBackend
+	storage storage.Storage
+}
+
+// Close closes the LocalBackend and then the underlying storage.
+func (c localDataPlaneCloser) Close() error {
+	err := c.local.Close()
+	if serr := c.storage.Close(); err == nil {
+		err = serr
+	}
+	return err
+}
+
 func shutdownNode(node io.Closer) error {
 	if err := node.Close(); err != nil {
 		slog.Error("error during shutdown", "error", err)

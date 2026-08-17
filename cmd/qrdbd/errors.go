@@ -48,15 +48,24 @@ type MissingFlagError = cluster.MissingFlagError
 // discovery. Aliased from pkg/cluster.
 type NoPeersError = cluster.NoPeersError
 
-// StandaloneModeNotSupportedError is returned when a configuration with
-// mode "standalone" is passed to the daemon before the standalone
-// composition branch lands (run-modes plan, phase 3). Refusing is safer
-// than silently booting the raft stack against a raft-free intent.
-type StandaloneModeNotSupportedError struct{}
+// StandaloneRaftBackendError is returned when mode "standalone" is
+// combined with a database whose backend is "raft" — the replicated data
+// plane structurally requires the consensus layer.
+type StandaloneRaftBackendError struct{}
 
 // Error returns a human-readable description.
-func (e *StandaloneModeNotSupportedError) Error() string {
-	return "cli: mode \"standalone\" is not yet supported by qrdbd; run mode \"raft\" (the default), or embed via sdk/go/node.NewStandaloneNode"
+func (e *StandaloneRaftBackendError) Error() string {
+	return "cli: database backend \"raft\" requires mode: raft (standalone serves node-local backends only)"
+}
+
+// StandaloneMigrationError is returned when an in-process system
+// encryption migration is requested under mode "standalone". The
+// migration recycle path is raft-mode-only today.
+type StandaloneMigrationError struct{}
+
+// Error returns a human-readable description.
+func (e *StandaloneMigrationError) Error() string {
+	return "cli: system encryption migration requires mode: raft"
 }
 
 // UnknownSMError is returned when the --sm flag specifies an unknown

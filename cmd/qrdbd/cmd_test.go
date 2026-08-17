@@ -2616,22 +2616,34 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	// when SIGINT arrives, the bootstrap cancels cleanly via context.
 	time.Sleep(500 * time.Millisecond)
 
-	// Send SIGINT to unblock waitForSignal.
+	// Re-send SIGINT until Execute returns: under full-suite load the
+	// boot can still be several seconds from registering the signal
+	// context when the first SIGINT is raised, and a single signal
+	// delivered in that window is lost — the daemon then starts fully
+	// and waits forever. Retrying makes the test independent of boot
+	// duration.
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	deadline := time.After(30 * time.Second)
 	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatalf("Kill() error = %v", err)
 	}
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Execute() error = %v, want nil (clean shutdown)", err)
+			}
+			resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
+			return
+		case <-ticker.C:
+			if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+				t.Fatalf("Kill() error = %v", err)
+			}
+		case <-deadline:
+			t.Fatal("Execute() did not return within timeout after SIGINT")
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("Execute() did not return within timeout after SIGINT")
 	}
-
-	// Reset signal handler.
-	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 func TestNewStartCmd_ValidConfig_SMUnknown(t *testing.T) {

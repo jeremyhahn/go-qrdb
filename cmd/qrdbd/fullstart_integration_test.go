@@ -17,10 +17,15 @@
 package main
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -512,6 +517,106 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 			t.Logf("runStart returned (acceptable): %v", runErr)
 		}
 	case <-time.After(20 * time.Second):
+		t.Fatal("runStart did not return within timeout after SIGTERM")
+	}
+	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
+}
+
+// TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly boots the
+// daemon in mode "standalone" (no raft, memory backend) and verifies over
+// REST: health serves, KV put/get round-trips, capabilities report mode
+// standalone with the raft-only features false, and the watch API is
+// refused with 501 naming the remedy.
+func TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	adminPort, err := findFreeTCPPort()
+	require.NoError(t, err)
+
+	f := &startFlags{
+		mode:        "standalone",
+		dataDir:     dir,
+		adminPort:   adminPort,
+		authEnabled: false,
+		enableREST:  true,
+		databases: []qrdbconfig.DatabaseConfig{
+			{Name: "default", Engine: "kv", Backend: "memory"},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runStart(f)
+	}()
+
+	base := fmt.Sprintf("https://127.0.0.1:%d", adminPort)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test client against a self-signed test daemon
+		},
+	}
+
+	// Wait for the admin listener.
+	require.Eventually(t, func() bool {
+		resp, herr := client.Get(base + "/health")
+		if herr != nil {
+			return false
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode == 200
+	}, 30*time.Second, 250*time.Millisecond, "standalone daemon never became healthy")
+
+	// Standard KV round-trip (raw-body PUT /kv/{key}).
+	putReq, err := http.NewRequest(http.MethodPut, base+"/kv/standalone-smoke", strings.NewReader("v1"))
+	require.NoError(t, err)
+	putResp, err := client.Do(putReq)
+	require.NoError(t, err)
+	_ = putResp.Body.Close()
+	require.Less(t, putResp.StatusCode, 300, "KV put must succeed in standalone")
+
+	getResp, err := client.Get(base + "/kv/standalone-smoke")
+	require.NoError(t, err)
+	_ = getResp.Body.Close()
+	require.Equal(t, 200, getResp.StatusCode, "KV get must succeed in standalone")
+
+	// Capabilities report the standalone truth.
+	capResp, err := client.Get(base + "/capabilities")
+	require.NoError(t, err)
+	capBytes, _ := io.ReadAll(capResp.Body)
+	_ = capResp.Body.Close()
+	require.Equal(t, 200, capResp.StatusCode)
+	var caps struct {
+		Mode  string `json:"mode"`
+		MVCC  bool   `json:"mvcc"`
+		Watch bool   `json:"watch"`
+		Lease bool   `json:"lease"`
+		KV    bool   `json:"kv"`
+	}
+	require.NoError(t, json.Unmarshal(capBytes, &caps))
+	require.Equal(t, "standalone", caps.Mode)
+	require.False(t, caps.MVCC)
+	require.False(t, caps.Watch)
+	require.False(t, caps.Lease)
+	require.True(t, caps.KV)
+
+	// A raft-only family is refused with 501 + the remedy hint.
+	rangeResp, err := client.Get(base + "/kv/range?start=a")
+	require.NoError(t, err)
+	rangeBytes, _ := io.ReadAll(rangeResp.Body)
+	_ = rangeResp.Body.Close()
+	require.Equal(t, 501, rangeResp.StatusCode, "mvcc range must be refused in standalone: %s", rangeBytes)
+	require.Contains(t, string(rangeBytes), "requires mode: raft")
+
+	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
+		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
+	}
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Logf("runStart returned (acceptable): %v", runErr)
+		}
+	case <-time.After(25 * time.Second):
 		t.Fatal("runStart did not return within timeout after SIGTERM")
 	}
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)

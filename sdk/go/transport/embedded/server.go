@@ -25,20 +25,17 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
@@ -511,57 +508,22 @@ func validateServerConfig(config *ServerConfig, backendType database.BackendType
 // memory and file backends ignore dataPlaneFS — encfs is a no-op for an
 // in-memory store, and the file backend does not run through Pebble.
 func createServerStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS) (storage.Storage, *pebble.DB, error) {
-	switch backendType {
-	case database.BackendMemory:
-		return memory.NewStorage(), nil, nil
-
-	case database.BackendFile:
-		stg, err := file.New(filepath.Join(dataDir, "file"))
-		if err != nil {
-			return nil, nil, &StorageCreateError{Backend: backendType, Err: err}
+	stg, pdb, err := lifecycle.NewLocalStorage(backendType, dataDir, dataPlaneFS, qrdbconfig.ObjstoreConfig{})
+	if err != nil {
+		var unsupported *lifecycle.UnsupportedLocalBackendError
+		if errors.As(err, &unsupported) {
+			return nil, nil, &ServerConfigError{Field: "Backend", Message: "unsupported backend: " + string(backendType)}
 		}
-		return stg, nil, nil
-
-	case database.BackendPebble:
-		pebbleDir := filepath.Join(dataDir, "pebble")
-		cfg := pebbleStorage.DefaultConfig(pebbleDir)
-		if dataPlaneFS != nil {
-			cfg.FS = dataPlaneFS
-		}
-		stg, err := pebbleStorage.New(cfg)
-		if err != nil {
-			return nil, nil, &StorageCreateError{Backend: backendType, Err: err}
-		}
-		return stg, stg.DB(), nil
-
-	default:
-		return nil, nil, &ServerConfigError{Field: "Backend", Message: "unsupported backend: " + string(backendType)}
+		return nil, nil, &StorageCreateError{Backend: backendType, Err: err}
 	}
+	return stg, pdb, nil
 }
 
 // createServerEngine creates the appropriate store engine for the given
 // backend type. MVCC is used for pebble and memory backends; KV for file
 // backends.
 func createServerEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB) (backend.SMAdapter, error) {
-	if backendType == database.BackendFile {
-		return engine.NewKVEngine(stg), nil
-	}
-
-	// MVCC engine for pebble and memory backends.
-	mvccOpts := []engine.MVCCOption{
-		engine.WithMVCCLessor(lease.NewLessor()),
-	}
-
-	if pdb != nil {
-		mvccOpts = append(mvccOpts, engine.WithMVCCPebbleDB(pdb))
-
-		tsStorage, err := timeseries.New(pdb)
-		if err == nil {
-			mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
-		}
-	}
-
-	eng, err := engine.NewMVCCEngine(stg, mvccOpts...)
+	eng, err := lifecycle.NewLocalEngine(backendType, stg, pdb, nil)
 	if err != nil {
 		return nil, &EngineCreateError{Engine: "mvcc", Err: err}
 	}

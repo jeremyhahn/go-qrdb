@@ -137,6 +137,11 @@ type Server struct {
 
 // serverOptions holds optional dependencies injected via ServerOption.
 type serverOptions struct {
+	// standaloneMode marks the raft-free composition: the transports'
+	// service registry gates the raft-only resolutions (see
+	// standalone_gate.go).
+	standaloneMode bool
+
 	tlsConfig  *tls.Config
 	caCertPool *x509.CertPool
 	gatherer   prometheus.Gatherer
@@ -1103,7 +1108,7 @@ func (s *Server) startREST() error {
 	if s.config.Auth.SODualFactor {
 		restOpts = append(restOpts, rest.WithSODualFactor())
 	}
-	if reg := s.buildServiceRegistry(); reg != nil {
+	if reg := s.transportServiceRegistry(); reg != nil {
 		restOpts = append(restOpts, rest.WithServiceRegistry(reg))
 	}
 	if s.opts.clusterKeyReceiver != nil {
@@ -1289,7 +1294,7 @@ func (s *Server) startGRPC() error {
 	if s.opts.userAuthFactorSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.buildServiceRegistry(); reg != nil {
+	if reg := s.transportServiceRegistry(); reg != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithServiceRegistry(reg))
 	}
 
@@ -1411,7 +1416,7 @@ func (s *Server) startQUIC() error {
 	if s.opts.credentialSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithCredentialService(s.opts.credentialSvc))
 	}
-	if reg := s.buildServiceRegistry(); reg != nil {
+	if reg := s.transportServiceRegistry(); reg != nil {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
 
@@ -1531,7 +1536,7 @@ func (s *Server) startUnix() error {
 	if s.opts.userAuthFactorSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.buildServiceRegistry(); reg != nil {
+	if reg := s.transportServiceRegistry(); reg != nil {
 		unixOpts = append(unixOpts, unixapi.WithServiceRegistry(reg))
 	}
 
@@ -1655,7 +1660,7 @@ func (s *Server) startMCP() error {
 	if s.opts.userAuthFactorSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithUserAuthFactorService(s.opts.userAuthFactorSvc))
 	}
-	if reg := s.buildServiceRegistry(); reg != nil {
+	if reg := s.transportServiceRegistry(); reg != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithServiceRegistry(reg))
 	}
 

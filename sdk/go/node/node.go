@@ -100,10 +100,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -114,14 +114,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	objstore "github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -747,11 +743,21 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		encryptor = atrest.New(n.barrier)
 	}
 
+	// The effective capability profile of THIS node: NewStandaloneNode is
+	// the raft-free composition by construction, so the profile is computed
+	// with the standalone mode semantics regardless of cfg.Mode. It is
+	// pinned per-instance (Infra.Profile -> AdminService) rather than
+	// sealed process-globally, because one process may host several nodes.
+	profileCfg := *pending.cfg
+	profileCfg.Mode = capabilities.ModeStandalone
+	profile := profileCfg.EffectiveCapabilities()
+
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              localHost,
 		WatchHub:          watchHub,
 		DataDir:           pending.dataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
 		SealBarrier:       n.barrier,
@@ -799,7 +805,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		n.tenantHosts = ti.Hosts
 	}
 
-	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
+	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, true); err != nil {
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -897,11 +903,19 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 
 	hostAdapter := raftbackend.New(host)
 
+	// Per-instance effective capability profile: the clustered node is the
+	// raft composition, so raft-mode semantics apply (config toggles can
+	// still narrow mvcc/watch/lease).
+	profileCfg := *pending.cfg
+	profileCfg.Mode = capabilities.ModeRaft
+	profile := profileCfg.EffectiveCapabilities()
+
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:              hostAdapter,
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
+		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
 		SealBarrier:       n.barrier,
@@ -996,7 +1010,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 	}
 
-	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts); err != nil {
+	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, false); err != nil {
 		// Stop the reconciler goroutine before tearing down the resources it
 		// accesses so it does not race against CloseAll/Close below.
 		if n.bgCancel != nil {
@@ -1303,11 +1317,18 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
+	// Per-instance effective capability profile: standalone semantics by
+	// construction (see completeStandaloneBoot for the rationale).
+	profileCfg := *cfg
+	profileCfg.Mode = capabilities.ModeStandalone
+	profile := profileCfg.EffectiveCapabilities()
+
 	svcNode, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
 		Host:      localHost,
 		WatchHub:  watchHub,
 		DataDir:   dataDir,
 		ReplicaID: cfg.Raft.ReplicaID,
+		Profile:   &profile,
 		Logger:    log,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService even on the no-seal data path, so the option a
@@ -1323,7 +1344,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 	}
 	n.svcNode = svcNode
 
-	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts); err != nil {
+	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, true); err != nil {
 		_ = svcNode.Stop(context.Background())
 		_ = localHost.Close()
 		_ = n.stg.Close()
@@ -1480,7 +1501,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 	n.svcNode = svcNode
 
-	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts); err != nil {
+	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false); err != nil {
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		return nil, err
@@ -1734,7 +1755,7 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 // wireClientAndServer creates the in-process embedded transport, SDK client,
 // and multi-protocol server. Used by both standalone and clustered builders
 // after the service graph is ready.
-func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption) error {
+func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node, cfg *qrdbconfig.Config, callerOpts []server.ServerOption, standalone bool) error {
 	// Resolve caller-supplied crypto options once so the same instances back
 	// both the multi-protocol server and the in-process transport.
 	crypto := server.ResolveCryptoOptions(callerOpts...)
@@ -1765,7 +1786,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// identically. The Auth.SeparationOfDuties flag is the same source
 	// the daemon reads (cfg.Auth.SeparationOfDuties).
 	strictSoD := fips140.Enabled() || cfg.Auth.SeparationOfDuties
-	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, strictSoD)
+	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, strictSoD, standalone)
 	if err != nil {
 		return err
 	}
@@ -1846,7 +1867,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 
 	// Build multi-protocol server.
 	serverCfg := buildNodeServerConfig(cfg)
-	allOpts := buildServerOpts(svcNode, callerOpts)
+	allOpts := buildServerOpts(svcNode, callerOpts, standalone)
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
@@ -1919,19 +1940,26 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 // It returns a LoginWiringError when the UserAuthFactor service cannot be
 // constructed; the caller aborts the boot so a misconfigured login surface
 // never silently degrades to "login not supported".
-func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]embedded.Option, error) {
+func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standalone bool) ([]embedded.Option, error) {
 	opts := []embedded.Option{
-		embedded.WithMVCCService(svcNode.MVCC),
-		embedded.WithTransactionService(svcNode.Transaction),
 		embedded.WithBatchService(svcNode.Batch),
-		embedded.WithLeaseService(svcNode.Lease),
 		embedded.WithIndexService(svcNode.Index),
 		embedded.WithTimeSeriesService(svcNode.TimeSeries),
-		embedded.WithWatchService(svcNode.Watch),
 		embedded.WithVectorService(svcNode.Vector),
 		embedded.WithEmbeddingService(svcNode.Embedding),
 		embedded.WithRAGService(svcNode.RAG),
 		embedded.WithDatabaseService(svcNode.Database),
+	}
+	// Raft-only families are not exposed on the standalone in-process
+	// transport (ratified run-modes split); their embedded clients return
+	// the transport's typed not-configured error.
+	if !standalone {
+		opts = append(opts,
+			embedded.WithMVCCService(svcNode.MVCC),
+			embedded.WithTransactionService(svcNode.Transaction),
+			embedded.WithLeaseService(svcNode.Lease),
+			embedded.WithWatchService(svcNode.Watch),
+		)
 	}
 	if svcNode.User != nil {
 		opts = append(opts, embedded.WithUserService(svcNode.User))
@@ -2127,19 +2155,31 @@ func principalRoles(u *user.User) []string {
 // buildServerOpts constructs the server.ServerOption slice that wires the
 // lifecycle.Node's services into server.New. Caller opts are appended last
 // so they can override any default wiring.
-func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption) []server.ServerOption {
+func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, standalone bool) []server.ServerOption {
 	opts := []server.ServerOption{
 		server.WithBatch(svcNode.Batch),
-		server.WithTransaction(svcNode.Transaction),
-		server.WithMVCC(svcNode.MVCC),
-		server.WithLease(svcNode.Lease),
 		server.WithIndex(svcNode.Index),
 		server.WithTimeSeries(svcNode.TimeSeries),
-		server.WithWatch(svcNode.Watch),
-		server.WithLockService(svcNode.Lock),
 		server.WithCollectionService(svcNode.Collection),
 		server.WithDatabaseService(svcNode.Database),
 		server.WithVector(svcNode.Vector),
+	}
+	// The raft-only API surface (ratified run-modes split): composed only
+	// on the raft path; the standalone composition refuses these families
+	// with a typed "requires mode: raft" error via nil singletons plus the
+	// gated per-database registry (server.WithStandaloneMode). The engine
+	// still serves MVCC/transaction operations internally for the SQL
+	// catalog and collections.
+	if standalone {
+		opts = append(opts, server.WithStandaloneMode())
+	} else {
+		opts = append(opts,
+			server.WithTransaction(svcNode.Transaction),
+			server.WithMVCC(svcNode.MVCC),
+			server.WithLease(svcNode.Lease),
+			server.WithWatch(svcNode.Watch),
+			server.WithLockService(svcNode.Lock),
+		)
 	}
 	if svcNode.User != nil {
 		opts = append(opts, server.WithUserService(svcNode.User))
@@ -2208,96 +2248,26 @@ func resolveBackend(cfg *qrdbconfig.Config) (database.BackendType, string, error
 	return bt, dataDir, nil
 }
 
-// createNodeStorage creates the appropriate storage backend, mirroring
-// embedded/server.go createServerStorage.
+// createNodeStorage creates the appropriate storage backend via the
+// canonical raft-free composition in pkg/server/lifecycle, shared with the
+// daemon's mode:standalone branch and the embedded transport. An
+// unrecognized backend type falls back to pebble for backward
+// compatibility with this constructor's historical behavior.
 func createNodeStorage(backendType database.BackendType, dataDir string, dataPlaneFS vfs.FS, objCfg qrdbconfig.ObjstoreConfig) (storage.Storage, *pebble.DB, error) {
 	switch backendType {
-	case database.BackendMemory:
-		return memory.NewStorage(), nil, nil
-
-	case database.BackendFile:
-		stg, err := file.New(filepath.Join(dataDir, "file"))
-		if err != nil {
-			return nil, nil, err
-		}
-		return stg, nil, nil
-
-	case database.BackendObjstore:
-		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
-		stg, err := objstore.New(provider, settings)
-		if err != nil {
-			return nil, nil, err
-		}
-		return stg, nil, nil
-
-	default: // BackendPebble
-		pebbleDir := filepath.Join(dataDir, "pebble")
-		nodeCfg := pebbleStorage.DefaultConfig(pebbleDir)
-		if dataPlaneFS != nil {
-			nodeCfg.FS = dataPlaneFS
-		}
-		stg, err := pebbleStorage.New(nodeCfg)
-		if err != nil {
-			return nil, nil, err
-		}
-		return stg, stg.DB(), nil
+	case database.BackendMemory, database.BackendFile, database.BackendObjstore:
+	default:
+		backendType = database.BackendPebble
 	}
+	return lifecycle.NewLocalStorage(backendType, dataDir, dataPlaneFS, objCfg)
 }
 
-// resolveObjstoreSettings derives the go-objstore provider and settings for an
-// objstore-backed node. An empty provider defaults to "local"; for the local
-// provider an empty "path" is rooted at <dataDir>/objstore so the backend works
-// out of the box. The caller's settings map is never mutated.
-func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (string, map[string]string) {
-	provider := objCfg.Provider
-	if provider == "" {
-		provider = "local"
-	}
-	settings := make(map[string]string, len(objCfg.Settings)+1)
-	for k, v := range objCfg.Settings {
-		settings[k] = v
-	}
-	if provider == "local" && settings["path"] == "" {
-		settings["path"] = filepath.Join(dataDir, "objstore")
-	}
-	return provider, settings
-}
-
-// createNodeEngine creates the appropriate store engine, mirroring
-// embedded/server.go createServerEngine.
-//
-// hub is the node's watch hub and MUST be the same instance handed to
-// lifecycle.Infra.WatchHub: the engine is the only publisher of change
-// events, so an engine built without the hub leaves the WatchService
-// subscribed to a hub nothing ever writes to — watches then "work" but
-// never deliver, which is exactly the silent defect this parameter fixes.
+// createNodeEngine creates the appropriate store engine via the canonical
+// raft-free composition in pkg/server/lifecycle (see
+// lifecycle.NewLocalEngine for the engine-boundary and watch-hub
+// contracts).
 func createNodeEngine(backendType database.BackendType, stg storage.Storage, pdb *pebble.DB, hub *watch.Hub) (backend.SMAdapter, error) {
-	if backendType == database.BackendFile || backendType == database.BackendObjstore {
-		kvOpts := []engine.KVOption{}
-		if hub != nil {
-			kvOpts = append(kvOpts, engine.WithKVWatchHub(hub))
-		}
-		return engine.NewKVEngine(stg, kvOpts...), nil
-	}
-
-	mvccOpts := []engine.MVCCOption{
-		engine.WithMVCCLessor(lease.NewLessor()),
-	}
-	if hub != nil {
-		mvccOpts = append(mvccOpts, engine.WithMVCCWatchHub(hub))
-	}
-	if pdb != nil {
-		mvccOpts = append(mvccOpts, engine.WithMVCCPebbleDB(pdb))
-		if tsStorage, err := timeseries.New(pdb); err == nil {
-			mvccOpts = append(mvccOpts, engine.WithMVCCTimeSeries(tsStorage))
-		}
-	}
-
-	eng, err := engine.NewMVCCEngine(stg, mvccOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return eng, nil
+	return lifecycle.NewLocalEngine(backendType, stg, pdb, hub)
 }
 
 // systemShardReadyTimeout is the maximum duration completeClusteredBoot waits

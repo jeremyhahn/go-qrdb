@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
+	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
@@ -164,6 +165,13 @@ type Infra struct {
 	// defaults (prefix-only isolation; dedicated raft/volume denied).
 	DefaultTenantEntitlements *quota.Entitlements
 
+	// Profile, when non-nil, is the effective capability profile for this
+	// node (build tags x run mode x config, config.EffectiveCapabilities).
+	// It is pinned onto the AdminService so the node reports its own truth
+	// even when several nodes share one process (the SDK). When nil, the
+	// AdminService falls back to the process-global capabilities view.
+	Profile *capabilities.Capabilities
+
 	// BackupSink, when non-nil, is wired into the Backup service so backup
 	// artifacts (shard payloads + metadata) are persisted durably instead of
 	// held only in the daemon process's memory. Without it, backups do not
@@ -284,7 +292,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 
 	// Build core data-plane services.
 	n.KV = service.NewKVService(infra.Host, shard.ShardKV, infra.KVOptions...)
-	n.Admin = service.NewAdminService(infra.Host)
+	var adminOpts []service.AdminServiceOption
+	if infra.Profile != nil {
+		adminOpts = append(adminOpts, service.WithCapabilityProfile(*infra.Profile))
+	}
+	n.Admin = service.NewAdminService(infra.Host, adminOpts...)
 	n.MVCC = service.NewMVCCKVService(infra.Host, shard.ShardKV)
 	n.Batch = service.NewBatchService(infra.Host, shard.ShardKV)
 	n.Transaction = service.NewTransactionService(infra.Host, shard.ShardKV)
