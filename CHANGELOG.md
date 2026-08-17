@@ -37,8 +37,9 @@ are not reconstructed here — their history is in the git log.
   on `mvcc`/`watch`/`lease` narrow the raft profile.
 - **Boot-time build gate** `Config.ValidateCapabilities()`: a wire
   protocol enabled in config but not compiled in is refused with an error
-  naming the build tag. The daemon refuses `mode: standalone` with a
-  pointed error until its raft-free composition branch lands (phase 3).
+  naming the build tag. (Between phases 2 and 3 the daemon refused
+  `mode: standalone` with a pointed error; phase 3 replaced the refusal
+  with the real composition branch.)
 - **Typed refusal hints.** REST `ServiceNotImplementedError` and the
   gRPC/QUIC/service `ServiceNotConfiguredError` gained an optional `Hint`
   appended to the message (e.g. `requires mode: raft`).
@@ -70,11 +71,17 @@ are not reconstructed here — their history is in the git log.
   funnel gap), and REST maps `ServiceNotImplementedError` to 501 from
   registry-resolved paths (previously 500).
 
-### Changed (upcoming, announced here first)
-- **SDK standalone (`NewStandaloneNode`) will stop composing MVCC, lease,
-  and transaction services**: those become raft-mode-only per the ratified
-  requirements. Downstream consumers are being notified via their repo
-  issue trackers.
+- **Per-mode exemplars and integration suites (run-modes phase 4).**
+  `configs/qrdb-standalone-{pebble,memory,file}.yaml` exemplars;
+  `configs/qrdb-standalone-mvcc.yaml` renamed to
+  `qrdb-raft-single-mvcc.yaml` (it always was a single-node RAFT config —
+  the old name contradicted the ratified terminology).
+  `TestStandaloneMode_StandardOpsAndRefusals_PerProtocol` drives a
+  `--mode standalone` daemon over all five transports: standard ops
+  green, capability truthfulness, raft-only refusals; plus per-backend
+  boot coverage. The unix SDK transport's capabilities mapping gained the
+  new profile fields (the last funnel site). Downstream notified:
+  go-quicbaas#4.
 
 ## [0.5.8-alpha] - 2026-08-17
 

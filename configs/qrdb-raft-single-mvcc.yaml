@@ -1,7 +1,8 @@
-# Standalone daemon, MVCC state machine.
+# Raft single-node daemon, MVCC state machine.
 #
-# Run mode:      standalone (single-replica Raft group — quorum of one; see
-#                docs/GLOSSARY.md "Single-node Raft")
+# Run mode:      raft, single node (single-replica Raft group — quorum of
+#                one; see docs/GLOSSARY.md "Single-node Raft"). NOT the
+#                raft-free "standalone" mode — MVCC features require raft.
 # State machine: mvcc — REQUIRED for every MVCC feature: revisions,
 #                `kv get --at-revision`, watch replay, transactions with
 #                revision semantics, and `kv restore` (PITR-lite). The

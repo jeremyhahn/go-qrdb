@@ -1,0 +1,49 @@
+# Standalone daemon over the memory backend.
+#
+# Run mode:      standalone — NO raft. Standard database operations (KV,
+#                batch, collections, indexes, database management, SQL)
+#                plus the always-on security core (mTLS/RBAC IAM, seal
+#                barrier, audit). Raft-only features (MVCC revisions,
+#                watch, lease, lock, etcd-style transactions, cluster
+#                operations) are refused with "requires mode: raft" —
+#                run a raft config (qrdb.yaml or the cluster trio) for
+#                those. See docs/run-modes.md.
+# Storage:       memory (volatile — nothing survives restart). Dev and
+#                tests. Serves the full standard set incl. timeseries/
+#                vector (MVCC-capable engine internally).
+
+mode: "standalone"
+
+server:
+  admin_port: 63002
+  grpc_port: 63003
+  host: "0.0.0.0"
+
+protocols:
+  rest: true
+  grpc: true
+
+# In standalone mode only the data directory is required from the raft
+# section; the consensus identity fields (shard/replica/raft_address/
+# peers) are not needed and are ignored.
+raft:
+  data_dir: "./data"
+
+databases:
+  - name: "default"
+    engine: "kv"
+    backend: "memory"
+
+tls:
+  enabled: true
+  cert_file: ""
+  key_file: ""
+  client_auth: "require_and_verify"
+  min_version: "TLS1.3"
+
+logging:
+  level: "info"
+  format: "text"
+
+discovery:
+  method: "static"
