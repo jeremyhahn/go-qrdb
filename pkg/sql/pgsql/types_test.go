@@ -34,8 +34,9 @@ func TestLookupOID_AllMappings(t *testing.T) {
 	}{
 		{"TEXT", "TEXT", pgtype.TextOID},
 		{"VARCHAR", "VARCHAR", pgtype.TextOID},
-		{"BLOB", "BLOB", pgtype.TextOID},
-		{"VARBINARY", "VARBINARY", pgtype.TextOID},
+		{"BLOB", "BLOB", pgtype.ByteaOID},
+		{"VARBINARY", "VARBINARY", pgtype.ByteaOID},
+		{"BINARY", "BINARY", pgtype.ByteaOID},
 		{"INT64", "INT64", pgtype.Int8OID},
 		{"BIGINT", "BIGINT", pgtype.Int8OID},
 		{"INT32", "INT32", pgtype.Int4OID},
@@ -90,7 +91,6 @@ func TestLookupOID_UnknownType(t *testing.T) {
 		{"POINT", "POINT"},
 		{"UNKNOWN", "UNKNOWN"},
 		{"empty string", ""},
-		{"BINARY", "BINARY"},
 	}
 
 	for _, tt := range tests {

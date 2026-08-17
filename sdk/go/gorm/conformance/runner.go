@@ -177,7 +177,7 @@ func loadLock(path string) (*lockFile, error) {
 // mode, and dumpAllowlistAndExit exits 0 (a "pass") before any Test*
 // function — let alone -v's "=== RUN" machinery — ever runs.
 func dumpAllowlist() ([]expectedFailure, error) {
-	cmd := exec.Command("go", "test", "-tags", "gormconformance", "-json", "-count=1", "./...")
+	cmd := exec.Command("go", "test", "-tags", "gormconformance qrdb_sql", "-json", "-count=1", "./...")
 	cmd.Env = append(os.Environ(), dumpAllowlistEnvVar+"=1")
 	out, err := cmd.Output()
 	if err != nil {
@@ -232,7 +232,7 @@ type testEvent2 struct {
 // test after the panic as a missing entry, which reads as 35 stale entries
 // when the truth is one aborted process.
 func listTests(target string) (map[string]struct{}, error) {
-	cmd := exec.Command("go", "test", "-tags", "gormconformance", "-list", ".*", "./...")
+	cmd := exec.Command("go", "test", "-tags", "gormconformance qrdb_sql", "-list", ".*", "./...")
 	cmd.Env = append(os.Environ(), targetEnvVar+"="+target)
 	cmd.Stderr = os.Stderr
 
@@ -297,7 +297,7 @@ type outcome struct {
 // is streamed rather than buffered whole so a hung test still surfaces
 // partial progress if the run is killed externally.
 func runTests(target, timeout string, exclude []string) (map[string]outcome, string, error) {
-	args := []string{"test", "-tags", "gormconformance", "-json", "-count=1", "-timeout", timeout}
+	args := []string{"test", "-tags", "gormconformance qrdb_sql", "-json", "-count=1", "-timeout", timeout}
 	if len(exclude) > 0 {
 		args = append(args, "-skip", "^("+strings.Join(exclude, "|")+")$")
 	}

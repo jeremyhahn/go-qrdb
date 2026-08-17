@@ -108,7 +108,27 @@ type Server struct {
 	// gRPC, and native-QUIC sealed-window gates so operators see the same
 	// envelope on every transport.
 	sealedWindowProbe sealedWindowProbe
+
+	// bearerChallenge, when non-empty, is the exact WWW-Authenticate header
+	// value returned with 401 Unauthorized when a request to the MCP
+	// endpoint carries no credential any configured authenticator accepts.
+	// Per the MCP authorization specification the value points OAuth
+	// clients at the Protected Resource Metadata document via its
+	// resource_metadata parameter. The embedder composes the value; qrdb
+	// only emits it (see WithBearerChallenge).
+	bearerChallenge string
+
+	// protectedResourceMetadata, when non-nil, is the RFC 9728 Protected
+	// Resource Metadata JSON document served UNAUTHENTICATED at
+	// ProtectedResourceMetadataPath. The embedder supplies the document;
+	// qrdb performs no OAuth processing of its own.
+	protectedResourceMetadata []byte
 }
+
+// ProtectedResourceMetadataPath is the well-known path at which the
+// embedder-supplied RFC 9728 Protected Resource Metadata document is served
+// when WithProtectedResourceMetadata is configured.
+const ProtectedResourceMetadataPath = "/.well-known/oauth-protected-resource"
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
@@ -147,6 +167,44 @@ func WithTLS(cfg *tls.Config) ServerOption {
 func WithAuthMiddleware(mw *authmw.AuthMiddleware) ServerOption {
 	return func(s *Server) {
 		s.authMW = mw
+	}
+}
+
+// WithBearerChallenge configures the exact WWW-Authenticate header value the
+// MCP endpoint returns with 401 Unauthorized when a request carries no
+// credential any configured authenticator accepts — the discovery entry
+// point of the MCP authorization flow. Per the specification the embedder
+// composes the value to point clients at its Protected Resource Metadata
+// document, e.g.:
+//
+//	Bearer realm="mcp", resource_metadata="https://host/.well-known/oauth-protected-resource"
+//
+// qrdb implements NO OAuth flow of its own: the challenge value, the
+// metadata document (WithProtectedResourceMetadata), and the bearer-token
+// validator (an auth.Authenticator passed through
+// wiring.AuthMiddlewareConfig.ExtraAuthenticators, reading the raw header
+// via auth.HTTPAuthorizationFromContext) are all supplied by the embedder.
+// Without this option an unauthenticated request proceeds with no identity
+// and is denied per-tool by the DEFAULT-DENY authorization middleware,
+// preserving the pre-OAuth behavior for mTLS-only deployments.
+func WithBearerChallenge(challenge string) ServerOption {
+	return func(s *Server) {
+		s.bearerChallenge = challenge
+	}
+}
+
+// WithProtectedResourceMetadata serves the supplied RFC 9728 Protected
+// Resource Metadata JSON document, unauthenticated, at
+// ProtectedResourceMetadataPath. The document is the embedder's: it names
+// the authorization servers, supported scopes, and resource identifier of
+// the deployment embedding qrdb. Serving it unauthenticated is required by
+// the discovery flow — it is public metadata, not a protected resource.
+func WithProtectedResourceMetadata(doc []byte) ServerOption {
+	return func(s *Server) {
+		if len(doc) == 0 {
+			return
+		}
+		s.protectedResourceMetadata = append([]byte(nil), doc...)
 	}
 }
 
@@ -503,7 +561,11 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	}
 	if s.tenantSvc != nil {
 		s.addTools(tenantTools(s.tenantSvc)...)
-		s.addTools(tenantBarrierTools(s.tenantSvc, s.authorizeTenantBarrierOp)...)
+		s.addTools(tenantBarrierTools(s.tenantSvc, tenantBarrierAuthorizers{
+			Op:     s.authorizeTenantBarrierOp,
+			Init:   s.authorizeTenantBarrierInit,
+			Sealed: s.authorizeTenantBarrierSealedOp,
+		})...)
 	}
 	if s.backupSvc != nil {
 		s.addTools(backupTools(s.backupSvc)...)
@@ -581,8 +643,25 @@ func (s *Server) Start() error {
 	}
 	streamHandler := mcpserver.NewStreamableHTTPServer(s.mcpSrv, streamOpts...)
 
+	// The MCP endpoint handler. When a bearer challenge is configured (an
+	// embedder running the MCP authorization flow), an unauthenticated
+	// request is answered 401 + WWW-Authenticate BEFORE reaching the MCP
+	// layer — the discovery entry point OAuth clients depend on. A request
+	// that authenticates proceeds with its identity already bound into the
+	// request context; authHTTPContext detects it and skips the second
+	// authentication pass.
+	var mcpHandler http.Handler = streamHandler
+	if s.authMW != nil && s.bearerChallenge != "" {
+		mcpHandler = s.bearerChallengeHandler(streamHandler)
+	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", streamHandler)
+	mux.Handle("/mcp", mcpHandler)
+	if len(s.protectedResourceMetadata) > 0 {
+		// RFC 9728 discovery document: public by design (see
+		// WithProtectedResourceMetadata).
+		mux.HandleFunc(ProtectedResourceMetadataPath, s.protectedResourceMetadataHandler)
+	}
 
 	s.httpSrv = &http.Server{
 		Handler:      mux,

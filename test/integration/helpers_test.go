@@ -773,10 +773,15 @@ type batchResult struct {
 	Responses []batchOpResponse `json:"responses"`
 }
 
-// kvResult is the JSON representation of an MVCC key-value pair.
+// kvResult is the JSON representation of an MVCC key-value pair. Key and
+// Value are []byte because that is the REST contract: kvResponse in
+// pkg/api/rest encodes both through encoding/json's standard base64 for
+// []byte so arbitrary byte-valued keys round-trip exactly, and the SDK's
+// REST transport (sdk/go/transport/rest/transport_mvcc.go) decodes the
+// same way. Compare with string(kv.Key) at the assertion site.
 type kvResult struct {
-	Key            string `json:"key"`
-	Value          string `json:"value"`
+	Key            []byte `json:"key"`
+	Value          []byte `json:"value"`
 	CreateRevision int64  `json:"create_revision"`
 	ModRevision    int64  `json:"mod_revision"`
 	Version        int64  `json:"version"`

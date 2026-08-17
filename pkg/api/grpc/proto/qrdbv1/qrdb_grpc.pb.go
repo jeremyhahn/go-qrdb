@@ -22,6 +22,7 @@ package qrdbv1
 
 import (
 	context "context"
+
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -7797,15 +7798,30 @@ type TenantBarrierServiceClient interface {
 	// Init initializes a tenant barrier with the selected strategy. For the
 	// Shamir strategy the share_count field indicates how many officer shares
 	// were sealed; shares are never returned in the response.
+	//
+	// identity:gated at the interceptor because a self-managed tenant's IAM
+	// is encrypted BEHIND the barrier being initialized: no role able to
+	// satisfy tenant_barrier:init can exist before the first init. The
+	// handler runs the full RBAC check with the shared trust-on-first-init
+	// fallback (middleware.AuthorizeTenantBarrierInit), identical to every
+	// other transport.
 	Init(ctx context.Context, in *TenantBarrierInitRequest, opts ...grpc.CallOption) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
+	//
+	// identity:gated at the interceptor: unseal must remain reachable while
+	// the tenant's IAM is unreachable (sealed window). The handler runs the
+	// full RBAC check with the shared sealed-window fallback
+	// (middleware.AuthorizeTenantBarrierSealedOp).
 	Unseal(ctx context.Context, in *TenantBarrierUnsealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
 	// auto-unsealing once enough distinct shares have been submitted.
+	// identity:gated for the same sealed-window reason as Unseal.
 	UnsealShare(ctx context.Context, in *TenantBarrierUnsealShareRequest, opts ...grpc.CallOption) (*TenantBarrierUnsealProgress, error)
 	// Seal seals a tenant barrier.
 	Seal(ctx context.Context, in *TenantBarrierSealRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// Status reports a tenant barrier's sealed/initialized state and strategy.
+	// identity:gated for the same sealed-window reason as Unseal: polling
+	// status is how a tenant admin drives the unseal flow.
 	Status(ctx context.Context, in *TenantBarrierStatusRequest, opts ...grpc.CallOption) (*TenantBarrierStatusResponse, error)
 	// OfficerRegister enrolls a Security Officer for this tenant's barrier.
 	// Only valid for Shamir-strategy tenant barriers.
@@ -7958,15 +7974,30 @@ type TenantBarrierServiceServer interface {
 	// Init initializes a tenant barrier with the selected strategy. For the
 	// Shamir strategy the share_count field indicates how many officer shares
 	// were sealed; shares are never returned in the response.
+	//
+	// identity:gated at the interceptor because a self-managed tenant's IAM
+	// is encrypted BEHIND the barrier being initialized: no role able to
+	// satisfy tenant_barrier:init can exist before the first init. The
+	// handler runs the full RBAC check with the shared trust-on-first-init
+	// fallback (middleware.AuthorizeTenantBarrierInit), identical to every
+	// other transport.
 	Init(context.Context, *TenantBarrierInitRequest) (*TenantBarrierInitResponse, error)
 	// Unseal unseals a tenant barrier using a single key (passphrase strategy).
+	//
+	// identity:gated at the interceptor: unseal must remain reachable while
+	// the tenant's IAM is unreachable (sealed window). The handler runs the
+	// full RBAC check with the shared sealed-window fallback
+	// (middleware.AuthorizeTenantBarrierSealedOp).
 	Unseal(context.Context, *TenantBarrierUnsealRequest) (*emptypb.Empty, error)
 	// UnsealShare submits one Shamir share toward the tenant quorum threshold,
 	// auto-unsealing once enough distinct shares have been submitted.
+	// identity:gated for the same sealed-window reason as Unseal.
 	UnsealShare(context.Context, *TenantBarrierUnsealShareRequest) (*TenantBarrierUnsealProgress, error)
 	// Seal seals a tenant barrier.
 	Seal(context.Context, *TenantBarrierSealRequest) (*emptypb.Empty, error)
 	// Status reports a tenant barrier's sealed/initialized state and strategy.
+	// identity:gated for the same sealed-window reason as Unseal: polling
+	// status is how a tenant admin drives the unseal flow.
 	Status(context.Context, *TenantBarrierStatusRequest) (*TenantBarrierStatusResponse, error)
 	// OfficerRegister enrolls a Security Officer for this tenant's barrier.
 	// Only valid for Shamir-strategy tenant barriers.

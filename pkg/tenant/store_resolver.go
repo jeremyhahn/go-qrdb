@@ -162,7 +162,7 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 		return r.shared, nil
 	}
 
-	return r.resolveBarrier(tenantID)
+	return r.resolveBarrier(ctx, tenantID)
 }
 
 // resolveBarrier returns the cached per-tenant barrier KVStore for a
@@ -170,10 +170,18 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 // seal state is read live, so a cached wrapper still surfaces ErrSealed
 // from the underlying barrier once it is sealed — Resolve translates that
 // into ErrTenantSealed up front to fail closed.
-func (r *defaultStoreResolver) resolveBarrier(tenantID string) (kvstore.KVStore, error) {
+func (r *defaultStoreResolver) resolveBarrier(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
 	tb, err := r.registry.GetTenant(tenantID)
 	if err != nil {
-		return nil, err
+		// A barrier-isolated tenant with NO registered barrier on this node
+		// is the same fail-closed state as a sealed one: its IAM cannot be
+		// resolved here until the barrier arrives (self-managed tenants get
+		// theirs via key delivery when a placement lands on this node). The
+		// distinction matters to callers — ErrTenantSealed flows through the
+		// auth middleware as a retryable unavailable (503) plus the sealed
+		// marker that unlocks the IdentityGated barrier bootstrap endpoints,
+		// whereas an opaque registry error would surface as a hard 403.
+		return nil, ErrTenantSealed
 	}
 
 	// Read the seal state LIVE — never cache the sealed/unsealed decision.
@@ -187,7 +195,14 @@ func (r *defaultStoreResolver) resolveBarrier(tenantID string) (kvstore.KVStore,
 		return cached.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 	}
 
-	wrapper, err := seal.NewTenantBarrierKVStore(tb)
+	// The wrapper persists the tenant's IAM in the SHARED replicated store,
+	// encrypted with the tenant's own DEK — NOT in the tenant's node-local
+	// dedicated barrier backend. IAM must be resolvable on EVERY replica
+	// (the auth middleware runs wherever the request lands) and must
+	// survive node loss, so it rides the system shard's Raft replication;
+	// the per-tenant encryption preserves exactly the isolation the
+	// dedicated backend provided. See seal.NewTenantSharedKVStore.
+	wrapper, err := seal.NewTenantSharedKVStore(tb, r.shared)
 	if err != nil {
 		return nil, err
 	}

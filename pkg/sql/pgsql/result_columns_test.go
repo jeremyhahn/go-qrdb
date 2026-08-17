@@ -146,7 +146,7 @@ func TestResultColumns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			columns := h.resultColumns(ctx, tt.query)
+			columns := h.resultColumns(ctx, tt.query, nil)
 
 			if tt.want == nil {
 				assert.Empty(t, columns)
@@ -177,7 +177,7 @@ func TestResultColumnsMatchExecutedWidth(t *testing.T) {
 
 	for _, query := range queries {
 		t.Run(query, func(t *testing.T) {
-			declared := h.resultColumns(ctx, query)
+			declared := h.resultColumns(ctx, query, nil)
 			require.NotEmpty(t, declared, "a row-producing statement must describe its columns")
 
 			schema, iter, _, err := h.sqlEngine.Query(ctx, query)

@@ -41,6 +41,8 @@ const (
 	L2Distance DistanceMetric = iota
 	CosineDistance
 	DotProductDistance
+	ManhattanDistance
+	HammingDistance
 )
 
 // DistanceFunc is a function that computes the distance between two vectors.

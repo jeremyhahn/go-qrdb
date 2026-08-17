@@ -49,9 +49,11 @@ QUICRAFT_ROOT ?= $(shell cd .. && pwd)/go-quicraft
 # Optional feature flags (1 = enabled, 0 = disabled)
 WITH_QRDB_TS     ?= 1
 WITH_QRDB_VECTOR ?= 1
+WITH_QRDB_SQL    ?= 1
 WITH_QRDB_MYSQL  ?= 1
 WITH_QRDB_PGSQL  ?= 1
 WITH_QRDB_ETCD   ?= 1
+WITH_QRDB_FTS    ?= 0
 WITH_QRDB_GPU      ?= 0
 WITH_QRDB_EMBEDDED ?= 1
 WITH_QRDBD_WEBUI   ?= 0
@@ -89,6 +91,16 @@ ifeq ($(WITH_AZURE),1)
   WITH_AZURE_ARCHIVE := 1
 endif
 
+# The MySQL and PostgreSQL wire protocols are engines layered over the
+# shared pkg/sql core (qrdb_sql), so enabling either implies qrdb_sql.
+# "override" wins even when WITH_QRDB_SQL=0 is passed on the command line.
+ifeq ($(WITH_QRDB_MYSQL),1)
+  override WITH_QRDB_SQL := 1
+endif
+ifeq ($(WITH_QRDB_PGSQL),1)
+  override WITH_QRDB_SQL := 1
+endif
+
 # Compute build tags from feature flags
 BUILD_TAGS := codec_json raft
 ifeq ($(WITH_QRDB_TS),1)
@@ -96,6 +108,9 @@ ifeq ($(WITH_QRDB_TS),1)
 endif
 ifeq ($(WITH_QRDB_VECTOR),1)
   BUILD_TAGS += qrdb_vector
+endif
+ifeq ($(WITH_QRDB_SQL),1)
+  BUILD_TAGS += qrdb_sql
 endif
 ifeq ($(WITH_QRDB_MYSQL),1)
   BUILD_TAGS += qrdb_mysql
@@ -105,6 +120,9 @@ ifeq ($(WITH_QRDB_PGSQL),1)
 endif
 ifeq ($(WITH_QRDB_ETCD),1)
   BUILD_TAGS += qrdb_etcd
+endif
+ifeq ($(WITH_QRDB_FTS),1)
+  BUILD_TAGS += qrdb_fts
 endif
 ifeq ($(WITH_QRDB_GPU),1)
   BUILD_TAGS += gpu

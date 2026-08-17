@@ -1,3 +1,5 @@
+//go:build qrdb_sql
+
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -44,9 +46,8 @@ func TestGetTypeAliases_KnownTypesReturnDocumentedAliases(t *testing.T) {
 		"integer":   {"int"},
 		"bigint":    {"int8"},
 		"int8":      {"bigint"},
-		"varchar":   {"char", "text"},
+		"varchar":   {"char"},
 		"char":      {"varchar"},
-		"text":      {"varchar"},
 		"datetime":  {"timestamp"},
 		"timestamp": {"datetime"},
 		"blob":      {"binary", "varbinary"},

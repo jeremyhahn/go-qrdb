@@ -198,6 +198,12 @@ func (t *RelationalTable) createIndex(ctx *sqle.Context, indexDef sqle.IndexDef,
 		return err
 	}
 	idx.ForeignKey = forForeignKey
+	// Persist PostgreSQL's index-vs-constraint distinction when the wire
+	// front end recorded one for this statement; see
+	// QRDBSession.SetStatementIndexOrigin.
+	if session, ok := ctx.Session.(*QRDBSession); ok {
+		idx.StatementIndex = session.StatementIndexOrigin()
+	}
 	return t.tableSvc.CreateIndex(ctx, &service.CreateTableIndexRequest{
 		Database: t.def.Database,
 		Table:    t.def.Name,
@@ -596,4 +602,30 @@ func (t *RelationalTable) DropCheck(ctx *sqle.Context, chName string) error {
 		}
 	}
 	return &service.TableCheckNotFoundError{Table: t.def.Name, Check: chName}
+}
+
+// IsStatementIndex reports whether the named unique index was created by a
+// standalone CREATE INDEX statement rather than declared as a constraint.
+// It is the read side of service.TableIndex.StatementIndex, consumed by
+// pkg/sql/pgcatalog's table_constraints filter; ok is false when the table
+// has no index of that name.
+func (t *RelationalTable) IsStatementIndex(name string) (statementIndex bool, ok bool) {
+	idx := findTableIndex(t.def, name)
+	if idx == nil {
+		return false, false
+	}
+	return idx.StatementIndex, true
+}
+
+// IsForeignKeyIndex reports whether the named index was generated to back
+// a foreign key constraint (see createIndex's forForeignKey). Consumed by
+// pkg/sql/pgcatalog's index introspection, which must not report such
+// indexes: PostgreSQL creates no indexes for foreign keys at all. ok is
+// false when the table has no index of that name.
+func (t *RelationalTable) IsForeignKeyIndex(name string) (backsForeignKey bool, ok bool) {
+	idx := findTableIndex(t.def, name)
+	if idx == nil {
+		return false, false
+	}
+	return idx.ForeignKey, true
 }

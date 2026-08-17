@@ -72,7 +72,15 @@ var infoSchemaByDialect = map[Dialect]func() sql.Database{
 // conformance failures -- the single largest cluster -- because every
 // migration that reached column introspection died there.
 var functionsByDialect = map[Dialect][]sql.Function{
-	DialectPostgreSQL: {pgcatalog.NewFormatType()},
+	DialectPostgreSQL: {
+		pgcatalog.NewFormatType(),
+		// Random-UUID generation under both PostgreSQL spellings --
+		// gorm's uuid-typed primary keys default to uuid_generate_v4()
+		// (via CREATE EXTENSION "uuid-ossp", a no-op on this wire) or
+		// gen_random_uuid().
+		pgcatalog.NewGenRandomUUID(),
+		pgcatalog.NewUUIDGenerateV4(),
+	},
 }
 
 // Config holds configuration for the SQL engine.
@@ -138,6 +146,15 @@ func New(cfg Config) *sqle.Engine {
 	for _, fn := range functionsByDialect[cfg.Dialect] {
 		a.Catalog.RegisterFunction(sql.NewEmptyContext(), fn)
 	}
+	// nextval is registered for EVERY dialect, unlike the map above,
+	// because it can be baked into a table: a serial column translated on
+	// the PostgreSQL wire carries DEFAULT (nextval('...')), and an INSERT
+	// into that same table arriving over the MySQL wire must evaluate the
+	// default rather than fail on an unknown function. (MariaDB ships the
+	// same function for its own sequences, so the name is not foreign to
+	// the MySQL dialect either.) It is built here rather than in
+	// functionsByDialect because it closes over the provider.
+	a.Catalog.RegisterFunction(sql.NewEmptyContext(), newNextvalFunction(cfg.Provider))
 	// Repair the two upstream DML-RETURNING defects through the exec
 	// builder's priority hook; see dml_returning.go. Installed for every
 	// dialect: the broken shapes are the MySQL-dialect statements the

@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha
 	github.com/jeremyhahn/go-qrdb v0.4.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.4.2-alpha
+	github.com/jeremyhahn/go-quicraft v0.5.1-alpha
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/stretchr/testify v1.11.1

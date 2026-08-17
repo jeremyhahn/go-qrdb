@@ -661,11 +661,6 @@ func TestTranslator_Translate_UnsupportedOnConflict(t *testing.T) {
 		feature string
 	}{
 		{
-			name:    "on_constraint_target",
-			input:   "INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT ON CONSTRAINT users_pkey DO UPDATE SET name = EXCLUDED.name",
-			feature: "ON CONFLICT ON CONSTRAINT",
-		},
-		{
 			name:    "partial_index_predicate",
 			input:   "INSERT INTO users (id, name) VALUES ($1, $2) ON CONFLICT (id) WHERE active DO UPDATE SET name = EXCLUDED.name",
 			feature: "ON CONFLICT ... WHERE (partial index predicate or conditional DO UPDATE)",

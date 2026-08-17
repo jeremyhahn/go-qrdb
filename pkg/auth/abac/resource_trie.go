@@ -170,14 +170,16 @@ func (rt *ResourceTrie) matchSegments(node *trieNode, segments []string, variabl
 		}
 	}
 
-	// Priority 3: Single-level wildcard
+	// Priority 3: Single-level wildcard. No later branch compares against
+	// bestPriority (the multi-level wildcard below is unconditionally the
+	// lowest priority and checks only !bestFound), so unlike the branches
+	// above this one records no priority value.
 	if child, exists := node.children["*"]; exists {
 		value, vars, found := rt.matchSegments(child, segments, copyVars(variables), depth+1)
 		if found && (!bestFound || 2 > bestPriority) {
 			bestMatch = value
 			bestVars = vars
 			bestFound = true
-			bestPriority = 2
 		}
 	}
 

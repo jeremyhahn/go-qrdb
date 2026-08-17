@@ -1455,10 +1455,9 @@ func TestInferParamOIDs_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
-	// The SET target resolves; the WHERE-clause parameter is out of scope
-	// for inferParamOIDs (see its doc comment) and is left unmapped.
+	// Both the SET target and the WHERE-clause comparison resolve.
 	assert.Equal(t, uint32(pgtype.ByteaOID), oids[1])
-	assert.NotContains(t, oids, 2)
+	assert.Equal(t, uint32(pgtype.TextOID), oids[2])
 }
 
 // TestInferParamOIDs_UnresolvedCases verifies every case inferParamOIDs
@@ -1471,15 +1470,34 @@ func TestInferParamOIDs_UnresolvedCases(t *testing.T) {
 	sqlCtx := sql.NewContext(context.Background())
 	sqlCtx.SetCurrentDatabase("qrdb")
 
-	t.Run("select statement", func(t *testing.T) {
+	t.Run("select WHERE comparison resolves", func(t *testing.T) {
 		stmt, err := sqlparser.Parse("SELECT * FROM kv WHERE `key` = :v1")
 		require.NoError(t, err)
 		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
-		assert.Empty(t, oids)
+		assert.Equal(t, uint32(pgtype.TextOID), oids[1])
 	})
 
-	t.Run("delete statement", func(t *testing.T) {
+	t.Run("delete WHERE comparison resolves", func(t *testing.T) {
 		stmt, err := sqlparser.Parse("DELETE FROM kv WHERE `key` = :v1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Equal(t, uint32(pgtype.TextOID), oids[1])
+	})
+
+	t.Run("WHERE IN tuple and BETWEEN resolve per element", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("SELECT * FROM kv WHERE `key` IN (:v1, :v2) AND `key` BETWEEN :v3 AND :v4")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Equal(t, map[int]uint32{
+			1: pgtype.TextOID, 2: pgtype.TextOID, 3: pgtype.TextOID, 4: pgtype.TextOID,
+		}, oids)
+	})
+
+	t.Run("WHERE subquery columns are not resolved against outer relations", func(t *testing.T) {
+		// The inner `key` belongs to the subquery's own FROM; resolving it
+		// against the outer statement could infer a wrong OID, so it is
+		// deliberately left unmapped.
+		stmt, err := sqlparser.Parse("SELECT * FROM kv WHERE `value` = (SELECT `value` FROM other WHERE `key` = :v1)")
 		require.NoError(t, err)
 		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
 		assert.Empty(t, oids)
@@ -1507,8 +1525,31 @@ func TestInferParamOIDs_UnresolvedCases(t *testing.T) {
 		assert.Len(t, oids, 1)
 	})
 
-	t.Run("multi-table update", func(t *testing.T) {
-		stmt, err := sqlparser.Parse("UPDATE kv, kv AS other SET kv.`value` = :v1")
+	t.Run("multi-table update resolves qualified assignments", func(t *testing.T) {
+		// The multi-table form is what translateUpdateFrom produces for
+		// PostgreSQL's UPDATE ... FROM; every assignment arrives qualified
+		// with its table, and resolving it is what keeps a bound timestamp
+		// from falling back to PostgreSQL's zone-suffixed text form, which
+		// the engine's DATETIME parser rejects.
+		stmt, err := sqlparser.Parse("UPDATE kv, kv AS other SET kv.`value` = :v1, other.`value` = :v2")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Equal(t, uint32(pgtype.ByteaOID), oids[1])
+		assert.Equal(t, uint32(pgtype.ByteaOID), oids[2], "alias qualifier must resolve too")
+		assert.Len(t, oids, 2)
+	})
+
+	t.Run("multi-table update with unresolvable qualifier", func(t *testing.T) {
+		stmt, err := sqlparser.Parse("UPDATE kv, kv AS other SET nope.`value` = :v1")
+		require.NoError(t, err)
+		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
+		assert.Empty(t, oids)
+	})
+
+	t.Run("multi-table update with unqualified assignment", func(t *testing.T) {
+		// An unqualified assignment in the multi-table form is ambiguous;
+		// it stays unresolved rather than being guessed.
+		stmt, err := sqlparser.Parse("UPDATE kv, kv AS other SET `value` = :v1")
 		require.NoError(t, err)
 		oids := inferParamOIDs(sqlCtx, sqlEngine.Analyzer.Catalog, "qrdb", stmt)
 		assert.Empty(t, oids)

@@ -67,6 +67,17 @@ type restServiceRegistry struct {
 	accountant   *quota.Accountant
 	systemTenant string
 
+	// sqlDefaultDB is the configured default SQL database name (the dbname
+	// every MySQL/PostgreSQL wire client connects with unless it names
+	// another). Like the registry's own DefaultName, it EXISTS for every
+	// provisioned tenant without a per-tenant create: the composite
+	// "<tenant>/<db>/" namespace applied by resolve keeps each tenant's view
+	// of it fully disjoint, so treating it as universal grants no
+	// cross-tenant access -- it only spares every tenant an explicit
+	// CREATE DATABASE for the name the wire protocols already advertise.
+	// Empty when the server has no SQL surface configured.
+	sqlDefaultDB string
+
 	// dbManager resolves a database's own configuration (barrier, dedicated
 	// store, backend type) so resolve can route a database that carries its
 	// OWN encryption barrier -- independent of the owning tenant's isolation
@@ -119,6 +130,14 @@ type RESTRegistryOption func(*restServiceRegistry)
 func WithTenantServicer(svc tenant.TenantServicer) RESTRegistryOption {
 	return func(r *restServiceRegistry) {
 		r.tenantSvc = svc
+	}
+}
+
+// WithSharedSQLDefaultDatabase marks the configured default SQL database
+// name as existing for every tenant; see restServiceRegistry.sqlDefaultDB.
+func WithSharedSQLDefaultDatabase(name string) RESTRegistryOption {
+	return func(r *restServiceRegistry) {
+		r.sqlDefaultDB = name
 	}
 }
 
@@ -391,6 +410,12 @@ func (r *restServiceRegistry) applyQuota(svcs *DatabaseServices, tenantID string
 // catalog, only databases pre-registered in the DatabaseServiceRegistry exist.
 func (r *restServiceRegistry) databaseExists(tenantID, db string) bool {
 	if db == "" || db == r.dbReg.DefaultName() {
+		return true
+	}
+	// The configured default SQL database exists for every tenant; the
+	// composite namespace keeps each tenant's view disjoint. See
+	// sqlDefaultDB.
+	if r.sqlDefaultDB != "" && db == r.sqlDefaultDB {
 		return true
 	}
 	if r.catalog != nil {

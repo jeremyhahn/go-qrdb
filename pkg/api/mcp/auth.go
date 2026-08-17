@@ -33,9 +33,13 @@ import (
 // NOT surfaced here (the hook cannot return an error); instead no identity is
 // injected, and the tool-handler authorization middleware denies the call.
 func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.Context {
-	if r != nil && r.TLS != nil {
-		ctx = auth.WithTLSState(ctx, r.TLS)
+	// bearerChallengeHandler may already have authenticated this request
+	// and bound the identity into the request context; a second pass would
+	// only repeat the same chain walk.
+	if auth.IdentityFromContext(ctx) != nil {
+		return ctx
 	}
+	ctx = withHTTPRequestCredentials(ctx, r)
 	authCtx, _, err := s.authMW.Authenticate(ctx)
 	if err != nil {
 		// Leave the identity unset so AuthorizeMCP denies; log at debug so a
@@ -44,6 +48,60 @@ func (s *Server) authHTTPContext(ctx context.Context, r *http.Request) context.C
 		return ctx
 	}
 	return authCtx
+}
+
+// withHTTPRequestCredentials binds the request's transport-level credential
+// material into ctx for the authenticator chain: the mTLS connection state
+// for the built-in mTLS authenticator, and the raw Authorization header for
+// embedder-supplied credential authenticators (e.g. an OAuth 2.1 bearer
+// validator registered via wiring.AuthMiddlewareConfig.ExtraAuthenticators —
+// qrdb ships no such validator itself).
+func withHTTPRequestCredentials(ctx context.Context, r *http.Request) context.Context {
+	if r == nil {
+		return ctx
+	}
+	if r.TLS != nil {
+		ctx = auth.WithTLSState(ctx, r.TLS)
+	}
+	return auth.WithHTTPAuthorization(ctx, r.Header.Get("Authorization"))
+}
+
+// protectedResourceMetadataHandler serves the embedder-supplied RFC 9728
+// Protected Resource Metadata document. GET returns the JSON body, HEAD the
+// headers only, and every other method 405 — the document is immutable
+// discovery metadata, never a mutation target.
+func (s *Server) protectedResourceMetadataHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(s.protectedResourceMetadata)
+	}
+}
+
+// bearerChallengeHandler wraps the MCP endpoint handler with the 401 +
+// WWW-Authenticate discovery response of the MCP authorization flow: a
+// request no configured authenticator accepts is refused at the HTTP layer
+// with the embedder-composed challenge (WithBearerChallenge) instead of
+// proceeding identity-less into per-tool DEFAULT-DENY errors, which an
+// OAuth client cannot interpret as "go authorize". A request that does
+// authenticate proceeds with its identity bound into the request context,
+// where authHTTPContext picks it up without re-authenticating.
+func (s *Server) bearerChallengeHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := withHTTPRequestCredentials(r.Context(), r)
+		authCtx, _, err := s.authMW.Authenticate(ctx)
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", s.bearerChallenge)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(authCtx))
+	})
 }
 
 // authorizeTenantBarrierOp authorizes a per-tenant barrier tool invocation
@@ -58,6 +116,29 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 		return nil
 	}
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
+}
+
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
+// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
+// — the single cross-transport home of the bootstrap-window semantics). When
+// authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
+// that must remain reachable while the tenant's IAM itself is unreachable
+// (status/unseal) via the shared sealed-window rule
+// (middleware.AuthorizeTenantBarrierSealedOp). When authMW is nil the gate
+// is a no-op.
+func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
 }
 
 // toolAuthzMiddleware returns an mcp-go tool-handler middleware that authorizes

@@ -2769,11 +2769,22 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	// domains (fail-closed). ABAC decoration wraps the SINGLE authorizer
 	// handed to the middleware, so every transport gets the composed
 	// provider; a load or compile failure aborts the boot (fail closed).
+	// The middleware MUST authenticate and authorize against the SAME
+	// user/role services the API surface serves (servedUserSvc /
+	// servedRoleSvc, the tenant-routed ones when a barrier registry
+	// exists): a barrier-isolated tenant's IAM records live in that
+	// tenant's own TenantBarrier-backed store, so resolving identities
+	// against the plain shared-store services would miss every such
+	// tenant's users and roles — authenticating their certificates to an
+	// identity with no roles and denying every request. The StaleRead
+	// fallbacks stay on the shared-store boot services: they exist for the
+	// system tenant's boot window, and for a barrier tenant a shared-store
+	// fallback answers not-found (deny), which is the fail-closed answer.
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             true,
-		RoleService:         mgmt.roleSvc,
+		RoleService:         mgmt.servedRoleSvc,
 		RoleServiceFallback: mgmt.bootRoleSvc,
-		UserService:         mgmt.userSvc,
+		UserService:         mgmt.servedUserSvc,
 		UserServiceFallback: mgmt.bootUserSvc,
 		StrictSeparation:    strictSoD,
 		SPIFFETrustDomain:   spiffeTrustDomain,

@@ -142,7 +142,7 @@ func TestExecuteDeferredCallbackRefusesAStaleDescription(t *testing.T) {
 
 	const query = "SELECT * FROM kv"
 
-	declared := h.resultColumns(sqlCtx, query)
+	declared := h.resultColumns(sqlCtx, query, nil)
 	require.Len(t, declared, 2, "the kv table describes key and value")
 
 	// Describe the statement as producing a single column, then execute the
@@ -176,7 +176,7 @@ func TestExecuteDeferredCallbackAcceptsItsOwnDescription(t *testing.T) {
 
 	for _, query := range queries {
 		t.Run(query, func(t *testing.T) {
-			declared := h.resultColumns(sqlCtx, query)
+			declared := h.resultColumns(sqlCtx, query, nil)
 			require.NotEmpty(t, declared)
 
 			writer := &mockDataWriter{}

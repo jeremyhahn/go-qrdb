@@ -35,17 +35,19 @@ import (
 // fakeShardLifecycle records Attach, Close, and CloseAndPurge calls and
 // maintains a set of "started" shards. It is goroutine-safe.
 type fakeShardLifecycle struct {
-	mu       sync.Mutex
-	started  map[raftShardKey]bool
-	attached []raftShardKey
-	closed   []raftShardKey
-	purged   []raftShardKey
-	attachFn func(tenantID, db string) error
+	mu        sync.Mutex
+	started   map[raftShardKey]bool
+	observers map[raftShardKey]bool
+	attached  []raftShardKey
+	closed    []raftShardKey
+	purged    []raftShardKey
+	attachFn  func(tenantID, db string) error
 }
 
 func newFakeShardLifecycle() *fakeShardLifecycle {
 	return &fakeShardLifecycle{
-		started: make(map[raftShardKey]bool),
+		started:   make(map[raftShardKey]bool),
+		observers: make(map[raftShardKey]bool),
 	}
 }
 
@@ -93,6 +95,24 @@ func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
 	}
 	return out
+}
+
+// StartedAsObserver reports the role recorded via setStartedAsObserver;
+// a shard the fake never started (or never marked) reports false, matching
+// the real factory's behavior for unknown or voter-started shards.
+func (f *fakeShardLifecycle) StartedAsObserver(tenantID, db string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	return f.started[key] && f.observers[key]
+}
+
+// setStartedAsObserver marks the named shard as having been started with
+// the observer role latched, for tests driving the promoted-replica restart.
+func (f *fakeShardLifecycle) setStartedAsObserver(tenantID, db string, observer bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.observers[raftShardKey{tenantID: tenantID, database: db}] = observer
 }
 
 func (f *fakeShardLifecycle) isStarted(tenantID, db string) bool {

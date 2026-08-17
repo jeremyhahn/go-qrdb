@@ -41,7 +41,7 @@ import (
 
 func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
 	svc := newMockTenantService()
-	handler := handleTenantBarrierInit(svc, allowAllTenantScope)
+	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{})
 	result, err := handler(context.Background(), req)
@@ -64,7 +64,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 		gotShares = shares
 		return nil
 	}
-	handler := handleTenantBarrierInit(svc, allowAllTenantScope)
+	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
 		"tenant_id":  "acme",
@@ -101,7 +101,7 @@ func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}
-	handler := handleTenantBarrierInit(svc, allowAllTenantScope)
+	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
 		"tenant_id":  "missing",
@@ -437,7 +437,9 @@ func TestTenantBarrierHandlers_ScopeDenied(t *testing.T) {
 		handler mcpserver.ToolHandlerFunc
 		args    map[string]any
 	}{
-		{"init", handleTenantBarrierInit(svc, deny), map[string]any{"tenant_id": "victim", "passphrase": "x"}},
+		{"init", handleTenantBarrierInit(svc, func(ctx context.Context, tenantID string) error {
+			return deny(ctx, tenantID, permission.TenantBarrierInit)
+		}), map[string]any{"tenant_id": "victim", "passphrase": "x"}},
 		{"unseal", handleTenantBarrierUnseal(svc, deny), map[string]any{"tenant_id": "victim"}},
 		{"unseal_share", handleTenantBarrierUnsealShare(svc, deny), map[string]any{"tenant_id": "victim", "share": "s1"}},
 		{"seal", handleTenantBarrierSeal(svc, deny), map[string]any{"tenant_id": "victim"}},

@@ -161,41 +161,14 @@ func testVectorLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto m
 	if !strings.Contains(out, "Dimension:      4") {
 		t.Fatalf("[%s] vector namespace info = %q, want Dimension: 4", proto.name, out)
 	}
-	// REAL CROSS-TRANSPORT PARITY BUG (found + confirmed, not fixed --
-	// non-trivial, touches another batch's file + its locked-in test):
-	// pkg/api/mcp/tools_vector.go's handleVectorCreateNamespace maps the
-	// caller-supplied distance_metric/index_type through distanceMetricMap/
-	// vectorIndexTypeMap into UPPERCASE canonical strings ("cosine"->
-	// "COSINE", "hnsw"->"HNSW") before forwarding to
-	// service.VectorServicer.CreateNamespace, then stores that uppercased
-	// value verbatim. REST (pkg/api/rest/handlers_vector.go
-	// handleVectorCreateNamespace), gRPC, QUIC, and Unix all forward
-	// req.DistanceMetric/req.IndexType UNMODIFIED -- by the time any
-	// transport receives the request, cmd/qrdb/vector_enabled.go's own
-	// parseDistanceMetric/parseIndexType have already normalized it to the
-	// canonical LOWERCASE transport.Distance*/transport.Index* constants
-	// (sdk/go/transport/vector_types.go), so MCP's additional server-side
-	// uppercasing is both redundant and the ONLY transport that diverges.
-	// The stored value round-trips exactly through GetNamespaceInfo/
-	// ListNamespaces, so `vector namespace info` after an MCP-created
-	// namespace shows "DistanceMetric: COSINE"/"IndexType: HNSW" while the
-	// identical namespace created over REST/gRPC/QUIC/Unix shows
-	// "cosine"/"hnsw". This does not affect distance-function CORRECTNESS
-	// (pkg/service/vector.go's ensureHNSWIndex matches both "COSINE" and
-	// "cosine" when selecting the HNSW distance function), only display/
-	// read-back parity. NOT fixed here: pkg/api/mcp/tools_vector_test.go's
-	// TestHandleVectorCreateNamespace_* explicitly pins the uppercase
-	// output (asserts captured.DistanceMetric == "L2",
-	// captured.IndexType == "FLAT"), so this is a deliberately tested
-	// existing contract in a file outside this batch's ownership, not an
-	// accidental regression -- reported per the CLAUDE.md task brief's
-	// "NON-TRIVIAL -> STOP and REPORT" rule rather than silently patched.
+	// Every transport stores the canonical LOWERCASE distance metric and
+	// index type: the CLI normalizes to the transport.Distance*/Index*
+	// constants before any transport sees the request, and MCP's former
+	// server-side re-uppercasing (the one historical divergence) was
+	// removed — pkg/api/mcp/tools_vector.go now lowercases like the rest,
+	// pinned by TestHandleVectorCreateNamespace_LowercaseCanonical.
 	wantDistanceMetric := "cosine"
 	wantIndexType := "hnsw"
-	if proto.name == "mcp" {
-		wantDistanceMetric = "COSINE"
-		wantIndexType = "HNSW"
-	}
 	if !strings.Contains(out, "DistanceMetric: "+wantDistanceMetric) {
 		t.Fatalf("[%s] vector namespace info = %q, want DistanceMetric: %s", proto.name, out, wantDistanceMetric)
 	}

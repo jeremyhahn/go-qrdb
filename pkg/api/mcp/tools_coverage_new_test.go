@@ -193,6 +193,22 @@ func allowAllTenantScope(_ context.Context, _ string, _ permission.Permission) e
 	return nil
 }
 
+// allowAllTenantInit is the init-gate sibling of allowAllTenantScope: it
+// permits every tenant barrier initialization, isolating handler-behavior
+// tests from the trust-on-first-init authorization rule.
+func allowAllTenantInit(_ context.Context, _ string) error { return nil }
+
+// allowAllTenantBarrierAuthz builds a tenantBarrierAuthorizers whose three
+// gates all permit every invocation, for registration/coverage tests that
+// exercise handler behavior rather than authorization.
+func allowAllTenantBarrierAuthz() tenantBarrierAuthorizers {
+	return tenantBarrierAuthorizers{
+		Op:     allowAllTenantScope,
+		Init:   allowAllTenantInit,
+		Sealed: allowAllTenantScope,
+	}
+}
+
 func (m *covMockTenantSvc) CreateTenant(ctx context.Context, id, name string, iso tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, iso)
@@ -1511,14 +1527,14 @@ func TestCovHandleTenantUpdateQuotas_ServiceError(t *testing.T) {
 
 func TestCovTenantBarrierTools_Registration(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	tools := tenantBarrierTools(svc, allowAllTenantScope)
+	tools := tenantBarrierTools(svc, allowAllTenantBarrierAuthz())
 	if len(tools) != 11 {
 		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
 }
 
 func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
-	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantScope)
+	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantInit)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{
 		"tenant_id": "acme", "passphrase": "secret", "threshold": float64(2), "shares": float64(3),
 	})
@@ -1532,7 +1548,7 @@ func TestCovHandleTenantBarrierInit_Success(t *testing.T) {
 }
 
 func TestCovHandleTenantBarrierInit_MissingID(t *testing.T) {
-	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantScope)
+	handler := handleTenantBarrierInit(newCovMockTenantSvc(), allowAllTenantInit)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{})
 	result, err := handler(context.Background(), req)
 	if err != nil || !result.IsError {
@@ -1545,7 +1561,7 @@ func TestCovHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}
-	handler := handleTenantBarrierInit(svc, allowAllTenantScope)
+	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
 	req := buildCallToolRequest(t, "qrdb_tenant_barrier_init", map[string]any{"tenant_id": "missing"})
 	_, err := handler(context.Background(), req)
 	if err == nil {

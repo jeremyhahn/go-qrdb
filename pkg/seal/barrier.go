@@ -284,7 +284,42 @@ func (b *StorageBarrier) Initialize(ctx context.Context, creds Credentials) erro
 			"deny", map[string]string{"error": err.Error()})
 		return err
 	}
+	return b.initializeWithStrategy(ctx, strategy, creds)
+}
 
+// InitializeWithStrategy initializes the barrier using EXACTLY the supplied
+// strategy, bypassing best-strategy preference selection. The strategy is
+// registered under its ID (replacing any registration the barrier was
+// constructed with under that ID) so a later Unseal resolves the persisted
+// blob's strategy in-process. Like Initialize, it refuses an
+// already-initialized barrier with ErrAlreadyInitialized.
+//
+// This is the seam that honors a tenant admin's explicit strategy choice at
+// barrier init on a node where the barrier shell was pre-registered with
+// the node's default strategy set (see
+// tenant.TenantService.TenantBarrierInitWithStrategy) — without it the
+// requested strategy was silently ignored and initialization ran against
+// whatever the shell happened to carry.
+func (b *StorageBarrier) InitializeWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	if strategy == nil {
+		return ErrNoStrategySpecified
+	}
+	exists, err := b.base.Exists(ctx, b.config.RootKeyPath)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrAlreadyInitialized
+	}
+	b.setStrategy(strategy.ID(), strategy)
+	return b.initializeWithStrategy(ctx, strategy, creds)
+}
+
+// initializeWithStrategy is the shared initialization core: it delegates to
+// the EpochBarrier with the chosen strategy, persists the sealed root key
+// blob under an existence CAS, and transitions to unsealed. Callers have
+// already verified the barrier is uninitialized and chosen the strategy.
+func (b *StorageBarrier) initializeWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
 	// Delegate initialization to the EpochBarrier. It generates the root
 	// key, derives the initial DEK, and seals the root key via the strategy.
 	if err := b.barrier.Initialize(ctx, strategy, creds); err != nil {
@@ -452,6 +487,9 @@ func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error 
 	var sealed SealedRootKey
 	if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
 		return ErrCorruptRootKey
+	}
+	if stampErr := b.stampNoneOriginSealedState(rootKey, &sealed); stampErr != nil {
+		return stampErr
 	}
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr

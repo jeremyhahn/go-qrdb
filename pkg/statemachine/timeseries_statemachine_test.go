@@ -1,4 +1,4 @@
-//go:build timeseries
+//go:build qrdb_ts
 
 // Copyright 2026 Jeremy Hahn
 //
@@ -29,10 +29,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vmihailenco/msgpack/v5"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 func setupTimeSeriesTestFSM(t *testing.T) (*TimeSeriesStateMachine, *timeseries.Storage, func()) {

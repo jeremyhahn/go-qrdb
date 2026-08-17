@@ -3824,19 +3824,32 @@ service TenantBarrierService {
     // Init initializes a tenant barrier with the selected strategy. For the
     // Shamir strategy the share_count field indicates how many officer shares
     // were sealed; shares are never returned in the response.
+    //
+    // identity:gated at the interceptor because a self-managed tenant's IAM
+    // is encrypted BEHIND the barrier being initialized: no role able to
+    // satisfy tenant_barrier:init can exist before the first init. The
+    // handler runs the full RBAC check with the shared trust-on-first-init
+    // fallback (middleware.AuthorizeTenantBarrierInit), identical to every
+    // other transport.
     rpc Init(TenantBarrierInitRequest) returns (TenantBarrierInitResponse) {
-        option (qrdb.v1.permission) = "tenant_barrier:init";
+        option (qrdb.v1.permission) = "identity:gated";
     }
 
     // Unseal unseals a tenant barrier using a single key (passphrase strategy).
+    //
+    // identity:gated at the interceptor: unseal must remain reachable while
+    // the tenant's IAM is unreachable (sealed window). The handler runs the
+    // full RBAC check with the shared sealed-window fallback
+    // (middleware.AuthorizeTenantBarrierSealedOp).
     rpc Unseal(TenantBarrierUnsealRequest) returns (google.protobuf.Empty) {
-        option (qrdb.v1.permission) = "tenant_barrier:unseal";
+        option (qrdb.v1.permission) = "identity:gated";
     }
 
     // UnsealShare submits one Shamir share toward the tenant quorum threshold,
     // auto-unsealing once enough distinct shares have been submitted.
+    // identity:gated for the same sealed-window reason as Unseal.
     rpc UnsealShare(TenantBarrierUnsealShareRequest) returns (TenantBarrierUnsealProgress) {
-        option (qrdb.v1.permission) = "tenant_barrier:unseal";
+        option (qrdb.v1.permission) = "identity:gated";
     }
 
     // Seal seals a tenant barrier.
@@ -3845,8 +3858,10 @@ service TenantBarrierService {
     }
 
     // Status reports a tenant barrier's sealed/initialized state and strategy.
+    // identity:gated for the same sealed-window reason as Unseal: polling
+    // status is how a tenant admin drives the unseal flow.
     rpc Status(TenantBarrierStatusRequest) returns (TenantBarrierStatusResponse) {
-        option (qrdb.v1.permission) = "tenant_barrier:status";
+        option (qrdb.v1.permission) = "identity:gated";
     }
 
     // OfficerRegister enrolls a Security Officer for this tenant's barrier.

@@ -17,6 +17,7 @@
 package pgsql
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/dolthub/go-mysql-server/sql"
@@ -68,10 +69,19 @@ import (
 //     `SELECT (CASE WHEN age = 18 THEN 1 ELSE 2 END) AS age` got that column
 //     described as boolean and failed scanning "true" into a uint.
 var OIDMapping = map[string]uint32{
-	"TEXT":      pgtype.TextOID,
-	"VARCHAR":   pgtype.TextOID,
-	"BLOB":      pgtype.TextOID,
-	"VARBINARY": pgtype.TextOID,
+	"TEXT":    pgtype.TextOID,
+	"VARCHAR": pgtype.TextOID,
+
+	// The binary families are bytea, NOT text. Describing a BLOB column as
+	// text put every non-UTF-8 byte through the wire's text path, where it
+	// arrived replaced -- a gob or protobuf blob stored through a
+	// serializer field came back starting with '?' bytes and failed to
+	// unmarshal. Values are already []byte (or normalized to it -- see
+	// normalizeBytea), which pgx's bytea codec encodes byte-for-byte in
+	// both wire formats.
+	"BLOB":      pgtype.ByteaOID,
+	"VARBINARY": pgtype.ByteaOID,
+	"BINARY":    pgtype.ByteaOID,
 	"INT64":     pgtype.Int8OID,
 	"BIGINT":    pgtype.Int8OID,
 	"INT32":     pgtype.Int4OID,
@@ -92,6 +102,16 @@ var OIDMapping = map[string]uint32{
 	"TIMESTAMP": pgtype.TimestamptzOID,
 	"DATETIME":  pgtype.TimestamptzOID,
 	"JSON":      pgtype.JSONBOID,
+
+	// DECIMAL is PostgreSQL's numeric. Describing it as text -- the default
+	// for an unmapped type -- was not merely imprecise: pgx reports a
+	// text-described column's length as "variable" (math.MaxInt64), and
+	// gorm's migrator compares that against the model field's declared size,
+	// concluding on every AutoMigrate that a numeric(p,s) column needs an
+	// ALTER it then executes. The values themselves need normalizeNumeric
+	// below: go-mysql-server hands decimals back as decimal.Decimal, which
+	// pgx's numeric codec has no encode plan for.
+	"DECIMAL": pgtype.NumericOID,
 }
 
 // DefaultOID is used when no mapping exists for a GMS type.
@@ -139,7 +159,21 @@ func ColumnOID(t sql.Type) uint32 {
 // need a coercion a single piece of data, checkable against OIDMapping by a
 // test rather than by reading two control-flow graphs.
 var wireValueNormalizers = map[uint32]func(any) any{
-	pgtype.BoolOID: normalizeBool,
+	pgtype.BoolOID:    normalizeBool,
+	pgtype.NumericOID: normalizeNumeric,
+	pgtype.ByteaOID:   normalizeBytea,
+}
+
+// normalizeBytea coerces a cell declared ByteaOID to []byte. go-mysql-server
+// mostly hands binary columns back as []byte already, but expression paths
+// (a literal, a coalesce) can produce string; pgx's bytea codec has no plan
+// for string, so the bytes are unwrapped here. Any other type is returned
+// unchanged for pgx to report.
+func normalizeBytea(v any) any {
+	if s, ok := v.(string); ok {
+		return []byte(s)
+	}
+	return v
 }
 
 // NormalizeForOID coerces a go-mysql-server cell into the Go type pgx can
@@ -194,4 +228,29 @@ func normalizeBool(v any) any {
 	default:
 		return v
 	}
+}
+
+// normalizeNumeric coerces a cell declared NumericOID into pgtype.Numeric,
+// the one shape pgx's numeric codec can encode in both wire formats.
+// go-mysql-server produces decimal.Decimal for a DECIMAL column (and a
+// plain string for some expression paths); both render to the exact
+// decimal text pgtype.Numeric parses, so no precision is lost in transit.
+// A value that fails to parse is returned unchanged so pgx reports
+// precisely what it could not encode.
+func normalizeNumeric(v any) any {
+	var text string
+	switch val := v.(type) {
+	case string:
+		text = val
+	case fmt.Stringer:
+		text = val.String()
+	default:
+		// Integers and floats already have numeric-codec encode plans.
+		return v
+	}
+	var n pgtype.Numeric
+	if err := n.Scan(text); err != nil {
+		return v
+	}
+	return n
 }

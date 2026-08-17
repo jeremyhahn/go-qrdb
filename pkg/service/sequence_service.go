@@ -245,3 +245,38 @@ func decodeSequenceCounter(b []byte) uint64 {
 	}
 	return binary.BigEndian.Uint64(b)
 }
+
+// userSequencePrefix namespaces the sequences SQL clients create and
+// consume by name -- PostgreSQL's CREATE SEQUENCE / nextval('name') surface
+// -- away from qrdb's internal counters (table IDs, collection increment
+// IDs), so a client naming a sequence can never collide with, read, or
+// reset an internal allocator.
+const userSequencePrefix = "__usq:"
+
+// UserSequenceName returns the SequenceServicer name for a client-named SQL
+// sequence.
+func UserSequenceName(name string) string {
+	return userSequencePrefix + name
+}
+
+// UserSequencer is the client-named-sequence surface of the catalog: the
+// service half of PostgreSQL's CREATE SEQUENCE / nextval() / DROP SEQUENCE.
+// It is implemented by TableService (which already holds the
+// SequenceServicer every internal allocator uses) and consumed by
+// pkg/sql/provider, which resolves it per session tenant exactly as it does
+// ViewServicer.
+type UserSequencer interface {
+	// NextUserSequenceValue allocates and returns the sequence's next
+	// value. A sequence that has never been allocated from starts at 1 --
+	// sequences materialize on first use, so nextval against a name no
+	// CREATE SEQUENCE ever declared succeeds rather than failing; see the
+	// pkg/sql/pgsql package documentation for how the SQL surface leans on
+	// that.
+	NextUserSequenceValue(ctx context.Context, database, name string) (uint64, error)
+
+	// ResetUserSequence returns the sequence to its zero state, so the
+	// next allocation starts at 1 again. It is DROP SEQUENCE's effect
+	// here: with materialize-on-first-use semantics, a dropped sequence is
+	// indistinguishable from one that was never created.
+	ResetUserSequence(ctx context.Context, database, name string) error
+}

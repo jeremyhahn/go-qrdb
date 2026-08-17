@@ -64,6 +64,29 @@ func (s *tenantBarrierServer) authorizeTenantBarrierOp(ctx context.Context, tena
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
+// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
+// — the single cross-transport home of the bootstrap-window semantics). When
+// authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *tenantBarrierServer) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.svc)
+}
+
+// authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
+// that must remain reachable while the tenant's IAM itself is unreachable
+// (status/unseal) via the shared sealed-window rule
+// (middleware.AuthorizeTenantBarrierSealedOp). When authMW is nil the gate
+// is a no-op.
+func (s *tenantBarrierServer) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
+}
+
 // peerCertThumbprintTenant extracts the mTLS leaf certificate thumbprint from
 // the gRPC peer context for the tenant barrier server.
 func peerCertThumbprintTenant(ctx context.Context) (string, error) {
@@ -101,7 +124,7 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierInit); err != nil {
+	if err := s.authorizeTenantBarrierInit(ctx, req.GetTenantId()); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 
@@ -132,7 +155,7 @@ func (s *tenantBarrierServer) Unseal(ctx context.Context, req *pb.TenantBarrierU
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 	if err := s.svc.TenantBarrierUnseal(ctx, req.GetTenantId(), req.GetKey()); err != nil {
@@ -150,7 +173,7 @@ func (s *tenantBarrierServer) UnsealShare(ctx context.Context, req *pb.TenantBar
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 	prog, err := s.svc.TenantBarrierUnsealShare(ctx, req.GetTenantId(), req.GetShare())
@@ -194,7 +217,7 @@ func (s *tenantBarrierServer) Status(ctx context.Context, req *pb.TenantBarrierS
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
-	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierStatus); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierStatus); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 	st, err := s.svc.TenantBarrierStatus(ctx, req.GetTenantId())

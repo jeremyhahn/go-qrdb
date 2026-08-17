@@ -36,6 +36,11 @@ const (
 	DescriptionRelation = "pg_description"
 	IndexesRelation     = "pg_indexes"
 	AttributeRelation   = "pg_attribute"
+
+	// IndexColumnsRelation is qrdb's substitute target for the
+	// pg_index-based per-column index introspection PostgreSQL clients
+	// run; see indexColumnsRows.
+	IndexColumnsRelation = "qrdb_index_columns"
 )
 
 // oidType is the column type used for every OID-valued column. PostgreSQL's
@@ -67,7 +72,14 @@ var relationSchemas = map[string]sqle.Schema{
 		{Name: "objsubid", Type: types.Int32, Nullable: false, Source: DescriptionRelation},
 		{Name: "description", Type: types.LongText, Nullable: true, Source: DescriptionRelation},
 	},
-	IndexesRelation:   indexesSchema,
+	IndexesRelation: indexesSchema,
+	IndexColumnsRelation: {
+		{Name: "table_name", Type: types.LongText, Nullable: false, Source: IndexColumnsRelation},
+		{Name: "index_name", Type: types.LongText, Nullable: false, Source: IndexColumnsRelation},
+		{Name: "non_unique", Type: types.Boolean, Nullable: false, Source: IndexColumnsRelation},
+		{Name: "primary", Type: types.Boolean, Nullable: false, Source: IndexColumnsRelation},
+		{Name: "column_name", Type: types.LongText, Nullable: false, Source: IndexColumnsRelation},
+	},
 	AttributeRelation: attributeSchema,
 }
 
@@ -77,12 +89,13 @@ var relationSchemas = map[string]sqle.Schema{
 // GetTableNames and TestRelationTablesAreConsistent can all be checked
 // against.
 var relationRows = map[string]rowsFunc{
-	TypeRelation:        typeRows,
-	ClassRelation:       classRows,
-	NamespaceRelation:   namespaceRows,
-	DescriptionRelation: descriptionRows,
-	IndexesRelation:     indexesRows,
-	AttributeRelation:   attributeRows,
+	TypeRelation:         typeRows,
+	ClassRelation:        classRows,
+	NamespaceRelation:    namespaceRows,
+	DescriptionRelation:  descriptionRows,
+	IndexesRelation:      indexesRows,
+	AttributeRelation:    attributeRows,
+	IndexColumnsRelation: indexColumnsRows,
 }
 
 // Compile-time interface assertion. database implements sqle.Database and

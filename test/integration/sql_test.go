@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -29,6 +30,7 @@ import (
 	gomysql "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"net/http"
 )
 
 // startSingleNodeWithSQL starts a single-node QRDB instance with MySQL and
@@ -660,7 +662,67 @@ func TestSQL_PgSQL_SelectAll(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSQL_MultiTenant_Isolation(t *testing.T) {
-	_, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+	adminPort, mysqlPort, _, ca := startSingleNodeWithSQL(t)
+
+	// Provision both tenants end-to-end first, exactly as production
+	// would: the data plane requires the tenant named by the certificate
+	// to EXIST (an unknown tenant is tenant-not-found, never an implicit
+	// namespace), the SQL default database must be CREATED for a tenant
+	// before its wire connections resolve it, and both of those need the
+	// tenant's own identity to carry a role granting the database and KV
+	// permissions. This mirrors TestIsolationRaft_EndToEnd's provisioning
+	// phase for the prefix-isolation tier.
+	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
+	for _, tc := range []struct{ tenantID, username string }{
+		{"tenant-a", "user-a"},
+		{"tenant-b", "user-b"},
+	} {
+		body, status := iraftAPIPost(t, sysClient,
+			fmt.Sprintf("https://127.0.0.1:%d/v1/tenants", adminPort),
+			map[string]interface{}{
+				"id":             tc.tenantID,
+				"name":           tc.tenantID,
+				"isolation_type": "prefix",
+			},
+		)
+		if status != http.StatusCreated && status != http.StatusOK {
+			t.Fatalf("create tenant %s: status %d, body: %s", tc.tenantID, status, body)
+		}
+
+		roleBody, roleStatus := iraftAPIPost(t, sysClient,
+			fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
+			map[string]interface{}{
+				"name":      "sql-user",
+				"tenant_id": tc.tenantID,
+				"permissions": []string{
+					"databases:create", "databases:read", "databases:list",
+					"kv:put", "kv:get", "kv:range", "kv:delete",
+				},
+			},
+		)
+		if roleStatus != http.StatusCreated && roleStatus != http.StatusOK {
+			t.Fatalf("create role for %s: status %d, body: %s", tc.tenantID, roleStatus, roleBody)
+		}
+		var roleResp struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(roleBody, &roleResp); err != nil || roleResp.ID == "" {
+			t.Fatalf("create role for %s: could not decode role ID from: %s", tc.tenantID, roleBody)
+		}
+
+		userBody, userStatus := iraftAPIPost(t, sysClient,
+			fmt.Sprintf("https://127.0.0.1:%d/users", adminPort),
+			map[string]interface{}{
+				"username":  tc.username,
+				"tenant_id": tc.tenantID,
+				"role_ids":  []string{roleResp.ID},
+			},
+		)
+		if userStatus != http.StatusCreated && userStatus != http.StatusOK {
+			t.Fatalf("create user %s: status %d, body: %s", tc.username, userStatus, userBody)
+		}
+
+	}
 
 	// Create two client certs with different tenant IDs (OU field).
 	certA, keyA := generateClientCert(t, ca, "user-a", "tenant-a")

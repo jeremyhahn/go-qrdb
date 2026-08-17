@@ -164,3 +164,46 @@ func toSQLViewDefinition(def *service.ViewDef) sqle.ViewDefinition {
 		CreateViewStatement: def.CreateStatement,
 	}
 }
+
+// userSequencer resolves the session tenant's client-named-sequence
+// surface, mirroring viewService above.
+func (d *Database) userSequencer(ctx *sqle.Context) (service.UserSequencer, error) {
+	if d.registry == nil {
+		return nil, &SequencesUnavailableError{Database: d.name}
+	}
+	tableSvc, err := d.registry.TableService(d.sessionTenantID(ctx), d.name)
+	if err != nil {
+		return nil, err
+	}
+	seq, ok := tableSvc.(service.UserSequencer)
+	if !ok {
+		return nil, &SequencesUnavailableError{Database: d.name}
+	}
+	return seq, nil
+}
+
+// NextSequenceValue allocates the next value of the named client sequence.
+// It is the storage half of the SQL nextval() function pkg/sql/engine
+// registers for the PostgreSQL dialect.
+func (d *Database) NextSequenceValue(ctx *sqle.Context, name string) (int64, error) {
+	seq, err := d.userSequencer(ctx)
+	if err != nil {
+		return 0, err
+	}
+	value, err := seq.NextUserSequenceValue(ctx, d.name, name)
+	if err != nil {
+		return 0, err
+	}
+	return int64(value), nil
+}
+
+// ResetSequence returns the named client sequence to its zero state --
+// DROP SEQUENCE's effect under materialize-on-first-use semantics (see
+// service.UserSequencer).
+func (d *Database) ResetSequence(ctx *sqle.Context, name string) error {
+	seq, err := d.userSequencer(ctx)
+	if err != nil {
+		return err
+	}
+	return seq.ResetUserSequence(ctx, d.name, name)
+}

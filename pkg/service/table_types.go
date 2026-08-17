@@ -151,6 +151,18 @@ type TableIndex struct {
 	// rather than one the user declared directly.
 	ForeignKey bool `json:"foreign_key,omitempty"`
 
+	// StatementIndex marks an index created by a standalone CREATE INDEX
+	// statement, as opposed to a constraint clause (a CREATE TABLE
+	// CONSTRAINT ... UNIQUE, a column-level UNIQUE, or ALTER TABLE ADD
+	// CONSTRAINT). MySQL draws no such line -- every unique index there IS
+	// a constraint -- but PostgreSQL does: a unique INDEX never appears in
+	// information_schema.table_constraints, only a unique CONSTRAINT does,
+	// and gorm's migrator drives real DDL off that difference. The flag is
+	// recorded at DDL time by the PostgreSQL wire front end (the only
+	// surface where the distinction exists in the statement text) and read
+	// back by pkg/sql/pgcatalog's table_constraints filter.
+	StatementIndex bool `json:"statement_index,omitempty"`
+
 	// Comment is the index comment, if any.
 	Comment string `json:"comment,omitempty"`
 }

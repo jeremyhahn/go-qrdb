@@ -766,3 +766,14 @@ func (e *IsolationRangeReadError) Error() string {
 	return "provider: qrdb_isolation=" + e.Level + " cannot compare the read set of a range scan over " +
 		strconv.Quote(e.Prefix) + "; read by exact key, or use qrdb_isolation='written' for this transaction"
 }
+
+// SequencesUnavailableError is returned when a database has no relational
+// catalog to serve client-named sequences from (KV-only shapes).
+type SequencesUnavailableError struct {
+	Database string
+}
+
+// Error returns a human-readable description.
+func (e *SequencesUnavailableError) Error() string {
+	return "provider: database " + e.Database + " does not support sequences"
+}

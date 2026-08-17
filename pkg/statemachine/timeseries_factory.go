@@ -1,4 +1,4 @@
-//go:build timeseries
+//go:build qrdb_ts
 
 // Copyright 2026 Jeremy Hahn
 //
@@ -17,9 +17,10 @@
 package statemachine
 
 import (
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // NewTimeSeriesRegularCreateFunc returns an sm.CreateFunc that creates

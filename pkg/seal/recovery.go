@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -158,6 +159,9 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 	if jsonErr := json.Unmarshal(blob, &sealed); jsonErr != nil {
 		return ErrCorruptRootKey
 	}
+	if stampErr := b.stampNoneOriginSealedState(rootKey, &sealed); stampErr != nil {
+		return stampErr
+	}
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr
 	}
@@ -198,6 +202,9 @@ func (b *StorageBarrier) recoverWithSoftwareStrategy(ctx context.Context, rootKe
 		return ErrStrategyNotFound
 	}
 
+	if stampErr := b.stampNoneOriginSealedState(rootKey, &sealed); stampErr != nil {
+		return stampErr
+	}
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr
 	}
@@ -293,4 +300,21 @@ func uitoa(u uint) string {
 		u /= 10
 	}
 	return string(buf[i:])
+}
+
+// stampNoneOriginSealedState stamps the metadata MAC onto a sealed
+// root-key record that legitimately carries none. quicraft's Initialize
+// deliberately leaves a StrategyNone-sealed blob unstamped -- that strategy
+// keeps no root key at rest to derive the MAC key from -- but every
+// recovery-shaped unseal here runs the full MAC verification with the
+// RECONSTRUCTED root key in hand. Stamping with that key upgrades the blob
+// to authenticated metadata rather than refusing a state the none strategy
+// itself defines as valid. Any other blob -- already stamped, or produced
+// by a key-holding strategy -- is left untouched, so a stripped or
+// tampered MAC on those still fails closed inside Unseal.
+func (b *StorageBarrier) stampNoneOriginSealedState(rootKey []byte, sealed *SealedRootKey) error {
+	if sealed == nil || len(sealed.StateMAC) != 0 || sealed.Strategy != StrategyNone {
+		return nil
+	}
+	return quicraftseal.StampSealedStateMACWithRootKey(rootKey, b.config.DeploymentID, sealed)
 }

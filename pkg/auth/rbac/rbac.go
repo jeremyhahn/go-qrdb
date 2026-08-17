@@ -359,10 +359,13 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		}
 	}
 
-	// Resolve the identity's effective permissions, with caching.
-	permSet, ok := a.cache.get(identity.TenantID, identity.Subject)
+	// Resolve the identity's effective permissions, with caching. The
+	// cache key includes the effective role set (see permissionCache), so
+	// a change in the identity's enriched roles is never masked by a
+	// stale entry.
+	effRoles := a.effectiveRoles(identity)
+	permSet, ok := a.cache.get(identity.TenantID, identity.Subject, effRoles)
 	if !ok {
-		effRoles := a.effectiveRoles(identity)
 		// Bound the primary linearizable resolve when a StaleRead fallback is
 		// available, so a SLOW (not just failed) ReadIndex — cold pipeline,
 		// draining host, transient consensus latency — fails over within
@@ -396,7 +399,7 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 			}
 			perms = fperms
 		}
-		a.cache.set(identity.TenantID, identity.Subject, perms)
+		a.cache.set(identity.TenantID, identity.Subject, effRoles, perms)
 		permSet = make(map[permission.Permission]struct{}, len(perms))
 		for _, p := range perms {
 			permSet[p] = struct{}{}

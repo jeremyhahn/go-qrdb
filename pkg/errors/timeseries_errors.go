@@ -1,4 +1,4 @@
-//go:build timeseries
+//go:build qrdb_ts
 
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC
@@ -287,11 +287,7 @@ func IsTimeSeriesError(err error) bool {
 	}
 
 	var tsShardUnavailable *TimeSeriesShardUnavailableError
-	if errors.As(err, &tsShardUnavailable) {
-		return true
-	}
-
-	return false
+	return errors.As(err, &tsShardUnavailable)
 }
 
 // IsTimeSeriesNotFound returns true if the error is a TimeSeriesNotFoundError.

@@ -378,7 +378,13 @@ func TestServices_PlacementMemberStart_JoinFlagFromReplicaState(t *testing.T) {
 		wantJoining bool
 	}{
 		{"ReplicaStateObserver starts join=true (enters bootstrap window)", placement.ReplicaStateObserver, true},
-		{"ReplicaStateObserverReady starts join=false", placement.ReplicaStateObserverReady, false},
+		// A FRESH ObserverReady start (no persisted shard state, as this
+		// fixture builds) is the wiped-observer edge: go-quicraft refuses to
+		// seed a fresh voting membership naming an observer, so the factory
+		// falls back to re-entering the join bootstrap window. A real
+		// ObserverReady restart recovers persisted state and starts
+		// join=false; that path is exercised by the integration scale tests.
+		{"ReplicaStateObserverReady with no persisted state re-enters bootstrap window", placement.ReplicaStateObserverReady, true},
 		{"ReplicaStateActive starts join=false", placement.ReplicaStateActive, false},
 		{"zero-value legacy state starts join=false", placement.ReplicaState(0), false},
 	}

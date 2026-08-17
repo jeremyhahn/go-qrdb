@@ -14,6 +14,8 @@
 
 package node
 
+import "errors"
+
 // StorageCreateError indicates that the storage backend could not be created.
 type StorageCreateError struct {
 	Backend string
@@ -185,6 +187,12 @@ func (e *ABACWiringError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *ABACWiringError) Unwrap() error { return e.Err }
+
+// ErrNilWrappedAuthorizer indicates that the embedder's authorizer wrapper
+// (WithAuthorizerWrapper) returned nil instead of an auth.Authorizer. Node
+// construction fails closed: a nil authorizer would leave every transport
+// with no authorization decision at all.
+var ErrNilWrappedAuthorizer = errors.New("node: authorizer wrapper returned nil")
 
 // AuthMiddlewareWiringError indicates that the multi-protocol server's
 // production auth-enforcement middleware (pkg/auth/wiring.BuildAuthMiddleware

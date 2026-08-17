@@ -1234,3 +1234,19 @@ func isSupportedColumnType(t string) bool {
 	}
 	return false
 }
+
+// NextUserSequenceValue implements UserSequencer over the same
+// SequenceServicer the table-ID allocator uses, under the client-sequence
+// namespace (see UserSequenceName).
+func (s *TableService) NextUserSequenceValue(ctx context.Context, database, name string) (uint64, error) {
+	return s.seq.Allocate(ctx, database, UserSequenceName(name), 1)
+}
+
+// ResetUserSequence implements UserSequencer.
+func (s *TableService) ResetUserSequence(ctx context.Context, database, name string) error {
+	return s.seq.Reset(ctx, database, UserSequenceName(name))
+}
+
+// Compile-time assertion that the table catalog also serves client-named
+// sequences.
+var _ UserSequencer = (*TableService)(nil)

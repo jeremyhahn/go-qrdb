@@ -6,9 +6,10 @@ import (
 	"sort"
 	"testing"
 
-	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 func newTestInvertedIndex(t *testing.T) *InvertedIndex {

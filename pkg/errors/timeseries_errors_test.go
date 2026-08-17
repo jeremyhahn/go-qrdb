@@ -1,4 +1,4 @@
-//go:build timeseries
+//go:build qrdb_ts
 
 // Copyright (c) 2025 Jeremy Hahn
 // Copyright (c) 2025 Automate The Things, LLC

@@ -38,17 +38,34 @@ import (
 // It mirrors authorizeTenantBarrierOp on the QUIC, gRPC, and REST servers.
 type tenantScopeAuthorizer func(ctx context.Context, tenantID string, perm permission.Permission) error
 
+// tenantBarrierAuthorizers carries the three authorization gates the tenant
+// barrier tools dispatch over. Op is the plain tenant-scoped RBAC check
+// (seal, officer management); Init is the trust-on-first-init gate and
+// Sealed the sealed-window gate — both route through the shared
+// cross-transport rules in pkg/auth/middleware (AuthorizeTenantBarrierInit /
+// AuthorizeTenantBarrierSealedOp) so the fallback semantics cannot drift
+// from REST, gRPC, and QUIC.
+type tenantBarrierAuthorizers struct {
+	Op     tenantScopeAuthorizer
+	Init   func(ctx context.Context, tenantID string) error
+	Sealed tenantScopeAuthorizer
+}
+
 // tenantBarrierTools returns the MCP tool registrations for per-tenant
 // barrier lifecycle: init, unseal, seal, status, and Security Officer flows.
 // Every handler authorizes against the target tenant parsed from the tool
-// arguments via authorize before delegating to the tenant service.
-func tenantBarrierTools(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) []serverTool {
+// arguments before delegating to the tenant service. Init/Unseal/
+// UnsealShare/Status register as IdentityGated at the tool layer because
+// their RBAC check runs inside the handlers with the bootstrap-window
+// fallbacks (see tenantBarrierAuthorizers).
+func tenantBarrierTools(svc tenant.TenantServicer, authz tenantBarrierAuthorizers) []serverTool {
+	authorize := authz.Op
 	return []serverTool{
-		{Tool: toolTenantBarrierInit(), Perm: permission.TenantBarrierInit, Handler: handleTenantBarrierInit(svc, authorize)},
-		{Tool: toolTenantBarrierUnseal(), Perm: permission.TenantBarrierUnseal, Handler: handleTenantBarrierUnseal(svc, authorize)},
-		{Tool: toolTenantBarrierUnsealShare(), Perm: permission.TenantBarrierUnseal, Handler: handleTenantBarrierUnsealShare(svc, authorize)},
+		{Tool: toolTenantBarrierInit(), Perm: permission.IdentityGated, Handler: handleTenantBarrierInit(svc, authz.Init)},
+		{Tool: toolTenantBarrierUnseal(), Perm: permission.IdentityGated, Handler: handleTenantBarrierUnseal(svc, authz.Sealed)},
+		{Tool: toolTenantBarrierUnsealShare(), Perm: permission.IdentityGated, Handler: handleTenantBarrierUnsealShare(svc, authz.Sealed)},
 		{Tool: toolTenantBarrierSeal(), Perm: permission.TenantBarrierSeal, Handler: handleTenantBarrierSeal(svc, authorize)},
-		{Tool: toolTenantBarrierStatus(), Perm: permission.TenantBarrierStatus, Handler: handleTenantBarrierStatus(svc, authorize)},
+		{Tool: toolTenantBarrierStatus(), Perm: permission.IdentityGated, Handler: handleTenantBarrierStatus(svc, authz.Sealed)},
 		{Tool: toolTenantBarrierOfficerRegister(), Perm: permission.TenantBarrierOfficerRegister, Handler: handleTenantBarrierOfficerRegister(svc, authorize)},
 		{Tool: toolTenantBarrierOfficerList(), Perm: permission.TenantBarrierOfficerList, Handler: handleTenantBarrierOfficerList(svc, authorize)},
 		{Tool: toolTenantBarrierShareClaimBegin(), Perm: permission.IdentityGated, Handler: handleTenantBarrierShareClaimBegin(svc, authorize)},
@@ -88,13 +105,13 @@ func toolTenantBarrierInit() mcp.Tool {
 // handleTenantBarrierInit returns a tool handler that initializes the
 // per-tenant barrier for the given tenant. When the strategy field is empty
 // or omitted the passphrase (software) strategy is selected.
-func handleTenantBarrierInit(svc tenant.TenantServicer, authorize tenantScopeAuthorizer) mcpserver.ToolHandlerFunc {
+func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx context.Context, tenantID string) error) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tenantID := mcp.ParseString(req, "tenant_id", "")
 		if tenantID == "" {
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
-		if err := authorize(ctx, tenantID, permission.TenantBarrierInit); err != nil {
+		if err := authorize(ctx, tenantID); err != nil {
 			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 

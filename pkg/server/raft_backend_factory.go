@@ -120,6 +120,18 @@ type raftShard struct {
 	// host's multiplex for this shard (4d Option C), or nil when the shard uses
 	// the shared system-barrier WAL. On teardown it is unregistered and closed.
 	dedicatedWAL logdb.LogDB
+
+	// startedObserver records that the local replica was started with
+	// quicraftconfig.Config.IsObserver set — i.e. the placement listed it as
+	// a (not-yet-promoted) observer at start time. go-quicraft latches this
+	// LOCAL role for the life of the in-process replica and cross-checks it
+	// against the replicated membership on every config change
+	// (checkSelfRole), so once the shard's leader promotes this replica to a
+	// voting member the running replica must be restarted with the flag
+	// clear or it refuses to campaign or serve leader reads forever. The
+	// TenantShardReconciler reads this through StartedAsObserver to drive
+	// exactly that restart.
+	startedObserver bool
 }
 
 // raftDatabaseInfoSource resolves the dedicated shard ID and on-disk DataDir for
@@ -428,8 +440,43 @@ func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) 
 		if rOK {
 			members := pInfo.Members()
 			join := localReplica.State == placement.ReplicaStateObserver
+			// The LOCAL role must agree with the replicated membership for
+			// the whole observer window (go-quicraft checkSelfRole latches a
+			// disagreement and refuses campaigning and leader reads): the
+			// leader admits the replica via AddObserver before this attach,
+			// and it stays an observer in committed membership through
+			// ObserverReady until the leader's promotion — so IsObserver
+			// covers BOTH states, while join marks only the very first
+			// attach (the snapshot-bootstrap window).
+			isObserver := localReplica.State == placement.ReplicaStateObserver ||
+				localReplica.State == placement.ReplicaStateObserverReady
+			// A joining observer bootstraps from the leader's snapshot; the
+			// members map seeds a fresh voting membership and must not name
+			// a non-voting replica (go-quicraft NonVotingRoleInMembersError),
+			// so the join path passes none at all.
+			if join {
+				members = nil
+			}
 			rs, merr := f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
-				localReplica.ReplicaID, join, members, dedicatedWAL)
+				localReplica.ReplicaID, join, isObserver, members, dedicatedWAL)
+			if merr != nil && isObserver && !join && errors.Is(merr, quicraft.ErrNonVotingRoleInMembers) {
+				// An ObserverReady replica with NO persisted shard state: its
+				// prior join bootstrap was wiped (demotion purge racing a
+				// re-add, an operator clearing the volume) while the placement
+				// still records the post-bootstrap state. Starting it
+				// join=false would seed a fresh voting membership naming an
+				// observer, which go-quicraft rejects on first start. Re-enter
+				// the join bootstrap window instead — the replica has no data,
+				// so streaming the leader's snapshot again is exactly the
+				// recovery it needs.
+				f.logger.Warn("observer replica has no persisted state; re-entering join bootstrap window",
+					slog.String("tenant", tenantID),
+					slog.String("database", db),
+					slog.Uint64("shard_id", shardID),
+					slog.Uint64("replica_id", localReplica.ReplicaID))
+				rs, merr = f.startShardAsMember(tenantID, db, shardID, dataDir, tb,
+					localReplica.ReplicaID, true, true, nil, dedicatedWAL)
+			}
 			if merr != nil {
 				return nil, merr
 			}
@@ -476,12 +523,26 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	return out
 }
 
+// StartedAsObserver reports whether the locally running shard for
+// (tenantID, db) was started with the observer role latched into its local
+// go-quicraft configuration. False for a shard that is not started. The
+// TenantShardReconciler uses this to detect a replica the shard's leader
+// has since promoted to a voting member: the local role cannot change
+// in-process, so the reconciler restarts the shard with the flag clear (see
+// raftShard.startedObserver).
+func (f *RaftBackendFactory) StartedAsObserver(tenantID, db string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rs, ok := f.shards[raftShardKey{tenantID: tenantID, database: db}]
+	return ok && rs.startedObserver
+}
+
 // startShard starts a single-node dedicated shard using the factory's local
 // replica ID and address. It is the Phase-4b compatibility path: a single local
 // replica bootstrapped with join=false. Caller holds f.mu.
 func (f *RaftBackendFactory) startShard(tenantID, db string, shardID uint64, dataDir string, tb *seal.TenantBarrier, dedicatedWAL bool) (*raftShard, error) {
 	members := map[uint64]string{f.localReplicaID: f.localRaftAddr}
-	return f.startShardAsMember(tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, members, dedicatedWAL)
+	return f.startShardAsMember(tenantID, db, shardID, dataDir, tb, f.localReplicaID, false, false, members, dedicatedWAL)
 }
 
 // startShardAsMember builds the per-shard subsystems and starts the shard on
@@ -500,6 +561,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 	tb *seal.TenantBarrier,
 	replicaID uint64,
 	join bool,
+	isObserver bool,
 	members map[uint64]string,
 	dedicatedWAL bool,
 ) (*raftShard, error) {
@@ -527,9 +589,10 @@ func (f *RaftBackendFactory) startShardAsMember(
 	registeredWAL := f.openAndRegisterDedicatedWAL(tenantID, db, shardID, absDir, tb, dedicatedWAL)
 
 	shardCfg := quicraftconfig.Config{
-		ShardID:   shardID,
-		ReplicaID: replicaID,
-		DataDir:   absDir,
+		ShardID:    shardID,
+		ReplicaID:  replicaID,
+		DataDir:    absDir,
+		IsObserver: isObserver,
 	}
 	if err := f.host.StartShard(members, join, createFn, shardCfg); err != nil {
 		if registeredWAL != nil {
@@ -566,6 +629,8 @@ func (f *RaftBackendFactory) startShardAsMember(
 		services:     buildDataPlaneServices(f.adapter, shardID, hub),
 		cancel:       cancel,
 		dedicatedWAL: registeredWAL,
+
+		startedObserver: isObserver,
 	}
 	rs.services.Name = db
 
@@ -591,6 +656,7 @@ func (f *RaftBackendFactory) startShardAsMember(
 		slog.Uint64("shard_id", shardID),
 		slog.Uint64("replica_id", replicaID),
 		slog.Bool("join", join),
+		slog.Bool("observer", isObserver),
 		slog.Bool("dedicated_wal", registeredWAL != nil),
 		slog.String("data_dir", absDir))
 

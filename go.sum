@@ -290,8 +290,8 @@ github.com/jeremyhahn/go-codec v1.4.0 h1:ORbXlqpzg5RDlYGKyqKmbVNdF7TFjabO/7lVgpJ
 github.com/jeremyhahn/go-codec v1.4.0/go.mod h1:WsKvb0GxD0jRyLQRCpNCb5RsXBg4GY1LfwqK3kbIqF4=
 github.com/jeremyhahn/go-objstore v0.2.1-alpha h1:HySwZ3IwDTbQ2nk2xmztk7CSDSlDA6nmfStnwXdEQ04=
 github.com/jeremyhahn/go-objstore v0.2.1-alpha/go.mod h1:rgQpAk8AFV4bb4FPPGxT2Z78u9JOtVOePJqWog/sJSY=
-github.com/jeremyhahn/go-quicraft v0.4.2-alpha h1:clal9zNcy3A5jPWAani66JfkMWXT0L7BL/76c5n8p0Y=
-github.com/jeremyhahn/go-quicraft v0.4.2-alpha/go.mod h1:0Z/9RFjYvzrfod+fIPzXjqPjMa92x6le2Ta3OWIRBxk=
+github.com/jeremyhahn/go-quicraft v0.5.1-alpha h1:tL/xtcEQSbHn63BluewlII+2RnOACkE3BsYKmF/a4IQ=
+github.com/jeremyhahn/go-quicraft v0.5.1-alpha/go.mod h1:0Z/9RFjYvzrfod+fIPzXjqPjMa92x6le2Ta3OWIRBxk=
 github.com/jeremyhahn/go-truststrap v0.1.2-alpha h1:rkb3PngbOLrmaZyLQM4ifXqkY9k5vc+yyU569Vp2gYo=
 github.com/jeremyhahn/go-truststrap v0.1.2-alpha/go.mod h1:adfwW38ejKrQ7kGGGP2d9/csTTDbfVuklO0kbgCzuBM=
 github.com/jeroenrinzema/psql-wire v0.18.0 h1:w8VZLCbyzx5UHQb3zojTBWYuOd9L2TlgrboD5jpsC4E=

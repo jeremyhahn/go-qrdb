@@ -132,12 +132,16 @@ type backupRestoreDisplay struct {
 	} `json:"errors,omitempty"`
 }
 
-// restoreRefusedSubstring is the real, quicraft-level refusal every restore
-// attempt in this file must surface: ImportSnapshot's importPreflight
-// refuses to touch a shard that is currently running
-// (go-quicraft/pkg/errors.go's ErrInvalidOperation). It is wrapped by
-// service.ShardSnapshotError (pkg/service/shard_snapshot_provider.go).
-const restoreRefusedSubstring = "quicraft: invalid operation"
+// restoreRefusedSubstring is the refusal every restore attempt in this file
+// must surface. The fixture's shard 1 hosts the SYSTEM tenant, so qrdb's own
+// online-restore guard (pkg/service's system-shard preflight) refuses the
+// request before it ever reaches quicraft: stopping the serving system shard
+// would take down auth for every subsequent admin call, so the guard directs
+// the operator to the offline `qrdbd start --restore-backup-id` boot flow
+// instead. This guard message REPLACED the deeper quicraft-level
+// "quicraft: invalid operation" refusal this file originally pinned, which
+// is now reachable only for a non-system shard.
+const restoreRefusedSubstring = "online restore of shard 1 refused"
 
 // oldBrokenUnsupportedSubstring is the message every backup/restore call
 // returned unconditionally before Part 1 fixed the snapshotExporter
@@ -452,7 +456,7 @@ func assertRestoreRefusedLive(t *testing.T, proto multiProtocol, restore backupR
 		t.Fatalf("[%s] backup restore: error ShardID=%d, want 1", proto.name, shardErr.ShardID)
 	}
 	if !strings.Contains(shardErr.Message, restoreRefusedSubstring) {
-		t.Fatalf("[%s] backup restore: error message %q does not contain the real quicraft refusal %q",
+		t.Fatalf("[%s] backup restore: error message %q does not contain the system-shard guard refusal %q",
 			proto.name, shardErr.Message, restoreRefusedSubstring)
 	}
 	if strings.Contains(shardErr.Message, oldBrokenUnsupportedSubstring) {

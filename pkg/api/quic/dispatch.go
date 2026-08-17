@@ -332,11 +332,17 @@ func (s *Server) buildHandlers() {
 	// the handler enforces the per-tenant registry lookup, thumbprint match,
 	// and nonce signature.
 	tenantOn := s.tenantSvc != nil
-	s.handleIf(tenantOn, "tenant.BarrierInit", permission.TenantBarrierInit, s.handleTenantBarrierInit)
-	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.TenantBarrierUnseal, s.handleTenantBarrierUnseal)
-	s.handleIf(tenantOn, "tenant.BarrierUnsealShare", permission.TenantBarrierUnseal, s.handleTenantBarrierUnsealShare)
+	// Init/Unseal/UnsealShare/Status are IdentityGated at the dispatch
+	// layer: a self-managed tenant's IAM is encrypted behind the very
+	// barrier these operate on, so the RBAC check runs inside the handlers
+	// with the shared trust-on-first-init / sealed-window fallbacks
+	// (middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp),
+	// identical to REST, gRPC, and MCP.
+	s.handleIf(tenantOn, "tenant.BarrierInit", permission.IdentityGated, s.handleTenantBarrierInit)
+	s.handleIf(tenantOn, "tenant.BarrierUnseal", permission.IdentityGated, s.handleTenantBarrierUnseal)
+	s.handleIf(tenantOn, "tenant.BarrierUnsealShare", permission.IdentityGated, s.handleTenantBarrierUnsealShare)
 	s.handleIf(tenantOn, "tenant.BarrierSeal", permission.TenantBarrierSeal, s.handleTenantBarrierSeal)
-	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.TenantBarrierStatus, s.handleTenantBarrierStatus)
+	s.handleIf(tenantOn, "tenant.BarrierStatus", permission.IdentityGated, s.handleTenantBarrierStatus)
 	s.handleIf(tenantOn, "tenant.BarrierOfficerRegister", permission.TenantBarrierOfficerRegister, s.handleTenantBarrierOfficerRegister)
 	s.handleIf(tenantOn, "tenant.BarrierOfficerList", permission.TenantBarrierOfficerList, s.handleTenantBarrierOfficerList)
 	s.handleIf(tenantOn, "tenant.BarrierShareClaimBegin", permission.IdentityGated, s.handleTenantBarrierShareClaimBegin)

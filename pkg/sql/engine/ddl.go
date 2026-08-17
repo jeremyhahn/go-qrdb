@@ -73,13 +73,13 @@ type pgColumnType struct {
 // The substitutions and why each is the faithful one:
 //
 //   - bigserial/serial/smallserial are PostgreSQL's shorthand for an
-//     integer column whose default comes from an owned sequence. MySQL
-//     spells the same intent as an integer column with AUTO_INCREMENT, so
-//     each maps to the integer width PostgreSQL gives it plus that
-//     attribute. A table naming two serial columns is therefore rejected
-//     by the engine (MySQL permits one auto-increment column per table)
-//     rather than quietly losing the second column's default -- see
-//     TestTranslateDDL_MultipleSerialColumns.
+//     integer column whose default comes from an owned sequence. A serial
+//     column covered by a key of the same statement maps to the integer
+//     width PostgreSQL gives it plus MySQL's AUTO_INCREMENT; one outside
+//     every key -- where MySQL's attribute is not even legal -- keeps
+//     PostgreSQL's own semantics as an integer defaulted from the
+//     implicitly named sequence (see columnTypeEdit and
+//     TestTranslateDDLTypes_MultipleSerialColumns).
 //
 //   - text is PostgreSQL's unbounded string. MySQL's TEXT caps at 64 KiB,
 //     so the honest stand-in is LONGTEXT, which is also what
@@ -108,6 +108,16 @@ var pgColumnTypes = map[string]pgColumnType{
 	"timestamp":                   {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
 	"timestamp without time zone": {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
 	"timestamp with time zone":    {Name: "DATETIME", KeepModifier: true, DefaultModifier: "(6)"},
+
+	// PostgreSQL's numeric/decimal without a modifier is arbitrary-precision
+	// exact; MySQL's bare DECIMAL defaults to (10,0), which silently ROUNDS
+	// every fractional value to an integer on insert (gorm.io/driver/postgres
+	// declares plain Go floats as modifier-less "decimal", so 1.8888 stored
+	// through such a column read back as 2). The widest scale MySQL can
+	// carry, (65,30), is substituted only when the statement names no
+	// modifier of its own; an explicit numeric(p,s) keeps (p,s).
+	"numeric": {Name: "DECIMAL", KeepModifier: true, DefaultModifier: "(65,30)"},
+	"decimal": {Name: "DECIMAL", KeepModifier: true, DefaultModifier: "(65,30)"},
 }
 
 // maxTypePhraseWords is the greatest number of whitespace-separated words
@@ -559,8 +569,9 @@ func appendColumnTypeEdit(query string, toks []ddlToken, edits []ddlEdit, el ddl
 	if el.end-el.start < 2 || tableConstraintKeywords[toks[el.start].word(query)] {
 		return edits, nil
 	}
-	inKey := keyed[identName(query, toks[el.start])] || inlineKeyed(query, toks, el.start+1, el.end)
-	return appendTypeEdit(query, toks, edits, el.start+1, el.end, inKey)
+	columnName := identName(query, toks[el.start])
+	inKey := keyed[columnName] || inlineKeyed(query, toks, el.start+1, el.end)
+	return appendTypeEdit(query, toks, edits, el.start+1, el.end, inKey, ddlTableName(query, toks), columnName)
 }
 
 // alterTableTypeEdits returns the type substitutions for an ALTER TABLE
@@ -632,14 +643,20 @@ func appendAlterClauseEdit(query string, toks []ddlToken, edits []ddlEdit, start
 	// statement is out of reach by construction and keeps its unbounded
 	// substitution -- see the doc comment on Translate.
 	at := i + names
-	return appendTypeEdit(query, toks, edits, at, end, inlineKeyed(query, toks, at, end))
+	column := ""
+	if at-1 >= start && at-1 < len(toks) && at-1 < end {
+		column = identName(query, toks[at-1])
+	}
+	return appendTypeEdit(query, toks, edits, at, end, inlineKeyed(query, toks, at, end), ddlTableName(query, toks), column)
 }
 
 // appendTypeEdit appends the substitution for the column type beginning at
 // toks[at], which must lie within toks[:limit]. keyed reports whether the
-// column participates in a key of the same statement.
-func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit int, keyed bool) ([]ddlEdit, error) {
-	edit, ok, err := columnTypeEdit(query, toks, at, limit, keyed)
+// column participates in a key of the same statement; table and column name
+// the definition the type belongs to, for the serial-to-sequence
+// substitution (see columnTypeEdit), and may be empty when unknown.
+func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit int, keyed bool, table, column string) ([]ddlEdit, error) {
+	edit, ok, err := columnTypeEdit(query, toks, at, limit, keyed, table, column)
 	if err != nil {
 		return nil, err
 	}
@@ -670,7 +687,7 @@ func appendTypeEdit(query string, toks []ddlToken, edits []ddlEdit, at, limit in
 // keyed reports whether the column participates in a key of the same
 // statement; it selects mapped.KeyedName over mapped.Name for the types that
 // distinguish them.
-func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool) (ddlEdit, bool, error) {
+func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool, table, column string) (ddlEdit, bool, error) {
 	if at >= limit || toks[at].kind != ddlWord {
 		return ddlEdit{}, false, nil
 	}
@@ -683,11 +700,38 @@ func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool) (d
 	}
 
 	if afterModifier < limit && toks[afterModifier].isPunct(query, '[') {
-		// modifier is included so the rejection names the type as the
-		// caller wrote it: "varchar(20)[]", not "varchar[]". An error that
-		// silently reshapes the offending text is harder to act on than one
-		// that quotes it back.
-		return ddlEdit{}, false, &UnsupportedColumnTypeError{Type: name + modifier + "[]"}
+		// A PostgreSQL array column -- text[], integer[], and so on. MySQL
+		// has no array type, but an array VALUE on the wire is its text
+		// literal ('{a,b}'), which is what every PostgreSQL client library
+		// (lib/pq's pq.StringArray, pgx's array codecs in text format)
+		// writes on INSERT and parses on scan. Storing that literal in a
+		// text column round-trips it exactly; what is NOT supported is
+		// server-side array operators, which fail in the engine by name.
+		// Every bracket pair is consumed -- including a declared dimension
+		// (integer[3][3]), which PostgreSQL itself treats as documentation
+		// and does not enforce -- so multi-dimensional declarations resolve
+		// the same way.
+		end := afterModifier
+		for end+1 < limit && toks[end].isPunct(query, '[') {
+			closing := end + 1
+			if toks[closing].kind == ddlWord && closing+1 < limit {
+				closing++ // declared dimension
+			}
+			if !toks[closing].isPunct(query, ']') {
+				break
+			}
+			end = closing + 1
+		}
+		if end == afterModifier {
+			// A lone '[' with no closing ']' is not an array declaration;
+			// refuse it by name as before.
+			return ddlEdit{}, false, &UnsupportedColumnTypeError{Type: name + modifier + "["}
+		}
+		replacement := "LONGTEXT"
+		if keyed {
+			replacement = keyedTextType
+		}
+		return ddlEdit{start: toks[at].start, end: toks[end-1].end, text: replacement}, true, nil
 	}
 	if mapped.KeepModifier && afterModifier < limit {
 		if w := toks[afterModifier].word(query); w == "WITH" || w == "WITHOUT" {
@@ -710,7 +754,21 @@ func columnTypeEdit(query string, toks []ddlToken, at, limit int, keyed bool) (d
 		replacement += modifier
 	}
 	if mapped.AutoIncrement {
-		replacement += " AUTO_INCREMENT"
+		if keyed || table == "" || column == "" {
+			replacement += " AUTO_INCREMENT"
+		} else {
+			// A serial column OUTSIDE every key cannot be AUTO_INCREMENT
+			// (MySQL permits exactly one, and only on a key), which is not
+			// a corner PostgreSQL has: serial is just integer + an implicit
+			// sequence default. It becomes exactly that here, against the
+			// sequence PostgreSQL would implicitly name
+			// (<table>_<column>_seq) -- the same name
+			// gorm.io/driver/postgres later addresses with CREATE/DROP
+			// SEQUENCE statements. Sequences materialize on first use (see
+			// service.UserSequencer), so no CREATE SEQUENCE side effect is
+			// needed for the default to work.
+			replacement += " DEFAULT (NEXTVAL('" + table + "_" + column + "_seq'))"
+		}
 	}
 
 	return ddlEdit{start: toks[at].start, end: toks[afterModifier-1].end, text: replacement}, true, nil
@@ -812,4 +870,27 @@ func TranslateColumnTypeText(typeText string) string {
 		out += " AUTO_INCREMENT"
 	}
 	return out
+}
+
+// ddlTableName returns the (lower-cased, unquoted) table name a CREATE
+// TABLE or ALTER TABLE statement addresses, skipping IF NOT EXISTS, or ""
+// when it cannot be located. Schema qualifiers are not resolved -- the
+// serial-to-sequence substitution that consumes this only needs the
+// PostgreSQL implicit sequence name, which is schema-independent.
+func ddlTableName(query string, toks []ddlToken) string {
+	i := 2 // past CREATE/ALTER TABLE
+	// IF NOT EXISTS
+	if i+2 < len(toks) && toks[i].word(query) == "IF" &&
+		toks[i+1].word(query) == "NOT" && toks[i+2].word(query) == "EXISTS" {
+		i += 3
+	}
+	if i >= len(toks) {
+		return ""
+	}
+	name := identName(query, toks[i])
+	// A schema-qualified name keeps its last component.
+	if i+2 < len(toks) && toks[i+1].isPunct(query, '.') {
+		name = identName(query, toks[i+2])
+	}
+	return name
 }

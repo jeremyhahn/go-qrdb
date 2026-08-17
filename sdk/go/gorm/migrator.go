@@ -1,3 +1,5 @@
+//go:build qrdb_sql
+
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -83,9 +85,12 @@ ORDER BY ORDINAL_POSITION`
 //     integer MySQL calls BIGINT; a gorm:"type:int8" tag written for
 //     cross-dialect portability must not read as an alter-worthy change
 //     under qrdb's MySQL-flavored catalog.
-//   - "varchar"/"char"/"text": CHAR and TEXT are both textual types a
-//     gorm:"type:..." tag might spell explicitly for a column
-//     DataTypeOf/stringType would otherwise have sized as VARCHAR(n).
+//   - "varchar"/"char": CHAR is a textual spelling a gorm:"type:..." tag
+//     might use for a column DataTypeOf/stringType would otherwise have
+//     sized as VARCHAR(n). TEXT is deliberately NOT in this group: a
+//     varchar-to-text (or text-to-varchar) migration is a REAL layout
+//     change the migrator must apply -- aliasing them silently suppressed
+//     the ALTER upstream's TestDifferentTypeWithoutDeclaredLength pins.
 //   - "datetime"/"timestamp": interchangeable temporal spellings; qrdb's
 //     catalog and DataTypeOf's timeType both always emit DATETIME, but a
 //     literal gorm:"type:timestamp" tag names the same underlying type.
@@ -108,9 +113,8 @@ var typeAliases = map[string][]string{
 	"integer":   {"int"},
 	"bigint":    {"int8"},
 	"int8":      {"bigint"},
-	"varchar":   {"char", "text"},
+	"varchar":   {"char"},
 	"char":      {"varchar"},
-	"text":      {"varchar"},
 	"datetime":  {"timestamp"},
 	"timestamp": {"datetime"},
 	"blob":      {"binary", "varbinary"},
@@ -641,9 +645,21 @@ func (m Migrator) dropConstraint(dst interface{}, name string) error {
 		constraint, table := m.GuessConstraintInterfaceAndTable(stmt, name)
 		if constraint != nil {
 			name = constraint.GetName()
-			if _, isCheck := constraint.(*schema.CheckConstraint); isCheck {
+			switch constraint.(type) {
+			case *schema.CheckConstraint:
 				return m.DB.Exec(
 					"ALTER TABLE ? DROP CHECK ?",
+					clause.Table{Name: table}, clause.Column{Name: name},
+				).Error
+			case *schema.Constraint:
+				// A relationship-derived FOREIGN KEY. Dropping the
+				// same-named backing index instead (the fallthrough below)
+				// is refused by the engine -- "cannot drop index: used by
+				// foreign key" -- and dropping nothing leaves HasConstraint
+				// true forever. MySQL's own DROP FOREIGN KEY leaves the
+				// backing index in place, and so does this.
+				return m.DB.Exec(
+					"ALTER TABLE ? DROP FOREIGN KEY ?",
 					clause.Table{Name: table}, clause.Column{Name: name},
 				).Error
 			}

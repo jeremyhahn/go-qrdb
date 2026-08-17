@@ -41,6 +41,29 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
+// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
+// — the single cross-transport home of the bootstrap-window semantics). When
+// authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
+// that must remain reachable while the tenant's IAM itself is unreachable
+// (status/unseal) via the shared sealed-window rule
+// (middleware.AuthorizeTenantBarrierSealedOp). When authMW is nil the gate
+// is a no-op.
+func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
+}
+
 // ---------------------------------------------------------------------------
 // Per-tenant barrier QUIC frame handlers.
 //
@@ -158,7 +181,7 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}
 
-	if err := s.authorizeTenantBarrierOp(ctx, req.TenantID, permission.TenantBarrierInit); err != nil {
+	if err := s.authorizeTenantBarrierInit(ctx, req.TenantID); err != nil {
 		return nil, err
 	}
 
@@ -200,7 +223,7 @@ func (s *Server) handleTenantBarrierUnsealShare(ctx context.Context, payload []b
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}
 
-	if err := s.authorizeTenantBarrierOp(ctx, req.TenantID, permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.TenantID, permission.TenantBarrierUnseal); err != nil {
 		return nil, err
 	}
 
@@ -239,7 +262,7 @@ func (s *Server) handleTenantBarrierUnseal(ctx context.Context, payload []byte) 
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}
 
-	if err := s.authorizeTenantBarrierOp(ctx, req.TenantID, permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.TenantID, permission.TenantBarrierUnseal); err != nil {
 		return nil, err
 	}
 
@@ -299,7 +322,7 @@ func (s *Server) handleTenantBarrierStatus(ctx context.Context, payload []byte) 
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}
 
-	if err := s.authorizeTenantBarrierOp(ctx, req.TenantID, permission.TenantBarrierStatus); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, req.TenantID, permission.TenantBarrierStatus); err != nil {
 		return nil, err
 	}
 

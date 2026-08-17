@@ -365,6 +365,24 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		t.Fatalf("create tenant: status %d, body: %s", s, b)
 	}
 
+	// The tenant's dedicated barrier must be initialized BEFORE any of its
+	// IAM can exist (the tenant's roles and users are encrypted under the
+	// tenant DEK; the store resolver fails closed until the barrier is up).
+	// The init itself is trust-on-first-init by the tenant's own identity —
+	// see pkg/api/rest authorizeTenantBarrierInit.
+	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
+	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
+
+	// Initialize the dedicated barrier as none (unsealed) on the leader.
+	if b, s := iraftAPIPost(t, tenantClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", leaderPort, tenantID),
+		map[string]interface{}{"strategy": "none", "secret": ""},
+	); s != http.StatusOK && s != http.StatusNoContent && s != http.StatusCreated {
+		t.Fatalf("tenant barrier init: status %d, body: %s", s, b)
+	}
+
+	// Role + user, created AFTER the barrier init so the records land in the
+	// tenant's own encrypted IAM store.
 	roleBody, roleStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", leaderPort),
 		map[string]interface{}{
@@ -390,17 +408,6 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 		map[string]interface{}{"username": "admin", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 	); s != http.StatusCreated && s != http.StatusOK {
 		t.Fatalf("create user: status %d", s)
-	}
-
-	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
-	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
-
-	// Initialize the dedicated barrier as none (unsealed) on the leader.
-	if b, s := iraftAPIPost(t, tenantClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", leaderPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": ""},
-	); s != http.StatusOK && s != http.StatusNoContent && s != http.StatusCreated {
-		t.Fatalf("tenant barrier init: status %d, body: %s", s, b)
 	}
 
 	// Create the RF=3 database as the tenant — schedules placement on 3 nodes and

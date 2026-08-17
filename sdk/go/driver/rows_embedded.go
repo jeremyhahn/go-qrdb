@@ -1,3 +1,5 @@
+//go:build qrdb_sql
+
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +17,7 @@
 package driver
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"fmt"
 	"io"
@@ -117,9 +120,25 @@ func (r *embeddedRows) ColumnTypeScanType(index int) reflect.Type {
 		return reflect.TypeOf("")
 	}
 
-	goType := catalog.ResolvedValueType(r.schema[index].Type)
+	column := r.schema[index]
+	goType := catalog.ResolvedValueType(column.Type)
 	if goType == nil {
 		return reflect.TypeOf("")
+	}
+	// Integer columns follow go-sql-driver/mysql's rule exactly: a NULLABLE
+	// integer of any width or signedness advertises sql.NullInt64, and only
+	// a NOT NULL column advertises its exact-width value type. This is what
+	// keeps a generic mapper behaving identically over this driver and the
+	// MySQL wire -- gorm's scan-into-map materializes destinations from
+	// ScanType, and go-sql-driver's NullInt64 unwraps (via driver.Valuer)
+	// to the int64 every consumer compares against, where a raw uintN
+	// destination surfaced uint64(18) for the same row.
+	switch goType.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if column.Nullable {
+			return reflect.TypeOf(sql.NullInt64{})
+		}
 	}
 	return goType
 }

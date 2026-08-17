@@ -155,6 +155,25 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 	return m.finalizeIdentity(ctx, identity)
 }
 
+// tenantIAMSealedMetadataKey marks an identity whose tenant's IAM store was
+// unreachable at authentication time because the tenant barrier is sealed on
+// this node. See finalizeIdentity (where it is stamped) and authorize (where
+// every non-IdentityGated permission converts it into a retryable
+// unavailable error).
+const tenantIAMSealedMetadataKey = "qrdb_tenant_iam_sealed"
+
+// IdentityIAMSealed reports whether identity was authenticated while its
+// tenant's IAM store was unreachable (tenant barrier sealed, not yet
+// initialized, or its key not yet delivered to this node). Handlers behind
+// permission.IdentityGated routes use this to distinguish "RBAC denied this
+// caller" from "RBAC could not have been evaluated at all": the tenant
+// barrier status and unseal endpoints accept the tenant's own identity
+// exactly in this window, because a role able to satisfy their RBAC check
+// is encrypted behind the very barrier being unsealed.
+func IdentityIAMSealed(identity *auth.Identity) bool {
+	return identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true"
+}
+
 // finalizeIdentity enriches a base identity with its persistent role
 // assignments from the user store, enforces the user-enabled check, then binds
 // the identity and its tenant into the returned context. The base identity's
@@ -170,6 +189,26 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
+			// A dedicated-isolation tenant whose barrier is sealed (or not
+			// yet initialized) cannot resolve ANY user: its IAM is encrypted
+			// under the tenant DEK and the store resolver fails closed with
+			// ErrTenantSealed. That is the tenant's sealed-window state, not
+			// a transient outage — the identity proceeds UNENRICHED (empty
+			// roles), so RBAC denies everything except the IdentityGated
+			// bootstrap endpoints (tenant barrier init, officer claims),
+			// which is exactly the surface a sealed tenant may reach.
+			if errors.Is(err, tenant.ErrTenantSealed) {
+				if identity.Metadata == nil {
+					identity.Metadata = make(map[string]string)
+				}
+				identity.Metadata[tenantIAMSealedMetadataKey] = "true"
+				ctx = auth.WithIdentity(ctx, identity)
+				tenantID := identity.TenantID
+				if tenantID == "" {
+					tenantID = tenant.SystemTenantID
+				}
+				return tenant.WithTenantID(ctx, tenantID), identity, nil
+			}
 			// If user not found, proceed with base identity (no enrichment).
 			var unf *user.UserNotFoundError
 			if !errors.As(err, &unf) {
@@ -238,6 +277,16 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 		return nil, err
 	}
 
+	// A sealed tenant barrier is authoritative too: the tenant's IAM is
+	// encrypted behind it, so the fallback store CANNOT hold the record —
+	// letting it answer would mask the sealed window as a definitive
+	// UserNotFound, stripping the sealed marker finalizeIdentity stamps and
+	// with it both the retryable 503 and the IdentityGated barrier
+	// bootstrap fallback that end the window.
+	if errors.Is(err, tenant.ErrTenantSealed) {
+		return nil, err
+	}
+
 	// Primary failed with a transient error; try fallback.
 	if m.usersFallback != nil {
 		fallbackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -278,6 +327,33 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 		}
 		m.auditDecision(ctx, identity, perm, nil)
 		return nil
+	}
+
+	// An identity whose tenant IAM was unreachable because the tenant's
+	// barrier is sealed on THIS node (see finalizeIdentity) can reach only
+	// the IdentityGated bootstrap surface above, plus admin:health. Every
+	// other permission is answered UNAVAILABLE, not denied: the sealed
+	// state is transient on a follower awaiting tenant-key delivery (and
+	// operator-resolvable everywhere else), so clients and polling
+	// harnesses must see a retryable 503/UNAVAILABLE rather than a
+	// definitive 403 computed from an empty role set the store never
+	// actually served.
+	//
+	// admin:health is admitted for the same liveness rationale the SYSTEM
+	// sealed-window allowlist (pkg/api/sealedwindow) admits Health: the
+	// gRPC/QUIC/Unix SDK transports perform an authenticated Health RPC at
+	// Connect time, so without it a sealed tenant's identity cannot even
+	// OPEN the connection it needs to reach the IdentityGated barrier
+	// status/unseal endpoints that end the sealed window. Health reports
+	// node liveness only — no tenant data crosses the seal boundary.
+	if identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true" {
+		if perm == permission.AdminHealth {
+			m.auditDecision(ctx, identity, perm, nil)
+			return nil
+		}
+		err := &StoreUnavailableError{Err: tenant.ErrTenantSealed}
+		m.auditDecision(ctx, identity, perm, err)
+		return err
 	}
 
 	resource := permission.Resource(perm)

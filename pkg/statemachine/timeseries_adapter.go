@@ -1,4 +1,4 @@
-//go:build timeseries
+//go:build qrdb_ts
 
 // Copyright 2026 Jeremy Hahn
 //

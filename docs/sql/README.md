@@ -87,14 +87,20 @@ and a plausible-looking wrong answer would be worse than a true partial one.
 
 ## Build Tags
 
-SQL protocols are opt-in via build tags (enabled by default in the Makefile):
+The SQL layer is opt-in via build tags (enabled by default in the Makefile):
 
 | Flag | Build Tag | Description |
 |------|-----------|-------------|
-| `WITH_QRDB_MYSQL=1` | `qrdb_mysql` | MySQL wire protocol |
-| `WITH_QRDB_PGSQL=1` | `qrdb_pgsql` | PostgreSQL wire protocol |
+| `WITH_QRDB_SQL=1` | `qrdb_sql` | Shared SQL core: go-mysql-server engine, ad-hoc `/sql/query` service, in-process driver |
+| `WITH_QRDB_MYSQL=1` | `qrdb_mysql` | MySQL wire protocol (implies `qrdb_sql`) |
+| `WITH_QRDB_PGSQL=1` | `qrdb_pgsql` | PostgreSQL wire protocol (implies `qrdb_sql`) |
 
-Disable with `WITH_QRDB_MYSQL=0` or `WITH_QRDB_PGSQL=0`.
+Disable with `WITH_QRDB_MYSQL=0` or `WITH_QRDB_PGSQL=0`. Setting
+`WITH_QRDB_SQL=0` as well removes the entire SQL layer — go-mysql-server
+and vitess no longer link into the binary, and every transport answers
+`/sql/query` with its nil-service error. The Makefile forces
+`WITH_QRDB_SQL=1` whenever either wire protocol is enabled, since both
+are engines over the shared `pkg/sql` core.
 
 ## Configuration
 
@@ -516,6 +522,15 @@ Single-statement atomicity is still provided by Raft for every table kind, and t
 | `LIMIT '5'`, `OFFSET '10'` | `LIMIT 5`, `OFFSET 10` (see below) |
 | `'C:\temp'` | `'C:\\temp'` (see below) |
 | `INSERT ... RETURNING` | *(unchanged — go-mysql-server parses and evaluates it natively)* |
+| `ON CONFLICT ON CONSTRAINT <name> DO ...` | `ON DUPLICATE KEY UPDATE` / `INSERT IGNORE` (same widening caveat as the `(cols)` form) |
+| `UPDATE t SET ... FROM others WHERE ...` | `UPDATE t, others SET t.col = ... WHERE ...` (assignments qualified with the target table) |
+| `public.name` | `name` (the public schema and the current database are the same level here) |
+| `text[]`, `integer[3][3]`, any array type | `LONGTEXT` (`VARCHAR(768)` when keyed) — array VALUES round-trip as their PostgreSQL text literal, which lib/pq/pgx array types write and parse; server-side array operators are not supported |
+| `numeric` / `decimal` with no modifier | `DECIMAL(65,30)` (MySQL's bare DECIMAL is (10,0), which silently rounds fractions) |
+| serial column outside every key | integer + `DEFAULT (NEXTVAL('<table>_<col>_seq'))` (MySQL allows one AUTO_INCREMENT, and only on a key; the sequence is PostgreSQL's own implicit one) |
+| `CREATE TABLE t ()` | `CREATE TABLE t (qrdb_zero_column TINYINT NULL)` (MySQL's grammar refuses an empty column list) |
+| `DEFAULT current_timestamp` after a `DATETIME(6)` translation | `DEFAULT CURRENT_TIMESTAMP(6)` (MySQL requires matching precision) |
+| `DEFAULT nextval('s')` | `DEFAULT (nextval('s'))` (MySQL expression defaults must be parenthesized) |
 
 Two of those rows are about semantics rather than spelling, and both are
 load-bearing:
@@ -543,15 +558,60 @@ interpolates a simple-protocol query, and GORM issues `LIMIT $1` on every
 `First`/`Take`/`Last`. Only an all-digits body is unquoted; anything else is
 left for the engine to reject, because PostgreSQL would reject it too.
 
+`UPDATE ... RETURNING` and `DELETE ... RETURNING` are rejected by the
+translator with a typed error (the embedded vitess grammar has no RETURNING on
+those productions) — but the **PostgreSQL wire serves them anyway**:
+`pkg/sql/pgsql` strips the clause, translates the head normally, and reattaches
+the parsed expression list to the AST's `Returning` field, which the planner and
+executor fully honor. See `pkg/sql/pgsql/returning.go` and
+[upstream-gaps.md](upstream-gaps.md) §3.
+
 Rejected with a typed `*engine.UnsupportedSyntaxError` rather than mistranslated:
 
 | Construct | Why |
 |---|---|
-| `UPDATE ... RETURNING`, `DELETE ... RETURNING` | The embedded vitess grammar added `RETURNING` to the `INSERT` production only, so these cannot reach the planner at all. Rejecting up front turns an opaque syntax error into a named one. |
-| `ON CONFLICT ON CONSTRAINT <name>` | MySQL's `ON DUPLICATE KEY UPDATE` always keys off whichever unique index the row actually violates, never a named one. |
 | `ON CONFLICT ... WHERE ...` | A partial-index conflict target, or a conditional `DO UPDATE`; MySQL has neither. |
 
 One deliberate, documented divergence: because MySQL keys an upsert off *any* violated unique index, a statement relying on PostgreSQL erroring when the conflict is against some *other* unique index will succeed against QRDB where PostgreSQL would have failed. Only the exact-case spellings `ILIKE`/`ilike` are normalized; a mixed-case `IlIkE` is not rewritten.
+
+## PostgreSQL Wire Semantics
+
+Beyond text translation, `pkg/sql/pgsql` implements PostgreSQL semantics the
+statement text alone cannot express:
+
+- **SQLSTATEs.** Engine failures are reported under the SQLSTATE PostgreSQL
+  raises for the same condition — `23505` unique violation, `23503` foreign
+  key, `23514` check, `23502` not-null, `42P01`/`42703` undefined table/column
+  — so client error translators (gorm's among them) work unmodified. See
+  `pkg/sql/pgsql/wire_errors.go`.
+- **`ON CONFLICT DO NOTHING` suppresses only duplicate keys.** The
+  `INSERT IGNORE` translation would also swallow FK, CHECK, and NOT NULL
+  violations (MySQL semantics); the wire re-raises any such suppressed
+  violation as the statement failure PostgreSQL reports.
+- **`UPDATE/DELETE ... RETURNING`** via AST reattachment (see above).
+- **`DROP TABLE ... CASCADE`** drops the foreign keys other tables aim at the
+  dropped table first, as PostgreSQL's CASCADE does.
+- **Schema-scoped index DDL.** `DROP INDEX [CURRENT_SCHEMA().]name` and
+  `ALTER INDEX name RENAME TO new` resolve the owning table through the
+  catalog and become MySQL's table-scoped forms.
+- **Sequences.** `nextval('name')` allocates from a Raft-linearizable
+  per-database counter (`service.UserSequencer`); sequences materialize on
+  first use and start at 1. `CREATE/ALTER SEQUENCE` are accepted (creation is
+  implicit), `DROP SEQUENCE` resets the counter. `ADD GENERATED ... AS
+  IDENTITY` becomes a sequence default. `information_schema.columns` restates
+  such defaults as `nextval('name'::regclass)`, the exact shape PostgreSQL
+  clients pattern-match for auto-increment classification.
+- **Unique constraint vs. unique index.** PostgreSQL lists only declared
+  UNIQUE **constraints** in `information_schema.table_constraints`; a unique
+  **index** never appears there. The wire records which one each statement
+  created (`service.TableIndex.StatementIndex`, captured per statement) and
+  the PostgreSQL dialect's `table_constraints` filters accordingly, while
+  `pg_indexes` continues to list both. gorm's pg_index-based per-column index
+  introspection is served through the `qrdb_index_columns` relation.
+- **Multi-statement simple queries.** Several `;`-separated statements in one
+  message execute in order; the last one's result is returned.
+- **`uuid_generate_v4()` / `gen_random_uuid()`** are built in;
+  `CREATE EXTENSION` is a no-op.
 
 ## Client Examples
 
@@ -583,6 +643,14 @@ pkg/sql/
   mysql/          # MySQL wire server (qrdb_mysql build tag)
   pgsql/          # PostgreSQL wire server (qrdb_pgsql build tag)
 ```
+
+The untagged packages carry no build constraint themselves; they are gated
+at their import sites instead. Every consumer outside `pkg/sql` — the
+server's ad-hoc `/sql/query` service (`pkg/server/server_sql.go`), the
+desktop SQL binding (`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL
+transport (`sdk/go/transport/embedded/transport_sql.go`), and the
+`sdk/go/driver` / `sdk/go/gorm` packages — compiles only under `qrdb_sql`,
+so a build without the tag links none of the SQL layer.
 
 For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN schemes (`node://` and `embedded://`), which differ in exactly whether the relational catalog is reachable.
 

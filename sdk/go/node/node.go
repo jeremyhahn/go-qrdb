@@ -131,6 +131,33 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
+// WithAuthenticators appends embedder-supplied authenticators to the node's
+// auth middleware chain, AFTER the built-in mTLS authenticator
+// (first-success-wins, so mTLS peers keep their existing behavior and
+// requests without a client certificate fall through to these). This is the
+// extension seam for credential schemes qrdb deliberately does not
+// implement itself — go-quicbaas passes its OAuth 2.1 bearer-token
+// validator here when embedding qrdb, per the MCP authorization
+// specification; the raw Authorization header reaches the authenticator
+// via auth.HTTPAuthorizationFromContext on the HTTP transports (REST, MCP).
+func WithAuthenticators(authenticators ...auth.Authenticator) NodeOption {
+	return func(o *nodeOptions) {
+		o.extraAuthenticators = append(o.extraAuthenticators, authenticators...)
+	}
+}
+
+// WithAuthorizerWrapper decorates the node's fully built RBAC[+ABAC]
+// authorizer with embedder-supplied authorization logic. The wrapper
+// receives the inner authorizer and returns the one every transport will
+// use — the SAME instance reaches the embedded transport and the network
+// transports' auth middleware, so custom logic (OAuth scope checks,
+// external policy engines) composes over, and can defer to, the built-in
+// stack everywhere at once. A wrapper returning nil aborts node
+// construction (fail closed).
+func WithAuthorizerWrapper(wrap func(inner auth.Authorizer) auth.Authorizer) NodeOption {
+	return func(o *nodeOptions) { o.authorizerWrapper = wrap }
+}
+
 // ---------------------------------------------------------------------------
 // Node options
 // ---------------------------------------------------------------------------
@@ -167,6 +194,15 @@ type nodeOptions struct {
 	// synchronisation. Use only in testing environments where overlay2/Docker
 	// fsync latency causes Raft proposal timeouts. Never use in production.
 	noSyncWrites bool
+
+	// extraAuthenticators are embedder-supplied authenticators appended to
+	// the auth middleware's chain after the built-in mTLS authenticator.
+	// See WithAuthenticators.
+	extraAuthenticators []auth.Authenticator
+
+	// authorizerWrapper decorates the node's fully built RBAC[+ABAC]
+	// authorizer with embedder-supplied logic. See WithAuthorizerWrapper.
+	authorizerWrapper func(inner auth.Authorizer) auth.Authorizer
 
 	// sessionIssuer mints/resolves/revokes the opaque bearer tokens issued
 	// by the unified-login ceremony. When non-nil it is forwarded to the
@@ -463,6 +499,13 @@ type Node struct {
 	abacPolicies   []*abac.Policy
 	abacPolicyDir  string
 	abacLiveReload bool
+
+	// extraAuthenticators / authorizerWrapper carry the embedder's custom
+	// authn/authz hooks (WithAuthenticators / WithAuthorizerWrapper) from
+	// the node constructor to buildEmbeddedOpts (wrapper) and
+	// wireClientAndServer (authenticator chain).
+	extraAuthenticators []auth.Authenticator
+	authorizerWrapper   func(inner auth.Authorizer) auth.Authorizer
 
 	// authorizer is the composed RBAC[+ABAC] auth.Authorizer built by
 	// decorateABAC in buildEmbeddedOpts (nil when svcNode.Role is nil, i.e.
@@ -1177,6 +1220,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
 		abacLiveReload:            nOpts.abacLiveReload,
+		extraAuthenticators:       nOpts.extraAuthenticators,
+		authorizerWrapper:         nOpts.authorizerWrapper,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -1334,6 +1379,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
 		abacLiveReload:            nOpts.abacLiveReload,
+		extraAuthenticators:       nOpts.extraAuthenticators,
+		authorizerWrapper:         nOpts.authorizerWrapper,
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -1782,13 +1829,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		decisionAudit = audit.NewDecisionLogger(n.auditLogger)
 	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
-		Enabled:           cfg.Auth.IsEnabled(),
-		Authorizer:        n.authorizer,
-		RoleService:       svcNode.Role,
-		UserService:       svcNode.User,
-		StrictSeparation:  strictSoD,
-		SPIFFETrustDomain: cfg.Auth.SPIFFETrustDomain,
-		AuditLogger:       decisionAudit,
+		Enabled:             cfg.Auth.IsEnabled(),
+		Authorizer:          n.authorizer,
+		RoleService:         svcNode.Role,
+		UserService:         svcNode.User,
+		StrictSeparation:    strictSoD,
+		SPIFFETrustDomain:   cfg.Auth.SPIFFETrustDomain,
+		AuditLogger:         decisionAudit,
+		ExtraAuthenticators: n.extraAuthenticators,
 	})
 	if err != nil {
 		_ = client.Close()
@@ -1908,6 +1956,17 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 		authorizer, err := n.decorateABAC(rbacAuthz)
 		if err != nil {
 			return nil, err
+		}
+		// Apply the embedder's authorizer wrapper HERE, at the single
+		// construction site, so the embedded transport and the network
+		// transports' auth middleware (which receives n.authorizer via
+		// AuthMiddlewareConfig.Authorizer below) share one wrapped
+		// instance — two independently wrapped instances would diverge.
+		if n.authorizerWrapper != nil {
+			authorizer = n.authorizerWrapper(authorizer)
+			if authorizer == nil {
+				return nil, &AuthMiddlewareWiringError{Err: ErrNilWrappedAuthorizer}
+			}
 		}
 		n.authorizer = authorizer
 		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))

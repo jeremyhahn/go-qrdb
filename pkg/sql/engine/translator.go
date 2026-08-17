@@ -100,14 +100,6 @@ var (
 	// detection.
 	onConflictRe = regexp.MustCompile(`(?i)\bON\s+CONFLICT\b`)
 
-	// onConflictOnConstraintRe matches ON CONFLICT ON CONSTRAINT <name>,
-	// which targets a named constraint rather than a column list. MySQL's
-	// ON DUPLICATE KEY UPDATE has no equivalent: it always keys off
-	// whichever unique index the conflicting row actually violates, not a
-	// named one, so this form is rejected rather than silently
-	// mistranslated.
-	onConflictOnConstraintRe = regexp.MustCompile(`(?i)\bON\s+CONFLICT\s+ON\s+CONSTRAINT\b`)
-
 	// onConflictWhereRe matches a bare WHERE token. Used only on the text
 	// following an ON CONFLICT match: in a valid INSERT statement that can
 	// only be the conflict target's partial-index predicate
@@ -117,14 +109,19 @@ var (
 	// equivalent.
 	onConflictWhereRe = regexp.MustCompile(`(?i)\bWHERE\b`)
 
-	// onConflictDoNothingRe matches ON CONFLICT [(cols)] DO NOTHING.
-	onConflictDoNothingRe = regexp.MustCompile(`(?i)\bON\s+CONFLICT\s*(?:\([^)]*\))?\s*DO\s+NOTHING\b`)
+	// onConflictDoNothingRe matches ON CONFLICT [(cols)] DO NOTHING and its
+	// named-target sibling ON CONFLICT ON CONSTRAINT <name> DO NOTHING.
+	// MySQL's forms always key off whichever unique index the conflicting
+	// row actually violates -- the same widening the (cols) translation
+	// already accepts, so the named form is translated under the same
+	// caveat rather than refused.
+	onConflictDoNothingRe = regexp.MustCompile("(?i)\\bON\\s+CONFLICT\\s*(?:\\([^)]*\\)|ON\\s+CONSTRAINT\\s+(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))?\\s*DO\\s+NOTHING\\b")
 
 	// onConflictDoUpdateRe matches the ON CONFLICT [(cols)] DO UPDATE SET
 	// prefix of a PostgreSQL upsert clause, up to and including the SET
 	// keyword, so it can be replaced wholesale with MySQL's
 	// ON DUPLICATE KEY UPDATE.
-	onConflictDoUpdateRe = regexp.MustCompile(`(?i)\bON\s+CONFLICT\s*(?:\([^)]*\))?\s*DO\s+UPDATE\s+SET\b`)
+	onConflictDoUpdateRe = regexp.MustCompile("(?i)\\bON\\s+CONFLICT\\s*(?:\\([^)]*\\)|ON\\s+CONSTRAINT\\s+(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))?\\s*DO\\s+UPDATE\\s+SET\\b")
 
 	// excludedColumnRe matches a column reference qualified by the EXCLUDED
 	// pseudo-table PostgreSQL exposes inside DO UPDATE SET.
@@ -266,6 +263,14 @@ func (t *Translator) Translate(query string) (string, error) {
 	// identifiers are recognized in cast expressions like `col`::type.
 	result = convertDoubleQuotedIdentifiers(result)
 
+	// 3b. Strip PostgreSQL's public. schema qualifier: public and the
+	// session's current database are the same level of the hierarchy here
+	// (current_schema() translates to DATABASE() in step 13 for the same
+	// reason), so the qualified name must resolve to the bare one. Runs
+	// after step 3 so one spelling -- backticked or bare -- covers every
+	// input quoting.
+	result = StripPublicSchemaQualifier(result)
+
 	// 4. Backtick-quote MySQL/GMS reserved words that appear as bare
 	// identifiers. This must run after double-quote conversion (step 3)
 	// so that already-backtick-quoted identifiers are skipped, and before
@@ -283,6 +288,18 @@ func (t *Translator) Translate(query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	// 5a. Parenthesize DEFAULT nextval(...) -- PostgreSQL's SET DEFAULT
+	// spelling -- into the expression-default form MySQL's grammar
+	// requires. Serial translation (step 5) emits its defaults already
+	// parenthesized; this covers the ALTER ... SET DEFAULT statements
+	// gorm's sequence migrations issue.
+	result = wrapNextvalDefault(result)
+
+	// 5b. Give DEFAULT current_timestamp the fractional-seconds precision
+	// of the DATETIME(p) column step 5 just produced -- MySQL requires the
+	// two to match, and PostgreSQL's spelling never carries one.
+	result = alignCurrentTimestampPrecision(result)
 
 	// 6. Rewrite INSERT ... DEFAULT VALUES into INSERT ... () VALUES ().
 	// Must run before the ON CONFLICT rewrite (step 7), whose DO NOTHING
@@ -303,6 +320,19 @@ func (t *Translator) Translate(query string) (string, error) {
 	if result, err = translateOnConflict(result); err != nil {
 		return "", err
 	}
+
+	// 7a. Rewrite a zero-column CREATE TABLE -- legal in PostgreSQL,
+	// unparseable in MySQL -- to declare one inert placeholder column.
+	// Runs after double-quote conversion (step 3) for the same reason as
+	// step 7b below.
+	result = translateEmptyCreateTable(result)
+
+	// 7b. Rewrite UPDATE ... SET ... FROM ... into MySQL's multi-table
+	// UPDATE. Must run after double-quote conversion (step 3) so the
+	// assignment-qualification step sees final identifier quoting, and
+	// operates on top-level keywords only, so subqueries pass through it
+	// untouched.
+	result = translateUpdateFrom(result)
 
 	// 8. Convert E'...' escape strings to regular string literals. Must
 	// run before cast conversion (step 9): a leading E left in place on
@@ -354,6 +384,35 @@ func (t *Translator) Translate(query string) (string, error) {
 // RETURNING is necessarily an INSERT's.
 func HasReturning(query string) bool {
 	return findOutsideRegions(query, returningKeywordRe) != nil
+}
+
+// SplitUpdateDeleteReturning splits an UPDATE or DELETE statement carrying
+// a trailing RETURNING clause into the statement without the clause and
+// the clause's expression list, reporting ok=false for any other
+// statement. The RETURNING keyword is located outside string literals,
+// comments, and dollar-quoted strings, so a literal containing the word
+// never splits the statement.
+//
+// It exists for pkg/sql/pgsql: the vitess grammar this engine embeds only
+// parses RETURNING on INSERT, but the UPDATE and DELETE AST nodes carry a
+// Returning field the planner and executor fully honor when it is set
+// programmatically -- so the wire front end strips the clause here,
+// parses both halves separately, and reattaches them (see pkg/sql/pgsql's
+// executeReturning path).
+func SplitUpdateDeleteReturning(query string) (head, returning string, ok bool) {
+	if updateOrDeleteLeadRe.FindStringIndex(query) == nil {
+		return "", "", false
+	}
+	loc := findOutsideRegions(query, returningKeywordRe)
+	if loc == nil {
+		return "", "", false
+	}
+	head = strings.TrimSpace(query[:loc[0]])
+	returning = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(query[loc[1]:]), ";"))
+	if head == "" || returning == "" {
+		return "", "", false
+	}
+	return head, returning, true
 }
 
 // translateDefaultValues rewrites PostgreSQL's all-defaults insert,
@@ -421,17 +480,14 @@ func translateOnConflict(query string) (string, error) {
 
 // unsupportedOnConflict reports a typed error if query contains an ON
 // CONFLICT clause shape that cannot be expressed in MySQL's ON DUPLICATE
-// KEY UPDATE / INSERT IGNORE syntax: a named-constraint target, or a WHERE
-// predicate (which, in a valid INSERT statement, can only be the conflict
-// target's partial-index predicate or the DO UPDATE action's conditional
-// predicate). It returns nil if query has no ON CONFLICT clause at all.
+// KEY UPDATE / INSERT IGNORE syntax: a WHERE predicate (which, in a valid
+// INSERT statement, can only be the conflict target's partial-index
+// predicate or the DO UPDATE action's conditional predicate). It returns
+// nil if query has no ON CONFLICT clause at all.
 func unsupportedOnConflict(query string) error {
 	loc := findOutsideRegions(query, onConflictRe)
 	if loc == nil {
 		return nil
-	}
-	if findOutsideRegions(query, onConflictOnConstraintRe) != nil {
-		return &UnsupportedSyntaxError{Feature: "ON CONFLICT ON CONSTRAINT"}
 	}
 	if findOutsideRegions(query[loc[1]:], onConflictWhereRe) != nil {
 		return &UnsupportedSyntaxError{Feature: "ON CONFLICT ... WHERE (partial index predicate or conditional DO UPDATE)"}

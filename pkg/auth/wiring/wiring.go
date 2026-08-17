@@ -181,6 +181,29 @@ type AuthMiddlewareConfig struct {
 	// AuditLogger, when non-nil, records every authorization decision
 	// (middleware.WithAuditLogger).
 	AuditLogger audit.Logger
+
+	// ExtraAuthenticators appends embedder-supplied authenticators to the
+	// chain AFTER the built-in mTLS authenticator. The chain is
+	// first-success-wins, so mTLS peers keep their existing behavior and a
+	// request without a client certificate falls through to the extras.
+	// This is the extension seam for credential schemes qrdb deliberately
+	// does not implement itself — e.g. go-quicbaas passes its OAuth 2.1
+	// bearer-token validator here when embedding qrdb, per the MCP
+	// authorization specification. Each authenticator resolves whatever
+	// carrier it needs from the request context
+	// (auth.HTTPAuthorizationFromContext for the raw Authorization header
+	// on the HTTP transports, gRPC metadata on gRPC).
+	ExtraAuthenticators []auth.Authenticator
+
+	// WrapAuthorizer, when non-nil, decorates the fully built
+	// RBAC[+ABAC] authorizer with embedder-supplied authorization logic.
+	// The wrapper receives the inner authorizer and returns the one the
+	// middleware will use, so custom logic (OAuth scope checks, external
+	// policy engines) can compose over — and defer to — the built-in
+	// stack instead of replacing it (use Authorizer to replace outright).
+	// Returning nil from the wrapper is a wiring bug and fails closed
+	// with *MissingServiceError.
+	WrapAuthorizer func(inner auth.Authorizer) auth.Authorizer
 }
 
 // BuildAuthMiddleware constructs the production AuthMiddleware: an mTLS
@@ -233,9 +256,22 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain)
 	}
 
+	if cfg.WrapAuthorizer != nil {
+		authorizer = cfg.WrapAuthorizer(authorizer)
+		if authorizer == nil {
+			return nil, &MissingServiceError{Service: "wrapped authorizer"}
+		}
+	}
+
 	opts := []middleware.Option{
 		middleware.WithAuthenticator(mtlsAuthenticator),
 		middleware.WithUserService(cfg.UserService),
+	}
+	for _, a := range cfg.ExtraAuthenticators {
+		if a == nil {
+			continue
+		}
+		opts = append(opts, middleware.WithAuthenticator(a))
 	}
 	if cfg.UserServiceFallback != nil {
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))

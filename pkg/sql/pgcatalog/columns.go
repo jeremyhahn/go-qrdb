@@ -15,6 +15,7 @@
 package pgcatalog
 
 import (
+	"regexp"
 	"strings"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -29,6 +30,7 @@ import (
 const (
 	tableCatalogIdx     = 0
 	tableSchemaIdx      = 1
+	columnDefaultIdx    = 5
 	dataTypeIdx         = 7
 	numericPrecisionIdx = 10
 	extraIdx            = 17
@@ -125,6 +127,19 @@ func (d infoSchema) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Ta
 	}
 	if strings.EqualFold(name, ConstraintColumnUsageTableName) {
 		return NewConstraintColumnUsageTable(), true, nil
+	}
+	if strings.EqualFold(name, information_schema.TableConstraintsTableName) {
+		tbl, found, err := d.Database.GetTableInsensitive(ctx, name)
+		if err != nil || !found {
+			return tbl, found, err
+		}
+		if inner, ok := tbl.(*information_schema.InformationSchemaTable); ok {
+			// PostgreSQL's constraint semantics: a statement-created
+			// unique index is not a constraint -- see
+			// newTableConstraintsTable.
+			return newTableConstraintsTable(inner), true, nil
+		}
+		return tbl, found, nil
 	}
 	return d.Database.GetTableInsensitive(ctx, name)
 }
@@ -225,5 +240,21 @@ func extendRow(row sqle.Row) (sqle.Row, error) {
 		increment = identityIncrement
 	}
 
+	// A sequence-defaulted column renders its default as
+	// nextval('name'::regclass) in PostgreSQL, and clients pattern-match
+	// that EXACT shape -- gorm.io/driver/postgres's
+	// autoIncrementValuePattern requires the ::regclass cast -- to
+	// classify the column as auto-incrementing. The engine's own rendering
+	// of the same default is nextval('name'); restate it.
+	if def, ok := extended[columnDefaultIdx].(string); ok {
+		if m := nextvalDefaultRe.FindStringSubmatch(def); m != nil {
+			extended[columnDefaultIdx] = "nextval('" + m[1] + "'::regclass)"
+		}
+	}
+
 	return append(extended, udtName, radix, increment), nil
 }
+
+// nextvalDefaultRe matches the engine's rendering of a sequence default,
+// nextval('name'), capturing the sequence name.
+var nextvalDefaultRe = regexp.MustCompile(`(?i)^\s*\(?nextval\('([^']+)'\)\)?\s*$`)

@@ -38,10 +38,10 @@ func (f *fakeAuthorizer) Authorize(_ context.Context, _ *auth.Identity, _, _ str
 	return f.err
 }
 
-// fakeDenied is the sentinel the fake inner authorizer denies with.
-type fakeDenied struct{}
+// fakeDeniedError is the sentinel the fake inner authorizer denies with.
+type fakeDeniedError struct{}
 
-func (fakeDenied) Error() string { return "inner: denied" }
+func (fakeDeniedError) Error() string { return "inner: denied" }
 
 func testPolicy(name, tenantID string, rules ...Rule) *Policy {
 	return &Policy{
@@ -131,7 +131,7 @@ func TestDecorator_DenyOverridesRBACAllow(t *testing.T) {
 }
 
 func TestDecorator_AllowBeyondRBACDeny(t *testing.T) {
-	inner := &fakeAuthorizer{err: fakeDenied{}} // inner would DENY
+	inner := &fakeAuthorizer{err: fakeDeniedError{}} // inner would DENY
 	policy := testPolicy("grant", "tenant-a", Rule{
 		Name:      "read-public",
 		Effect:    EffectAllow,
@@ -176,14 +176,14 @@ func TestDecorator_NoMatchDelegates(t *testing.T) {
 	})
 
 	t.Run("inner denies", func(t *testing.T) {
-		inner := &fakeAuthorizer{err: fakeDenied{}}
+		inner := &fakeAuthorizer{err: fakeDeniedError{}}
 		authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
 		if err != nil {
 			t.Fatalf("Decorate() error = %v", err)
 		}
 		ctx := tenant.WithTenantID(context.Background(), "tenant-a")
 		err = authz.Authorize(ctx, testIdentity("bob", "tenant-a"), "/private/x", "write")
-		if !errors.As(err, &fakeDenied{}) {
+		if !errors.As(err, &fakeDeniedError{}) {
 			t.Errorf("unmatched request should surface the inner error, got %v", err)
 		}
 		if inner.calls != 1 {
@@ -275,7 +275,7 @@ func TestDecorator_SystemTargetEvaluatedOnce(t *testing.T) {
 func TestDecorator_NilIdentityDelegates(t *testing.T) {
 	// A nil identity produces an empty subject that matches no policy, so
 	// the decision falls through to the inner authorizer.
-	inner := &fakeAuthorizer{err: fakeDenied{}}
+	inner := &fakeAuthorizer{err: fakeDeniedError{}}
 	policy := testPolicy("any", "tenant-a", Rule{
 		Name:      "allow-all",
 		Effect:    EffectAllow,
@@ -288,7 +288,7 @@ func TestDecorator_NilIdentityDelegates(t *testing.T) {
 	}
 	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
 	err = authz.Authorize(ctx, nil, "/kv/x", "read")
-	if !errors.As(err, &fakeDenied{}) {
+	if !errors.As(err, &fakeDeniedError{}) {
 		t.Errorf("nil identity should delegate to inner, got %v", err)
 	}
 	if inner.calls != 1 {
@@ -298,7 +298,7 @@ func TestDecorator_NilIdentityDelegates(t *testing.T) {
 
 func TestDecorator_SubjectAttributesFromMetadata(t *testing.T) {
 	// Identity metadata surfaces as ABAC subject attributes.
-	inner := &fakeAuthorizer{err: fakeDenied{}}
+	inner := &fakeAuthorizer{err: fakeDeniedError{}}
 	policy := &Policy{
 		APIVersion: "abac.qrdb.io/v1",
 		Kind:       PolicyKind,
@@ -327,7 +327,7 @@ func TestDecorator_SubjectAttributesFromMetadata(t *testing.T) {
 
 	sales := testIdentity("bob", "tenant-a")
 	sales.Metadata = map[string]string{"department": "sales"}
-	if err := authz.Authorize(ctx, sales, "/eng/specs", "read"); !errors.As(err, &fakeDenied{}) {
+	if err := authz.Authorize(ctx, sales, "/eng/specs", "read"); !errors.As(err, &fakeDeniedError{}) {
 		t.Errorf("sales identity should delegate to inner (deny), got %v", err)
 	}
 }

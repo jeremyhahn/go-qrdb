@@ -34,8 +34,11 @@ type Capabilities struct {
 	Index       bool `json:"index"`
 	TimeSeries  bool `json:"timeSeries"`
 	Vector      bool `json:"vector"`
+	SQL         bool `json:"sql"`
 	MySQL       bool `json:"mysql"`
 	PostgreSQL  bool `json:"postgresql"`
+	Etcd        bool `json:"etcd"`
+	FTS         bool `json:"fts"`
 }
 
 var (
@@ -60,8 +63,11 @@ func Get() Capabilities {
 
 	_, ts := features["timeSeries"]
 	_, vec := features["vector"]
+	_, sql := features["sql"]
 	_, mysql := features["mysql"]
 	_, pgsql := features["pgsql"]
+	_, etcd := features["etcd"]
+	_, fts := features["fts"]
 
 	return Capabilities{
 		KV:          true,
@@ -73,8 +79,11 @@ func Get() Capabilities {
 		Index:       true,
 		TimeSeries:  ts,
 		Vector:      vec,
+		SQL:         sql,
 		MySQL:       mysql,
 		PostgreSQL:  pgsql,
+		Etcd:        etcd,
+		FTS:         fts,
 	}
 }
 

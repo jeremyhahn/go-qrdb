@@ -117,12 +117,22 @@ func TestLookupGRPCFromDescriptor_DefaultDenyRegression(t *testing.T) {
 	if got, ok := LookupGRPCFromDescriptor("/qrdb.v1.QRDBService/Put"); !ok || got != permission.KVPut {
 		t.Errorf("Put (cached): got (%q, %v), want (%q, true)", got, ok, permission.KVPut)
 	}
-	// Identity-gated share-claim routes resolve to the sentinel.
+	// Identity-gated routes resolve to the sentinel: the share-claim
+	// bootstrap handshakes, plus the tenant barrier bootstrap surface
+	// (init/status/unseal) whose RBAC check runs in the handlers with the
+	// shared trust-on-first-init / sealed-window fallbacks
+	// (middleware.AuthorizeTenantBarrierInit / AuthorizeTenantBarrierSealedOp)
+	// so a self-managed tenant can drive its own unseal while its IAM is
+	// encrypted behind the sealed barrier.
 	for _, method := range []string{
 		"/qrdb.v1.QRDBService/BarrierShareClaimBegin",
 		"/qrdb.v1.QRDBService/BarrierShareClaimComplete",
 		"/qrdb.v1.TenantBarrierService/ShareClaimBegin",
 		"/qrdb.v1.TenantBarrierService/ShareClaimComplete",
+		"/qrdb.v1.TenantBarrierService/Init",
+		"/qrdb.v1.TenantBarrierService/Unseal",
+		"/qrdb.v1.TenantBarrierService/UnsealShare",
+		"/qrdb.v1.TenantBarrierService/Status",
 	} {
 		if got, ok := LookupGRPCFromDescriptor(method); !ok || got != permission.IdentityGated {
 			t.Errorf("%s: got (%q, %v), want (%q, true)", method, got, ok, permission.IdentityGated)

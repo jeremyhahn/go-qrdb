@@ -188,7 +188,7 @@ func TestNewServesExactlyTheSupportedRelations(t *testing.T) {
 
 	names, err := db.GetTableNames(sqle.NewEmptyContext())
 	require.NoError(t, err)
-	assert.Equal(t, []string{AttributeRelation, ClassRelation, DescriptionRelation, IndexesRelation, NamespaceRelation, TypeRelation}, names)
+	assert.Equal(t, []string{AttributeRelation, ClassRelation, DescriptionRelation, IndexesRelation, NamespaceRelation, TypeRelation, IndexColumnsRelation}, names)
 
 	for _, name := range names {
 		tbl, ok, err := db.GetTableInsensitive(sqle.NewEmptyContext(), strings.ToUpper(name))

@@ -760,8 +760,26 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 		t.Fatalf("create tenant: status %d, body: %s", tStatus, tBody)
 	}
 
-	// Role + user so the tenant cert can initialize its barrier, create a
-	// database, and do KV I/O.
+	// The tenant's dedicated barrier must be initialized BEFORE any of its
+	// IAM can exist (the tenant's roles and users are encrypted under the
+	// tenant DEK; the store resolver fails closed until the barrier is up).
+	// The init itself is trust-on-first-init by the tenant's own identity —
+	// see pkg/api/rest authorizeTenantBarrierInit.
+	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
+	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
+
+	// Initialize the self-managed dedicated barrier as "none" (unencrypted) --
+	// the source state for enable-encryption.
+	if initBody, initStatus := iraftAPIPost(t, tenantClient,
+		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
+		map[string]interface{}{"strategy": "none", "secret": ""},
+	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
+		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
+	}
+
+	// Role + user so the tenant cert can create a database and do KV I/O.
+	// Created AFTER the barrier init so the records land in the tenant's
+	// own encrypted IAM store.
 	roleBody, roleStatus := iraftAPIPost(t, sysClient,
 		fmt.Sprintf("https://127.0.0.1:%d/roles", adminPort),
 		map[string]interface{}{
@@ -788,18 +806,6 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 		map[string]interface{}{"username": "admin", "tenant_id": tenantID, "role_ids": []string{roleResp.ID}},
 	); uStatus != http.StatusCreated && uStatus != http.StatusOK {
 		t.Fatalf("create user: status %d", uStatus)
-	}
-
-	tenantCert, tenantKey := ca.generateClientCertForTenant(t, tenantID)
-	tenantClient := mtlsHTTPClientFromFiles(t, ca, tenantCert, tenantKey, 15*time.Second)
-
-	// Initialize the self-managed dedicated barrier as "none" (unencrypted) --
-	// the source state for enable-encryption.
-	if initBody, initStatus := iraftAPIPost(t, tenantClient,
-		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": ""},
-	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
-		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
 	}
 
 	if strategy, _, ok := tenantBarrierStatusJSON(t, tenantClient, adminPort, tenantID); !ok || strategy != "none" {

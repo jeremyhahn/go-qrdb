@@ -20,7 +20,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jeroenrinzema/psql-wire/codes"
 	psqlerr "github.com/jeroenrinzema/psql-wire/errors"
 	"github.com/stretchr/testify/assert"
@@ -61,6 +64,24 @@ func TestSQLStateFor(t *testing.T) {
 	}
 }
 
+// TestSQLStateForWrappedInsertError pins the chain shape every constraint
+// violation raised during an INSERT actually arrives in:
+// sql.WrappedInsertError has no Unwrap method and the kind error inside it
+// only matches Kind.Is at the top level, so sqlStateFor must follow the
+// Cause field by hand. This exact shape is what left every duplicate-key
+// INSERT reported as XXUUU on the wire.
+func TestSQLStateForWrappedInsertError(t *testing.T) {
+	err := sql.NewWrappedInsertError(nil, sql.NewUniqueKeyErr("PRIMARY", true, nil))
+	code, ok := sqlStateFor(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.UniqueViolation, code)
+
+	err = sql.NewWrappedInsertError(nil, sql.NewUniqueKeyErr("uni_cities_name", false, nil))
+	code, ok = sqlStateFor(err)
+	require.True(t, ok)
+	assert.Equal(t, codes.UniqueViolation, code)
+}
+
 // TestWireQueryError proves the code survives the QueryError wrapping the
 // wire handler applies, which is what psql-wire actually serializes.
 func TestWireQueryError(t *testing.T) {
@@ -92,4 +113,84 @@ func psqlErrorCode(err error) string {
 		return string(flat.Code)
 	}
 	return ""
+}
+
+// TestNormalizeNumeric pins the DECIMAL wire path: an *apd.Decimal cell
+// (what go-mysql-server produces for a DECIMAL column) and a plain decimal
+// string both normalize to pgtype.Numeric, the shape pgx's numeric codec
+// encodes; integers pass through (they have their own encode plans), and
+// garbage is returned unchanged for pgx to report.
+func TestNormalizeNumeric(t *testing.T) {
+	dec, _, err0 := apd.NewFromString("123.450")
+	require.NoError(t, err0)
+	n, ok := normalizeNumeric(dec).(pgtype.Numeric)
+	require.True(t, ok)
+	value, err := n.Value()
+	require.NoError(t, err)
+	assert.Equal(t, "123.450", value)
+
+	n, ok = normalizeNumeric("42.7").(pgtype.Numeric)
+	require.True(t, ok)
+	value, err = n.Value()
+	require.NoError(t, err)
+	assert.Equal(t, "42.7", value)
+
+	assert.Equal(t, int64(7), normalizeNumeric(int64(7)))
+	assert.Equal(t, "not-a-number", normalizeNumeric("not-a-number"))
+}
+
+// TestColumnOIDDecimal pins DECIMAL's OID: text described a numeric column
+// as variable-length, which gorm's migrator read as a size change and
+// answered with an ALTER on every AutoMigrate.
+func TestColumnOIDDecimal(t *testing.T) {
+	decimalType, err := types.CreateDecimalType(9, 0)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(pgtype.NumericOID), ColumnOID(decimalType))
+}
+
+// TestCheckIgnoredViolations pins the PostgreSQL semantics of ON CONFLICT
+// DO NOTHING over the INSERT IGNORE translation: only duplicate-key
+// conflicts are suppressed; a foreign-key (or CHECK, or NOT NULL)
+// violation the engine downgraded to a warning is re-raised as the
+// statement failure PostgreSQL reports.
+func TestCheckIgnoredViolations(t *testing.T) {
+	newCtx := func() *sql.Context {
+		return sql.NewContext(t.Context(), sql.WithSession(sql.NewBaseSession()))
+	}
+
+	t.Run("duplicate-key warnings stay suppressed", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 1062, Message: "duplicate"})
+		require.NoError(t, checkIgnoredViolations(ctx, "INSERT IGNORE INTO t VALUES (1)", 0))
+	})
+
+	t.Run("fk violation re-raised with 23503", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 1452, Message: "fk violated"})
+		err := checkIgnoredViolations(ctx, "INSERT IGNORE INTO t VALUES (1)", 0)
+		require.Error(t, err)
+		var verr *IgnoredViolationError
+		require.ErrorAs(t, err, &verr)
+		assert.Equal(t, 1452, verr.Code)
+		assert.Contains(t, psqlErrorCode(err), "23503")
+	})
+
+	t.Run("oldest new warning wins, baseline respected", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 1452, Message: "old, before baseline"})
+		baseline := len(ctx.Session.Warnings())
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 3819, Message: "check violated"})
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 1048, Message: "null violated"})
+		err := checkIgnoredViolations(ctx, "insert ignore into t values (1)", baseline)
+		require.Error(t, err)
+		var verr *IgnoredViolationError
+		require.ErrorAs(t, err, &verr)
+		assert.Equal(t, 3819, verr.Code, "the FIRST violation of the statement is reported")
+	})
+
+	t.Run("non-IGNORE statements untouched", func(t *testing.T) {
+		ctx := newCtx()
+		ctx.Session.Warn(&sql.Warning{Level: "Note", Code: 1452, Message: "fk violated"})
+		require.NoError(t, checkIgnoredViolations(ctx, "INSERT INTO t VALUES (1)", 0))
+	})
 }

@@ -32,6 +32,16 @@ type keyPayload struct {
 	Salt        []byte   `json:"salt"`
 	Epoch       uint64   `json:"epoch"`
 	KnownEpochs []uint64 `json:"known_epochs"`
+
+	// HKDFVersion is the HKDF info-string layout the leader derives its
+	// DEKs with. Omitting it from the wire (as this codec once did) makes
+	// an importing follower fall back to the legacy v1 layout and derive
+	// DIFFERENT DEKs from the identical root key, salt, and epoch — every
+	// cross-node decrypt then fails. omitempty keeps the wire form of a
+	// genuine legacy-v1 leader (version 0) byte-identical to the old
+	// encoding, and an absent field on receive decodes to 0, so mixed-
+	// version clusters interoperate in both directions.
+	HKDFVersion seal.HKDFVersion `json:"hkdf_version,omitempty"`
 }
 
 // marshalKeyPayload encodes an ImportedKey as JSON for HPKE-sealing by the
@@ -43,6 +53,7 @@ func marshalKeyPayload(k *seal.ImportedKey) ([]byte, error) {
 		Salt:        k.Salt,
 		Epoch:       k.Epoch,
 		KnownEpochs: k.KnownEpochs,
+		HKDFVersion: k.HKDFVersion,
 	})
 }
 
@@ -58,5 +69,6 @@ func unmarshalKeyPayload(b []byte) (*seal.ImportedKey, error) {
 		Salt:        p.Salt,
 		Epoch:       p.Epoch,
 		KnownEpochs: p.KnownEpochs,
+		HKDFVersion: p.HKDFVersion,
 	}, nil
 }

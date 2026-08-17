@@ -91,6 +91,17 @@ var noopPrefixes = []string{
 	"DEALLOCATE ",
 	"LISTEN ",
 	"UNLISTEN ",
+
+	// PostgreSQL loads C extensions per database; every function qrdb
+	// serves is compiled in, so installing or removing an extension is
+	// meaningless here. Accepting the statements matters because
+	// gorm.io/driver/postgres issues CREATE EXTENSION IF NOT EXISTS
+	// "uuid-ossp" before creating any table with a uuid default -- the
+	// functions the extension would provide (uuid_generate_v4 and
+	// friends) are registered unconditionally for the PostgreSQL dialect
+	// in pkg/sql/engine.
+	"CREATE EXTENSION ",
+	"DROP EXTENSION ",
 }
 
 // ParseHandler handles SQL query parsing and execution for the PG wire
@@ -142,6 +153,22 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 		return h.emptyResult()
 	}
 
+	// PostgreSQL's simple query protocol accepts several statements in one
+	// message. Each is executed in order and the LAST one's result is
+	// returned, which matches what a client sees from PostgreSQL itself
+	// (earlier results are superseded on the wire). The extended protocol
+	// forbids the form entirely when parameters are involved, and so does
+	// this path: the split only fires for parameterless text.
+	if statements := engine.SplitTopLevelStatements(trimmed); len(statements) > 1 &&
+		len(wire.ParseParameters(trimmed)) == 0 {
+		for _, statement := range statements[:len(statements)-1] {
+			if _, err := h.HandleParse(ctx, statement); err != nil {
+				return nil, err
+			}
+		}
+		return h.HandleParse(ctx, statements[len(statements)-1])
+	}
+
 	// PostgreSQL's END/END WORK/END TRANSACTION are aliases for COMMIT that
 	// go-mysql-server's parser does not itself accept; rewrite the
 	// statement text before anything else touches it.
@@ -165,22 +192,42 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	rewriteCtx := h.buildSQLContext(ctx)
 	rewriteDB := rewriteCtx.GetCurrentDatabase()
 
+	// Sequence DDL is served directly from the sequence catalog -- the
+	// engine's grammar has no CREATE/ALTER/DROP SEQUENCE at all.
+	if handled, err := h.handleSequenceDDL(rewriteCtx, rewriteDB, trimmed); handled {
+		if err != nil {
+			return nil, wireQueryError(trimmed, err)
+		}
+		return h.emptyResult()
+	}
+
 	// DROP TABLE ... CASCADE acts by side effect: PostgreSQL's CASCADE drops
 	// the foreign keys other tables aim at the dropped table, which the
 	// engine's referenced-by validation would otherwise refuse. The statement
 	// text itself passes through unchanged.
 	applyDropTableCascade(rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, trimmed)
 
+	// An UPDATE or DELETE carrying a RETURNING clause is split here: the
+	// embedded grammar cannot parse the clause on those statements, but
+	// their AST nodes carry a Returning field the planner and executor
+	// fully honor, so the head is translated normally and the clause is
+	// parsed separately and reattached (see buildReturningStatement).
+	toTranslate := trimmed
+	head, returningList, isDMLReturning := engine.SplitUpdateDeleteReturning(trimmed)
+	if isDMLReturning {
+		toTranslate = head
+	}
+
 	// A few PostgreSQL-only DDL forms must be rewritten BEFORE the
 	// translator runs: it has no rule for them and mangles them instead
 	// (see rewritePGOnlyDDL). When one fires, its output is already
 	// complete MySQL and skips the translator entirely.
 	translated, rewrote := rewritePGOnlyDDL(
-		rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, trimmed)
+		rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, toTranslate)
 	if !rewrote {
 		// Translate PG-specific syntax to GMS-compatible SQL.
 		var err error
-		translated, err = h.translator.Translate(trimmed)
+		translated, err = h.translator.Translate(toTranslate)
 		if err != nil {
 			return nil, &TranslationError{Query: trimmed, Err: err}
 		}
@@ -194,26 +241,58 @@ func (h *ParseHandler) HandleParse(ctx context.Context, query string) (wire.Prep
 	translated = rewriteCatalogAwareDDL(
 		rewriteCtx, h.sqlEngine.Analyzer.Catalog, rewriteDB, translated)
 
+	// Reattach the RETURNING clause to the translated head's AST; the AST
+	// is then carried through execution in place of re-parsing the text.
+	var preparsed sqlparser.Statement
+	if isDMLReturning {
+		var err error
+		preparsed, err = h.buildReturningStatement(translated, returningList)
+		if err != nil {
+			return nil, &TranslationError{Query: trimmed, Err: err}
+		}
+	}
+
+	// A standalone CREATE INDEX carries PostgreSQL's index-vs-constraint
+	// distinction only in its statement text -- the plan node it produces
+	// is identical to ALTER TABLE ADD CONSTRAINT UNIQUE's -- so it is
+	// recorded on the session here for the provider to persist into the
+	// catalog (see QRDBSession.SetStatementIndexOrigin) and cleared again
+	// when the statement finishes.
+	if createIndexStatementRe.MatchString(trimmed) {
+		if session := connectionSessionFromContext(ctx); session != nil {
+			session.SetStatementIndexOrigin(true)
+			defer session.SetStatementIndexOrigin(false)
+		}
+	}
+
 	// Parameterized queries must defer execution until BIND/EXECUTE
 	// when the wire protocol delivers parameter values. Non-parameterized
 	// queries execute eagerly for lower latency.
 	paramOIDs := wire.ParseParameters(trimmed)
 	if len(paramOIDs) > 0 {
-		return h.executeDeferred(ctx, trimmed, translated, paramOIDs)
+		return h.executeDeferred(ctx, trimmed, translated, paramOIDs, preparsed)
 	}
 
-	return h.executeEager(ctx, trimmed, translated)
+	return h.executeEager(ctx, trimmed, translated, preparsed)
 }
+
+// createIndexStatementRe matches a standalone CREATE [UNIQUE] INDEX
+// statement head.
+var createIndexStatementRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b`)
 
 // executeEager runs the translated query immediately during the PARSE phase.
 // This path is used for non-parameterized queries where all values are
 // available in the SQL text itself.
-func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string) (wire.PreparedStatements, error) {
+func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated string, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
 	// Build a GMS sql.Context with the QRDB session carrying identity.
 	sqlCtx := h.buildSQLContext(ctx)
 
-	// Execute the query through go-mysql-server.
-	schema, rowIter, _, err := h.sqlEngine.Query(sqlCtx, translated)
+	warningBaseline := len(sqlCtx.Warnings())
+
+	// Execute the query through go-mysql-server. A pre-parsed AST (the
+	// reattached UPDATE/DELETE ... RETURNING) executes as parsed; the text
+	// path re-parses translated exactly as before.
+	schema, rowIter, _, err := h.sqlEngine.QueryWithBindings(sqlCtx, translated, preparsed, nil, nil)
 	if err != nil {
 		return nil, wireQueryError(trimmed, err)
 	}
@@ -225,6 +304,13 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 	// from the PreparedStatementFn callback.
 	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
+		return nil, wireQueryError(trimmed, err)
+	}
+
+	// An INSERT IGNORE (the translation of ON CONFLICT DO NOTHING) may
+	// have suppressed a violation PostgreSQL would have raised; re-raise
+	// it. See checkIgnoredViolations.
+	if err := checkIgnoredViolations(sqlCtx, translated, warningBaseline); err != nil {
 		return nil, wireQueryError(trimmed, err)
 	}
 
@@ -252,10 +338,14 @@ func (h *ParseHandler) executeEager(ctx context.Context, trimmed, translated str
 // parameters that target a known column (see inferParamOIDs), and passing
 // the already-parsed statement straight into QueryWithBindings at EXECUTE
 // time instead of asking go-mysql-server to parse the same text again.
-func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32) (wire.PreparedStatements, error) {
+func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated string, paramOIDs []uint32, preparsed sqlparser.Statement) (wire.PreparedStatements, error) {
 	sqlCtx := h.buildSQLContext(ctx)
 
-	parsedStmt, parseErr := sqlparser.Parse(translated)
+	parsedStmt := preparsed
+	var parseErr error
+	if parsedStmt == nil {
+		parsedStmt, parseErr = sqlparser.Parse(translated)
+	}
 	if parseErr == nil {
 		resolved := inferParamOIDs(sqlCtx, h.sqlEngine.Analyzer.Catalog, sqlCtx.GetCurrentDatabase(), parsedStmt)
 		for ordinal, oid := range resolved {
@@ -269,7 +359,15 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 	// client may reuse it across many BIND/EXECUTE rounds without ever
 	// re-issuing PARSE, so it is also what every later execution must keep
 	// producing -- see ensureStableResultType.
-	declared := h.resultColumns(sqlCtx, translated)
+	// Only a HandleParse-supplied AST (the reattached UPDATE/DELETE ...
+	// RETURNING) is described from its AST. The locally parsed statement
+	// above must NOT be passed here: resultColumns caches whatever AST it
+	// prepares in the session's prepared-statement cache, which execution
+	// later prefers over re-parsing, and the local parse comes from the
+	// plain vitess grammar rather than the engine's parser -- so passing it
+	// would silently bypass every parser-level repair the engine installs
+	// (the HAVING-subquery aliasing among them).
+	declared := h.resultColumns(sqlCtx, translated, preparsed)
 
 	stmt := wire.NewStatement(
 		func(execCtx context.Context, writer wire.DataWriter, parameters []wire.Parameter) error {
@@ -319,13 +417,20 @@ func (h *ParseHandler) executeDeferred(ctx context.Context, trimmed, translated 
 // metadata resolution, and the authoritative diagnosis of a bad statement
 // belongs to the execution path, which reports it against the caller's real
 // parameters.
-func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string) wire.Columns {
+func (h *ParseHandler) resultColumns(sqlCtx *sql.Context, translated string, preparsed sqlparser.Statement) wire.Columns {
 	upper := strings.ToUpper(strings.TrimSpace(translated))
-	if !strings.HasPrefix(upper, "SELECT") && !engine.HasReturning(translated) {
+	if !strings.HasPrefix(upper, "SELECT") && !engine.HasReturning(translated) &&
+		!statementCarriesReturning(preparsed) {
 		return nil
 	}
 
-	node, err := h.sqlEngine.PrepareQuery(sqlCtx, translated)
+	var node sql.Node
+	var err error
+	if preparsed != nil {
+		node, err = h.sqlEngine.PrepareParsedQuery(sqlCtx, translated, translated, preparsed)
+	} else {
+		node, err = h.sqlEngine.PrepareQuery(sqlCtx, translated)
+	}
 	if err != nil || node == nil {
 		return nil
 	}
@@ -366,6 +471,8 @@ func (h *ParseHandler) executeDeferredCallback(
 	// Build a fresh sql.Context for execution.
 	sqlCtx := h.buildSQLContext(ctx)
 
+	warningBaseline := len(sqlCtx.Warnings())
+
 	// Execute the query with parameter bindings. The schema is needed to
 	// resolve ENUM/SET cells against their declared column types before
 	// they are written to the wire; it is not sent as a RowDescription
@@ -392,6 +499,13 @@ func (h *ParseHandler) executeDeferredCallback(
 	// Collect and write result.
 	result, err := collectRows(sqlCtx, schema, rowIter)
 	if err != nil {
+		return wireQueryError(trimmed, err)
+	}
+
+	// An INSERT IGNORE (the translation of ON CONFLICT DO NOTHING) may
+	// have suppressed a violation PostgreSQL would have raised; re-raise
+	// it. See checkIgnoredViolations.
+	if err := checkIgnoredViolations(sqlCtx, translated, warningBaseline); err != nil {
 		return wireQueryError(trimmed, err)
 	}
 
@@ -599,21 +713,150 @@ func inferParamOIDs(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, stm
 		assignmentOIDs(schema, sqlparser.AssignmentExprs(node.OnDup), oids)
 
 	case *sqlparser.Update:
-		if len(node.TableExprs) != 1 {
-			return oids
+		// Resolve every relation the statement names -- one for the plain
+		// single-table UPDATE, several for the multi-table form the
+		// UPDATE ... FROM translation produces (see pkg/sql/engine's
+		// translateUpdateFrom, which qualifies every assignment with its
+		// table). Each relation is keyed by both its name and its alias so
+		// a qualified assignment resolves under whichever the statement
+		// used.
+		schemas, soleSchema := relationSchemas(sqlCtx, catalog, dbName, node.TableExprs)
+		for _, assign := range node.Exprs {
+			ordinal, ok := valArgOrdinal(assign.Expr)
+			if !ok {
+				continue
+			}
+			schema := soleSchema
+			if qualifier := assign.Name.Qualifier.Name.String(); qualifier != "" {
+				schema = schemas[strings.ToLower(qualifier)]
+			}
+			if schema == nil {
+				continue
+			}
+			colType, ok := columnType(schema, assign.Name.Name)
+			if !ok {
+				continue
+			}
+			oids[ordinal] = paramOIDForColumn(colType)
 		}
-		tableName, ok := singleTableName(node.TableExprs[0])
-		if !ok {
-			return oids
+		if node.Where != nil {
+			comparisonParamOIDs(schemas, soleSchema, node.Where.Expr, oids)
 		}
-		table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
-		if !ok {
-			return oids
+
+	case *sqlparser.Select:
+		schemas, soleSchema := relationSchemas(sqlCtx, catalog, dbName, node.From)
+		if node.Where != nil {
+			comparisonParamOIDs(schemas, soleSchema, node.Where.Expr, oids)
 		}
-		assignmentOIDs(table.Schema(sqlCtx), node.Exprs, oids)
+		if node.Having != nil {
+			comparisonParamOIDs(schemas, soleSchema, node.Having.Expr, oids)
+		}
+
+	case *sqlparser.Delete:
+		schemas, soleSchema := relationSchemas(sqlCtx, catalog, dbName, node.TableExprs)
+		if node.Where != nil {
+			comparisonParamOIDs(schemas, soleSchema, node.Where.Expr, oids)
+		}
 	}
 
 	return oids
+}
+
+// relationSchemas resolves each plain relation in tableExprs to its schema,
+// keyed (lower-cased) by both table name and alias. soleSchema is the one
+// schema when exactly one relation is named -- the only case an UNQUALIFIED
+// column may be resolved against without risking a wrong guess.
+func relationSchemas(sqlCtx *sql.Context, catalog sql.Catalog, dbName string, tableExprs sqlparser.TableExprs) (map[string]sql.Schema, sql.Schema) {
+	schemas := make(map[string]sql.Schema, len(tableExprs))
+	var soleSchema sql.Schema
+	for _, tableExpr := range tableExprs {
+		aliased, ok := tableExpr.(*sqlparser.AliasedTableExpr)
+		if !ok {
+			continue
+		}
+		name, ok := aliased.Expr.(sqlparser.TableName)
+		if !ok {
+			continue
+		}
+		table, ok := lookupTable(sqlCtx, catalog, dbName, name.Name.String())
+		if !ok {
+			continue
+		}
+		schema := table.Schema(sqlCtx)
+		schemas[strings.ToLower(name.Name.String())] = schema
+		if alias := aliased.As.String(); alias != "" {
+			schemas[strings.ToLower(alias)] = schema
+		}
+		if len(tableExprs) == 1 {
+			soleSchema = schema
+		}
+	}
+	return schemas, soleSchema
+}
+
+// comparisonParamOIDs walks a WHERE or HAVING expression resolving the
+// parameter in each `column <op> $N` comparison, `column IN ($N, ...)`
+// membership, and `column BETWEEN $N AND $M` range against the column's
+// type. This is what keeps a bound boolean from arriving as the string
+// 'true' -- which the engine coerces to 0, silently flipping the predicate
+// -- and a bound timestamp from arriving in PostgreSQL's zone-suffixed
+// text form its DATETIME parser rejects.
+//
+// Subqueries are deliberately not descended into: their columns resolve
+// against their own FROM clause, and matching an inner column against the
+// outer statement's relations could infer a wrong OID, which is worse than
+// the string-literal fallback.
+func comparisonParamOIDs(schemas map[string]sql.Schema, soleSchema sql.Schema, expr sqlparser.Expr, oids map[int]uint32) {
+	resolve := func(col *sqlparser.ColName) (sql.Type, bool) {
+		schema := soleSchema
+		if qualifier := col.Qualifier.Name.String(); qualifier != "" {
+			schema = schemas[strings.ToLower(qualifier)]
+		}
+		if schema == nil {
+			return nil, false
+		}
+		return columnType(schema, col.Name)
+	}
+	record := func(col *sqlparser.ColName, value sqlparser.Expr) {
+		ordinal, ok := valArgOrdinal(value)
+		if !ok {
+			return
+		}
+		colType, ok := resolve(col)
+		if !ok {
+			return
+		}
+		oids[ordinal] = paramOIDForColumn(colType)
+	}
+
+	_ = sqlparser.Walk(func(node sqlparser.SQLNode) (bool, error) {
+		switch n := node.(type) {
+		case *sqlparser.Subquery:
+			return false, nil
+		case *sqlparser.ComparisonExpr:
+			col, ok := n.Left.(*sqlparser.ColName)
+			value := n.Right
+			if !ok {
+				if col, ok = n.Right.(*sqlparser.ColName); !ok {
+					return true, nil
+				}
+				value = n.Left
+			}
+			if tuple, ok := value.(sqlparser.ValTuple); ok {
+				for _, element := range tuple {
+					record(col, element)
+				}
+				return true, nil
+			}
+			record(col, value)
+		case *sqlparser.RangeCond:
+			if col, ok := n.Left.(*sqlparser.ColName); ok {
+				record(col, n.From)
+				record(col, n.To)
+			}
+		}
+		return true, nil
+	}, expr)
 }
 
 // assignmentOIDs resolves the parameter in each `column = $N` assignment
@@ -1017,18 +1260,21 @@ func buildCompleteTag(query string, rowCount int) string {
 // formatValue converts a GMS value to a format suitable for the PG wire
 // protocol, under the OID its column was described with.
 //
-// Byte slices are converted to string for text-mode encoding since
-// BLOB/VARBINARY columns use TextOID to avoid binary format issues with
-// pgx's extended query protocol. Everything else is handed to
-// NormalizeForOID, which coerces the cell to the Go type pgx has an encode
-// plan for under that declaration -- a value that does not match the
-// description the client already received fails the statement rather than
-// arriving wrong, so this is not a convenience.
+// A byte-slice cell under a bytea description stays []byte -- that is the
+// one shape pgx's bytea codec encodes, and converting it to string here is
+// exactly what used to corrupt every non-UTF-8 blob. Under any other
+// description (a TEXT column's value arriving as []byte, JSON, and so on)
+// the bytes are genuinely text and become string for the text-family
+// codecs. Everything else is handed to NormalizeForOID, which coerces the
+// cell to the Go type pgx has an encode plan for under that declaration --
+// a value that does not match the description the client already received
+// fails the statement rather than arriving wrong, so this is not a
+// convenience.
 func formatValue(v any, oid uint32) any {
 	if v == nil {
 		return nil
 	}
-	if b, isBytes := v.([]byte); isBytes {
+	if b, isBytes := v.([]byte); isBytes && oid != pgtype.ByteaOID {
 		return string(b)
 	}
 	return NormalizeForOID(v, oid)

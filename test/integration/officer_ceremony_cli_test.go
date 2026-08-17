@@ -745,18 +745,18 @@ func TestCLI_Init_LocalFlagValidation(t *testing.T) {
 // 2. System-barrier Shamir officers (`barrier officer ...`).
 // ---------------------------------------------------------------------------
 
-// TestCLI_BarrierOfficerRegister_SealedWindow proves the fix for bug 1 (see
-// the package doc comment). System-barrier officer registration MUST happen
-// while the barrier is sealed (before `barrier init-shamir`, whose
+// TestCLI_BarrierOfficerRegister_SealedWindow proves system-barrier officer
+// registration during the sealed window (before `barrier init-shamir`, whose
 // SealAndDistribute step requires the enrolled officer count to exactly
 // equal --total -- see pkg/ceremony/ceremony_officer.go
-// sealSharesToOfficers). The only CLI transport that can reach the pre-host
-// sealed-window listener is REST (gRPC/unix both fail their mandatory
-// Connect()-time Health RPC against that listener, which is an unrelated,
-// still-true fact about the sealed-window listener rather than the CSRPEM
-// bug); now that the Go REST transport sends csr_pem as a plain PEM string
-// (matching the wire contract), REST officer registration against the
-// sealed-window listener succeeds end-to-end.
+// sealSharesToOfficers) works over BOTH the REST and gRPC transports.
+//
+// gRPC parity is deliberate and load-bearing: the sealed-window listener's
+// Health RPC answers HealthStatusSealed when no admin service is wired
+// (pkg/api/grpc/service.go Health), so the Go gRPC transport's mandatory
+// Connect()-time health check passes pre-boot instead of locking gRPC out of
+// the one window officer enrollment is allowed in. The REST leg additionally
+// pins the csr_pem wire contract (a plain PEM string).
 func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	bin := buildBinary(t)
 	cli := buildCLIBinary(t)
@@ -769,39 +769,44 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 	csrPEM, _ := generateCeremonyCSR(t, "off1")
 	csrPath := writeTempFile(t, "off1.csr", csrPEM)
 
-	// gRPC and unix transports still cannot reach the sealed-window listener
-	// at all: its Health RPC handler requires a non-nil admin service, which
-	// the pre-host listener never wires (pkg/api/grpc/service.go Health).
-	// This is independent of the CSRPEM encoding fix.
+	// gRPC reaches the sealed-window listener (Health answers "sealed"
+	// rather than erroring) and registers the first officer.
 	grpcArgs := []string{
 		"--server", fmt.Sprintf("grpcs://127.0.0.1:%d", node.grpcPort),
 		"--ca-file", node.caPath,
 		"--cert-file", node.adminCertPath, "--key-file", node.adminKeyPath,
 		"--timeout", "5s",
 	}
-	if out, err := runQRDB(t, cli, grpcArgs, "barrier", "officer", "register",
-		"--username", "off1", "--csr-file", csrPath); err == nil {
-		t.Fatalf("gRPC officer register unexpectedly succeeded against the sealed-window listener; output: %s", out)
-	} else if !strings.Contains(out, "health check failed") {
-		t.Errorf("expected a Connect()-time health-check failure over gRPC pre-boot, got: %s", out)
+	out, err := runQRDB(t, cli, grpcArgs, "barrier", "officer", "register",
+		"--username", "off1", "--csr-file", csrPath, "--output", "json")
+	if err != nil {
+		t.Fatalf("gRPC officer register against the sealed-window listener should succeed: %v\noutput: %s", err, out)
+	}
+	var regGRPC officerRegisterJSON
+	decodeJSON(t, out, &regGRPC)
+	if regGRPC.ShareIndex != 1 {
+		t.Errorf("expected the first registered officer to get ShareIndex 1, got %d: %s", regGRPC.ShareIndex, out)
 	}
 
-	// REST reaches the listener and the CSR now round-trips correctly.
-	out, err := runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "register",
-		"--username", "off1", "--csr-file", csrPath, "--output", "json")
+	// REST reaches the listener too, and the CSR round-trips as a plain PEM
+	// string.
+	csr2PEM, _ := generateCeremonyCSR(t, "off2")
+	csr2Path := writeTempFile(t, "off2.csr", csr2PEM)
+	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "register",
+		"--username", "off2", "--csr-file", csr2Path, "--output", "json")
 	if err != nil {
 		t.Fatalf("REST officer register should succeed now that csr_pem travels as a plain PEM string: %v\noutput: %s", err, out)
 	}
 	var reg officerRegisterJSON
 	decodeJSON(t, out, &reg)
-	if reg.ShareIndex != 1 {
-		t.Errorf("expected the first registered officer to get ShareIndex 1, got %d: %s", reg.ShareIndex, out)
+	if reg.ShareIndex != 2 {
+		t.Errorf("expected the second registered officer to get ShareIndex 2, got %d: %s", reg.ShareIndex, out)
 	}
 	if !strings.Contains(string(reg.CertPEM), "-----BEGIN CERTIFICATE-----") {
 		t.Errorf("expected cert_pem to decode into a PEM certificate, got: %s", reg.CertPEM)
 	}
 
-	// The registry now carries exactly the one registered officer.
+	// The registry now carries exactly the two registered officers.
 	out, err = runQRDB(t, cli, node.restArgsNoAuth(), "barrier", "officer", "list", "--output", "json")
 	if err != nil {
 		t.Fatalf("barrier officer list: %v\noutput: %s", err, out)
@@ -811,11 +816,11 @@ func TestCLI_BarrierOfficerRegister_SealedWindow(t *testing.T) {
 		ShareIndex int    `json:"share_index"`
 	}
 	decodeJSON(t, out, &officers)
-	if len(officers) != 1 {
-		t.Fatalf("expected exactly 1 enrolled officer, got %d: %s", len(officers), out)
+	if len(officers) != 2 {
+		t.Fatalf("expected exactly 2 enrolled officers, got %d: %s", len(officers), out)
 	}
-	if officers[0].Username != "off1" {
-		t.Errorf("expected officer username off1, got %q", officers[0].Username)
+	if officers[0].Username != "off1" || officers[1].Username != "off2" {
+		t.Errorf("expected officers off1, off2; got %+v", officers)
 	}
 }
 

@@ -1176,6 +1176,19 @@ func (r *BarrierRegistry) InitializeTenant(ctx context.Context, tenantID string,
 	return tb.Initialize(ctx, creds)
 }
 
+// InitializeTenantWithStrategy initializes the tenant barrier identified by
+// tenantID using EXACTLY the supplied strategy, bypassing the barrier's
+// best-strategy preference selection (see
+// StorageBarrier.InitializeWithStrategy). The tenant must already be
+// registered.
+func (r *BarrierRegistry) InitializeTenantWithStrategy(ctx context.Context, tenantID string, strategy SealingStrategy, creds Credentials) error {
+	tb, err := r.GetTenant(tenantID)
+	if err != nil {
+		return err
+	}
+	return tb.Barrier().InitializeWithStrategy(ctx, strategy, creds)
+}
+
 // UnsealTenant unseals the tenant barrier identified by tenantID using the
 // supplied credentials. The tenant must already be registered and
 // initialized.

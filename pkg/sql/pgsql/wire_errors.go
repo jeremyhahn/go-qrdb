@@ -18,6 +18,7 @@ package pgsql
 
 import (
 	"errors"
+	"regexp"
 
 	"github.com/dolthub/go-mysql-server/sql"
 	"github.com/jeroenrinzema/psql-wire/codes"
@@ -48,7 +49,31 @@ func wireQueryError(query string, err error) error {
 
 // sqlStateFor maps an engine error to the SQLSTATE PostgreSQL would raise
 // for the same condition, or ok=false when no unambiguous mapping exists.
+//
+// Each level of the error chain is classified separately because two of the
+// links do not participate in Go's standard unwrapping:
+// go-mysql-server's kind errors (gopkg.in/src-d/go-errors) only match
+// Kind.Is when the kind error itself is at the top, and its
+// sql.WrappedInsertError -- the wrapper every constraint violation raised
+// during an INSERT actually arrives in -- has no Unwrap method at all, so
+// its cause must be followed by hand.
 func sqlStateFor(err error) (codes.Code, bool) {
+	for err != nil {
+		if code, ok := sqlStateForLevel(err); ok {
+			return code, ok
+		}
+		switch e := err.(type) { //nolint:errorlint // deliberate: WrappedInsertError has NO Unwrap, this loop IS the hand-rolled chain walk
+		case sql.WrappedInsertError:
+			err = e.Cause
+		default:
+			err = errors.Unwrap(err)
+		}
+	}
+	return "", false
+}
+
+// sqlStateForLevel classifies one level of the error chain.
+func sqlStateForLevel(err error) (codes.Code, bool) {
 	var duplicate *provider.DuplicateKeyError
 	switch {
 	case sql.ErrUniqueKeyViolation.Is(err),
@@ -69,4 +94,74 @@ func sqlStateFor(err error) (codes.Code, bool) {
 		return codes.NotNullViolation, true
 	}
 	return "", false
+}
+
+// insertIgnorePrefixRe matches the INSERT IGNORE statements the translator
+// produces from PostgreSQL's ON CONFLICT ... DO NOTHING.
+var insertIgnorePrefixRe = regexp.MustCompile(`(?i)^\s*INSERT\s+IGNORE\b`)
+
+// pgSuppressedViolationCodes are the MySQL warning codes INSERT IGNORE may
+// legitimately record on the PostgreSQL wire: the duplicate-key code is the
+// ONE failure class PostgreSQL's ON CONFLICT DO NOTHING actually
+// suppresses. Every other ignorable class -- foreign-key violations, CHECK
+// violations, NULL into NOT NULL -- still errors in PostgreSQL, so an
+// IGNORE that swallowed one must be converted back into the statement
+// failure the client expects. Without this, a join-table INSERT ... ON
+// CONFLICT DO NOTHING referencing a missing parent row "succeeded" with
+// zero rows instead of raising the FK violation gorm's association tests
+// assert on.
+var pgSuppressedViolationCodes = map[int]bool{
+	1062: true, // ER_DUP_ENTRY: unique/primary key conflict
+}
+
+// sqlStateByMySQLWarningCode maps a re-raised warning's MySQL code to the
+// SQLSTATE PostgreSQL reports for that condition.
+var sqlStateByMySQLWarningCode = map[int]codes.Code{
+	1452: codes.ForeignKeyViolation, // ER_NO_REFERENCED_ROW_2 (child insert)
+	1451: codes.ForeignKeyViolation, // ER_ROW_IS_REFERENCED_2 (parent delete)
+	3819: codes.CheckViolation,      // ER_CHECK_CONSTRAINT_VIOLATED
+	1048: codes.NotNullViolation,    // ER_BAD_NULL_ERROR
+}
+
+// IgnoredViolationError is the statement failure re-raised when INSERT
+// IGNORE suppressed a violation PostgreSQL's ON CONFLICT DO NOTHING would
+// not have.
+type IgnoredViolationError struct {
+	Code    int
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *IgnoredViolationError) Error() string {
+	return e.Message
+}
+
+// checkIgnoredViolations inspects the warnings an INSERT IGNORE execution
+// recorded past baseline (the session's warning count before it ran) and
+// returns the first violation PostgreSQL would have raised, or nil when
+// every suppressed conflict was a genuine duplicate-key. Warnings() is
+// newest-first, so the new entries are the leading ones; the OLDEST new
+// warning is returned so the reported failure is the first one that
+// occurred, matching statement order.
+func checkIgnoredViolations(sqlCtx *sql.Context, translated string, baseline int) error {
+	if !insertIgnorePrefixRe.MatchString(translated) {
+		return nil
+	}
+	warnings := sqlCtx.Warnings()
+	fresh := len(warnings) - baseline
+	if fresh <= 0 {
+		return nil
+	}
+	for i := fresh - 1; i >= 0; i-- {
+		warning := warnings[i]
+		if pgSuppressedViolationCodes[warning.Code] {
+			continue
+		}
+		verr := &IgnoredViolationError{Code: warning.Code, Message: warning.Message}
+		if code, ok := sqlStateByMySQLWarningCode[warning.Code]; ok {
+			return psqlerr.WithCode(verr, code)
+		}
+		return verr
+	}
+	return nil
 }

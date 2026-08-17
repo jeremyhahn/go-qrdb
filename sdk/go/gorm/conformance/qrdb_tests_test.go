@@ -74,17 +74,16 @@ const targetEnvVar = "GORM_QRDB_TARGET"
 // independent connection against the same target.
 var DB *gorm.DB
 
-// postgresDSN and gaussdbDSN exist only so table_test.go and migrate_test.go
-// compile: both files gorm.Open a throwaway connection with these DSNs
-// inside a block guarded by `if DB.Dialector.Name() != "postgres"` /
-// `!= "gaussdb"`. qrdb has no gaussdb target and its "pgsql" target's
-// Dialector.Name() is genuinely "postgres" (gorm.io/driver/postgres, used
-// unmodified for the wire test), so the postgres-guarded block DOES run for
-// GORM_QRDB_TARGET=pgsql — but it opens its own private connection with
-// this literal upstream DSN rather than qrdb's server, and never touches it
-// beyond schema.Parse (no query is issued), so it exercises identifier-
-// length logic only and never dials out. See qrdb_allowlist_test.go for
-// this test's target scoping.
+// postgresDSN and gaussdbDSN are the DSNs upstream's postgres-/gaussdb-
+// guarded blocks (table_test.go, migrate_test.go) gorm.Open a throwaway
+// connection with. qrdb has no gaussdb target, so gaussdbDSN keeps the dead
+// upstream literal for compilation only. postgresDSN starts as the same
+// kind of literal but is RE-POINTED at the harness daemon's live pgsql
+// listener by TestMain for the pgsql target: qrdb's "pgsql" target's
+// Dialector.Name() is genuinely "postgres" (gorm.io/driver/postgres,
+// unmodified), so those guarded blocks DO run, and one of them
+// (TestInvalidCachedPlanSimpleProtocol) issues real queries over the
+// connection it opens.
 var (
 	postgresDSN = "user=gorm password=gorm dbname=gorm host=localhost port=9920 sslmode=disable TimeZone=Asia/Shanghai"
 	gaussdbDSN  = "user=gaussdb password=Gaussdb@123 dbname=gorm host=localhost port=9950 sslmode=disable TimeZone=Asia/Shanghai"
@@ -341,6 +340,20 @@ func TestMain(m *testing.M) {
 		}
 		shared = srv
 		teardown = srv.stop
+		if tgt == targetPgSQL {
+			// Re-point the upstream literal at the live harness daemon.
+			// TestInvalidCachedPlanSimpleProtocol opens its own connection
+			// with postgresDSN and ISSUES queries over it (unlike
+			// table_test.go's parse-only uses), so against the upstream
+			// default of localhost:9920 it dials a server that does not
+			// exist and fails before reaching what it tests.
+			postgresDSN = fmt.Sprintf(
+				"host=127.0.0.1 port=%d dbname=%s user=%s sslmode=verify-full sslrootcert=%s sslcert=%s sslkey=%s default_query_exec_mode=%s",
+				srv.pgsqlPort, sqlDatabase, sqlUser,
+				srv.ca.CertPath, srv.client.CertPath, srv.client.KeyPath,
+				pgsqlQueryExecMode,
+			)
+		}
 	case targetNode:
 		// One node for the whole run, one pool per connection: see
 		// nodeConnector's doc comment for what each of the two alternatives

@@ -1432,8 +1432,23 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 			slog.String("strategy", string(strategyID)))
 	}
 
-	if err := s.registry.InitializeTenant(ctx, tenantID, creds); err != nil {
-		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: err}
+	// Honor an EXPLICIT strategy choice even on a node where the tenant's
+	// barrier shell was pre-registered at CreateTenant with the node's
+	// default strategy set: initialization then runs against exactly the
+	// requested strategy (StorageBarrier.InitializeWithStrategy) instead of
+	// silently falling back to whatever the shell carries — the silent
+	// fallback made `barrier-init --strategy none` fail with "empty
+	// credentials for deferred-passphrase strategy" on the tenant's create
+	// node while succeeding on every other node. An empty strategyID keeps
+	// the legacy best-strategy selection unchanged.
+	var initErr error
+	if strategyID != "" {
+		initErr = s.registry.InitializeTenantWithStrategy(ctx, tenantID, strategy, creds)
+	} else {
+		initErr = s.registry.InitializeTenant(ctx, tenantID, creds)
+	}
+	if initErr != nil {
+		return nil, &BarrierError{TenantID: tenantID, Op: "initialize", Err: initErr}
 	}
 
 	s.logger.Info("tenant barrier initialized",

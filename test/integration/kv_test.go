@@ -686,7 +686,7 @@ func TestBatch_SingleNode_MixedOps(t *testing.T) {
 	if len(getResp.Kvs) == 0 {
 		t.Fatal("batch GET response returned no kvs")
 	}
-	if getResp.Kvs[0].Key != "batchmix/existing" {
+	if string(getResp.Kvs[0].Key) != "batchmix/existing" {
 		t.Errorf("batch GET key: got %q, want %q", getResp.Kvs[0].Key, "batchmix/existing")
 	}
 
@@ -922,7 +922,7 @@ func TestMVCC_SingleNode_Range(t *testing.T) {
 	// Verify keys are in order.
 	expectedKeys := []string{"mvccrange/a", "mvccrange/b", "mvccrange/c"}
 	for i, kv := range result.Kvs {
-		if kv.Key != expectedKeys[i] {
+		if string(kv.Key) != expectedKeys[i] {
 			t.Errorf("range kv[%d]: got key %q, want %q", i, kv.Key, expectedKeys[i])
 		}
 	}

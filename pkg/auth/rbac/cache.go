@@ -15,6 +15,8 @@
 package rbac
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +30,16 @@ type cacheEntry struct {
 }
 
 // permissionCache provides a lock-free, TTL-based cache for resolved
-// permission sets keyed by "tenantID:subject".
+// permission sets keyed by "tenantID:subject:<sorted role set>".
+//
+// The ROLE SET is part of the key on purpose: an identity's effective roles
+// are re-resolved from the user store on every request (finalizeIdentity),
+// so they can legitimately change between two requests -- most importantly
+// from EMPTY to populated the moment a tenant's first user record becomes
+// resolvable (sealed-window bootstrap, or a user created seconds earlier).
+// Keying by (tenant, subject) alone let the empty-role resolution of a
+// bootstrap request answer for the enriched identity for a full TTL,
+// denying every request the subject was already entitled to make.
 type permissionCache struct {
 	entries sync.Map // map[string]*cacheEntry
 	ttl     time.Duration
@@ -39,16 +50,27 @@ func newPermissionCache(ttl time.Duration) *permissionCache {
 	return &permissionCache{ttl: ttl}
 }
 
-// cacheKey builds the composite key for cache lookups.
-func cacheKey(tenantID, subject string) string {
-	return tenantID + ":" + subject
+// cacheKey builds the composite key for cache lookups. roles is
+// order-normalized so two identical sets in different orders share one
+// entry.
+func cacheKey(tenantID, subject string, roles []string) string {
+	sorted := make([]string, len(roles))
+	copy(sorted, roles)
+	sort.Strings(sorted)
+	return tenantID + ":" + subject + ":" + strings.Join(sorted, ",")
+}
+
+// cacheSubjectPrefix is the prefix every cache key for (tenantID, subject)
+// shares, regardless of role set; invalidate deletes by it.
+func cacheSubjectPrefix(tenantID, subject string) string {
+	return tenantID + ":" + subject + ":"
 }
 
 // get returns the cached permission set for the given identity if the
 // entry exists and has not expired. The second return value reports
 // whether a valid entry was found.
-func (c *permissionCache) get(tenantID, subject string) (map[permission.Permission]struct{}, bool) {
-	key := cacheKey(tenantID, subject)
+func (c *permissionCache) get(tenantID, subject string, roles []string) (map[permission.Permission]struct{}, bool) {
+	key := cacheKey(tenantID, subject, roles)
 	val, ok := c.entries.Load(key)
 	if !ok {
 		return nil, false
@@ -62,20 +84,27 @@ func (c *permissionCache) get(tenantID, subject string) (map[permission.Permissi
 }
 
 // set stores the given permissions in the cache with the configured TTL.
-func (c *permissionCache) set(tenantID, subject string, perms []permission.Permission) {
+func (c *permissionCache) set(tenantID, subject string, roles []string, perms []permission.Permission) {
 	permSet := make(map[permission.Permission]struct{}, len(perms))
 	for _, p := range perms {
 		permSet[p] = struct{}{}
 	}
-	c.entries.Store(cacheKey(tenantID, subject), &cacheEntry{
+	c.entries.Store(cacheKey(tenantID, subject, roles), &cacheEntry{
 		permissions: permSet,
 		expiresAt:   time.Now().Add(c.ttl),
 	})
 }
 
-// invalidate removes the cache entry for a specific identity.
+// invalidate removes every cache entry for a specific identity, across all
+// role sets it has been resolved under.
 func (c *permissionCache) invalidate(tenantID, subject string) {
-	c.entries.Delete(cacheKey(tenantID, subject))
+	prefix := cacheSubjectPrefix(tenantID, subject)
+	c.entries.Range(func(key, _ any) bool {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
+			c.entries.Delete(key)
+		}
+		return true
+	})
 }
 
 // invalidateAll clears all cached permission entries.

@@ -94,8 +94,8 @@ func TestTranslateDDLTypes_CreateTable(t *testing.T) {
 		},
 		{
 			name:     "shared_spellings_pass_through",
-			input:    "CREATE TABLE `t` (`a` bigint,`b` integer,`c` smallint,`d` decimal,`e` numeric(9,0),`f` boolean,`g` varchar(233))",
-			expected: "CREATE TABLE `t` (`a` bigint,`b` integer,`c` smallint,`d` decimal,`e` numeric(9,0),`f` boolean,`g` varchar(233))",
+			input:    "CREATE TABLE `t` (`a` bigint,`b` integer,`c` smallint,`f` boolean,`g` varchar(233))",
+			expected: "CREATE TABLE `t` (`a` bigint,`b` integer,`c` smallint,`f` boolean,`g` varchar(233))",
 		},
 		{
 			name:     "constraint_elements_untouched",
@@ -103,9 +103,12 @@ func TestTranslateDDLTypes_CreateTable(t *testing.T) {
 			expected: "CREATE TABLE `t` (`id` BIGINT AUTO_INCREMENT,PRIMARY KEY (`id`),CONSTRAINT `u` UNIQUE (`id`),CONSTRAINT `f` FOREIGN KEY (`p`) REFERENCES `o`(`id`),CONSTRAINT `c` CHECK (name <> ''))",
 		},
 		{
-			name:     "unquoted_column_names",
-			input:    "CREATE TABLE t (id bigserial, body text)",
-			expected: "CREATE TABLE t (id BIGINT AUTO_INCREMENT, body LONGTEXT)",
+			name:  "unquoted_column_names",
+			input: "CREATE TABLE t (id bigserial, body text)",
+			// A serial column that no key in the statement covers cannot be
+			// AUTO_INCREMENT (MySQL requires a key); it takes PostgreSQL's
+			// own semantics -- an implicit sequence default -- instead.
+			expected: "CREATE TABLE t (id BIGINT DEFAULT (NEXTVAL('t_id_seq')), body LONGTEXT)",
 		},
 		{
 			name:     "if_not_exists",
@@ -115,7 +118,7 @@ func TestTranslateDDLTypes_CreateTable(t *testing.T) {
 		{
 			name:     "whitespace_and_newlines_preserved",
 			input:    "CREATE TABLE `t` (\n\t`id`   bigserial,\n\t`name` text\n)",
-			expected: "CREATE TABLE `t` (\n\t`id`   BIGINT AUTO_INCREMENT,\n\t`name` LONGTEXT\n)",
+			expected: "CREATE TABLE `t` (\n\t`id`   BIGINT DEFAULT (NEXTVAL('t_id_seq')),\n\t`name` LONGTEXT\n)",
 		},
 	}
 
@@ -293,21 +296,6 @@ func TestTranslateDDLTypes_Rejections(t *testing.T) {
 		wantType string
 	}{
 		{
-			name:     "array_of_mapped_type",
-			input:    "CREATE TABLE `t` (`things` text[])",
-			wantType: "text[]",
-		},
-		{
-			name:     "array_of_passthrough_type",
-			input:    "CREATE TABLE `t` (`ids` bigint[])",
-			wantType: "bigint[]",
-		},
-		{
-			name:     "array_after_modifier",
-			input:    "CREATE TABLE `t` (`names` varchar(20)[])",
-			wantType: "varchar(20)[]",
-		},
-		{
 			name:     "modifier_on_type_that_cannot_carry_one",
 			input:    "CREATE TABLE `t` (`id` uuid(16))",
 			wantType: "uuid(16)",
@@ -316,11 +304,6 @@ func TestTranslateDDLTypes_Rejections(t *testing.T) {
 			name:     "precision_before_time_zone_qualifier",
 			input:    "CREATE TABLE `t` (`a` timestamp(3) without time zone)",
 			wantType: "timestamp(3) WITHOUT TIME ZONE",
-		},
-		{
-			name:     "array_in_alter_table",
-			input:    "ALTER TABLE `t` ADD `things` text[]",
-			wantType: "text[]",
 		},
 	}
 
@@ -428,21 +411,22 @@ func TestTranslateDDLTypes_Malformed(t *testing.T) {
 	}
 }
 
-// TestTranslateDDLTypes_MultipleSerialColumns documents the one place this
-// translation is deliberately lossy in the direction of an error: MySQL
-// permits a single AUTO_INCREMENT column per table while PostgreSQL permits
-// any number of serial columns, so a two-serial table is rewritten
-// faithfully and rejected downstream by the engine rather than having its
-// second column quietly demoted to a plain integer.
+// TestTranslateDDLTypes_MultipleSerialColumns pins how a table with more
+// serial columns than MySQL's single AUTO_INCREMENT allows is expressed:
+// the keyed serial takes AUTO_INCREMENT, and every serial OUTSIDE a key
+// takes PostgreSQL's own semantics -- an integer defaulted from the
+// implicitly named sequence (<table>_<column>_seq, exactly the name
+// gorm.io/driver/postgres addresses with its CREATE/DROP SEQUENCE
+// statements).
 func TestTranslateDDLTypes_MultipleSerialColumns(t *testing.T) {
 	result, err := translateDDLTypes("CREATE TABLE `events` (`id` bigserial,`uid` bigserial NOT NULL,PRIMARY KEY (`id`))")
 	require.NoError(t, err)
 	assert.Equal(t,
-		"CREATE TABLE `events` (`id` BIGINT AUTO_INCREMENT,`uid` BIGINT AUTO_INCREMENT NOT NULL,PRIMARY KEY (`id`))",
+		"CREATE TABLE `events` (`id` BIGINT AUTO_INCREMENT,`uid` BIGINT DEFAULT (NEXTVAL('events_uid_seq')) NOT NULL,PRIMARY KEY (`id`))",
 		result)
 
 	_, parseErr := sqlparser.Parse(result)
-	assert.NoError(t, parseErr, "the rewrite is grammatical; the one-auto-column rule is the engine's to enforce")
+	assert.NoError(t, parseErr, "the rewrite must stay grammatical")
 }
 
 // TestTranslator_Translate_DDLTypes exercises the DDL rewrite through the
@@ -496,17 +480,19 @@ func TestTranslator_Translate_DDLTypes(t *testing.T) {
 }
 
 // TestTranslator_Translate_DDLTypeRejection pins that the typed rejection
-// propagates out of Translate rather than being swallowed.
+// propagates out of Translate rather than being swallowed. Arrays are no
+// longer a rejection (they translate to text storage), so the pin uses a
+// modifier on a substituted type that cannot carry one.
 func TestTranslator_Translate_DDLTypeRejection(t *testing.T) {
 	tr := NewTranslator()
 
-	result, err := tr.Translate(`CREATE TABLE "harumphs" ("id" bigserial,"things" text[],PRIMARY KEY ("id"))`)
+	result, err := tr.Translate(`CREATE TABLE "harumphs" ("id" bigserial,"body" text(20),PRIMARY KEY ("id"))`)
 	require.Error(t, err)
 	assert.Empty(t, result)
 
 	var typed *UnsupportedColumnTypeError
 	require.ErrorAs(t, err, &typed)
-	assert.Equal(t, "text[]", typed.Type)
+	assert.Equal(t, "text(20)", typed.Type)
 }
 
 // TestTranslator_Translate_CurrentSchema covers the current_schema() /
@@ -991,11 +977,6 @@ func TestTranslateDDLTypes_KeyedRejections(t *testing.T) {
 			input: "CREATE TABLE `t` (`a` text(20),PRIMARY KEY (`a`))",
 			want:  "text(20)",
 		},
-		{
-			name:  "keyed_text_array",
-			input: "CREATE TABLE `t` (`a` text[],PRIMARY KEY (`a`))",
-			want:  "text[]",
-		},
 	}
 
 	for _, tt := range tests {
@@ -1094,7 +1075,7 @@ func TestTranslateDDLTypes_AlterTableMultipleClauses(t *testing.T) {
 		"ALTER TABLE `t` ADD COLUMN `a` text, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` timestamptz, DROP COLUMN `d`")
 	require.NoError(t, err)
 	assert.Equal(t,
-		"ALTER TABLE `t` ADD COLUMN `a` LONGTEXT, ADD COLUMN `b` numeric(9,0), MODIFY COLUMN `c` DATETIME(6), DROP COLUMN `d`",
+		"ALTER TABLE `t` ADD COLUMN `a` LONGTEXT, ADD COLUMN `b` DECIMAL(9,0), MODIFY COLUMN `c` DATETIME(6), DROP COLUMN `d`",
 		result)
 }
 
@@ -1103,9 +1084,9 @@ func TestTranslateDDLTypes_AlterTableMultipleClauses(t *testing.T) {
 // clause that is not the statement's last: the whole statement fails with the
 // typed error rather than having the clauses before the offending one applied.
 func TestTranslateDDLTypes_AlterTableRejectionInNonFinalClause(t *testing.T) {
-	_, err := translateDDLTypes("ALTER TABLE `t` ADD COLUMN `a` text[], ADD COLUMN `b` bigint")
+	_, err := translateDDLTypes("ALTER TABLE `t` ADD COLUMN `a` text(20), ADD COLUMN `b` bigint")
 
 	var typeErr *UnsupportedColumnTypeError
 	require.ErrorAs(t, err, &typeErr)
-	assert.Equal(t, "text[]", typeErr.Type)
+	assert.Equal(t, "text(20)", typeErr.Type)
 }

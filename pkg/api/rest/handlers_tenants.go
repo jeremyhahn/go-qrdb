@@ -584,6 +584,29 @@ func (s *Server) authorizeTenantBarrierOp(ctx context.Context, tenantID string, 
 	return s.authMW.AuthorizeTenant(ctx, tenantID, perm)
 }
 
+// authorizeTenantBarrierInit authorizes a tenant barrier initialization via
+// the shared trust-on-first-init rule (middleware.AuthorizeTenantBarrierInit
+// — the single cross-transport home of the bootstrap-window semantics). When
+// authMW is nil the gate is a no-op (unauthenticated deployment).
+func (s *Server) authorizeTenantBarrierInit(ctx context.Context, tenantID string) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierInit(ctx, tenantID, s.tenantSvc)
+}
+
+// authorizeTenantBarrierSealedOp authorizes the tenant barrier operations
+// that must remain reachable while the tenant's IAM itself is unreachable
+// (status/unseal) via the shared sealed-window rule
+// (middleware.AuthorizeTenantBarrierSealedOp — the single cross-transport
+// home of the fallback semantics). When authMW is nil the gate is a no-op.
+func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID string, perm permission.Permission) error {
+	if s.authMW == nil {
+		return nil
+	}
+	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
+}
+
 // handleTenantBarrierInit handles POST /v1/tenants/{id}/barrier/init --
 // initializes the per-tenant barrier with the given threshold and shares.
 // Both fields are optional; when both are zero, the service uses default
@@ -601,7 +624,7 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierInit); err != nil {
+	if err := s.authorizeTenantBarrierInit(ctx, id); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -644,7 +667,7 @@ func (s *Server) handleTenantBarrierUnsealShare(w http.ResponseWriter, r *http.R
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -676,7 +699,7 @@ func (s *Server) handleTenantBarrierUnseal(w http.ResponseWriter, r *http.Reques
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
-	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}
@@ -716,7 +739,7 @@ func (s *Server) handleTenantBarrierStatus(w http.ResponseWriter, r *http.Reques
 	// Reading a tenant's barrier state leaks isolation metadata, so it is gated
 	// by the same tenant-scoped authorizer as init/unseal/seal: a tenant admin
 	// may read only their own tenant's barrier, and the system tenant is denied.
-	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierStatus); err != nil {
+	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierStatus); err != nil {
 		writeErrorJSON(w, http.StatusForbidden, err)
 		return
 	}

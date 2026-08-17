@@ -115,3 +115,13 @@ The function returns a `firstboot.Result` describing which artifacts were create
 ## go-xkms Integration
 
 go-xkms passes its own `Authenticator` (JWT with tenant claims, adaptive auth) to go-qrdb's server constructor. go-qrdb accepts any implementation of the interface.
+
+## Embedder Hooks (OAuth 2.1 / custom authorizers)
+
+The registration seams an embedding application uses to supply custom
+authenticators and authorizers — including the MCP OAuth 2.1 discovery
+surface (401 + `WWW-Authenticate`, RFC 9728 Protected Resource Metadata)
+that go-quicbaas drives — are documented in
+[custom-authorizers.md](custom-authorizers.md). qrdb defines the interfaces
+and transport plumbing only; token validation is always the embedder's
+implementation.

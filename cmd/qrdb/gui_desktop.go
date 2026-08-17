@@ -20,10 +20,11 @@ import (
 	"context"
 	"embed"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 )
 
 //go:embed all:frontend/dist

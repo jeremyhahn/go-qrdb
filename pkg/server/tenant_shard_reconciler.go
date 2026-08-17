@@ -49,6 +49,15 @@ type ShardLifecycle interface {
 	// raft shards are currently started on this node. Used by ReconcileOnce to
 	// detect orphans.
 	ListStarted() []StartedShard
+
+	// StartedAsObserver reports whether the locally running shard for
+	// (tenantID, db) was started with the observer role latched into its
+	// local raft configuration (false when the shard is not started). Used
+	// by ReconcileOnce to restart a replica the leader has promoted to a
+	// voting member — go-quicraft latches the local role for the life of
+	// the in-process replica, so agreement with the promoted membership can
+	// only be restored by a restart.
+	StartedAsObserver(tenantID, db string) bool
 }
 
 // JoinObserver reports whether a locally-started dynamically-added replica
@@ -245,6 +254,7 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 			continue
 		}
 		r.ensureStarted(ctx, p)
+		r.maybeRestartPromotedLocal(ctx, p)
 		r.maybePromoteToObserverReady(ctx, p)
 		r.maybePromoteReadyObservers(ctx, p)
 	}
@@ -286,6 +296,47 @@ func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
 		return r.factory.CloseAndPurge(tenantID, db)
 	}
 	return r.factory.Close(tenantID, db)
+}
+
+// maybeRestartPromotedLocal restarts the LOCAL replica of p as a full
+// voting member once the shard's leader has promoted it: the placement
+// entry says ReplicaStateActive but the running replica was started with
+// the observer role latched into its local raft configuration.
+//
+// go-quicraft cross-checks the local role against the replicated
+// membership on every applied config change (checkSelfRole) and latches a
+// disagreement by refusing campaigning and leader reads — the correct
+// fail-safe while the replica is still an observer, but after a committed
+// promotion it would leave a full voting member permanently unable to
+// stand for election (an availability hole on the next leader failure).
+// The local role is immutable in-process, so the only way to restore
+// agreement is to stop the shard and re-attach: ensureStarted then starts
+// it with join=false and IsObserver=false (ReplicaStateActive), recovering
+// its log and committed membership from the shared host's LogDB — the
+// no-data-loss restart path.
+//
+// Close (never CloseAndPurge) is deliberate: this replica remains a member
+// and its on-disk state is the whole point of the restart.
+func (r *TenantShardReconciler) maybeRestartPromotedLocal(ctx context.Context, p *placement.Placement) {
+	local, ok := p.ReplicaForNode(r.selfNodeID)
+	if !ok || local.State != placement.ReplicaStateActive {
+		return
+	}
+	if !r.factory.StartedAsObserver(p.TenantID, p.Database) {
+		return
+	}
+	r.logger.Info("placement reconciler: restarting promoted local replica as voting member",
+		slog.String("tenant", p.TenantID),
+		slog.String("database", p.Database),
+		slog.Uint64("replica_id", local.ReplicaID))
+	if err := r.factory.Close(p.TenantID, p.Database); err != nil {
+		r.logger.Warn("placement reconciler: promoted replica stop failed, will retry",
+			slog.String("tenant", p.TenantID),
+			slog.String("database", p.Database),
+			slog.Any("error", err))
+		return
+	}
+	r.ensureStarted(ctx, p)
 }
 
 // maybePromoteToObserverReady flips the local node's replica from

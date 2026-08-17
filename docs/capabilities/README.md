@@ -23,9 +23,11 @@ type Capabilities struct {
     Index       bool `json:"index"`
     TimeSeries  bool `json:"timeSeries"`
     Vector      bool `json:"vector"`
+    SQL         bool `json:"sql"`
     MySQL       bool `json:"mysql"`
     PostgreSQL  bool `json:"postgresql"`
     Etcd        bool `json:"etcd"`
+    FTS         bool `json:"fts"`
 }
 
 // Register records a feature as available. Called from init() in
@@ -55,15 +57,33 @@ func Reset()
 | Index | Core | Yes |
 | TimeSeries | Optional | No (requires `qrdb_ts` build tag) |
 | Vector | Optional | No (requires `qrdb_vector` build tag) |
-| MySQL | Optional | No (requires `qrdb_mysql` build tag) |
-| PostgreSQL | Optional | No (requires `qrdb_pgsql` build tag) |
+| SQL | Optional | No (requires `qrdb_sql` build tag) |
+| MySQL | Optional | No (requires `qrdb_mysql` build tag, implies `qrdb_sql`) |
+| PostgreSQL | Optional | No (requires `qrdb_pgsql` build tag, implies `qrdb_sql`) |
 | Etcd | Optional | No (requires `qrdb_etcd` build tag) |
+| FTS | Optional | No (requires `qrdb_fts` build tag) |
 
 ## Build Tags
 
 Optional features are gated by Go build constraints. Each feature has a dedicated source file containing only an `init()` function that calls `Register()`.
 
 ### TimeSeries
+
+The `qrdb_ts` tag gates the time-series engine itself (`pkg/timeseries`
+storage, aggregation, and the `TimeSeriesServicer` interface), not just the
+CLI command tree and the capability flag. Builds without `qrdb_ts` compile
+`pkg/timeseries/stub.go` instead: the pure data and wire types stay real so
+untagged consumers keep compiling and marshaling identically, while every
+storage operation returns `ErrNotCompiled` ("timeseries support not
+compiled: build with -tags qrdb_ts"). The shared typed errors in
+`pkg/timeseries/errors.go` remain in both builds.
+
+The legacy bare `timeseries` build tag — previously on
+`pkg/errors/timeseries_errors.go` and the
+`pkg/statemachine/timeseries_{adapter,factory,statemachine}.go` trio — was
+retagged to `qrdb_ts`. qrdb's own Makefile never set that tag; only
+cross-repo workspace builds defining an unrelated `timeseries` feature tag
+activated those files, and that accidental coupling is now gone.
 
 Source: `pkg/capabilities/capabilities_ts.go`
 
@@ -91,6 +111,26 @@ func init() {
 }
 ```
 
+### SQL
+
+The `qrdb_sql` tag gates the shared `pkg/sql` core (go-mysql-server engine,
+ad-hoc `/sql/query` service, in-process SQL driver). The MySQL and
+PostgreSQL wire protocols are engines layered over it, so `qrdb_mysql` and
+`qrdb_pgsql` builds always enable `qrdb_sql` as well (enforced by the
+Makefile).
+
+Source: `pkg/capabilities/capabilities_sql.go`
+
+```go
+//go:build qrdb_sql
+
+package capabilities
+
+func init() {
+    Register("sql")
+}
+```
+
 ### MySQL
 
 Source: `pkg/capabilities/capabilities_mysql.go`
@@ -115,7 +155,7 @@ Source: `pkg/capabilities/capabilities_pgsql.go`
 package capabilities
 
 func init() {
-    Register("postgresql")
+    Register("pgsql")
 }
 ```
 
@@ -133,30 +173,49 @@ func init() {
 }
 ```
 
+### FTS
+
+Source: `pkg/capabilities/capabilities_fts.go`
+
+```go
+//go:build qrdb_fts
+
+package capabilities
+
+func init() {
+    Register("fts")
+}
+```
+
 ### Makefile Integration
 
 The Makefile exposes variables that control which build tags are included:
 
 | Variable | Build Tag | Default |
 |----------|-----------|---------|
-| `WITH_QRDB_TS` | `qrdb_ts` | unset |
-| `WITH_QRDB_VECTOR` | `qrdb_vector` | unset |
-| `WITH_QRDB_MYSQL` | `qrdb_mysql` | unset |
-| `WITH_QRDB_PGSQL` | `qrdb_pgsql` | unset |
-| `WITH_QRDB_ETCD` | `qrdb_etcd` | unset |
+| `WITH_QRDB_TS` | `qrdb_ts` | 1 |
+| `WITH_QRDB_VECTOR` | `qrdb_vector` | 1 |
+| `WITH_QRDB_SQL` | `qrdb_sql` | 1 |
+| `WITH_QRDB_MYSQL` | `qrdb_mysql` | 1 |
+| `WITH_QRDB_PGSQL` | `qrdb_pgsql` | 1 |
+| `WITH_QRDB_ETCD` | `qrdb_etcd` | 1 |
+| `WITH_QRDB_FTS` | `qrdb_fts` | 0 |
+
+`WITH_QRDB_MYSQL=1` or `WITH_QRDB_PGSQL=1` forces `WITH_QRDB_SQL=1`: the
+wire protocols cannot exist without the shared SQL core.
 
 ```bash
-# Build with all optional features
-make build WITH_QRDB_TS=1 WITH_QRDB_VECTOR=1 WITH_QRDB_MYSQL=1 WITH_QRDB_PGSQL=1 WITH_QRDB_ETCD=1
-
-# Build with TimeSeries only
-make build WITH_QRDB_TS=1
-
-# Build with etcd protocol support
-make build WITH_QRDB_ETCD=1
-
-# Build with core features only (default)
+# Build with the default feature set (all optional features except FTS)
 make build
+
+# Build without any SQL support (drops go-mysql-server entirely)
+make build WITH_QRDB_SQL=0 WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0
+
+# Build with the ad-hoc SQL query service but no wire protocols
+make build WITH_QRDB_MYSQL=0 WITH_QRDB_PGSQL=0
+
+# Build with FTS support
+make build WITH_QRDB_FTS=1
 ```
 
 ## Service Integration
@@ -196,9 +255,11 @@ All API protocols surface a capabilities endpoint. The response is always the sa
   "index": true,
   "timeSeries": true,
   "vector": false,
+  "sql": true,
   "mysql": true,
   "postgresql": true,
-  "etcd": true
+  "etcd": true,
+  "fts": false
 }
 ```
 

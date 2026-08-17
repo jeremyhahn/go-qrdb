@@ -21,6 +21,13 @@ with `github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7`.
 
 **Severity: high — silent wrong data, not an error.**
 
+**Worked around in QRDB, so this one is no longer a live gap here.** The
+engine installs a `PriorityBuilder` on the exec builder
+(`pkg/sql/engine/dml_returning.go`) that intercepts exactly the two broken
+statement shapes (an ignoring or upserting INSERT that carries RETURNING) and
+repairs the row stream without touching any other statement. Upstream remains
+the better home for the fix; nothing here is blocked on it.
+
 `AddAccumulatorIter` (`sql/rowexec/dml_iters.go`) decides whether a DML
 statement returns rows or a single `OkResult`. It inspects the iterator tree and
 has a case for `*plan.TableEditorIter`, unwrapping it to check whether the inner
@@ -99,6 +106,15 @@ on-duplicate path, so that the emitted row matches `returnSchema`.
 
 **Severity: low — a clean, early error.**
 
+**Worked around in QRDB on the PostgreSQL wire, so the forms WORK there.**
+The grammar gap is only about parsing: the `Update` and `Delete` AST nodes
+carry a `Returning` field the planner and executor fully honor when it is set
+programmatically. `pkg/sql/pgsql` strips the clause from the statement text,
+translates the head normally, parses the clause's expression list via a
+throwaway SELECT, and reattaches it to the AST before execution — see
+`buildReturningStatement` in `pkg/sql/pgsql/returning.go`. The engine-level
+typed error below still guards every OTHER entry path.
+
 GMS's plan and rowexec layers implement RETURNING for update and delete
 (`plan/update.go`, `plan/delete.go`, `rowexec/update.go`, `rowexec/delete.go`
 all carry `Returning` / `returnExprs`), but the vitess grammar only added the
@@ -111,7 +127,9 @@ grammar and populate the existing plan fields.
 
 QRDB turns this into a typed error up front rather than a bare syntax error —
 see `updateOrDeleteLeadRe` in `pkg/sql/engine/translator.go`, which is
-documented to be deleted the day the grammar gains the token.
+documented to be deleted the day the grammar gains the token (at which point
+the AST reattachment in `pkg/sql/pgsql/returning.go` also collapses into a
+plain translation).
 
 ---
 

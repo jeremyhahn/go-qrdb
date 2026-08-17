@@ -21,12 +21,13 @@
 package qrdbv1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 const (
@@ -26019,14 +26020,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\fDatabaseSeal\x12\x1c.qrdb.v1.DatabaseSealRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0edatabases:seal\x12^\n" +
 	"\x0eDatabaseUnseal\x12\x1e.qrdb.v1.DatabaseUnsealRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10databases:unseal\x12\x84\x01\n" +
 	"\x15DatabaseBarrierStatus\x12%.qrdb.v1.DatabaseBarrierStatusRequest\x1a&.qrdb.v1.DatabaseBarrierStatusResponse\"\x1c\xc2\xf3\x18\x18databases:barrier_status\x12M\n" +
-	"\bSQLQuery\x12\x18.qrdb.v1.SQLQueryRequest\x1a\x19.qrdb.v1.SQLQueryResponse\"\f\xc2\xf3\x18\bkv:range2\xfc\n" +
+	"\bSQLQuery\x12\x18.qrdb.v1.SQLQueryRequest\x1a\x19.qrdb.v1.SQLQueryResponse\"\f\xc2\xf3\x18\bkv:range2\xe2\n" +
 	"\n" +
-	"\x14TenantBarrierService\x12f\n" +
-	"\x04Init\x12!.qrdb.v1.TenantBarrierInitRequest\x1a\".qrdb.v1.TenantBarrierInitResponse\"\x17\xc2\xf3\x18\x13tenant_barrier:init\x12`\n" +
-	"\x06Unseal\x12#.qrdb.v1.TenantBarrierUnsealRequest\x1a\x16.google.protobuf.Empty\"\x19\xc2\xf3\x18\x15tenant_barrier:unseal\x12x\n" +
-	"\vUnsealShare\x12(.qrdb.v1.TenantBarrierUnsealShareRequest\x1a$.qrdb.v1.TenantBarrierUnsealProgress\"\x19\xc2\xf3\x18\x15tenant_barrier:unseal\x12Z\n" +
-	"\x04Seal\x12!.qrdb.v1.TenantBarrierSealRequest\x1a\x16.google.protobuf.Empty\"\x17\xc2\xf3\x18\x13tenant_barrier:seal\x12n\n" +
-	"\x06Status\x12#.qrdb.v1.TenantBarrierStatusRequest\x1a$.qrdb.v1.TenantBarrierStatusResponse\"\x19\xc2\xf3\x18\x15tenant_barrier:status\x12\x93\x01\n" +
+	"\x14TenantBarrierService\x12a\n" +
+	"\x04Init\x12!.qrdb.v1.TenantBarrierInitRequest\x1a\".qrdb.v1.TenantBarrierInitResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12Y\n" +
+	"\x06Unseal\x12#.qrdb.v1.TenantBarrierUnsealRequest\x1a\x16.google.protobuf.Empty\"\x12\xc2\xf3\x18\x0eidentity:gated\x12q\n" +
+	"\vUnsealShare\x12(.qrdb.v1.TenantBarrierUnsealShareRequest\x1a$.qrdb.v1.TenantBarrierUnsealProgress\"\x12\xc2\xf3\x18\x0eidentity:gated\x12Z\n" +
+	"\x04Seal\x12!.qrdb.v1.TenantBarrierSealRequest\x1a\x16.google.protobuf.Empty\"\x17\xc2\xf3\x18\x13tenant_barrier:seal\x12g\n" +
+	"\x06Status\x12#.qrdb.v1.TenantBarrierStatusRequest\x1a$.qrdb.v1.TenantBarrierStatusResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x93\x01\n" +
 	"\x0fOfficerRegister\x12,.qrdb.v1.TenantBarrierOfficerRegisterRequest\x1a-.qrdb.v1.TenantBarrierOfficerRegisterResponse\"#\xc2\xf3\x18\x1ftenant_barrier:officer_register\x12\x83\x01\n" +
 	"\vOfficerList\x12(.qrdb.v1.TenantBarrierOfficerListRequest\x1a).qrdb.v1.TenantBarrierOfficerListResponse\"\x1f\xc2\xf3\x18\x1btenant_barrier:officer_list\x12\x82\x01\n" +
 	"\x0fShareClaimBegin\x12,.qrdb.v1.TenantBarrierShareClaimBeginRequest\x1a-.qrdb.v1.TenantBarrierShareClaimBeginResponse\"\x12\xc2\xf3\x18\x0eidentity:gated\x12\x8b\x01\n" +

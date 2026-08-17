@@ -52,6 +52,11 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		if r.TLS != nil {
 			ctx = auth.WithTLSState(ctx, r.TLS)
 		}
+		// Carry the raw Authorization header for embedder-supplied
+		// credential authenticators (e.g. an OAuth 2.1 bearer validator
+		// registered via wiring.AuthMiddlewareConfig.ExtraAuthenticators);
+		// qrdb ships no token-validating authenticator itself.
+		ctx = auth.WithHTTPAuthorization(ctx, r.Header.Get("Authorization"))
 
 		// A small set of endpoints is public -- skip authentication entirely.
 		// Load balancers and probes must reach /health without a client

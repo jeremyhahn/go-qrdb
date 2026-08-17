@@ -64,6 +64,14 @@ func TestRewriteAlterColumnType(t *testing.T) {
 			want:  "ALTER TABLE `people` MODIFY `name` LONGTEXT NULL",
 		},
 		{
+			// A chained plain cast of the same column carries the same
+			// semantics as MODIFY's own conversion -- gorm emits this shape
+			// for smallint-to-boolean migrations.
+			name:  "chained plain cast accepted",
+			query: `ALTER TABLE "people" ALTER COLUMN "name" TYPE varchar(20) USING "name"::text::varchar(20)`,
+			want:  "ALTER TABLE `people` MODIFY `name` varchar(20) NULL",
+		},
+		{
 			// A USING expression that transforms the value cannot be
 			// expressed as MODIFY; leave it for the engine to reject rather
 			// than silently dropping the transformation.

@@ -24,6 +24,7 @@ import (
 	"github.com/dolthub/go-mysql-server/sql"
 
 	"github.com/dolthub/go-mysql-server/sql/types"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/sql/engine"
 )
 
@@ -152,11 +153,15 @@ var alterColumnTypeRe = regexp.MustCompile(
 		`\s+(?:SET\s+DATA\s+)?TYPE\s+([A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?)` +
 		`(?:\s+USING\s+(.+?))?\s*;?\s*$`)
 
-// usingPlainCastRe recognises the USING expressions that are a plain cast of
-// the column itself -- "col"::type or CAST(col AS type) -- which carry no
-// semantics beyond what MODIFY's own conversion performs.
+// usingPlainCastRe recognises the USING expressions that are a plain cast
+// of the column itself -- "col"::type (including a chained
+// "col"::t1::t2, the shape gorm emits for smallint-to-boolean migrations
+// as "col"::int::boolean) or CAST(col AS type) -- which carry no
+// semantics beyond what MODIFY's own conversion performs: each step of a
+// chain is a widening or truthiness cast of the SAME value, exactly what
+// the engine's own type conversion applies row by row.
 var usingPlainCastRe = regexp.MustCompile(
-	`(?i)^\s*(?:(` + pgIdent + `)\s*::\s*[A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?` +
+	`(?i)^\s*(?:(` + pgIdent + `)(?:\s*::\s*[A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?)+` +
 		`|CAST\s*\(\s*(` + pgIdent + `)\s+AS\s+[A-Za-z_][A-Za-z0-9_ ]*(?:\([0-9, ]+\))?\s*\))\s*$`)
 
 // rewriteAlterColumnType rewrites PostgreSQL's ALTER COLUMN ... TYPE into
@@ -291,6 +296,9 @@ func rewritePGOnlyDDL(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw stri
 		rewriteAlterColumnDefault,
 		rewriteCommentOnColumn,
 		rewriteDropIndex,
+		rewriteAlterIndexRename,
+		rewriteGormIndexIntrospection,
+		rewriteAddIdentity,
 	} {
 		if out := rewrite(sqlCtx, catalog, dbName, raw); out != raw {
 			return out, true
@@ -339,23 +347,27 @@ func rewriteDropConstraint(sqlCtx *sql.Context, catalog sql.Catalog, dbName, tra
 		return translated
 	}
 
-	if indexed, ok := table.(sql.IndexAddressable); ok {
-		indexes, err := indexed.GetIndexes(sqlCtx)
-		if err == nil {
-			for _, index := range indexes {
-				if strings.EqualFold(index.ID(), constraintName) {
-					return "ALTER TABLE " + groups[1] + " DROP INDEX " + groups[2]
-				}
-			}
-		}
-	}
-
+	// Foreign keys are resolved BEFORE indexes: an engine-side foreign key
+	// carries a backing index under the same name, so a name matching both
+	// is the constraint, and rewriting it as DROP INDEX would be refused
+	// with "cannot drop index: used by foreign key".
 	if fkTable, ok := table.(sql.ForeignKeyTable); ok {
 		fks, err := fkTable.GetDeclaredForeignKeys(sqlCtx)
 		if err == nil {
 			for _, fk := range fks {
 				if strings.EqualFold(fk.Name, constraintName) {
 					return "ALTER TABLE " + groups[1] + " DROP FOREIGN KEY " + groups[2]
+				}
+			}
+		}
+	}
+
+	if indexed, ok := table.(sql.IndexAddressable); ok {
+		indexes, err := indexed.GetIndexes(sqlCtx)
+		if err == nil {
+			for _, index := range indexes {
+				if strings.EqualFold(index.ID(), constraintName) {
+					return "ALTER TABLE " + groups[1] + " DROP INDEX " + groups[2]
 				}
 			}
 		}
@@ -551,4 +563,78 @@ func rewriteDropIndex(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw stri
 		}
 	}
 	return raw
+}
+
+// alterIndexRenameRe matches PostgreSQL's
+// ALTER INDEX [IF EXISTS] [<schema>.]<old> RENAME TO <new>, the statement
+// gorm.io/driver/postgres emits for Migrator.RenameIndex. As with DROP
+// INDEX, the schema qualifier is usually the literal CURRENT_SCHEMA().
+var alterIndexRenameRe = regexp.MustCompile(
+	`(?i)^\s*ALTER\s+INDEX\s+(?:IF\s+EXISTS\s+)?` +
+		`(?:(?:CURRENT_SCHEMA\(\)|"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)?` +
+		`("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s+RENAME\s+TO\s+` +
+		`("[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*;?\s*$`)
+
+// rewriteAlterIndexRename rewrites PostgreSQL's schema-scoped ALTER INDEX
+// ... RENAME TO into MySQL's table-scoped ALTER TABLE ... RENAME INDEX,
+// resolving the owning table the same way rewriteDropIndex does. An index
+// that resolves to no table is left alone for the engine to report.
+func rewriteAlterIndexRename(sqlCtx *sql.Context, catalog sql.Catalog, dbName, raw string) string {
+	groups := alterIndexRenameRe.FindStringSubmatch(raw)
+	if groups == nil {
+		return raw
+	}
+	oldName, newName := unquoteIdentifier(groups[1]), unquoteIdentifier(groups[2])
+
+	db, err := catalog.Database(sqlCtx, dbName)
+	if err != nil {
+		return raw
+	}
+	tableNames, err := db.GetTableNames(sqlCtx)
+	if err != nil {
+		return raw
+	}
+	for _, tableName := range tableNames {
+		table, ok := lookupTable(sqlCtx, catalog, dbName, tableName)
+		if !ok {
+			continue
+		}
+		indexed, ok := table.(sql.IndexAddressableTable)
+		if !ok {
+			continue
+		}
+		indexes, err := indexed.GetIndexes(sqlCtx)
+		if err != nil {
+			continue
+		}
+		for _, idx := range indexes {
+			if strings.EqualFold(idx.ID(), oldName) {
+				return "ALTER TABLE " + backtick(tableName) +
+					" RENAME INDEX " + backtick(oldName) + " TO " + backtick(newName)
+			}
+		}
+	}
+	return raw
+}
+
+// gormIndexIntrospectionRe recognises the pg_index-based per-column index
+// query gorm.io/driver/postgres's Migrator.GetIndexes issues (a constant
+// in that driver). Its pg_index/pg_constraint join and `= ANY(indkey)`
+// int2vector membership test cannot be served by this engine, so the whole
+// statement is substituted -- see rewriteGormIndexIntrospection.
+var gormIndexIntrospectionRe = regexp.MustCompile(
+	`(?is)^\s*SELECT\s+ct\.relname\s+AS\s+table_name,.*i\.indisprimary\s+AS\s+primary,.*FROM\s+pg_index\s+i\b.*ct\.relname\s*=\s*\$1`)
+
+// rewriteGormIndexIntrospection substitutes gorm's pg_index join with an
+// equivalent scan of pkg/sql/pgcatalog's qrdb_index_columns relation, which
+// serves the same five columns under the same names with the upstream
+// query's own filters (no primary key, no constraint-backed unique, no
+// foreign-key backing index) already applied. The single bind parameter --
+// the table name -- is preserved positionally.
+func rewriteGormIndexIntrospection(_ *sql.Context, _ sql.Catalog, _, raw string) string {
+	if !gormIndexIntrospectionRe.MatchString(raw) {
+		return raw
+	}
+	return "SELECT `table_name`, `index_name`, `non_unique`, `primary`, `column_name`" +
+		" FROM `qrdb_index_columns` WHERE `table_name` = ?"
 }

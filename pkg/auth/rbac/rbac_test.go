@@ -810,7 +810,7 @@ func TestResolveError_Unwrap(t *testing.T) {
 
 func TestCache_GetMiss(t *testing.T) {
 	c := newPermissionCache(time.Minute)
-	_, ok := c.get("t", "s")
+	_, ok := c.get("t", "s", []string{"r1"})
 	if ok {
 		t.Fatal("expected cache miss for empty cache")
 	}
@@ -818,9 +818,9 @@ func TestCache_GetMiss(t *testing.T) {
 
 func TestCache_SetAndGet(t *testing.T) {
 	c := newPermissionCache(time.Minute)
-	c.set("t", "s", []permission.Permission{"kv:get", "kv:put"})
+	c.set("t", "s", []string{"r1"}, []permission.Permission{"kv:get", "kv:put"})
 
-	perms, ok := c.get("t", "s")
+	perms, ok := c.get("t", "s", []string{"r1"})
 	if !ok {
 		t.Fatal("expected cache hit after set")
 	}
@@ -837,16 +837,16 @@ func TestCache_SetAndGet(t *testing.T) {
 
 func TestCache_Expiry(t *testing.T) {
 	c := newPermissionCache(10 * time.Millisecond)
-	c.set("t", "s", []permission.Permission{"kv:get"})
+	c.set("t", "s", []string{"r1"}, []permission.Permission{"kv:get"})
 
-	_, ok := c.get("t", "s")
+	_, ok := c.get("t", "s", []string{"r1"})
 	if !ok {
 		t.Fatal("expected cache hit before expiry")
 	}
 
 	time.Sleep(20 * time.Millisecond)
 
-	_, ok = c.get("t", "s")
+	_, ok = c.get("t", "s", []string{"r1"})
 	if ok {
 		t.Fatal("expected cache miss after expiry")
 	}
@@ -854,16 +854,16 @@ func TestCache_Expiry(t *testing.T) {
 
 func TestCache_Invalidate(t *testing.T) {
 	c := newPermissionCache(time.Minute)
-	c.set("t", "s1", []permission.Permission{"kv:get"})
-	c.set("t", "s2", []permission.Permission{"kv:put"})
+	c.set("t", "s1", []string{"r1"}, []permission.Permission{"kv:get"})
+	c.set("t", "s2", []string{"r1"}, []permission.Permission{"kv:put"})
 
 	c.invalidate("t", "s1")
 
-	_, ok := c.get("t", "s1")
+	_, ok := c.get("t", "s1", []string{"r1"})
 	if ok {
 		t.Fatal("expected s1 to be invalidated")
 	}
-	_, ok = c.get("t", "s2")
+	_, ok = c.get("t", "s2", []string{"r1"})
 	if !ok {
 		t.Fatal("expected s2 to remain cached")
 	}
@@ -871,34 +871,50 @@ func TestCache_Invalidate(t *testing.T) {
 
 func TestCache_InvalidateAll(t *testing.T) {
 	c := newPermissionCache(time.Minute)
-	c.set("t1", "s1", []permission.Permission{"kv:get"})
-	c.set("t2", "s2", []permission.Permission{"kv:put"})
+	c.set("t1", "s1", []string{"r1"}, []permission.Permission{"kv:get"})
+	c.set("t2", "s2", []string{"r1"}, []permission.Permission{"kv:put"})
 
 	c.invalidateAll()
 
-	_, ok := c.get("t1", "s1")
+	_, ok := c.get("t1", "s1", []string{"r1"})
 	if ok {
 		t.Fatal("expected t1:s1 to be cleared")
 	}
-	_, ok = c.get("t2", "s2")
+	_, ok = c.get("t2", "s2", []string{"r1"})
 	if ok {
 		t.Fatal("expected t2:s2 to be cleared")
 	}
 }
 
 func TestCacheKey(t *testing.T) {
-	key := cacheKey("tenant-1", "user-a")
-	expected := "tenant-1:user-a"
+	key := cacheKey("tenant-1", "user-a", []string{"r2", "r1"})
+	expected := "tenant-1:user-a:r1,r2"
 	if key != expected {
 		t.Fatalf("expected %q, got %q", expected, key)
 	}
 }
 
 func TestCacheKey_EmptyTenant(t *testing.T) {
-	key := cacheKey("", "user-a")
-	expected := ":user-a"
+	key := cacheKey("", "user-a", nil)
+	expected := ":user-a:"
 	if key != expected {
 		t.Fatalf("expected %q, got %q", expected, key)
+	}
+}
+
+// TestCacheKey_RoleSetSeparatesEntries pins the poisoning fix: an identity
+// resolved with NO roles (a sealed-window or just-created subject) must not
+// answer for the same subject once enrichment yields roles.
+func TestCacheKey_RoleSetSeparatesEntries(t *testing.T) {
+	c := newPermissionCache(time.Minute)
+	c.set("t", "s", nil, nil) // empty resolution, cached
+	if _, ok := c.get("t", "s", []string{"role-1"}); ok {
+		t.Fatal("an empty-role entry must not serve an enriched identity")
+	}
+	c.set("t", "s", []string{"role-1"}, []permission.Permission{"kv:get"})
+	perms, ok := c.get("t", "s", []string{"role-1"})
+	if !ok || len(perms) != 1 {
+		t.Fatalf("enriched entry expected, got ok=%v perms=%v", ok, perms)
 	}
 }
 

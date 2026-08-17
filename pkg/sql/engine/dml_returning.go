@@ -139,7 +139,10 @@ func (i *dmlReturningIter) Next(ctx *sql.Context) (sql.Row, error) {
 			// the accumulator this wrapper displaced would have absorbed.
 			// PostgreSQL's ON CONFLICT DO NOTHING RETURNING yields no row
 			// for a suppressed tuple, so absorb it here and move on.
-			if _, ignorable := err.(sql.IgnorableError); ignorable {
+			// Direct assertion is deliberate: go-mysql-server errors do
+			// not implement Unwrap, and IgnorableError arrives at the top
+			// of the chain from the engine itself.
+			if _, ignorable := err.(sql.IgnorableError); ignorable { //nolint:errorlint // GMS errors carry no Unwrap chain
 				continue
 			}
 			return nil, err

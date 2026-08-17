@@ -121,7 +121,9 @@ type Transport struct {
 	auditLogger       audit.AuditLogger
 
 	// sqlOnce/sqlSvcCache lazily construct the SQL query service from
-	// kvSvc/dbSvc on first Query call. See transport_sql.go.
+	// kvSvc/dbSvc on first Query call. See transport_sql.go (compiled
+	// only under the qrdb_sql build tag; without it the fields are
+	// unused and the transport does not implement transport.SQLProvider).
 	sqlOnce     sync.Once
 	sqlSvcCache service.SQLServicer
 

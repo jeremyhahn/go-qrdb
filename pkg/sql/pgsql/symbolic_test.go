@@ -109,5 +109,7 @@ func TestCollectRows_NonSymbolicUnaffected(t *testing.T) {
 	require.Len(t, result.rows, 1)
 	assert.Equal(t, int32(7), result.rows[0][0])
 	assert.Equal(t, "widget", result.rows[0][1])
-	assert.Equal(t, "bytes", result.rows[0][2])
+	// A blob column is described bytea, so its bytes stay []byte -- the one
+	// shape pgx's bytea codec encodes byte-for-byte.
+	assert.Equal(t, []byte("bytes"), result.rows[0][2])
 }

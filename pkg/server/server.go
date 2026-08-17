@@ -53,7 +53,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	sqlquery "github.com/jeremyhahn/go-qrdb/pkg/sql/query"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -105,6 +104,16 @@ var (
 	stopEtcdServerFn  stopEtcdFn
 )
 
+// buildSQLServiceFn is a function that constructs the shared ad-hoc SQL
+// query service consumed by every transport (REST, gRPC, QUIC, Unix, MCP).
+type buildSQLServiceFn func(s *Server) service.SQLServicer
+
+// newSQLServiceFn is set by init() in the qrdb_sql build-tagged
+// server_sql.go. When the build tag is absent it remains nil, no
+// transport receives a SQL service, and each transport surfaces its
+// existing nil-service error for the /sql/query surface.
+var newSQLServiceFn buildSQLServiceFn
+
 // Server orchestrates the REST, gRPC, Unix socket, MCP, MySQL,
 // PostgreSQL, and etcd API servers for QRDB. It starts and stops servers
 // based on the protocol configuration and manages their lifecycles with
@@ -137,7 +146,12 @@ type serverOptions struct {
 	adminSvc   service.AdminServicer
 	// modules are capability modules a higher layer (e.g. go-xkms) registers via
 	// WithModule. Each is exposed across every transport by the start* methods.
-	modules            []apimodule.ServiceModule
+	modules []apimodule.ServiceModule
+	// mcpServerOpts are embedder-supplied MCP transport options appended
+	// after the built-in ones at MCP server construction (WithMCPServerOptions)
+	// — e.g. the OAuth discovery surface (mcpapi.WithBearerChallenge,
+	// mcpapi.WithProtectedResourceMetadata) go-quicbaas configures.
+	mcpServerOpts      []mcpapi.ServerOption
 	userSvc            user.UserServicer
 	roleSvc            role.RoleServicer
 	certProv           cert.CertProvider
@@ -253,6 +267,21 @@ func WithModule(m apimodule.ServiceModule) ServerOption {
 			}
 		}
 		o.modules = append(o.modules, m)
+	}
+}
+
+// WithMCPServerOptions appends embedder-supplied MCP transport options at
+// MCP server construction, after the built-in ones. This is how a higher
+// layer configures the MCP authorization discovery surface — the 401
+// WWW-Authenticate challenge (mcpapi.WithBearerChallenge) and the RFC 9728
+// Protected Resource Metadata document
+// (mcpapi.WithProtectedResourceMetadata) — while the bearer-token validator
+// itself is registered as an auth.Authenticator through the auth middleware
+// (wiring.AuthMiddlewareConfig.ExtraAuthenticators / the SDK node's
+// WithAuthenticators). qrdb implements no OAuth flow of its own.
+func WithMCPServerOptions(opts ...mcpapi.ServerOption) ServerOption {
+	return func(o *serverOptions) {
+		o.mcpServerOpts = append(o.mcpServerOpts, opts...)
 	}
 }
 
@@ -1013,8 +1042,8 @@ func (s *Server) startREST() error {
 	}
 	if s.opts.databaseSvc != nil {
 		restOpts = append(restOpts, rest.WithDatabaseService(s.opts.databaseSvc))
-		if s.kvSvc != nil {
-			restOpts = append(restOpts, rest.WithSQLService(s.newSQLService()))
+		if s.kvSvc != nil && newSQLServiceFn != nil {
+			restOpts = append(restOpts, rest.WithSQLService(newSQLServiceFn(s)))
 		}
 	}
 	if s.opts.barrierSvc != nil {
@@ -1150,30 +1179,10 @@ func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.quotaAccountant != nil {
 		regOpts = append(regOpts, withQuotaAccountant(s.opts.quotaAccountant))
 	}
+	if s.config.SQL.DefaultDatabase != "" {
+		regOpts = append(regOpts, WithSharedSQLDefaultDatabase(s.config.SQL.DefaultDatabase))
+	}
 	return NewRESTServiceRegistry(s.opts.dbRegistry, s.opts.barrierRegistry, tenant.SystemTenantID, regOpts...)
-}
-
-// newSQLService constructs the shared ad-hoc SQL query service used by every
-// transport (REST, gRPC, QUIC, Unix, MCP). It is read-only by construction —
-// the RPC/route name ("SQLQuery" / POST /sql/query) and its permission
-// mapping (permission.KVRange, a read permission — see
-// pkg/auth/middleware/mapping.go) both express a read-only contract, and the
-// full-DML surface is served separately by the MySQL/PostgreSQL wire
-// protocol listeners (pkg/sql/mysql, pkg/sql/pgsql), which authenticate a
-// dedicated per-connection session. When a service.Registry is configured
-// (buildServiceRegistry), every query is additionally resolved per-(tenant,
-// db) through it — exactly like the KV/MVCC/Batch data-plane paths — so
-// barrier/quota/isolation are enforced and IsolationRaft/IsolationVolume
-// tenants route to their dedicated backend instead of the shared system
-// store; the tenant is the one authenticated on the request context by the
-// transport's auth middleware, never a fixed system default.
-func (s *Server) newSQLService() service.SQLServicer {
-	return sqlquery.NewService(
-		s.kvSvc,
-		s.opts.databaseSvc,
-		sqlquery.WithReadOnly(),
-		sqlquery.WithRegistry(s.buildServiceRegistry()),
-	)
 }
 
 // startGRPC creates and starts the gRPC server with configured options.
@@ -1261,8 +1270,8 @@ func (s *Server) startGRPC() error {
 	}
 	if s.opts.databaseSvc != nil {
 		grpcOpts = append(grpcOpts, grpcapi.WithDatabaseService(s.opts.databaseSvc))
-		if s.kvSvc != nil {
-			grpcOpts = append(grpcOpts, grpcapi.WithSQLService(s.newSQLService()))
+		if s.kvSvc != nil && newSQLServiceFn != nil {
+			grpcOpts = append(grpcOpts, grpcapi.WithSQLService(newSQLServiceFn(s)))
 		}
 	}
 	if s.opts.tenantSvc != nil {
@@ -1356,8 +1365,8 @@ func (s *Server) startQUIC() error {
 	}
 	if s.opts.databaseSvc != nil {
 		quicOpts = append(quicOpts, quicapi.WithDatabaseService(s.opts.databaseSvc))
-		if s.kvSvc != nil {
-			quicOpts = append(quicOpts, quicapi.WithSQLService(s.newSQLService()))
+		if s.kvSvc != nil && newSQLServiceFn != nil {
+			quicOpts = append(quicOpts, quicapi.WithSQLService(newSQLServiceFn(s)))
 		}
 	}
 	if s.opts.barrierSvc != nil {
@@ -1495,8 +1504,8 @@ func (s *Server) startUnix() error {
 	}
 	if s.opts.databaseSvc != nil {
 		unixOpts = append(unixOpts, unixapi.WithDatabaseService(s.opts.databaseSvc))
-		if s.kvSvc != nil {
-			unixOpts = append(unixOpts, unixapi.WithSQLService(s.newSQLService()))
+		if s.kvSvc != nil && newSQLServiceFn != nil {
+			unixOpts = append(unixOpts, unixapi.WithSQLService(newSQLServiceFn(s)))
 		}
 	}
 	if s.opts.auditLogger != nil {
@@ -1624,8 +1633,8 @@ func (s *Server) startMCP() error {
 	}
 	if s.opts.databaseSvc != nil {
 		mcpOpts = append(mcpOpts, mcpapi.WithDatabaseService(s.opts.databaseSvc))
-		if s.kvSvc != nil {
-			mcpOpts = append(mcpOpts, mcpapi.WithSQLService(s.newSQLService()))
+		if s.kvSvc != nil && newSQLServiceFn != nil {
+			mcpOpts = append(mcpOpts, mcpapi.WithSQLService(newSQLServiceFn(s)))
 		}
 	}
 	if s.opts.auditLogger != nil {
@@ -1653,6 +1662,7 @@ func (s *Server) startMCP() error {
 	if len(s.opts.modules) > 0 {
 		mcpOpts = append(mcpOpts, mcpapi.WithServiceModules(s.opts.modules))
 	}
+	mcpOpts = append(mcpOpts, s.opts.mcpServerOpts...)
 
 	s.mcpSrv = mcpapi.NewServer(s.kvSvc, s.adminSvc, addr, mcpOpts...)
 

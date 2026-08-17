@@ -44,6 +44,7 @@ func newTenantCmd() *cobra.Command {
 		newTenantBarrierInitCmd(),
 		newTenantBarrierUnsealCmd(),
 		newTenantBarrierSealCmd(),
+		newTenantBarrierStatusCmd(),
 	)
 
 	return cmd
@@ -488,6 +489,59 @@ func newTenantBarrierSealCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("id")
 
 	return cmd
+}
+
+// newTenantBarrierStatusCmd creates the "tenant barrier-status" subcommand.
+// It reports the per-tenant barrier's sealed/initialized state and active
+// strategy, completing CLI parity with the REST, gRPC, QUIC, and MCP
+// transports' TenantBarrierStatus surface. Like barrier-init and
+// barrier-unseal it remains reachable by the tenant's own mTLS identity
+// during the sealed window (the server-side IdentityGated bootstrap rules),
+// which is what lets a self-managed tenant drive its own unseal flow.
+func newTenantBarrierStatusCmd() *cobra.Command {
+	var tenantID string
+
+	cmd := &cobra.Command{
+		Use:   "barrier-status",
+		Short: "Report the per-tenant cryptographic barrier status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			status, err := client.Tenants().TenantBarrierStatus(cmd.Context(), &transport.TenantBarrierStatusRequest{
+				TenantID: tenantID,
+			})
+			if err != nil {
+				return err
+			}
+			return printTenantBarrierStatus(status)
+		},
+	}
+
+	cmd.Flags().StringVar(&tenantID, "id", "", "Tenant ID")
+	_ = cmd.MarkFlagRequired("id")
+
+	return cmd
+}
+
+// printTenantBarrierStatus prints a TenantBarrierStatusResponse in the
+// current output format.
+func printTenantBarrierStatus(status *transport.TenantBarrierStatusResponse) error {
+	switch outputFormat {
+	case "json":
+		return printJSON(status)
+	case "yaml":
+		return printYAML(status)
+	default:
+		_, _ = fmt.Fprintf(outputWriter, "TenantID:    %s\n", status.TenantID)
+		_, _ = fmt.Fprintf(outputWriter, "Sealed:      %t\n", status.Sealed)
+		_, _ = fmt.Fprintf(outputWriter, "Initialized: %t\n", status.Initialized)
+		if status.Strategy != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Strategy:    %s\n", status.Strategy)
+		}
+		if status.ShamirThreshold > 0 {
+			_, _ = fmt.Fprintf(outputWriter, "Threshold:   %d of %d\n", status.ShamirThreshold, status.ShamirTotal)
+		}
+		return nil
+	}
 }
 
 // printTenant prints a single TenantInfo in the current output format.

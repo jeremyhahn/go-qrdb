@@ -512,14 +512,26 @@ func TestTransportParity_ScanTypes(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, types, 3)
 
+	// id is the NOT NULL primary key, so it advertises its exact width;
+	// big is NULLABLE, so it advertises sql.NullInt64 -- exactly
+	// go-sql-driver/mysql's rule (fields.go scanType: every nullable
+	// integer is scanTypeNullInt regardless of width or signedness), which
+	// is the parity this test exists to hold.
 	assert.Equal(t, reflect.TypeOf(int32(0)), types[0].ScanType(), "id")
 	assert.Equal(t, reflect.TypeOf(""), types[1].ScanType(), "amt")
-	assert.Equal(t, reflect.TypeOf(uint64(0)), types[2].ScanType(), "big")
+	assert.Equal(t, reflect.TypeOf(sql.NullInt64{}), types[2].ScanType(), "big")
 
 	require.True(t, rows.Next())
-	dest := make([]any, len(types))
-	for i := range dest {
-		dest[i] = reflect.New(types[i].ScanType()).Interface()
+	dest := []any{
+		reflect.New(types[0].ScanType()).Interface(),
+		reflect.New(types[1].ScanType()).Interface(),
+		// NullInt64 cannot hold the upper half of the uint64 range -- the
+		// same range error go-sql-driver reports when a generic mapper
+		// scans this column there -- so the max-value cell is scanned
+		// through the explicitly typed destination a caller who KNOWS the
+		// column uses. The exact-value round trip through *uint64 is
+		// TestTransportParity_ExactDecimalAndUint64's subject.
+		new(uint64),
 	}
 	require.NoError(t, rows.Scan(dest...), "advertised scan types must be scannable")
 
@@ -527,6 +539,15 @@ func TestTransportParity_ScanTypes(t *testing.T) {
 	assert.Equal(t, "1.2345", *dest[1].(*string))
 	assert.Equal(t, uint64(math.MaxUint64), *dest[2].(*uint64))
 	require.NoError(t, rows.Err())
+
+	// The advertised NullInt64 IS scannable for the in-range values a
+	// nullable column ordinarily holds.
+	_, err = s.embedded.Exec("INSERT INTO ledger VALUES (2, 0.0, 42)")
+	require.NoError(t, err)
+	var nullable sql.NullInt64
+	require.NoError(t, s.embedded.QueryRow("SELECT big FROM ledger WHERE id = 2").Scan(&nullable))
+	require.True(t, nullable.Valid)
+	assert.EqualValues(t, 42, nullable.Int64)
 }
 
 // ---------------------------------------------------------------------------

@@ -67,6 +67,9 @@ type QRDBSession struct {
 	// of *contents* to the single goroutine driving the current statement
 	// (see WriteSet's doc comment).
 	ws atomic.Pointer[WriteSet]
+
+	// statementIndexOrigin -- see SetStatementIndexOrigin.
+	statementIndexOrigin atomic.Bool
 }
 
 // Compile-time interface assertion: QRDBSession implements
@@ -393,4 +396,29 @@ func flushPendingWriteSet(ctx *sqle.Context) error {
 		return nil
 	}
 	return sess.CommitTransaction(ctx, ctx.GetTransaction())
+}
+
+// statementIndexOrigin records whether the statement currently executing on
+// this session is a standalone CREATE INDEX. The PostgreSQL wire front end
+// sets it around each such statement (see pkg/sql/pgsql's HandleParse) so
+// RelationalTable.CreateIndex can persist PostgreSQL's index-vs-constraint
+// distinction into the catalog -- the plan node reaching CreateIndex is
+// identical for CREATE INDEX and ALTER TABLE ADD CONSTRAINT UNIQUE, so the
+// statement text is the only place the distinction exists. An atomic is
+// used for the same cross-goroutine reasons as ws above.
+//
+// The zero value (false, "constraint or unknown origin") is deliberately
+// the MySQL-faithful default: a surface that never sets the hint gets
+// MySQL's behaviour, where every unique index is a constraint.
+
+// SetStatementIndexOrigin marks whether the statement about to execute is a
+// standalone CREATE INDEX.
+func (s *QRDBSession) SetStatementIndexOrigin(isStatementIndex bool) {
+	s.statementIndexOrigin.Store(isStatementIndex)
+}
+
+// StatementIndexOrigin reports whether the currently executing statement
+// was marked a standalone CREATE INDEX.
+func (s *QRDBSession) StatementIndexOrigin() bool {
+	return s.statementIndexOrigin.Load()
 }

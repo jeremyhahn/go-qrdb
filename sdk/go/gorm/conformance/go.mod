@@ -142,7 +142,7 @@ require (
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
 	github.com/jeremyhahn/go-objstore v0.2.1-alpha // indirect
 	github.com/jeremyhahn/go-qrdb v0.4.0-alpha // indirect
-	github.com/jeremyhahn/go-quicraft v0.4.2-alpha // indirect
+	github.com/jeremyhahn/go-quicraft v0.5.1-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
