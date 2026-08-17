@@ -538,8 +538,8 @@ test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-s
 test-sdk:
 	cd $(SDK_DIR) && $(GOTEST) ./...
 
-# The qrdbd integration-test harness shared by test/integration, the
-# cmd/qrdb-sqlite gateway module and the GORM conformance module. It is part of
+# The qrdbd integration-test harness shared by test/integration and the
+# GORM conformance module. It is part of
 # the SDK module, so test-sdk already runs it via ./... ; this target exists to
 # run it alone.
 .PHONY: test-testutil-qrdbdharness
@@ -1457,47 +1457,6 @@ coverage-vector-bloom: | _cover-dir ## Generate bloom filter coverage report
 	$(call check-coverage,$(COVER_DIR)/vector-bloom.out,vector-bloom)
 
 # ============================================================================
-# SQLite Gateway
-# ============================================================================
-# The qrdb-sqlite binary lives in a separate Go module (cmd/qrdb-sqlite)
-# because it requires CGo via mattn/go-sqlite3. All targets below
-# operate within that module directory.
-
-SQLITE_DIR  := cmd/qrdb-sqlite
-SQLITE_TAGS := sqlite_vtable
-SQLITE_BIN  := bin/qrdb-sqlite
-
-.PHONY: build-sqlite-gateway
-build-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go build -tags $(SQLITE_TAGS) \
-		-ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)" \
-		-o ../../$(SQLITE_BIN) .
-
-.PHONY: test-sqlite-gateway
-test-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -race -count=1 ./... 2>&1 | tee ../../test-sqlite-gateway.log
-
-# The suite drives a real qrdbd subprocess over five transports under -race and
-# takes well over ten minutes, so it needs an explicit timeout: go test's default
-# is 10m, and without this the run dies mid-suite with "panic: test timed out"
-# and no failing test to point at.
-SQLITE_INT_TIMEOUT := 40m
-
-.PHONY: integration-test-sqlite-gateway
-integration-test-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -race -count=1 -timeout $(SQLITE_INT_TIMEOUT) ./integration/... 2>&1 | tee ../../integration-test-sqlite-gateway.log
-
-.PHONY: bench-sqlite-gateway
-bench-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags "$(SQLITE_TAGS) integration" -bench=. -benchmem -count=1 ./integration/... 2>&1 | tee ../../bench-sqlite-gateway.log
-
-.PHONY: coverage-sqlite-gateway
-coverage-sqlite-gateway:
-	cd $(SQLITE_DIR) && CGO_ENABLED=1 go test -tags $(SQLITE_TAGS) -coverprofile=coverage.out -covermode=atomic ./... && \
-	go tool cover -func=coverage.out && \
-	cp coverage.out ../../$(COVER_DIR)/sqlite-gateway.out
-
-# ============================================================================
 # GORM Conformance Suite
 # ============================================================================
 # sdk/go/gorm/conformance runs GORM's own upstream test suite against qrdb's
@@ -1512,9 +1471,8 @@ coverage-sqlite-gateway:
 # tracked fraction of its tests until qrdb's Migrator/DDL support lands (see
 # sdk/go/gorm/migrator.go and pkg/sql/provider). conformance-test-gorm-* is
 # therefore never wired into `make test`, `make integration-test`, or `make
-# all` — same reasoning as the sqlite gateway's own integration targets
-# above, and doubly true here since a red run is the expected, tracked
-# state rather than a transient one.
+# all` — a red run is the expected, tracked state rather than a
+# transient one.
 
 GORM_DIR  := sdk/go/gorm/conformance
 GORM_TAGS := gormconformance
@@ -1649,13 +1607,6 @@ help:
 	@echo "  docker-build-integration     Build integration test image"
 	@echo "  docker-run                   Run production container"
 	@echo "  docker-run-devcontainer      Run devcontainer shell"
-	@echo ""
-	@echo "SQLite Gateway (CGo, separate module at cmd/qrdb-sqlite):"
-	@echo "  build-sqlite-gateway             Build qrdb-sqlite binary to bin/qrdb-sqlite"
-	@echo "  test-sqlite-gateway              Run unit tests (CGO_ENABLED=1, sqlite_vtable tag)"
-	@echo "  integration-test-sqlite-gateway  Run integration tests"
-	@echo "  bench-sqlite-gateway             Run benchmarks"
-	@echo "  coverage-sqlite-gateway          Generate coverage report"
 	@echo ""
 	@echo "GORM Conformance (separate module at sdk/go/gorm/conformance; RED by design, see README):"
 	@echo "  gorm-suite-sync                  Fetch/verify/materialize the upstream GORM test suite"

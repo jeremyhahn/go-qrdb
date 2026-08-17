@@ -68,7 +68,7 @@ func pqRecallAt10(t *testing.T, dim, m, nbits int) int {
 	pq, err := NewPQQuantizer(dim, m, nbits)
 	require.NoError(t, err)
 
-	trainingVecs := generateRandomVectors(2000, dim)
+	trainingVecs := generateRandomVectors(800, dim)
 	require.NoError(t, pq.Train(trainingVecs))
 
 	queryVec := trainingVecs[0]
@@ -136,9 +136,16 @@ func pqRecallAt10(t *testing.T, dim, m, nbits int) int {
 // returns essentially random neighbours (expected recall 0.5/10), which is far
 // below the bound, while ordinary codebook variance no longer trips it.
 func TestPQ_RecallAccuracy(t *testing.T) {
+	// Sized for CI: k-means training dominates the runtime and runs under
+	// -race on a shared runner, where 5 trials over 2000 training vectors
+	// ran ~8 minutes and blew the test binary's 10-minute budget. 3 trials
+	// over 800 vectors keeps the statistical margin intact — a broken
+	// quantizer still measures ~0.5/10 mean recall against the 3.0 bound,
+	// while a trained codebook comfortably clears it — at a fraction of
+	// the cost.
 	const (
 		dim, m, nbits = 64, 8, 8
-		trials        = 5
+		trials        = 3
 		minMeanRecall = 3.0
 	)
 

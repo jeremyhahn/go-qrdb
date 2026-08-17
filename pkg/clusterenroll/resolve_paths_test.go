@@ -22,6 +22,7 @@ package clusterenroll
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -176,11 +177,15 @@ func TestResolveCAReloadsTheCachedCA(t *testing.T) {
 // TestResolveCAPropagatesAPersistFailure covers the error return from
 // PersistCA, reached here by making the data directory unwritable.
 func TestResolveCAPropagatesAPersistFailure(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "readonly")
-	if err := os.Mkdir(dir, 0o500); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	// A DataDir whose parent path component is a regular FILE fails every
+	// create/write under it with ENOTDIR — for root too. A chmod 0o500
+	// directory does not: root ignores permission bits, and CI runners
+	// execute as root, where the previous fixture stopped failing.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	dir := filepath.Join(blocker, "denied")
 
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63014",
@@ -230,11 +235,15 @@ func TestResolveCAFirstNodeStartsAnAdvertiser(t *testing.T) {
 // TestResolvePropagatesAPersistFailure covers Resolve's persist error on the
 // single-node path, the counterpart to the ResolveCA case above.
 func TestResolvePropagatesAPersistFailure(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "readonly")
-	if err := os.Mkdir(dir, 0o500); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	// A DataDir whose parent path component is a regular FILE fails every
+	// create/write under it with ENOTDIR — for root too. A chmod 0o500
+	// directory does not: root ignores permission bits, and CI runners
+	// execute as root, where the previous fixture stopped failing.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	dir := filepath.Join(blocker, "denied")
 
 	opts := &Options{
 		RaftAddress: "127.0.0.1:63016",
@@ -259,10 +268,21 @@ func TestStartAdvertiserRejectsAnUnusablePort(t *testing.T) {
 	}
 	mat := &clustertls.Material{CACertPEM: caCertPEM, CAKeyPEM: caKeyPEM}
 
-	// Port 1 is privileged; binding it as an unprivileged user fails.
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: 1}, dir, discardLogger())
+	// Occupy a TCP port first so the advertiser's own bind (a wildcard TCP
+	// listen on the same port) collides with EADDRINUSE. An address conflict
+	// fails for every privilege level — a privileged low port does not: root
+	// binds port 1 without complaint, and CI runners execute as root, where
+	// the previous fixture stopped failing.
+	occupied, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("occupy port: %v", err)
+	}
+	t.Cleanup(func() { _ = occupied.Close() })
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: port}, dir, discardLogger())
 	if err == nil {
-		t.Fatal("expected StartAdvertiser to fail on a privileged port")
+		t.Fatal("expected StartAdvertiser to fail on an already-bound port")
 	}
 	var want *ServerError
 	if !errors.As(err, &want) {

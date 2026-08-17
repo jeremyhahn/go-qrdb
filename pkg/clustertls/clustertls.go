@@ -680,6 +680,12 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 // fileExists returns true when path refers to an existing regular file.
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	// ANY existing entry counts — a directory (or other non-regular file)
+	// squatting at a material path must NOT read as "absent": absent means
+	// "no cache, generate", and generating a fresh CA because something
+	// unreadable occupies ca.pem silently forks cluster trust. Reporting it
+	// as present routes the load into os.ReadFile, whose failure (EISDIR,
+	// EACCES, ...) fails closed as a *LoadError naming the path.
+	_, err := os.Stat(path)
+	return err == nil
 }

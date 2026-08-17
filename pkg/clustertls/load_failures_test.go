@@ -52,10 +52,17 @@ func persistedMaterial(t *testing.T) string {
 // file still exists -- the case that separates "absent" from "unreadable".
 func makeUnreadable(t *testing.T, path string) {
 	t.Helper()
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatalf("chmod: %v", err)
+	// Replace the file with a DIRECTORY of the same name: os.ReadFile then
+	// fails with EISDIR for every caller — including root, which ignores a
+	// chmod 0o000 (CI runners execute as root, where the previous fixture
+	// stopped failing). The path still EXISTS, preserving the property under
+	// test: unreadable is not absent, and must fail the load closed.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 }
 
 // TestLoadFromDirLoadsTheOptionalCAKey covers the branch that picks up

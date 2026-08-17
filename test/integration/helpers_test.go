@@ -51,7 +51,7 @@ const (
 
 // testCA is this suite's fatal-on-error face for the shared qrdbd harness
 // CA. The certificate authority itself, and every certificate it mints, come
-// from sdk/go/testutil/qrdbdharness so the sqlite gateway and GORM
+// from sdk/go/testutil/qrdbdharness so the GORM
 // conformance suites mint identical material; only the *testing.T ergonomics
 // are local.
 type testCA struct {

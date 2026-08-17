@@ -15,10 +15,9 @@
 // Package qrdbdharness spins up a real qrdbd process and hands callers
 // everything they need to talk to it over mTLS from a test.
 //
-// It exists because three separate test trees — the root module's
-// test/integration suite, the cmd/qrdb-sqlite gateway's integration module,
-// and the sdk/go/gorm/conformance module — each need the identical four
-// primitives:
+// It exists because two separate test trees — the root module's
+// test/integration suite and the sdk/go/gorm/conformance module — each need
+// the identical four primitives:
 //
 //   - an ephemeral certificate authority that mints the node certificate
 //     qrdbd presents and the client certificates callers authenticate with
@@ -31,9 +30,8 @@
 //   - readiness waits for the node host, the admin /health endpoint, and
 //     Raft leadership.
 //
-// Nothing here takes a *testing.T: the sqlite gateway drives it from TestMain
-// and the GORM conformance module drives it from a plain runner binary, and
-// both need real errors rather than t.Fatalf. Callers that want fatal-on-error
+// Nothing here takes a *testing.T: the GORM conformance module drives it
+// from a plain runner binary and needs real errors rather than t.Fatalf. Callers that want fatal-on-error
 // ergonomics wrap these calls in their own one-line test helpers.
 package qrdbdharness
 

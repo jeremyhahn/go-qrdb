@@ -33,12 +33,16 @@ import (
 // persist failures.
 func readonlyDir(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "readonly")
-	if err := os.Mkdir(dir, 0o500); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	// A path component that is a regular FILE makes every create/write under
+	// it fail with ENOTDIR — for root too. A chmod 0o500 directory does not:
+	// root ignores permission bits, and CI runners execute as root, which is
+	// exactly where the previous fixture stopped failing and these tests
+	// went red.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	return dir
+	return filepath.Join(blocker, "denied")
 }
 
 // TestErrorMessagesNameTheirSubject checks each typed error renders the detail

@@ -136,7 +136,7 @@ func build(pkg string, cfg buildConfig) (string, error) {
 // RepoRoot returns the go-qrdb repository root, found by walking up from the
 // working directory until a directory containing cmd/qrdbd is reached. This
 // works from the root module, from a nested module such as
-// cmd/qrdb-sqlite or sdk/go/gorm/conformance, and from any subdirectory.
+// sdk/go/gorm/conformance, and from any subdirectory.
 func RepoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {

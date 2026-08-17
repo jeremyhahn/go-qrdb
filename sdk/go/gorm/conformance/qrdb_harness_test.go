@@ -198,7 +198,7 @@ func (e *wireServerNotStartedError) Error() string {
 // Every primitive it needs — CA and certificate minting, non-ephemeral port
 // reservation, the qrdbd/qrdb builds, subprocess lifecycle and the readiness
 // waits — comes from sdk/go/testutil/qrdbdharness, the same package
-// test/integration and the cmd/qrdb-sqlite gateway drive their daemons with.
+// test/integration drives its daemons with.
 type wireServer struct {
 	daemon *qrdbdharness.Daemon
 

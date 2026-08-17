@@ -95,34 +95,6 @@ jobs:
       - name: Unit tests (race)
         run: make test
 
-  integration-sqlite:
-    name: Integration (sqlite gateway)
-    runs-on: ubuntu-latest
-    needs: [lint, build]
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      # The only integration suite in this repository that a runner can host.
-      # cmd/qrdb-sqlite is its own module whose first-party dependencies are
-      # satisfied by intra-repo replaces, and the suite spawns its own qrdbd
-      # subprocess via sdk/go/testutil/qrdbdharness -- no docker, no sibling
-      # checkouts, no cluster. The rest of the integration surface still needs
-      # the compose harness rebuilt onto tagged modules before it can run here.
-      #
-      # CGO_ENABLED=1 is required: mattn/go-sqlite3 and the sqlite_vtable tag.
-      # gcc ships in the runner image.
-      #
-      # Verified before wiring, per testing-guidelines.md: green as root on the
-      # dev host and green in a clean gitea/runner-images:ubuntu-latest
-      # container carrying nothing from a workstation.
-      - name: Integration tests (sqlite gateway, race)
-        run: make integration-test-sqlite-gateway
-
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
@@ -268,9 +240,20 @@ jobs:
 
       # Gitea leg: trivy-action's setup step cannot authenticate to github.com
       # from a Gitea runner, so install the CLI and run the identical gate.
+      # Retried: raw.githubusercontent.com intermittently answers the Gitea
+      # runner with transient HTTP errors (curl exit 22), which failed the
+      # whole job on a fetch that succeeds seconds later. Backoff keeps one
+      # network blip from reading as a security-gate failure.
       - name: Install Trivy CLI
         if: github.server_url != 'https://github.com'
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        run: |
+          for i in 1 2 3 4 5; do
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && exit 0
+            echo "trivy install attempt $i failed; retrying in $((i*10))s"
+            sleep $((i*10))
+          done
+          echo "trivy install failed after 5 attempts" >&2
+          exit 1
 
       - name: Trivy gate (fail on CRITICAL/HIGH)
         if: github.server_url != 'https://github.com'
@@ -285,14 +268,13 @@ jobs:
     # evaluates to an empty string on Gitea, so a gate built on it reports
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
-    needs: [lint, build, test, integration-sqlite, integration-standalone, security, trivy]
+    needs: [lint, build, test, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded
         env:
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_TEST: ${{ needs.test.result }}
-          RESULT_INTEGRATION_SQLITE: ${{ needs.integration-sqlite.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
           RESULT_TRIVY: ${{ needs.trivy.result }}
@@ -314,7 +296,6 @@ jobs:
           check lint "$RESULT_LINT"
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
-          check integration-sqlite "$RESULT_INTEGRATION_SQLITE"
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
           check trivy "$RESULT_TRIVY"
