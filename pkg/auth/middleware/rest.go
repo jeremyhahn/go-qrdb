@@ -76,6 +76,22 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			return
 		}
 
+		// Module-registered PUBLIC routes short-circuit BEFORE
+		// authentication, exactly like the built-in allowlist above: a
+		// capability module's first-contact surfaces (WebAuthn
+		// registration/login ceremonies, OIDC discovery, trust bootstrap)
+		// are anonymous BY DECLARATION at the registration site
+		// (HandlePublic → RESTRoutePublic), and demanding a peer
+		// certificate for them would break every anonymous login ceremony
+		// the moment client_auth is enabled. The registry lookup resolves
+		// through chi's own trie, so templated public routes match here
+		// too. Authenticated/permission routes proceed to authentication
+		// below unchanged.
+		if _, kind, ok := routes.Lookup(r.Method, r.URL.Path); ok && kind == RESTRoutePublic {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		// Authenticate the caller. A forwarded write from a cluster peer
 		// carries a signed on-behalf-of assertion of the ORIGINAL caller;
 		// when present it is verified (peer must be a cluster node, signature

@@ -11,6 +11,18 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.7-alpha] - 2026-08-17
+
+### Fixed — SECURITY-ADJACENT
+
+- **Module-registered public routes serve anonymously.** The REST
+  middleware short-circuited only its hardcoded built-in allowlist before
+  authentication; a module's `HandlePublic` routes (WebAuthn
+  registration/login ceremonies, OIDC discovery) still demanded a peer
+  certificate once `client_auth` was enabled, breaking every anonymous
+  first-contact ceremony. Public registry routes now short-circuit
+  pre-authentication exactly like the built-ins.
+
 ## [0.5.6-alpha] - 2026-08-17
 
 ### Added

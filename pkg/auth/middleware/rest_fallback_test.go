@@ -188,3 +188,32 @@ func TestRESTRouteRegistry_SetFallbackUnregisteredPanics(t *testing.T) {
 	}()
 	rr.SetFallback(http.MethodGet, "/nope", &mockFallback{})
 }
+
+// TestRESTMiddleware_ModulePublicRoute_SkipsAuthentication proves a
+// module-declared public route (HandlePublic → RESTRoutePublic) serves
+// anonymously even when every authenticator would reject: first-contact
+// ceremonies (WebAuthn registration/login) must not demand a peer
+// certificate just because client_auth is enabled.
+func TestRESTMiddleware_ModulePublicRoute_SkipsAuthentication(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+
+	rr := NewRESTRouteRegistry()
+	rr.RegisterPublic(http.MethodPost, "/api/v1/webauthn/login/begin")
+
+	served := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = true
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := m.RESTMiddleware(rr, next)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/webauthn/login/begin", nil))
+	if !served || w.Code != http.StatusOK {
+		t.Fatalf("module public route must serve anonymously: served=%v code=%d", served, w.Code)
+	}
+	if authn.calls.Load() != 0 {
+		t.Fatalf("authenticator consulted %d times for a public route", authn.calls.Load())
+	}
+}
