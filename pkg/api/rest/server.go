@@ -860,6 +860,15 @@ func (s *Server) route(method, pattern string, perm permission.Permission, h htt
 // router, and SO dual-factor gating recognizes SO-permissioned paths even on
 // servers that do not serve them.
 func (s *Server) routeIf(enabled bool, method, pattern string, perm permission.Permission, h http.HandlerFunc) {
+	// Modules register FIRST and take precedence (the documented contract):
+	// a built-in route whose method+pattern a module already claimed yields
+	// to the module rather than colliding. Module-vs-module duplicates
+	// still fail construction loudly inside the registry.
+	if s.routePerms.Covered(method, pattern) {
+		slog.Debug("rest: built-in route yielded to a module registration",
+			"method", method, "pattern", pattern)
+		return
+	}
 	s.routePerms.Register(method, pattern, perm)
 	if !enabled {
 		return
@@ -879,6 +888,12 @@ func (s *Server) public(method, pattern string, h http.HandlerFunc) {
 // publicIf mirrors routeIf for public routes: the public marker is recorded
 // unconditionally, the router registration is gated on enabled.
 func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFunc) {
+	// Built-ins yield to module registrations (see routeIf).
+	if s.routePerms.Covered(method, pattern) {
+		slog.Debug("rest: built-in route yielded to a module registration",
+			"method", method, "pattern", pattern)
+		return
+	}
 	s.routePerms.RegisterPublic(method, pattern)
 	if !enabled {
 		return
@@ -892,6 +907,12 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 // marker is recorded unconditionally, the router registration is gated on
 // enabled.
 func (s *Server) authenticatedIf(enabled bool, method, pattern string, h http.HandlerFunc) {
+	// Built-ins yield to module registrations (see routeIf).
+	if s.routePerms.Covered(method, pattern) {
+		slog.Debug("rest: built-in route yielded to a module registration",
+			"method", method, "pattern", pattern)
+		return
+	}
 	s.routePerms.RegisterAuthenticated(method, pattern)
 	if !enabled {
 		return

@@ -1009,10 +1009,10 @@ func TestBootstrapAuth_Success(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// bootstrapAuth: audit logger creation failure
+// bootstrapAuth: per-decision audit rides the chained compliance logger
 // ---------------------------------------------------------------------------
 
-func TestBootstrapAuth_AuditLoggerError(t *testing.T) {
+func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	// The audit logger's file backend creates a file at
 	// filepath.Join(dataDir, "audit.log"). If the dataDir does not exist
 	// and cannot be created, os.OpenFile fails and bootstrapAuth wraps
@@ -1053,21 +1053,20 @@ func TestBootstrapAuth_AuditLoggerError(t *testing.T) {
 		},
 	}
 
-	// Pass a nonexistent nested directory as dataDir so that
-	// os.OpenFile(filepath.Join(dataDir, "audit.log"), ...) fails.
+	// The per-decision audit rides the chained compliance logger via the
+	// decision bridge — there is no unchained side file to open — so a
+	// nonexistent dataDir no longer fails auth bootstrap. Pin the
+	// one-audit-plane behavior: construction succeeds and yields a
+	// middleware.
 	nonexistentDir := filepath.Join(t.TempDir(), "does", "not", "exist")
 	node := &mockRaftNode{} // default: leader ready
 
-	// First bootstrap the management stores (this succeeds).
 	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.NoError(t, err)
 
-	// Then bootstrap auth enforcement with the bad dataDir (this fails).
-	_, err = bootstrapAuthEnforcement(context.Background(), mgmt, mock, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
-	require.Error(t, err)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
-	assert.Equal(t, "audit logger", abe.Step)
+	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
 }
 
 // ---------------------------------------------------------------------------

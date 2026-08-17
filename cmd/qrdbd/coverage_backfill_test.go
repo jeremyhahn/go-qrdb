@@ -665,50 +665,6 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// start.go: runStart — bootstrapAuthEnforcement error covers lines 1172-1178
-// ---------------------------------------------------------------------------
-
-// TestRunStart_BootstrapAuthEnforcementFails verifies that when
-// bootstrapAuthEnforcement fails (audit.log path is a directory so
-// audit.New returns an error), runStart returns an AuthBootstrapError
-// covering start.go:1172-1178.
-func TestRunStart_BootstrapAuthEnforcementFails(t *testing.T) {
-	dir := t.TempDir()
-
-	raftPort, err := findFreeUDPPort()
-	require.NoError(t, err)
-
-	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
-
-	// Place a directory at audit.log so audit.New (FileBackend) fails.
-	auditLogPath := filepath.Join(dir, "audit.log")
-	require.NoError(t, os.MkdirAll(auditLogPath, 0o700))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "memory",
-		discoveryMethod: "static",
-		peers:           []string{fmt.Sprintf("1=%s", raftAddr)},
-		listen:          fmt.Sprintf("0.0.0.0:%d", raftPort),
-		raftAddress:     raftAddr,
-		shardID:         1,
-		replicaID:       1,
-		deploymentID:    1,
-		adminPort:       occupiedTCPPort(t),
-		grpcPort:        9999,
-		authEnabled:     true, // triggers bootstrapAuthEnforcement path
-		enableREST:      true,
-	}
-
-	err = runStart(f)
-	require.Error(t, err)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe),
-		"expected AuthBootstrapError from bootstrapAuthEnforcement, got %T: %v", err, err)
-	assert.Equal(t, "audit logger", abe.Step)
-}
-
-// ---------------------------------------------------------------------------
 // start.go: runStart — audit.NewFileLogger error path (lines 1153-1156)
 // ---------------------------------------------------------------------------
 

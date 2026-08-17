@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.5-alpha] - 2026-08-17
+
+### Changed
+
+- **Built-in routes yield to module registrations.** The documented
+  "modules register first and take precedence" contract is now formal:
+  a built-in route whose method+pattern a capability module already
+  claimed is skipped (debug-logged) instead of colliding. Module-vs-
+  module duplicates still fail construction loudly.
+- qrdbd auth bootstrap no longer opens an unchained `audit.log` side
+  file (the decision bridge made it obsolete); a nonexistent data dir no
+  longer fails auth bootstrap.
+
 ## [0.5.4-alpha] - 2026-08-16
 
 ### Added
