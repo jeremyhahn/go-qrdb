@@ -17,10 +17,11 @@ ABAC with the wrapped (RBAC) authorizer:
 2. **Explicit ALLOW match** → allow immediately. ABAC can grant beyond RBAC.
 3. **No rule matched** → delegate to the inner authorizer. RBAC decides.
 
-With zero policies configured, `Decorate` returns the inner authorizer
-unchanged (zero overhead). Deny rules of **all** applicable policies are
-evaluated before any allow rule (deny-overrides combining), so an allow in
-one policy can never shadow a deny in another.
+With zero policies configured (and `WithLiveReload` not supplied), `Decorate`
+returns the inner authorizer unchanged (zero overhead). Deny rules of
+**all** applicable policies are evaluated before any allow rule
+(deny-overrides combining), so an allow in one policy can never shadow a
+deny in another.
 
 ### Tenant scoping
 
@@ -37,9 +38,34 @@ for a non-nil identity. A nil identity matches no policy and always falls
 through to the inner authorizer. The target tenant is available in
 conditions as `request.tenant`.
 
-Policies are loaded once at construction. Hot-reload is a documented
-follow-up; restart the node (or rebuild the embedded decorator) to pick up
-policy changes.
+### Live reload
+
+The active policy set can be replaced at runtime, without restarting the
+process, via `Decorator.Reload(policies []*abac.Policy) error`. Reload
+compiles and validates the new set before swapping it in: a failed reload
+(bad policy, parse error) returns the typed compilation/validation error and
+leaves the previously active set fully in force — a reload never partially
+applies. The swap is a single atomic pointer store, so `Authorize` reads the
+active set lock-free and concurrently with any number of in-flight `Reload`
+calls.
+
+`Decorate` returns a `*Decorator` (which implements `Reload`) whenever it
+wraps at all — i.e. whenever at least one policy was configured, or
+`WithLiveReload()` was passed. `WithLiveReload` forces the wrapper even with
+zero initial policies, so an embedder that starts with none can still add
+its first policy later (e.g. from a downstream policy CRUD store) instead of
+restarting.
+
+`sdk/go/node.Node` exposes the seam as `Node.ABACPolicyReloader()
+abac.PolicyReloader`, non-nil whenever the node was built with
+`WithABACPolicies`, `WithABACPolicyDir`, or `WithABACLiveReload`. The
+embedded in-process transport (`node.Client().RBAC()`) and, when auth is
+enabled, every network transport's `AuthMiddleware` (REST, gRPC, unix, QUIC,
+MCP, MySQL, PostgreSQL) share the SAME composed authorizer instance
+(`pkg/auth/wiring.AuthorizerConfig.Authorizer` /
+`AuthMiddlewareConfig.Authorizer`), so a single `Reload` call is visible to
+every transport atomically — qrdb stays the one authorization decision
+point rather than each transport caching an independently-reloadable copy.
 
 ## Configuration
 
@@ -65,14 +91,25 @@ Embedded hosts (xkms, quicbaas) enable it per node — via the SDK only:
 n, err := node.NewStandaloneNode(ctx, cfg, nil,
     node.WithABACPolicyDir("/etc/xkms/abac"),          // and/or
     node.WithABACPolicies([]*qrdbsdk.ABACPolicy{...}), // programmatic
+    node.WithABACLiveReload(),                         // keep Reload available even from zero policies
 )
+
+// Later, e.g. from a policy CRUD handler:
+if reloader := n.ABACPolicyReloader(); reloader != nil {
+    if err := reloader.Reload(updatedPolicies); err != nil {
+        // typed error (e.g. *abac.CompilationFailedError); the previous
+        // policy set is still fully in force.
+    }
+}
 ```
 
 SDK re-exports (`sdk/go/types_abac.go`): `ABACPolicy`, `ABACRule`,
-`ABACEffectAllow/Deny`, `DecorateAuthorizer`, `ABACWithPolicyDir`,
-`ABACWithPolicies`, `LoadABACPolicyDir`, `LoadABACPolicyFile`,
-`ABACPolicyDeniedError`, plus `DaemonAuthABACConfig` in the daemon config
-aliases.
+`ABACEffectAllow/Deny`, `ABACPolicyReloader`, `DecorateAuthorizer`,
+`ABACWithPolicyDir`, `ABACWithPolicies`, `ABACWithLiveReload`,
+`LoadABACPolicyDir`, `LoadABACPolicyFile`, `ABACPolicyDeniedError`, plus
+`DaemonAuthABACConfig` in the daemon config aliases. `node.WithABACLiveReload`
+and `Node.ABACPolicyReloader` live in `sdk/go/node`, imported directly (not
+re-exported through `sdk/go`).
 
 ## Policy schema
 

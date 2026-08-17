@@ -22,6 +22,16 @@
 // are intentionally NOT ported; policies are loaded at construction from
 // a directory of YAML files or injected directly by embedded hosts.
 //
+// The active policy set can be replaced at runtime, without restarting the
+// embedding process, by calling Decorator.Reload — the seam a downstream
+// policy store (e.g. a policy CRUD API) drives after persisting a change.
+// Reload compiles and validates the new set before swapping it in, so a
+// failed reload leaves the previous set fully in force, and the swap is a
+// single atomic pointer store: Authorize always reads a complete policy
+// set, lock-free, never a partially applied reload. Construct a Decorator
+// that supports Reload even before any policy exists by passing
+// WithLiveReload to Decorate.
+//
 // The Decorator implements auth.Authorizer and composes with the RBAC
 // authorizer using hybrid semantics:
 //

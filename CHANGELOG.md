@@ -11,6 +11,23 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.8-alpha] - 2026-08-17
+
+### Added
+
+- **Live ABAC policy reload.** `pkg/auth/abac.Decorator` now supports
+  `Reload(policies []*abac.Policy) error`: the new set is compiled and
+  validated before an atomic pointer swap, so a failed reload leaves the
+  previous policy set fully in force and `Authorize` reads lock-free under
+  concurrent reloads. `abac.WithLiveReload` keeps the decorator reloadable
+  even when zero policies are configured at construction. `sdk/go/node.Node`
+  exposes the seam via `WithABACLiveReload` / `Node.ABACPolicyReloader()`;
+  `pkg/auth/wiring.AuthorizerConfig`/`AuthMiddlewareConfig` gained an
+  `Authorizer` override field so the embedded in-process transport and every
+  network transport's `AuthMiddleware` share one authorizer instance, and a
+  reload reaches all of them identically. `sdk/go/types_abac.go` re-exports
+  `ABACPolicyReloader` and `ABACWithLiveReload`.
+
 ## [0.5.7-alpha] - 2026-08-17
 
 ### Fixed — SECURITY-ADJACENT

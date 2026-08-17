@@ -43,8 +43,19 @@ import (
 // caller that needs the bare auth.Authorizer without a full AuthMiddleware
 // (e.g. sdk/go/node's embedded in-process transport).
 type AuthorizerConfig struct {
+	// Authorizer, when non-nil, is used directly instead of constructing a
+	// fresh RBAC[+ABAC] stack from RoleService/ABAC*, and RoleService is
+	// then NOT required. This lets a caller that already built the
+	// composed authorizer (e.g. sdk/go/node, so its embedded in-process
+	// transport and the network-transport AuthMiddleware share the EXACT
+	// SAME authorizer instance) reuse it rather than standing up a second,
+	// independently-configured one. A live ABAC policy reload on the
+	// shared instance then reaches every transport, keeping qrdb the
+	// single authorization decision point.
+	Authorizer auth.Authorizer
+
 	// RoleService resolves an identity's roles into their granted
-	// permissions. Required.
+	// permissions. Required unless Authorizer is set.
 	RoleService role.RoleServicer
 
 	// RoleServiceFallback is an optional StaleRead-backed role store
@@ -75,11 +86,16 @@ type AuthorizerConfig struct {
 }
 
 // BuildAuthorizer constructs the canonical RBAC[+ABAC] auth.Authorizer:
-// rbac.New(cfg.RoleService, ...) optionally decorated via DecorateABAC.
+// rbac.New(cfg.RoleService, ...) optionally decorated via DecorateABAC. When
+// cfg.Authorizer is non-nil it is returned directly and no new RBAC/ABAC
+// stack is constructed (see AuthorizerConfig.Authorizer). Otherwise
 // RoleService is required; its absence returns *MissingServiceError so a
 // caller that intends to enforce authorization fails loudly rather than
 // silently admitting every request.
 func BuildAuthorizer(cfg AuthorizerConfig) (auth.Authorizer, error) {
+	if cfg.Authorizer != nil {
+		return cfg.Authorizer, nil
+	}
 	if cfg.RoleService == nil {
 		return nil, &MissingServiceError{Service: "role"}
 	}
@@ -124,9 +140,16 @@ type AuthMiddlewareConfig struct {
 	// explicit operator choice — never as a silent default.
 	Enabled bool
 
+	// Authorizer, when non-nil, is forwarded to BuildAuthorizer and used
+	// directly instead of constructing a fresh RBAC[+ABAC] stack. See
+	// AuthorizerConfig.Authorizer.
+	Authorizer auth.Authorizer
+
 	// RoleService and UserService back the RBAC authorizer and the
-	// identity-enrichment/enabled-check respectively. Both are required
-	// when Enabled is true; their absence returns *MissingServiceError.
+	// identity-enrichment/enabled-check respectively. UserService is
+	// always required when Enabled is true; RoleService is required
+	// unless Authorizer is set. Either missing requirement returns
+	// *MissingServiceError.
 	RoleService role.RoleServicer
 	UserService user.UserServicer
 
@@ -168,15 +191,16 @@ type AuthMiddlewareConfig struct {
 // When cfg.Enabled is false, BuildAuthMiddleware returns (nil, nil): the
 // caller must skip installing the middleware, matching qrdbd's own
 // --auth-enabled=false posture (auth explicitly disabled by the operator).
-// When cfg.Enabled is true, RoleService and UserService are REQUIRED: their
-// absence returns a *MissingServiceError so an embedder (e.g. an SDK node
-// whose service graph failed to construct one of them) fails loudly at
-// boot instead of silently serving every request unauthenticated.
+// When cfg.Enabled is true, UserService is always REQUIRED, and RoleService
+// is required unless cfg.Authorizer is set: their absence returns a
+// *MissingServiceError so an embedder (e.g. an SDK node whose service graph
+// failed to construct one of them) fails loudly at boot instead of
+// silently serving every request unauthenticated.
 func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	if cfg.RoleService == nil {
+	if cfg.Authorizer == nil && cfg.RoleService == nil {
 		return nil, &MissingServiceError{Service: "role"}
 	}
 	if cfg.UserService == nil {
@@ -184,6 +208,7 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 
 	authorizer, err := BuildAuthorizer(AuthorizerConfig{
+		Authorizer:          cfg.Authorizer,
 		RoleService:         cfg.RoleService,
 		RoleServiceFallback: cfg.RoleServiceFallback,
 		StrictSeparation:    cfg.StrictSeparation,

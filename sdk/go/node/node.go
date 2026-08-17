@@ -203,6 +203,12 @@ type nodeOptions struct {
 	// embedded RBAC authorizer is constructed. Load or compile failures
 	// abort the boot (fail closed).
 	abacPolicyDir string
+
+	// abacLiveReload forces the ABAC decorator to be constructed (and its
+	// Reload seam exposed via Node.ABACPolicyReloader) even when neither
+	// abacPolicies nor abacPolicyDir is set, so an embedder can add its
+	// first policy after boot. See WithABACLiveReload.
+	abacLiveReload bool
 }
 
 // NodeOption is a functional option for NewStandaloneNode / NewClusteredNode.
@@ -323,6 +329,19 @@ func WithABACPolicyDir(dir string) NodeOption {
 	return func(o *nodeOptions) { o.abacPolicyDir = dir }
 }
 
+// WithABACLiveReload guarantees the node's ABAC decorator supports
+// Node.ABACPolicyReloader / Decorator.Reload even when the node is
+// constructed with neither WithABACPolicies nor WithABACPolicyDir. Without
+// this option, a node built with zero initial ABAC policies runs the RBAC
+// authorizer undecorated (matching prior behavior) and
+// ABACPolicyReloader returns nil, since there is nothing to reload into.
+// Set this when a downstream policy store (e.g. a policy CRUD API) will
+// call Node.ABACPolicyReloader().Reload after boot, including to add the
+// very first policy.
+func WithABACLiveReload() NodeOption {
+	return func(o *nodeOptions) { o.abacLiveReload = true }
+}
+
 // ---------------------------------------------------------------------------
 // nodeSealSubsystem
 // ---------------------------------------------------------------------------
@@ -437,11 +456,29 @@ type Node struct {
 	sessionIssuer        embedded.SessionIssuer
 	loginFactorVerifiers []embedded.FactorVerifier
 
-	// abacPolicies / abacPolicyDir carry the ABAC decorator configuration
-	// from the node constructor to buildEmbeddedOpts, which wraps the RBAC
-	// authorizer via abac.Decorate. Both empty means RBAC only.
-	abacPolicies  []*abac.Policy
-	abacPolicyDir string
+	// abacPolicies / abacPolicyDir / abacLiveReload carry the ABAC decorator
+	// configuration from the node constructor to buildEmbeddedOpts, which
+	// wraps the RBAC authorizer via abac.Decorate. All empty/false means
+	// RBAC only.
+	abacPolicies   []*abac.Policy
+	abacPolicyDir  string
+	abacLiveReload bool
+
+	// authorizer is the composed RBAC[+ABAC] auth.Authorizer built by
+	// decorateABAC in buildEmbeddedOpts (nil when svcNode.Role is nil, i.e.
+	// no Role service). wireClientAndServer forwards this SAME instance to
+	// wiring.BuildAuthMiddleware (AuthMiddlewareConfig.Authorizer) so the
+	// embedded in-process transport and every network transport (REST,
+	// gRPC, unix, QUIC, MCP, MySQL, PostgreSQL) share one authorizer — an
+	// ABAC policy Reload on it reaches every transport identically.
+	authorizer auth.Authorizer
+
+	// abacDecorator is the Reload seam for the node's live ABAC policy set,
+	// set by decorateABAC when the composed authorizer supports it
+	// (abac.PolicyReloader). Nil when ABAC was not configured with
+	// WithABACLiveReload and no initial policies were supplied. Exposed via
+	// ABACPolicyReloader.
+	abacDecorator abac.PolicyReloader
 
 	// auditLogger is the caller-supplied compliance audit logger resolved
 	// from the server.ServerOptions. It is shared with the multi-protocol
@@ -1139,6 +1176,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
+		abacLiveReload:            nOpts.abacLiveReload,
 	}
 
 	backendType, dataDir, err := resolveBackend(cfg)
@@ -1295,6 +1333,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
 		abacPolicyDir:             nOpts.abacPolicyDir,
+		abacLiveReload:            nOpts.abacLiveReload,
 	}
 
 	dataDir := cfg.Raft.DataDir
@@ -1720,10 +1759,18 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// aborts node construction with a typed AuthMiddlewareWiringError
 	// rather than silently serving unauthenticated.
 	//
-	// The ABAC decoration mirrors buildEmbeddedOpts/decorateABAC exactly
-	// (n.abacPolicyDir / n.abacPolicies, the WithABACPolicies /
-	// WithABACPolicyDir node options) so the network transports and the
-	// in-process embedded transport authorize identically.
+	// n.authorizer is the EXACT SAME composed RBAC[+ABAC] authorizer
+	// buildEmbeddedOpts/decorateABAC already built and handed to the
+	// in-process embedded transport (embedded.WithRBACAuthorizer), passed
+	// here via AuthMiddlewareConfig.Authorizer so BuildAuthMiddleware
+	// reuses it instead of constructing an independent second instance.
+	// Sharing one instance is what makes a live ABAC policy Reload
+	// (Node.ABACPolicyReloader) reach every network transport identically
+	// to the embedded transport — two independently-built decorators would
+	// silently diverge the moment either one reloaded. n.authorizer is nil
+	// only when svcNode.Role is nil (no Role service), in which case
+	// cfg.RoleService below is also nil and BuildAuthMiddleware fails
+	// closed exactly as it did before this authorizer was shared.
 	// The middleware's per-decision audit trail (audit.Logger, Log/Close)
 	// bridges onto the node's chained compliance sink (audit.AuditLogger,
 	// Emit/Query) via audit.NewDecisionLogger, so authorization decisions
@@ -1736,13 +1783,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:           cfg.Auth.IsEnabled(),
+		Authorizer:        n.authorizer,
 		RoleService:       svcNode.Role,
 		UserService:       svcNode.User,
 		StrictSeparation:  strictSoD,
 		SPIFFETrustDomain: cfg.Auth.SPIFFETrustDomain,
-		ABACEnabled:       n.abacPolicyDir != "" || len(n.abacPolicies) > 0,
-		ABACPolicyDir:     n.abacPolicyDir,
-		ABACPolicies:      n.abacPolicies,
 		AuditLogger:       decisionAudit,
 	})
 	if err != nil {
@@ -1864,6 +1909,7 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 		if err != nil {
 			return nil, err
 		}
+		n.authorizer = authorizer
 		opts = append(opts, embedded.WithRBACAuthorizer(authorizer))
 	}
 	if svcNode.Barrier != nil {
@@ -1894,26 +1940,55 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool) ([]emb
 }
 
 // decorateABAC wraps the given authorizer with the ABAC policy decorator
-// when the node was constructed with WithABACPolicies or WithABACPolicyDir.
-// With neither configured the inner authorizer is returned unchanged. Any
-// load or compilation failure is wrapped in *ABACWiringError so the caller
-// aborts the boot rather than running with a partial policy set.
+// when the node was constructed with WithABACPolicies, WithABACPolicyDir,
+// or WithABACLiveReload. With none of those configured the inner
+// authorizer is returned unchanged. Any load or compilation failure is
+// wrapped in *ABACWiringError so the caller aborts the boot rather than
+// running with a partial policy set.
+//
+// When the returned authorizer supports live reload (abac.PolicyReloader —
+// always true when WithABACLiveReload was set, since that forces
+// abac.Decorate to wrap even with zero initial policies; also true when at
+// least one policy was actually loaded from abacPolicies/abacPolicyDir),
+// the reload seam is retained on n.abacDecorator for ABACPolicyReloader.
 func (n *Node) decorateABAC(inner auth.Authorizer) (auth.Authorizer, error) {
-	if len(n.abacPolicies) == 0 && n.abacPolicyDir == "" {
+	if len(n.abacPolicies) == 0 && n.abacPolicyDir == "" && !n.abacLiveReload {
 		return inner, nil
 	}
-	decoratorOpts := make([]abac.Option, 0, 2)
+	decoratorOpts := make([]abac.Option, 0, 3)
 	if n.abacPolicyDir != "" {
 		decoratorOpts = append(decoratorOpts, abac.WithPolicyDir(n.abacPolicyDir))
 	}
 	if len(n.abacPolicies) > 0 {
 		decoratorOpts = append(decoratorOpts, abac.WithPolicies(n.abacPolicies))
 	}
+	if n.abacLiveReload {
+		decoratorOpts = append(decoratorOpts, abac.WithLiveReload())
+	}
 	authorizer, err := abac.Decorate(inner, decoratorOpts...)
 	if err != nil {
 		return nil, &ABACWiringError{Err: err}
 	}
+	if reloader, ok := authorizer.(abac.PolicyReloader); ok {
+		n.abacDecorator = reloader
+	}
 	return authorizer, nil
+}
+
+// ABACPolicyReloader returns the handle for replacing the node's active
+// ABAC policy set at runtime, without restarting the process. It returns
+// nil when the node's ABAC decorator does not support reload — i.e. the
+// node was constructed with none of WithABACPolicies, WithABACPolicyDir,
+// or WithABACLiveReload. Callers should nil-check before use, mirroring
+// other optional runtime handles exposed by Node (e.g. BarrierRegistry).
+//
+// The returned reloader updates the SAME authorizer instance shared by the
+// node's embedded in-process transport (node.Client().RBAC()) and, when
+// auth is enabled, every network transport's AuthMiddleware (REST, gRPC,
+// unix, QUIC, MCP, MySQL, PostgreSQL) — a Reload call is visible to every
+// transport atomically and immediately.
+func (n *Node) ABACPolicyReloader() abac.PolicyReloader {
+	return n.abacDecorator
 }
 
 // buildLoginOpts constructs the embedded options that wire the unified-login

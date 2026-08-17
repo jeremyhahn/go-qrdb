@@ -132,3 +132,122 @@ func TestNodeDecorateABAC_InvalidPolicy(t *testing.T) {
 	var wireErr *ABACWiringError
 	require.True(t, errors.As(err, &wireErr))
 }
+
+// TestNode_ABACPolicyReloader_Unconfigured verifies that a node built
+// without WithABACPolicies, WithABACPolicyDir, or WithABACLiveReload has no
+// reload seam: ABACPolicyReloader returns nil.
+func TestNode_ABACPolicyReloader_Unconfigured(t *testing.T) {
+	n := newMemoryNodeWithUser(t)
+	assert.Nil(t, n.ABACPolicyReloader())
+}
+
+// TestNode_ABACPolicyReloader_ReachesEmbeddedAuthorizer proves the exported
+// reload seam reaches the live decorator wired into the embedded transport:
+// after Node.ABACPolicyReloader().Reload swaps in a new policy set, the
+// SAME node.Client().RBAC() authorizer immediately enforces the new
+// decisions, with no restart.
+func TestNode_ABACPolicyReloader_ReachesEmbeddedAuthorizer(t *testing.T) {
+	ctx := context.Background()
+	setA := []*abac.Policy{abacGuardrailPolicy()} // denies keys:destroy, allows keys:export
+	n := newMemoryNodeWithUser(t, WithABACPolicies(setA))
+	svcNode := n.Services()
+
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	rbacClient := n.Client().RBAC()
+	require.NotNil(t, rbacClient)
+
+	id := &transport.Identity{
+		Subject:  "admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{adminRoleID},
+	}
+	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+
+	// Set A is in force: destroy denied, export allowed.
+	err := rbacClient.Authorize(selfCtx, id, "keys", "destroy")
+	var denied *abac.PolicyDeniedError
+	require.True(t, errors.As(err, &denied), "expected set A's deny rule to fire, got %v", err)
+	require.NoError(t, rbacClient.Authorize(selfCtx, id, "keys", "export"))
+
+	reloader := n.ABACPolicyReloader()
+	require.NotNil(t, reloader, "a node built with WithABACPolicies must expose a reload seam")
+
+	// Reload to a policy set with the OPPOSITE decisions: destroy allowed,
+	// export denied.
+	setB := []*abac.Policy{{
+		APIVersion: "abac.qrdb.io/v1",
+		Kind:       abac.PolicyKind,
+		Metadata:   abac.PolicyMetadata{Name: "node-guardrail-v2", Tenant: tenant.SystemTenantID},
+		Spec: abac.PolicySpec{
+			Subjects: abac.SubjectSelector{Any: true},
+			Rules: []abac.Rule{
+				{Name: "allow-destroy", Effect: abac.EffectAllow, Actions: []string{"destroy"}, Resources: []string{"keys"}},
+				{Name: "deny-export", Effect: abac.EffectDeny, Actions: []string{"export"}, Resources: []string{"keys"}},
+			},
+		},
+	}}
+	require.NoError(t, reloader.Reload(setB))
+
+	// The SAME rbacClient, with no restart, now enforces set B.
+	require.NoError(t, rbacClient.Authorize(selfCtx, id, "keys", "destroy"),
+		"after reload, set B's allow rule must grant keys:destroy")
+	err = rbacClient.Authorize(selfCtx, id, "keys", "export")
+	require.True(t, errors.As(err, &denied), "after reload, set B's deny rule must reject keys:export, got %v", err)
+	assert.Equal(t, "node-guardrail-v2", denied.Policy)
+}
+
+// TestNode_ABACPolicyReloader_LiveReloadFromZero proves WithABACLiveReload
+// exposes a working reload seam even when the node starts with zero ABAC
+// policies, so an embedder can add its first policy after boot instead of
+// restarting the process.
+func TestNode_ABACPolicyReloader_LiveReloadFromZero(t *testing.T) {
+	ctx := context.Background()
+	n := newMemoryNodeWithUser(t, WithABACLiveReload())
+	svcNode := n.Services()
+
+	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	rbacClient := n.Client().RBAC()
+	require.NotNil(t, rbacClient)
+
+	id := &transport.Identity{
+		Subject:  "admin",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{adminRoleID},
+	}
+	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
+
+	// No ABAC policy exists yet: RBAC decides, and the seeded Admin role
+	// grants self-scope tenants:read.
+	require.NoError(t, rbacClient.Authorize(selfCtx, id, "tenants", "read"))
+
+	reloader := n.ABACPolicyReloader()
+	require.NotNil(t, reloader, "WithABACLiveReload must expose a reload seam even with zero initial policies")
+	denyRead := testPolicyForTenant("first-policy", tenant.SystemTenantID, abac.Rule{
+		Name:      "deny-tenants-read",
+		Effect:    abac.EffectDeny,
+		Actions:   []string{"read"},
+		Resources: []string{"tenants"},
+	})
+	require.NoError(t, reloader.Reload([]*abac.Policy{denyRead}))
+
+	// The first policy is now active: tenants:read is denied even though
+	// RBAC still grants it.
+	err := rbacClient.Authorize(selfCtx, id, "tenants", "read")
+	var denied *abac.PolicyDeniedError
+	require.True(t, errors.As(err, &denied), "expected the newly-reloaded deny rule to fire, got %v", err)
+	assert.Equal(t, "first-policy", denied.Policy)
+}
+
+// testPolicyForTenant builds a minimal, valid ABAC policy applying to every
+// subject in tenantID.
+func testPolicyForTenant(name, tenantID string, rules ...abac.Rule) *abac.Policy {
+	return &abac.Policy{
+		APIVersion: "abac.qrdb.io/v1",
+		Kind:       abac.PolicyKind,
+		Metadata:   abac.PolicyMetadata{Name: name, Tenant: tenantID},
+		Spec: abac.PolicySpec{
+			Subjects: abac.SubjectSelector{Any: true},
+			Rules:    rules,
+		},
+	}
+}

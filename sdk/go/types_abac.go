@@ -65,10 +65,20 @@ type ABACDecoratorOption = abac.Option
 // matches a request. It wraps ErrUnauthorized.
 type ABACPolicyDeniedError = abac.PolicyDeniedError
 
+// ABACPolicyReloader is the seam for replacing an ABAC decorator's active
+// policy set at runtime, without restarting the embedding process. The
+// authorizer returned by DecorateAuthorizer implements this interface
+// whenever it wraps at all (i.e. whenever it isn't the bare pass-through
+// inner authorizer) — type-assert the result, or use
+// sdk/go/node.Node.ABACPolicyReloader for the SDK node's composed
+// authorizer.
+type ABACPolicyReloader = abac.PolicyReloader
+
 // DecorateAuthorizer wraps an authorizer with ABAC policy evaluation:
 // explicit deny overrides the inner allow, explicit allow grants beyond
 // the inner authorizer, and unmatched requests delegate to it. With zero
-// policies configured the inner authorizer is returned unchanged.
+// policies configured (and ABACWithLiveReload not supplied) the inner
+// authorizer is returned unchanged.
 var DecorateAuthorizer = abac.Decorate
 
 // ABACWithPolicyDir loads YAML policy files from a directory at
@@ -77,6 +87,12 @@ var ABACWithPolicyDir = abac.WithPolicyDir
 
 // ABACWithPolicies injects programmatically constructed policies.
 var ABACWithPolicies = abac.WithPolicies
+
+// ABACWithLiveReload keeps DecorateAuthorizer's returned authorizer
+// reloadable (implementing ABACPolicyReloader) even when zero policies are
+// configured at construction time, so an embedder can add its first policy
+// later via Reload instead of restarting the process.
+var ABACWithLiveReload = abac.WithLiveReload
 
 // LoadABACPolicyDir loads and validates every policy document from the
 // YAML files directly inside a directory.
