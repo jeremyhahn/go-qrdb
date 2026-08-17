@@ -56,3 +56,14 @@ func NewAuditFileLogger(path string) (NodeAuditLogger, error) {
 func NewAuditRingBuffer(capacity int) NodeAuditLogger {
 	return audit.NewRingBuffer(capacity)
 }
+
+// NodeAuditEvent is the canonical audit record the node sink accepts
+// (pkg/audit.AuditEvent): actor, tenant, resource, action, outcome,
+// attributes, and the tamper-evidence chain field.
+type NodeAuditEvent = audit.AuditEvent
+
+// NodeAuditFilter filters NodeAuditLogger.Query.
+type NodeAuditFilter = audit.Filter
+
+// NodeAuditPage is one page of queried audit events.
+type NodeAuditPage = audit.Page

@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.5.4-alpha] - 2026-08-16
+
+### Added
+
+- SDK audit-record aliases (`qrdbsdk.NodeAuditEvent` / `NodeAuditFilter` /
+  `NodeAuditPage`): composing hosts emit into the node's chained audit
+  sink through the SDK boundary without importing `pkg/audit`.
+
 ## [0.5.3-alpha] - 2026-08-16
 
 ### Added
