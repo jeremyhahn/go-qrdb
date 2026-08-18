@@ -1,0 +1,107 @@
+# Leases — User Guide
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+
+A lease is a timer with a name. Attach keys to it, keep it alive while you care
+about them, and the server deletes them all when you stop.
+
+## Prerequisites
+
+A reachable server, client certificates, an unsealed barrier, and the `lease:*`
+permissions for the verbs you use. Attaching a key also needs
+`mvcc:put_with_lease`.
+
+## First run
+
+```bash
+# Create a 60-second lease
+qrdb lease grant --ttl 60
+```
+
+Note the `id` it returns. Hang a key off it:
+
+```bash
+qrdb kv put session/abc '{"user":"alice"}' --lease-id 7
+```
+
+Wait 60 seconds without renewing, and the key is gone:
+
+```bash
+qrdb kv get session/abc      # not found
+```
+
+## Common tasks
+
+**Script it end to end.**
+
+```bash
+LEASE=$(qrdb lease grant --ttl 60 --output json | jq -r .id)
+qrdb kv put session/abc '{"user":"alice"}' --lease-id "$LEASE"
+qrdb kv put session/abc/meta 'ua=curl'     --lease-id "$LEASE"
+```
+
+Both keys share one lifetime. Revoke the lease and both disappear together.
+
+**Keep it alive while your process is running.** Renew well before the TTL —
+half the TTL is a good default, so one missed renewal is not fatal.
+
+```bash
+while sleep 25; do qrdb lease keep-alive "$LEASE" >/dev/null || break; done &
+```
+
+**Check how long you have left.**
+
+```bash
+qrdb lease ttl "$LEASE" --output json
+```
+
+`granted_ttl` is what you asked for; `remaining_ttl` is what is left.
+
+**Tear down deliberately.**
+
+```bash
+qrdb lease revoke "$LEASE"
+```
+
+This deletes every attached key immediately. It is the clean-shutdown path for a
+session or a service registration.
+
+**See what is outstanding.**
+
+```bash
+qrdb lease list
+```
+
+**React when a lease expires.** The cascade delete shows up as ordinary delete
+events, so a watcher learns about it the normal way:
+
+```bash
+qrdb watch session/ --prefix
+```
+
+## Troubleshooting
+
+**Your keys vanished and you did not revoke anything.** The keep-alive stopped —
+a crashed renewer, a network partition longer than the TTL, or a renewal
+interval too close to the TTL. Lengthen the TTL, renew more often, or both. This
+is the feature working as designed: expiry is what leases are for.
+
+**"Reading the key should have kept it alive."** It does not. Only
+`lease keep-alive` renews. Renewal on access would tie expiry to traffic rather
+than to whether the owner is still alive.
+
+**Writing with `--lease-id` was refused.** The lease does not exist — it expired
+or was revoked between your grant and your write. The write is refused rather
+than accepted lease-less, because a key silently written without its lease would
+never expire. Grant a new lease and retry.
+
+**`lease keep-alive` returns not-found.** The lease already expired; its keys are
+already gone. Grant a new one and re-create the state.
+
+**A lease ID from one database does not work in another.** Leases are scoped per
+(tenant, database), like every other data-plane object. Check `--database`.
+
+**You want a TTL shorter than a second.** Not available — TTLs are whole
+seconds, and finer granularity would not be honoured by the expiry sweep anyway.
+For sub-second coordination use [../distributed-locks/](../distributed-locks/),
+which is built on leases but gives you a fencing token to reason with.
