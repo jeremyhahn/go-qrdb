@@ -24,7 +24,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/uuidv8"
 )
 
 const (
@@ -103,12 +102,8 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		return nil, err
 	}
 
-	// Deterministic ID: RFC 9562 UUID v8 over SHA-256 of the DNS namespace +
-	// "tenantID:username". It was UUID v5, which is defined to hash with SHA-1
-	// and therefore panics under GODEBUG=fips140=only. The ID is derived from
-	// the request on every call rather than allocated, so it stays stable for a
-	// given tenant and username on any node running this build.
-	id := uuidv8.FromName(uuid.NameSpaceDNS, req.TenantID+":"+req.Username).String()
+	// Deterministic ID: UUID v5 from DNS namespace + "tenantID:username".
+	id := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(req.TenantID+":"+req.Username)).String()
 
 	// Check for duplicate registration.
 	existing, err := s.store.Get(ctx, sysCustodianPrefix+id)

@@ -328,7 +328,7 @@ The role model integrates with qrdb's existing RBAC system (`pkg/role/`, `pkg/au
 
 On daemon initialization (`qrdbd start`), the six system roles are created deterministically and idempotently:
 
-- Each role is assigned a fixed UUID derived from its name via RFC 9562 version 8 over SHA-256 (e.g., `uuidv8.FromName(roleNamespace, "system/SO")`). It was UUID v5 until SHA-1 was removed for [FIPS 140-3 mode](../seal/fips140-mode.md)
+- Each role is assigned a fixed UUID v5 derived from its name (e.g., `uuid.NewSHA1(UUID_NAMESPACE_DNS, "go-qrdb/role/SO")`)
 - All six roles are marked as **system roles** (undeletable)
 - Roles are persisted in the KV store at `__sys:role/<id>` (Raft-replicated)
 - If roles already exist (restart scenario), the function returns immediately without duplication

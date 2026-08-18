@@ -79,7 +79,7 @@ Source: `pkg/role/store.go`
 | `__sys:roles/tenant/{tenantID}/{roleID}` | roleID bytes | Tenant-scoped listing index |
 | `__sys:role_idx/name/{tenantID}/{roleName}` | roleID bytes | Name uniqueness index |
 
-The name index enforces uniqueness within a tenant. Role IDs for built-in roles use deterministic UUIDs generated via RFC 9562 UUID v8 over SHA-256 (`pkg/uuidv8`), from a namespace derived from `"go-qrdb:role-namespace"` plus tenantID and name. The derivation was UUID v5 until it was moved off SHA-1 for [FIPS 140-3 mode](../seal/fips140-mode.md).
+The name index enforces uniqueness within a tenant. Role IDs for built-in roles use deterministic UUIDs generated via UUID v5 (SHA-1 namespace derived from `"go-qrdb:role-namespace"` + tenantID + name).
 
 ## Permission Validation
 

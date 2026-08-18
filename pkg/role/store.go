@@ -28,7 +28,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
-	"github.com/jeremyhahn/go-qrdb/pkg/uuidv8"
 )
 
 const (
@@ -562,25 +561,14 @@ func SystemRoleID(tenantID, roleName string) string {
 	return deterministicUUID(tenantID, roleName)
 }
 
-// deterministicUUID generates a deterministic UUID from a namespace derived
-// from the tenant ID and role name combination.
-//
-// The derivation is RFC 9562 version 8 over SHA-256 (see pkg/uuidv8). It was
-// UUID version 5, which is defined to hash with SHA-1 and therefore panics
-// under GODEBUG=fips140=only.
-//
-// The IDs are derived on every call rather than allocated, so a cluster whose
-// nodes all run this build is self-consistent. A store seeded by an OLDER
-// build is not: its role records keep the version 5 IDs, role seeding is
-// idempotent on the name index rather than the ID, and callers that match on
-// the derived ID would find no record. Such a store needs its system roles
-// re-seeded. See docs/seal/fips140-mode.md.
+// deterministicUUID generates a deterministic UUID v5 from a namespace
+// derived from the tenant ID and role name combination.
 func deterministicUUID(tenantID, name string) string {
 	// Create a deterministic namespace UUID from a SHA-256 hash of a
 	// fixed prefix so the result is stable across builds.
 	nsData := sha256.Sum256([]byte("go-qrdb:role-namespace"))
 	ns, _ := uuid.FromBytes(nsData[:16])
-	return uuidv8.FromName(ns, tenantID+"/"+name).String()
+	return uuid.NewSHA1(ns, []byte(tenantID+"/"+name)).String()
 }
 
 // custodianPermissions returns the permission set for the Custodian built-in role.

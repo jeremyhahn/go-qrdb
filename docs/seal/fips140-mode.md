@@ -6,10 +6,13 @@ Licensed under the Apache License, Version 2.0
 # FIPS 140-3 Mode (`GODEBUG=fips140=only`)
 
 This document records how go-qrdb is verified against the Go Cryptographic
-Module, what had to change to make the codebase approved-algorithm clean, and
-the exemption register for anything that is deliberately not clean.
+Module, what had to change on the way to approved-algorithm clean, the
+exemption register for anything that is deliberately not clean, and — in
+[Open blockers](#open-blockers) — exactly how far from clean the module still
+is. **go-qrdb does not yet operate under `fips140=only`**; do not read this
+document as a compliance claim.
 
-## The gate
+## The job
 
 CI runs a `FIPS 140-3` job that executes the full unit suite under:
 
@@ -26,14 +29,19 @@ level at run time, and the level is `only`, not `on`:
 | `fips140=on` | yes | **permitted** — MD5, SHA-1, X25519 all succeed |
 | `fips140=only` | yes | rejected: the call returns an error or panics |
 
-`on` cannot fail on the thing the gate exists to catch: a regulated path can use
+`on` cannot fail on the thing the job exists to catch: a regulated path can use
 prohibited cryptography and the job still reports green. `only` is the setting a
 FedRAMP / PCI DSS v4 / HIPAA gate has to run. Ratified by the owner 2026-08-17
 (`automatethethings` `software/conventions/configuration.md` §5).
 
 The job scope is deliberately identical to the ordinary `Test` job — the same
-`make test` target with the same build tags. A FIPS gate over a subset of the
+`make test` target with the same build tags. A FIPS job over a subset of the
 suite does not tell you the product is FIPS-clean.
+
+The job is **not** in `ci-gate`'s `needs` and is therefore not a required
+check — see [Open blockers](#open-blockers) for the three findings that keep it
+red and [Arming the gate](#arming-the-gate) for the exact change that makes it
+required.
 
 To reproduce a CI failure locally, prefix the same command:
 
@@ -66,11 +74,16 @@ it did.
 
 ## Remediation performed
 
-Every non-approved primitive this repository owns has been replaced. The
-AES-GCM change is byte-compatible with existing ciphertext and existing wire
-formats; the rest are not free, and each states its cost below — identifiers
-that change value, a configuration minimum, one enrollment path refused in FIPS
-mode, and one export format refused under strict enforcement.
+The non-approved primitives on this repository's cryptographic paths have been
+replaced. The AES-GCM change is byte-compatible with existing ciphertext and
+existing wire formats; the rest are not free, and each states its cost below —
+a configuration minimum, one enrollment path refused in FIPS mode, and one
+export format refused under strict enforcement.
+
+One in-repo finding is deliberately **not** remediated here: the SHA-1 in the
+deterministic role and custodian identifiers (`uuid.NewSHA1`). It has its own
+issue and its own change; see [Open blockers](#open-blockers) for why it is not
+folded in.
 
 ### AES-GCM — `cipher.NewGCM` → `cipher.NewGCMWithRandomNonce`
 
@@ -108,39 +121,6 @@ per message from `crypto/rand`, so the collision bound is unchanged. The
 tightest case is `pkg/seal/encfs`, whose AEAD is bound to one file's DEK and
 seals once per 4 KiB block write — 2^32 blocks is 16 TiB of writes through a
 single DEK.
-
-### SHA-1 — UUID version 5 → RFC 9562 version 8 over SHA-256
-
-`crypto/sha1` **panics** under `only`. Two deterministic identifiers were
-derived with `uuid.NewSHA1`, which is UUID version 5 and is defined to hash
-with SHA-1:
-
-| Call site | Identifier |
-|---|---|
-| `pkg/role/store.go` (`deterministicUUID`, via `SystemRoleID`) | built-in role IDs |
-| `pkg/custodian/service.go` | deterministic custodian IDs |
-
-Both now use `pkg/uuidv8`, which derives an RFC 9562 version 8 UUID from
-SHA-256. SHA-1 here protects nothing — it is a naming construct — but a
-name-based identifier is not exempt from the gate, and the alternative to
-changing it is a process that dies on its first role lookup.
-
-**These identifiers change value, and that is an upgrade concern.** They are
-derived from `(tenantID, name)` on every call rather than allocated, so a
-cluster whose nodes all run this build is self-consistent and a fresh
-deployment is unaffected.
-
-An **existing** store is not. `bootstrap.seedTenantRoles` treats
-`RoleNameExistsError` as idempotent success, so on upgrade the persisted role
-records keep their version 5 IDs while `role.SystemRoleID` now returns version
-8 values. The two consumers that match on the derived ID —
-`pkg/auth/rbac` (the Owner/SO deny-list) and `bootstrap`'s Admin@system grant —
-would then reference IDs no record carries. Re-seeding is not automatic and no
-migration ships with this change; an operator upgrading a store that already
-holds system roles needs one, and whether that is a rewrite of the role records
-or a re-bootstrap is an owner decision. The alternative — keeping SHA-1 — is
-not available: `crypto/sha1` panics under `only`, so the process dies on its
-first role lookup.
 
 ### X25519 — refused for Ed25519 external officers in FIPS mode
 
@@ -205,8 +185,9 @@ really does protect a Shamir share.
 
 ## Exemption register
 
-One exemption. Every other non-approved primitive in this repository has been
-remediated rather than exempted.
+One exemption. Every other non-approved primitive in this repository is either
+remediated above or open with a tracking issue in
+[Open blockers](#open-blockers) — none is silently tolerated.
 
 A row here requires: the citation of the external format or protocol that
 mandates the primitive, evidence that it protects nothing regulated, and the
@@ -218,20 +199,47 @@ narrowest isolation that keeps it out of the FIPS-gated path.
 
 ## Open blockers
 
-The FIPS job is **not yet wired into `ci-gate`**. Two first-party dependencies
-still use non-approved cryptography, which qrdb cannot fix from this repository
-(the composition direction is one-way):
+**Read this before describing go-qrdb as FIPS 140-3 clean: it is not, yet.**
+The `FIPS 140-3` job fails today, it is **not** a required check, and it must
+not be presented as an enforceable compliance gate until it passes. Its purpose
+until then is to measure the remaining distance under the enforcement level the
+policy requires, on every pull request, where the number cannot be quietly lost.
+That is a strict improvement over having no FIPS coverage at all; it is not a
+claim of compliance.
 
-| Dependency | Call sites | Effect on qrdb | Tracking |
+Three findings stand between the job and green. None of them can be closed from
+this pull request.
+
+| Finding | Call sites | Effect on the suite | Tracking |
 |---|---|---|---|
-| `go-quicraft` `pkg/seal` | `algorithm.go`, `strategy_software.go` build the barrier AEAD with `cipher.NewGCM` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#5` |
-| `go-truststrap` `pkg/noiseproto` | Noise_NK handshake over `noise.DH25519` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5` |
+| SHA-1 in the deterministic role and custodian identifiers | `pkg/role/store.go` (`deterministicUUID`, via `SystemRoleID`), `pkg/custodian/service.go` | `crypto/sha1` **panics**, taking out `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`, `pkg/firstboot`, `pkg/custodian` and every package that seeds a tenant | [#8](https://github.com/jeremyhahn/go-qrdb/issues/8) / [#10](https://github.com/jeremyhahn/go-qrdb/issues/10) |
+| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#5` |
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5` |
 
-Arming the gate once both ship approved-algorithm releases and this module
-bumps to them is a three-line change in `.github/workflows/ci.yml`: add `fips`
-to `ci-gate`'s `needs`, add `RESULT_FIPS` to its `env` block, and add a
-`check fips` call to its loop. The job runs on every PR in the meantime, so its
-status is visible rather than hypothetical.
+The two dependency findings cannot be fixed here at all — the composition
+direction is one-way, and both tracking issues are open and blocked on an owner
+decision at the time of writing.
+
+The identifier finding is in this repository, and it is a change of **persisted
+identity data**: a store seeded by an older build keeps its version 5 role and
+custodian IDs, so re-deriving them with an approved hash requires a dual-read
+compatibility path across the role name index, every user record's `RoleIDs`,
+the RBAC Owner/SO deny-list and custodian duplicate detection — otherwise an
+in-place upgrade silently strips an admin's permissions or lets an enrolled
+custodian re-enrol under a second ID. That work is scoped, designed and in
+review on its own issue. Duplicating it here, in a change whose subject is the
+CI job, would put two derivations of the same identifier in the tree; the repo's
+no-cruft policy allows exactly one canonical home per capability.
+
+### Arming the gate
+
+Once all three findings are closed and this module bumps to
+approved-algorithm dependency releases, `fips` becomes a required check in
+three lines of `.github/workflows/ci.yml`: add `fips` to `ci-gate`'s `needs`,
+add `RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop.
+Do that in the change that closes the last finding, not later — a FIPS job that
+can pass and is not required is the fail-open gate this document exists to
+argue against.
 
 ## See Also
 
@@ -240,5 +248,4 @@ status is visible rather than hypothetical.
 - [Go FIPS 140-3 documentation](https://go.dev/doc/security/fips140) — `GOFIPS140`, `GODEBUG=fips140`, and the module's approved-algorithm list
 - [NIST SP 800-38D](https://csrc.nist.gov/publications/detail/sp/800-38d/final) — GCM, including the IV construction requirement
 - [NIST SP 800-107 Rev. 1](https://csrc.nist.gov/publications/detail/sp/800-107/rev-1/final) — §5.3.4, HMAC key length
-- [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562) — §5.8, UUID version 8
 - [RFC 7292](https://www.rfc-editor.org/rfc/rfc7292) — PKCS#12, including the `localKeyId` attribute

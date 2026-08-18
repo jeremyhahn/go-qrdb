@@ -115,6 +115,12 @@ jobs:
     # external format mandates the primitive -- isolate it and record a cited
     # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
     # a build tag that skips the job, or narrow the package list.
+    #
+    # It IS red today, on three tracked findings, and it is deliberately not
+    # part of ci-gate while that is true -- see the comment on ci-gate below
+    # and the "Open blockers" section of docs/seal/fips140-mode.md. Nothing in
+    # this repository claims the module operates under fips140=only until this
+    # job passes and joins ci-gate.
     env:
       GOFIPS140: latest
       GODEBUG: fips140=only
@@ -132,7 +138,7 @@ jobs:
         run: go build ./...
 
       # The same target the Test job runs, with the same build tags. The scope
-      # is deliberately identical: a FIPS gate over a subset of the suite
+      # is deliberately identical: a FIPS job over a subset of the suite
       # cannot tell you the product is FIPS-clean.
       - name: Unit tests (race, FIPS 140-only)
         run: make test
@@ -320,22 +326,33 @@ jobs:
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
     #
-    # `fips` is deliberately ABSENT from this list, and only until two upstream
-    # fixes land -- it is not an optional gate. Every non-approved primitive
-    # this repository owns has been remediated (see docs/seal/fips140-mode.md),
-    # but the FIPS job still fails on cryptography inside two first-party
-    # dependencies, which qrdb cannot fix from here:
+    # `fips` is ABSENT from this list because it does not pass yet, and while
+    # that is true it is NOT presented as an enforceable compliance gate: this
+    # module does not currently operate under GODEBUG=fips140=only and nothing
+    # in this repository claims it does (docs/seal/fips140-mode.md states so in
+    # its opening paragraph). The job runs on every PR to measure the remaining
+    # distance at the enforcement level the policy requires; a required check
+    # that cannot pass would only freeze the repository without closing a
+    # single finding.
     #
+    # Three findings keep it red, all tracked, none closable from a change to
+    # this workflow:
+    #
+    #   * pkg/role and pkg/custodian derive deterministic IDs with uuid.NewSHA1
+    #     (#8, #10). Re-deriving them with an approved hash rewrites persisted
+    #     identity data and needs a dual-read compatibility path, which is in
+    #     review on its own issue.
     #   * go-quicraft pkg/seal builds its barrier AEAD with cipher.NewGCM
     #     (jeremyhahn/go-quicraft#5), which fails every sealed-storage test.
     #   * go-truststrap pkg/noiseproto performs the Noise handshake over
     #     X25519 (jeremyhahn/go-truststrap#5), which fails pkg/clusterenroll.
     #
-    # Arming it is one line: add `fips` here, add RESULT_FIPS to the env block,
-    # and add a `check fips` call to the loop. Do that as soon as both
-    # dependencies ship approved-algorithm releases and this module bumps to
-    # them. Until then the job runs on every PR and its red X is the honest
-    # status; nothing about the six gates below is weakened by its absence.
+    # ARM IT IN THE CHANGE THAT CLOSES THE LAST ONE, not later: add `fips`
+    # here, add RESULT_FIPS to the env block, and add a `check fips` call to the
+    # loop. A FIPS job that can pass and is not required IS a fail-open gate.
+    # What is forbidden meanwhile is making it green dishonestly -- setting it
+    # back to fips140=on, adding continue-on-error, tag-gating a failing
+    # package out, or trimming the package list.
     needs: [lint, build, test, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded
