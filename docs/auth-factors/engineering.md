@@ -61,7 +61,7 @@ func NewSoftwareBackend(store Storage, hashConfig HashConfig) (*SoftwareBackend,
 
 func DefaultHashConfig()    HashConfig  // Argon2id: 3 passes, 64 MiB, 4 threads, 32-byte key, 16-byte salt
 func FIPSHashConfig()       HashConfig  // PBKDF2-SHA256, 600 000 iterations, NIST SP 800-132
-func AutoDetectHashConfig() HashConfig  // crypto/fips140.Enabled() decides
+func AutoDetectHashConfig() HashConfig  // seal.FIPSEnabled() decides
 
 const FIDO2PINHashSize = 16 // CTAP2 mandate: SHA-256(PIN)[:16]
 func ComputeFIDO2PINHash(pin string) []byte

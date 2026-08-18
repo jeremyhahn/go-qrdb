@@ -72,7 +72,7 @@ That table is the reason PINs are not credentials: lockout is backend-native and
 |---|---|
 | `DefaultHashConfig()` | Argon2id — 3 passes, 64 MiB, 4 threads, 32-byte key, 16-byte salt |
 | `FIPSHashConfig()` | PBKDF2-SHA256, **600 000 iterations**, NIST SP 800-132 |
-| `AutoDetectHashConfig()` | calls `crypto/fips140.Enabled()` and picks between them |
+| `AutoDetectHashConfig()` | calls `seal.FIPSEnabled()` and picks between them |
 
 Supported PBKDF2 hashes: `sha256`, `sha384`, `sha512`, `sha512_256`.
 

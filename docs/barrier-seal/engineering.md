@@ -34,7 +34,18 @@ type StrategyFactory func() (SealingStrategy, error)
 func NewDefaultStrategyRegistry() StrategyRegistry
 func NewDeferredSoftwareStrategy() (SealingStrategy, error)
 func NewNoneStrategy() SealingStrategy
+
+func FIPSEnabled() bool // the stack's single FIPS 140 predicate
 ```
+
+`FIPSEnabled` is re-exported from `go-quicraft/pkg/seal`. It reads the Go
+runtime's FIPS 140-3 module state (`crypto/fips140.Enabled`) first and falls
+back to the `GOFIPS140` environment variable for deployments that signal FIPS
+intent that way, honouring the explicit value `off` as **disabled**. Every
+FIPS-conditional path in qrdb routes through it — SO PIN hashing (`pkg/auth`),
+PIN hash configuration (`pkg/pin.AutoDetectHashConfig`) and KDF selection
+(`pkg/seal/kdf.DefaultHasher`) — so one environment yields one answer across
+the whole process.
 
 Strategy IDs: `seal.StrategyPassphrase`, `seal.StrategyShamir`,
 `seal.StrategyNone`, `seal.StrategySystemBarrier`.
