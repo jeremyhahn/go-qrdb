@@ -852,7 +852,7 @@ func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
 // runFirstBoot: RoleNameExistsError uses deterministic IDs
 // ---------------------------------------------------------------------------
 
-func TestRunFirstBoot_RoleExistsUsesDeterministicIDs(t *testing.T) {
+func TestRunFirstBoot_RoleExistsUsesPersistedIDs(t *testing.T) {
 	var capturedRoleIDs []string
 	userSvc := &mockUserServicer{
 		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
@@ -871,15 +871,44 @@ func TestRunFirstBoot_RoleExistsUsesDeterministicIDs(t *testing.T) {
 	}
 	node := &mockRaftNode{} // default: leader ready
 
-	// When all roles already exist, bootstrap succeeds using deterministic
-	// IDs from BuiltInRoles rather than calling GetRoleByName.
+	// Every role already exists, so bootstrap must bind the admin to the
+	// identifiers the STORE reports for them rather than re-deriving. On a
+	// cluster seeded before system role IDs moved off UUIDv5/SHA-1 the two
+	// differ, and a derived grant would name no role at all.
 	err := runFirstBoot(context.Background(), node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.NoError(t, err)
 
-	// Verify the admin user was assigned deterministic role IDs in the
-	// system tenant. Under the standard posture (strictSoD=false) that is
-	// the canonical Admin@system grant plus the Owner@system convenience
-	// grant — both derived from SystemRoleID, not GetRoleByName.
+	// Under the standard posture (strictSoD=false) that is the Admin@system
+	// grant plus the Owner@system convenience grant, both as GetRoleByName
+	// reports them.
+	require.Len(t, capturedRoleIDs, 2)
+	assert.Equal(t, "r-"+role.RoleNameAdmin, capturedRoleIDs[0])
+	assert.Equal(t, "r-"+role.RoleNameOwner, capturedRoleIDs[1])
+}
+
+// TestRunFirstBoot_UnseededRolesUseDerivedIDs is the companion case: when the
+// store holds no role of that name, there is no persisted identifier to
+// prefer and the deterministic derivation is what the grant uses.
+func TestRunFirstBoot_UnseededRolesUseDerivedIDs(t *testing.T) {
+	var capturedRoleIDs []string
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: "admin"}
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			capturedRoleIDs = req.RoleIDs
+			return &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{
+		getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+			return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
+		},
+	}
+
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
+	require.NoError(t, err)
+
 	expectedAdminID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameAdmin)
 	expectedOwnerID := role.SystemRoleID(tenantpkg.SystemTenantID, role.RoleNameOwner)
 	require.Len(t, capturedRoleIDs, 2)

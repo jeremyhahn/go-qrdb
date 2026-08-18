@@ -114,3 +114,72 @@ func (c *permissionCache) invalidateAll() {
 		return true
 	})
 }
+
+// roleIDEntry holds the identifiers that denote one system role, with an
+// expiration timestamp.
+type roleIDEntry struct {
+	ids       []string
+	expiresAt time.Time
+}
+
+// systemRoleIDCache is a lock-free, TTL-based cache for the identifiers that
+// denote a named system role in a tenant, keyed by "tenantID/roleName".
+//
+// It is TTL-bounded rather than permanent even though the mapping is stable
+// under normal operation. The store does NOT enforce system-role
+// immutability: kvRoleStore.CreateRole persists System: false regardless of
+// the request, so a seeded SO or Owner role can be renamed or deleted and
+// recreated under a fresh identifier. A permanent cache would keep
+// recognising the replaced identifier for the process lifetime, and the two
+// controls that consult it — the SO deny-list and the strict-SoD Owner strip
+// — would stop voiding a grant they exist to void.
+//
+// The TTL is the one the permission cache already applies to the same role
+// data, so a replacement is picked up on exactly the schedule its permissions
+// are; this adds no staleness class that authorization did not already have.
+type systemRoleIDCache struct {
+	entries sync.Map // map[string]*roleIDEntry
+	ttl     time.Duration
+}
+
+// newSystemRoleIDCache creates a cache with the given TTL.
+func newSystemRoleIDCache(ttl time.Duration) *systemRoleIDCache {
+	return &systemRoleIDCache{ttl: ttl}
+}
+
+// systemRoleIDKey builds the composite key for a tenant's named system role.
+func systemRoleIDKey(tenantID, roleName string) string {
+	return tenantID + "/" + roleName
+}
+
+// get returns the cached identifiers if the entry exists and has not
+// expired. The second return value reports whether a valid entry was found.
+func (c *systemRoleIDCache) get(tenantID, roleName string) ([]string, bool) {
+	key := systemRoleIDKey(tenantID, roleName)
+	val, ok := c.entries.Load(key)
+	if !ok {
+		return nil, false
+	}
+	entry := val.(*roleIDEntry) //nolint:errcheck // type assertion on a value this container only ever holds
+	if time.Now().After(entry.expiresAt) {
+		c.entries.Delete(key)
+		return nil, false
+	}
+	return entry.ids, true
+}
+
+// set stores the identifiers with the configured TTL.
+func (c *systemRoleIDCache) set(tenantID, roleName string, ids []string) {
+	c.entries.Store(systemRoleIDKey(tenantID, roleName), &roleIDEntry{
+		ids:       ids,
+		expiresAt: time.Now().Add(c.ttl),
+	})
+}
+
+// invalidateAll clears every cached entry.
+func (c *systemRoleIDCache) invalidateAll() {
+	c.entries.Range(func(key, _ any) bool {
+		c.entries.Delete(key)
+		return true
+	})
+}

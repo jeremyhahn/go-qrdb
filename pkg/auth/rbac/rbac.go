@@ -52,7 +52,6 @@ package rbac
 import (
 	"context"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -195,14 +194,10 @@ type RBACAuthorizer struct {
 	// authorizable on a draining node. Nil disables the fallback.
 	rolesFallback role.RoleServicer
 
-	// sysRoleIDs memoizes role.SystemRoleIDs per "tenantID/roleName". The
-	// mapping is immutable in practice — a system role can be neither
-	// renamed nor deleted (SystemRoleImmutableError), and once a tenant is
-	// seeded its system roles keep whichever identifiers that seeding
-	// assigned — so entries never expire. A negative result (no such role
-	// yet, hence canonical identifier only) is equally durable: every write
-	// from here on emits the canonical form.
-	sysRoleIDs sync.Map // map[string][]string
+	// sysRoleIDs caches role.SystemRoleIDs per "tenantID/roleName" under the
+	// same TTL the permission cache applies to the same role data. See
+	// systemRoleIDCache for why it is bounded rather than permanent.
+	sysRoleIDs *systemRoleIDCache
 
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
 	// authorizer resolves a permission's scope in the identity's own tenant
@@ -264,8 +259,9 @@ func WithScopeResolver(resolver permission.ScopeResolver) Option {
 // New creates a new RBACAuthorizer backed by the given role service.
 func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 	a := &RBACAuthorizer{
-		roles: roles,
-		cache: newPermissionCache(defaultCacheTTL),
+		roles:      roles,
+		cache:      newPermissionCache(defaultCacheTTL),
+		sysRoleIDs: newSystemRoleIDCache(defaultCacheTTL),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -276,19 +272,19 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 // systemRoleIDs returns every identifier that denotes the named system role
 // in tenantID: the canonical one plus, on a cluster seeded before system
 // role IDs moved off UUIDv5/SHA-1, the legacy identifier still persisted for
-// it. Results are memoized in a.sysRoleIDs, so a tenant costs one name-index
-// lookup per process.
+// it. Results are cached for defaultCacheTTL, so a tenant costs at most one
+// name-index lookup per TTL rather than one per request.
 //
 // The lookup runs on the caller's context, exactly as ResolvePermissions
 // does below, so it sees the role store through the same tenant-visibility
 // rules that permission resolution will apply moments later. A failure is
 // reported rather than swallowed: both callers use the result to VOID a
 // grant, so treating an unresolvable store as "no legacy identifier" would
-// fail open.
+// fail open. A failure is likewise never cached, so a transient store error
+// cannot pin a fail-open answer.
 func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, error) {
-	key := tenantID + "/" + roleName
-	if cached, ok := a.sysRoleIDs.Load(key); ok {
-		return cached.([]string), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	if cached, ok := a.sysRoleIDs.get(tenantID, roleName); ok {
+		return cached, nil
 	}
 
 	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
@@ -306,7 +302,7 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 		ids = fids
 	}
 
-	a.sysRoleIDs.Store(key, ids)
+	a.sysRoleIDs.set(tenantID, roleName, ids)
 	return ids, nil
 }
 
@@ -568,7 +564,11 @@ func (a *RBACAuthorizer) Invalidate(tenantID, subject string) {
 	a.cache.invalidate(tenantID, subject)
 }
 
-// InvalidateAll clears all cached permission entries.
+// InvalidateAll clears all cached permission entries and the cached system
+// role identifiers, so a role that was renamed, deleted, or recreated under a
+// fresh identifier is reclassified on the next Authorize call instead of at
+// the next TTL expiry.
 func (a *RBACAuthorizer) InvalidateAll() {
 	a.cache.invalidateAll()
+	a.sysRoleIDs.invalidateAll()
 }

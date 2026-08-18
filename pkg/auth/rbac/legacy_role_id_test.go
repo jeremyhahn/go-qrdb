@@ -187,7 +187,7 @@ func TestAuthorize_LegacyIdentifierLookup_UsesFallbackStore(t *testing.T) {
 	}
 }
 
-func TestSystemRoleIDs_MemoizedPerTenantAndRole(t *testing.T) {
+func TestSystemRoleIDs_CachedWithinTTL(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{}).
 		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
 	authz := New(svc)
@@ -197,14 +197,106 @@ func TestSystemRoleIDs_MemoizedPerTenantAndRole(t *testing.T) {
 		t.Fatalf("systemRoleIDs: %v", err)
 	}
 
-	// A later store failure must not disturb an already-memoized answer:
-	// system roles can be neither renamed nor deleted.
 	svc.byNameErr = errors.New("role store unavailable")
 	second, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
 	if err != nil {
-		t.Fatalf("systemRoleIDs (memoized): %v", err)
+		t.Fatalf("systemRoleIDs (cached): %v", err)
 	}
 	if len(first) != 2 || len(second) != 2 || first[1] != second[1] || second[1] != legacySOIDAcme {
-		t.Fatalf("memoized lookup = %v, want the same %v including %s", second, first, legacySOIDAcme)
+		t.Fatalf("cached lookup = %v, want the same %v including %s", second, first, legacySOIDAcme)
+	}
+}
+
+func TestSystemRoleIDs_ReresolvesAfterTTL(t *testing.T) {
+	// The store does NOT enforce system-role immutability — CreateRole
+	// persists System: false regardless of the request — so a seeded SO role
+	// can be deleted and recreated under a fresh identifier. A permanent
+	// cache would keep recognising the replaced one for the process
+	// lifetime and stop denying the replacement SO its crypto operations.
+	svc := newMockRoleService(map[string][]permission.Permission{}).
+		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+	authz := New(svc)
+	authz.sysRoleIDs = newSystemRoleIDCache(0) // every entry is already stale
+
+	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err != nil {
+		t.Fatalf("systemRoleIDs: %v", err)
+	}
+
+	// The SO role is recreated under a different identifier.
+	const replacementSOID = "11111111-2222-8333-8444-555555555555"
+	svc.withRole(legacyRole(replacementSOID, role.RoleNameSO))
+
+	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
+	if err != nil {
+		t.Fatalf("systemRoleIDs (after TTL): %v", err)
+	}
+	if len(got) != 2 || got[1] != replacementSOID {
+		t.Fatalf("systemRoleIDs = %v, want the replacement %s", got, replacementSOID)
+	}
+
+	// And the deny-list follows it: the replacement SO is denied crypto.
+	identity := &auth.Identity{
+		Subject:  "so-replacement",
+		TenantID: "acme",
+		Roles:    []string{replacementSOID},
+	}
+	if err := authz.Authorize(ctxFor("acme"), identity, "keys", "sign"); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected the deny-list to trigger for the replacement SO, got %v", err)
+	}
+}
+
+func TestInvalidateAll_ClearsCachedSystemRoleIDs(t *testing.T) {
+	// The operational escape hatch must reach the new cache too, so a
+	// reclassification does not have to wait out the TTL.
+	svc := newMockRoleService(map[string][]permission.Permission{}).
+		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+	authz := New(svc)
+
+	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err != nil {
+		t.Fatalf("systemRoleIDs: %v", err)
+	}
+
+	const replacementSOID = "11111111-2222-8333-8444-555555555555"
+	svc.withRole(legacyRole(replacementSOID, role.RoleNameSO))
+
+	// Still the old answer until invalidated.
+	cached, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
+	if err != nil {
+		t.Fatalf("systemRoleIDs: %v", err)
+	}
+	if cached[1] != legacySOIDAcme {
+		t.Fatalf("cached = %v, want the pre-invalidation %s", cached, legacySOIDAcme)
+	}
+
+	authz.InvalidateAll()
+
+	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
+	if err != nil {
+		t.Fatalf("systemRoleIDs (after InvalidateAll): %v", err)
+	}
+	if got[1] != replacementSOID {
+		t.Fatalf("systemRoleIDs = %v, want the replacement %s", got, replacementSOID)
+	}
+}
+
+func TestSystemRoleIDs_FailureIsNotCached(t *testing.T) {
+	// A transient store error must not pin a fail-open answer.
+	svc := newMockRoleService(map[string][]permission.Permission{})
+	svc.byNameErr = errors.New("read index not ready")
+	authz := New(svc)
+
+	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err == nil {
+		t.Fatal("expected the lookup to fail")
+	}
+
+	svc.byNameErr = nil
+	svc.withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+
+	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
+	if err != nil {
+		t.Fatalf("systemRoleIDs after recovery: %v", err)
+	}
+	if len(got) != 2 || got[1] != legacySOIDAcme {
+		t.Fatalf("systemRoleIDs = %v, want the legacy %s once the store recovered", got, legacySOIDAcme)
 	}
 }
