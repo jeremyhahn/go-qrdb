@@ -162,6 +162,26 @@ are not reconstructed here — their history is in the git log.
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
 
+- **Release tag lockstep check.** `make check-tag-lockstep`
+  (`scripts/check-tag-lockstep.sh`) checks release-versioning.md P2: every
+  root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same commit, and
+  no `sdk/go` tag may exist without its root. The new `Release Lockstep`
+  workflow runs it on version-tag pushes in both namespaces (`v*` and
+  `sdk/go/v*`) — within a minute of publication, rather than days later in a
+  consumer's dependency bump — and re-audits the whole tag set on every merge
+  to `main`. It detects a skewed release; it
+  cannot prevent one, because a tag is visible the moment it is pushed
+  (go-qrdb#13 tracks enforcement). The preventive step is running the check
+  before publishing both tags in one atomic push
+  (`git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z`). `make test-tag-lockstep` covers
+  the rejection branches against throwaway repositories, since this
+  repository's own tag set is permanently valid and exercises only the
+  accepting branch. `v0.5.9-alpha` was tagged on the root module alone, so
+  `go get` at latest resolved the root to `v0.5.9-alpha` and `sdk/go` to
+  `v0.5.8-alpha` — a pair that does not compile, because the older `sdk/go`
+  still aliased the symbols removed below. The tag has since been cut.
+  Reported by go-xkms (#6).
+
 ### Deprecated
 
 - **Plaintext-into-`string` secret resolution (`pkg/secret`).** Resolving a
@@ -178,6 +198,17 @@ are not reconstructed here — their history is in the git log.
   would break those callers at run time with no compile error; the accidental
   paths (`%v`, `fmt.Sprint`, structured logging) are redacted now, as noted
   above, so what remains deferred is only the deliberate call.
+
+### Removed
+
+- **`statemachine.CachedDiskBackend` and `NewCachedDiskBackend`**, with
+  their `sdk/go` aliases — a breaking change to an exported API, shipped
+  in `v0.5.9-alpha`. Both were a reserved placeholder: a methodless struct
+  no registry ever provided, so the `cached-disk` SM backend passed config
+  validation and then failed at boot. There is no replacement and nothing
+  to migrate — no build that compiled against these symbols was running a
+  cached disk backend. The disk-backed path is `sm_type: disk`, now
+  composable over any storage backend via `raft.sm_storage`.
 
 ### Fixed — SECURITY
 

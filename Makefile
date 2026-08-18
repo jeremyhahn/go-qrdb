@@ -1140,6 +1140,29 @@ fmt:
 	echo "All files formatted correctly"
 
 # ============================================================================
+# Release hygiene
+# ============================================================================
+
+# release-versioning.md P2: the nested sdk/go module is tagged in lockstep with
+# the root module. This is the ONLY preventive run — a tag is visible to
+# consumers the moment it is pushed, so the Release Lockstep workflow can report
+# a skewed release but not stop one (go-qrdb#13 tracks real enforcement). Run it
+# before publishing, and publish both tags in one atomic push:
+#
+#     make check-tag-lockstep && git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
+#
+# The rules and the failure modes are documented in the script; its rejection
+# branches are covered by test-tag-lockstep, because this repository's own tag
+# set is permanently valid and exercises only the accepting branch.
+.PHONY: check-tag-lockstep
+check-tag-lockstep:
+	@./scripts/check-tag-lockstep.sh
+
+.PHONY: test-tag-lockstep
+test-tag-lockstep:
+	@./scripts/check-tag-lockstep_test.sh
+
+# ============================================================================
 # Security scanning
 # ============================================================================
 
