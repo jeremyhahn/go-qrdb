@@ -229,6 +229,14 @@ var (
 	// public key fails for any cryptographic reason.
 	ErrShareSealFailed = errors.New("ceremony: share sealing failed")
 
+	// ErrAlgorithmNotFIPSApproved is returned when the officer's key algorithm
+	// would require a non-approved primitive to seal a share and the process is
+	// running in FIPS 140-3 mode. Sealing a Shamir share of the barrier root
+	// key is a regulated path, so the enrollment is refused rather than
+	// completed with cryptography a FedRAMP / PCI DSS / HIPAA deployment may
+	// not use.
+	ErrAlgorithmNotFIPSApproved = errors.New("ceremony: key algorithm is not FIPS 140-3 approved for share sealing")
+
 	// ErrInvalidShareIndex is returned when ShareIndex is outside the
 	// valid 1..N range.
 	ErrInvalidShareIndex = errors.New("ceremony: invalid share index")

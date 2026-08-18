@@ -159,6 +159,7 @@ Each phase includes compliance verification:
 
 ## See Also
 
+- [fips140-mode.md](fips140-mode.md) — The `GODEBUG=fips140=only` CI job, the approved-algorithm remediation, the exemption register, and the findings still open
 - [roles.md](../auth/roles.md) — Canonical six-role definitions and SoD constraints
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
 - [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol

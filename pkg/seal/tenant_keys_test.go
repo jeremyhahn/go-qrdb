@@ -13,9 +13,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"errors"
-	"io"
 	"sync/atomic"
 	"testing"
 
@@ -125,35 +123,36 @@ func newUnsealedBarrier(t *testing.T) *testBarrier {
 	if err != nil {
 		t.Fatalf("NewCipher: %v", err)
 	}
-	aead, err := cipher.NewGCM(block)
+	// NewGCMWithRandomNonce is the FIPS-approved construction: it samples the
+	// nonce itself and prepends it, which is the layout this double already used.
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
-		t.Fatalf("NewGCM: %v", err)
+		t.Fatalf("NewGCMWithRandomNonce: %v", err)
 	}
 	b := &testBarrier{aead: aead}
 	b.sealed.Store(false)
 	return b
 }
 
+// testBarrierNonceSize is the nonce NewGCMWithRandomNonce prepends; the AEAD
+// reports NonceSize() == 0 because callers never supply one.
+const testBarrierNonceSize = 12
+
 func (b *testBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	if b.sealed.Load() {
 		return nil, &BarrierSealedError{}
 	}
-	nonce := make([]byte, b.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return b.aead.Seal(nonce, nonce, plaintext, nil), nil
+	return b.aead.Seal(nil, nil, plaintext, nil), nil
 }
 
 func (b *testBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 	if b.sealed.Load() {
 		return nil, &BarrierSealedError{}
 	}
-	nonceSize := b.aead.NonceSize()
-	if len(ciphertext) < nonceSize {
+	if len(ciphertext) < testBarrierNonceSize {
 		return nil, errors.New("ciphertext too short")
 	}
-	return b.aead.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	return b.aead.Open(nil, nil, ciphertext, nil)
 }
 
 func (b *testBarrier) IsSealed() bool {

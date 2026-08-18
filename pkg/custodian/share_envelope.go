@@ -108,22 +108,33 @@ func SealShareTo(shareBytes []byte, recipientPubKeyPEM string) (*SealedEnvelope,
 	defer secure.Wipe(contentKey)
 
 	// Encrypt share with AES-256-GCM.
+	//
+	// cipher.NewGCMWithRandomNonce is the only GCM construction approved under
+	// GODEBUG=fips140=only: SP 800-38D requires the module to own nonce
+	// generation, so cipher.NewGCM (arbitrary IVs) is rejected. It samples a
+	// 12-byte nonce and prepends it to the sealed output; the wire format keeps
+	// the nonce in its own field, so the prefix is split back off below. The
+	// bytes a custodian receives are unchanged, which matters because the
+	// custodian-side inverse is third-party client software (see
+	// docs/seal/custodians.md).
 	block, err := aes.NewCipher(contentKey)
 	if err != nil {
 		return nil, ErrEnvelopeSeal
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, ErrEnvelopeSeal
 	}
 
-	nonce := make([]byte, envelopeNonceLen)
-	if _, err := rand.Read(nonce); err != nil {
+	// AAD binds the envelope to the protocol version string. The nonce
+	// argument must be empty: the AEAD samples the nonce itself.
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
+	sealed := gcm.Seal(nil, nil, shareBytes, []byte(envelopeHKDFInfo))
+	if len(sealed) < envelopeNonceLen {
 		return nil, ErrEnvelopeSeal
 	}
-
-	// AAD binds the envelope to the protocol version string.
-	ciphertext := gcm.Seal(nil, nonce, shareBytes, []byte(envelopeHKDFInfo))
+	nonce := sealed[:envelopeNonceLen:envelopeNonceLen]
+	ciphertext := sealed[envelopeNonceLen:]
 
 	// PEM-encode the ephemeral public key.
 	ephemeralPubDER, err := x509.MarshalPKIXPublicKey(ephemeralPriv.PublicKey())

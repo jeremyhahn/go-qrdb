@@ -36,8 +36,9 @@ func TestDefaultNewGCM_NewGCMFailureBranch(t *testing.T) {
 		if err != nil {
 			return nil, &CipherError{Op: "create cipher", Err: err}
 		}
-		// Wrap the block to report block size != 16, making cipher.NewGCM fail.
-		_, err = cipher.NewGCM(wrongSizeBlock{block})
+		// Wrap the block so it is not the *aes.Block NewGCMWithRandomNonce
+		// requires, making the construction fail.
+		_, err = cipher.NewGCMWithRandomNonce(wrongSizeBlock{block})
 		if err != nil {
 			return nil, &CipherError{Op: "create GCM", Err: err}
 		}
@@ -58,8 +59,9 @@ func TestDefaultNewGCM_NewGCMFailureBranch(t *testing.T) {
 	}
 }
 
-// wrongSizeBlock wraps a cipher.Block but reports a BlockSize of 17,
-// causing cipher.NewGCM to return an error.
+// wrongSizeBlock wraps a cipher.Block but reports a BlockSize of 17. It is
+// also not the *aes.Block that NewGCMWithRandomNonce requires, so either
+// construction rejects it.
 type wrongSizeBlock struct {
 	cipher.Block
 }

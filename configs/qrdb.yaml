@@ -43,5 +43,7 @@ logging:
 
 discovery:
   method: "multicast"
-  multicast_secret: "quicraft"
+  # The HMAC-SHA256 key authenticating membership announcements. Minimum 16
+  # bytes; replace this placeholder with an operator-chosen value.
+  multicast_secret: "CHANGE-ME-quicraft-multicast-psk"
   dns_domain: ""

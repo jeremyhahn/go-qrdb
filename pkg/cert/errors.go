@@ -75,6 +75,25 @@ func (e *CertExportError) Unwrap() error {
 	return e.Err
 }
 
+// PKCS12FIPSUnavailableError is returned when a PKCS#12 export is requested
+// while the Go Cryptographic Module is in strict FIPS 140-3 mode
+// (GODEBUG=fips140=only).
+//
+// The archive's own protection is approved -- Modern2023 is PBKDF2-HMAC-SHA256
+// with AES-256-CBC -- but PKCS#12 also carries a localKeyId attribute holding
+// the SHA-1 fingerprint of the certificate, which is how every consumer of the
+// format (OpenSSL, Java keytool, Windows CryptoAPI) matches a key to its cert.
+// That is an interoperability identifier, not a protection mechanism, so it is
+// not a compliance violation; but crypto/sha1 panics under strict enforcement,
+// so the export cannot be produced there. See docs/seal/fips140-mode.md.
+type PKCS12FIPSUnavailableError struct{}
+
+// Error returns a human-readable description.
+func (e *PKCS12FIPSUnavailableError) Error() string {
+	return "qrdb/cert: PKCS#12 export is unavailable under GODEBUG=fips140=only: " +
+		"the format's localKeyId attribute is a SHA-1 certificate fingerprint"
+}
+
 // CAKeyNotAvailableError is returned when the CA private key is not
 // loaded or has been destroyed.
 type CAKeyNotAvailableError struct{}

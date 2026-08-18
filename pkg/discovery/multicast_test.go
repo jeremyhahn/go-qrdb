@@ -155,7 +155,7 @@ func waitForWritten(t *testing.T, ft *fakeTransport, n int, timeout time.Duratio
 }
 
 func TestEncodeDecodeMulticastMessage(t *testing.T) {
-	secret := []byte("test-secret-key")
+	secret := []byte("test-secret-key-16b")
 	deploymentID := uint64(12345)
 	nodeID := uint64(67890)
 	addr := "10.0.0.1:5000"
@@ -182,7 +182,7 @@ func TestEncodeDecodeMulticastMessage(t *testing.T) {
 }
 
 func TestEncodeMulticastMessage_EmptyAddress(t *testing.T) {
-	secret := []byte("test-secret-key")
+	secret := []byte("test-secret-key-16b")
 	encoded, err := EncodeMulticastMessage(1, 1, "", secret)
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
@@ -198,8 +198,8 @@ func TestEncodeMulticastMessage_EmptyAddress(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_WrongSecret(t *testing.T) {
-	secret := []byte("correct-secret")
-	wrongSecret := []byte("wrong-secret")
+	secret := []byte("correct-secret-16b")
+	wrongSecret := []byte("wrong-secret-0016b")
 
 	encoded, err := EncodeMulticastMessage(1, 1, "addr:5000", secret)
 	if err != nil {
@@ -217,7 +217,7 @@ func TestDecodeMulticastMessage_WrongSecret(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_TooShort(t *testing.T) {
-	secret := []byte("secret")
+	secret := []byte("secret-fips140-16b")
 	_, _, _, err := DecodeMulticastMessage(make([]byte, 10), secret, 0)
 	if err == nil {
 		t.Fatal("expected error for short message, got nil")
@@ -225,7 +225,7 @@ func TestDecodeMulticastMessage_TooShort(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_TruncatedMessage(t *testing.T) {
-	secret := []byte("secret")
+	secret := []byte("secret-fips140-16b")
 	encoded, err := EncodeMulticastMessage(1, 1, "10.0.0.1:5000", secret)
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
@@ -239,7 +239,7 @@ func TestDecodeMulticastMessage_TruncatedMessage(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_TamperedPayload(t *testing.T) {
-	secret := []byte("secret")
+	secret := []byte("secret-fips140-16b")
 	encoded, err := EncodeMulticastMessage(1, 1, "10.0.0.1:5000", secret)
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
@@ -254,7 +254,7 @@ func TestDecodeMulticastMessage_TamperedPayload(t *testing.T) {
 }
 
 func TestEncodeMulticastMessage_MessageFormat(t *testing.T) {
-	secret := []byte("key")
+	secret := []byte("key-fips140-min16b")
 	deploymentID := uint64(0x0102030405060708)
 	nodeID := uint64(0x1112131415161718)
 	addr := "a:1"
@@ -300,7 +300,7 @@ func TestEncodeMulticastMessage_MessageFormat(t *testing.T) {
 }
 
 func TestComputeHMAC_Deterministic(t *testing.T) {
-	key := []byte("test-key")
+	key := []byte("test-key-fips140-16")
 	data := []byte("test-data")
 
 	mac1 := computeHMAC(data, key)
@@ -313,8 +313,8 @@ func TestComputeHMAC_Deterministic(t *testing.T) {
 
 func TestComputeHMAC_DifferentKeys(t *testing.T) {
 	data := []byte("test-data")
-	mac1 := computeHMAC(data, []byte("key1"))
-	mac2 := computeHMAC(data, []byte("key2"))
+	mac1 := computeHMAC(data, []byte("key1-fips140-min16"))
+	mac2 := computeHMAC(data, []byte("key2-fips140-min16"))
 
 	if hmac.Equal(mac1, mac2) {
 		t.Error("different keys should produce different HMACs")
@@ -322,14 +322,14 @@ func TestComputeHMAC_DifferentKeys(t *testing.T) {
 }
 
 func TestComputeHMAC_SHA256Length(t *testing.T) {
-	mac := computeHMAC([]byte("data"), []byte("key"))
+	mac := computeHMAC([]byte("data"), []byte("key-fips140-min16b"))
 	if len(mac) != sha256.Size {
 		t.Errorf("HMAC length = %d, want %d", len(mac), sha256.Size)
 	}
 }
 
 func TestEncodeMulticastMessage_LongAddress(t *testing.T) {
-	secret := []byte("key")
+	secret := []byte("key-fips140-min16b")
 	addr := string(make([]byte, 253))
 	_, err := EncodeMulticastMessage(1, 1, addr, secret)
 	if err != nil {
@@ -344,7 +344,7 @@ func TestEncodeMulticastMessage_LongAddress(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_ExtraBytes(t *testing.T) {
-	secret := []byte("secret")
+	secret := []byte("secret-fips140-16b")
 	encoded, err := EncodeMulticastMessage(1, 1, "a:1", secret)
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
@@ -385,7 +385,7 @@ func TestNewMulticastDiscovery_NoSecret(t *testing.T) {
 func TestNewMulticastDiscovery_NoAddress(t *testing.T) {
 	_, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:       1,
-		SharedSecret: []byte("secret"),
+		SharedSecret: []byte("secret-fips140-16b"),
 	})
 	if err == nil {
 		t.Fatal("expected error for empty address")
@@ -393,7 +393,7 @@ func TestNewMulticastDiscovery_NoAddress(t *testing.T) {
 }
 
 func TestEncodeDecodeMulticastMessage_ZeroValues(t *testing.T) {
-	secret := []byte("key")
+	secret := []byte("key-fips140-min16b")
 	encoded, err := EncodeMulticastMessage(0, 0, "x", secret)
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
@@ -409,7 +409,7 @@ func TestEncodeDecodeMulticastMessage_ZeroValues(t *testing.T) {
 }
 
 func TestDecodeMulticastMessage_EmptyData(t *testing.T) {
-	_, _, _, err := DecodeMulticastMessage(nil, []byte("key"), 0)
+	_, _, _, err := DecodeMulticastMessage(nil, []byte("key-fips140-min16b"), 0)
 	if err == nil {
 		t.Fatal("expected error for nil data")
 	}
@@ -477,7 +477,7 @@ func TestReplayError_Format(t *testing.T) {
 }
 
 func TestMulticastDiscovery_DiscoverWithFakeTransport(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue a message from a different node.
@@ -509,7 +509,7 @@ func TestMulticastDiscovery_DiscoverWithFakeTransport(t *testing.T) {
 }
 
 func TestMulticastDiscovery_DiscoverTimeout(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 	// No messages enqueued, so Discover should timeout.
 
@@ -530,7 +530,7 @@ func TestMulticastDiscovery_DiscoverTimeout(t *testing.T) {
 }
 
 func TestMulticastDiscovery_DiscoverAfterStop(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
@@ -547,7 +547,7 @@ func TestMulticastDiscovery_DiscoverAfterStop(t *testing.T) {
 }
 
 func TestMulticastDiscovery_SkipsSelf(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue message from self (nodeID=1).
@@ -571,7 +571,7 @@ func TestMulticastDiscovery_SkipsSelf(t *testing.T) {
 }
 
 func TestMulticastDiscovery_SkipsDifferentDeployment(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue message from different deployment.
@@ -594,11 +594,11 @@ func TestMulticastDiscovery_SkipsDifferentDeployment(t *testing.T) {
 }
 
 func TestMulticastDiscovery_SkipsInvalidHMAC(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue message with wrong secret.
-	badMsg, err := EncodeMulticastMessage(100, 2, "10.0.0.2:5000", []byte("wrong-secret"))
+	badMsg, err := EncodeMulticastMessage(100, 2, "10.0.0.2:5000", []byte("wrong-secret-0016b"))
 	if err != nil {
 		t.Fatalf("encode error: %v", err)
 	}
@@ -617,7 +617,7 @@ func TestMulticastDiscovery_SkipsInvalidHMAC(t *testing.T) {
 }
 
 func TestMulticastDiscovery_MultiplePeers(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	for i := uint64(2); i <= 4; i++ {
@@ -647,7 +647,7 @@ func TestMulticastDiscovery_MultiplePeers(t *testing.T) {
 }
 
 func TestMulticastDiscovery_MinPeersWaitsForEnough(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Configure MinPeers=2 — Discover should wait for 2 other peers.
@@ -687,7 +687,7 @@ func TestMulticastDiscovery_MinPeersWaitsForEnough(t *testing.T) {
 }
 
 func TestMulticastDiscovery_MinPeersTimeoutIfNotEnough(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Configure MinPeers=3 but only provide 1 peer.
@@ -720,7 +720,7 @@ func TestMulticastDiscovery_MinPeersTimeoutIfNotEnough(t *testing.T) {
 }
 
 func TestMulticastDiscovery_StartSendsAnnouncements(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
@@ -756,7 +756,7 @@ func TestMulticastDiscovery_StartSendsAnnouncements(t *testing.T) {
 }
 
 func TestMulticastDiscovery_StopIdempotent(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
@@ -799,7 +799,7 @@ func TestMulticastDiscovery_Snapshot(t *testing.T) {
 }
 
 func TestMulticastDiscovery_DiscoverStoppedDuringSleep(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
@@ -820,7 +820,7 @@ func TestMulticastDiscovery_DiscoverStoppedDuringSleep(t *testing.T) {
 }
 
 func TestMulticastDiscovery_ListenHandlesReadError(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 	ft.readErr = errors.New("simulated read error")
 
@@ -846,7 +846,7 @@ func TestNewMulticastDiscovery_BadGroupAddress(t *testing.T) {
 	_, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:         1,
 		Address:        "10.0.0.1:5000",
-		SharedSecret:   []byte("secret"),
+		SharedSecret:   []byte("secret-fips140-16b"),
 		MulticastGroup: "not-a-valid-address:99999999",
 	})
 	if err == nil {
@@ -862,7 +862,7 @@ func TestNewMulticastDiscovery_BadInterfaceName(t *testing.T) {
 	_, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:       1,
 		Address:      "10.0.0.1:5000",
-		SharedSecret: []byte("secret"),
+		SharedSecret: []byte("secret-fips140-16b"),
 		Interface:    "nonexistent-iface-xyz999",
 	})
 	if err == nil {
@@ -879,7 +879,7 @@ func TestNewMulticastDiscovery_DefaultIntervals(t *testing.T) {
 	md, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:       1,
 		Address:      "10.0.0.1:5000",
-		SharedSecret: []byte("secret"),
+		SharedSecret: []byte("secret-fips140-16b"),
 		transport:    ft,
 	})
 	if err != nil {
@@ -1086,7 +1086,7 @@ func TestNewMulticastSender_SendsToGroup(t *testing.T) {
 func TestMulticastDiscovery_RealUDP_ThreeNodes(t *testing.T) {
 	// Use a unique port to avoid interference with other tests.
 	const groupAddr = "239.255.77.77:63782"
-	secret := []byte("e2e-test-secret")
+	secret := []byte("e2e-test-secret-16")
 	deploymentID := uint64(42)
 
 	nodes := make([]*MulticastDiscovery, 3)
@@ -1143,7 +1143,7 @@ func TestMulticastDiscovery_RealUDP_ThreeNodes(t *testing.T) {
 // instances discover each other using real UDP multicast.
 func TestMulticastDiscovery_RealUDP_TwoNodes(t *testing.T) {
 	const groupAddr = "239.255.77.77:63783"
-	secret := []byte("two-node-secret")
+	secret := []byte("two-node-secret-16")
 
 	md1, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:           1,
@@ -1517,7 +1517,7 @@ func TestMulticastDiscovery_TransportCloseError(t *testing.T) {
 // TestNewMulticastDiscovery_EncodeError verifies that an address that is
 // too long returns an encoding error during initialization.
 func TestNewMulticastDiscovery_EncodeError(t *testing.T) {
-	secret := []byte("secret")
+	secret := []byte("secret-fips140-16b")
 	longAddr := string(make([]byte, 254)) // Exceeds maxAddrLen of 253
 
 	_, err := NewMulticastDiscovery(MulticastConfig{
@@ -1756,7 +1756,7 @@ func TestNewMulticastDiscovery_ConfigurationValidation(t *testing.T) {
 			config: MulticastConfig{
 				NodeID:       1,
 				DeploymentID: 100,
-				SharedSecret: []byte("secret"),
+				SharedSecret: []byte("secret-fips140-16b"),
 				transport:    newFakeTransport(),
 			},
 		},
@@ -1971,7 +1971,7 @@ func TestMulticastDiscovery_AnnouncementsNotRejectedAsReplay(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMulticastDiscovery_SendAnnouncementWriteError(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 	ft.writeErr = errors.New("write failed")
 
@@ -1994,7 +1994,7 @@ func TestMulticastDiscovery_SendAnnouncementWriteError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewMulticastDiscovery_AddressTooLong(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	longAddr := strings.Repeat("a", maxAddrLen+1)
 	_, err := NewMulticastDiscovery(MulticastConfig{
 		NodeID:       1,
@@ -2009,7 +2009,7 @@ func TestNewMulticastDiscovery_AddressTooLong(t *testing.T) {
 }
 
 func TestNewMulticastDiscovery_DefaultAnnounceInterval(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := NewMulticastDiscovery(MulticastConfig{
@@ -2031,7 +2031,7 @@ func TestNewMulticastDiscovery_DefaultAnnounceInterval(t *testing.T) {
 }
 
 func TestNewMulticastDiscovery_DefaultDiscoverTimeout(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	md, err := NewMulticastDiscovery(MulticastConfig{
@@ -2069,7 +2069,7 @@ func TestMulticastDiscovery_SendAnnouncementEncodeError(t *testing.T) {
 			NodeID:       1,
 			Address:      longAddr,
 			DeploymentID: 100,
-			SharedSecret: []byte("test-secret"),
+			SharedSecret: []byte("test-secret-fips16"),
 		},
 		transport: ft,
 		peers:     make(map[uint64]Peer),
@@ -2090,7 +2090,7 @@ func TestMulticastDiscovery_SendAnnouncementEncodeError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMulticastDiscovery_DiscoverReturnsMultiplePeers(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue announcements from two different nodes.
@@ -2137,7 +2137,7 @@ func TestMulticastDiscovery_DiscoverReturnsMultiplePeers(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNewMulticastDiscovery_EmptyAddress(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	_, err := NewMulticastDiscovery(MulticastConfig{
@@ -2158,7 +2158,7 @@ func TestNewMulticastDiscovery_EmptyAddress(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMulticastDiscovery_ListenLoopSkipsSelfMessages(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue a message from our own NodeID.
@@ -2192,7 +2192,7 @@ func TestMulticastDiscovery_ListenLoopSkipsSelfMessages(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMulticastDiscovery_ListenLoopSkipsDifferentDeployment(t *testing.T) {
-	secret := []byte("test-secret")
+	secret := []byte("test-secret-fips16")
 	ft := newFakeTransport()
 
 	// Enqueue a message from a different deployment.
@@ -2406,5 +2406,78 @@ func TestUDPTransport_CloseSenderError(t *testing.T) {
 	// transport.Close() should still succeed (reader is still open).
 	if err := transport.Close(); err != nil {
 		t.Fatalf("transport.Close(): %v", err)
+	}
+}
+
+// TestEncodeMulticastMessage_ShortSecret asserts that a shared secret below
+// MinSharedSecretLen is refused with a ValidationError instead of reaching
+// crypto/hmac, which panics on an under-length key under
+// GODEBUG=fips140=only.
+func TestEncodeMulticastMessage_ShortSecret(t *testing.T) {
+	for _, secret := range [][]byte{nil, []byte("short"), make([]byte, MinSharedSecretLen-1)} {
+		_, err := EncodeMulticastMessage(1, 1, "10.0.0.1:5000", secret)
+		if err == nil {
+			t.Fatalf("secret of %d bytes: expected an error", len(secret))
+		}
+		var verr *ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("secret of %d bytes: error = %T (%v), want *ValidationError", len(secret), err, err)
+		}
+		if verr.Field != "SharedSecret" {
+			t.Errorf("Field = %q, want %q", verr.Field, "SharedSecret")
+		}
+	}
+}
+
+// TestDecodeMulticastMessage_ShortSecret asserts the same guard on the receive
+// path: a node must not panic because a peer's message arrived while its own
+// secret is too short.
+func TestDecodeMulticastMessage_ShortSecret(t *testing.T) {
+	secret := []byte("decode-short-secret-check")
+	encoded, err := EncodeMulticastMessage(1, 1, "10.0.0.1:5000", secret)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+
+	_, _, _, err = DecodeMulticastMessage(encoded, []byte("short"), 0)
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("error = %T (%v), want *ValidationError", err, err)
+	}
+}
+
+// TestEncodeMulticastMessage_MinimumLengthSecretAccepted pins the boundary: a
+// secret of exactly MinSharedSecretLen bytes is usable.
+func TestEncodeMulticastMessage_MinimumLengthSecretAccepted(t *testing.T) {
+	secret := make([]byte, MinSharedSecretLen)
+	for i := range secret {
+		secret[i] = byte(i + 1)
+	}
+
+	encoded, err := EncodeMulticastMessage(7, 9, "10.0.0.1:5000", secret)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+	deployment, node, addr, err := DecodeMulticastMessage(encoded, secret, 0)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if deployment != 7 || node != 9 || addr != "10.0.0.1:5000" {
+		t.Fatalf("round trip = (%d, %d, %q), want (7, 9, %q)", deployment, node, addr, "10.0.0.1:5000")
+	}
+}
+
+// TestNewMulticastDiscovery_ShortSecret asserts construction fails rather than
+// deferring the failure to the first announcement goroutine.
+func TestNewMulticastDiscovery_ShortSecret(t *testing.T) {
+	_, err := NewMulticastDiscovery(MulticastConfig{
+		NodeID:       1,
+		Address:      "10.0.0.1:5000",
+		DeploymentID: 1,
+		SharedSecret: []byte("short"),
+	})
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("error = %T (%v), want *ValidationError", err, err)
 	}
 }

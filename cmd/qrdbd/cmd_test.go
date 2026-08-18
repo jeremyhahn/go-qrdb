@@ -2436,7 +2436,7 @@ func TestNewStatusCmd_MultipleShards(t *testing.T) {
 
 func TestBuildMulticastDiscovery_Success(t *testing.T) {
 	f := &startFlags{
-		multicastSecret: "test-secret-key",
+		multicastSecret: "test-secret-key-16b",
 		replicaID:       42,
 		raftAddress:     "127.0.0.1:63001",
 		deploymentID:    1,

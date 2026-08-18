@@ -1284,7 +1284,7 @@ func TestGenerateAdminClientCert_MismatchedCAKeyForCert(t *testing.T) {
 
 func TestBuildMulticastDiscovery_Success_Coverage(t *testing.T) {
 	f := &startFlags{
-		multicastSecret: "test-secret",
+		multicastSecret: "test-secret-fips16",
 		replicaID:       42,
 		raftAddress:     "127.0.0.1:63001",
 		deploymentID:    1,
@@ -1304,7 +1304,7 @@ func TestBuildMulticastDiscovery_NewMulticastDiscoveryError(t *testing.T) {
 	// Pass a valid secret but empty raftAddress to trigger the error from
 	// discovery.NewMulticastDiscovery.
 	f := &startFlags{
-		multicastSecret: "test-secret",
+		multicastSecret: "test-secret-fips16",
 		replicaID:       42,
 		raftAddress:     "",
 		deploymentID:    1,
