@@ -17,6 +17,7 @@ package custodian
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -108,3 +109,30 @@ func (e *CorruptRecordError) Error() string {
 
 // Unwrap returns the underlying decode failure.
 func (e *CorruptRecordError) Unwrap() error { return e.Err }
+
+// OrphanedEnrolmentError is returned when a registration failed partway
+// through persisting and the compensating deletes could not remove everything
+// it had written.
+//
+// The keys it names are still in the store, and the sealed envelope for them
+// is not: envelopes are returned to the caller, never stored. The duplicate
+// check will honour the surviving record — correctly, since it cannot tell an
+// orphan from a completed enrolment — so this custodian cannot re-enrol until
+// an operator removes the listed keys.
+type OrphanedEnrolmentError struct {
+	// ID is the custodian identifier the failed registration used.
+	ID string
+	// Keys are the store keys that survived the rollback.
+	Keys []string
+	// Cause is the write failure that triggered the rollback.
+	Cause error
+}
+
+// Error returns a human-readable description naming the surviving keys.
+func (e *OrphanedEnrolmentError) Error() string {
+	return fmt.Sprintf("custodian: registration of %s failed (%v) and left %s behind; remove them before retrying",
+		e.ID, e.Cause, strings.Join(e.Keys, ", "))
+}
+
+// Unwrap returns the write failure that triggered the rollback.
+func (e *OrphanedEnrolmentError) Unwrap() error { return e.Cause }

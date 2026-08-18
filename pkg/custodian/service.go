@@ -160,7 +160,13 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		EnrolledAt:   now,
 	}
 
-	if err := s.persist(ctx, c); err != nil {
+	if err := s.persistNew(ctx, c); err != nil {
+		s.audit.Emit(ctx, audit.AuditEvent{
+			Resource:   "custodian:" + id,
+			Action:     "register",
+			Outcome:    audit.OutcomeFailure + ":persist",
+			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID, "error": err.Error()},
+		})
 		return nil, err
 	}
 
@@ -277,31 +283,105 @@ func (s *service) RevokeCustodian(ctx context.Context, id string) error {
 	return nil
 }
 
-// persist serialises the custodian record and writes it together with its
-// secondary indexes to the KV store.
-func (s *service) persist(ctx context.Context, c *Custodian) error {
+// custodianWrite is one key a custodian record occupies, with the store
+// operation name reported when writing it fails.
+type custodianWrite struct {
+	op    string
+	key   string
+	value []byte
+}
+
+// custodianWrites returns the three keys a custodian record occupies, in the
+// order they must be written: the primary record first, then the indexes that
+// point at it, so no index is ever visible before its record.
+func custodianWrites(c *Custodian) ([]custodianWrite, error) {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return &StoreError{Op: "marshal", Err: err}
+		return nil, &StoreError{Op: "marshal", Err: err}
 	}
+	return []custodianWrite{
+		{op: "put", key: sysCustodianPrefix + c.ID, value: data},
+		{op: "put-idx-tenant", key: sysCustodianIdxTenant + c.TenantID + "/" + c.ID, value: []byte(c.ID)},
+		{op: "put-idx-username", key: custodianUsernameKey(c.TenantID, c.Username), value: []byte(c.ID)},
+	}, nil
+}
 
-	// Primary record.
-	if err := s.store.Put(ctx, sysCustodianPrefix+c.ID, data); err != nil {
-		return &StoreError{Op: "put", Err: err}
+// persist serialises the custodian record and writes it together with its
+// secondary indexes to the KV store.
+//
+// It is the UPDATE path — RevokeCustodian rewrites an existing record — so a
+// failure leaves what is already there alone. Creating a record instead goes
+// through persistNew, which compensates for a torn write.
+func (s *service) persist(ctx context.Context, c *Custodian) error {
+	writes, err := custodianWrites(c)
+	if err != nil {
+		return err
 	}
-
-	// Tenant secondary index.
-	idxTenant := sysCustodianIdxTenant + c.TenantID + "/" + c.ID
-	if err := s.store.Put(ctx, idxTenant, []byte(c.ID)); err != nil {
-		return &StoreError{Op: "put-idx-tenant", Err: err}
+	for _, w := range writes {
+		if err := s.store.Put(ctx, w.key, w.value); err != nil {
+			return &StoreError{Op: w.op, Err: err}
+		}
 	}
-
-	// Username secondary index.
-	if err := s.store.Put(ctx, custodianUsernameKey(c.TenantID, c.Username), []byte(c.ID)); err != nil {
-		return &StoreError{Op: "put-idx-username", Err: err}
-	}
-
 	return nil
+}
+
+// persistNew writes a brand-new enrolment and compensates for a torn write by
+// removing whatever it managed to write.
+//
+// The KV store has no multi-key transaction — kvstore.AtomicKVStore offers
+// single-key PutIfAbsent and nothing wider — so the three writes can tear.
+// Without compensation the primary record survives a failed registration while
+// the sealed envelope does not: the envelope is returned to the caller, never
+// stored, so a registration that fails after writing the primary would leave a
+// record that the duplicate check honours forever and an envelope that no
+// longer exists. The custodian could then neither receive their share nor
+// re-enrol.
+//
+// Compensating deletes run in reverse order, so an index is never left
+// pointing at a record that has already gone. A delete that itself fails is
+// reported as OrphanedEnrolmentError naming the keys that survived, rather
+// than being folded into the write error: at that point an operator has
+// something to clean up and must be told which keys.
+//
+// Only a crash between the failed write and the compensation can still strand
+// a record. Closing that needs either a multi-key atomic write or a two-phase
+// enrolment that persists the sealed envelope, and the latter is a change to
+// this package's standing property that no share material is ever stored.
+func (s *service) persistNew(ctx context.Context, c *Custodian) error {
+	writes, err := custodianWrites(c)
+	if err != nil {
+		return err
+	}
+
+	written := make([]string, 0, len(writes))
+	for _, w := range writes {
+		if putErr := s.store.Put(ctx, w.key, w.value); putErr != nil {
+			storeErr := &StoreError{Op: w.op, Err: putErr}
+			stranded := s.rollback(ctx, written)
+			if len(stranded) > 0 {
+				return &OrphanedEnrolmentError{ID: c.ID, Keys: stranded, Cause: storeErr}
+			}
+			return storeErr
+		}
+		written = append(written, w.key)
+	}
+	return nil
+}
+
+// rollback deletes keys in reverse order and returns those it could not
+// remove. Every failure is logged as it happens: the caller reports the set,
+// but only the individual delete error explains why each one survived.
+func (s *service) rollback(ctx context.Context, keys []string) []string {
+	var stranded []string
+	for i := len(keys) - 1; i >= 0; i-- {
+		if err := s.store.Delete(ctx, keys[i]); err != nil {
+			s.logger.Error("custodian registration rollback failed",
+				slog.String("key", keys[i]),
+				slog.String("error", err.Error()))
+			stranded = append(stranded, keys[i])
+		}
+	}
+	return stranded
 }
 
 // validateRegisterRequest checks all required fields in a RegisterRequest.
