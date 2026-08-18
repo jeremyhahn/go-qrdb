@@ -171,18 +171,35 @@ func TestInitializeIdempotent(t *testing.T) {
 	assert.Equal(t, firstVersion, mgr.GetDEKVersion())
 }
 
-// TestGetCurrentDEK tests retrieving the current DEK.
-func TestGetCurrentDEK(t *testing.T) {
+// TestWithCurrentDEK tests scoped access to the current DEK.
+func TestWithCurrentDEK(t *testing.T) {
 	t.Run("uninitialized manager", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
-		dek, err := mgr.GetCurrentDEK()
+		called := false
+		err = mgr.WithCurrentDEK(func([]byte) error {
+			called = true
+			return nil
+		})
 		require.Error(t, err)
-		assert.Nil(t, dek)
+		assert.False(t, called, "callback must not run without a DEK")
 		var niErr *NotInitializedError
 		assert.ErrorAs(t, err, &niErr)
+	})
+
+	t.Run("nil callback", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
+
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+
+		err = mgr.WithCurrentDEK(nil)
+		require.Error(t, err)
+		var nilErr *NilInputError
+		assert.ErrorAs(t, err, &nilErr)
 	})
 
 	t.Run("initialized manager", func(t *testing.T) {
@@ -192,28 +209,36 @@ func TestGetCurrentDEK(t *testing.T) {
 
 		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
 
-		dek, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
-		assert.Len(t, dek, 32)
+		require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
+			assert.Len(t, dek, 32)
+			return nil
+		}))
 	})
 
-	t.Run("returns copy not original", func(t *testing.T) {
+	t.Run("aliases protected memory rather than copying", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
 		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
 
-		dek1, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
-		dek2, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
+		require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
+			assert.Same(t, &mgr.dekPlaintext.Bytes()[0], &dek[0],
+				"callback must see the mlocked buffer, not a heap copy")
+			return nil
+		}))
+	})
 
-		// Modify first copy.
-		dek1[0] ^= 0xFF
+	t.Run("callback error propagates", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
 
-		// Second copy should be unaffected.
-		assert.NotEqual(t, dek1[0], dek2[0])
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+
+		sentinel := &NotImplementedError{Message: "from callback"}
+		err = mgr.WithCurrentDEK(func([]byte) error { return sentinel })
+		assert.ErrorIs(t, err, error(sentinel))
 	})
 
 	t.Run("nil plaintext after manual reset", func(t *testing.T) {
@@ -227,9 +252,8 @@ func TestGetCurrentDEK(t *testing.T) {
 		mgr.dekPlaintext = nil
 		mgr.mu.Unlock()
 
-		dek, err := mgr.GetCurrentDEK()
+		err = mgr.WithCurrentDEK(func([]byte) error { return nil })
 		require.Error(t, err)
-		assert.Nil(t, dek)
 		assert.Contains(t, err.Error(), "DEK plaintext not initialized")
 	})
 }
@@ -255,14 +279,12 @@ func TestRotate(t *testing.T) {
 		ctx := context.Background()
 		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
 
-		dek1, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
+		dek1 := copyCurrentDEK(t, mgr)
 		v1 := mgr.GetDEKVersion()
 
 		require.NoError(t, mgr.Rotate(ctx))
 
-		dek2, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
+		dek2 := copyCurrentDEK(t, mgr)
 		v2 := mgr.GetDEKVersion()
 
 		assert.Equal(t, v1+1, v2)
@@ -520,8 +542,8 @@ func TestGetMetrics(t *testing.T) {
 	metrics2 := mgr.GetMetrics()
 	assert.Equal(t, uint64(1), metrics2["init_operations"])
 
-	_, _ = mgr.GetCurrentDEK()
-	_, _ = mgr.GetCurrentDEK()
+	_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
+	_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
 	_ = mgr.Rotate(ctx)
 	_ = mgr.SyncToNode(ctx, 1)
 
@@ -569,7 +591,7 @@ func TestConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				_, _ = mgr.GetCurrentDEK()
+				_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
 				_ = mgr.GetDEKVersion()
 				_, _ = mgr.GetStatus(ctx)
 			}
@@ -579,8 +601,8 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// BenchmarkGetCurrentDEK benchmarks DEK retrieval.
-func BenchmarkGetCurrentDEK(b *testing.B) {
+// BenchmarkWithCurrentDEK benchmarks scoped DEK access.
+func BenchmarkWithCurrentDEK(b *testing.B) {
 	mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 	if err != nil {
 		b.Fatalf("failed to create manager: %v", err)
@@ -593,7 +615,7 @@ func BenchmarkGetCurrentDEK(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = mgr.GetCurrentDEK()
+		_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
 	}
 }
 
@@ -630,7 +652,7 @@ func BenchmarkConcurrentDEKAccess(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_, _ = mgr.GetCurrentDEK()
+			_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
 		}
 	})
 }

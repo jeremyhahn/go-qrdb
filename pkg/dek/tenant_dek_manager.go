@@ -553,35 +553,47 @@ func (m *defaultTenantDEKManager) Close() error {
 	return nil
 }
 
-// wrapDEK wraps a plaintext DEK with the cluster DEK using AES-256-GCM.
+// wrapDEK wraps a plaintext DEK with the cluster DEK using AES-256-GCM. The
+// cluster DEK is read under scoped access, so it never leaves the cluster
+// manager's protected memory.
 func (m *defaultTenantDEKManager) wrapDEK(plaintext []byte) ([]byte, error) {
-	clusterDEK, err := m.clusterDEK.GetCurrentDEK()
-	if err != nil {
+	var (
+		ciphertext []byte
+		encErr     error
+	)
+	if err := m.clusterDEK.WithCurrentDEK(func(clusterDEK []byte) error {
+		ciphertext, encErr = AESGCMEncrypt(clusterDEK, plaintext)
+		return encErr
+	}); err != nil {
+		if encErr != nil {
+			return nil, &CryptoError{Op: "TenantDEKManager.wrapDEK", Detail: "encrypt DEK", Err: encErr}
+		}
 		return nil, &CryptoError{Op: "TenantDEKManager.wrapDEK", Detail: "get cluster DEK", Err: err}
-	}
-
-	ciphertext, err := AESGCMEncrypt(clusterDEK, plaintext)
-	if err != nil {
-		return nil, &CryptoError{Op: "TenantDEKManager.wrapDEK", Detail: "encrypt DEK", Err: err}
 	}
 
 	return ciphertext, nil
 }
 
-// unwrapDEK unwraps a wrapped DEK using the cluster DEK with AES-256-GCM.
+// unwrapDEK unwraps a wrapped DEK using the cluster DEK with AES-256-GCM. As
+// in wrapDEK, the cluster DEK is read under scoped access and stays inside the
+// cluster manager's protected memory.
 func (m *defaultTenantDEKManager) unwrapDEK(wrapped []byte) ([]byte, error) {
-	clusterDEK, err := m.clusterDEK.GetCurrentDEK()
-	if err != nil {
-		return nil, &CryptoError{Op: "TenantDEKManager.unwrapDEK", Detail: "get cluster DEK", Err: err}
-	}
-
 	if len(wrapped) < AESGCMOverhead {
 		return nil, &CiphertextTooShortError{Op: "TenantDEKManager.unwrapDEK", Detail: "wrapped DEK too short"}
 	}
 
-	dekPlaintext, err := AESGCMDecrypt(clusterDEK, wrapped)
-	if err != nil {
-		return nil, &CryptoError{Op: "TenantDEKManager.unwrapDEK", Detail: "decrypt DEK", Err: err}
+	var (
+		dekPlaintext []byte
+		decErr       error
+	)
+	if err := m.clusterDEK.WithCurrentDEK(func(clusterDEK []byte) error {
+		dekPlaintext, decErr = AESGCMDecrypt(clusterDEK, wrapped)
+		return decErr
+	}); err != nil {
+		if decErr != nil {
+			return nil, &CryptoError{Op: "TenantDEKManager.unwrapDEK", Detail: "decrypt DEK", Err: decErr}
+		}
+		return nil, &CryptoError{Op: "TenantDEKManager.unwrapDEK", Detail: "get cluster DEK", Err: err}
 	}
 
 	return dekPlaintext, nil

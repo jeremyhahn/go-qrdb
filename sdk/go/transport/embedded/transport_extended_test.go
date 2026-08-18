@@ -2540,7 +2540,7 @@ type mockDEKService struct {
 	initializeFn      func(ctx context.Context, algorithm string, keyBytes int) error
 	getStatusFn       func(ctx context.Context) (*dek.ClusterDEKStatus, error)
 	rotateFn          func(ctx context.Context) error
-	getCurrentFn      func(ctx context.Context) ([]byte, uint64, error)
+	currentVersionFn  func(ctx context.Context) (uint64, error)
 	syncToNodeFn      func(ctx context.Context, nodeID uint64) error
 	tenantGetCreateFn func(ctx context.Context, tenantID string) ([]byte, error)
 	tenantRotateFn    func(ctx context.Context, tenantID string) error
@@ -2567,11 +2567,11 @@ func (m *mockDEKService) Rotate(ctx context.Context) error {
 	}
 	return nil
 }
-func (m *mockDEKService) GetCurrentDEK(ctx context.Context) ([]byte, uint64, error) {
-	if m.getCurrentFn != nil {
-		return m.getCurrentFn(ctx)
+func (m *mockDEKService) CurrentDEKVersion(ctx context.Context) (uint64, error) {
+	if m.currentVersionFn != nil {
+		return m.currentVersionFn(ctx)
 	}
-	return []byte("dek-bytes"), 2, nil
+	return 2, nil
 }
 func (m *mockDEKService) SyncToNode(ctx context.Context, nodeID uint64) error {
 	if m.syncToNodeFn != nil {
@@ -2800,8 +2800,8 @@ func TestEmbeddedDEK_GetCurrent_Closed(t *testing.T) {
 
 func TestEmbeddedDEK_GetCurrent_Error(t *testing.T) {
 	svc := &mockDEKService{
-		getCurrentFn: func(context.Context) ([]byte, uint64, error) {
-			return nil, 0, errSentinel
+		currentVersionFn: func(context.Context) (uint64, error) {
+			return 0, errSentinel
 		},
 	}
 	tr := newExtTransport(t, WithDEKService(svc))

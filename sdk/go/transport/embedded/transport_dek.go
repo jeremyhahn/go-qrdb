@@ -92,7 +92,8 @@ func (t *Transport) DEKRotate(ctx context.Context) error {
 
 // DEKGetCurrent returns the current DEK metadata by delegating to the
 // injected DEKServicer. The actual DEK bytes are not exposed through the
-// transport layer for security.
+// transport layer for security — the service seam does not surface them at
+// all, so only the version reaches this layer.
 func (t *Transport) DEKGetCurrent(ctx context.Context) (*transport.DEKCurrentResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
@@ -100,7 +101,7 @@ func (t *Transport) DEKGetCurrent(ctx context.Context) (*transport.DEKCurrentRes
 	if t.dekSvc == nil {
 		return nil, &NilServiceError{Service: "DEKServicer"}
 	}
-	_, version, err := t.dekSvc.GetCurrentDEK(ctx)
+	version, err := t.dekSvc.CurrentDEKVersion(ctx)
 	if err != nil {
 		return nil, err
 	}

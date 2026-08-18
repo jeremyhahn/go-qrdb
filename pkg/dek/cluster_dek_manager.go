@@ -334,11 +334,22 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 	return nil
 }
 
-// GetCurrentDEK returns the current cluster DEK (for local encryption).
-// Returns a copy of the DEK to prevent external modification.
-func (m *ClusterDEKManager) GetCurrentDEK() ([]byte, error) {
+// WithCurrentDEK invokes fn with the live cluster DEK (for local encryption).
+//
+// The slice handed to fn ALIASES the manager's mlocked buffer and is valid
+// only for the duration of the call: fn must not retain it, must not copy it
+// into unprotected memory, and must not mutate it. The manager's state lock is
+// held across the call, so fn must not call back into the manager.
+//
+// Scoped access is the only way to read the DEK. The manager deliberately does
+// not hand out a heap-backed copy: such a copy is neither mlocked nor wiped,
+// and its lifetime would be outside the manager's control.
+func (m *ClusterDEKManager) WithCurrentDEK(fn func(dek []byte) error) error {
+	if fn == nil {
+		return &NilInputError{Op: "ClusterDEKManager.WithCurrentDEK", Field: "fn"}
+	}
 	if !m.initialized.Load() {
-		return nil, &NotInitializedError{Op: "ClusterDEKManager.GetCurrentDEK", Resource: "cluster DEK"}
+		return &NotInitializedError{Op: "ClusterDEKManager.WithCurrentDEK", Resource: "cluster DEK"}
 	}
 
 	m.mu.RLock()
@@ -347,22 +358,29 @@ func (m *ClusterDEKManager) GetCurrentDEK() ([]byte, error) {
 	// Bytes reports nil for both an absent and an already-destroyed buffer.
 	plaintext := m.dekPlaintext.Bytes()
 	if plaintext == nil {
-		return nil, &NotInitializedError{Op: "ClusterDEKManager.GetCurrentDEK", Resource: "DEK plaintext"}
+		return &NotInitializedError{Op: "ClusterDEKManager.WithCurrentDEK", Resource: "DEK plaintext"}
 	}
-
-	// Return a copy to prevent external modification.
-	dek := make([]byte, len(plaintext))
-	copy(dek, plaintext)
 
 	// Update metrics.
 	m.metrics.dekAccesses.Add(1)
 
-	return dek, nil
+	return fn(plaintext)
 }
 
-// GetDEKVersion returns the current DEK version number.
+// GetDEKVersion returns the current DEK version number, or 0 when the cluster
+// DEK has not been initialized.
 func (m *ClusterDEKManager) GetDEKVersion() uint64 {
 	return atomic.LoadUint64(&m.dekVersion)
+}
+
+// CurrentVersion returns the current DEK version, and a NotInitializedError
+// when no cluster DEK has been established yet. It is the checked counterpart
+// of GetDEKVersion, for callers that must distinguish "version 0" from "no DEK".
+func (m *ClusterDEKManager) CurrentVersion() (uint64, error) {
+	if !m.initialized.Load() {
+		return 0, &NotInitializedError{Op: "ClusterDEKManager.CurrentVersion", Resource: "cluster DEK"}
+	}
+	return atomic.LoadUint64(&m.dekVersion), nil
 }
 
 // SyncToNode synchronizes the DEK to a specific node.

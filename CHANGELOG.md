@@ -118,13 +118,24 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — protected memory
 
-- **The live cluster DEK is held in mlocked memory.**
+- **The live cluster DEK is held in mlocked memory, and never copied out.**
   `dek.ClusterDEKManager` kept the plaintext cluster DEK in an ordinary
   `[]byte` for the manager's whole lifetime. It is now a `*secure.Buffer`
   (mlocked, guard-paged, wiped on destroy): the key is generated straight
   into protected memory rather than being copied there, and the superseded
-  buffer is destroyed on `Rotate` and on `Close`. `GetCurrentDEK` is
-  unchanged for callers — it still returns a detached copy.
+  buffer is destroyed on `Rotate` and on `Close`.
+
+  **BREAKING (service seam):** `ClusterDEKManager.GetCurrentDEK() ([]byte,
+  error)` is replaced by `WithCurrentDEK(func(dek []byte) error) error`,
+  which lends the caller a slice aliasing protected memory for the duration
+  of the callback — the manager no longer hands out a heap-backed copy whose
+  lifetime it cannot control. `ClusterDEKManager.CurrentVersion()` is the
+  checked counterpart of `GetDEKVersion` for callers that must distinguish
+  "version 0" from "no DEK". Correspondingly,
+  `service.DEKServicer.GetCurrentDEK(ctx) ([]byte, uint64, error)` becomes
+  `CurrentDEKVersion(ctx) (uint64, error)`: the DEK bytes never crossed that
+  boundary usefully — the embedded transport already discarded them, and no
+  transport exposes DEK material.
 
 ## [0.5.8-alpha] - 2026-08-17
 

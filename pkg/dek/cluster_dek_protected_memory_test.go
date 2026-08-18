@@ -58,6 +58,19 @@ func livePlaintext(mgr *ClusterDEKManager) *secure.Buffer {
 	return mgr.dekPlaintext
 }
 
+// copyCurrentDEK copies the live DEK out of protected memory so a test can
+// compare successive values. It exists for tests ONLY: production callers use
+// the scoped slice WithCurrentDEK hands them and never take a copy.
+func copyCurrentDEK(t *testing.T, mgr *ClusterDEKManager) []byte {
+	t.Helper()
+	var out []byte
+	require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
+		out = bytes.Clone(dek)
+		return nil
+	}))
+	return out
+}
+
 // TestClusterDEKProtectedMemory covers the protected-memory lifecycle of the
 // live cluster DEK. The DEK is held in an mlocked, guard-paged
 // *secure.Buffer from Initialize until Close — never on the ordinary heap —
@@ -86,10 +99,8 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		require.Len(t, wrapped, 36)
 		assert.Equal(t, buf.Bytes(), wrapped[4:])
 
-		// GetCurrentDEK hands back a detached copy of the protected bytes.
-		dek, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
-		assert.Equal(t, buf.Bytes(), dek)
+		// Scoped access sees exactly those protected bytes.
+		assert.Equal(t, buf.Bytes(), copyCurrentDEK(t, mgr))
 	})
 
 	t.Run("rotate destroys the superseded buffer", func(t *testing.T) {
@@ -127,9 +138,13 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		assert.Nil(t, livePlaintext(mgr))
 		assert.False(t, mgr.initialized.Load())
 
-		dek, err := mgr.GetCurrentDEK()
+		called := false
+		err = mgr.WithCurrentDEK(func([]byte) error {
+			called = true
+			return nil
+		})
 		require.Error(t, err)
-		assert.Nil(t, dek)
+		assert.False(t, called, "no DEK may be handed out after Close")
 	})
 
 	t.Run("close is idempotent", func(t *testing.T) {
@@ -166,9 +181,7 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		require.Error(t, mgr.Rotate(ctx))
 
 		assert.Same(t, buf, livePlaintext(mgr), "failed rotate must not swap the buffer")
-		dek, err := mgr.GetCurrentDEK()
-		require.NoError(t, err)
-		assert.Equal(t, before, dek, "failed rotate must leave the DEK intact")
+		assert.Equal(t, before, copyCurrentDEK(t, mgr), "failed rotate must leave the DEK intact")
 		assert.Equal(t, uint64(1), mgr.GetDEKVersion())
 	})
 }

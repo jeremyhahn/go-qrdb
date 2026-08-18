@@ -32,8 +32,8 @@ type DEKServicer interface {
 	// Rotate rotates the cluster DEK to a new version.
 	Rotate(ctx context.Context) error
 
-	// GetCurrentDEK returns the current DEK bytes and version.
-	GetCurrentDEK(ctx context.Context) ([]byte, uint64, error)
+	// CurrentDEKVersion returns the version of the live cluster DEK.
+	CurrentDEKVersion(ctx context.Context) (uint64, error)
 
 	// SyncToNode synchronizes the DEK to a specific node.
 	SyncToNode(ctx context.Context, nodeID uint64) error
@@ -102,14 +102,14 @@ func (s *DEKService) Rotate(ctx context.Context) error {
 	return s.cluster.Rotate(ctx)
 }
 
-// GetCurrentDEK returns the current DEK bytes and version.
-func (s *DEKService) GetCurrentDEK(_ context.Context) ([]byte, uint64, error) {
-	dekBytes, err := s.cluster.GetCurrentDEK()
-	if err != nil {
-		return nil, 0, err
-	}
-	version := s.cluster.GetDEKVersion()
-	return dekBytes, version, nil
+// CurrentDEKVersion returns the version of the live cluster DEK.
+//
+// The DEK bytes themselves do not cross this boundary. They stay in the
+// cluster manager's protected memory, readable only under scoped access
+// (dek.ClusterDEKManager.WithCurrentDEK), and no transport exposes them: the
+// version is the whole of the caller-visible state.
+func (s *DEKService) CurrentDEKVersion(_ context.Context) (uint64, error) {
+	return s.cluster.CurrentVersion()
 }
 
 // SyncToNode synchronizes the DEK to a specific node.
