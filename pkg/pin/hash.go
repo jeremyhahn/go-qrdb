@@ -15,7 +15,6 @@
 package pin
 
 import (
-	"crypto/fips140"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -25,6 +24,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 // HashAlgorithm identifies the password-hashing primitive used to protect
@@ -36,7 +37,7 @@ const (
 	HashArgon2id HashAlgorithm = "argon2id"
 
 	// HashPBKDF2 selects PBKDF2 (FIPS 140-3 approved). Chosen automatically
-	// when crypto/fips140 reports the FIPS module is enabled.
+	// when FIPS 140 mode is in effect.
 	HashPBKDF2 HashAlgorithm = "pbkdf2"
 )
 
@@ -93,11 +94,15 @@ func FIPSHashConfig() HashConfig {
 	}
 }
 
-// AutoDetectHashConfig returns FIPSHashConfig when the Go runtime is in
-// FIPS 140 mode (GOFIPS=on or equivalent build), DefaultHashConfig
-// otherwise.
+// AutoDetectHashConfig returns FIPSHashConfig when FIPS 140 mode is in
+// effect, DefaultHashConfig otherwise. Detection uses the stack-wide
+// predicate in go-quicraft/pkg/seal (re-exported as seal.FIPSEnabled): the
+// Go runtime's FIPS module state first, then GOFIPS140 as an environmental
+// signal, with the explicit value "off" honored as disabled. The previous
+// implementation consulted crypto/fips140.Enabled alone and so ignored a
+// deployment that signalled FIPS through the environment.
 func AutoDetectHashConfig() HashConfig {
-	if fips140.Enabled() {
+	if quicraftseal.FIPSEnabled() {
 		return FIPSHashConfig()
 	}
 	return DefaultHashConfig()

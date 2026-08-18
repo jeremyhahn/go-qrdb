@@ -330,7 +330,7 @@ func TestDEKService_Rotate_NotInitialized(t *testing.T) {
 	}
 }
 
-func TestDEKService_GetCurrentDEK(t *testing.T) {
+func TestDEKService_CurrentDEKVersion(t *testing.T) {
 	svc, _, _ := newTestDEKService(t)
 	ctx := context.Background()
 
@@ -338,25 +338,36 @@ func TestDEKService_GetCurrentDEK(t *testing.T) {
 		t.Fatalf("initialize error: %v", err)
 	}
 
-	dekBytes, version, err := svc.GetCurrentDEK(ctx)
+	version, err := svc.CurrentDEKVersion(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(dekBytes) != 32 {
-		t.Fatalf("expected 32-byte DEK, got %d", len(dekBytes))
 	}
 	if version != 1 {
 		t.Fatalf("expected version 1, got %d", version)
 	}
+
+	if err := svc.Rotate(ctx); err != nil {
+		t.Fatalf("rotate error: %v", err)
+	}
+	version, err = svc.CurrentDEKVersion(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error after rotate: %v", err)
+	}
+	if version != 2 {
+		t.Fatalf("expected version 2 after rotate, got %d", version)
+	}
 }
 
-func TestDEKService_GetCurrentDEK_NotInitialized(t *testing.T) {
+func TestDEKService_CurrentDEKVersion_NotInitialized(t *testing.T) {
 	svc, _, _ := newTestDEKService(t)
 	ctx := context.Background()
 
-	_, _, err := svc.GetCurrentDEK(ctx)
+	version, err := svc.CurrentDEKVersion(ctx)
 	if err == nil {
-		t.Fatal("expected error for uninitialized GetCurrentDEK, got nil")
+		t.Fatal("expected error for uninitialized CurrentDEKVersion, got nil")
+	}
+	if version != 0 {
+		t.Fatalf("expected version 0 on error, got %d", version)
 	}
 	var notInit *dek.NotInitializedError
 	if !errors.As(err, &notInit) {

@@ -70,10 +70,10 @@ type ShamirConfig = quicraftseal.ShamirConfig
 //
 // The software strategy auto-selects the KDF at construction time via
 // DefaultKDFVersion(): PBKDF2-SHA256 (600,000 iterations, NIST SP 800-132)
-// when GOFIPS140 is set, Argon2id (OWASP defaults) otherwise. Both KDF
-// adapters are always registered so a FIPS binary can unseal a key that was
-// originally sealed by a non-FIPS binary, and vice-versa. The KDF version
-// is stored in SealedRootKey.Metadata[0] for cross-version routing.
+// in FIPS 140 mode (see FIPSEnabled), Argon2id (OWASP defaults) otherwise.
+// Both KDF adapters are always registered so a FIPS binary can unseal a key
+// that was originally sealed by a non-FIPS binary, and vice-versa. The KDF
+// version is stored in SealedRootKey.Metadata[0] for cross-version routing.
 //
 // Strategy preference order (highest to lowest):
 //
@@ -89,9 +89,22 @@ type ShamirConfig = quicraftseal.ShamirConfig
 type SoftwareStrategy = quicraftseal.SoftwareStrategy
 
 // NewSoftwareStrategy is a constructor alias for go-quicraft's software
-// strategy. It creates a SoftwareStrategy that auto-selects the KDF
-// based on FIPS mode: PBKDF2-SHA256 when GOFIPS140 is set, Argon2id otherwise.
+// strategy. It creates a SoftwareStrategy that auto-selects the KDF based on
+// FIPS mode: PBKDF2-SHA256 in FIPS 140 mode, Argon2id otherwise.
 var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
+
+// FIPSEnabled is the single FIPS 140 mode predicate for the stack,
+// re-exported from go-quicraft/pkg/seal. Detection keys off the Go runtime's
+// FIPS 140-3 module state (crypto/fips140.Enabled) first and falls back to
+// the GOFIPS140 environment variable for deployments that signal FIPS intent
+// that way; the explicit value "off" is honored as disabled rather than
+// misread as enabled.
+//
+// Every FIPS-conditional path in go-qrdb routes through this one predicate —
+// SO PIN hashing (pkg/auth), PIN hash configuration (pkg/pin) and KDF
+// selection (pkg/seal/kdf) — so a given environment yields one consistent
+// answer across the process.
+var FIPSEnabled = quicraftseal.FIPSEnabled
 
 // NewDeferredSoftwareStrategy creates a SoftwareStrategy that defers passphrase
 // binding to Seal/Unseal time. The passphrase is extracted from

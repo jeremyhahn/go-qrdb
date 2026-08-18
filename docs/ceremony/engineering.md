@@ -73,7 +73,7 @@ qrdb ships only `NoopThresholdInitializer`
   `shamir.Split` and wiped locally once the shares exist. The PIN is never
   persisted in plaintext anywhere.
 - **Without `WithPINBackend` the daemon builds a default `pin.SoftwareBackend`**
-  (Argon2id / PBKDF2 auto-selected by `crypto/fips140.Enabled()`) over
+  (Argon2id / PBKDF2 auto-selected by `seal.FIPSEnabled()`) over
   barrier-protected storage. Hardware backends from go-xkms inject through the
   same option; ceremony never learns which it is talking to.
 - **Verification ignores the authenticator kind.** `BeginClaimCert` and

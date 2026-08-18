@@ -215,7 +215,7 @@ func TestClusterDEKManager_GetReencryptionStatus_ZeroTotalKeys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestTenantDEKManager_WrapDEK_ClusterDEKFailure exercises the wrapDEK
-// branch where GetCurrentDEK returns an error (closed cluster DEK).
+// branch where scoped cluster-DEK access fails (closed cluster DEK).
 func TestTenantDEKManager_WrapDEK_ClusterDEKFailure(t *testing.T) {
 	clusterDEK, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestTenantDEKManager_WrapDEK_ClusterDEKFailure(t *testing.T) {
 	mgr, err := NewTenantDEKManager(clusterDEK, newMockStorageBackend(), discardLogger(), nil)
 	require.NoError(t, err)
 
-	// Close the cluster DEK so GetCurrentDEK will fail.
+	// Close the cluster DEK so scoped access will fail.
 	require.NoError(t, clusterDEK.Close())
 
 	_, err = mgr.GetOrCreateTenantDEK(context.Background(), "wrap-fail-tenant")
