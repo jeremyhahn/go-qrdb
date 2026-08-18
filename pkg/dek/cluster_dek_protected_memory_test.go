@@ -369,7 +369,12 @@ func TestClusterDEKEncapsulation(t *testing.T) {
 		assert.Equal(t, []byte("another tenant DEK"), unwrapped)
 	})
 
-	t.Run("unwrapped output is a copy, not the live key", func(t *testing.T) {
+	// The subtest below asserts that UnwrapKey's output does not ALIAS the
+	// manager's protected buffer — it is about the cluster DEK not escaping,
+	// not a requirement that the output be heap-backed. The tenant key
+	// material it returns is heap-resident for reasons documented on
+	// UnwrapKey and tracked in #22.
+	t.Run("unwrapped output does not alias the live key", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
@@ -386,7 +391,7 @@ func TestClusterDEKEncapsulation(t *testing.T) {
 		live := mgr.dekPlaintext.Bytes()
 		aliased := &unwrapped[0] == &live[0]
 		mgr.mu.RUnlock()
-		assert.False(t, aliased, "UnwrapKey must not return a slice over protected memory")
+		assert.False(t, aliased, "UnwrapKey must not return a slice over the manager's protected buffer")
 
 		for i := range unwrapped {
 			unwrapped[i] ^= 0xFF

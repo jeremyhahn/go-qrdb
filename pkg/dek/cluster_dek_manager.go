@@ -364,6 +364,16 @@ func (m *ClusterDEKManager) WrapKey(plaintext []byte) ([]byte, error) {
 // UnwrapKey decrypts key material that WrapKey wrapped with the live cluster
 // DEK. As in WrapKey, the cluster DEK is applied inside the manager and never
 // crosses the API boundary.
+//
+// The returned plaintext is the CALLER's key material — a tenant DEK, not the
+// cluster DEK — and it is ordinary heap memory, exactly as it was before the
+// cluster DEK moved into a protected buffer. The tenant key path is heap-
+// resident end to end (defaultTenantDEKManager caches plaintext []byte, and
+// the exported TenantDEKManager interface returns []byte), so returning a
+// *secure.Buffer here would only move the copy one call further out rather
+// than protect it. Converting that path is a breaking change to an exported
+// interface and is tracked with the audit's other exported-surface rulings
+// in #22.
 func (m *ClusterDEKManager) UnwrapKey(wrapped []byte) ([]byte, error) {
 	if len(wrapped) < AESGCMOverhead {
 		return nil, &CiphertextTooShortError{Op: "ClusterDEKManager.UnwrapKey", Detail: "wrapped key too short"}
