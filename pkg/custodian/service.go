@@ -16,8 +16,10 @@ package custodian
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,10 +89,11 @@ func NewService(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *sl
 	return &service{store: store, audit: auditLogger, logger: logger}, nil
 }
 
-// RegisterCustodian validates the request, generates a deterministic UUID v5
-// from tenantID+username, seals the Shamir share into an ECDH envelope, persists
-// the custodian metadata, and returns the sealed envelope. The share plaintext
-// bytes are zeroed by SealShareTo before this method returns.
+// RegisterCustodian validates the request, derives the custodian's
+// deterministic ID from tenantID+username, seals the Shamir share into an
+// ECDH envelope, persists the custodian metadata, and returns the sealed
+// envelope. The share plaintext bytes are zeroed by SealShareTo before this
+// method returns.
 func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
 	if err := validateRegisterRequest(req); err != nil {
 		s.audit.Emit(ctx, audit.AuditEvent{
@@ -102,23 +105,31 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		return nil, err
 	}
 
-	// Deterministic ID: UUID v5 from DNS namespace + "tenantID:username".
-	id := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(req.TenantID+":"+req.Username)).String()
-
-	// Check for duplicate registration.
-	existing, err := s.store.Get(ctx, sysCustodianPrefix+id)
+	// Duplicate registration is decided from the username index, not by
+	// looking up the derived ID. The index is the record of what this tenant
+	// has actually enrolled, so it catches a custodian registered before
+	// custodian IDs moved off UUIDv5/SHA-1 (see custodianID), whose record
+	// still lives under its legacy identifier. Re-deriving instead would
+	// miss it and enrol the same person twice, under two IDs, each holding a
+	// share.
+	existing, err := s.store.Get(ctx, custodianUsernameKey(req.TenantID, req.Username))
 	if err != nil {
 		return nil, &StoreError{Op: "check-exists", Err: err}
 	}
 	if existing != nil {
+		// The index value is the enrolled custodian's own ID, so the audit
+		// event names the record that actually exists rather than the one
+		// this call would have created.
 		s.audit.Emit(ctx, audit.AuditEvent{
-			Resource:   "custodian:" + id,
+			Resource:   "custodian:" + string(existing),
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":already-exists",
 			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID},
 		})
 		return nil, ErrCustodianAlreadyExists
 	}
+
+	id := custodianID(req.TenantID, req.Username)
 
 	// Seal the share into an ECDH envelope. SealShareTo zeroes req.ShareBytes.
 	envelope, err := SealShareTo(req.ShareBytes, req.PublicKeyPEM)
@@ -281,8 +292,7 @@ func (s *service) persist(ctx context.Context, c *Custodian) error {
 	}
 
 	// Username secondary index.
-	idxUsername := sysCustodianIdxUsername + c.TenantID + "/" + c.Username
-	if err := s.store.Put(ctx, idxUsername, []byte(c.ID)); err != nil {
+	if err := s.store.Put(ctx, custodianUsernameKey(c.TenantID, c.Username), []byte(c.ID)); err != nil {
 		return &StoreError{Op: "put-idx-username", Err: err}
 	}
 
@@ -315,4 +325,56 @@ func validateRegisterRequest(req RegisterRequest) error {
 		return ErrInvalidMethod
 	}
 	return nil
+}
+
+// custodianUsernameKey builds the username secondary index key, the
+// authoritative "has this tenant already enrolled this person" record.
+func custodianUsernameKey(tenantID, username string) string {
+	return sysCustodianIdxUsername + tenantID + "/" + username
+}
+
+// custodianNamespace domain-separates custodian identifiers from every other
+// SHA-256 derivation in the system. UUIDv8 leaves the derivation entirely to
+// the application (RFC 9562 §5.8), so unlike a v3/v5 namespace this is
+// hashed as a literal prefix rather than as sixteen namespace bytes.
+const custodianNamespace = "go-qrdb:custodian-namespace/v8/"
+
+// custodianID derives a custodian's stable identifier from its tenant and
+// username as an RFC 9562 §5.8 UUIDv8 over SHA-256.
+//
+// It replaces a UUIDv5 (name-based, SHA-1) derivation: SHA-1 does not exist
+// under FIPS 140-3, so that call panicked outright in a binary built with
+// GODEBUG=fips140=only. RFC 4122 fixes v3 to MD5 and v5 to SHA-1, so v8 —
+// the version reserved for application-defined derivations — is the only
+// name-based form an approved hash can take. The 36-character UUID text
+// shape is unchanged, so no caller, key, or wire format reformats.
+//
+// The value differs from what the SHA-1 derivation produced for the same
+// inputs. Custodians enrolled earlier keep resolving because every read
+// addresses them by their stored identifier: GetCustodian and
+// RevokeCustodian take the ID as given, ListCustodians reads it out of the
+// tenant index, and RegisterCustodian's duplicate check goes through the
+// username index rather than re-deriving.
+//
+// tenantID and username are length-prefixed rather than merely joined so
+// that the encoding is injective: without framing, tenant "a:b" with user
+// "c" and tenant "a" with user "b:c" would hash identically and two
+// distinct custodians would collide on one identifier.
+func custodianID(tenantID, username string) string {
+	buf := make([]byte, 0, len(custodianNamespace)+len(tenantID)+len(username)+16)
+	buf = append(buf, custodianNamespace...)
+	buf = strconv.AppendInt(buf, int64(len(tenantID)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, tenantID...)
+	buf = strconv.AppendInt(buf, int64(len(username)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, username...)
+
+	sum := sha256.Sum256(buf)
+
+	var u uuid.UUID
+	copy(u[:], sum[:len(u)])
+	u[6] = (u[6] & 0x0f) | 0x80 // version 8
+	u[8] = (u[8] & 0x3f) | 0x80 // RFC 9562 variant (10xx)
+	return u.String()
 }

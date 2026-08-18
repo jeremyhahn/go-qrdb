@@ -144,6 +144,17 @@ type Dependencies struct {
 	// Roles is the role-creation surface. Required.
 	Roles RoleCreator
 
+	// RoleResolver resolves a system role to the identifier it is actually
+	// persisted under, so grants bind to that record rather than to a
+	// freshly derived identifier. Optional but strongly recommended: on a
+	// cluster seeded before system role IDs moved off UUIDv5/SHA-1, the
+	// seeded roles keep their legacy identifiers (seeding is name-unique
+	// and tolerates already-exists), and a grant written against the
+	// derived identifier would name no role at all. When nil, grants use
+	// the derived identifier, which is correct only for a store this
+	// bootstrap seeds itself. qrdb's own role.RoleServicer satisfies it.
+	RoleResolver role.NameResolver
+
 	// CA issues the platform admin certificate (Path A: generate-and-distribute).
 	// Optional: used when no AdminCSRPEM is supplied.
 	CA CertProvider
@@ -490,7 +501,10 @@ func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
 // createAdminUser creates the bootstrap admin. It returns the created user
 // (nil when the admin already existed), a created flag, and an error.
 func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, error) {
-	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
+	adminRoleID, err := role.ResolveSystemRoleID(ctx, deps.RoleResolver, tenantID, role.RoleNameAdmin)
+	if err != nil {
+		return nil, false, err
+	}
 	roleIDs := []string{adminRoleID}
 
 	// Under the standard (non-strict) posture, also grant the Owner role so
@@ -499,7 +513,11 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*
 	// keeps only the canonical Admin@system grant and data-plane/governance
 	// duties require the operator/SO identities.
 	if !deps.SeparationOfDuties {
-		roleIDs = append(roleIDs, role.SystemRoleID(tenantID, role.RoleNameOwner))
+		ownerRoleID, ownerErr := role.ResolveSystemRoleID(ctx, deps.RoleResolver, tenantID, role.RoleNameOwner)
+		if ownerErr != nil {
+			return nil, false, ownerErr
+		}
+		roleIDs = append(roleIDs, ownerRoleID)
 	}
 
 	adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{

@@ -51,6 +51,8 @@ package rbac
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -193,6 +195,15 @@ type RBACAuthorizer struct {
 	// authorizable on a draining node. Nil disables the fallback.
 	rolesFallback role.RoleServicer
 
+	// sysRoleIDs memoizes role.SystemRoleIDs per "tenantID/roleName". The
+	// mapping is immutable in practice — a system role can be neither
+	// renamed nor deleted (SystemRoleImmutableError), and once a tenant is
+	// seeded its system roles keep whichever identifiers that seeding
+	// assigned — so entries never expire. A negative result (no such role
+	// yet, hence canonical identifier only) is equally durable: every write
+	// from here on emits the canonical form.
+	sysRoleIDs sync.Map // map[string][]string
+
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
 	// authorizer resolves a permission's scope in the identity's own tenant
 	// (per-tenant store -> built-in default -> ScopeSelf) so that two
@@ -262,24 +273,69 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 	return a
 }
 
+// systemRoleIDs returns every identifier that denotes the named system role
+// in tenantID: the canonical one plus, on a cluster seeded before system
+// role IDs moved off UUIDv5/SHA-1, the legacy identifier still persisted for
+// it. Results are memoized in a.sysRoleIDs, so a tenant costs one name-index
+// lookup per process.
+//
+// The lookup runs on the caller's context, exactly as ResolvePermissions
+// does below, so it sees the role store through the same tenant-visibility
+// rules that permission resolution will apply moments later. A failure is
+// reported rather than swallowed: both callers use the result to VOID a
+// grant, so treating an unresolvable store as "no legacy identifier" would
+// fail open.
+func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, error) {
+	key := tenantID + "/" + roleName
+	if cached, ok := a.sysRoleIDs.Load(key); ok {
+		return cached.([]string), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	}
+
+	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
+	if err != nil {
+		if a.rolesFallback == nil {
+			return nil, &ResolveError{Err: err}
+		}
+		// Same StaleRead fallback rationale as permission resolution: role
+		// data is replicated before servers start, so a stale read is safe
+		// and keeps a cold or draining node authorizing.
+		fids, ferr := role.SystemRoleIDs(ctx, a.rolesFallback, tenantID, roleName)
+		if ferr != nil {
+			return nil, &ResolveError{Err: err}
+		}
+		ids = fids
+	}
+
+	a.sysRoleIDs.Store(key, ids)
+	return ids, nil
+}
+
 // effectiveRoles returns the identity's roles with the Owner convenience role
 // removed when strict separation of duties is active. Owner may be referenced
-// either by its name (role.RoleNameOwner) or by its deterministic per-tenant
-// ID (role.SystemRoleID(tenantID, RoleNameOwner)); both forms are stripped.
-// In the standard posture the roles are returned unchanged.
-func (a *RBACAuthorizer) effectiveRoles(identity *auth.Identity) []string {
+// either by its name (role.RoleNameOwner) or by any identifier that denotes
+// the tenant's Owner role — the canonical one and, on a cluster seeded before
+// the UUIDv5 migration, its legacy identifier. All such forms are stripped;
+// recognising only the canonical identifier would leave a pre-migration Owner
+// grant live under a posture that exists to void it.
+//
+// In the standard posture the roles are returned unchanged and no lookup is
+// performed.
+func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Identity) ([]string, error) {
 	if !a.strictSoD {
-		return identity.Roles
+		return identity.Roles, nil
 	}
-	ownerID := role.SystemRoleID(identity.TenantID, role.RoleNameOwner)
+	ownerIDs, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameOwner)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(identity.Roles))
 	for _, r := range identity.Roles {
-		if r == role.RoleNameOwner || r == ownerID {
+		if r == role.RoleNameOwner || slices.Contains(ownerIDs, r) {
 			continue
 		}
 		out = append(out, r)
 	}
-	return out
+	return out, nil
 }
 
 // IsSystemTenant reports whether identity is scoped to the structurally
@@ -346,9 +402,12 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.
 	if isSODenied(resource, action) {
-		soRoleID := role.SystemRoleID(identity.TenantID, role.RoleNameSO)
+		soRoleIDs, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameSO)
+		if err != nil {
+			return err
+		}
 		for _, r := range identity.Roles {
-			if r == role.RoleNameSO || r == soRoleID {
+			if r == role.RoleNameSO || slices.Contains(soRoleIDs, r) {
 				return &PermissionDeniedError{
 					Resource: resource,
 					Action:   action,
@@ -363,7 +422,10 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// cache key includes the effective role set (see permissionCache), so
 	// a change in the identity's enriched roles is never masked by a
 	// stale entry.
-	effRoles := a.effectiveRoles(identity)
+	effRoles, err := a.effectiveRoles(ctx, identity)
+	if err != nil {
+		return err
+	}
 	permSet, ok := a.cache.get(identity.TenantID, identity.Subject, effRoles)
 	if !ok {
 		// Bound the primary linearizable resolve when a StaleRead fallback is

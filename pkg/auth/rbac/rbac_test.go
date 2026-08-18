@@ -45,16 +45,29 @@ func ctxFor(targetTenantID string) context.Context {
 // Mock RoleServicer
 // ---------------------------------------------------------------------------
 
-// mockRoleService is a minimal RoleServicer stub for testing. Only
-// ResolvePermissions is exercised; other methods panic if called.
+// mockRoleService is a minimal RoleServicer stub for testing.
+// ResolvePermissions and GetRoleByName are exercised; other methods panic if
+// called.
 type mockRoleService struct {
 	perms     map[string][]permission.Permission // roleID -> permissions
+	byName    map[string]*role.Role              // "tenantID/roleName" -> role
+	byNameErr error                              // if non-nil, GetRoleByName returns this error
 	callCount atomic.Int64
 	err       error // if non-nil, ResolvePermissions returns this error
 }
 
 func newMockRoleService(perms map[string][]permission.Permission) *mockRoleService {
 	return &mockRoleService{perms: perms}
+}
+
+// withRole registers r under its tenant and name so GetRoleByName resolves
+// it, modelling a role already persisted in the store.
+func (m *mockRoleService) withRole(r *role.Role) *mockRoleService {
+	if m.byName == nil {
+		m.byName = make(map[string]*role.Role)
+	}
+	m.byName[r.TenantID+"/"+r.Name] = r
+	return m
 }
 
 func (m *mockRoleService) ResolvePermissions(_ context.Context, roleIDs []string) ([]permission.Permission, error) {
@@ -83,8 +96,14 @@ func (m *mockRoleService) GetRole(_ context.Context, _ string) (*role.Role, erro
 	panic("not implemented")
 }
 
-func (m *mockRoleService) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
-	panic("not implemented")
+func (m *mockRoleService) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
+	if m.byNameErr != nil {
+		return nil, m.byNameErr
+	}
+	if r, ok := m.byName[tenantID+"/"+name]; ok {
+		return r, nil
+	}
+	return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
 }
 
 func (m *mockRoleService) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {

@@ -3039,11 +3039,12 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 				Strategy:           sealStrategy,
 				SeparationOfDuties: strictSoD,
 			}, bootstrap.Dependencies{
-				Tenants:  tenantSvc,
-				Users:    userSvc,
-				Roles:    roleSvc,
-				Barriers: barriers,
-				Logger:   slog.Default(),
+				Tenants:      tenantSvc,
+				Users:        userSvc,
+				Roles:        roleSvc,
+				RoleResolver: roleSvc,
+				Barriers:     barriers,
+				Logger:       slog.Default(),
 			})
 			return bsErr
 		}
@@ -3054,6 +3055,7 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 			Tenants:            tenantSvc,
 			Users:              userSvc,
 			Roles:              roleSvc,
+			RoleResolver:       roleSvc,
 			Logger:             slog.Default(),
 			SeparationOfDuties: strictSoD,
 		})

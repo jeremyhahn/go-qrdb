@@ -79,7 +79,34 @@ Source: `pkg/role/store.go`
 | `__sys:roles/tenant/{tenantID}/{roleID}` | roleID bytes | Tenant-scoped listing index |
 | `__sys:role_idx/name/{tenantID}/{roleName}` | roleID bytes | Name uniqueness index |
 
-The name index enforces uniqueness within a tenant. Role IDs for built-in roles use deterministic UUIDs generated via UUID v5 (SHA-1 namespace derived from `"go-qrdb:role-namespace"` + tenantID + name).
+The name index enforces uniqueness within a tenant. Role IDs for built-in roles
+are deterministic UUIDs derived as RFC 9562 §5.8 **UUIDv8 over SHA-256** of a
+fixed `"go-qrdb:role-namespace/v8/"` prefix plus the length-framed tenant ID and
+role name (`pkg/role.SystemRoleID`).
+
+The derivation was UUIDv5 (name-based, SHA-1) until the FIPS 140-3 migration.
+SHA-1 does not exist under FIPS 140-3 — a binary built with
+`GODEBUG=fips140=only` panics the moment it is called — and RFC 4122 fixes v3 to
+MD5 and v5 to SHA-1, so v8, the version reserved for application-defined
+derivations, is the only name-based form an approved hash can take. The
+36-character UUID text shape is unchanged, so no index key or wire format
+changed with it.
+
+Because these identifiers are persisted data — role primary keys, both secondary
+indexes, and every user record's `RoleIDs` — the change is versioned rather than
+a flag day: **writes emit only the v8 form, reads accept both.** A cluster seeded
+before the migration keeps its roles under their UUIDv5 identifiers (seeding is
+name-unique and tolerates already-exists, so those records are never replaced),
+and nothing already persisted becomes unresolvable:
+
+| Direction | How it stays correct |
+|-----------|----------------------|
+| Identifier → role | Unchanged: a stored identifier is looked up verbatim, so `GetRole`, `ListRoles`, and `ResolvePermissions` resolve a legacy record as they always did. |
+| Tenant + name → identifier | `role.ResolveSystemRoleID` answers from the name index rather than from a hash, so a grant binds to the record that exists. Bootstrap and first-boot use it when assigning system roles. |
+| "Is this identifier role X?" | `role.SystemRoleIDs` returns both the canonical and the persisted identifier. The RBAC authorizer matches against the whole set, so the SO deny-list (FIPS 140-3 AS10.03) and the strict-separation-of-duties Owner strip still void a grant made before the migration. |
+
+No capability is absent from a FIPS build as a result: the v8 derivation is the
+only one compiled, in every build.
 
 ## Permission Validation
 

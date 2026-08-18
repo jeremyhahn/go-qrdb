@@ -81,6 +81,11 @@ type Dependencies struct {
 	// Roles is the role-creation seam (firstboot.RoleCreator).
 	Roles firstboot.RoleCreator
 
+	// RoleResolver resolves a system role to the identifier it is persisted
+	// under (firstboot.Dependencies.RoleResolver). Optional; see that field
+	// for why a store seeded by an earlier release needs it.
+	RoleResolver role.NameResolver
+
 	// CA issues certificates via the generate-and-distribute path (Path A).
 	// Optional: used when no CSR PEM is supplied.
 	CA firstboot.CertProvider
@@ -217,6 +222,7 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		Tenants:            deps.Tenants,
 		Users:              deps.Users,
 		Roles:              deps.Roles,
+		RoleResolver:       deps.RoleResolver,
 		CA:                 deps.CA,
 		Signer:             deps.Signer,
 		AdminCSRPEM:        cfg.AdminCSRPEM,
@@ -353,7 +359,15 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 
 	// Step 3: tenant-admin user bound to the tenant-scoped admin role.
-	adminRoleID := role.SystemRoleID(cfg.TenantID, role.RoleNameAdmin)
+	// Resolve the grant through the store rather than re-deriving it: step 2
+	// tolerates an already-seeded tenant, whose Admin role may still carry
+	// the legacy UUIDv5 identifier a pre-FIPS release assigned it. Granting
+	// the freshly derived identifier there would bind the admin to a role
+	// that does not exist.
+	adminRoleID, err := role.ResolveSystemRoleID(ctx, deps.RoleResolver, cfg.TenantID, role.RoleNameAdmin)
+	if err != nil {
+		return nil, &TenantAdminUserCreationError{Cause: err}
+	}
 	adminUser, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
 		Username: adminUsername,
 		TenantID: cfg.TenantID,
