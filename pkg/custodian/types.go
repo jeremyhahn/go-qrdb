@@ -44,8 +44,12 @@ const (
 // custodian. It is stored under __sys:custodian/<id> and Raft-replicated.
 // No share material is ever present in this struct.
 type Custodian struct {
-	// ID is the unique identifier for this custodian (UUID v5, deterministic
-	// from tenantID+username).
+	// ID is the unique identifier for this custodian: a UUIDv8 (RFC 9562
+	// §5.8, over SHA-256) derived deterministically from tenantID+username
+	// — see custodianID. Custodians enrolled before that derivation
+	// replaced a UUIDv5/SHA-1 one keep their legacy identifiers, which
+	// still resolve; treat this as an opaque identifier rather than
+	// re-deriving it.
 	ID string `json:"id"`
 
 	// Username is the human-readable identifier for the custodian.

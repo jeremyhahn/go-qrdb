@@ -193,6 +193,7 @@ type fakeRoles struct {
 	createErr    error
 	existsByName map[string]bool
 	createCalls  []role.CreateRoleRequest
+	seeded       []role.Role
 }
 
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
@@ -204,7 +205,22 @@ func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (
 		return nil, f.createErr
 	}
 	f.createCount.Add(1)
+	f.seeded = append(f.seeded, role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions})
 	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions}, nil
+}
+
+// GetRoleByName makes fakeRoles a role.NameResolver, as qrdb's own
+// role.RoleServicer is — every production wiring passes a store that can
+// answer lookups by name, and provisioning consults it so grants bind to the
+// identifier a role is actually persisted under.
+func (f *fakeRoles) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
+	for i := range f.seeded {
+		if f.seeded[i].TenantID == tenantID && f.seeded[i].Name == name {
+			r := f.seeded[i]
+			return &r, nil
+		}
+	}
+	return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
 }
 
 type fakeCA struct {

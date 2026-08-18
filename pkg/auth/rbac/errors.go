@@ -59,3 +59,20 @@ func (e *ResolveError) Error() string {
 
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *ResolveError) Unwrap() error { return e.Err }
+
+// InvalidRoleLookupError is returned when a role store answers a lookup by ID
+// with neither a role nor an error.
+//
+// It is a contract violation, not an absence, and the distinction matters on
+// the paths that decide whether to void a grant: reading it as "no such role"
+// would clear the very grant the lookup exists to catch. The decision denies
+// instead.
+type InvalidRoleLookupError struct {
+	// RoleID is the identifier whose lookup returned nothing at all.
+	RoleID string
+}
+
+// Error returns a human-readable description of the contract violation.
+func (e *InvalidRoleLookupError) Error() string {
+	return "qrdb/auth/rbac: role store returned neither a role nor an error for " + e.RoleID
+}

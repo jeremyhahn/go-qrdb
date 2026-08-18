@@ -83,7 +83,8 @@ their own credential to one role can bring it to the other.
   leave the presented certificate unbound; adopting the certificate would
   silently discard the CSR. Neither is choosable for them.
 - **Non-deterministic role IDs.** Rejected: each built-in role gets a fixed
-  UUID v5 derived from its name, so role identity is stable across clusters.
+  UUIDv8 (SHA-256) derived from its name, so role identity is stable across
+  clusters.
 
 ## Built-in roles
 

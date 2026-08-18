@@ -41,11 +41,29 @@ type memKV struct {
 
 func newMemKV() *memKV { return &memKV{data: make(map[string][]byte)} }
 
+// Compile-time check: the service refuses a store without the atomic
+// conditional write, so the fake must carry it.
+var _ kvstore.AtomicKVStore = (*memKV)(nil)
+
 func (m *memKV) Put(_ context.Context, key string, value []byte) error {
 	m.mu.Lock()
 	m.data[key] = append([]byte(nil), value...)
 	m.mu.Unlock()
 	return nil
+}
+
+// PutIfAbsent stores value under key only when the key is absent, serialising
+// the check and the write under the same lock — the guarantee
+// kvstore.AtomicKVStore requires and every production engine provides
+// natively.
+func (m *memKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.data[key]; exists {
+		return false, nil
+	}
+	m.data[key] = append([]byte(nil), value...)
+	return true, nil
 }
 
 func (m *memKV) Get(_ context.Context, key string) ([]byte, error) {
@@ -156,6 +174,40 @@ func testRegisterRequest(t *testing.T) (custodian.RegisterRequest, *ecdh.Private
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// nonAtomicKV is a KVStore without the atomic conditional write. Embedding the
+// interface rather than the concrete fake is what withholds PutIfAbsent: only
+// the KVStore method set is promoted.
+type nonAtomicKV struct{ kvstore.KVStore }
+
+// TestNewService_RefusesAStoreWithoutAtomicWrites pins the fail-closed
+// construction. Registration's exactly-once guarantee is the store's
+// PutIfAbsent; a store without it could only be served by a Get-then-Put,
+// which is the check-then-act window two concurrent enrolments for one
+// identity slip through. Refusing at construction states the requirement at
+// startup instead of losing a share holder's enrolment at ceremony time.
+func TestNewService_RefusesAStoreWithoutAtomicWrites(t *testing.T) {
+	logger := slog.Default()
+	svc, err := custodian.NewService(&nonAtomicKV{newMemKV()}, &noopAudit{}, logger)
+	if !errors.Is(err, custodian.ErrAtomicWriteUnsupported) {
+		t.Fatalf("err = %v, want ErrAtomicWriteUnsupported", err)
+	}
+	if svc != nil {
+		t.Error("a service was returned for a store that cannot claim a username")
+	}
+}
+
+// TestNewService_AcceptsAnAtomicStore is the other half: a store that carries
+// the capability constructs.
+func TestNewService_AcceptsAnAtomicStore(t *testing.T) {
+	svc, err := custodian.NewService(newMemKV(), &noopAudit{}, slog.Default())
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("NewService returned no service and no error")
+	}
+}
 
 func TestNewService_NilStore(t *testing.T) {
 	logger := slog.Default()

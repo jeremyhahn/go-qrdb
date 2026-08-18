@@ -89,18 +89,22 @@ The barrier status is checked via `BarrierStatus`. If sealed, data operations ar
 
 ### 6. Role and User Bootstrap
 
-The daemon creates six system roles deterministically on first init. Each role is assigned a fixed UUID v5 derived from its name to ensure cross-cluster stability.
+The daemon creates six system roles deterministically on first init. Each role is
+assigned a fixed UUIDv8 (RFC 9562 §5.8, derived over SHA-256) from its tenant and
+name to ensure cross-cluster stability. Roles seeded before the FIPS 140-3
+migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
+[roles/README.md](roles/README.md#storage-schema).
 
 **System Roles** (undeletable, persist at `__sys:role/<id>`):
 
 | Role | UUID | Permissions | Notes |
 |------|------|-----------|-------|
-| Security Officer (SO) | `uuid5(namespace, "go-qrdb/role/SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
-| Admin | `uuid5(namespace, "go-qrdb/role/Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
-| Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
-| User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
-| Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | `barrier:unseal-share` | Shamir share holder only |
+| Security Officer (SO) | `SystemRoleID(tenantID, "SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
+| Admin | `SystemRoleID(tenantID, "Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
+| Operator | `SystemRoleID(tenantID, "Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
+| User | `SystemRoleID(tenantID, "User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
+| Auditor | `SystemRoleID(tenantID, "Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
+| Custodian | `SystemRoleID(tenantID, "Custodian")` | `barrier:unseal-share` | Shamir share holder only |
 
 An admin user for the system tenant is also created:
 

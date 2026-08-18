@@ -67,6 +67,33 @@ func (e *SystemTenantCreationError) Unwrap() error {
 	return e.Cause
 }
 
+// UnresolvableSystemRoleError is returned when a system role already exists
+// in the store but no role.NameResolver is available to learn the identifier
+// it is persisted under.
+//
+// This is refused rather than papered over. System role IDs moved from
+// UUIDv5/SHA-1 to UUIDv8/SHA-256 for FIPS 140-3, so on a cluster seeded
+// before that migration the persisted identifier is NOT the one this code
+// derives. Granting the derived identifier there produces a user bound to a
+// role that does not exist: bootstrap reports success and the administrator
+// silently holds no permissions at all. Deriving is only safe when the store
+// was seeded in this same run.
+//
+// Supply Dependencies.RoleResolver — qrdb's own role.RoleServicer satisfies
+// it — or a Roles implementation that also implements
+// role.NameResolver, which is used automatically.
+type UnresolvableSystemRoleError struct {
+	// Role is the name of the system role that could not be resolved.
+	Role string
+	// TenantID is the tenant the role belongs to.
+	TenantID string
+}
+
+func (e *UnresolvableSystemRoleError) Error() string {
+	return "firstboot: role " + e.Role + " already exists in tenant " + e.TenantID +
+		" but no role name resolver is configured; set Dependencies.RoleResolver so the grant binds to the persisted role ID"
+}
+
 // RolesRegistrationError wraps errors that occur while registering the
 // built-in roles during first-boot.
 type RolesRegistrationError struct {

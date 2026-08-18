@@ -89,3 +89,27 @@ type InvalidPermissionError struct {
 func (e *InvalidPermissionError) Error() string {
 	return "role: invalid permission: " + e.Permission
 }
+
+// InvalidResolverResultError is returned when a NameResolver breaks its
+// contract by reporting neither a role nor an error.
+//
+// It is refused rather than read as "no such role". ResolveSystemRoleID and
+// SystemRoleIDs answer the question "which identifier denotes this system
+// role", and their callers include controls that exist to VOID a grant — the
+// SO deny-list and the strict-separation-of-duties Owner strip. Reading a
+// contract violation as absence would drop the persisted identifier from the
+// answer, and on a cluster seeded before the UUIDv5 migration that is exactly
+// the identifier those controls must recognise. The grant would survive the
+// control that exists to void it. Callers fail closed on this error instead.
+type InvalidResolverResultError struct {
+	// Name is the role name that was being resolved.
+	Name string
+	// TenantID is the tenant the lookup was scoped to.
+	TenantID string
+}
+
+// Error returns a human-readable description of the contract violation.
+func (e *InvalidResolverResultError) Error() string {
+	return "role: name resolver returned no role and no error for " + e.Name +
+		" in tenant " + e.TenantID
+}

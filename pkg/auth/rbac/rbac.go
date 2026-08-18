@@ -51,6 +51,8 @@ package rbac
 
 import (
 	"context"
+	"errors"
+	"slices"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -191,6 +193,13 @@ type RBACAuthorizer struct {
 	// is safe for authorization. This mirrors the user-store fallback in
 	// pkg/auth/middleware and keeps control-plane operations (such as Drain)
 	// authorizable on a draining node. Nil disables the fallback.
+	//
+	// "Safe for authorization" holds for resolving what a role GRANTS. It
+	// does not extend to deciding whether an identifier denotes a system
+	// role, because the replica can be behind a role that was deleted and
+	// recreated — so the two grant-voiding controls treat a stale answer as
+	// unable to clear a grant rather than as proof of innocence. See
+	// systemRoleIDs and staleMayDenote.
 	rolesFallback role.RoleServicer
 
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
@@ -262,24 +271,202 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 	return a
 }
 
+// systemRoleIDs returns every identifier that denotes the named system role
+// in tenantID: the canonical one plus, on a cluster seeded before system
+// role IDs moved off UUIDv5/SHA-1, the legacy identifier still persisted for
+// it.
+//
+// The result is deliberately NOT cached across requests. Both callers use it
+// to VOID a grant — the SO deny-list (FIPS 140-3 AS10.03) and the strict-SoD
+// Owner strip — and the store does not preserve the invariant that would make
+// a cached answer safe: kvRoleStore.CreateRole persists System: false
+// regardless of the request, so a seeded SO or Owner role can be deleted and
+// recreated under a different identifier, and no role-mutation path
+// invalidates an authorizer. Any positive cache therefore buys throughput
+// with a window in which a replacement role is not recognised and the control
+// silently stops applying. Correctness wins: the identifiers backing a
+// grant-voiding control are resolved on the decision that uses them.
+//
+// The cost is one name-index lookup plus one record read, and only on the
+// decisions that consult it. Callers avoid it entirely when the identity is
+// already classified by role name or by the canonical identifier, neither of
+// which requires the store. Earning a cache back means making system roles
+// genuinely immutable first, so the cached invariant is one the store
+// guarantees.
+//
+// The lookup runs on the caller's context, exactly as ResolvePermissions
+// does below, so it sees the role store through the same tenant-visibility
+// rules that permission resolution will apply moments later. A failure is
+// reported rather than swallowed: treating an unresolvable store as "no other
+// identifier" would fail open.
+//
+// The second return value reports whether the answer is authoritative — that
+// is, whether it came from the linearizable store rather than the StaleRead
+// replica. It matters because the answer is used to CLEAR a grant, and the
+// replica can be behind the mutation that matters: after the SO role is
+// deleted and recreated under a generated identifier, a replica that has not
+// caught up still maps the name to the old one. An identity carrying the new
+// identifier would then match nothing in this set and the control would
+// silently stop applying. Callers must not treat a stale "not in the set" as
+// "does not denote the role" — see staleMayDenote.
+func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, bool, error) {
+	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
+	if err == nil {
+		return ids, true, nil
+	}
+
+	// A resolver that returns neither a role nor an error has broken its
+	// contract. That is a defect in the resolver, not the cold-node
+	// condition the fallback exists for, so it is terminal: retrying it
+	// against the stale-read replica would only mask a broken seam on a
+	// path that decides whether to void a grant.
+	var invalid *role.InvalidResolverResultError
+	if errors.As(err, &invalid) {
+		return nil, false, &ResolveError{Err: err}
+	}
+	if a.rolesFallback == nil {
+		return nil, false, &ResolveError{Err: err}
+	}
+	// Same StaleRead fallback rationale as permission resolution: role data
+	// is replicated before servers start, so a stale read keeps a cold or
+	// draining node authorizing. Unlike permission resolution, the answer is
+	// marked stale so the caller can refuse to clear a grant on it.
+	fids, ferr := role.SystemRoleIDs(ctx, a.rolesFallback, tenantID, roleName)
+	if ferr != nil {
+		// The fallback failed too — including by breaking the same contract.
+		// Either way there is no resolved answer, so deny.
+		return nil, false, &ResolveError{Err: err}
+	}
+	return fids, false, nil
+}
+
+// staleMayDenote reports whether roleID may denote the named system role,
+// asked of the StaleRead replica about an identifier that a stale name lookup
+// did not account for.
+//
+// It exists because a stale name lookup can only be trusted to say what the
+// role WAS called, never that an unmatched identifier is innocent. So the
+// identifier is resolved the other way round — by ID, to a record with a name
+// — and anything the replica cannot rule out is treated as denoting the role:
+//
+//   - no record for the identifier: this is exactly what a role recreated
+//     after the replica's snapshot looks like, so it is assumed to be one.
+//   - a record whose name is the system role's: the replica has the recreated
+//     role but not yet the name index entry pointing at it, which the earlier
+//     lookup would have missed.
+//   - a record with some other name: ruled out. The identifier is a generated
+//     UUID that names a different role, and identifiers are not reused.
+//
+// A read failure is not an answer, so it denies rather than clearing.
+func (a *RBACAuthorizer) staleMayDenote(ctx context.Context, roleID, roleName string) (bool, error) {
+	r, err := a.rolesFallback.GetRole(ctx, roleID)
+	if err != nil {
+		var notFound *role.RoleNotFoundError
+		if errors.As(err, &notFound) {
+			return true, nil
+		}
+		return false, &ResolveError{Err: err}
+	}
+	if r == nil {
+		// Neither a role nor an error: the same broken contract systemRoleIDs
+		// refuses to interpret. Deny rather than read it as innocence.
+		return false, &ResolveError{Err: &InvalidRoleLookupError{RoleID: roleID}}
+	}
+	return r.Name == roleName, nil
+}
+
+// holdsSystemRole reports whether identity holds the named system role of its
+// own tenant, by role name or by any identifier that denotes it.
+//
+// The name and the canonical identifier are matched first because neither
+// needs the store: an identity classified by those is classified with no I/O
+// and no staleness whatsoever. The store is consulted only when they do not
+// settle it, which is the case where the role may be persisted under another
+// identifier — a legacy seeding, or a role recreated under a generated ID.
+func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Identity, roleName string) (bool, error) {
+	canonical := role.SystemRoleID(identity.TenantID, roleName)
+	for _, r := range identity.Roles {
+		if r == roleName || r == canonical {
+			return true, nil
+		}
+	}
+	if len(identity.Roles) == 0 {
+		return false, nil
+	}
+
+	ids, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, roleName)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range identity.Roles {
+		if slices.Contains(ids, r) {
+			return true, nil
+		}
+	}
+	if authoritative {
+		return false, nil
+	}
+
+	// The set came from the StaleRead replica, which can be behind the very
+	// mutation this control has to see: a role deleted and recreated under a
+	// generated identifier. "Not in the stale set" is therefore not a finding
+	// of innocence, so each unmatched identifier is checked from the ID side
+	// before the grant is cleared.
+	for _, r := range identity.Roles {
+		mayDenote, err := a.staleMayDenote(ctx, r, roleName)
+		if err != nil {
+			return false, err
+		}
+		if mayDenote {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // effectiveRoles returns the identity's roles with the Owner convenience role
 // removed when strict separation of duties is active. Owner may be referenced
-// either by its name (role.RoleNameOwner) or by its deterministic per-tenant
-// ID (role.SystemRoleID(tenantID, RoleNameOwner)); both forms are stripped.
-// In the standard posture the roles are returned unchanged.
-func (a *RBACAuthorizer) effectiveRoles(identity *auth.Identity) []string {
+// either by its name (role.RoleNameOwner) or by any identifier that denotes
+// the tenant's Owner role — the canonical one, a legacy identifier on a
+// cluster seeded before the UUIDv5 migration, or a generated one if the role
+// was recreated. All such forms are stripped; recognising only the canonical
+// identifier would leave such a grant live under a posture that exists to
+// void it.
+//
+// The identifiers are resolved on this call rather than cached, for the
+// reason given on systemRoleIDs. In the standard posture the roles are
+// returned unchanged and no lookup is performed at all.
+func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Identity) ([]string, error) {
 	if !a.strictSoD {
-		return identity.Roles
+		return identity.Roles, nil
 	}
-	ownerID := role.SystemRoleID(identity.TenantID, role.RoleNameOwner)
+	if len(identity.Roles) == 0 {
+		return identity.Roles, nil
+	}
+	ownerIDs, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameOwner)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]string, 0, len(identity.Roles))
 	for _, r := range identity.Roles {
-		if r == role.RoleNameOwner || r == ownerID {
+		if !authoritative && r != role.RoleNameOwner && !slices.Contains(ownerIDs, r) {
+			// Stale set: an identifier it does not account for may be an Owner
+			// role recreated after the replica's snapshot. Strip it unless the
+			// replica can rule it out. See staleMayDenote.
+			mayDenote, mayErr := a.staleMayDenote(ctx, r, role.RoleNameOwner)
+			if mayErr != nil {
+				return nil, mayErr
+			}
+			if mayDenote {
+				continue
+			}
+		}
+		if r == role.RoleNameOwner || slices.Contains(ownerIDs, r) {
 			continue
 		}
 		out = append(out, r)
 	}
-	return out
+	return out, nil
 }
 
 // IsSystemTenant reports whether identity is scoped to the structurally
@@ -346,15 +533,16 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.
 	if isSODenied(resource, action) {
-		soRoleID := role.SystemRoleID(identity.TenantID, role.RoleNameSO)
-		for _, r := range identity.Roles {
-			if r == role.RoleNameSO || r == soRoleID {
-				return &PermissionDeniedError{
-					Resource: resource,
-					Action:   action,
-					Subject:  identity.Subject,
-					Reason:   "SO role explicitly denied from cryptographic operations (FIPS 140-3 AS10.03)",
-				}
+		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
+		if err != nil {
+			return err
+		}
+		if isSO {
+			return &PermissionDeniedError{
+				Resource: resource,
+				Action:   action,
+				Subject:  identity.Subject,
+				Reason:   "SO role explicitly denied from cryptographic operations (FIPS 140-3 AS10.03)",
 			}
 		}
 	}
@@ -363,7 +551,10 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// cache key includes the effective role set (see permissionCache), so
 	// a change in the identity's enriched roles is never masked by a
 	// stale entry.
-	effRoles := a.effectiveRoles(identity)
+	effRoles, err := a.effectiveRoles(ctx, identity)
+	if err != nil {
+		return err
+	}
 	permSet, ok := a.cache.get(identity.TenantID, identity.Subject, effRoles)
 	if !ok {
 		// Bound the primary linearizable resolve when a StaleRead fallback is
