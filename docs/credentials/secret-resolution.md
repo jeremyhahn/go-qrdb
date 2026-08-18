@@ -229,5 +229,5 @@ Downstream projects consume this package through the SDK re-exports in
 
 ## See also
 
-- [Credentials Service](README.md) — the L2 store the `credential://` scheme reads from.
+- [Credentials Service](architecture.md) — the L2 store the `credential://` scheme reads from.
 - Package documentation: `go doc github.com/jeremyhahn/go-qrdb/pkg/secret`.

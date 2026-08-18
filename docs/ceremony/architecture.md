@@ -34,7 +34,7 @@ daemon stays in `enrolling` until every custodian has claimed.
 
 ## PIN handling — never raw bytes
 
-The ceremony never stores raw PIN bytes inside the credential store any more. PIN material is owned by a `pin.PINBackend` (see `pkg/pin/backend.go:33-84` and [../pin/README.md](../pin/README.md)) injected through the qrdb server option:
+The ceremony never stores raw PIN bytes inside the credential store any more. PIN material is owned by a `pin.PINBackend` (see `pkg/pin/backend.go:33-84` and [../pin/README.md](../auth-factors/architecture.md)) injected through the qrdb server option:
 
 ```go
 // pkg/server/server.go:488-495

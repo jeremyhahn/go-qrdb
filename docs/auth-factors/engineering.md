@@ -63,10 +63,18 @@ func DefaultHashConfig()    HashConfig  // Argon2id: 3 passes, 64 MiB, 4 threads
 func FIPSHashConfig()       HashConfig  // PBKDF2-SHA256, 600 000 iterations, NIST SP 800-132
 func AutoDetectHashConfig() HashConfig  // crypto/fips140.Enabled() decides
 
-const FIPO2PINHashSize = 16 // CTAP2 mandate: SHA-256(PIN)[:16]
+const FIDO2PINHashSize = 16 // CTAP2 mandate: SHA-256(PIN)[:16]
 func ComputeFIDO2PINHash(pin string) []byte
 func VerifyFIDO2PINHash(expected, actual []byte) bool
+
+type FIDO2HashVerifier interface{ /* optional PINBackend capability */ }
+func (s *Service) VerifyFIDO2Hash(hash []byte) bool
 ```
+
+> **Correction carried forward.** The retired `docs/pin/README.md` spelled this
+> constant `FIPO2PINHashSize`. The real identifier is **`FIDO2PINHashSize`**
+> (`pkg/pin/service.go`); the older spelling was a typo, and anything copied
+> from that document should be re-checked against the code.
 
 `PINRecord` (`pkg/pin/hash.go`):
 

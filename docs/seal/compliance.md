@@ -163,7 +163,7 @@ Each phase includes compliance verification:
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
 - [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol
 - [auth-factors.md](../seal/auth-factors.md) — `Factor` framework + `FactorRegistry` (hardware factor implementations ship in go-xkms)
-- [audit/README.md](../audit/README.md) — Audit event schema and retrieval API
+- [audit/README.md](../audit/architecture.md) — Audit event schema and retrieval API
 - [FIPS 140-3 ISO/IEC 19790](https://csrc.nist.gov/publications/detail/fips/140/3) — Official standard
 - [NIST SP 800-57 Part 2 §5](https://csrc.nist.gov/publications/detail/sp/800-57-part-2/final) — Key management best practices
 - [PCI-DSS v4](https://www.pcisecuritystandards.org/documents/PCI-DSS-v4-0.pdf) — Payment Card Industry Security Standard

@@ -417,6 +417,6 @@ Cached plan: ~500 bytes (execution instructions)
 ## Cross-References
 
 - [Secondary Indexes](08-secondary-indexes.md) -- Index types, creation, and management
-- [MVCC Engine](02-mvcc.md) -- Underlying key-value versioning
+- [MVCC Engine](key-value/engineering.md) -- Underlying key-value versioning
 - [Configuration](12-configuration.md) -- `index.max_indexes` setting
-- [API Reference](api.md) -- DAO query endpoints
+- [API Reference](api-server/api.md) -- DAO query endpoints

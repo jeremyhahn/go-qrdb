@@ -338,6 +338,6 @@ The global feature registry is protected by a `sync.RWMutex`. `Register()` acqui
 
 ## See Also
 
-- [api.md](../api.md) -- Full API endpoint reference
-- [sdk/README.md](../sdk/README.md) -- Go SDK with capabilities client
-- [cli/README.md](../cli/README.md) -- CLI command tree including `admin capabilities`
+- [api.md](../api-server/api.md) -- Full API endpoint reference
+- [sdk/README.md](../api-server/engineering.md) -- Go SDK with capabilities client
+- [cli/README.md](../api-server/cli.md) -- CLI command tree including `admin capabilities`

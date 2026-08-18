@@ -14,79 +14,123 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# QRDB Implementation Documentation
+# QRDB Documentation
 
 ![QuicRaft DB Logo](../assets/logo.svg)
 
-> **Start with the [Glossary](GLOSSARY.md)** — the standard terminology for
-> run modes, storage backends, state machines, and engines. These terms are
-> easy to conflate and every other document assumes the glossary's usage.
-> The run-mode and feature-model **requirements** live in
-> [run-modes.md](run-modes.md).
+> **Start with the [Glossary](GLOSSARY.md)** — the standard terminology for run
+> modes, storage backends, state machines and engines. These terms are easy to
+> conflate and every other document assumes the glossary's usage.
 
-Technical documentation for the QRDB distributed transactional key-value
-store. These documents describe the system as implemented, with references
-to source code locations, actual struct definitions, and verified behavior
-from the test suite.
+## How this documentation is organised
 
-## Documents
+**Every feature has a folder holding five documents**, and together they are
+that feature's documentation:
 
-| Document | Description |
+```
+docs/<feature>/
+    architecture.md     design, component boundaries, data flow, rejected alternatives
+    engineering.md      implementation contracts, invariants, errors, tests
+    cli.md              every verb and flag, with examples
+    api.md              every capability, on every transport
+    user.md             task-oriented usage
+```
+
+**The feature folder is the requirements contract.** An agent picking up work on
+a feature reads its folder before it reads code. Where a document contradicts
+the code, the document is wrong and gets fixed — never the reverse.
+
+## Features
+
+### Data plane
+
+| Feature | What it covers |
 |---|---|
-| [bootstrap.md](bootstrap.md) | First-run initialization: TLS generation, barrier setup, role/user bootstrap, cluster join, single-admin vs M-of-N modes |
-| [deployment-multi-node-raft.md](deployment-multi-node-raft.md) | Deploying multi-node IsolationRaft tenant clusters: trust domain setup, volume pool configuration, node certificate SPIFFE URIs, key delivery, replica lifecycle on restart, rebalance operations, troubleshooting |
-| [discovery.md](discovery.md) | Peer discovery (static/multicast/dns/token), cluster bootstrap orchestration (`pkg/cluster`), opt-in dynamic membership, and the SDK `Cluster()` client |
-| [api.md](api.md) | REST, gRPC, Unix socket, and MCP API reference with endpoint specifications and error codes |
-| [01-architecture.md](01-architecture.md) | System overview, three-layer store architecture (storage backends, store engines, state machines), package structure, data flow, dependency graph, and key design decisions |
-| [02-mvcc.md](02-mvcc.md) | MVCC engine internals, revision tracking, key encoding scheme, compaction, and historical reads |
-| [03-transactions.md](03-transactions.md) | Compare-and-swap transactions, snapshot isolation, conflict detection, and atomic multi-operation execution |
-| [05-consistency.md](05-consistency.md) | Consistency levels (Strong, Linearizable, Eventual), routing behavior, and read path selection |
-| [06-leases.md](06-leases.md) | Distributed lease management, TTL enforcement, keep-alive protocol, and automatic key expiry |
-| [07-batch-operations.md](07-batch-operations.md) | Atomic multi-operation execution at the KV layer without conditional logic |
-| [08-secondary-indexes.md](08-secondary-indexes.md) | Secondary index types, unique/sparse flags, struct tag integration, database-scoped names, PebbleDB/memory backends, and query planner integration |
-| [09-timeseries.md](09-timeseries.md) | Time-series storage with composite keys, aggregation functions, tag filtering, and retention policies |
-| [10-write-modes.md](10-write-modes.md) | Durability vs performance tradeoffs, engine and storage backend selection (KVEngine/MVCCEngine, memory/file/pebble) |
-| [11-batch-aggregator.md](11-batch-aggregator.md) | Group commit strategy, flush triggers, and write amplification reduction |
-| [12-configuration.md](12-configuration.md) | Complete YAML configuration reference for all subsystems with defaults and validation rules |
-| [13-operations.md](13-operations.md) | Deployment topology, monitoring with Prometheus, health checks, drain/shutdown, and CLI commands |
-| [14-migration-from-dragondb.md](14-migration-from-dragondb.md) | Migration guide for refactoring from go-dragondb, interface mapping, and package reorganization |
-| [15-vectors.md](15-vectors.md) | Vector database: namespace management, vector CRUD, similarity search, hybrid search, index rebuild, compaction, GPU acceleration |
-| [16-query-planner.md](16-query-planner.md) | Query planner & fluent query API: cost-based index selection, DAO query builder, security model, and legacy index escape hatches |
-| [17-entity-sql-bridge.md](17-entity-sql-bridge.md) | Entity-SQL bridge: ORM-style query interface, schema generation from entity types, SQL integration |
-| [18-distributed-locking.md](18-distributed-locking.md) | Distributed lock service: fencing tokens, blocking/non-blocking acquisition, reentrant locks, lease-based TTL, watch-based blocking, REST/gRPC APIs |
-| [multi-tenancy.md](multi-tenancy.md) | Multi-tenancy guide: the isolation ladder (prefix/barrier/volume/raft), the three governance planes (RBAC permissions, numeric quotas, feature entitlements), config defaults, and tenant-provisioning CLI/REST |
-| [databases/README.md](databases/README.md) | Multi-database architecture: engine/backend types, lifecycle, per-database protocol/barrier config, management API across all transports, CLI, and migration |
-| [scoping.md](scoping.md) | Tenant & database scoping: tenant from the authenticated mTLS identity, X-QRDB-Database for multi-database isolation, keyspace + vector-namespace tenant-partitioning |
-| [embedding/README.md](embedding/README.md) | Embedding service: OpenAI-compatible providers (Ollama, OpenAI, vLLM), caching, batch processing |
-| [rag/README.md](rag/README.md) | Retrieval-Augmented Generation: document chunking, ingestion pipeline, semantic retrieval |
-| [sql/README.md](sql/README.md) | SQL wire protocol: MySQL and PostgreSQL compatibility, mTLS auth, the two authorization planes (service RBAC vs SQL table privileges: GRANT/REVOKE/SHOW GRANTS, per-database activation latch), PG syntax translation, multi-tenancy, relational tables (DDL, DML, secondary indexes, foreign keys), interactive transactions, index-accelerated WHERE clauses |
-| [sql/gorm.md](sql/gorm.md) | GORM provider (`sdk/go/gorm`): getting started, `node://` vs `embedded://` DSNs, migrations, transactions, error mapping (1062/1451/1452/1213), known limitations, conformance harness |
-| [etcd/README.md](etcd/README.md) | etcd protocol compatibility: per-database gRPC endpoint, Kubernetes integration, watch/lease/transaction support |
+| [key-value](key-value/) | KV operations, MVCC revisions, consistency levels, write modes, compaction, selective restore |
+| [transactions](transactions/) | compare-and-swap transactions, atomic batches, file import |
+| [watch](watch/) | change streams, replay from a revision |
+| [leases](leases/) | TTL leases and cascade expiry |
+| [distributed-locks](distributed-locks/) | locks with fencing tokens, reentrancy |
+| [secondary-indexes](secondary-indexes/) | indexes, compound indexes, the query planner, DAO aggregations |
+| [full-text-search](full-text-search/) | inverted index, analyzer, tokenizer *(build tag `qrdb_fts`)* |
+| [collections](collections/) | document collections and ID strategies |
+| [sql](sql/) | MySQL and PostgreSQL wire protocols, relational tables, transactions, privileges |
+| [vectors](vectors/) | vector namespaces, k-NN and hybrid search, index maintenance *(`qrdb_vector`)* |
+| [time-series](time-series/) | metrics, tags, aggregation, retention *(`qrdb_ts`)* |
+| [embeddings](embeddings/) | text→vector provider proxy with caching |
+| [rag](rag/) | chunking, ingestion, semantic retrieval |
+| [etcd-compatibility](etcd-compatibility/) | per-database etcd v3 endpoints *(`qrdb_etcd`)* |
 
-## Subsystem Documentation
+### Storage and operations
 
-| Document | Description |
+| Feature | What it covers |
 |---|---|
-| [seal/README.md](seal/README.md) | StorageBarrier: three-layer architecture, Software / Shamir / None strategies, hardware via `WithStrategyRegistry`, DEK management |
-| [seal/shamir.md](seal/shamir.md) | Shamir threshold unsealing, recovery keys, rekey, root token generation |
-| [seal/auth-factors.md](seal/auth-factors.md) | `Factor` framework + `FactorRegistry`; hardware factor implementations injected from go-xkms |
-| [seal/multi-tenant.md](seal/multi-tenant.md) | BarrierRegistry, TenantBarrier, per-tenant DEK isolation across the isolation ladder (prefix/barrier/volume/raft), and tenant barrier key management (self-managed vs system-managed auto-unseal) |
-| [pin/README.md](pin/README.md) | Canonical PIN management (`PINBackend`, `SoftwareBackend`, Argon2id / PBKDF2 with FIPS auto-detect, `LockoutStatus`, FIDO2 PIN hash interop) |
-| [credentials/README.md](credentials/README.md) | Versioned credential rotation: `RotateCredential` / `ListCredentialVersions` / `RetrieveCredentialVersion` / `GCExpiredVersions`, grace periods, storage layout |
-| [credentials/secret-resolution.md](credentials/secret-resolution.md) | The `pkg/secret` SPI that resolves `credential://` / `literal://` references in config at boot; enclave-backed `SecretValue`, protected config fields, `ConfigProcessor`, fail-closed resolution |
-| [ceremony/README.md](ceremony/README.md) | Barrier-only initialization ceremony, three-state machine, PIN delegation to `pkg/pin.PINBackend`, relationship to `firstboot` |
-| [storage/README.md](storage/README.md) | Canonical storage engine layer: file, memory, pebble, namespace |
-| [auth/README.md](auth/README.md) | Pluggable authentication interfaces, default mTLS authenticator |
-| [sdk/README.md](sdk/README.md) | Go SDK with 5 transports: REST, gRPC, Unix, MCP, embedded |
-| [cli/README.md](cli/README.md) | qrdb client CLI: full command tree, global flags, transport auto-detection, deprecation notes |
-| [capabilities/README.md](capabilities/README.md) | Compile-time feature registration, build-tag gated capabilities API |
-| [permissions/README.md](permissions/README.md) | Fine-grained permission system: resource:action format, categories, registry |
-| [users/README.md](users/README.md) | Passwordless mTLS user management, KVStore schema, secondary indexes |
-| [roles/README.md](roles/README.md) | Role-based access control, built-in roles, RBAC authorizer, permission cache |
-| [certs/README.md](certs/README.md) | Pluggable CertProvider, barrier-sealed CA key, PKCS#12 export |
-| [audit/README.md](audit/README.md) | Dual-backend audit logging: KVStore + slog JSON file |
-| [gui/README.md](gui/README.md) | Universal GUI: Wails v2 + Svelte 5, desktop + browser, setup wizard |
-| [typescript-sdk/README.md](typescript-sdk/README.md) | TypeScript SDK: @qrdb/sdk, WailsClient + RestClient transports |
+| [databases](databases/) | multi-database lifecycle, per-database protocol, raft and barrier config |
+| [storage-engines](storage-engines/) | the `Engine` interface, file/memory/pebble/namespace, volume pools |
+| [backup-restore](backup-restore/) | shard snapshots, verification, selective restore |
+| [clustering](clustering/) | peer discovery, cluster formation, membership, node admin, rebalance |
+| [run-modes](run-modes/) | standalone vs raft, the three capability gates |
+| [configuration](configuration/) | load order, validation, the flag/YAML mapping |
+| [api-server](api-server/) | the unified multi-protocol server and the `ServiceModule` seam |
+
+### Security and identity
+
+| Feature | What it covers |
+|---|---|
+| [barrier-seal](barrier-seal/) | the at-rest barrier, strategies, the strategy registry, enable-encryption |
+| [shamir-custody](shamir-custody/) | Security Officers, M-of-N shares, rekey, recovery keys, root tokens |
+| [ceremony](ceremony/) | the initialization ceremony state machine and share lifecycle |
+| [firstboot](firstboot/) | system tenant, built-in roles, the platform admin, admin credential paths |
+| [trust-bootstrap](trust-bootstrap/) | client-side CA trust establishment *(command shape only — see its docs)* |
+| [certificate-authority](certificate-authority/) | client certificate issuance, export, revocation |
+| [credentials](credentials/) | named credentials, versioned rotation, secret resolution |
+| [identity-rbac](identity-rbac/) | users, roles, the permission vocabulary, the RBAC PDP |
+| [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
+| [audit](audit/) | compliance-grade audit logging and query |
+| [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers |
+
+### Interfaces
+
+| Feature | What it covers |
+|---|---|
+| [desktop-gui](desktop-gui/) | the Wails desktop application and the TypeScript SDK *(build tag `desktop`)* |
+
+## Migration state
+
+**All 33 currently-implemented features have a `docs/<feature>/` folder with all
+five files** (migrated 2026-08-19). The portfolio view is derived, not
+maintained — count `docs/*/architecture.md`.
+
+Some legacy documents survive **as companions**, not as duplicates: they carry
+deeper reference material the five-file layout points at rather than restates.
+They are listed below and are linked from the feature folder that owns them.
+
+## Companion references
+
+| Document | Owned by |
+|---|---|
+| [GLOSSARY.md](GLOSSARY.md) | everything |
+| [01-architecture.md](01-architecture.md) | [key-value](key-value/), [storage-engines](storage-engines/) |
+| [05-consistency.md](05-consistency.md) | [key-value](key-value/) |
+| [08-secondary-indexes.md](08-secondary-indexes.md), [16-query-planner.md](16-query-planner.md), [17-entity-sql-bridge.md](17-entity-sql-bridge.md) | [secondary-indexes](secondary-indexes/) |
+| [12-configuration.md](12-configuration.md) | [configuration](configuration/) — the full field-by-field reference |
+| [15-vectors.md](15-vectors.md) | [vectors](vectors/) |
+| [18-distributed-locking.md](18-distributed-locking.md) | [distributed-locks](distributed-locks/) |
+| [run-modes.md](run-modes.md) | [run-modes](run-modes/) — the ratified requirements statement |
+| [bootstrap.md](bootstrap.md) | [firstboot](firstboot/) |
+| [ceremony-sdk.md](ceremony-sdk.md) | [ceremony](ceremony/) |
+| [scoping.md](scoping.md) | [multi-tenancy](multi-tenancy/) |
+| [deployment-multi-node-raft.md](deployment-multi-node-raft.md) | [multi-tenancy](multi-tenancy/), [clustering](clustering/) |
+| [embedding.md](embedding.md) | [api-server](api-server/), [run-modes](run-modes/) — embedding qrdb in a Go program |
+| [databases/README.md](databases/README.md) | [databases](databases/) |
+| [capabilities/README.md](capabilities/README.md) | [run-modes](run-modes/) |
+| [auth/](auth/) — README, roles, abac, layering, custom-authorizers | [identity-rbac](identity-rbac/) |
+| [seal/](seal/) — README, shamir, custodians, sealed-window, compliance, multi-tenant, enabling-encryption, so-dual-factor, auth-factors, and the design records | [barrier-seal](barrier-seal/), [shamir-custody](shamir-custody/) |
+| [sql/gorm.md](sql/gorm.md), [sql/upstream-gaps.md](sql/upstream-gaps.md), [sql/constraint-column-usage-duplication.md](sql/constraint-column-usage-duplication.md) | [sql](sql/) |
+| [credentials/secret-resolution.md](credentials/secret-resolution.md) | [credentials](credentials/) |
+| [gui/README.md](gui/README.md), [typescript-sdk/README.md](typescript-sdk/README.md) | [desktop-gui](desktop-gui/) |
+| [design/](design/) | design records — read as history and intent, **not** as shipped behaviour |
+| [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md), [invite-notfound-ambiguity.md](invite-notfound-ambiguity.md) | open questions |
 
 ## Module
 

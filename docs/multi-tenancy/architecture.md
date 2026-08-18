@@ -45,7 +45,7 @@ namespace in an independent backend allocated from the storage volume pool) over
 the tenant's IAM data. The tenant's KV data plane still rides the shared shard
 with key prefixing. Requires `storage.volume_pools` to be configured; without a
 pool, registering a barrier fails with `volume pool not configured on barrier
-registry`. See [seal/multi-tenant.md](seal/multi-tenant.md) for the barrier
+registry`. See [seal/multi-tenant.md](../seal/multi-tenant.md) for the barrier
 lifecycle, officer enrollment, and seal strategy selection.
 
 ### `volume` — dedicated filesystem volume, full engines

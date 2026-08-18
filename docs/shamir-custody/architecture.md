@@ -33,7 +33,7 @@ challenge/response claim. The full design contract is
    bytes. When `qrdbd` manages its own TLS material, the ceremony CA is a
    `ceremony.LocalCA` built from the cluster CA bundle, so officer
    certificates chain to the same CA the server trusts for mTLS client auth
-   (see [sealed-window.md](sealed-window.md)); with BYO TLS certificates,
+   (see [sealed-window.md](../seal/sealed-window.md)); with BYO TLS certificates,
    registration requires the full initialization ceremony to establish a CA
    first.
 2. **Initialize** — `InitializeShamir` splits the secret and seals one share

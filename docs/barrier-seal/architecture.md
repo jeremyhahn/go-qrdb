@@ -44,7 +44,7 @@ hardware code**; it calls a registered factory by name.
 | StrategyID | Constant | Source | When to use |
 |------------|----------|--------|-------------|
 | `passphrase` | `seal.StrategyPassphrase` | go-quicraft (re-exported) | Single passphrase, FIPS-aware KDF (Argon2id or PBKDF2-SHA256). The default. |
-| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir.md](shamir.md)). |
+| `shamir`   | `seal.StrategyShamir`   | go-qrdb (`pkg/seal/strategy_shamir.go`) | M-of-N quorum unseal; the Shamir secret is a random unseal key that AEAD-wraps the root key (Vault-style indirection, see [shamir.md](../seal/shamir.md)). |
 | `none`     | `seal.StrategyNone`     | go-quicraft (re-exported) | Barrier disabled; data stored plaintext. Dev/test or OS-level FDE deployments. Valid enable-encryption source (plaintext→keyed migration). |
 | `system-barrier` | `seal.StrategySystemBarrier` | go-qrdb (tenant strategy only) | Auto-unseal with per-tenant root key wrapped under the system barrier; no per-tenant credential required. System-managed convenience mode for dedicated tenants. Valid enable-encryption source (credential-free→keyed migration). |
 
@@ -148,7 +148,7 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication. See
-  [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy.md#per-node-independent-key-design).
+  [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy/architecture.md#per-node-independent-key-design).
 
 
 ## Transparent at-rest encryption
@@ -162,7 +162,7 @@ All persistent data is encrypted transparently at rest via the `StorageBarrier`:
 - The barrier operates transparently: callers put/get plaintext, the barrier handles encryption/decryption
   automatically.
 
-See [multi-tenant.md](multi-tenant.md) for the full tenant-barrier lifecycle and key-management modes.
+See [multi-tenant.md](../seal/multi-tenant.md) for the full tenant-barrier lifecycle and key-management modes.
 
 
 ## Cluster auto-unseal — `ShareExchangeCoordinator`

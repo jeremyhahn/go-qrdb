@@ -606,9 +606,9 @@ func (e *DimensionMismatchError) Error() string {
 ## Cross-References
 
 - [Architecture](01-architecture.md) -- System overview and package dependencies
-- [CLI Reference](cli/README.md) -- Full command tree including vector subcommands
-- [API Reference](api.md) -- REST and gRPC endpoint specifications
+- [CLI Reference](api-server/cli.md) -- Full command tree including vector subcommands
+- [API Reference](api-server/api.md) -- REST and gRPC endpoint specifications
 - [Configuration](12-configuration.md) -- YAML configuration reference
-- [Go SDK](sdk/README.md) -- Go client library, `Vector()` method
+- [Go SDK](api-server/engineering.md) -- Go client library, `Vector()` method
 - [TypeScript SDK](typescript-sdk/README.md) -- `VectorClient` interface
 - [GUI System](gui/README.md) -- Vector views in the desktop/browser GUI

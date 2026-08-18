@@ -461,7 +461,7 @@ each node (more operational burden, higher security).
 
 ## See Also
 
-- [multi-tenancy.md](multi-tenancy.md) — Isolation modes, quotas, entitlements
+- [multi-tenancy.md](multi-tenancy/architecture.md) — Isolation modes, quotas, entitlements
 - [bootstrap.md](bootstrap.md) — TLS setup, SPIFFE URIs, initial cluster
   formation
 - [seal/multi-tenant.md](seal/multi-tenant.md) — Barrier lifecycle, key

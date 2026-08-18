@@ -96,7 +96,7 @@ same from their own configuration. Helpers `BuildDiscovery`, `ParsePeers`, and
 `IsSingleNode` are exported for finer-grained use.
 
 Configuration lives under the `discovery` block — see
-[12-configuration.md](12-configuration.md#discovery).
+[12-configuration.md](../12-configuration.md#discovery).
 
 ## Dynamic membership (opt-in)
 
