@@ -73,7 +73,7 @@ from the test suite.
 | [seal/multi-tenant.md](seal/multi-tenant.md) | BarrierRegistry, TenantBarrier, per-tenant DEK isolation across the isolation ladder (prefix/barrier/volume/raft), and tenant barrier key management (self-managed vs system-managed auto-unseal) |
 | [pin/README.md](pin/README.md) | Canonical PIN management (`PINBackend`, `SoftwareBackend`, Argon2id / PBKDF2 with FIPS auto-detect, `LockoutStatus`, FIDO2 PIN hash interop) |
 | [credentials/README.md](credentials/README.md) | Versioned credential rotation: `RotateCredential` / `ListCredentialVersions` / `RetrieveCredentialVersion` / `GCExpiredVersions`, grace periods, storage layout |
-| [credentials/secret-resolution.md](credentials/secret-resolution.md) | The `pkg/secret` SPI that resolves `credential://` / `literal://` references in config to plaintext at boot; enclave-backed `SecretValue`, `ConfigProcessor`, fail-closed resolution |
+| [credentials/secret-resolution.md](credentials/secret-resolution.md) | The `pkg/secret` SPI that resolves `credential://` / `literal://` references in config at boot; enclave-backed `SecretValue`, protected config fields, `ConfigProcessor`, fail-closed resolution |
 | [ceremony/README.md](ceremony/README.md) | Barrier-only initialization ceremony, three-state machine, PIN delegation to `pkg/pin.PINBackend`, relationship to `firstboot` |
 | [storage/README.md](storage/README.md) | Canonical storage engine layer: file, memory, pebble, namespace |
 | [auth/README.md](auth/README.md) | Pluggable authentication interfaces, default mTLS authenticator |

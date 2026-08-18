@@ -13,6 +13,68 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Protected resolution targets for `ConfigProcessor` (`pkg/secret`).** A
+  config field declared as `secret.SecretValue` (or `*secret.SecretValue`)
+  instead of `string` is now resolved in place inside its own memguard
+  enclave, so a resolved secret reaches the consumer without ever resting in
+  an unwipeable Go string. `SecretValue` gained YAML/JSON codecs that decode
+  from — and re-encode to — the plain reference string, so config documents
+  are unchanged and a re-serialized config emits the reference rather than
+  the plaintext (a non-scalar node — and JSON `null`, which is a configuration
+  mistake rather than an empty secret — fails with the new
+  `SecretValueDecodeError`). `Raw` is left intact by the walk.
+
+  The protected target is deliberately stricter than a plain `string` field:
+  every non-nil target the walk reaches is either resolved or reported in
+  `Unresolved`, never skipped in silence. A target holding nothing (a null or
+  absent key), an inline `literal://` secret, a bare value, or a scheme no
+  resolver claims is refused with the new `UnresolvableTargetError` — an
+  inline secret carries the plaintext in `Raw` itself, an ordinary Go string
+  that outlives the walk, so sealing it would leave a second unprotected copy
+  and break the guarantee the field type advertises. A target the walk cannot
+  write to (boxed by value in an unsettable interface) is refused with the new
+  `UnwritableTargetError`; boxed targets it can write to are resolved through
+  an addressable copy and assigned back. An optional secret is spelled as a
+  `*SecretValue`, where an absent or null key leaves the pointer nil — the one
+  case the walk passes over. That is also what closes the YAML null gap:
+  `yaml.v3` zeroes a null destination before the unmarshaler is consulted, so
+  `password:` and `password: null` never reach `UnmarshalYAML` and are refused
+  at the walk instead of at decode time, where JSON rejects its `null` token.
+
+  A protected-target failure fails the call: `Process` returns
+  `ErrUnresolvedSecretURI` whenever the new `ProcessResult.ProtectedUnresolved`
+  is non-empty, with or without `WithFailClosed()`, because choosing the type
+  is itself the request to fail closed on that field. `Process` also destroys a
+  target's existing enclave before refilling it, so a failed refresh over an
+  already-resolved config leaves the field empty rather than letting a revoked
+  credential keep authenticating while its backend is down.
+
+  Additive throughout: `Process`'s signature is unchanged, the deprecated
+  string path keeps its exact behaviour — including that its failures stay
+  opt-in diagnostics under `WithFailClosed()` — and no existing consumer
+  breaks on upgrade.
+- **Redacted display paths for `SecretValue` (`pkg/secret`).** `SecretValue`
+  now implements `fmt.Formatter` and `slog.LogValuer`, which `fmt` and
+  `log/slog` consult ahead of `fmt.Stringer`. `%v`, `%s`, `%+v`, `fmt.Sprint`
+  and structured logging of a config struct holding a resolved secret therefore
+  render the redacted description instead of the plaintext. New `Redacted()`
+  exposes the same description directly: it shows the reference only when a
+  resolver established that the reference points at a secret rather than
+  carrying one, judging by provenance rather than syntax — the registry falls
+  back to `StrategyLiteral` for anything no resolver claims, so a
+  reference-shaped `https://user:pw@host` or `unknown://pw` is the secret in
+  fact and is redacted, as is any value not yet resolved. Only an explicit
+  `String()`/`Bytes()` call still materializes plaintext, and only
+  serialization still emits `Raw` verbatim — reproducing the configuration
+  document is what serializing it means.
+- **`WithNoPlaintextStrings()` migration ratchet (`pkg/secret`).** With this
+  processor option set, a plain `string` field holding a reference is left
+  untouched — its secret is never fetched — and its path is reported in the
+  new `ProcessResult.PlaintextSkipped` (always a subset of `Unresolved`). A
+  consumer turns it on, converts the reported fields to `SecretValue` one at
+  a time, and adds `WithFailClosed()` once the list is empty to refuse any
+  boot that would produce a plaintext string. Both re-exported from
+  `sdk/go/secret`.
 - **Raft state machines over any storage backend (run-modes phase 5).**
   New `raft.sm_storage` (`--sm-storage`) selects the storage backend the
   storage-generic state machines (`sm_type: disk`/`fast`) compose:
@@ -99,6 +161,41 @@ are not reconstructed here — their history is in the git log.
   boot coverage. The unix SDK transport's capabilities mapping gained the
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
+
+### Deprecated
+
+- **Plaintext-into-`string` secret resolution (`pkg/secret`).** Resolving a
+  secret into a plain `string` config field is the plain path the stack is
+  moving off; use a `SecretValue` field target, and
+  `WithNoPlaintextStrings()` to find the fields that still need converting.
+  `SecretValue.String()` and `SecretValue.Bytes()` are likewise deprecated in
+  favour of `WithBytes`/`Open` (and `Redacted()` for anything displayed).
+  Nothing is removed and the deliberate accessors keep their behaviour: the
+  exported signatures stay as they are until the stack's coordinated breaking
+  release, so the whole dependency chain can move in one wave rather than repo
+  by repo. `String()` still returns plaintext because it is the documented way
+  to hand a secret to an API that takes a string, and silently redacting it
+  would break those callers at run time with no compile error; the accidental
+  paths (`%v`, `fmt.Sprint`, structured logging) are redacted now, as noted
+  above, so what remains deferred is only the deliberate call.
+
+### Fixed — SECURITY
+
+- **A resolver reporting success with no value is now refused
+  (`pkg/secret`).** `SecretResolver` requires a non-nil `SecretValue` on
+  success, but `ResolverRegistry.Resolve` did not enforce it: a resolver
+  returning `(nil, nil)` panicked the plain string path on the nil
+  dereference, and would have let a protected target be counted as resolved
+  while holding nothing. The registry now fails such a resolver with
+  `ResolutionFailedError`, so the path is recorded in `Unresolved` and
+  `WithFailClosed()` refuses the boot.
+- **`ConfigProcessor` no longer destroys a `SecretValue` config field.** The
+  walker descended into a `SecretValue`, saw its exported `Raw` reference as
+  an ordinary resolvable string field, and overwrote it with the resolved
+  plaintext while leaving the enclave empty — making the documented "hold the
+  secret in a `SecretValue`" pattern strictly worse than a plain `string`
+  field. A `SecretValue` is now a protected leaf the walk resolves into and
+  never descends through.
 
 ## [0.5.8-alpha] - 2026-08-17
 

@@ -16,6 +16,9 @@ package secret
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +53,13 @@ const (
 // value that would otherwise be mistaken for a secret reference.
 const literalPrefix = "literal://"
 
+// schemeSeparator divides the scheme from the name in a secret reference.
+const schemeSeparator = "://"
+
+// redactedMarker is what Redacted yields when the raw reference cannot be shown
+// because it is, or may be, the secret itself rather than a pointer to one.
+const redactedMarker = "[redacted]"
+
 // literalValue strips an optional "literal://" scheme prefix, yielding the
 // verbatim value a literal reference resolves to.
 func literalValue(raw string) string {
@@ -64,6 +74,11 @@ func literalValue(raw string) string {
 //
 // SecretValue is single-owner for its working life; concurrent Clear with
 // any accessor is undefined.
+//
+// A SecretValue is also the processor's protected resolution target: a config
+// field declared as SecretValue (or *SecretValue) rather than string decodes
+// the reference into Raw and is filled in place by ConfigProcessor.Process, so
+// the plaintext reaches the consumer without ever resting in a Go string.
 type SecretValue struct {
 	// Raw is the original unresolved reference (e.g. "credential://db-password").
 	Raw string
@@ -132,6 +147,12 @@ func (v *SecretValue) Open() (*secure.Buffer, error) {
 // returns it. This copies the secret OUT of mlocked memory into the Go heap,
 // where it cannot be reliably wiped, so prefer WithBytes or Open for sensitive
 // handling. Returns nil for an empty value; each call decrypts afresh.
+//
+// Deprecated: Bytes hands the plaintext to the garbage collector, which is the
+// plain path this package is moving away from. Use WithBytes, or Open when the
+// buffer must outlive a single callback — both keep the plaintext in mlocked
+// memory. Bytes remains for callers bound to an API that takes a raw []byte,
+// and is retained until the stack's coordinated breaking release.
 func (v *SecretValue) Bytes() []byte {
 	if v.secret == nil {
 		return nil
@@ -149,6 +170,17 @@ func (v *SecretValue) Bytes() []byte {
 // String materializes the plaintext into a Go string. Like Bytes, this copies
 // the secret into the garbage-collected heap as an immutable string that cannot
 // be wiped; prefer WithBytes. Returns "" for an empty value.
+//
+// A direct String call is the only way to reach the plaintext this way.
+// Formatting a SecretValue — or a struct holding one — with %v, %s or
+// fmt.Sprint is redacted, because Format satisfies fmt.Formatter, which fmt
+// consults ahead of this Stringer. Changing what String itself returns is a
+// behaviour break reserved for the stack's coordinated breaking release.
+//
+// Deprecated: String copies the plaintext into an immutable heap string that
+// can never be wiped. Use WithBytes, or Redacted when the value is only being
+// displayed. String remains for callers bound to an API that takes a raw
+// string, and is retained until the stack's coordinated breaking release.
 func (v *SecretValue) String() string {
 	if v.secret == nil {
 		return ""
@@ -159,6 +191,90 @@ func (v *SecretValue) String() string {
 	}
 	defer buf.Destroy()
 	return string(buf.Bytes())
+}
+
+// Redacted returns a printable description of the secret that never contains
+// plaintext. It yields Raw only when a resolver has established that Raw POINTS
+// AT a secret held elsewhere, e.g. "credential://db-key"; otherwise it yields
+// "[redacted]". A type that holds a SecretValue should route its String and
+// logging paths through Redacted.
+//
+// Provenance decides this, not syntax. Looking like a URI proves nothing: the
+// registry falls back to StrategyLiteral for any value no resolver claims, so
+// "https://user:hunter2@example.test" and "unknown://hunter2" are references in
+// shape only and are the secret in fact. A value is therefore shown only when
+// its Strategy says a resolver produced it from a reference — an unresolved
+// value, whose Strategy is not yet set, is redacted too, because nothing has
+// vouched for where its Raw came from.
+func (v *SecretValue) Redacted() string {
+	if v == nil {
+		return redactedMarker
+	}
+	// StrategyLiteral means Raw carries the secret rather than pointing at it,
+	// whether it arrived through the "literal://" scheme or the registry's
+	// fallback for an unclaimed value.
+	if v.Strategy == "" || v.Strategy == StrategyLiteral {
+		return redactedMarker
+	}
+	if strings.HasPrefix(v.Raw, literalPrefix) {
+		return redactedMarker
+	}
+	if i := strings.Index(v.Raw, schemeSeparator); i > 0 {
+		return v.Raw
+	}
+	return redactedMarker
+}
+
+// Compile-time proof that a SecretValue renders redacted down every default
+// display path — fmt verbs and structured logging alike — whether a config
+// holds it by value or by pointer.
+var (
+	_ fmt.Formatter  = SecretValue{}
+	_ slog.LogValuer = SecretValue{}
+	_ fmt.Formatter  = (*SecretValue)(nil)
+	_ slog.LogValuer = (*SecretValue)(nil)
+)
+
+// Format implements fmt.Formatter, which fmt consults ahead of Stringer for
+// every verb. Formatting a SecretValue — or any struct that holds one — with
+// %v, %s, %+v or fmt.Print therefore yields the redacted description, so a
+// stray log line over a config struct cannot spill a resolved secret.
+//
+// String is deliberately left returning the plaintext: it is the documented way
+// to hand a secret to an API that takes a string, and silently redacting it
+// would break those callers at run time with no compile error to warn them.
+// That change belongs to the stack's coordinated breaking release; until then
+// the accidental paths are closed here and the deliberate one stays deprecated.
+func (v SecretValue) Format(f fmt.State, verb rune) {
+	// A write error on a fmt.State is the caller's output problem, not this
+	// value's, and fmt itself discards it — there is nothing useful to do with
+	// it here beyond not pretending otherwise.
+	if verb == 'q' {
+		_, _ = fmt.Fprintf(f, "%q", v.Redacted())
+		return
+	}
+	_, _ = io.WriteString(f, v.Redacted())
+}
+
+// LogValue implements slog.LogValuer so a SecretValue passed to a structured
+// logger records the redacted description rather than the plaintext.
+func (v SecretValue) LogValue() slog.Value {
+	return slog.StringValue(v.Redacted())
+}
+
+// adopt moves src's enclave and resolution metadata into v, destroying whatever
+// enclave v held. v keeps its own Raw: Raw records where the secret came FROM
+// and must never be overwritten with the plaintext it resolved to. src is left
+// empty — its enclave now belongs to v — and must not be used afterwards.
+func (v *SecretValue) adopt(src *SecretValue) {
+	if v == nil || src == nil {
+		return
+	}
+	v.Clear()
+	v.secret = src.secret
+	v.Strategy = src.Strategy
+	v.ExpiresAt = src.ExpiresAt
+	src.secret = nil
 }
 
 // Clear destroys the backing enclave and releases its mlocked memory. After
@@ -228,8 +344,9 @@ func (r *ResolverRegistry) Register(resolver SecretResolver) {
 
 // Resolve returns the plaintext SecretValue for raw. The first registered
 // resolver whose CanResolve returns true is used. If a matching resolver
-// returns an error, Resolve wraps it in ResolutionFailedError and returns it
-// without consulting subsequent resolvers. When no resolver matches, raw is
+// returns an error — or breaks the SecretResolver contract by reporting
+// success with a nil value — Resolve wraps it in ResolutionFailedError and
+// returns it without consulting subsequent resolvers. When no resolver matches, raw is
 // returned verbatim as a literal SecretValue with StrategyLiteral.
 //
 // Returns ErrNilContext when ctx is nil.
@@ -250,6 +367,17 @@ func (r *ResolverRegistry) Resolve(ctx context.Context, raw string) (*SecretValu
 					Scheme: res.Scheme(),
 					Raw:    raw,
 					Err:    err,
+				}
+			}
+			if sv == nil {
+				// SecretResolver requires a non-nil value on success. A
+				// resolver that breaks that contract must fail here rather
+				// than hand the caller a nil that reads as a resolved secret
+				// everywhere downstream.
+				return nil, &ResolutionFailedError{
+					Scheme: res.Scheme(),
+					Raw:    raw,
+					Err:    errNilResolvedValue,
 				}
 			}
 			return sv, nil
