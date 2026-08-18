@@ -108,3 +108,89 @@ func TestProvisionTenant_FailsWhenAdminRoleIdentifierResolutionFails(t *testing.
 		t.Fatalf("err = %T, want *TenantAdminUserCreationError", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The resolver seam must not be a silent fail-open
+// ---------------------------------------------------------------------------
+
+// legacyRoleCreator is a RoleCreator that ALSO satisfies role.NameResolver,
+// exactly as qrdb's own role.RoleServicer does, and reports the Admin role as
+// already present under its legacy identifier.
+type legacyRoleCreator struct {
+	legacyRoleResolver
+}
+
+func (l *legacyRoleCreator) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+	return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+}
+
+func TestProvisionTenant_UsesRolesAsResolverWhenRoleResolverOmitted(t *testing.T) {
+	// Wiring only Roles must still bind the tenant admin to the persisted
+	// identifier. Deriving would grant a role ID that names nothing while
+	// ProvisionTenant reported success.
+	users := &fakeUsers{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID: "acme",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users, Roles: &legacyRoleCreator{},
+		Logger: discardLogger(),
+		// RoleResolver deliberately omitted.
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+
+	got := users.createCalls[0].RoleIDs
+	if len(got) != 1 || got[0] != legacyAdminRoleIDAcme {
+		t.Errorf("admin RoleIDs = %v, want [%s]", got, legacyAdminRoleIDAcme)
+	}
+}
+
+// roleCreatorOnly can create roles but cannot answer lookups by name.
+type roleCreatorOnly struct {
+	exists bool
+}
+
+func (r roleCreatorOnly) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
+	if r.exists {
+		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
+	}
+	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID}, nil
+}
+
+func TestProvisionTenant_RefusesToGuessWhenRolesPreexistAndNothingResolves(t *testing.T) {
+	users := &fakeUsers{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID: "acme",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users, Roles: roleCreatorOnly{exists: true},
+		Logger: discardLogger(),
+	})
+
+	var unresolvable *UnresolvableSystemRoleError
+	if !errors.As(err, &unresolvable) {
+		t.Fatalf("err = %v (%T), want *UnresolvableSystemRoleError", err, err)
+	}
+	if len(users.createCalls) != 0 {
+		t.Errorf("tenant admin was created with RoleIDs %v despite unresolvable roles", users.createCalls[0].RoleIDs)
+	}
+}
+
+func TestProvisionTenant_DerivesWhenThisRunSeededTheRoles(t *testing.T) {
+	users := &fakeUsers{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID: "acme",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users, Roles: roleCreatorOnly{exists: false},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+
+	got := users.createCalls[0].RoleIDs
+	want := role.SystemRoleID("acme", role.RoleNameAdmin)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("admin RoleIDs = %v, want [%s]", got, want)
+	}
+}

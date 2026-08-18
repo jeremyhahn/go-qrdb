@@ -82,8 +82,12 @@ type Dependencies struct {
 	Roles firstboot.RoleCreator
 
 	// RoleResolver resolves a system role to the identifier it is persisted
-	// under (firstboot.Dependencies.RoleResolver). Optional; see that field
-	// for why a store seeded by an earlier release needs it.
+	// under (firstboot.Dependencies.RoleResolver). Leaving it nil is safe
+	// when Roles itself implements role.NameResolver — qrdb's own
+	// role.RoleServicer does, and it is then used automatically — and when
+	// this run seeds the roles. If a tenant's roles already existed and
+	// nothing can resolve them, provisioning fails rather than binding the
+	// tenant admin to a guessed identifier; see that field for why.
 	RoleResolver role.NameResolver
 
 	// CA issues certificates via the generate-and-distribute path (Path A).
@@ -354,7 +358,8 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 
 	// Step 2: tenant-scoped built-in roles (tolerates already-exists).
-	if err := seedTenantRoles(ctx, deps, cfg.TenantID); err != nil {
+	rolesPreexisted, err := seedTenantRoles(ctx, deps, cfg.TenantID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -364,7 +369,13 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	// the legacy UUIDv5 identifier a pre-FIPS release assigned it. Granting
 	// the freshly derived identifier there would bind the admin to a role
 	// that does not exist.
-	adminRoleID, err := role.ResolveSystemRoleID(ctx, deps.RoleResolver, cfg.TenantID, role.RoleNameAdmin)
+	resolver := roleResolver(deps)
+	if resolver == nil && rolesPreexisted {
+		return nil, &TenantAdminUserCreationError{
+			Cause: &UnresolvableSystemRoleError{Role: role.RoleNameAdmin, TenantID: cfg.TenantID},
+		}
+	}
+	adminRoleID, err := role.ResolveSystemRoleID(ctx, resolver, cfg.TenantID, role.RoleNameAdmin)
 	if err != nil {
 		return nil, &TenantAdminUserCreationError{Cause: err}
 	}
@@ -551,9 +562,29 @@ func buildTenantStrategy(strategy seal.StrategyID) (seal.SealingStrategy, error)
 	}
 }
 
+// roleResolver returns the name resolver provisioning should use: the
+// explicit dependency when supplied, otherwise the Roles surface itself when
+// it implements role.NameResolver. Mirrors firstboot.roleResolver — a caller
+// that wires only Roles still binds grants to persisted identifiers rather
+// than silently deriving them.
+func roleResolver(deps Dependencies) role.NameResolver {
+	if deps.RoleResolver != nil {
+		return deps.RoleResolver
+	}
+	if r, ok := deps.Roles.(role.NameResolver); ok {
+		return r
+	}
+	return nil
+}
+
 // seedTenantRoles installs the tenant-scoped built-in roles. Already-exists
 // for any individual role is idempotent success.
-func seedTenantRoles(ctx context.Context, deps Dependencies, tenantID string) error {
+//
+// It reports whether any role was found to already exist, which distinguishes
+// a tenant this run seeded — where the derived system role ID is exactly the
+// identifier just written — from one seeded earlier, whose identifiers this
+// code may be unable to derive.
+func seedTenantRoles(ctx context.Context, deps Dependencies, tenantID string) (preexisting bool, err error) {
 	for _, r := range role.BuiltInRoles(tenantID) {
 		_, err := deps.Roles.CreateRole(ctx, &role.CreateRoleRequest{
 			ID:          r.ID,
@@ -566,11 +597,12 @@ func seedTenantRoles(ctx context.Context, deps Dependencies, tenantID string) er
 		}
 		var nameExists *role.RoleNameExistsError
 		if errors.As(err, &nameExists) {
+			preexisting = true
 			continue
 		}
-		return &TenantAdminRoleCreationError{Cause: err}
+		return false, &TenantAdminRoleCreationError{Cause: err}
 	}
-	return nil
+	return preexisting, nil
 }
 
 // enrollAdminCert issues, thumbprints, and binds a tenant-admin certificate

@@ -105,31 +105,27 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		return nil, err
 	}
 
-	// Duplicate registration is decided from the username index, not by
-	// looking up the derived ID. The index is the record of what this tenant
-	// has actually enrolled, so it catches a custodian registered before
-	// custodian IDs moved off UUIDv5/SHA-1 (see custodianID), whose record
-	// still lives under its legacy identifier. Re-deriving instead would
-	// miss it and enrol the same person twice, under two IDs, each holding a
-	// share.
-	existing, err := s.store.Get(ctx, custodianUsernameKey(req.TenantID, req.Username))
+	id := custodianID(req.TenantID, req.Username)
+
+	// Duplicate registration must be refused however the existing record is
+	// reachable — overwriting one replaces a share holder's enrolment with a
+	// freshly sealed share, destroying the original. See findExistingID for
+	// why one lookup is not enough.
+	existingID, err := s.findExistingID(ctx, req.TenantID, req.Username, id)
 	if err != nil {
-		return nil, &StoreError{Op: "check-exists", Err: err}
+		return nil, err
 	}
-	if existing != nil {
-		// The index value is the enrolled custodian's own ID, so the audit
-		// event names the record that actually exists rather than the one
-		// this call would have created.
+	if existingID != "" {
+		// Name the record that actually exists rather than the one this call
+		// would have created; on a legacy enrolment they differ.
 		s.audit.Emit(ctx, audit.AuditEvent{
-			Resource:   "custodian:" + string(existing),
+			Resource:   "custodian:" + existingID,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":already-exists",
 			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID},
 		})
 		return nil, ErrCustodianAlreadyExists
 	}
-
-	id := custodianID(req.TenantID, req.Username)
 
 	// Seal the share into an ECDH envelope. SealShareTo zeroes req.ShareBytes.
 	envelope, err := SealShareTo(req.ShareBytes, req.PublicKeyPEM)
@@ -327,10 +323,88 @@ func validateRegisterRequest(req RegisterRequest) error {
 	return nil
 }
 
-// custodianUsernameKey builds the username secondary index key, the
-// authoritative "has this tenant already enrolled this person" record.
+// custodianUsernameKey builds the username secondary index key.
 func custodianUsernameKey(tenantID, username string) string {
 	return sysCustodianIdxUsername + tenantID + "/" + username
+}
+
+// findExistingID returns the ID of the custodian already enrolled for
+// tenantID/username, or "" when there is none. derivedID is the identifier a
+// new registration would take.
+//
+// It consults three sources because no single one is sufficient, and the
+// consequence of missing an existing record is that RegisterCustodian
+// overwrites a share holder's enrolment with a newly sealed share:
+//
+//  1. The username index. Catches the ordinary case, and is the only source
+//     that finds a custodian enrolled before custodian IDs moved off
+//     UUIDv5/SHA-1 — that record lives under an identifier this code can no
+//     longer derive, since deriving it would call SHA-1.
+//  2. The primary record at derivedID. persist writes the primary first and
+//     the indexes after, and the KV store offers no transaction, so a failed
+//     index write leaves a valid primary with no index. Without this check a
+//     retry would read the missing index as "absent" and overwrite it.
+//  3. A scan of the tenant index matching Username. Covers a record whose
+//     username index is missing or damaged AND whose ID this code cannot
+//     derive — the torn-write case for a legacy enrolment, which neither of
+//     the cheaper lookups can see.
+//
+// The scan is last and runs only when the first two find nothing, so the
+// ordinary path costs two Gets. Registration is a ceremony-time operation
+// performed once per custodian, so the fallback's cost is not on any hot
+// path.
+func (s *service) findExistingID(ctx context.Context, tenantID, username, derivedID string) (string, error) {
+	indexed, err := s.store.Get(ctx, custodianUsernameKey(tenantID, username))
+	if err != nil {
+		return "", &StoreError{Op: "check-exists", Err: err}
+	}
+	if indexed != nil {
+		return string(indexed), nil
+	}
+
+	primary, err := s.store.Get(ctx, sysCustodianPrefix+derivedID)
+	if err != nil {
+		return "", &StoreError{Op: "check-exists", Err: err}
+	}
+	if primary != nil {
+		return derivedID, nil
+	}
+
+	return s.findByUsernameScan(ctx, tenantID, username)
+}
+
+// findByUsernameScan walks the tenant index looking for a custodian record
+// with the given username. It reports "" when the tenant has no such record.
+// An unreadable individual record is skipped rather than failing the scan: a
+// record that cannot be decoded cannot be the one this username belongs to,
+// and failing here would block enrolment on unrelated corruption.
+func (s *service) findByUsernameScan(ctx context.Context, tenantID, username string) (string, error) {
+	prefix := sysCustodianIdxTenant + tenantID + "/"
+	keys, err := s.store.List(ctx, prefix)
+	if err != nil {
+		return "", &StoreError{Op: "check-exists", Err: err}
+	}
+	for _, key := range keys {
+		candidateID := key[len(prefix):]
+		data, err := s.store.Get(ctx, sysCustodianPrefix+candidateID)
+		if err != nil {
+			return "", &StoreError{Op: "check-exists", Err: err}
+		}
+		if data == nil {
+			continue
+		}
+		var c Custodian
+		if err := json.Unmarshal(data, &c); err != nil {
+			s.logger.Warn("custodian duplicate check: skipping undecodable record",
+				slog.String("id", candidateID),
+				slog.String("error", err.Error()))
+			continue
+		}
+		if c.Username == username {
+			return c.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // custodianNamespace domain-separates custodian identifiers from every other

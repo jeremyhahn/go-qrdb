@@ -194,11 +194,6 @@ type RBACAuthorizer struct {
 	// authorizable on a draining node. Nil disables the fallback.
 	rolesFallback role.RoleServicer
 
-	// sysRoleIDs caches role.SystemRoleIDs per "tenantID/roleName" under the
-	// same TTL the permission cache applies to the same role data. See
-	// systemRoleIDCache for why it is bounded rather than permanent.
-	sysRoleIDs *systemRoleIDCache
-
 	// scopes is an optional tenant-aware scope resolver. When non-nil, the
 	// authorizer resolves a permission's scope in the identity's own tenant
 	// (per-tenant store -> built-in default -> ScopeSelf) so that two
@@ -259,9 +254,8 @@ func WithScopeResolver(resolver permission.ScopeResolver) Option {
 // New creates a new RBACAuthorizer backed by the given role service.
 func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 	a := &RBACAuthorizer{
-		roles:      roles,
-		cache:      newPermissionCache(defaultCacheTTL),
-		sysRoleIDs: newSystemRoleIDCache(defaultCacheTTL),
+		roles: roles,
+		cache: newPermissionCache(defaultCacheTTL),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -272,21 +266,32 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 // systemRoleIDs returns every identifier that denotes the named system role
 // in tenantID: the canonical one plus, on a cluster seeded before system
 // role IDs moved off UUIDv5/SHA-1, the legacy identifier still persisted for
-// it. Results are cached for defaultCacheTTL, so a tenant costs at most one
-// name-index lookup per TTL rather than one per request.
+// it.
+//
+// The result is deliberately NOT cached across requests. Both callers use it
+// to VOID a grant — the SO deny-list (FIPS 140-3 AS10.03) and the strict-SoD
+// Owner strip — and the store does not preserve the invariant that would make
+// a cached answer safe: kvRoleStore.CreateRole persists System: false
+// regardless of the request, so a seeded SO or Owner role can be deleted and
+// recreated under a different identifier, and no role-mutation path
+// invalidates an authorizer. Any positive cache therefore buys throughput
+// with a window in which a replacement role is not recognised and the control
+// silently stops applying. Correctness wins: the identifiers backing a
+// grant-voiding control are resolved on the decision that uses them.
+//
+// The cost is one name-index lookup plus one record read, and only on the
+// decisions that consult it. Callers avoid it entirely when the identity is
+// already classified by role name or by the canonical identifier, neither of
+// which requires the store. Earning a cache back means making system roles
+// genuinely immutable first, so the cached invariant is one the store
+// guarantees.
 //
 // The lookup runs on the caller's context, exactly as ResolvePermissions
 // does below, so it sees the role store through the same tenant-visibility
 // rules that permission resolution will apply moments later. A failure is
-// reported rather than swallowed: both callers use the result to VOID a
-// grant, so treating an unresolvable store as "no legacy identifier" would
-// fail open. A failure is likewise never cached, so a transient store error
-// cannot pin a fail-open answer.
+// reported rather than swallowed: treating an unresolvable store as "no other
+// identifier" would fail open.
 func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, error) {
-	if cached, ok := a.sysRoleIDs.get(tenantID, roleName); ok {
-		return cached, nil
-	}
-
 	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
 	if err != nil {
 		if a.rolesFallback == nil {
@@ -301,23 +306,57 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 		}
 		ids = fids
 	}
-
-	a.sysRoleIDs.set(tenantID, roleName, ids)
 	return ids, nil
+}
+
+// holdsSystemRole reports whether identity holds the named system role of its
+// own tenant, by role name or by any identifier that denotes it.
+//
+// The name and the canonical identifier are matched first because neither
+// needs the store: an identity classified by those is classified with no I/O
+// and no staleness whatsoever. The store is consulted only when they do not
+// settle it, which is the case where the role may be persisted under another
+// identifier — a legacy seeding, or a role recreated under a generated ID.
+func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Identity, roleName string) (bool, error) {
+	canonical := role.SystemRoleID(identity.TenantID, roleName)
+	for _, r := range identity.Roles {
+		if r == roleName || r == canonical {
+			return true, nil
+		}
+	}
+	if len(identity.Roles) == 0 {
+		return false, nil
+	}
+
+	ids, err := a.systemRoleIDs(ctx, identity.TenantID, roleName)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range identity.Roles {
+		if slices.Contains(ids, r) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // effectiveRoles returns the identity's roles with the Owner convenience role
 // removed when strict separation of duties is active. Owner may be referenced
 // either by its name (role.RoleNameOwner) or by any identifier that denotes
-// the tenant's Owner role — the canonical one and, on a cluster seeded before
-// the UUIDv5 migration, its legacy identifier. All such forms are stripped;
-// recognising only the canonical identifier would leave a pre-migration Owner
-// grant live under a posture that exists to void it.
+// the tenant's Owner role — the canonical one, a legacy identifier on a
+// cluster seeded before the UUIDv5 migration, or a generated one if the role
+// was recreated. All such forms are stripped; recognising only the canonical
+// identifier would leave such a grant live under a posture that exists to
+// void it.
 //
-// In the standard posture the roles are returned unchanged and no lookup is
-// performed.
+// The identifiers are resolved on this call rather than cached, for the
+// reason given on systemRoleIDs. In the standard posture the roles are
+// returned unchanged and no lookup is performed at all.
 func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Identity) ([]string, error) {
 	if !a.strictSoD {
+		return identity.Roles, nil
+	}
+	if len(identity.Roles) == 0 {
 		return identity.Roles, nil
 	}
 	ownerIDs, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameOwner)
@@ -398,18 +437,16 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.
 	if isSODenied(resource, action) {
-		soRoleIDs, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameSO)
+		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
 		if err != nil {
 			return err
 		}
-		for _, r := range identity.Roles {
-			if r == role.RoleNameSO || slices.Contains(soRoleIDs, r) {
-				return &PermissionDeniedError{
-					Resource: resource,
-					Action:   action,
-					Subject:  identity.Subject,
-					Reason:   "SO role explicitly denied from cryptographic operations (FIPS 140-3 AS10.03)",
-				}
+		if isSO {
+			return &PermissionDeniedError{
+				Resource: resource,
+				Action:   action,
+				Subject:  identity.Subject,
+				Reason:   "SO role explicitly denied from cryptographic operations (FIPS 140-3 AS10.03)",
 			}
 		}
 	}
@@ -564,11 +601,7 @@ func (a *RBACAuthorizer) Invalidate(tenantID, subject string) {
 	a.cache.invalidate(tenantID, subject)
 }
 
-// InvalidateAll clears all cached permission entries and the cached system
-// role identifiers, so a role that was renamed, deleted, or recreated under a
-// fresh identifier is reclassified on the next Authorize call instead of at
-// the next TTL expiry.
+// InvalidateAll clears all cached permission entries.
 func (a *RBACAuthorizer) InvalidateAll() {
 	a.cache.invalidateAll()
-	a.sysRoleIDs.invalidateAll()
 }

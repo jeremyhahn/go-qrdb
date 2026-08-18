@@ -187,116 +187,104 @@ func TestAuthorize_LegacyIdentifierLookup_UsesFallbackStore(t *testing.T) {
 	}
 }
 
-func TestSystemRoleIDs_CachedWithinTTL(t *testing.T) {
-	svc := newMockRoleService(map[string][]permission.Permission{}).
-		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+// ---------------------------------------------------------------------------
+// Role replacement: there must be no window
+// ---------------------------------------------------------------------------
+
+func TestAuthorize_ReplacementSO_IsDeniedImmediately(t *testing.T) {
+	// The store does not keep seeded system roles immutable (CreateRole
+	// persists System: false), so an SO role can be deleted and recreated
+	// under a generated identifier. The deny-list must recognise the
+	// replacement on the very next authorization decision — there is no
+	// interval in which the replacement SO reaches a cryptographic
+	// operation.
+	const replacementSOID = "99999999-8888-8777-8666-555555555555"
+	svc := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme:  {"keys:sign"},
+		replacementSOID: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
 	authz := New(svc)
 
-	first, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs: %v", err)
+	// A decision against the pre-replacement store, so any cache that might
+	// exist is warm.
+	preIdentity := &auth.Identity{Subject: "so", TenantID: "acme", Roles: []string{legacySOIDAcme}}
+	if err := authz.Authorize(ctxFor("acme"), preIdentity, "keys", "sign"); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected the original SO to be denied, got %v", err)
 	}
 
-	svc.byNameErr = errors.New("role store unavailable")
-	second, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs (cached): %v", err)
-	}
-	if len(first) != 2 || len(second) != 2 || first[1] != second[1] || second[1] != legacySOIDAcme {
-		t.Fatalf("cached lookup = %v, want the same %v including %s", second, first, legacySOIDAcme)
-	}
-}
-
-func TestSystemRoleIDs_ReresolvesAfterTTL(t *testing.T) {
-	// The store does NOT enforce system-role immutability — CreateRole
-	// persists System: false regardless of the request — so a seeded SO role
-	// can be deleted and recreated under a fresh identifier. A permanent
-	// cache would keep recognising the replaced one for the process
-	// lifetime and stop denying the replacement SO its crypto operations.
-	svc := newMockRoleService(map[string][]permission.Permission{}).
-		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
-	authz := New(svc)
-	authz.sysRoleIDs = newSystemRoleIDCache(0) // every entry is already stale
-
-	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err != nil {
-		t.Fatalf("systemRoleIDs: %v", err)
-	}
-
-	// The SO role is recreated under a different identifier.
-	const replacementSOID = "11111111-2222-8333-8444-555555555555"
+	// The SO role is now recreated under a different identifier.
 	svc.withRole(legacyRole(replacementSOID, role.RoleNameSO))
 
-	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs (after TTL): %v", err)
-	}
-	if len(got) != 2 || got[1] != replacementSOID {
-		t.Fatalf("systemRoleIDs = %v, want the replacement %s", got, replacementSOID)
-	}
-
-	// And the deny-list follows it: the replacement SO is denied crypto.
-	identity := &auth.Identity{
-		Subject:  "so-replacement",
-		TenantID: "acme",
-		Roles:    []string{replacementSOID},
-	}
+	identity := &auth.Identity{Subject: "so-replacement", TenantID: "acme", Roles: []string{replacementSOID}}
 	if err := authz.Authorize(ctxFor("acme"), identity, "keys", "sign"); !errors.Is(err, auth.ErrUnauthorized) {
-		t.Fatalf("expected the deny-list to trigger for the replacement SO, got %v", err)
+		t.Fatalf("replacement SO bypassed the deny-list: %v", err)
 	}
 }
 
-func TestInvalidateAll_ClearsCachedSystemRoleIDs(t *testing.T) {
-	// The operational escape hatch must reach the new cache too, so a
-	// reclassification does not have to wait out the TTL.
-	svc := newMockRoleService(map[string][]permission.Permission{}).
-		withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
-	authz := New(svc)
+func TestAuthorize_ReplacementOwner_IsStrippedImmediately(t *testing.T) {
+	// Same for the strict-separation-of-duties Owner strip: a replacement
+	// Owner grant must be voided on the next decision, not after an interval.
+	const replacementOwnerID = "77777777-6666-8555-8444-333333333333"
+	svc := newMockRoleService(map[string][]permission.Permission{
+		legacyOwnerIDAcme:  {"kv:put"},
+		replacementOwnerID: {"kv:put"},
+		legacyAdminIDAcme:  {"tenants:read"},
+	}).withRole(legacyRole(legacyOwnerIDAcme, role.RoleNameOwner))
+	authz := New(svc, WithStrictSeparation(true))
 
-	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err != nil {
-		t.Fatalf("systemRoleIDs: %v", err)
+	preIdentity := &auth.Identity{
+		Subject:  "admin",
+		TenantID: "acme",
+		Roles:    []string{legacyAdminIDAcme, legacyOwnerIDAcme},
+	}
+	if err := authz.Authorize(ctxFor("acme"), preIdentity, "kv", "put"); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("expected the original Owner grant to be voided, got %v", err)
 	}
 
-	const replacementSOID = "11111111-2222-8333-8444-555555555555"
-	svc.withRole(legacyRole(replacementSOID, role.RoleNameSO))
+	svc.withRole(legacyRole(replacementOwnerID, role.RoleNameOwner))
 
-	// Still the old answer until invalidated.
-	cached, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs: %v", err)
+	identity := &auth.Identity{
+		Subject:  "admin-replacement",
+		TenantID: "acme",
+		Roles:    []string{legacyAdminIDAcme, replacementOwnerID},
 	}
-	if cached[1] != legacySOIDAcme {
-		t.Fatalf("cached = %v, want the pre-invalidation %s", cached, legacySOIDAcme)
-	}
-
-	authz.InvalidateAll()
-
-	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs (after InvalidateAll): %v", err)
-	}
-	if got[1] != replacementSOID {
-		t.Fatalf("systemRoleIDs = %v, want the replacement %s", got, replacementSOID)
+	if err := authz.Authorize(ctxFor("acme"), identity, "kv", "put"); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("replacement Owner grant survived the strict-SoD strip: %v", err)
 	}
 }
 
-func TestSystemRoleIDs_FailureIsNotCached(t *testing.T) {
-	// A transient store error must not pin a fail-open answer.
+func TestAuthorize_CanonicalSO_IsDeniedWithoutConsultingTheStore(t *testing.T) {
+	// An identity classified by the canonical identifier is classified with
+	// no store lookup at all, so a broken role store cannot suppress the
+	// deny-list for the roles it covers.
+	canonicalSO := role.SystemRoleID("acme", role.RoleNameSO)
+	svc := newMockRoleService(map[string][]permission.Permission{canonicalSO: {"keys:sign"}})
+	svc.byNameErr = errors.New("role store unavailable")
+
+	identity := &auth.Identity{Subject: "so", TenantID: "acme", Roles: []string{canonicalSO}}
+	err := New(svc).Authorize(ctxFor("acme"), identity, "keys", "sign")
+
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("err = %v (%T), want *PermissionDeniedError from the deny-list", err, err)
+	}
+}
+
+func TestAuthorize_SODenyList_SkipsTheLookupForAnIdentityWithNoRoles(t *testing.T) {
+	// Nothing to classify means nothing to look up: a roleless identity must
+	// not be denied merely because the role store is unreachable.
 	svc := newMockRoleService(map[string][]permission.Permission{})
-	svc.byNameErr = errors.New("read index not ready")
-	authz := New(svc)
+	svc.byNameErr = errors.New("role store unavailable")
 
-	if _, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO); err == nil {
-		t.Fatal("expected the lookup to fail")
+	identity := &auth.Identity{Subject: "nobody", TenantID: "acme"}
+	err := New(svc).Authorize(ctxFor("acme"), identity, "keys", "sign")
+
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("err = %v (%T), want a plain permission denial", err, err)
 	}
-
-	svc.byNameErr = nil
-	svc.withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
-
-	got, err := authz.systemRoleIDs(ctxFor("acme"), "acme", role.RoleNameSO)
-	if err != nil {
-		t.Fatalf("systemRoleIDs after recovery: %v", err)
-	}
-	if len(got) != 2 || got[1] != legacySOIDAcme {
-		t.Fatalf("systemRoleIDs = %v, want the legacy %s once the store recovered", got, legacySOIDAcme)
+	var resolveErr *ResolveError
+	if errors.As(err, &resolveErr) {
+		t.Fatal("a roleless identity triggered a role-store lookup")
 	}
 }

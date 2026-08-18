@@ -129,6 +129,28 @@ func (e *TenantAdminRoleCreationError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *TenantAdminRoleCreationError) Unwrap() error { return e.Cause }
 
+// UnresolvableSystemRoleError is returned when a tenant's system roles
+// already exist but no role.NameResolver is available to learn the
+// identifiers they are persisted under.
+//
+// Provisioning refuses rather than guessing: system role IDs moved from
+// UUIDv5/SHA-1 to UUIDv8/SHA-256 for FIPS 140-3, so on a tenant seeded
+// before that migration the derived identifier names no role, and the tenant
+// admin would be created holding no permissions while provisioning reported
+// success. Supply Dependencies.RoleResolver, or a Roles implementation that
+// also implements role.NameResolver, which is used automatically.
+type UnresolvableSystemRoleError struct {
+	// Role is the name of the system role that could not be resolved.
+	Role string
+	// TenantID is the tenant the role belongs to.
+	TenantID string
+}
+
+func (e *UnresolvableSystemRoleError) Error() string {
+	return "bootstrap: role " + e.Role + " already exists in tenant " + e.TenantID +
+		" but no role name resolver is configured; set Dependencies.RoleResolver so the grant binds to the persisted role ID"
+}
+
 // TenantAdminUserCreationError wraps errors that occur while creating the
 // tenant-admin user during ProvisionTenant.
 type TenantAdminUserCreationError struct {
