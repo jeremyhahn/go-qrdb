@@ -28,13 +28,20 @@ name: Release Lockstep
 # accepted in part, publishing the skew, and nothing downstream can retract a
 # tag consumers have already resolved.
 #
+# Both tag namespaces trigger it. `v*` does not match `sdk/go/v*`, so a root-only
+# filter would leave the ORPHAN branch — an sdk/go tag published without its root
+# — with no event to fire on, waiting for the next push to main that may not
+# come. scripts/check-tag-lockstep_test.sh pins both patterns, because the
+# trigger list is the one part of this check that running the script cannot
+# exercise.
+#
 # The main and pull_request legs re-audit the whole published tag set, so an
 # out-of-band tag change — a tag deleted, moved, or pushed with the workflow
 # disabled — still surfaces on the next merge.
 on:
   push:
     branches: [main]
-    tags: ["v*"]                        # root tags only; sdk/go/v* never matches
+    tags: ["v*", "sdk/go/v*"]           # both release-tag namespaces — see below
   pull_request:
     branches: [main]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API

@@ -104,9 +104,10 @@ are not reconstructed here — their history is in the git log.
   (`scripts/check-tag-lockstep.sh`) checks release-versioning.md P2: every
   root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same commit, and
   no `sdk/go` tag may exist without its root. The new `Release Lockstep`
-  workflow runs it on version-tag pushes — within a minute of publication,
-  rather than days later in a consumer's dependency bump — and re-audits the
-  whole tag set on every merge to `main`. It detects a skewed release; it
+  workflow runs it on version-tag pushes in both namespaces (`v*` and
+  `sdk/go/v*`) — within a minute of publication, rather than days later in a
+  consumer's dependency bump — and re-audits the whole tag set on every merge
+  to `main`. It detects a skewed release; it
   cannot prevent one, because a tag is visible the moment it is pushed
   (go-qrdb#13 tracks enforcement). The preventive step is running the check
   before publishing both tags in one atomic push

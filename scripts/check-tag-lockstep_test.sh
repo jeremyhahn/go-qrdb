@@ -138,6 +138,30 @@ tag "${DIR}" sdk/go/v2.0.0
 git -C "${DIR}" branch v2.0.0
 assert "branch does not shadow a missing root tag" 1 "ORPHAN   sdk/go/v2.0.0" "${DIR}"
 
+# The workflow's trigger list is the one part of this check that running the
+# script cannot exercise: the audit rejects an orphaned sdk/go tag, but a
+# root-only `v*` filter gives that branch no event to fire on, because `v*` does
+# not match `sdk/go/v*`. Pin both patterns so a future edit of the filter cannot
+# silently drop a namespace.
+WORKFLOW="${SCRIPT_DIR}/../.github/workflows/release-lockstep.yml"
+if [ ! -f "${WORKFLOW}" ]; then
+	echo "FAIL  workflow triggers: ${WORKFLOW} not found"
+	FAILURES=$((FAILURES + 1))
+else
+	TAGS_LINE=$(sed -n 's/^[[:space:]]*tags:[[:space:]]*//p' "${WORKFLOW}" | head -n 1)
+	for PATTERN in '"v*"' '"sdk/go/v*"'; do
+		case "${TAGS_LINE}" in
+		*"${PATTERN}"*)
+			echo "ok    workflow triggers on ${PATTERN} tag pushes"
+			;;
+		*)
+			echo "FAIL  workflow tag filter does not include ${PATTERN}: ${TAGS_LINE}"
+			FAILURES=$((FAILURES + 1))
+			;;
+		esac
+	done
+fi
+
 if [ "${FAILURES}" -ne 0 ]; then
 	echo "${FAILURES} case(s) failed"
 	exit 1
