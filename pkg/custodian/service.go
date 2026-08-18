@@ -17,6 +17,7 @@ package custodian
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
@@ -66,8 +67,13 @@ type Servicer interface {
 }
 
 // service is the default Servicer implementation backed by a kvstore.KVStore.
+//
+// claims is the same store narrowed to its atomic conditional write. It is
+// held separately, and required at construction, because registration's
+// exactly-once guarantee rests on it: see NewService.
 type service struct {
 	store  kvstore.KVStore
+	claims kvstore.AtomicKVStore
 	audit  audit.AuditLogger
 	logger *slog.Logger
 }
@@ -77,6 +83,19 @@ var _ Servicer = (*service)(nil)
 
 // NewService constructs a Servicer backed by the provided KV store.
 // Both store and logger must be non-nil.
+//
+// The store must also implement kvstore.AtomicKVStore. Registration claims a
+// tenant's username with PutIfAbsent so that exactly one of two concurrent
+// enrolments for the same identity proceeds; without that primitive the claim
+// degrades to a Get followed by a Put, which is the very check-then-act window
+// it exists to close. Refusing here surfaces the missing capability at startup
+// rather than at the first ceremony, and matches how every other caller in this
+// repository treats the capability — see kvstore.AtomicKVStore and
+// invite.NewDAOStore.
+//
+// Every production store satisfies it: service.KVServicer requires PutIfAbsent
+// of all engines, and the Raft-backed adapter evaluates the condition inside
+// the state machine so replicas cannot diverge.
 func NewService(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *slog.Logger) (Servicer, error) {
 	if store == nil {
 		return nil, ErrNilStore
@@ -87,7 +106,11 @@ func NewService(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *sl
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-	return &service{store: store, audit: auditLogger, logger: logger}, nil
+	claims, ok := store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, ErrAtomicWriteUnsupported
+	}
+	return &service{store: store, claims: claims, audit: auditLogger, logger: logger}, nil
 }
 
 // RegisterCustodian validates the request, derives the custodian's
@@ -137,9 +160,52 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		return nil, ErrCustodianAlreadyExists
 	}
 
+	// Claim the username before sealing anything. findExistingID above is a
+	// read, so two registrations for one tenant and username can both pass it;
+	// they derive the SAME identifier and would then write the same three keys,
+	// both reporting success while the later write decides which enrolment
+	// survives. The loser's holder would keep an envelope for share material
+	// the store no longer describes. PutIfAbsent settles that in one operation:
+	// the key is created by exactly one caller.
+	//
+	// The claim occupies the username index key with a token unique to this
+	// attempt. The registration's final write replaces that token with the
+	// custodian identifier, so committing the enrolment and releasing the
+	// claim are one operation and there is no window in which the identity is
+	// unclaimed but the record exists.
+	//
+	// It is taken before SealShareTo so a refused registration has not yet
+	// consumed the caller's share (SealShareTo zeroes req.ShareBytes) and so an
+	// enrolment interrupted between the claim and the record has produced no
+	// envelope material to lose.
+	claim := newClaim(req.TenantID, req.Username)
+	claimed, err := s.claims.PutIfAbsent(ctx, claim.key, claim.value)
+	if err != nil {
+		storeErr := &StoreError{Op: claim.op, Err: err}
+		s.audit.Emit(ctx, audit.AuditEvent{
+			Resource:   "custodian:" + id,
+			Action:     "register",
+			Outcome:    audit.OutcomeFailure + ":claim",
+			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID, "error": storeErr.Error()},
+		})
+		return nil, storeErr
+	}
+	if !claimed {
+		// The username was claimed between the duplicate check and here, so a
+		// concurrent registration owns this identity.
+		s.audit.Emit(ctx, audit.AuditEvent{
+			Resource:   "custodian:" + id,
+			Action:     "register",
+			Outcome:    audit.OutcomeFailure + ":already-claimed",
+			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID},
+		})
+		return nil, ErrCustodianAlreadyExists
+	}
+
 	// Seal the share into an ECDH envelope. SealShareTo zeroes req.ShareBytes.
 	envelope, err := SealShareTo(req.ShareBytes, req.PublicKeyPEM)
 	if err != nil {
+		s.releaseClaim(ctx, claim)
 		s.audit.Emit(ctx, audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
@@ -161,7 +227,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		EnrolledAt:   now,
 	}
 
-	if err := s.persistNew(ctx, c); err != nil {
+	if err := s.persistNew(ctx, c, claim); err != nil {
 		s.audit.Emit(ctx, audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
@@ -295,6 +361,11 @@ type custodianWrite struct {
 // custodianWrites returns the three keys a custodian record occupies, in the
 // order they must be written: the primary record first, then the indexes that
 // point at it, so no index is ever visible before its record.
+//
+// For a new enrolment the last of them — the username index — doubles as the
+// commit: it replaces the claim token that registration put there with the
+// custodian identifier, which is what makes the enrolment visible as an
+// existing custodian rather than one in flight. See persistNew.
 func custodianWrites(c *Custodian) ([]custodianWrite, error) {
 	data, err := json.Marshal(c)
 	if err != nil {
@@ -305,6 +376,32 @@ func custodianWrites(c *Custodian) ([]custodianWrite, error) {
 		{op: "put-idx-tenant", key: sysCustodianIdxTenant + c.TenantID + "/" + c.ID, value: []byte(c.ID)},
 		{op: "put-idx-username", key: custodianUsernameKey(c.TenantID, c.Username), value: []byte(c.ID)},
 	}, nil
+}
+
+// claimPrefix marks a username index entry as an uncommitted registration
+// claim rather than a completed enrolment. A custodian identifier is a
+// 36-character UUID, so it never carries this prefix and the two are never
+// confused — including for a custodian enrolled under the old UUIDv5
+// identifiers, whose index entry is likewise a bare UUID.
+const claimPrefix = "claim:"
+
+// newClaim builds the username claim a registration takes before it seals
+// anything.
+//
+// The value is unique to this attempt, not the custodian identifier the commit
+// will replace it with. The identifier is derived from the tenant and username,
+// so every registration for one identity computes the same one; a claim carrying
+// it could not tell "the entry I created" from "an entry another attempt created
+// after mine was removed", and compensation would then delete a stranger's
+// enrolment. A per-attempt random token can only have been written by the
+// attempt that generated it — rand.Text is 128+ bits, so a collision between
+// two attempts is unreachable and the ownership test in rollback is exact.
+func newClaim(tenantID, username string) custodianWrite {
+	return custodianWrite{
+		op:    "claim-username",
+		key:   custodianUsernameKey(tenantID, username),
+		value: []byte(claimPrefix + rand.Text()),
+	}
 }
 
 // persist serialises the custodian record and writes it together with its
@@ -327,7 +424,13 @@ func (s *service) persist(ctx context.Context, c *Custodian) error {
 }
 
 // persistNew writes a brand-new enrolment and compensates for a torn write by
-// removing whatever it managed to write.
+// removing whatever it managed to write and releasing the username claim the
+// caller acquired for it.
+//
+// The caller already holds that claim, so this is the only registration that
+// can be writing these keys. The last write commits: it replaces the claim
+// token on the username index with the custodian identifier, which is what
+// makes the enrolment visible to the duplicate check as an existing custodian.
 //
 // The KV store has no multi-key transaction — kvstore.AtomicKVStore offers
 // single-key PutIfAbsent and nothing wider — so the three writes can tear.
@@ -339,37 +442,33 @@ func (s *service) persist(ctx context.Context, c *Custodian) error {
 // re-enrol.
 //
 // Compensating deletes run in reverse order, so an index is never left
-// pointing at a record that has already gone. A delete that itself fails is
-// reported as OrphanedEnrolmentError naming the keys that survived, rather
-// than being folded into the write error: at that point an operator has
-// something to clean up and must be told which keys.
+// pointing at a record that has already gone, and the claim is released LAST:
+// while it stands no other registration for that identity can start, so the
+// debris is cleared before the username is available again. A delete that
+// itself fails is reported as OrphanedEnrolmentError naming the keys that
+// survived, rather than being folded into the write error: at that point an
+// operator has something to clean up and must be told which keys.
 //
-// Two limits remain, both needing the same missing primitive and both filed
-// as one decision rather than taken here:
-//
-//   - A crash between the failed write and the compensation still strands a
-//     record.
-//   - Duplicate detection and these writes are separate operations, so two
-//     concurrent registrations for one tenant and username derive the same
-//     identifier and race on the same keys. That race predates the
-//     compensation; what the compensation must not do is make it worse, so
-//     rollback deletes only while this call still owns the primary record.
-//
-// Closing either needs a multi-key atomic write, or a username reservation
-// the store can honour atomically, or a two-phase enrolment that persists the
-// sealed envelope — and the last would overturn this package's standing
-// property that no share material is ever stored.
-func (s *service) persistNew(ctx context.Context, c *Custodian) error {
+// One limit remains, and it is a crash rather than a race: a process that dies
+// between the claim and the compensation strands the claim, and the username
+// cannot enrol until an operator removes that key. Registration reports the
+// state distinctly — see IncompleteEnrolmentError — and nothing is lost with
+// it, because the claim precedes the seal. Closing it entirely needs a
+// multi-key atomic write, or a two-phase enrolment that persists the sealed
+// envelope, and the latter would overturn this package's standing property
+// that no share material is ever stored.
+func (s *service) persistNew(ctx context.Context, c *Custodian, claim custodianWrite) error {
 	writes, err := custodianWrites(c)
 	if err != nil {
+		s.releaseClaim(ctx, claim)
 		return err
 	}
 
 	written := make([]custodianWrite, 0, len(writes))
-	for _, w := range writes {
+	for i, w := range writes {
 		if putErr := s.store.Put(ctx, w.key, w.value); putErr != nil {
 			storeErr := &StoreError{Op: w.op, Err: putErr}
-			stranded := s.rollback(ctx, writes[0], written)
+			stranded := s.rollback(ctx, claim, s.commitProof(ctx, writes, i), written)
 			if len(stranded) > 0 {
 				return &OrphanedEnrolmentError{ID: c.ID, Keys: stranded, Cause: storeErr}
 			}
@@ -380,39 +479,83 @@ func (s *service) persistNew(ctx context.Context, c *Custodian) error {
 	return nil
 }
 
-// rollback removes what this registration wrote, in reverse order, and returns
-// the keys it could not remove. Every failure is logged as it happens: the
-// caller reports the set, but only the individual delete error explains why
-// each one survived.
+// commitProof returns the value rollback may additionally accept as proof that
+// the claim is still this registration's, or nil when there is none.
 //
-// It compensates ONLY while this registration still owns the identity. The
-// duplicate check and the writes are separate operations, so a concurrent
-// registration for the same tenant and username derives the same identifier
-// and writes the same keys; primary tells us who holds it now. If the primary
-// record no longer carries the bytes this call wrote, the other registration
-// owns it, and deleting anything here would destroy a completed enrolment —
-// or strip the indexes off a live record. Leave it whole and report nothing
-// stranded: what is in the store is another registration's, not this one's
-// debris.
+// It is non-nil only when the write that failed was the commit — the last one,
+// which replaces the claim token on the username index with the custodian
+// identifier. A store can apply a write and still report a failure, so after
+// that one the claim may legitimately read as the identifier rather than as
+// the token.
 //
-// The ownership read is not atomic with the deletes, so a registration that
-// loses the identity in that window can still delete a key the winner has just
-// written. Closing that needs a reservation the store can honour atomically,
-// which is filed as its own decision — see persistNew.
-func (s *service) rollback(ctx context.Context, primary custodianWrite, written []custodianWrite) []string {
-	owned, err := s.ownsPrimary(ctx, primary)
+// The identifier is derived, so every registration for this identity commits
+// the same value and reading it back does not by itself prove who wrote it.
+// The primary record settles that: it carries this call's marshalled custodian,
+// which no other registration would produce. Without that corroboration the
+// proof is withheld and rollback simply finds the claim unowned, which is the
+// conservative answer.
+func (s *service) commitProof(ctx context.Context, writes []custodianWrite, failed int) []byte {
+	if failed != len(writes)-1 {
+		return nil
+	}
+	ours, err := s.ownsPrimary(ctx, writes[0])
 	if err != nil {
-		s.logger.Error("custodian registration rollback: cannot establish ownership",
-			slog.String("key", primary.key),
+		s.logger.Error("custodian registration rollback: cannot establish record ownership",
+			slog.String("key", writes[0].key),
 			slog.String("error", err.Error()))
-		return keysOf(written)
+		return nil
+	}
+	if !ours {
+		return nil
+	}
+	return writes[len(writes)-1].value
+}
+
+// ownsPrimary reports whether the primary record still holds exactly the bytes
+// this registration wrote. An absent record is not this call's: it wrote one,
+// so something else has been at these keys.
+func (s *service) ownsPrimary(ctx context.Context, primary custodianWrite) (bool, error) {
+	current, err := s.store.Get(ctx, primary.key)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(current, primary.value), nil
+}
+
+// rollback removes what this registration wrote and releases its username
+// claim, in reverse order of writing. It returns the keys it could not remove.
+// Every failure is logged as it happens: the caller reports the set, but only
+// the individual delete error explains why each one survived.
+//
+// It compensates ONLY while this registration still owns the claim, and
+// ownership is exact rather than inferred. PutIfAbsent reported that this call
+// created the claim key, no other registration can create it again until this
+// one releases it, and the token it holds was generated for this attempt
+// alone. So the claim key carrying either that token or the identifier this
+// call commits it to means every key below it is this call's to remove.
+//
+// If it carries anything else the claim was taken away — an operator clearing
+// what looked like debris, and another enrolment then acquiring the identity —
+// and what is in the store is that enrolment's, written under the same
+// deterministic keys. Nothing is deleted and nothing is reported: this call has
+// no debris left, because the other registration overwrote it.
+func (s *service) rollback(ctx context.Context, claim custodianWrite, committed []byte, written []custodianWrite) []string {
+	owned, err := s.ownsClaim(ctx, claim, committed)
+	if err != nil {
+		s.logger.Error("custodian registration rollback: cannot establish claim ownership",
+			slog.String("key", claim.key),
+			slog.String("error", err.Error()))
+		return keysOf(written, claim)
 	}
 	if !owned {
-		s.logger.Warn("custodian registration rollback skipped: the record is another registration's",
-			slog.String("key", primary.key))
+		s.logger.Warn("custodian registration rollback skipped: the username claim is no longer this registration's",
+			slog.String("key", claim.key))
 		return nil
 	}
 
+	// written never holds the claim key: the write that would put the
+	// identifier there is the last one, and succeeding at it ends the
+	// registration rather than bringing it here.
 	var stranded []string
 	for i := len(written) - 1; i >= 0; i-- {
 		if err := s.store.Delete(ctx, written[i].key); err != nil {
@@ -422,28 +565,73 @@ func (s *service) rollback(ctx context.Context, primary custodianWrite, written 
 			stranded = append(stranded, written[i].key)
 		}
 	}
+
+	// The claim goes last: while it stands no other registration for this
+	// identity can start, so the debris is cleared before the username is
+	// available again.
+	if err := s.store.Delete(ctx, claim.key); err != nil {
+		s.logger.Error("custodian registration rollback failed to release the username claim",
+			slog.String("key", claim.key),
+			slog.String("error", err.Error()))
+		stranded = append(stranded, claim.key)
+	}
 	return stranded
 }
 
-// ownsPrimary reports whether the primary record still holds exactly the bytes
-// this registration wrote. An absent record counts as owned: this call wrote
-// it and something removed it, so there is nothing of anyone else's to
-// protect.
-func (s *service) ownsPrimary(ctx context.Context, primary custodianWrite) (bool, error) {
-	current, err := s.store.Get(ctx, primary.key)
+// releaseClaim removes a username claim whose registration never got as far as
+// writing a record. It is best-effort by construction — there is nothing left
+// to undo if the delete fails — so a surviving key is logged for an operator
+// rather than reported to the caller, whose error is the failure that made the
+// release necessary.
+func (s *service) releaseClaim(ctx context.Context, claim custodianWrite) {
+	owned, err := s.ownsClaim(ctx, claim, nil)
+	if err != nil {
+		s.logger.Error("custodian registration: cannot establish claim ownership to release it",
+			slog.String("key", claim.key),
+			slog.String("error", err.Error()))
+		return
+	}
+	if !owned {
+		s.logger.Warn("custodian registration: username claim release skipped, it is no longer this registration's",
+			slog.String("key", claim.key))
+		return
+	}
+	if err := s.store.Delete(ctx, claim.key); err != nil {
+		s.logger.Error("custodian registration: failed to release the username claim",
+			slog.String("key", claim.key),
+			slog.String("error", err.Error()))
+	}
+}
+
+// ownsClaim reports whether the username claim key still carries a value only
+// this registration could have written: the token it claimed with, or — when
+// the commit write may have landed — the identifier that token is replaced
+// with. Pass a nil committed value when the registration never reached the
+// commit.
+//
+// An absent claim is not owned. Something removed it, so another registration
+// may have taken the identity since.
+func (s *service) ownsClaim(ctx context.Context, claim custodianWrite, committed []byte) (bool, error) {
+	current, err := s.store.Get(ctx, claim.key)
 	if err != nil {
 		return false, err
 	}
 	if current == nil {
+		return false, nil
+	}
+	if bytes.Equal(current, claim.value) {
 		return true, nil
 	}
-	return bytes.Equal(current, primary.value), nil
+	return committed != nil && bytes.Equal(current, committed), nil
 }
 
 // keysOf projects the key of each write, for reporting what was left behind.
-func keysOf(writes []custodianWrite) []string {
-	keys := make([]string, 0, len(writes))
+func keysOf(writes []custodianWrite, more ...custodianWrite) []string {
+	keys := make([]string, 0, len(writes)+len(more))
 	for _, w := range writes {
+		keys = append(keys, w.key)
+	}
+	for _, w := range more {
 		keys = append(keys, w.key)
 	}
 	return keys
@@ -493,7 +681,11 @@ func custodianUsernameKey(tenantID, username string) string {
 //  1. The username index. Catches the ordinary case, and is the only source
 //     that finds a custodian enrolled before custodian IDs moved off
 //     UUIDv5/SHA-1 — that record lives under an identifier this code can no
-//     longer derive, since deriving it would call SHA-1.
+//     longer derive, since deriving it would call SHA-1. It is also where a
+//     registration's username claim lives, so an entry still holding a claim
+//     token is an enrolment in flight or interrupted rather than an existing
+//     custodian; that is refused as IncompleteEnrolmentError, which says so
+//     instead of reporting a custodian that does not exist.
 //  2. The primary record at derivedID. persist writes the primary first and
 //     the indexes after, and the KV store offers no transaction, so a failed
 //     index write leaves a valid primary with no index. Without this check a
@@ -508,11 +700,19 @@ func custodianUsernameKey(tenantID, username string) string {
 // performed once per custodian, so the fallback's cost is not on any hot
 // path.
 func (s *service) findExistingID(ctx context.Context, tenantID, username, derivedID string) (string, error) {
-	indexed, err := s.store.Get(ctx, custodianUsernameKey(tenantID, username))
+	usernameKey := custodianUsernameKey(tenantID, username)
+	indexed, err := s.store.Get(ctx, usernameKey)
 	if err != nil {
 		return "", &StoreError{Op: "check-exists", Err: err}
 	}
 	if indexed != nil {
+		// A claim token means a registration for this identity holds the
+		// username but has not committed: in flight on another caller, or
+		// interrupted. Either way this call must not proceed, and neither is
+		// an existing custodian.
+		if bytes.HasPrefix(indexed, []byte(claimPrefix)) {
+			return "", &IncompleteEnrolmentError{ID: derivedID, Key: usernameKey}
+		}
 		return string(indexed), nil
 	}
 

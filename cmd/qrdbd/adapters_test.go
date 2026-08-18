@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -237,6 +238,71 @@ func TestKVServiceAdapter_Put_Error(t *testing.T) {
 	err := adapter.Put(context.Background(), "k", []byte("v"))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, sentinel))
+}
+
+// ---------------------------------------------------------------------------
+// kvServiceAdapter.PutIfAbsent tests
+// ---------------------------------------------------------------------------
+
+// TestKVServiceAdapter_SatisfiesAtomicKVStore pins the capability the adapter
+// advertises. Callers that need exactly-once semantics — custodian
+// registration claiming a username, invite redemption — discover it by type
+// assertion and refuse a store without it, so losing this assertion would fail
+// those services at startup rather than anywhere near this file.
+func TestKVServiceAdapter_SatisfiesAtomicKVStore(t *testing.T) {
+	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
+	_, ok := adapter.(kvstore.AtomicKVStore)
+	assert.True(t, ok, "the Raft-backed adapter must carry the atomic conditional write")
+}
+
+func TestKVServiceAdapter_PutIfAbsent_Stored(t *testing.T) {
+	var capturedKey string
+	var capturedVal []byte
+	mock := &mockKVServicer{
+		putIfAbsentFn: func(_ context.Context, key string, value []byte) (bool, error) {
+			capturedKey = key
+			capturedVal = value
+			return true, nil
+		},
+	}
+	adapter := newKVServiceAdapter(mock, nil, nil).(kvstore.AtomicKVStore)
+
+	stored, err := adapter.PutIfAbsent(context.Background(), "mykey", []byte("myval"))
+	require.NoError(t, err)
+	assert.True(t, stored)
+	assert.Equal(t, "mykey", capturedKey)
+	assert.Equal(t, []byte("myval"), capturedVal)
+}
+
+// TestKVServiceAdapter_PutIfAbsent_NotStored covers the outcome the capability
+// exists for: the key was already present, which is reported as stored=false
+// with a nil error and must not be flattened into success.
+func TestKVServiceAdapter_PutIfAbsent_NotStored(t *testing.T) {
+	mock := &mockKVServicer{
+		putIfAbsentFn: func(_ context.Context, _ string, _ []byte) (bool, error) {
+			return false, nil
+		},
+	}
+	adapter := newKVServiceAdapter(mock, nil, nil).(kvstore.AtomicKVStore)
+
+	stored, err := adapter.PutIfAbsent(context.Background(), "k", []byte("v"))
+	require.NoError(t, err)
+	assert.False(t, stored)
+}
+
+func TestKVServiceAdapter_PutIfAbsent_Error(t *testing.T) {
+	sentinel := errors.New("conditional put failed")
+	mock := &mockKVServicer{
+		putIfAbsentFn: func(_ context.Context, _ string, _ []byte) (bool, error) {
+			return false, sentinel
+		},
+	}
+	adapter := newKVServiceAdapter(mock, nil, nil).(kvstore.AtomicKVStore)
+
+	stored, err := adapter.PutIfAbsent(context.Background(), "k", []byte("v"))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, sentinel))
+	assert.False(t, stored)
 }
 
 // ---------------------------------------------------------------------------

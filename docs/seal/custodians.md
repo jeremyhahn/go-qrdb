@@ -58,6 +58,44 @@ type Custodian struct {
 
 **Private** (server-held, temporary): Custodian's encrypted share envelope, held in memory only during the enrollment transaction. Zeroed and discarded after delivery to the Custodian.
 
+### Keys and the Username Claim
+
+An enrolled Custodian occupies three keys:
+
+| Key | Holds |
+|---|---|
+| `__sys:custodian/<id>` | the metadata record above |
+| `__sys:custodian-idx/tenant/<tenant>/<id>` | the tenant index, walked by `ListCustodians` |
+| `__sys:custodian-idx/username/<tenant>/<username>` | the username index, which resolves a tenant's username to its Custodian ID |
+
+The username index is also the **registration claim**. Enrolling the same
+username twice would seal a second share against one identity and leave one of
+the two holders with an envelope the store no longer describes, so registration
+takes that key with an atomic conditional write (`PutIfAbsent`) *before* it
+seals anything:
+
+1. **Claim** — `PutIfAbsent` writes a token unique to this attempt. Exactly one
+   of two concurrent registrations for a username can create the key; the other
+   is refused with `ErrCustodianAlreadyExists`.
+2. **Seal and write** — the share is sealed and the record and tenant index are
+   written.
+3. **Commit** — the last write replaces the claim token with the Custodian ID,
+   which is what makes the enrolment visible as an existing Custodian.
+
+A failed write is compensated: what was written is deleted in reverse order and
+the claim is released last, so the username is never freed before the debris it
+guards is gone. Compensation runs only while the claim still carries this
+attempt's token (or, for an ambiguous commit, while the record still carries
+this attempt's bytes) — a registration that has lost the identity deletes
+nothing.
+
+Because the claim is required, the KV store backing the custodian service must
+implement `kvstore.AtomicKVStore`. `custodian.NewService` refuses a store
+without it (`ErrAtomicWriteUnsupported`) rather than emulating the claim with a
+read followed by a write, which is the check-then-act window it exists to
+close. Every qrdb engine provides the primitive natively — Raft evaluates the
+condition inside the state machine, so replicas cannot diverge.
+
 ## Enrollment Flow
 
 ```
@@ -331,6 +369,15 @@ If the daemon restarts during enrollment or unseal:
 **Enrollment restart**: All in-flight ceremony state is lost (shares in memguard are zeroed on process exit). SO must restart the ceremony from `Initialize()`. **This is intentional**: ceremony state is transient, not persisted.
 
 **Unseal restart**: Accumulated shares are lost. Custodians must resubmit shares from the beginning. No state pollution or race conditions because accumulator is in-memory only.
+
+**Interrupted registration**: a process that dies between the username claim
+and the commit leaves the claim behind. The username cannot enroll until it is
+cleared, and registration says so — `IncompleteEnrolmentError` names the key,
+distinguishing it from an existing Custodian. Nothing is lost with it: the
+claim is taken before the share is sealed, so an enrollment interrupted in this
+window never produced envelope material. Retry first — the same state is also
+what an in-flight registration on another caller looks like — and remove the
+named key only if it persists.
 
 ### All Custodians Unavailable
 

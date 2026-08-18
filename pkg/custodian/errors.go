@@ -70,6 +70,19 @@ var (
 
 	// ErrInvalidPublicKey is returned when the public key PEM cannot be parsed.
 	ErrInvalidPublicKey = errors.New("custodian: invalid public key PEM")
+
+	// ErrAtomicWriteUnsupported is returned when the KV store cannot perform
+	// an atomic conditional write.
+	//
+	// Registration claims a tenant's username with PutIfAbsent so exactly one
+	// of two concurrent enrolments for the same identity can proceed. A store
+	// without that primitive can only be checked with Get and then written
+	// with Put, and both callers observe "absent" in the window between them
+	// — so both seal a different share against the same identity and the
+	// later write decides which enrolment survives, leaving the other holder
+	// with an envelope for material the store no longer describes. Emulating
+	// the guarantee would hide that; refusing states it.
+	ErrAtomicWriteUnsupported = errors.New("custodian: kv store does not support atomic conditional writes")
 )
 
 // StoreError wraps a KV store operation failure.
@@ -136,3 +149,32 @@ func (e *OrphanedEnrolmentError) Error() string {
 
 // Unwrap returns the write failure that triggered the rollback.
 func (e *OrphanedEnrolmentError) Unwrap() error { return e.Cause }
+
+// IncompleteEnrolmentError is returned when a tenant's username index still
+// holds a registration's claim token rather than a custodian identifier.
+//
+// Registration claims the username before it seals a share and replaces the
+// claim with the identifier only once the record is written, so this is the
+// state of an enrolment that is either still in flight on another caller or
+// was interrupted before it committed. Both refuse: admitting a second
+// registration here is precisely the concurrent duplicate the claim exists to
+// prevent.
+//
+// It is reported distinctly from ErrCustodianAlreadyExists because the remedy
+// differs. No custodian holds this username yet — a retry succeeds once the
+// in-flight registration finishes or, if the claim was left by an interrupted
+// one, once an operator removes Key. Nothing was lost with it: the claim is
+// taken before any share is sealed, so an enrolment interrupted in this window
+// never produced envelope material.
+type IncompleteEnrolmentError struct {
+	// ID is the identifier the registration holding the claim would take.
+	ID string
+	// Key is the claimed username index key.
+	Key string
+}
+
+// Error returns a human-readable description of the incomplete enrolment.
+func (e *IncompleteEnrolmentError) Error() string {
+	return fmt.Sprintf("custodian: %s is claimed by an uncommitted registration of %s; retry, and remove %s if it persists",
+		e.Key, e.ID, e.Key)
+}
