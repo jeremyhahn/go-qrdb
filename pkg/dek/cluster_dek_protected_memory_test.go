@@ -209,6 +209,56 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		require.NoError(t, mgr.Close())
 	})
 
+	t.Run("rotate loses the race with a concurrent close", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+
+		// Stand in for a Close that is mid-flight, as the CurrentVersion case
+		// above does: hold the state lock, tear the DEK down, then release.
+		// A Rotate that only consults the initialised flag before taking the
+		// lock installs a fresh protected buffer into a closed manager — a
+		// live mlocked allocation no later Close would ever destroy, and one
+		// no checked accessor would report.
+		mgr.mu.Lock()
+
+		started := make(chan struct{})
+		done := make(chan struct{})
+		var rotateErr error
+		go func() {
+			close(started)
+			rotateErr = mgr.Rotate(ctx)
+			close(done)
+		}()
+		<-started
+
+		mgr.dekPlaintext.Destroy()
+		mgr.dekPlaintext = nil
+		mgr.initialized.Store(false)
+		mgr.mu.Unlock()
+
+		<-done
+		require.Error(t, rotateErr, "rotate must not proceed against a closed manager")
+		var niErr *NotInitializedError
+		assert.ErrorAs(t, rotateErr, &niErr)
+		assert.Nil(t, livePlaintext(mgr), "a losing rotate must leave no protected buffer behind")
+		assert.False(t, mgr.initialized.Load())
+
+		require.NoError(t, mgr.Close())
+	})
+
+	t.Run("no rotation is accepted once Close has returned", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+		require.NoError(t, mgr.Close())
+
+		require.Error(t, mgr.Rotate(ctx))
+		assert.Nil(t, livePlaintext(mgr))
+	})
+
 	t.Run("no version is reported once Close has returned", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)

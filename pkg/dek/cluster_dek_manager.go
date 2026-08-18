@@ -277,12 +277,22 @@ func (m *ClusterDEKManager) GetStatus(ctx context.Context) (interface{}, error) 
 // Rotate generates a new cluster DEK version and initiates re-encryption.
 // The old version remains available for decryption during the transition.
 func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
+	// Lock-free rejection of the uninitialized manager; the authoritative
+	// check is the one below, taken under the lock Close holds while it
+	// destroys the DEK. Without it, a Rotate that passed this fast path and
+	// then waited for a concurrent Close would install fresh key material
+	// into a closed manager: mlocked memory nothing would ever destroy,
+	// invisible to every checked accessor.
 	if !m.initialized.Load() {
 		return &NotInitializedError{Op: "ClusterDEKManager.Rotate", Resource: "cluster DEK"}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if !m.initialized.Load() {
+		return &NotInitializedError{Op: "ClusterDEKManager.Rotate", Resource: "cluster DEK"}
+	}
 
 	oldVersion := atomic.LoadUint64(&m.dekVersion)
 
