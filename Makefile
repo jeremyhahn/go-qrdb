@@ -188,6 +188,7 @@ PKG_INDEX          := ./pkg/index/...
 PKG_TIMESERIES     := ./pkg/timeseries/...
 PKG_WRITEMODE      := ./pkg/writemode/...
 PKG_BATCH          := ./pkg/batch/...
+PKG_UUIDV8         := ./pkg/uuidv8/...
 PKG_CRYPTO_AESGCM  := ./pkg/crypto/aesgcm/...
 PKG_CRYPTO_MEM     := ./pkg/crypto/mem/...
 PKG_CRYPTO_SHAMIR  := ./pkg/crypto/shamir/...
@@ -382,6 +383,10 @@ test-writemode:
 .PHONY: test-batch
 test-batch:
 	$(GOTEST) $(TAG_FLAG) $(PKG_BATCH)
+
+.PHONY: test-uuidv8
+test-uuidv8:
+	$(GOTEST) $(TAG_FLAG) $(PKG_UUIDV8)
 
 .PHONY: test-crypto-aesgcm
 test-crypto-aesgcm:
@@ -908,6 +913,11 @@ coverage-writemode: | _cover-dir
 coverage-batch: | _cover-dir
 	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/batch.out $(PKG_BATCH)
 	$(call check-coverage,$(COVER_DIR)/batch.out,batch)
+
+.PHONY: coverage-uuidv8
+coverage-uuidv8: | _cover-dir
+	$(GOTEST) $(TAG_FLAG) -coverprofile=$(COVER_DIR)/uuidv8.out $(PKG_UUIDV8)
+	$(call check-coverage,$(COVER_DIR)/uuidv8.out,uuidv8)
 
 .PHONY: coverage-crypto-aesgcm
 coverage-crypto-aesgcm: | _cover-dir

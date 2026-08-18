@@ -166,7 +166,7 @@ func TestBuildDiscovery_StaticWithSecret(t *testing.T) {
 	m, err := BuildDiscovery(Options{
 		Method:          "static",
 		Peers:           []string{"1=127.0.0.1:7001"},
-		MulticastSecret: "shared-secret",
+		MulticastSecret: "shared-secret-16by",
 	})
 	if err != nil {
 		t.Fatalf("BuildDiscovery(static) error = %v, want nil", err)
@@ -182,7 +182,7 @@ func TestBuildDiscovery_MulticastSuccess(t *testing.T) {
 		Method:          "multicast",
 		NodeID:          1,
 		RaftAddress:     "127.0.0.1:7001",
-		MulticastSecret: "shared-secret",
+		MulticastSecret: "shared-secret-16by",
 		DeploymentID:    42,
 	})
 	if err != nil {

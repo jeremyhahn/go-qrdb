@@ -236,12 +236,21 @@ func tryUnsealEnvelope(env *custodian.SealedEnvelope, recipientPriv *ecdh.Privat
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(blk)
+	// NewGCMWithRandomNonce is the FIPS-approved construction; it expects the
+	// nonce prepended to the ciphertext rather than passed separately, so the
+	// two wire fields are rejoined here. That this still opens an envelope
+	// SealShareTo produced is the compatibility check: the bytes on the wire
+	// are the same ones the previous NewGCM code emitted.
+	gcm, err := cipher.NewGCMWithRandomNonce(blk)
 	if err != nil {
 		return nil, err
 	}
 
-	plaintext, err := gcm.Open(nil, env.Nonce, env.Ciphertext, []byte(hkdfInfo))
+	sealed := make([]byte, 0, len(env.Nonce)+len(env.Ciphertext))
+	sealed = append(sealed, env.Nonce...)
+	sealed = append(sealed, env.Ciphertext...)
+
+	plaintext, err := gcm.Open(nil, nil, sealed, []byte(hkdfInfo))
 	if err != nil {
 		return nil, err
 	}

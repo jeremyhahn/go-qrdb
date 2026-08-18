@@ -90,7 +90,7 @@ logging:
 
 discovery:
   method: "static"          # default: single-node; no network auto-join
-  multicast_secret: ""      # no default PSK — required when method is "multicast"
+  multicast_secret: ""      # no default PSK — required when method is "multicast"; min 16 bytes
   dns_domain: ""
   # token discovery (method: "token")
   token_endpoint: ""
@@ -360,7 +360,7 @@ detail in [discovery.md](discovery.md).
 | Field                       | Type   | Default      | CLI Flag                   | Description                                          |
 |-----------------------------|--------|--------------|----------------------------|------------------------------------------------------|
 | `method`                    | string | `static`     | `--discovery`              | Discovery mechanism (default: single-node static)    |
-| `multicast_secret`          | string | `""`         | `--multicast-secret`       | Shared PSK for multicast auth; **required** for multicast, no default |
+| `multicast_secret`          | string | `""`         | `--multicast-secret`       | Shared PSK for multicast auth; **required** for multicast, no default, minimum 16 bytes |
 | `multicast_group`           | string | `""`         | —                          | Override multicast address (host:port)               |
 | `dns_domain`                | string | `""`         | `--dns-domain`             | DNS domain for DNS SRV peer discovery                |
 | `dns_service`               | string | `_raft`      | —                          | SRV service label                                    |
@@ -389,7 +389,7 @@ detail in [discovery.md](discovery.md).
 
 - **Default is single-node `static`** with no network auto-join and no shared secret — the production-safe default. Multi-node discovery (multicast/dns/token) is an explicit opt-in.
 - **Static discovery** requires the `raft.peers` field to contain the complete initial member list. A single entry (`1=127.0.0.1:63001`) creates a single-node cluster with transport disabled.
-- **Multicast discovery** requires an operator-chosen `multicast_secret` shared across all nodes (the protocol is authenticated-only; there is deliberately **no well-known default** PSK). The default minimum cluster size for bootstrap is 3 nodes.
+- **Multicast discovery** requires an operator-chosen `multicast_secret` shared across all nodes (the protocol is authenticated-only; there is deliberately **no well-known default** PSK). The secret must be at least 16 bytes: it is the HMAC-SHA256 key, and FIPS 140-3 (SP 800-107 §5.3.4) sets the floor for an HMAC key at 112 bits — a shorter secret is rejected at construction with a `ValidationError`, and would otherwise panic under `GODEBUG=fips140=only` (see [seal/fips140-mode.md](seal/fips140-mode.md)). The default minimum cluster size for bootstrap is 3 nodes.
 - **DNS discovery** requires `dns_domain` to be set. It looks up SRV records at `{dns_service}.{dns_proto}.{dns_domain}` (default `_raft._udp.{dns_domain}`).
 - **Token discovery** requires `token_endpoint` and `token`. Each node registers via the endpoint and polls until `token_cluster_size` (or `min_peers`) nodes have registered. The endpoint must use `https://` unless `allow_insecure_token_http` is set. The token is sent as an `Authorization: Bearer` header, never in the URL.
 - When using multicast, dns, or token discovery without a config file, the server auto-generates `replica_id`, selects free ports, and appends the replica ID to `data_dir` to avoid collisions.

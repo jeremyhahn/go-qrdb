@@ -95,6 +95,48 @@ jobs:
       - name: Unit tests (race)
         run: make test
 
+  fips:
+    name: FIPS 140-3
+    runs-on: ubuntu-latest
+    needs: [lint, build]
+    timeout-minutes: 90
+    # GOFIPS140 selects the Go Cryptographic Module at BUILD time; GODEBUG
+    # selects the enforcement level at RUN time, and both are needed.
+    #
+    # "only" rather than "on": "on" loads the module but still PERMITS
+    # non-approved algorithms, so a regulated path using MD5, SHA-1 or GCM with
+    # a caller-chosen IV passes silently and the gate reports green on exactly
+    # the thing it exists to catch. "only" makes those operations error or
+    # panic. Ratified by the owner 2026-08-17; see automatethethings
+    # software/conventions/configuration.md §5 and docs/seal/fips140-mode.md.
+    #
+    # If this job goes red, the failure IS the finding: something on a tested
+    # path is using non-approved cryptography. Fix the call site, or -- when an
+    # external format mandates the primitive -- isolate it and record a cited
+    # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
+    # a build tag that skips the job, or narrow the package list.
+    env:
+      GOFIPS140: latest
+      GODEBUG: fips140=only
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # GODEBUG is a runtime setting and cannot fail a compile, but building
+      # against the module first keeps a genuine build break from being
+      # reported as a test failure.
+      - name: Build all packages against the FIPS module
+        run: go build ./...
+
+      # The same target the Test job runs, with the same build tags. The scope
+      # is deliberately identical: a FIPS gate over a subset of the suite
+      # cannot tell you the product is FIPS-clean.
+      - name: Unit tests (race, FIPS 140-only)
+        run: make test
+
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
@@ -277,6 +319,23 @@ jobs:
     # evaluates to an empty string on Gitea, so a gate built on it reports
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
+    #
+    # `fips` is deliberately ABSENT from this list, and only until two upstream
+    # fixes land -- it is not an optional gate. Every non-approved primitive
+    # this repository owns has been remediated (see docs/seal/fips140-mode.md),
+    # but the FIPS job still fails on cryptography inside two first-party
+    # dependencies, which qrdb cannot fix from here:
+    #
+    #   * go-quicraft pkg/seal builds its barrier AEAD with cipher.NewGCM
+    #     (jeremyhahn/go-quicraft#5), which fails every sealed-storage test.
+    #   * go-truststrap pkg/noiseproto performs the Noise handshake over
+    #     X25519 (jeremyhahn/go-truststrap#5), which fails pkg/clusterenroll.
+    #
+    # Arming it is one line: add `fips` here, add RESULT_FIPS to the env block,
+    # and add a `check fips` call to the loop. Do that as soon as both
+    # dependencies ship approved-algorithm releases and this module bumps to
+    # them. Until then the job runs on every PR and its red X is the honest
+    # status; nothing about the six gates below is weakened by its absence.
     needs: [lint, build, test, integration-standalone, security, trivy]
     steps:
       - name: Verify every job succeeded

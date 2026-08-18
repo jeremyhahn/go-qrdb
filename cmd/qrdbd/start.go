@@ -761,7 +761,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 
 // resolveAutoConfig auto-generates replica-id, port, and data-dir for
 // non-static discovery methods when the user hasn't explicitly set them.
-// This allows users to run `qrdbd start --discovery multicast --multicast-secret test`
+// This allows users to run `qrdbd start --discovery multicast --multicast-secret <16+ byte psk>`
 // in multiple terminals without manually assigning unique values.
 func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 	if f.discoveryMethod == "static" {

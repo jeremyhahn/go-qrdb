@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
@@ -151,6 +152,10 @@ func newMockBarrier() *mockBarrier {
 	}
 }
 
+// mockBarrierNonceSize is the nonce NewGCMWithRandomNonce prepends; the AEAD
+// reports NonceSize() == 0 because callers never supply one.
+const mockBarrierNonceSize = 12
+
 func (b *mockBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -161,15 +166,13 @@ func (b *mockBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
+	// NewGCMWithRandomNonce is the FIPS-approved construction: it samples the
+	// nonce itself and prepends it, which is the layout this double already used.
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nil, nil, plaintext, nil), nil
 }
 
 func (b *mockBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
@@ -182,16 +185,14 @@ func (b *mockBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, err
 	}
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
+	if len(ciphertext) < mockBarrierNonceSize {
 		return nil, errors.New("ciphertext too short")
 	}
-	nonce, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return gcm.Open(nil, nonce, ct, nil)
+	return gcm.Open(nil, nil, ciphertext, nil)
 }
 
 func (b *mockBarrier) IsSealed() bool {
@@ -787,6 +788,28 @@ func TestDefaultCertProvider_ExportPKCS12_Success(t *testing.T) {
 	}
 
 	p12Data, err := p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "test-password")
+
+	// PKCS#12 stamps a SHA-1 certificate fingerprint into its localKeyId
+	// attribute, which crypto/sha1 refuses to compute under
+	// GODEBUG=fips140=only. Both branches are real assertions: the FIPS CI job
+	// proves the refusal is clean, the ordinary test job proves the export
+	// still works.
+	if fips140.Enforced() {
+		var unavailable *PKCS12FIPSUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("expected *PKCS12FIPSUnavailableError, got %T: %v", err, err)
+		}
+		// The refusal keeps the error shape callers already match on.
+		var exportErr *CertExportError
+		if !errors.As(err, &exportErr) {
+			t.Fatalf("expected *CertExportError, got %T: %v", err, err)
+		}
+		if p12Data != nil {
+			t.Error("no PKCS12 data should be returned when the export is refused")
+		}
+		return
+	}
+
 	if err != nil {
 		t.Fatalf("ExportPKCS12: %v", err)
 	}
@@ -1722,8 +1745,17 @@ func TestEncodePKCS12_NoCACertPEM(t *testing.T) {
 	p.caCertPEM = nil
 	p.mu.Unlock()
 
-	// Should still work without CA chain.
+	// Should still work without CA chain -- except under
+	// GODEBUG=fips140=only, where the export is refused for every input
+	// because of the format's SHA-1 localKeyId attribute.
 	p12Data, err := p.ExportPKCS12(ctx, bundle.CertPEM, bundle.KeyPEM, "pw")
+	if fips140.Enforced() {
+		var unavailable *PKCS12FIPSUnavailableError
+		if !errors.As(err, &unavailable) {
+			t.Fatalf("expected *PKCS12FIPSUnavailableError, got %T: %v", err, err)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("ExportPKCS12: %v", err)
 	}

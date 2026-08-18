@@ -89,18 +89,18 @@ The barrier status is checked via `BarrierStatus`. If sealed, data operations ar
 
 ### 6. Role and User Bootstrap
 
-The daemon creates six system roles deterministically on first init. Each role is assigned a fixed UUID v5 derived from its name to ensure cross-cluster stability.
+The daemon creates six system roles deterministically on first init. Each role is assigned a fixed UUID derived from its name to ensure cross-cluster stability. The derivation is RFC 9562 version 8 over SHA-256 (`pkg/uuidv8`); it was version 5, which hashes with SHA-1 and is refused under `GODEBUG=fips140=only` — see [seal/fips140-mode.md](seal/fips140-mode.md).
 
 **System Roles** (undeletable, persist at `__sys:role/<id>`):
 
 | Role | UUID | Permissions | Notes |
 |------|------|-----------|-------|
-| Security Officer (SO) | `uuid5(namespace, "go-qrdb/role/SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
-| Admin | `uuid5(namespace, "go-qrdb/role/Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
-| Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
-| User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
-| Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | `barrier:unseal-share` | Shamir share holder only |
+| Security Officer (SO) | `uuidv8(namespace, "go-qrdb/role/SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
+| Admin | `uuidv8(namespace, "go-qrdb/role/Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
+| Operator | `uuidv8(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
+| User | `uuidv8(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
+| Auditor | `uuidv8(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
+| Custodian | `uuidv8(namespace, "go-qrdb/role/Custodian")` | `barrier:unseal-share` | Shamir share holder only |
 
 An admin user for the system tenant is also created:
 

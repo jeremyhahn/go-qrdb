@@ -164,7 +164,11 @@ qrdb certs list [--tenant-id <id>]
 qrdb certs generate --username alice --out /tmp/alice-certs/
 # Output: /tmp/alice-certs/alice-cert.pem, /tmp/alice-certs/alice-key.pem
 
-# Export as PKCS#12 for browser import
+# Export as PKCS#12 for browser import.
+# Unavailable when the daemon runs with GODEBUG=fips140=only: the format's
+# localKeyId attribute is a SHA-1 certificate fingerprint, which the Go
+# Cryptographic Module refuses to compute under strict enforcement. See
+# ../seal/fips140-mode.md.
 qrdb certs export --username alice --format p12 --passphrase changeme --out /tmp/alice.p12
 
 # Revoke by serial number

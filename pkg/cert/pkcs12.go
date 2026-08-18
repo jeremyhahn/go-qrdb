@@ -15,6 +15,7 @@
 package cert
 
 import (
+	"crypto/fips140"
 	"crypto/x509"
 	"encoding/pem"
 
@@ -23,7 +24,19 @@ import (
 
 // encodePKCS12 encodes a certificate, private key, and optional CA chain
 // into a PKCS#12 archive protected by the given passphrase.
+//
+// Under GODEBUG=fips140=only the encode is refused up front: the PKCS#12
+// localKeyId attribute is a SHA-1 fingerprint of the certificate, and
+// crypto/sha1 panics rather than returning an error under strict enforcement.
+// The guard is on fips140.Enforced(), not Enabled(), because that SHA-1 is an
+// interoperability identifier rather than a protection mechanism -- nothing in
+// FIPS 140-3, FedRAMP, PCI DSS or HIPAA prohibits it, so a deployment running
+// GODEBUG=fips140=on keeps the export. See docs/seal/fips140-mode.md.
 func encodePKCS12(certPEM, keyPEM, caCertPEM []byte, passphrase string) ([]byte, error) {
+	if fips140.Enforced() {
+		return nil, &CertExportError{Err: &PKCS12FIPSUnavailableError{}}
+	}
+
 	// Decode private key PEM.
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {

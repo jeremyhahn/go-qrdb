@@ -80,6 +80,14 @@ An officer supplies key material one of three ways, parsed by `ceremony.ParseEnr
 
 The two-field form `<username>:<path>` means `csr`.
 
+Share sealing picks an envelope from the officer's key algorithm: RSA-OAEP for
+RSA, ECIES over P-256 / P-384 for ECDSA, and X25519 (via the birational map
+from the Ed25519 public key) for Ed25519. **In FIPS 140-3 mode the Ed25519 form
+is refused** with `ErrAlgorithmNotFIPSApproved`: X25519 is not an approved
+algorithm and there is no approved substitute for an Ed25519 recipient, so such
+an officer must enrol an RSA or NIST-curve key instead. See
+[seal/fips140-mode.md](../seal/fips140-mode.md).
+
 ## CeremonyCA Interface
 
 The ceremony requires a narrow CA interface that decouples it from any specific CA implementation:
