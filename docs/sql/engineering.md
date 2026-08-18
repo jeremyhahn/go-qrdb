@@ -1,106 +1,33 @@
-# SQL Wire Protocol
+# SQL — Engineering Contract
 
-QRDB supports MySQL and PostgreSQL wire protocol compatibility, allowing standard SQL tools (`mysql`, `psql`, JDBC, pgx, ORMs) to reach both the KV store and user-defined [relational tables](#relational-tables).
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
 
-For Go applications, the same engine is reachable in-process through `sdk/go/driver` (`database/sql`) and `sdk/go/gorm` — see [gorm.md](gorm.md).
+Design and boundaries are in [architecture.md](architecture.md). This file is
+the implementation contract: schemas, invariants, error codes, limits and the
+test surface.
 
-## Architecture
+## Exported surface
 
-Both protocols share a single SQL engine ([go-mysql-server](https://github.com/dolthub/go-mysql-server)) and reuse the existing mTLS auth, RBAC, multi-tenancy, and audit systems.
-
-```
-SQL client --> Wire protocol layer --> Shared SQL engine --> KV service --> Raft
-                (MySQL or PG)          (go-mysql-server)     (tenant-scoped)
-```
-
-### PostgreSQL Path
-
-PostgreSQL clients connect via [psql-wire](https://github.com/jeroenrinzema/psql-wire). Queries are translated from PG syntax to GMS-compatible SQL before execution.
-
-```
-psql --> psql-wire (PG framing) --> PG translator --> go-mysql-server --> KVTable        --> Raft
-                                                                     \-> RelationalTable -^
+```go
+// sdk/go — ad-hoc query
+func (c *Client) ...  // reached through the transport's SQLClient
 ```
 
-#### Startup parameters
+`sdk/go/transport`:
 
-QRDB reports `standard_conforming_strings=on` alongside the parameters
-psql-wire emits for itself. It is required rather than decorative: pgx refuses
-to run *any* simple-protocol query against a server that has not reported it,
-and `gorm.io/driver/postgres` forces simple protocol for `Migrator.GetRows`,
-which backs `ColumnTypes` and therefore every schema-introspecting migration.
-See the literal-escaping note under [PostgreSQL Syntax
-Translation](#postgresql-syntax-translation) for what makes the claim true.
+```go
+type SQLClient interface { /* ad-hoc SQL query */ }
+type SQLProvider interface { /* transport capability probe */ }
+```
 
-#### Prepared statements and cached plans
+In-process paths, both gated on `qrdb_sql`:
 
-A PostgreSQL client may PARSE a statement once and then BIND/EXECUTE it many
-times against the `RowDescription` it was given at Describe time; pgx does this
-by default (`QueryExecModeCacheStatement`). If DDL changes the statement's
-result shape in between, the rows it now produces no longer match the
-descriptor the client is still decoding against.
-
-QRDB refuses that execution with PostgreSQL's own condition — `cached plan must
-not change result type`, SQLSTATE **0A000** — rather than writing rows the
-client would mis-map. Column count, column names, and type OIDs are all
-compared: an equal-width rename or retype is the case that would otherwise
-corrupt silently, because nothing downstream notices and a client scanning by
-name lands each value in the wrong field. Clients recover on their own, as they
-do against PostgreSQL: pgx drops the statement from its cache on any error, so
-a retry of the same SQL re-parses and succeeds.
-
-#### `pg_catalog`
-
-QRDB serves the subset of PostgreSQL's system catalogue that schema
-introspection reads — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,
-`pg_indexes` — from `pkg/sql/pgcatalog`, reachable both qualified
-(`pg_catalog.pg_class`) and bare (`pg_type`), as PostgreSQL's implicit search
-path allows. The relations are computed per query, read-only (they implement no
-write-capability interface, so DDL against them fails during analysis), and
-scoped to the session's tenant. They are served only to PostgreSQL clients: a
-MySQL client has no more business resolving `pg_type` than a PostgreSQL client
-has resolving MySQL's grant tables.
-
-`pg_indexes` reports a table's primary key under PostgreSQL's `<table>_pkey`
-name rather than go-mysql-server's MySQL spelling `PRIMARY`, because that is
-the name a client compares against; its `indexdef` is reconstructed from the
-index's own metadata, since nothing in the engine keeps the original statement
-text.
-
-#### information_schema
-
-`information_schema` is go-mysql-server's own database — the analyzer's catalog
-resolves the name to its built-in instance and never consults the
-`DatabaseProvider` — so QRDB cannot contribute a view to it the way it
-contributes the `pg_catalog` schema. go-mysql-server exposes
-`NewInformationSchemaTablesToAdd` for exactly this, documented as the hook
-Doltgres injects PostgreSQL-specific tables through, and `pkg/sql/infoschema`
-uses it to add **`constraint_column_usage`**.
-
-That view is SQL-standard (PostgreSQL implements it; MySQL offers the
-overlapping `key_column_usage` instead), and GORM's PostgreSQL Migrator joins
-it against `table_constraints` and `columns` to resolve a table's primary-key
-and unique constraints. It reports only PRIMARY KEY and UNIQUE constraints:
-PostgreSQL's view lists, for a FOREIGN KEY, the columns of the constraint it
-*references*, which cannot be named from an `sql.ForeignKeyConstraint` alone,
-and a plausible-looking wrong answer would be worse than a true partial one.
-
-## Build Tags
-
-The SQL layer is opt-in via build tags (enabled by default in the Makefile):
-
-| Flag | Build Tag | Description |
-|------|-----------|-------------|
-| `WITH_QRDB_SQL=1` | `qrdb_sql` | Shared SQL core: go-mysql-server engine, ad-hoc `/sql/query` service, in-process driver |
-| `WITH_QRDB_MYSQL=1` | `qrdb_mysql` | MySQL wire protocol (implies `qrdb_sql`) |
-| `WITH_QRDB_PGSQL=1` | `qrdb_pgsql` | PostgreSQL wire protocol (implies `qrdb_sql`) |
-
-Disable with `WITH_QRDB_MYSQL=0` or `WITH_QRDB_PGSQL=0`. Setting
-`WITH_QRDB_SQL=0` as well removes the entire SQL layer — go-mysql-server
-and vitess no longer link into the binary, and every transport answers
-`/sql/query` with its nil-service error. The Makefile forces
-`WITH_QRDB_SQL=1` whenever either wire protocol is enabled, since both
-are engines over the shared `pkg/sql` core.
+- `sdk/go/driver` — a `database/sql` driver. Its connection owns exactly one
+  `provider.QRDBSession` for its lifetime, which is what makes transactions
+  work on it.
+- `sdk/go/gorm` — the GORM dialector. See [gorm.md](gorm.md) for the two
+  in-process DSN schemes (`node://`, `embedded://`), which differ in exactly
+  whether the relational catalog is reachable.
 
 ## Configuration
 
@@ -131,95 +58,6 @@ auth:
 
 **Validation:** TLS and auth must be enabled when MySQL or PostgreSQL protocols are active.
 
-### CLI Flags
-
-```bash
-qrdbd start \
-  --enable-mysql --mysql-port 3306 \
-  --enable-pgsql --pgsql-port 5432 \
-  --sql-database qrdb \
-  --tls-ca-file ca.pem --tls-cert-file server.pem --tls-key-file server-key.pem
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--enable-mysql` | `false` | Enable MySQL wire protocol server |
-| `--mysql-port` | `3306` | MySQL wire protocol server port |
-| `--enable-pgsql` | `false` | Enable PostgreSQL wire protocol server |
-| `--pgsql-port` | `5432` | PostgreSQL wire protocol server port |
-| `--sql-database` | `qrdb` | Default SQL database name |
-
-## Authentication
-
-Both protocols use mTLS exclusively -- no password authentication. The certificate Common Name (CN) maps to the username, and the Organizational Unit (OU) maps to the tenant ID.
-
-```
-Client cert (CN=alice, OU=acme-corp)
-  --> mTLS handshake
-  --> Identity{Subject: "alice", TenantID: "acme-corp"}
-  --> User store enrichment (roles)
-  --> QRDBSession (tenant-scoped)
-```
-
-## Authorization
-
-SQL is authorized over **two planes with disjoint resources**. Neither consults the other, and there is deliberately no mapping between them: a role is not a grant, and a grant is not a role.
-
-| Plane | Owner | Question it answers |
-|-------|-------|---------------------|
-| **Control** — service RBAC | `pkg/auth/rbac`, `pkg/auth/middleware` | May this identity reach the SQL endpoint at all, and may it create or drop a database? |
-| **Data** — SQL table privileges | `pkg/sql/privilege`, `pkg/service` (`PrivilegeServicer`) | May this identity touch THIS table, or THIS column? |
-
-RBAC gates the endpoint and the database lifecycle; privileges govern everything inside a database.
-
-### Table privileges
-
-`GRANT`, `REVOKE`, and `SHOW GRANTS` are real MySQL statements, parsed by the real parser and rewritten by an analyzer post-analyze rule onto QRDB's own per-`(tenant, database)` privilege catalog. QRDB does not implement MySQL's `mysql` grant tables; the `mysql` schema is served as an empty stand-in purely because go-mysql-server's plan builder resolves it while building these statements.
-
-```sql
-GRANT SELECT, INSERT ON shop.orders TO 'alice'@'%';
-GRANT SELECT (id, total) ON shop.orders TO 'bob'@'%';
-GRANT ALL PRIVILEGES ON shop.* TO 'admin'@'%' WITH GRANT OPTION;
-SHOW GRANTS FOR 'alice'@'%';
-REVOKE INSERT ON shop.orders FROM 'alice'@'%';
-```
-
-Three tiers are enforced, each covering the ones below it: **database** (`ON db.*`), **table** (`ON db.tbl`), and **column** (`ON db.tbl(col)`).
-
-Supported privileges: `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`, `REFERENCES`, `GRANT OPTION`, `ALL PRIVILEGES`, and `USAGE`.
-
-Anything that cannot be represented is **refused by name** rather than stored and never checked — server-wide privileges (`SUPER`, `PROCESS`, `FILE`, `CREATE USER`, ...), routine and trigger privileges, `ON FUNCTION` / `ON PROCEDURE`, `ON *.*` at any privilege, and host-qualified grantees other than `'user'@'%'` (QRDB identities are certificate subjects and carry no host).
-
-### Activation latch — the default posture
-
-A database with **no privilege catalog is unrestricted**. The **first** privilege mutation arms the database, and from that moment it is **default-deny** for every session: an identity may do only what its record grants. `REVOKE` never disarms it, and nothing else does — the posture is monotonic and can only ever tighten.
-
-This is MySQL's own model made per-database: MySQL's privilege system is inert until the `mysql` schema's grant tables are loaded (`mysql_db.MySQLDb.Enabled()`), and flips exactly once.
-
-The **system tenant is exempt permanently**. There is no `--skip-grant-tables` recovery mode in QRDB, so the exemption is what makes arming a database safe. Note the consequences:
-
-- Privileges are enforced for **non-system tenants only**. A deployment that runs everything as the system tenant is unrestricted by design.
-- The catalog is scoped to `(tenant, database)` exactly as the relational table catalog is, so a tenant's catalog is bootstrapped **from inside that tenant** — which the unrestricted-until-armed rule always permits.
-
-### Enforcement
-
-Enforcement is a `sql.AuthorizationHandler` installed process-wide, so go-mysql-server asks about **every statement it builds**. A statement kind the handler does not model is **denied** on an armed database rather than waved through. Refusals reach the client as MySQL's own codes — `1044` (`ER_DBACCESS_DENIED_ERROR`), `1142` (`ER_TABLEACCESS_DENIED_ERROR`), `1143` (`ER_COLUMNACCESS_DENIED_ERROR`) — so a client classifies them by number.
-
-Each query resolves the identity's privilege set **once**, from a lock-free snapshot cache gated on the catalog generation the service maintains. An unarmed database costs no reads at all.
-
-Administering privileges requires `GRANT OPTION` at the **database** tier: the authorization information the parser attaches to `GRANT` and `REVOKE` names no target, so no finer tier can be checked. That is stricter than MySQL, which would let the holder of a table-level `GRANT OPTION` re-grant that one table.
-
-Session management statements (`SET`, `SHOW`, `USE`, `BEGIN`, `COMMIT`) require no authorization.
-
-### Storage
-
-```
-__sys:privs/{database}/__latch            # activation latch + monotonic catalog generation
-__sys:privs/{database}/{grantee}          # privilege set (database + table + column tiers)
-__sys:privs/{database}/{grantee}/__epoch  # per-grantee generation
-```
-
-All three move together in a single Raft compare-and-swap. The prefix lies under `__sys:`, which the internal-key guard already excludes from user key enumeration.
 
 ## KV Table Schema
 
@@ -240,38 +78,6 @@ CREATE TABLE kv (
 | `UPDATE kv SET value = ? WHERE key = ?` | `kvSvc.Put(ctx, prefixedKey, value)` |
 | `DELETE FROM kv WHERE key = ?` | `kvSvc.Delete(ctx, prefixedKey)` |
 
-## Multi-Tenancy
-
-Tenant isolation is enforced at the storage level. Keys are automatically prefixed with the tenant ID from the client certificate:
-
-```sql
--- Client cert: CN=alice, OU=acme-corp
-INSERT INTO kv (key, value) VALUES ('config/db', x'...');
--- Stored as: acme-corp/config/db
-
-SELECT * FROM kv WHERE key = 'config/db';
--- Reads: acme-corp/config/db
--- Returns: key='config/db' (prefix stripped)
-```
-
-### Catalog visibility
-
-The database *catalog* is scoped to the session's tenant as well, not just the
-keyspace. The database manager is node-local and holds every tenant's databases
-side by side, so `SHOW DATABASES`, `information_schema`, and
-`pg_catalog.pg_namespace`/`pg_class` enumerate only the databases belonging to
-the tenant on the connection's certificate.
-
-Data access was never reachable across tenants — `service.Registry` resolves
-every read and write against the session's own tenant, so another tenant's
-database name simply is not found — but the *names* were, and through
-`pg_class` their table names with them. A tenant's schema is its own business.
-
-A database created before any tenant existed carries no tenant ID; those are
-system-owned, visible to the system tenant and to no one else. That is the only
-reading that is both safe and true: treating them as ownerless would hide them
-from the operator, and treating them as everyone's is the disclosure this
-prevents.
 
 ## Index-Accelerated WHERE Clauses
 
@@ -304,6 +110,7 @@ qrdb index drop email_idx
 The same operations are available on every transport via `index.IndexServicer` (`CreateIndex`, `DropIndex`, `ListIndexes`). Once an index exists, the SQL layer discovers it automatically and the optimizer will use it — index *use* from SQL works; index *creation* from SQL does not.
 
 **On user-defined relational tables (see "Relational Tables" below), index DDL is supported**: `CREATE INDEX`, `DROP INDEX`, and `ALTER TABLE ... RENAME INDEX` all work. `CREATE INDEX` on a non-empty table populates the index from existing rows (`sql.IndexBuildingTable`) rather than leaving it empty until the next write.
+
 
 ## Relational Tables
 
@@ -425,6 +232,7 @@ The KV, entity, and collection tables implement `sql.IndexAddressableTable` and 
 
 The KV, entity, and collection tables do **not** implement `sql.StatisticsTable`, so the optimizer has no row-count estimate for them and falls back to its default heuristics. `information_schema.statistics` is served by go-mysql-server from the indexes each table reports; the `CARDINALITY` column is not populated from real statistics for any table kind.
 
+
 ## Transaction Control
 
 `BEGIN` / `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `ROLLBACK TO SAVEPOINT` and `RELEASE SAVEPOINT` are **real** on user-defined relational tables. `provider.QRDBSession` implements `sql.TransactionSession`, so go-mysql-server's transaction plan nodes route through it instead of silently returning an empty iterator.
@@ -503,6 +311,7 @@ A losing commit clears the write-set (matching InnoDB, which rolls back a transa
 Both wire protocols and the in-process driver carry this, because transaction state lives on the **session**, not the query context — so every statement of a connection must share one `provider.QRDBSession`. `sdk/go/driver`'s connection owns exactly one session for its lifetime; the MySQL listener builds one per connection; on the PostgreSQL listener the session is created once per connection by a `wire.SessionMiddleware` handler (`pkg/sql/pgsql/parse.go`) and threaded through every statement, since `psql-wire` calls its parse function once per statement with no connection handle. PostgreSQL's `END` / `END WORK` / `END TRANSACTION` — spellings the vitess-derived parser does not accept — are rewritten to `COMMIT` before reaching the engine.
 
 Single-statement atomicity is still provided by Raft for every table kind, and the KV transaction API (`TransactionServicer.Execute`) remains available directly.
+
 
 ## PostgreSQL Syntax Translation
 
@@ -613,46 +422,45 @@ statement text alone cannot express:
 - **`uuid_generate_v4()` / `gen_random_uuid()`** are built in;
   `CREATE EXTENSION` is a no-op.
 
-## Client Examples
 
-### MySQL
+## Error code summary
 
-```bash
-mysql --ssl-cert=client.pem --ssl-key=client-key.pem --ssl-ca=ca.pem \
-  -h 127.0.0.1 -P 3306 -e "SELECT * FROM kv"
-```
+Failures reach a client as the code its driver already classifies, never as a
+QRDB-specific string:
 
-### PostgreSQL
+| Condition | Code | Notes |
+|---|---|---|
+| Duplicate key / unique violation | MySQL **1062** | from `sql.NewUniqueKeyErr`, naming `PRIMARY` or the index |
+| Transaction conflict (first-committer-wins loss) | MySQL **1213** / SQLSTATE **40001** | the code ORM retry loops already recognise |
+| Database access denied | MySQL **1044** | `ER_DBACCESS_DENIED_ERROR` |
+| Table access denied | MySQL **1142** | `ER_TABLEACCESS_DENIED_ERROR` |
+| Column access denied | MySQL **1143** | `ER_COLUMNACCESS_DENIED_ERROR` |
+| Cached plan result-type change | SQLSTATE **0A000** | `cached plan must not change result type` |
+| Foreign key violations | MySQL **1451** / **1452** | see [gorm.md](gorm.md) |
 
-```bash
-psql "sslmode=verify-full sslcert=client.pem sslkey=client-key.pem sslrootcert=ca.pem \
-  host=127.0.0.1 port=5432 dbname=qrdb" -c "SELECT * FROM kv"
-```
+Named Go error types on the QRDB side: `RowKeyTooLargeError`,
+`RowValueTooLargeError`, `RowTransactionTooLargeError`, `WriteSetLimitError`,
+`TransactionSnapshotExpiredError`, `CrossDatabaseTransactionError`,
+`ReadOnlyTransactionError`, `NonTransactionalTableError`,
+`TransactionConflictError`, `IsolationRangeReadError`.
 
-## Package Structure
+**Fail-closed paths**, each stated in full above: an unmodelled statement kind
+on an armed database is denied; a cached plan whose result type changed is
+refused rather than mis-mapped; a type `catalog.ColumnTypeOf` cannot represent
+is rejected at DDL time rather than at decode time; a write to a
+non-transactional table inside an open transaction fails loudly; a range read
+under `written+reads` is refused rather than pretending to be covered; and a
+per-statement ceiling is enforced at the statement rather than deferred to an
+eventual proposal rejection.
 
-```
-pkg/sql/
-  provider/       # DatabaseProvider, Database, KVTable, RelationalTable,
-                  #   WriteSet, QRDBSession (no build tag)
-  catalog/        # TableDef <-> sql.Type mapping, RowCodec, KeyCodec (no build tag)
-  engine/         # Shared SQL engine factory (default analyzer + the privilege
-                  #   post-analyze rule), PG translator + lexer (no build tag)
-  privilege/      # SQL table privileges: the authorization handler every engine
-                  #   installs, and the GRANT/REVOKE/SHOW GRANTS rewrite (no build tag)
-  mysql/          # MySQL wire server (qrdb_mysql build tag)
-  pgsql/          # PostgreSQL wire server (qrdb_pgsql build tag)
-```
+## Known authorization gap
 
-The untagged packages carry no build constraint themselves; they are gated
-at their import sites instead. Every consumer outside `pkg/sql` — the
-server's ad-hoc `/sql/query` service (`pkg/server/server_sql.go`), the
-desktop SQL binding (`cmd/qrdb/bindings_sql.go`), the SDK's embedded SQL
-transport (`sdk/go/transport/embedded/transport_sql.go`), and the
-`sdk/go/driver` / `sdk/go/gorm` packages — compiles only under `qrdb_sql`,
-so a build without the tag links none of the SQL layer.
-
-For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN schemes (`node://` and `embedded://`), which differ in exactly whether the relational catalog is reachable.
+The ad-hoc query endpoint is authorized with **`permission.KVRange`**
+(`kv:range`) on every transport — there is no dedicated `sql:query` permission
+constant. Since a single ad-hoc statement can reach relational tables and
+collections, not only the `kv` table, `kv:range` is a weaker grant than the
+capability it is guarding. Recorded here rather than silently accepted; the
+right permission vocabulary is an owner decision.
 
 ## Makefile Targets
 
@@ -671,3 +479,16 @@ make coverage-sql-pgsql    # PgSQL coverage
 make coverage-sql-privilege # Table privilege coverage
 make coverage-sql          # All SQL coverage
 ```
+
+Coverage floors are enforced by those targets, not by convention:
+`coverage-sql-provider` requires 91%+.
+
+## Observability
+
+- SQL statements reach the existing audit system rather than a SQL-specific log
+  — see [../audit/](../audit/).
+- Privilege enforcement resolves each identity's privilege set once per query
+  from a lock-free snapshot cache gated on the catalog generation. **An unarmed
+  database costs no reads at all**, which is the signal that the latch has not
+  been tripped.
+- `SELECT @@qrdb_isolation` reports the session's conflict-detection scope.
