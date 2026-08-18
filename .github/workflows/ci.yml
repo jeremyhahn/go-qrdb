@@ -52,25 +52,6 @@ jobs:
       - name: golangci-lint
         run: make lint
 
-  release-lockstep:
-    name: Release tag lockstep
-    runs-on: ubuntu-latest
-    steps:
-      # The check reads this clone's tags and the default checkout fetches
-      # none of them, so a vacuous pass is the failure mode to avoid; the full
-      # history brings the tags, and `make check-tag-lockstep` refuses to run
-      # against a tagless clone rather than reporting green.
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      # release-versioning.md P2: sdk/go is tagged in lockstep with the root
-      # module. Auditing every published tag, not just the commit under build,
-      # is what catches a skew introduced by a tag push — tags do not trigger
-      # this workflow, so the next merge to main is the gate.
-      - name: Root and sdk/go tags in lockstep
-        run: make check-tag-lockstep
-
   build:
     name: Build
     runs-on: ubuntu-latest

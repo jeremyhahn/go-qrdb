@@ -1,0 +1,55 @@
+name: Release Lockstep
+
+# release-versioning.md P2: the nested sdk/go module is tagged in lockstep with
+# the root module. A root vX.Y.Z tag published without sdk/go/vX.Y.Z leaves the
+# two modules' latest versions mutually unbuildable for every consumer that
+# takes both at latest (go-qrdb#6).
+#
+# Its own workflow rather than a job in ci.yml, because it is the only gate that
+# has to run on a version-tag push, and putting that trigger on ci.yml would run
+# the whole suite — build, race tests, the compose integration stack — a second
+# time for every release.
+#
+# The tag leg is the real gate: it fires the moment a release is published.
+# Both tags must go out in ONE atomic push,
+#
+#     git push origin vX.Y.Z sdk/go/vX.Y.Z
+#
+# so that both refs exist server-side before any run starts; a split push is
+# itself the defect this gate reports. `make check-tag-lockstep` runs the same
+# script locally, which is where a maintainer catches it before publishing.
+#
+# The main and pull_request legs are defense in depth: they re-audit the whole
+# published tag set, so an out-of-band tag change — a tag deleted, moved, or
+# pushed with the workflow disabled — still surfaces on the next merge.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]                        # root tags only; sdk/go/v* never matches
+  pull_request:
+    branches: [main]
+  workflow_dispatch:                    # manual rerun — Gitea has no rerun API
+
+permissions:
+  contents: read
+
+jobs:
+  lockstep:
+    name: Root and sdk/go tags in lockstep
+    runs-on: ubuntu-latest
+    steps:
+      # The check reads this clone's tags and the default checkout fetches none
+      # of them. A tagless clone is the vacuous-green failure mode, so the full
+      # history is fetched here and the script refuses to run without tags.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # The rejection branches cannot be exercised against this repository's own
+      # tag set, which is permanently valid — the fixtures cover them, and they
+      # run first so a broken check cannot pass the audit by never failing.
+      - name: Lockstep check fixtures
+        run: make test-tag-lockstep
+
+      - name: Audit published tags
+        run: make check-tag-lockstep

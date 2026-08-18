@@ -100,15 +100,22 @@ are not reconstructed here — their history is in the git log.
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
 
-- **`make check-tag-lockstep`** and the `Release tag lockstep` CI job:
-  every root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same
-  commit, and no `sdk/go` tag may exist without its root
-  (release-versioning.md P2). `v0.5.9-alpha` was tagged on the root module
-  alone, so `go get` at latest resolved the root to `v0.5.9-alpha` and
-  `sdk/go` to `v0.5.8-alpha` — a pair that does not compile, because the
-  older `sdk/go` still aliased the symbols removed below. The tag has since
-  been cut; the gate is what keeps the next release from repeating it.
-  Reported by go-xkms (#6).
+- **Release tag lockstep gate.** `make check-tag-lockstep`
+  (`scripts/check-tag-lockstep.sh`) enforces release-versioning.md P2: every
+  root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same commit, and
+  no `sdk/go` tag may exist without its root. The new `Release Lockstep`
+  workflow runs it on version-tag pushes — the moment a release is published
+  — and re-audits the whole tag set on every merge to `main`; a release is
+  published by pushing both tags in one atomic push
+  (`git push origin vX.Y.Z sdk/go/vX.Y.Z`). `make test-tag-lockstep` covers
+  the rejection branches against throwaway repositories, since this
+  repository's own tag set is permanently valid and exercises only the
+  accepting branch. `v0.5.9-alpha` was tagged on the root module alone, so
+  `go get` at latest resolved the root to `v0.5.9-alpha` and `sdk/go` to
+  `v0.5.8-alpha` — a pair that does not compile, because the older `sdk/go`
+  still aliased the symbols removed below. The tag has since been cut; the
+  gate is what keeps the next release from repeating it. Reported by
+  go-xkms (#6).
 
 ### Removed
 
