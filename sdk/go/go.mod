@@ -8,9 +8,9 @@ require (
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/google/uuid v1.6.0
-	github.com/jeremyhahn/go-objstore v0.2.1-alpha
+	github.com/jeremyhahn/go-objstore v0.2.2-alpha
 	github.com/jeremyhahn/go-qrdb v0.4.0-alpha
-	github.com/jeremyhahn/go-quicraft v0.5.1-alpha
+	github.com/jeremyhahn/go-quicraft v0.6.2-alpha
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/stretchr/testify v1.11.1
@@ -113,7 +113,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
-	github.com/jeremyhahn/go-truststrap v0.1.2-alpha // indirect
+	github.com/jeremyhahn/go-truststrap v0.1.3-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect

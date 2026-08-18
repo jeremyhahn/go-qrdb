@@ -14,7 +14,7 @@ go 1.26.6
 // against a different copy of its own code. sdk/go carries the mirror-image
 // replace for this module, and sdk/go/gorm/conformance carries both.
 
-require github.com/jeremyhahn/go-truststrap v0.1.2-alpha
+require github.com/jeremyhahn/go-truststrap v0.1.3-alpha
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.15.0
@@ -31,9 +31,9 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.4.0
-	github.com/jeremyhahn/go-objstore v0.2.1-alpha
+	github.com/jeremyhahn/go-objstore v0.2.2-alpha
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0-00010101000000-000000000000
-	github.com/jeremyhahn/go-quicraft v0.5.1-alpha
+	github.com/jeremyhahn/go-quicraft v0.6.2-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/prometheus/client_golang v1.23.2

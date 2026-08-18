@@ -286,8 +286,12 @@ github.com/jeremyhahn/go-codec v1.4.0 h1:ORbXlqpzg5RDlYGKyqKmbVNdF7TFjabO/7lVgpJ
 github.com/jeremyhahn/go-codec v1.4.0/go.mod h1:WsKvb0GxD0jRyLQRCpNCb5RsXBg4GY1LfwqK3kbIqF4=
 github.com/jeremyhahn/go-objstore v0.2.1-alpha h1:HySwZ3IwDTbQ2nk2xmztk7CSDSlDA6nmfStnwXdEQ04=
 github.com/jeremyhahn/go-objstore v0.2.1-alpha/go.mod h1:rgQpAk8AFV4bb4FPPGxT2Z78u9JOtVOePJqWog/sJSY=
+github.com/jeremyhahn/go-objstore v0.2.2-alpha h1:II1mdFHS2FR5/l2WPx85lCqvpkd4uHStPwvqnelPCCw=
+github.com/jeremyhahn/go-objstore v0.2.2-alpha/go.mod h1:pM9U2nQkN00nWT5DtKPnflHKgN15d9U9wStmJWtJdmg=
 github.com/jeremyhahn/go-quicraft v0.5.1-alpha h1:tL/xtcEQSbHn63BluewlII+2RnOACkE3BsYKmF/a4IQ=
 github.com/jeremyhahn/go-quicraft v0.5.1-alpha/go.mod h1:0Z/9RFjYvzrfod+fIPzXjqPjMa92x6le2Ta3OWIRBxk=
+github.com/jeremyhahn/go-quicraft v0.6.2-alpha h1:LOHgkB2ON+isSGluSkJbvXeVWoopjEoAKiAViR2EAWw=
+github.com/jeremyhahn/go-quicraft v0.6.2-alpha/go.mod h1:0Z/9RFjYvzrfod+fIPzXjqPjMa92x6le2Ta3OWIRBxk=
 github.com/jeroenrinzema/psql-wire v0.18.0 h1:w8VZLCbyzx5UHQb3zojTBWYuOd9L2TlgrboD5jpsC4E=
 github.com/jeroenrinzema/psql-wire v0.18.0/go.mod h1:i7+aXJyIrgcXmbTkij68LdFs03w2f9kt18HIUo+eXmY=
 github.com/jinzhu/inflection v1.0.0 h1:K317FqzuhWc8YvSVlFMCCUb36O/S9MCKRDI7QkRKD/E=

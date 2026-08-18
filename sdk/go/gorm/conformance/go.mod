@@ -140,9 +140,9 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
-	github.com/jeremyhahn/go-objstore v0.2.1-alpha // indirect
+	github.com/jeremyhahn/go-objstore v0.2.2-alpha // indirect
 	github.com/jeremyhahn/go-qrdb v0.4.0-alpha // indirect
-	github.com/jeremyhahn/go-quicraft v0.5.1-alpha // indirect
+	github.com/jeremyhahn/go-quicraft v0.6.2-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
