@@ -126,11 +126,14 @@ are not reconstructed here — their history is in the git log.
   buffer is destroyed on `Rotate` and on `Close`.
 
   **BREAKING (service seam):** `ClusterDEKManager.GetCurrentDEK() ([]byte,
-  error)` is replaced by `WithCurrentDEK(func(dek []byte) error) error`,
-  which lends the caller a slice aliasing protected memory for the duration
-  of the callback — the manager no longer hands out a heap-backed copy whose
-  lifetime it cannot control. `ClusterDEKManager.CurrentVersion()` is the
-  checked counterpart of `GetDEKVersion` for callers that must distinguish
+  error)` is gone, and no exported API replaces it: the key is now applied
+  inside the manager by `WrapKey(plaintext []byte) ([]byte, error)` and
+  `UnwrapKey(wrapped []byte) ([]byte, error)`, which perform the AES-256-GCM
+  key wrapping under the manager's state lock. Neither a heap-backed copy nor
+  a slice aliasing protected memory crosses the API boundary, so no caller
+  can retain the key past a call or mutate the live key.
+  `ClusterDEKManager.CurrentVersion()` is the checked
+  counterpart of `GetDEKVersion` for callers that must distinguish
   "version 0" from "no DEK". Correspondingly,
   `service.DEKServicer.GetCurrentDEK(ctx) ([]byte, uint64, error)` becomes
   `CurrentDEKVersion(ctx) (uint64, error)`: the DEK bytes never crossed that

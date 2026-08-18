@@ -334,25 +334,59 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 	return nil
 }
 
-// WithCurrentDEK invokes fn with the live cluster DEK (for local encryption).
+// WrapKey encrypts plaintext key material with the live cluster DEK using
+// AES-256-GCM and returns the wrapped form (nonce || ciphertext || tag).
 //
-// The slice handed to fn ALIASES the manager's mlocked buffer and is valid
-// only for the duration of the call: fn must not retain it, must not copy it
-// into unprotected memory, and must not mutate it. The manager's state lock is
-// held across the call, so fn must not call back into the manager.
-//
-// Scoped access is the only way to read the DEK. The manager deliberately does
-// not hand out a heap-backed copy: such a copy is neither mlocked nor wiped,
-// and its lifetime would be outside the manager's control.
-func (m *ClusterDEKManager) WithCurrentDEK(fn func(dek []byte) error) error {
-	if fn == nil {
-		return &NilInputError{Op: "ClusterDEKManager.WithCurrentDEK", Field: "fn"}
+// The cluster DEK is applied inside the manager, under its state lock: the key
+// bytes never leave protected memory and are never exposed to the caller.
+func (m *ClusterDEKManager) WrapKey(plaintext []byte) ([]byte, error) {
+	var wrapped []byte
+	if err := m.withCurrentDEK("WrapKey", func(dek []byte) error {
+		var err error
+		wrapped, err = AESGCMEncrypt(dek, plaintext)
+		return err
+	}); err != nil {
+		return nil, err
 	}
+	return wrapped, nil
+}
+
+// UnwrapKey decrypts key material that WrapKey wrapped with the live cluster
+// DEK. As in WrapKey, the cluster DEK is applied inside the manager and never
+// crosses the API boundary.
+func (m *ClusterDEKManager) UnwrapKey(wrapped []byte) ([]byte, error) {
+	if len(wrapped) < AESGCMOverhead {
+		return nil, &CiphertextTooShortError{Op: "ClusterDEKManager.UnwrapKey", Detail: "wrapped key too short"}
+	}
+
+	var plaintext []byte
+	if err := m.withCurrentDEK("UnwrapKey", func(dek []byte) error {
+		var err error
+		plaintext, err = AESGCMDecrypt(dek, wrapped)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return plaintext, nil
+}
+
+// withCurrentDEK invokes fn with the live cluster DEK held under the manager's
+// state lock. It is deliberately unexported: the slice handed to fn aliases
+// the mlocked buffer, so lending it outside this package would let a caller
+// mutate the live key or retain it past the call, defeating both the key's
+// integrity and the protected-memory boundary. External callers reach the DEK
+// only through the cryptographic operations above, which apply it in place.
+//
+// fn must not retain or mutate the slice, and must not call back into the
+// manager: the state lock is held for the duration of the call. op names the
+// exported operation on whose behalf the DEK is read, so returned errors
+// identify the caller's entry point rather than this helper.
+func (m *ClusterDEKManager) withCurrentDEK(op string, fn func(dek []byte) error) error {
 	// Lock-free rejection of the never-initialized manager. It is only a fast
 	// path: the authoritative check is the buffer test below, taken under the
 	// lock Close holds while it destroys the DEK.
 	if !m.initialized.Load() {
-		return &NotInitializedError{Op: "ClusterDEKManager.WithCurrentDEK", Resource: "cluster DEK"}
+		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "cluster DEK"}
 	}
 
 	m.mu.RLock()
@@ -361,7 +395,7 @@ func (m *ClusterDEKManager) WithCurrentDEK(fn func(dek []byte) error) error {
 	// Bytes reports nil for both an absent and an already-destroyed buffer.
 	plaintext := m.dekPlaintext.Bytes()
 	if plaintext == nil {
-		return &NotInitializedError{Op: "ClusterDEKManager.WithCurrentDEK", Resource: "DEK plaintext"}
+		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "DEK plaintext"}
 	}
 
 	// Update metrics.

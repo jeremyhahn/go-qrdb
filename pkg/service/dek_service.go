@@ -105,9 +105,9 @@ func (s *DEKService) Rotate(ctx context.Context) error {
 // CurrentDEKVersion returns the version of the live cluster DEK.
 //
 // The DEK bytes themselves do not cross this boundary. They stay in the
-// cluster manager's protected memory, readable only under scoped access
-// (dek.ClusterDEKManager.WithCurrentDEK), and no transport exposes them: the
-// version is the whole of the caller-visible state.
+// cluster manager's protected memory, applied only by the manager's own
+// wrapping operations (dek.ClusterDEKManager.WrapKey / UnwrapKey), and no
+// transport exposes them: the version is the whole of the caller-visible state.
 func (s *DEKService) CurrentDEKVersion(_ context.Context) (uint64, error) {
 	return s.cluster.CurrentVersion()
 }

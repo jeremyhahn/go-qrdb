@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -59,17 +60,16 @@ func livePlaintext(mgr *ClusterDEKManager) *secure.Buffer {
 	return mgr.dekPlaintext
 }
 
-// copyCurrentDEK copies the live DEK out of protected memory so a test can
-// compare successive values. It exists for tests ONLY: production callers use
-// the scoped slice WithCurrentDEK hands them and never take a copy.
-func copyCurrentDEK(t *testing.T, mgr *ClusterDEKManager) []byte {
+// copyLiveDEK copies the live DEK out of protected memory so a test can
+// compare successive values. It reaches into the manager's unexported state
+// deliberately: no exported API hands out the key, which is the invariant
+// TestClusterDEKEncapsulation pins down.
+func copyLiveDEK(t *testing.T, mgr *ClusterDEKManager) []byte {
 	t.Helper()
-	var out []byte
-	require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
-		out = bytes.Clone(dek)
-		return nil
-	}))
-	return out
+	mgr.mu.RLock()
+	defer mgr.mu.RUnlock()
+	require.NotNil(t, mgr.dekPlaintext)
+	return bytes.Clone(mgr.dekPlaintext.Bytes())
 }
 
 // TestClusterDEKProtectedMemory covers the protected-memory lifecycle of the
@@ -100,8 +100,13 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		require.Len(t, wrapped, 36)
 		assert.Equal(t, buf.Bytes(), wrapped[4:])
 
-		// Scoped access sees exactly those protected bytes.
-		assert.Equal(t, buf.Bytes(), copyCurrentDEK(t, mgr))
+		// WrapKey applies exactly those protected bytes: its output decrypts
+		// under the key held in the buffer and under no other.
+		wrappedKey, err := mgr.WrapKey([]byte("a tenant data encryption key"))
+		require.NoError(t, err)
+		unwrapped, err := AESGCMDecrypt(buf.Bytes(), wrappedKey)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("a tenant data encryption key"), unwrapped)
 	})
 
 	t.Run("rotate destroys the superseded buffer", func(t *testing.T) {
@@ -139,13 +144,8 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		assert.Nil(t, livePlaintext(mgr))
 		assert.False(t, mgr.initialized.Load())
 
-		called := false
-		err = mgr.WithCurrentDEK(func([]byte) error {
-			called = true
-			return nil
-		})
-		require.Error(t, err)
-		assert.False(t, called, "no DEK may be handed out after Close")
+		_, err = mgr.WrapKey([]byte("tenant DEK"))
+		require.Error(t, err, "no DEK may be applied after Close")
 	})
 
 	t.Run("close is idempotent", func(t *testing.T) {
@@ -261,7 +261,86 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 		require.Error(t, mgr.Rotate(ctx))
 
 		assert.Same(t, buf, livePlaintext(mgr), "failed rotate must not swap the buffer")
-		assert.Equal(t, before, copyCurrentDEK(t, mgr), "failed rotate must leave the DEK intact")
+		assert.Equal(t, before, copyLiveDEK(t, mgr), "failed rotate must leave the DEK intact")
 		assert.Equal(t, uint64(1), mgr.GetDEKVersion())
+	})
+}
+
+// TestClusterDEKEncapsulation pins down the manager's key-integrity boundary:
+// no exported method lends out the live key bytes, so an external caller can
+// neither mutate the active key nor retain it beyond a call. Callers reach the
+// DEK only through WrapKey/UnwrapKey, which apply it inside the manager.
+func TestClusterDEKEncapsulation(t *testing.T) {
+	t.Run("no exported method lends the key to a callback", func(t *testing.T) {
+		mgrType := reflect.TypeOf(&ClusterDEKManager{})
+		for i := 0; i < mgrType.NumMethod(); i++ {
+			method := mgrType.Method(i)
+			for arg := 0; arg < method.Type.NumIn(); arg++ {
+				assert.NotEqual(t, reflect.Func, method.Type.In(arg).Kind(),
+					"exported method %s takes a callback: a callback is how live key "+
+						"bytes escape the manager, so the DEK stays behind WrapKey/UnwrapKey",
+					method.Name)
+			}
+		}
+	})
+
+	t.Run("wrapping does not expose or retain the live key", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
+
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+		before := copyLiveDEK(t, mgr)
+
+		plaintext := []byte("a tenant data encryption key")
+		wrapped, err := mgr.WrapKey(plaintext)
+		require.NoError(t, err)
+
+		// Nothing the caller holds reveals the DEK.
+		assert.False(t, bytes.Contains(wrapped, before), "the wrapped output must not carry the DEK")
+
+		// A caller mutating everything it was given and everything it passed
+		// in cannot reach the manager's key material.
+		for i := range wrapped {
+			wrapped[i] ^= 0xFF
+		}
+		for i := range plaintext {
+			plaintext[i] ^= 0xFF
+		}
+
+		assert.Equal(t, before, copyLiveDEK(t, mgr), "the live DEK must be unreachable from caller-held memory")
+		assert.Equal(t, uint64(1), mgr.GetDEKVersion())
+
+		// The key still works: the manager's own round trip is unaffected.
+		fresh, err := mgr.WrapKey([]byte("another tenant DEK"))
+		require.NoError(t, err)
+		unwrapped, err := mgr.UnwrapKey(fresh)
+		require.NoError(t, err)
+		assert.Equal(t, []byte("another tenant DEK"), unwrapped)
+	})
+
+	t.Run("unwrapped output is a copy, not the live key", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
+
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+		before := copyLiveDEK(t, mgr)
+
+		wrapped, err := mgr.WrapKey(bytes.Repeat([]byte{0xA5}, 32))
+		require.NoError(t, err)
+		unwrapped, err := mgr.UnwrapKey(wrapped)
+		require.NoError(t, err)
+
+		mgr.mu.RLock()
+		live := mgr.dekPlaintext.Bytes()
+		aliased := &unwrapped[0] == &live[0]
+		mgr.mu.RUnlock()
+		assert.False(t, aliased, "UnwrapKey must not return a slice over protected memory")
+
+		for i := range unwrapped {
+			unwrapped[i] ^= 0xFF
+		}
+		assert.Equal(t, before, copyLiveDEK(t, mgr))
 	})
 }

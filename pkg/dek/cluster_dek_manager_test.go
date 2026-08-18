@@ -171,74 +171,99 @@ func TestInitializeIdempotent(t *testing.T) {
 	assert.Equal(t, firstVersion, mgr.GetDEKVersion())
 }
 
-// TestWithCurrentDEK tests scoped access to the current DEK.
-func TestWithCurrentDEK(t *testing.T) {
+// TestWrapKeyUnwrapKey tests the cluster DEK's encapsulated key-wrapping
+// operations, the only way key material may be applied from outside.
+func TestWrapKeyUnwrapKey(t *testing.T) {
 	t.Run("uninitialized manager", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
-		called := false
-		err = mgr.WithCurrentDEK(func([]byte) error {
-			called = true
-			return nil
-		})
+		_, err = mgr.WrapKey([]byte("tenant DEK"))
 		require.Error(t, err)
-		assert.False(t, called, "callback must not run without a DEK")
 		var niErr *NotInitializedError
+		assert.ErrorAs(t, err, &niErr)
+
+		_, err = mgr.UnwrapKey(make([]byte, AESGCMOverhead+8))
+		require.Error(t, err)
 		assert.ErrorAs(t, err, &niErr)
 	})
 
-	t.Run("nil callback", func(t *testing.T) {
+	t.Run("round trip", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
 		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
 
-		err = mgr.WithCurrentDEK(nil)
+		plaintext := []byte("a tenant data encryption key")
+		wrapped, err := mgr.WrapKey(plaintext)
+		require.NoError(t, err)
+		assert.Len(t, wrapped, len(plaintext)+AESGCMOverhead)
+		assert.NotContains(t, string(wrapped), string(plaintext))
+
+		unwrapped, err := mgr.UnwrapKey(wrapped)
+		require.NoError(t, err)
+		assert.Equal(t, plaintext, unwrapped)
+	})
+
+	t.Run("wrapping is randomized", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
+
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+
+		plaintext := []byte("a tenant data encryption key")
+		first, err := mgr.WrapKey(plaintext)
+		require.NoError(t, err)
+		second, err := mgr.WrapKey(plaintext)
+		require.NoError(t, err)
+		assert.NotEqual(t, first, second, "each wrap must use a fresh nonce")
+	})
+
+	t.Run("short ciphertext", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+		defer func() { _ = mgr.Close() }()
+
+		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+
+		_, err = mgr.UnwrapKey(make([]byte, AESGCMOverhead-1))
 		require.Error(t, err)
-		var nilErr *NilInputError
-		assert.ErrorAs(t, err, &nilErr)
+		var shortErr *CiphertextTooShortError
+		assert.ErrorAs(t, err, &shortErr)
 	})
 
-	t.Run("initialized manager", func(t *testing.T) {
+	t.Run("tampered ciphertext", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
 		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
 
-		require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
-			assert.Len(t, dek, 32)
-			return nil
-		}))
+		wrapped, err := mgr.WrapKey([]byte("a tenant data encryption key"))
+		require.NoError(t, err)
+		wrapped[len(wrapped)-1] ^= 0xFF
+
+		_, err = mgr.UnwrapKey(wrapped)
+		require.Error(t, err, "GCM authentication must reject tampered ciphertext")
 	})
 
-	t.Run("aliases protected memory rather than copying", func(t *testing.T) {
+	t.Run("rotation invalidates the previous wrapping", func(t *testing.T) {
 		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 		require.NoError(t, err)
 		defer func() { _ = mgr.Close() }()
 
-		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
+		ctx := context.Background()
+		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
 
-		require.NoError(t, mgr.WithCurrentDEK(func(dek []byte) error {
-			assert.Same(t, &mgr.dekPlaintext.Bytes()[0], &dek[0],
-				"callback must see the mlocked buffer, not a heap copy")
-			return nil
-		}))
-	})
-
-	t.Run("callback error propagates", func(t *testing.T) {
-		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		wrapped, err := mgr.WrapKey([]byte("a tenant data encryption key"))
 		require.NoError(t, err)
-		defer func() { _ = mgr.Close() }()
+		require.NoError(t, mgr.Rotate(ctx))
 
-		require.NoError(t, mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32))
-
-		sentinel := &NotImplementedError{Message: "from callback"}
-		err = mgr.WithCurrentDEK(func([]byte) error { return sentinel })
-		assert.ErrorIs(t, err, error(sentinel))
+		_, err = mgr.UnwrapKey(wrapped)
+		require.Error(t, err, "the rotated-out DEK must no longer unwrap")
 	})
 
 	t.Run("nil plaintext after manual reset", func(t *testing.T) {
@@ -252,7 +277,7 @@ func TestWithCurrentDEK(t *testing.T) {
 		mgr.dekPlaintext = nil
 		mgr.mu.Unlock()
 
-		err = mgr.WithCurrentDEK(func([]byte) error { return nil })
+		_, err = mgr.WrapKey([]byte("a tenant data encryption key"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "DEK plaintext not initialized")
 	})
@@ -279,12 +304,12 @@ func TestRotate(t *testing.T) {
 		ctx := context.Background()
 		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
 
-		dek1 := copyCurrentDEK(t, mgr)
+		dek1 := copyLiveDEK(t, mgr)
 		v1 := mgr.GetDEKVersion()
 
 		require.NoError(t, mgr.Rotate(ctx))
 
-		dek2 := copyCurrentDEK(t, mgr)
+		dek2 := copyLiveDEK(t, mgr)
 		v2 := mgr.GetDEKVersion()
 
 		assert.Equal(t, v1+1, v2)
@@ -542,8 +567,8 @@ func TestGetMetrics(t *testing.T) {
 	metrics2 := mgr.GetMetrics()
 	assert.Equal(t, uint64(1), metrics2["init_operations"])
 
-	_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
-	_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
+	_, _ = mgr.WrapKey([]byte("tenant DEK"))
+	_, _ = mgr.WrapKey([]byte("tenant DEK"))
 	_ = mgr.Rotate(ctx)
 	_ = mgr.SyncToNode(ctx, 1)
 
@@ -591,7 +616,7 @@ func TestConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
+				_, _ = mgr.WrapKey([]byte("tenant DEK"))
 				_ = mgr.GetDEKVersion()
 				_, _ = mgr.GetStatus(ctx)
 			}
@@ -601,8 +626,8 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// BenchmarkWithCurrentDEK benchmarks scoped DEK access.
-func BenchmarkWithCurrentDEK(b *testing.B) {
+// BenchmarkWrapKey benchmarks encapsulated key wrapping.
+func BenchmarkWrapKey(b *testing.B) {
 	mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
 	if err != nil {
 		b.Fatalf("failed to create manager: %v", err)
@@ -613,9 +638,11 @@ func BenchmarkWithCurrentDEK(b *testing.B) {
 		b.Fatalf("initialization failed: %v", err)
 	}
 
+	plaintext := []byte("a tenant data encryption key")
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
+		_, _ = mgr.WrapKey(plaintext)
 	}
 }
 
@@ -649,10 +676,12 @@ func BenchmarkConcurrentDEKAccess(b *testing.B) {
 		b.Fatalf("initialization failed: %v", err)
 	}
 
+	plaintext := []byte("a tenant data encryption key")
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = mgr.WithCurrentDEK(func([]byte) error { return nil })
+			_, _ = mgr.WrapKey(plaintext)
 		}
 	})
 }
