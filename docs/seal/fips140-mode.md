@@ -216,6 +216,29 @@ this pull request.
 | `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#5` |
 | `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5` |
 
+### Measured status
+
+Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
+**102 packages pass, 20 fail**, and every one of the 20 attributes to a finding
+above.
+
+| Blocker | Failing packages |
+|---|---|
+| SHA-1 identifiers | `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`, `pkg/firstboot`, `pkg/custodian`, `cmd/qrdbd` |
+| `quicraft/seal` AEAD | `pkg/atrest`, `pkg/ceremony`, `pkg/clusterkeys`, `pkg/credentials`, `pkg/database`, `pkg/seal`, `pkg/seal/encfs`, `pkg/secret`, `pkg/server`, `pkg/server/lifecycle`, `pkg/service`, `pkg/store`, `pkg/tenant`, `cmd/qrdbd` |
+| Noise X25519 | `pkg/clusterenroll`, `cmd/qrdbd` |
+
+All 652 occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
+allowed in FIPS 140-only mode` in that run are the body of a
+`quicraft/seal: cipher creation failed: ...` error — **none is a qrdb call
+site**, which is what the AES-GCM remediation above was for. There are zero
+`crypto/hmac: use of keys shorter than 112 bits` occurrences, which is what the
+shared-secret minimum was for. Re-derive the attribution with:
+
+```
+GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'quicraft/seal: cipher creation failed: crypto/cipher: use of GCM with arbitrary IVs'
+```
+
 The two dependency findings cannot be fixed here at all — the composition
 direction is one-way, and both tracking issues are open and blocked on an owner
 decision at the time of writing.
