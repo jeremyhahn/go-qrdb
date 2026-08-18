@@ -82,9 +82,12 @@ Verify it out of band before you rely on it —
 not authorize. Bind it to a user and give that user a role:
 
 ```bash
-qrdb users create --username alice
-qrdb roles assign --username alice --role Operator
+qrdb users create --username alice --tenant-id system
+qrdb roles assign --user <user-id> --role <role-id>
 ```
+
+Both `assign` flags take **IDs**, not names; `qrdb roles get-by-name Operator`
+resolves a role name to its ID.
 
 See [../identity-rbac/user.md](../identity-rbac/user.md).
 
