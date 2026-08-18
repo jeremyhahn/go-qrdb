@@ -1492,23 +1492,17 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	// Send SIGTERM while bootstrapAuth is running (likely waiting for leader
-	// election). This covers lines 961-963: the "if sigCtx.Err() != nil"
-	// check that converts context cancellation to a clean nil return.
-	time.Sleep(500 * time.Millisecond)
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		// Either nil (signal during bootstrap) or an error from startup.
-		// Both are acceptable — the goal is to cover lines 956-967.
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Deliver SIGTERM until runStart returns, and wait on that return rather
+	// than on a duration. runStart installs its handler partway through
+	// startup, so a single delivery timed by a sleep can be absorbed by
+	// signalGuard before the handler exists, after which no shutdown is
+	// possible and the test can only time out. See signalUntilReturn.
+	//
+	// Either nil (signal observed during bootstrap) or an error from startup
+	// is acceptable here: the assertion is that a signalled runStart returns,
+	// which is what covers the sigCtx.Err() shutdown branches.
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
+		t.Logf("runStart returned (acceptable): %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)

@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // Many tests in this package drive runStart's shutdown path by sending a
@@ -56,6 +57,51 @@ func armSignalGuard() {
 func resetSignalHandlers(sigs ...os.Signal) {
 	signal.Reset(sigs...)
 	armSignalGuard()
+}
+
+// signalRetryInterval paces the re-delivery in signalUntilReturn. It bounds
+// only how soon a lost delivery is retried, never how long the helper waits:
+// the loop ends when runStart returns, whatever that takes.
+const signalRetryInterval = 25 * time.Millisecond
+
+// signalUntilReturn drives a runStart goroutine to shutdown and returns its
+// error, with no assumption about how long startup takes.
+//
+// runStart installs its SIGINT/SIGTERM handler partway through startup, after
+// TLS resolution and database-manager setup. A test that sleeps for a fixed
+// duration and then signals once is betting that startup reaches
+// signal.NotifyContext within that sleep. When the bet loses -- which is what
+// a loaded runner makes likely -- signalGuard absorbs the delivery, runStart
+// never observes a cancellation, and the test waits for a shutdown that can no
+// longer happen. Sleeping longer only lengthens the odds.
+//
+// Re-delivering until runStart returns removes the bet entirely. Whichever
+// delivery lands after the handler is installed cancels sigCtx, and the
+// synchronisation point is the value on done -- the real completion signal --
+// rather than an elapsed duration. Deliveries before installation are absorbed
+// by signalGuard, exactly as they are today, and deliveries after are received
+// by an already-cancelled context, which is a no-op.
+//
+// There is deliberately no timeout: any bound tight enough to fail fast would
+// be another bet on startup duration under load, and a runStart that never
+// returns is a real hang, best reported by the test binary's own timeout with
+// a full goroutine dump rather than by a bare "did not return" message.
+func signalUntilReturn(t *testing.T, done <-chan error, sig syscall.Signal) error {
+	t.Helper()
+
+	ticker := time.NewTicker(signalRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		if err := syscall.Kill(os.Getpid(), sig); err != nil {
+			t.Fatalf("Kill(%v) error = %v", sig, err)
+		}
+		select {
+		case runErr := <-done:
+			return runErr
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestMain(m *testing.M) {
