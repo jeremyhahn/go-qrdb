@@ -51,8 +51,11 @@ func ctxFor(targetTenantID string) context.Context {
 type mockRoleService struct {
 	perms     map[string][]permission.Permission // roleID -> permissions
 	byName    map[string]*role.Role              // "tenantID/roleName" -> role
+	byID      map[string]*role.Role              // roleID -> role
 	byNameErr error                              // if non-nil, GetRoleByName returns this error
 	byNameNil bool                               // if true, GetRoleByName returns (nil, nil): a contract violation
+	byIDErr   error                              // if non-nil, GetRole returns this error
+	byIDNil   bool                               // if true, GetRole returns (nil, nil): a contract violation
 	callCount atomic.Int64
 	err       error // if non-nil, ResolvePermissions returns this error
 }
@@ -61,13 +64,25 @@ func newMockRoleService(perms map[string][]permission.Permission) *mockRoleServi
 	return &mockRoleService{perms: perms}
 }
 
-// withRole registers r under its tenant and name so GetRoleByName resolves
-// it, modelling a role already persisted in the store.
+// withRole registers r under its tenant and name AND under its identifier, so
+// both GetRoleByName and GetRole resolve it — modelling a role already
+// persisted in the store, which occupies both key spaces.
 func (m *mockRoleService) withRole(r *role.Role) *mockRoleService {
 	if m.byName == nil {
 		m.byName = make(map[string]*role.Role)
 	}
 	m.byName[r.TenantID+"/"+r.Name] = r
+	return m.withRecordOnly(r)
+}
+
+// withRecordOnly registers r under its identifier but NOT under its name,
+// modelling a replica that has replicated the role record without the name
+// index entry that points at it.
+func (m *mockRoleService) withRecordOnly(r *role.Role) *mockRoleService {
+	if m.byID == nil {
+		m.byID = make(map[string]*role.Role)
+	}
+	m.byID[r.ID] = r
 	return m
 }
 
@@ -93,8 +108,17 @@ func (m *mockRoleService) CreateRole(_ context.Context, _ *role.CreateRoleReques
 	panic("not implemented")
 }
 
-func (m *mockRoleService) GetRole(_ context.Context, _ string) (*role.Role, error) {
-	panic("not implemented")
+func (m *mockRoleService) GetRole(_ context.Context, id string) (*role.Role, error) {
+	if m.byIDErr != nil {
+		return nil, m.byIDErr
+	}
+	if m.byIDNil {
+		return nil, nil
+	}
+	if r, ok := m.byID[id]; ok {
+		return r, nil
+	}
+	return nil, &role.RoleNotFoundError{ID: id}
 }
 
 func (m *mockRoleService) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {

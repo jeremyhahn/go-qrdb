@@ -16,6 +16,7 @@ package rbac
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -404,5 +405,202 @@ func TestAuthorize_FallbackResolverReturningNilNil_FailsClosed(t *testing.T) {
 	var re *ResolveError
 	if !errors.As(err, &re) {
 		t.Fatalf("err = %v (%T), want *ResolveError", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Role replacement seen through the StaleRead replica
+// ---------------------------------------------------------------------------
+//
+// The fallback keeps a cold or draining node authorizing, but it can be behind
+// the very mutation the grant-voiding controls exist to catch: a system role
+// deleted and recreated under a generated identifier. A stale name lookup then
+// answers with the OLD identifier, and an identity carrying the new one matches
+// nothing. "Not in the stale set" must therefore not be read as innocence.
+
+// replacementSOStale is the identifier an SO role recreated after the replica's
+// snapshot carries. The replica maps the name to the legacy identifier instead.
+const (
+	replacementSOStale    = "9f2c1d64-0000-8000-8000-aaaaaaaaaaaa"
+	replacementOwnerStale = "9f2c1d64-0000-8000-8000-bbbbbbbbbbbb"
+	unrelatedRoleID       = "9f2c1d64-0000-8000-8000-cccccccccccc"
+)
+
+func TestAuthorize_ReplacementSO_StaleFallbackDoesNotClearTheDenyList(t *testing.T) {
+	// Primary unavailable (cold ReadIndex), replica behind the replacement:
+	// it still maps "so" to the legacy identifier and has no record at all
+	// for the replacement. The deny-list must not clear the grant on that.
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	primary.err = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		replacementSOStale: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+
+	identity := &auth.Identity{
+		Subject:  "replacement-so",
+		TenantID: "acme",
+		Roles:    []string{replacementSOStale},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	assertDeniedByTheSODenyList(t, err)
+}
+
+// assertDeniedByTheSODenyList checks the denial came from AS10.03 rather than
+// from an empty permission set, so a test cannot pass because the identity
+// happened to resolve no permissions at all.
+func assertDeniedByTheSODenyList(t *testing.T, err error) {
+	t.Helper()
+	var denied *PermissionDeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("expected *PermissionDeniedError, got %T (%v)", err, err)
+	}
+	if !strings.Contains(denied.Reason, "AS10.03") {
+		t.Fatalf("denied for %q, want the SO deny-list — the replacement SO was not recognised", denied.Reason)
+	}
+}
+
+func TestAuthorize_ReplacementSO_StaleFallbackWithRecordButNoNameIndex(t *testing.T) {
+	// The replica has replicated the replacement role's RECORD but not the
+	// name index entry that points at it, so the name lookup still answers
+	// with the legacy identifier. Resolving from the ID side finds a record
+	// named "so", which the name lookup could not see.
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	primary.err = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		replacementSOStale: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO)).
+		withRecordOnly(legacyRole(replacementSOStale, role.RoleNameSO))
+
+	identity := &auth.Identity{
+		Subject:  "replacement-so",
+		TenantID: "acme",
+		Roles:    []string{replacementSOStale},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	assertDeniedByTheSODenyList(t, err)
+}
+
+func TestAuthorize_ReplacementOwner_StaleFallbackStillStripsTheGrant(t *testing.T) {
+	// Same shape for the strict-SoD Owner strip: an Owner grant carrying an
+	// identifier the replica cannot account for must not survive the posture
+	// that exists to void it.
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	primary.err = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		replacementOwnerStale: {"kv:put"},
+	}).withRole(legacyRole(legacyOwnerIDAcme, role.RoleNameOwner))
+
+	identity := &auth.Identity{
+		Subject:  "replacement-owner",
+		TenantID: "acme",
+		Roles:    []string{replacementOwnerStale},
+	}
+
+	// Standard posture: the grant is honored, through the fallback.
+	if err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "kv", "put"); err != nil {
+		t.Fatalf("standard posture: expected kv:put allowed, got %v", err)
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback), WithStrictSeparation(true)).
+		Authorize(ctxFor("acme"), identity, "kv", "put")
+	if !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("strict posture: replacement Owner grant survived a stale lookup, got %T (%v)", err, err)
+	}
+}
+
+// TestAuthorize_StaleFallback_SparesARoleItCanAccountFor is the availability
+// half of the rule. Being conservative about identifiers the replica cannot
+// explain must not turn a cold node into one that denies every request: a role
+// the replica knows, and knows is not the system role, is left alone.
+func TestAuthorize_StaleFallback_SparesARoleItCanAccountFor(t *testing.T) {
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	primary.err = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		unrelatedRoleID: {"kv:put"},
+	}).withRole(legacyRole(legacyOwnerIDAcme, role.RoleNameOwner)).
+		withRole(&role.Role{ID: unrelatedRoleID, Name: "editor", TenantID: "acme"})
+
+	identity := &auth.Identity{
+		Subject:  "editor",
+		TenantID: "acme",
+		Roles:    []string{unrelatedRoleID},
+	}
+
+	if err := New(primary, WithRoleServiceFallback(fallback), WithStrictSeparation(true)).
+		Authorize(ctxFor("acme"), identity, "kv", "put"); err != nil {
+		t.Fatalf("strict posture: an ordinary role was stripped on a cold node: %v", err)
+	}
+
+	// And the SO deny-list does not deny it either.
+	soIdentity := &auth.Identity{
+		Subject:  "editor",
+		TenantID: "acme",
+		Roles:    []string{unrelatedRoleID},
+	}
+	fallback.perms[unrelatedRoleID] = []permission.Permission{"keys:sign"}
+	if err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), soIdentity, "keys", "sign"); err != nil {
+		t.Fatalf("deny-list denied a role the replica accounts for: %v", err)
+	}
+}
+
+func TestAuthorize_StaleFallback_RoleLookupFailure_Denies(t *testing.T) {
+	// The replica cannot say what the identifier is. That is not innocence.
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		replacementSOStale: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+	fallback.byIDErr = errors.New("replica read failed")
+
+	identity := &auth.Identity{
+		Subject:  "replacement-so",
+		TenantID: "acme",
+		Roles:    []string{replacementSOStale},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	var re *ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected *ResolveError, got %T (%v)", err, err)
+	}
+}
+
+func TestAuthorize_StaleFallback_RoleLookupNilNil_Denies(t *testing.T) {
+	// Neither a role nor an error is a broken contract, not an absence.
+	primary := newMockRoleService(map[string][]permission.Permission{})
+	primary.byNameErr = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		replacementSOStale: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+	fallback.byIDNil = true
+
+	identity := &auth.Identity{
+		Subject:  "replacement-so",
+		TenantID: "acme",
+		Roles:    []string{replacementSOStale},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	var invalid *InvalidRoleLookupError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected *InvalidRoleLookupError, got %T (%v)", err, err)
+	}
+	if invalid.RoleID != replacementSOStale {
+		t.Errorf("RoleID = %q, want %q", invalid.RoleID, replacementSOStale)
+	}
+	if !strings.Contains(invalid.Error(), replacementSOStale) {
+		t.Errorf("Error() = %q, want it to name the identifier", invalid.Error())
 	}
 }
