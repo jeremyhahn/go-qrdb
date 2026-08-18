@@ -100,6 +100,32 @@ are not reconstructed here — their history is in the git log.
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
 
+### Fixed — SECURITY
+
+- **`GOFIPS140=off` was read as a FIPS request.** SO PIN hashing in
+  `pkg/auth` picked its KDF with `os.Getenv("GOFIPS140") != ""`, so the one
+  value that explicitly means "not FIPS" selected PBKDF2-SHA256, and
+  `crypto/fips140.Enabled()` was never consulted at all. Every
+  FIPS-conditional path in the tree now routes through a single predicate,
+  `seal.FIPSEnabled` (re-exported from `go-quicraft/pkg/seal`): the Go
+  runtime's FIPS 140-3 module state first, `GOFIPS140` as an environmental
+  fallback, and `off` honoured as disabled. `pkg/seal/kdf.DefaultHasher`
+  loses the same env-only test, and `pkg/pin.AutoDetectHashConfig` — which
+  was blind to the environment entirely — now honours a `GOFIPS140` FIPS
+  request. Stored hashes are unaffected: each record carries its own
+  algorithm/version tag and verification still routes by that tag, so a
+  hash written in either mode continues to verify in the other.
+
+### Changed — protected memory
+
+- **The live cluster DEK is held in mlocked memory.**
+  `dek.ClusterDEKManager` kept the plaintext cluster DEK in an ordinary
+  `[]byte` for the manager's whole lifetime. It is now a `*secure.Buffer`
+  (mlocked, guard-paged, wiped on destroy): the key is generated straight
+  into protected memory rather than being copied there, and the superseded
+  buffer is destroyed on `Rotate` and on `Close`. `GetCurrentDEK` is
+  unchanged for callers — it still returns a detached copy.
+
 ## [0.5.8-alpha] - 2026-08-17
 
 ### Added
