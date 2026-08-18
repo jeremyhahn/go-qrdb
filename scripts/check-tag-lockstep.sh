@@ -31,9 +31,13 @@
 #
 # --atomic is what makes it one transaction: the server applies both ref updates
 # or neither. Listing two refs on a plain push is not enough — the server may
-# accept one and reject the other, which publishes the skew this check exists to
-# prevent, and no post-publication gate can retract a tag consumers have already
-# resolved.
+# accept one and reject the other, which publishes the skew.
+#
+# Running this script before that push is the only preventive step available
+# today. Once a tag is pushed it is visible to `go get` immediately, so the
+# Release Lockstep workflow reports a skewed release rather than stopping it;
+# preventing one needs a server-side pre-receive policy or workflow-only
+# tagging, which is release policy this repository does not set — go-qrdb#13.
 #
 # Usage: check-tag-lockstep.sh [repo-dir]   (default: the current directory)
 #

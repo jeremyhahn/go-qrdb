@@ -5,25 +5,32 @@ name: Release Lockstep
 # two modules' latest versions mutually unbuildable for every consumer that
 # takes both at latest (go-qrdb#6).
 #
-# Its own workflow rather than a job in ci.yml, because it is the only gate that
-# has to run on a version-tag push, and putting that trigger on ci.yml would run
-# the whole suite — build, race tests, the compose integration stack — a second
-# time for every release.
+# This workflow DETECTS a skewed release; it does not prevent one. Gitea accepts
+# a tag push and exposes the ref before any workflow starts, so by the time the
+# tag leg runs, `go get` can already resolve the skew. What it buys is latency:
+# the report lands within a minute of publication instead of days later in a
+# downstream consumer's dependency bump, which is how go-qrdb#6 surfaced and
+# what it cost. Prevention needs a server-side pre-receive policy, or a rule
+# that only a release workflow may create version tags — release policy and
+# infrastructure this repository does not own. Filed as go-qrdb#13.
 #
-# The tag leg is the real gate: it fires the moment a release is published.
-# Both tags must go out in ONE atomic push,
+# Its own workflow rather than a job in ci.yml, because it is the only check
+# that has to run on a version-tag push, and putting that trigger on ci.yml
+# would run the whole suite — build, race tests, the compose integration stack —
+# a second time for every release.
 #
-#     git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
+# Until go-qrdb#13 is decided, the preventive step is local and manual:
 #
-# so that both refs exist server-side before any run starts. --atomic is load
-# bearing: without it the server may accept one ref update and reject the other,
-# publishing the skew, and no post-publication gate can retract a tag consumers
-# have already resolved. `make check-tag-lockstep` runs the same script locally,
-# which is where a maintainer catches it before publishing at all.
+#     make check-tag-lockstep && git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
 #
-# The main and pull_request legs are defense in depth: they re-audit the whole
-# published tag set, so an out-of-band tag change — a tag deleted, moved, or
-# pushed with the workflow disabled — still surfaces on the next merge.
+# --atomic is load bearing and not a synonym for listing both refs: it makes the
+# server apply both ref updates or neither. Without it a push of two refs can be
+# accepted in part, publishing the skew, and nothing downstream can retract a
+# tag consumers have already resolved.
+#
+# The main and pull_request legs re-audit the whole published tag set, so an
+# out-of-band tag change — a tag deleted, moved, or pushed with the workflow
+# disabled — still surfaces on the next merge.
 on:
   push:
     branches: [main]

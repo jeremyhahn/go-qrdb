@@ -1144,9 +1144,10 @@ fmt:
 # ============================================================================
 
 # release-versioning.md P2: the nested sdk/go module is tagged in lockstep with
-# the root module. Run this before pushing a release — the tags of a published
-# release are already visible to consumers by the time CI re-audits them — and
-# push both tags in one atomic push:
+# the root module. This is the ONLY preventive run — a tag is visible to
+# consumers the moment it is pushed, so the Release Lockstep workflow can report
+# a skewed release but not stop one (go-qrdb#13 tracks real enforcement). Run it
+# before publishing, and publish both tags in one atomic push:
 #
 #     make check-tag-lockstep && git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
 #
