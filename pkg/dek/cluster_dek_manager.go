@@ -348,6 +348,9 @@ func (m *ClusterDEKManager) WithCurrentDEK(fn func(dek []byte) error) error {
 	if fn == nil {
 		return &NilInputError{Op: "ClusterDEKManager.WithCurrentDEK", Field: "fn"}
 	}
+	// Lock-free rejection of the never-initialized manager. It is only a fast
+	// path: the authoritative check is the buffer test below, taken under the
+	// lock Close holds while it destroys the DEK.
 	if !m.initialized.Load() {
 		return &NotInitializedError{Op: "ClusterDEKManager.WithCurrentDEK", Resource: "cluster DEK"}
 	}
@@ -376,7 +379,17 @@ func (m *ClusterDEKManager) GetDEKVersion() uint64 {
 // CurrentVersion returns the current DEK version, and a NotInitializedError
 // when no cluster DEK has been established yet. It is the checked counterpart
 // of GetDEKVersion, for callers that must distinguish "version 0" from "no DEK".
+//
+// The state is read under the same lock Initialize, Rotate and Close take, so
+// a returned version always belongs to a DEK that existed at the instant of
+// the call: a Close racing this call either has not yet entered its critical
+// section (the version is still live) or has already left it (this returns the
+// error). A lock-free check of initialized would leave a window in which Close
+// destroys the DEK between the check and the version load.
 func (m *ClusterDEKManager) CurrentVersion() (uint64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	if !m.initialized.Load() {
 		return 0, &NotInitializedError{Op: "ClusterDEKManager.CurrentVersion", Resource: "cluster DEK"}
 	}

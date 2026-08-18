@@ -11,6 +11,7 @@ package dek
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -166,6 +167,85 @@ func TestClusterDEKProtectedMemory(t *testing.T) {
 
 		assert.Nil(t, livePlaintext(mgr))
 		assert.False(t, mgr.initialized.Load())
+	})
+
+	t.Run("CurrentVersion reads the DEK state under the manager lock", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+
+		// Stand in for a Close that is mid-flight: hold the state lock, flip
+		// the manager to closed, then release. A CurrentVersion that consults
+		// the initialised flag outside the lock can slip in before the flip
+		// and report a version for a DEK that is being destroyed; one that
+		// reads under the lock can only observe the state after the flip.
+		mgr.mu.Lock()
+
+		started := make(chan struct{})
+		done := make(chan struct{})
+		var (
+			version    uint64
+			versionErr error
+		)
+		go func() {
+			close(started)
+			version, versionErr = mgr.CurrentVersion()
+			close(done)
+		}()
+		<-started
+
+		mgr.dekPlaintext.Destroy()
+		mgr.dekPlaintext = nil
+		mgr.initialized.Store(false)
+		mgr.mu.Unlock()
+
+		<-done
+		require.Error(t, versionErr, "CurrentVersion must not report a version for a destroyed DEK")
+		assert.Equal(t, uint64(0), version)
+		var niErr *NotInitializedError
+		assert.ErrorAs(t, versionErr, &niErr)
+
+		require.NoError(t, mgr.Close())
+	})
+
+	t.Run("no version is reported once Close has returned", func(t *testing.T) {
+		mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+		require.NoError(t, err)
+
+		require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+
+		const readers = 8
+		var wg sync.WaitGroup
+		closed := make(chan struct{})
+		failures := make(chan error, readers)
+
+		for i := 0; i < readers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-closed:
+						if _, err := mgr.CurrentVersion(); err == nil {
+							failures <- errors.New("CurrentVersion succeeded after Close returned")
+						}
+						return
+					default:
+						_, _ = mgr.CurrentVersion()
+					}
+				}
+			}()
+		}
+
+		require.NoError(t, mgr.Close())
+		close(closed)
+		wg.Wait()
+		close(failures)
+
+		for err := range failures {
+			t.Error(err)
+		}
 	})
 
 	t.Run("failed rotate keeps the current DEK usable", func(t *testing.T) {
