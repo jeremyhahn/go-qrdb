@@ -107,7 +107,7 @@ are not reconstructed here — their history is in the git log.
   workflow runs it on version-tag pushes — the moment a release is published
   — and re-audits the whole tag set on every merge to `main`; a release is
   published by pushing both tags in one atomic push
-  (`git push origin vX.Y.Z sdk/go/vX.Y.Z`). `make test-tag-lockstep` covers
+  (`git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z`). `make test-tag-lockstep` covers
   the rejection branches against throwaway repositories, since this
   repository's own tag set is permanently valid and exercises only the
   accepting branch. `v0.5.9-alpha` was tagged on the root module alone, so

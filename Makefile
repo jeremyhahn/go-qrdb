@@ -1148,7 +1148,7 @@ fmt:
 # release are already visible to consumers by the time CI re-audits them — and
 # push both tags in one atomic push:
 #
-#     make check-tag-lockstep && git push origin vX.Y.Z sdk/go/vX.Y.Z
+#     make check-tag-lockstep && git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
 #
 # The rules and the failure modes are documented in the script; its rejection
 # branches are covered by test-tag-lockstep, because this repository's own tag

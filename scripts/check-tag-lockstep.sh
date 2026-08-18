@@ -27,9 +27,13 @@
 # sdk/go tag may exist without its root. Publish a release by pushing both tags
 # in ONE atomic push:
 #
-#     git push origin vX.Y.Z sdk/go/vX.Y.Z
+#     git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
 #
-# so no window exists in which the two modules' latest versions disagree.
+# --atomic is what makes it one transaction: the server applies both ref updates
+# or neither. Listing two refs on a plain push is not enough — the server may
+# accept one and reject the other, which publishes the skew this check exists to
+# prevent, and no post-publication gate can retract a tag consumers have already
+# resolved.
 #
 # Usage: check-tag-lockstep.sh [repo-dir]   (default: the current directory)
 #
@@ -74,6 +78,7 @@ done
 
 if [ "${FAILED}" -ne 0 ]; then
 	echo "root and sdk/go tags are not in lockstep (release-versioning.md P2)"
+	echo "publish a release with: git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z"
 	exit 1
 fi
 

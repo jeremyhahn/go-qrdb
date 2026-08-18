@@ -13,11 +13,13 @@ name: Release Lockstep
 # The tag leg is the real gate: it fires the moment a release is published.
 # Both tags must go out in ONE atomic push,
 #
-#     git push origin vX.Y.Z sdk/go/vX.Y.Z
+#     git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z
 #
-# so that both refs exist server-side before any run starts; a split push is
-# itself the defect this gate reports. `make check-tag-lockstep` runs the same
-# script locally, which is where a maintainer catches it before publishing.
+# so that both refs exist server-side before any run starts. --atomic is load
+# bearing: without it the server may accept one ref update and reject the other,
+# publishing the skew, and no post-publication gate can retract a tag consumers
+# have already resolved. `make check-tag-lockstep` runs the same script locally,
+# which is where a maintainer catches it before publishing at all.
 #
 # The main and pull_request legs are defense in depth: they re-audit the whole
 # published tag set, so an out-of-band tag change — a tag deleted, moved, or
