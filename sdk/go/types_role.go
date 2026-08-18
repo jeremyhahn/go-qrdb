@@ -103,6 +103,37 @@ var BuiltInRoles = role.BuiltInRoles
 // built-in role in the given tenant. An empty tenantID defaults to the system
 // tenant. This is the seam consumers use to address qrdb's canonical roles by
 // a stable identifier (e.g. binding the bootstrap admin to Admin@system).
+//
+// It derives the identifier rather than reading it, which is correct for a
+// comparison against a freshly seeded cluster but NOT for writing a grant or
+// for deciding whether an existing grant denotes the role. System role IDs
+// moved from UUIDv5 (SHA-1) to UUIDv8 (SHA-256) for FIPS 140-3, and a cluster
+// seeded before that keeps its roles — and its users' RoleIDs — under the
+// legacy identifiers. Use ResolveSystemRoleID or SystemRoleIDs, which answer
+// from the role store, wherever an already-provisioned cluster must keep
+// resolving. Evaluating this at package-init time into a package-level var is
+// the shape that gets this wrong.
 func SystemRoleID(tenantID, roleName string) string {
 	return role.SystemRoleID(tenantID, roleName)
 }
+
+// RoleNameResolver is the narrow role-store surface the two functions below
+// need: "which role is named N in tenant T". qrdb's own role service
+// satisfies it, as does any consumer adapter over its own role store.
+type RoleNameResolver = role.NameResolver
+
+// ResolveSystemRoleID returns the identifier a named system role is actually
+// persisted under in the given tenant, falling back to the derived one from
+// SystemRoleID when the cluster holds no role of that name yet. Bind grants
+// to this, never to the derived identifier: on a cluster seeded before system
+// role IDs moved off UUIDv5/SHA-1, a derived identifier names no role at all
+// and the grant silently confers nothing.
+var ResolveSystemRoleID = role.ResolveSystemRoleID
+
+// SystemRoleIDs returns every identifier that denotes a named system role in
+// the given tenant — the derived one plus, on a cluster seeded before the
+// UUIDv5 migration, the legacy one still persisted for it. An authorization
+// rule that recognises a role by identifier in order to VOID a grant must
+// match against the whole set; matching only the derived identifier fails
+// open on a pre-migration grant.
+var SystemRoleIDs = role.SystemRoleIDs
