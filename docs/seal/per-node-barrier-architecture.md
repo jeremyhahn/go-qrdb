@@ -21,7 +21,7 @@ enable-encryption.
 > (`sdk/go/node`) both drive encryption-at-rest using the same per-node barrier
 > architecture and `scopedEncryptionMigrator` composition. The embedded node gains
 > daemon-parity enable-encryption support through `pkg/server.BuildTenantInfra()`
-> convergence (see [embedding.md](../../embedding.md)). There is no duplication of
+> convergence (see [embedding.md](../embedding.md)). There is no duplication of
 > migration logic between daemon and embedded paths.
 
 ---

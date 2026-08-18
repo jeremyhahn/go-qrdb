@@ -939,6 +939,6 @@ return doWork(ctx)
 
 ## See Also
 
-- [06-leases.md](06-leases.md) -- Lease management and TTL enforcement
-- [03-transactions.md](03-transactions.md) -- Compare-and-swap transactions
+- [06-leases.md](leases/engineering.md) -- Lease management and TTL enforcement
+- [03-transactions.md](transactions/engineering.md) -- Compare-and-swap transactions
 - [05-consistency.md](05-consistency.md) -- Consistency levels and routing

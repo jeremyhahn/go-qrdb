@@ -24,11 +24,14 @@ place. A value with no recognized scheme is left untouched.
   them in registration order and uses the first whose `CanResolve` matches. A
   reference that no resolver claims falls through to a literal (the value is used
   verbatim).
-- **`ConfigProcessor`** — reflects over a config struct, finds string fields that
-  hold a reference, resolves each through the registry, and writes the plaintext
-  back in place. `WithFailClosed()` makes it return `ErrUnresolvedSecretURI` when
-  any reference fails to resolve. For a production boot, that is the default you want.
-- **`SecretValue`** — a resolved secret plus its `ResolvedStrategy` tag.
+- **`ConfigProcessor`** — reflects over a config struct, finds the fields that
+  hold a reference, and resolves each through the registry. A `SecretValue`
+  field is filled in place inside its enclave; a plain `string` field has the
+  plaintext written back over the reference. `WithFailClosed()` makes it return
+  `ErrUnresolvedSecretURI` when any reference fails to resolve. For a production
+  boot, that is the default you want.
+- **`SecretValue`** — a resolved secret plus its `ResolvedStrategy` tag, and the
+  processor's protected resolution target.
 
 ## Secrets live in a memguard enclave
 
@@ -47,16 +50,149 @@ err := sv.WithBytes(func(plaintext []byte) error {
 
 `Bytes()` and `String()` still exist for callers that must hand a raw `[]byte`
 or `string` to an API that takes one, but they copy the secret into the
-garbage-collected heap, where it cannot be wiped reliably, so reach for them
-only when an interface leaves no choice. Call `Clear()` once you are done to destroy
-the enclave.
+garbage-collected heap, where it cannot be wiped reliably. Both are
+**deprecated** and go away in the stack's coordinated breaking release; reach
+for them only when an interface leaves no choice. Call `Clear()` once you are
+done to destroy the enclave.
 
-One limit is worth stating plainly: when the `ConfigProcessor` resolves a secret
-into a plain `string` config field, that field is an ordinary Go string and
-lives in the heap for the lifetime of the process. The enclave protects the
-secret through the resolution pipeline, up to the moment it lands in the config
-struct. Config types that hold their secret in a `SecretValue` rather than a
-bare `string` keep the enclave guarantee end to end.
+Every *accidental* path to the plaintext is closed. `SecretValue` implements
+`fmt.Formatter` and `slog.LogValuer`, which `fmt` and `log/slog` consult ahead
+of `fmt.Stringer`, so `%v`, `%s`, `%+v`, `fmt.Sprint` and a structured log of a
+config struct all render the redacted description. `Redacted()` is the same
+description, available directly.
+
+It shows the reference (`credential://db-key`) only when a resolver has
+established that the reference points *at* a secret rather than carrying one,
+and `[redacted]` otherwise. **Provenance decides that, not syntax.** Looking
+like a URI proves nothing: the registry falls back to `StrategyLiteral` for any
+value no resolver claims, so `https://user:hunter2@example.test` and
+`unknown://hunter2` are references in shape only and are the secret in fact. A
+value whose `Strategy` is unset — one that has not been resolved yet — is
+redacted for the same reason: nothing has vouched for where its `Raw` came from.
+
+Serialization is the one place `Raw` is still emitted verbatim, because that is
+what serializing a configuration *means* — `MarshalYAML`/`MarshalJSON` reproduce
+the document the value was loaded from. If an operator puts a secret inline in
+that document, writing the document back out writes the secret; use a reference.
+
+Only an explicit `String()` or `Bytes()` call still materializes the plaintext.
+That is deliberate: `String()` is the documented way to hand a secret to an API
+that takes a string, and silently redacting it would break those callers at run
+time with no compile error to warn them. Changing it belongs to the stack's
+coordinated breaking release; until then it is deprecated, and the paths a
+caller does not choose deliberately are already safe.
+
+## Protected config fields
+
+A plain `string` config field is the leak. When the `ConfigProcessor` writes a
+resolved secret into one, that field is an ordinary Go string: it lives in the
+heap for the lifetime of the process and cannot be wiped. The enclave protects
+the secret right up to the moment it lands in the config struct, and no further.
+
+Declare the field as a `SecretValue` instead and the plaintext never becomes a
+string at all — the processor seals it into that field's own enclave:
+
+```go
+type DatabaseConfig struct {
+    Host     string              `yaml:"host"`
+    Password *secret.SecretValue `yaml:"password"`
+}
+```
+
+The config document does not change. `SecretValue` decodes from — and
+re-encodes to — the plain reference string in both YAML and JSON, so
+`password: "credential://db-key"` still reads exactly as it did, and a
+re-serialized config emits the reference rather than the resolved value. A
+non-scalar node fails with `SecretValueDecodeError`, and so does JSON `null` —
+a null where a reference belongs is a configuration mistake, not an empty
+secret. Express an optional secret with a `*SecretValue` field, where an absent
+or null key simply leaves the pointer nil.
+
+After `Process`, read the secret through the enclave-respecting accessor:
+
+```go
+err := cfg.Database.Password.WithBytes(func(pw []byte) error {
+    return db.Connect(cfg.Database.Host, pw)
+})
+```
+
+`Raw` keeps the reference the value resolved from; the processor never
+overwrites it.
+
+### A protected target must reference a secret, and it fails closed
+
+The protected target is deliberately **stricter than a plain `string` field**.
+Every non-nil target the walk reaches ends in one of two outcomes — resolved, or
+reported in `Unresolved` — and never in silence:
+
+| the target holds | outcome |
+| --- | --- |
+| `credential://db-key`, or any registered scheme | resolved into its enclave |
+| nothing (an empty `Raw`: a null or absent key) | `UnresolvableTargetError` |
+| `literal://hunter2`, or a bare `hunter2` | `UnresolvableTargetError` |
+| a scheme no registered resolver claims | `UnresolvableTargetError` |
+| a value the walk cannot write to (boxed in an unsettable interface) | `UnwritableTargetError` |
+
+An **inline** secret is refused rather than sealed, and that is the point:
+`literal://hunter2` carries the secret in `Raw` itself, an ordinary Go string
+that outlives the walk and can never be wiped. Sealing it into the enclave would
+leave a second, unprotected copy behind and quietly break the guarantee the
+field type advertises. Use `literal://` in a plain `string` field, where it
+promises nothing, or better, put the value in the credential store and reference
+it.
+
+**A protected-target failure fails the call, with or without
+`WithFailClosed()`.** `Process` returns `ErrUnresolvedSecretURI` whenever
+`ProcessResult.ProtectedUnresolved` is non-empty — choosing the type *is* the
+request to fail closed on that field, and a caller who reads only the error,
+which is the normal Go contract, must not be told a config is ready when a
+secret it declared protected is missing or unverified. The deprecated `string`
+path keeps its old contract: there, a failure is a diagnostic you opt into with
+`WithFailClosed()`.
+
+**A failed re-resolution never leaves the previous secret usable.** `Process`
+destroys a target's existing enclave before refilling it, so a second walk over
+an already-resolved config — a refresh after a rotation, a re-read after a
+reload — leaves the field empty and errors if the new value cannot be fetched.
+A revoked credential cannot go on authenticating for as long as its backend
+stays down.
+
+An **empty** target is refused for the same reason a missing password should
+stop a boot: declaring a field as a `SecretValue` says a secret belongs there.
+A secret that is genuinely optional is spelled as a `*SecretValue`, where an
+absent or null key leaves the pointer nil and the walk passes over it — the one
+silent case.
+
+This is what closes the gap YAML would otherwise leave. `yaml.v3` zeroes a null
+destination before the unmarshaler is consulted, so `password:` and
+`password: null` never reach `UnmarshalYAML` and cannot be rejected there; they
+decode to an empty target, which the walk refuses. JSON rejects its `null` token
+at decode time instead. Either way a required secret cannot be deleted or nulled
+into a successful boot.
+
+Boxed targets the walk *can* write to (an `any` struct field, an `any` map
+value) are resolved through an addressable copy and assigned back.
+
+### Migrating off `string` fields
+
+`WithNoPlaintextStrings()` is the ratchet. With it set, the processor refuses to
+write plaintext into a `string` field: the reference stays put, the secret is
+never fetched, and the field's path is reported in
+`ProcessResult.PlaintextSkipped` (always a subset of `Unresolved`).
+
+```go
+proc := secret.NewConfigProcessor(reg, secret.WithNoPlaintextStrings())
+result, _ := proc.Process(ctx, &cfg)
+// result.PlaintextSkipped is the exact list of fields still holding a reference
+// because resolving it would have produced a plaintext string.
+```
+
+Turn the option on, read the list, convert those fields to `SecretValue` one at
+a time, and the list shrinks to empty. Add `WithFailClosed()` once it is, and
+any boot that would have produced a plaintext string fails instead.
+
+Both options are opt-in. With no options the processor behaves exactly as it
+always has, so nothing breaks on upgrade.
 
 ## Scheme ownership across the stack
 
@@ -88,10 +224,10 @@ prefix is stripped during resolution.
 
 Downstream projects consume this package through the SDK re-exports in
 `sdk/go/secret/` (`ResolverRegistry`, `NewConfigProcessor`,
-`NewCredentialResolver`, `SecretValue`, `WithFailClosed`, …), never by importing
-`go-qrdb/pkg/*` directly.
+`NewCredentialResolver`, `SecretValue`, `WithFailClosed`,
+`WithNoPlaintextStrings`, …), never by importing `go-qrdb/pkg/*` directly.
 
 ## See also
 
-- [Credentials Service](README.md) — the L2 store the `credential://` scheme reads from.
+- [Credentials Service](architecture.md) — the L2 store the `credential://` scheme reads from.
 - Package documentation: `go doc github.com/jeremyhahn/go-qrdb/pkg/secret`.

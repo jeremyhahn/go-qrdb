@@ -114,7 +114,7 @@ throughout.
 `seal:enable_encryption`) or a single tenant's **dedicated** barrier (`--tenant`).
 A tenant on the **shared system barrier** inherits the system settings and
 cannot change its own encryption — the server rejects such a request. Take a
-verified backup before migrating (see [backup/README.md](../backup/README.md)).
+verified backup before migrating (see [backup/README.md](../backup-restore/architecture.md)).
 
 The GUI surfaces the same operation from the Seal Manager. When a `none`
 barrier is configured it offers the migration; for a barrier subsystem present
@@ -359,6 +359,6 @@ Seal Manager toggle. This is not implemented; request it explicitly if needed.
 - [custodians.md](custodians.md) — Custodian lifecycle, Shamir recovery quorum,
   share-delivery protocol
 - [shamir.md](shamir.md) — Shamir M-of-N unsealing
-- [backup/README.md](../backup/README.md) — Backup & restore
-- [../cli/barrier.md](../cli/barrier.md) — `qrdb barrier` CLI (init, unseal,
+- [backup/README.md](../backup-restore/architecture.md) — Backup & restore
+- [../cli/barrier.md](../barrier-seal/cli.md) — `qrdb barrier` CLI (init, unseal,
   rekey, status)

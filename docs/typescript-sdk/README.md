@@ -315,6 +315,6 @@ await client.kv.put('mykey', 'myvalue');
 ## Cross-References
 
 - [GUI System](../gui/README.md) -- Desktop GUI that consumes this SDK
-- [Go SDK](../sdk/README.md) -- Go client library with 5 transports
-- [API Reference](../api.md) -- REST API endpoints used by `RestClient`
-- [CLI Reference](../cli/README.md) -- CLI commands (same binary as GUI)
+- [Go SDK](../api-server/engineering.md) -- Go client library with 5 transports
+- [API Reference](../api-server/api.md) -- REST API endpoints used by `RestClient`
+- [CLI Reference](../api-server/cli.md) -- CLI commands (same binary as GUI)

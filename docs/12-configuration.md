@@ -355,7 +355,7 @@ Configures structured logging output.
 
 Configures peer discovery for cluster formation. The discovery engine
 (`pkg/discovery`) and bootstrap orchestration (`pkg/cluster`) are described in
-detail in [discovery.md](discovery.md).
+detail in [discovery.md](clustering/architecture.md).
 
 | Field                       | Type   | Default      | CLI Flag                   | Description                                          |
 |-----------------------------|--------|--------------|----------------------------|------------------------------------------------------|
@@ -662,7 +662,7 @@ databases:
 - Each database with `etcd: enabled` spawns its own gRPC server on the specified `listen_addr`.
 - Multiple databases can each have etcd enabled on different listen addresses.
 - The etcd endpoint is fully isolated per database: revision counters, watches, leases, and encryption barriers are scoped to the database's shard.
-- See [etcd documentation](etcd/README.md) for Kubernetes integration and client examples.
+- See [etcd documentation](etcd-compatibility/architecture.md) for Kubernetes integration and client examples.
 
 ---
 

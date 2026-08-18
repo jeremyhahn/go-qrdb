@@ -46,8 +46,17 @@ const (
 
 // SecretValue holds a resolved secret sealed in a memguard enclave together
 // with resolution metadata. Prefer WithBytes/Open (which keep the plaintext in
-// mlocked memory) over Bytes/String (which copy it into the GC heap). Call
-// Clear when done to destroy the enclave.
+// mlocked memory) over the deprecated Bytes/String (which copy it into the GC
+// heap). Every default display path is already redacted — fmt verbs go through
+// fmt.Formatter and structured logging through slog.LogValuer, both of which
+// render Redacted() — so only an explicit String/Bytes call materializes the
+// plaintext. Call Clear when done to destroy the enclave.
+//
+// SecretValue is also the ConfigProcessor's protected resolution target:
+// declare a config field as SecretValue instead of string and the resolved
+// plaintext is sealed into the field's own enclave rather than written back as
+// a plain Go string. It decodes from, and re-encodes to, the plain reference
+// string in YAML and JSON, so config documents are unchanged.
 type SecretValue = secret.SecretValue
 
 // SecretResolver resolves raw secret reference URIs to their plaintext values.
@@ -91,6 +100,12 @@ var NewConfigProcessor = secret.NewConfigProcessor
 // WithFailClosed returns a ProcessorOption that makes Process return
 // ErrUnresolvedSecretURI when any secret reference cannot be resolved.
 var WithFailClosed = secret.WithFailClosed
+
+// WithNoPlaintextStrings returns a ProcessorOption that makes Process refuse to
+// write resolved plaintext into a plain string field, reporting each such field
+// in ProcessResult.PlaintextSkipped instead. It is the migration ratchet onto
+// protected SecretValue config fields.
+var WithNoPlaintextStrings = secret.WithNoPlaintextStrings
 
 // ---------------------------------------------------------------------------
 // Aggregated types
@@ -145,3 +160,17 @@ type ProcessorInputError = secret.ProcessorInputError
 // MaxDepthExceededError is recorded by ConfigProcessor.Process when the config
 // graph is nested too deeply, which usually indicates a reference cycle.
 type MaxDepthExceededError = secret.MaxDepthExceededError
+
+// SecretValueDecodeError is returned when a config node cannot be decoded into
+// a SecretValue because it is not a scalar reference string.
+type SecretValueDecodeError = secret.SecretValueDecodeError
+
+// UnwritableTargetError is recorded by ConfigProcessor.Process when a
+// SecretValue target is reachable but cannot be written to, so a fail-closed
+// walk reports it rather than silently accepting it.
+type UnwritableTargetError = secret.UnwritableTargetError
+
+// UnresolvableTargetError is recorded by ConfigProcessor.Process when a
+// protected SecretValue target holds nothing it can resolve — an empty value,
+// an inline "literal://" secret, a bare value, or an unclaimed scheme.
+type UnresolvableTargetError = secret.UnresolvableTargetError

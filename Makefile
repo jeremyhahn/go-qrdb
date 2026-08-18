@@ -1145,14 +1145,14 @@ fmt:
 
 .PHONY: gosec
 gosec:
-	$(GOSEC) -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+	$(GOSEC) -concurrency 4 -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
 # dashboard and the gate never disagree; non-blocking because `gosec` is the
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
+	$(GOSEC) -concurrency 4 -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable

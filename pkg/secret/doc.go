@@ -36,11 +36,16 @@
 //   - ResolverRegistry — ordered dispatch. Register resolvers; Resolve consults
 //     them in registration order and uses the first whose CanResolve matches.
 //     The fallback is StrategyLiteral (the value is used verbatim).
-//   - ConfigProcessor (walker.go) — reflects over a config struct, finds string
-//     fields holding `scheme://ref` references, resolves each through the
-//     registry, and writes the plaintext back in place. WithFailClosed() makes
-//     Process return ErrUnresolvedSecretURI if any reference could not be
-//     resolved — the secure default for production boots.
+//   - ConfigProcessor (walker.go) — reflects over a config struct, finds the
+//     fields holding `scheme://ref` references, and resolves each through the
+//     registry. A SecretValue field is the protected target: the plaintext is
+//     sealed into that field's own enclave and never becomes a Go string. A
+//     plain string field is the deprecated target: the plaintext is written
+//     back over the reference and rests in the heap for the process lifetime.
+//     WithNoPlaintextStrings() refuses the plain target and reports the fields
+//     that still use it, which is the migration path onto SecretValue.
+//     WithFailClosed() makes Process return ErrUnresolvedSecretURI if any
+//     reference could not be resolved — the secure default for production boots.
 //
 // # Scheme ownership across the stack
 //

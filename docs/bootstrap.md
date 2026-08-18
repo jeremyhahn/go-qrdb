@@ -34,7 +34,7 @@ Admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thum
 - **Provision tenant** — minimal control-plane tenant record + tenant-admin cert enrollment (no tenant barrier key held by the system admin).
 - **Initialize tenant barrier** — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
 
-See [users/README.md](users/README.md) for the user model and SPKI binding.
+See [users/README.md](identity-rbac/architecture.md) for the user model and SPKI binding.
 
 ## Startup Sequence
 
@@ -74,7 +74,7 @@ Each database (configured in YAML) gets its own storage backend instance.
 The daemon initializes the Raft consensus layer:
 
 - **Node ID** — Derived from CLI flags or YAML (`--replica-id`, `--deployment-id`)
-- **Peer Discovery** — Uses configured method: static, multicast, DNS, or token. The discovery engine and cluster-formation orchestration live in `pkg/discovery` and `pkg/cluster`; see [discovery.md](discovery.md) for details.
+- **Peer Discovery** — Uses configured method: static, multicast, DNS, or token. The discovery engine and cluster-formation orchestration live in `pkg/discovery` and `pkg/cluster`; see [discovery.md](clustering/architecture.md) for details.
 - **Shard Creation** — Creates the default KV shard (ID `1`) with the configured state machine type and storage backend
 - **Log Storage** — Opens the Raft WAL in `$DATA_DIR/raft.log`
 
@@ -227,7 +227,7 @@ If TLS certs are corrupted or expired:
 
 ## See Also
 
-- [ceremony/README.md](ceremony/README.md) — Ceremony state machine and officer enrollment
+- [ceremony/README.md](ceremony/architecture.md) — Ceremony state machine and officer enrollment
 - [seal/README.md](seal/README.md) — Barrier architecture and unsealing
 - [12-configuration.md](12-configuration.md) — Full YAML configuration reference
-- [13-operations.md](13-operations.md) — Monitoring, health checks, and deployment
+- [13-operations.md](clustering/cli.md) — Monitoring, health checks, and deployment
