@@ -97,6 +97,13 @@ func newTornService(t *testing.T, store *tornKV) custodian.Servicer {
 // enrolmentOf decodes the custodian record stored under id.
 func enrolmentOf(t *testing.T, store *tornKV, id string) custodian.Custodian {
 	t.Helper()
+	return enrolmentOfKV(t, store.memKV, id)
+}
+
+// enrolmentOfKV is enrolmentOf against the bare store, for tests that wrap
+// memKV differently.
+func enrolmentOfKV(t *testing.T, store *memKV, id string) custodian.Custodian {
+	t.Helper()
 	data, err := store.Get(context.Background(), "__sys:custodian/"+id)
 	if err != nil || data == nil {
 		t.Fatalf("no primary record for %s (err %v)", id, err)

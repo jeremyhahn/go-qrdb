@@ -15,6 +15,7 @@
 package custodian
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -343,45 +344,109 @@ func (s *service) persist(ctx context.Context, c *Custodian) error {
 // than being folded into the write error: at that point an operator has
 // something to clean up and must be told which keys.
 //
-// Only a crash between the failed write and the compensation can still strand
-// a record. Closing that needs either a multi-key atomic write or a two-phase
-// enrolment that persists the sealed envelope, and the latter is a change to
-// this package's standing property that no share material is ever stored.
+// Two limits remain, both needing the same missing primitive and both filed
+// as one decision rather than taken here:
+//
+//   - A crash between the failed write and the compensation still strands a
+//     record.
+//   - Duplicate detection and these writes are separate operations, so two
+//     concurrent registrations for one tenant and username derive the same
+//     identifier and race on the same keys. That race predates the
+//     compensation; what the compensation must not do is make it worse, so
+//     rollback deletes only while this call still owns the primary record.
+//
+// Closing either needs a multi-key atomic write, or a username reservation
+// the store can honour atomically, or a two-phase enrolment that persists the
+// sealed envelope — and the last would overturn this package's standing
+// property that no share material is ever stored.
 func (s *service) persistNew(ctx context.Context, c *Custodian) error {
 	writes, err := custodianWrites(c)
 	if err != nil {
 		return err
 	}
 
-	written := make([]string, 0, len(writes))
+	written := make([]custodianWrite, 0, len(writes))
 	for _, w := range writes {
 		if putErr := s.store.Put(ctx, w.key, w.value); putErr != nil {
 			storeErr := &StoreError{Op: w.op, Err: putErr}
-			stranded := s.rollback(ctx, written)
+			stranded := s.rollback(ctx, writes[0], written)
 			if len(stranded) > 0 {
 				return &OrphanedEnrolmentError{ID: c.ID, Keys: stranded, Cause: storeErr}
 			}
 			return storeErr
 		}
-		written = append(written, w.key)
+		written = append(written, w)
 	}
 	return nil
 }
 
-// rollback deletes keys in reverse order and returns those it could not
-// remove. Every failure is logged as it happens: the caller reports the set,
-// but only the individual delete error explains why each one survived.
-func (s *service) rollback(ctx context.Context, keys []string) []string {
+// rollback removes what this registration wrote, in reverse order, and returns
+// the keys it could not remove. Every failure is logged as it happens: the
+// caller reports the set, but only the individual delete error explains why
+// each one survived.
+//
+// It compensates ONLY while this registration still owns the identity. The
+// duplicate check and the writes are separate operations, so a concurrent
+// registration for the same tenant and username derives the same identifier
+// and writes the same keys; primary tells us who holds it now. If the primary
+// record no longer carries the bytes this call wrote, the other registration
+// owns it, and deleting anything here would destroy a completed enrolment —
+// or strip the indexes off a live record. Leave it whole and report nothing
+// stranded: what is in the store is another registration's, not this one's
+// debris.
+//
+// The ownership read is not atomic with the deletes, so a registration that
+// loses the identity in that window can still delete a key the winner has just
+// written. Closing that needs a reservation the store can honour atomically,
+// which is filed as its own decision — see persistNew.
+func (s *service) rollback(ctx context.Context, primary custodianWrite, written []custodianWrite) []string {
+	owned, err := s.ownsPrimary(ctx, primary)
+	if err != nil {
+		s.logger.Error("custodian registration rollback: cannot establish ownership",
+			slog.String("key", primary.key),
+			slog.String("error", err.Error()))
+		return keysOf(written)
+	}
+	if !owned {
+		s.logger.Warn("custodian registration rollback skipped: the record is another registration's",
+			slog.String("key", primary.key))
+		return nil
+	}
+
 	var stranded []string
-	for i := len(keys) - 1; i >= 0; i-- {
-		if err := s.store.Delete(ctx, keys[i]); err != nil {
+	for i := len(written) - 1; i >= 0; i-- {
+		if err := s.store.Delete(ctx, written[i].key); err != nil {
 			s.logger.Error("custodian registration rollback failed",
-				slog.String("key", keys[i]),
+				slog.String("key", written[i].key),
 				slog.String("error", err.Error()))
-			stranded = append(stranded, keys[i])
+			stranded = append(stranded, written[i].key)
 		}
 	}
 	return stranded
+}
+
+// ownsPrimary reports whether the primary record still holds exactly the bytes
+// this registration wrote. An absent record counts as owned: this call wrote
+// it and something removed it, so there is nothing of anyone else's to
+// protect.
+func (s *service) ownsPrimary(ctx context.Context, primary custodianWrite) (bool, error) {
+	current, err := s.store.Get(ctx, primary.key)
+	if err != nil {
+		return false, err
+	}
+	if current == nil {
+		return true, nil
+	}
+	return bytes.Equal(current, primary.value), nil
+}
+
+// keysOf projects the key of each write, for reporting what was left behind.
+func keysOf(writes []custodianWrite) []string {
+	keys := make([]string, 0, len(writes))
+	for _, w := range writes {
+		keys = append(keys, w.key)
+	}
+	return keys
 }
 
 // validateRegisterRequest checks all required fields in a RegisterRequest.
