@@ -52,6 +52,7 @@ type mockRoleService struct {
 	perms     map[string][]permission.Permission // roleID -> permissions
 	byName    map[string]*role.Role              // "tenantID/roleName" -> role
 	byNameErr error                              // if non-nil, GetRoleByName returns this error
+	byNameNil bool                               // if true, GetRoleByName returns (nil, nil): a contract violation
 	callCount atomic.Int64
 	err       error // if non-nil, ResolvePermissions returns this error
 }
@@ -99,6 +100,9 @@ func (m *mockRoleService) GetRole(_ context.Context, _ string) (*role.Role, erro
 func (m *mockRoleService) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
 	if m.byNameErr != nil {
 		return nil, m.byNameErr
+	}
+	if m.byNameNil {
+		return nil, nil
 	}
 	if r, ok := m.byName[tenantID+"/"+name]; ok {
 		return r, nil

@@ -288,3 +288,121 @@ func TestAuthorize_SODenyList_SkipsTheLookupForAnIdentityWithNoRoles(t *testing.
 		t.Fatal("a roleless identity triggered a role-store lookup")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Resolver contract violation: (nil, nil) is not "no legacy identifier"
+// ---------------------------------------------------------------------------
+
+func TestAuthorize_SODenyList_FailsClosedWhenResolverReturnsNilNil(t *testing.T) {
+	// A resolver that reports neither a role nor an error has broken its
+	// contract. Reading that as "the role does not exist" would drop the
+	// persisted identifier out of the answer, and on a legacy-seeded tenant
+	// that identifier is exactly the one the deny-list must recognise — the
+	// SO would reach the cryptographic operation the control exists to
+	// refuse. Deny instead.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme: {"keys:sign"},
+	})
+	svc.byNameNil = true
+
+	identity := &auth.Identity{
+		Subject:  "so-by-legacy-id",
+		TenantID: "acme",
+		Roles:    []string{legacySOIDAcme},
+	}
+
+	err := New(svc).Authorize(ctxFor("acme"), identity, "keys", "sign")
+	if err == nil {
+		t.Fatal("a contract-violating resolver let a legacy SO reach keys:sign")
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("err = %v (%T), want *ResolveError — the request is refused, not answered", err, err)
+	}
+	var invalid *role.InvalidResolverResultError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want it to carry *role.InvalidResolverResultError", err, err)
+	}
+}
+
+func TestAuthorize_OwnerStrip_FailsClosedWhenResolverReturnsNilNil(t *testing.T) {
+	// Same for the strict-SoD Owner strip: an unresolvable Owner identifier
+	// must not be read as "there is no Owner role", which would leave a
+	// legacy Owner grant live under the posture that exists to void it.
+	svc := newMockRoleService(map[string][]permission.Permission{
+		legacyOwnerIDAcme: {"kv:put"},
+		legacyAdminIDAcme: {"tenants:read"},
+	})
+	svc.byNameNil = true
+
+	identity := &auth.Identity{
+		Subject:  "admin",
+		TenantID: "acme",
+		Roles:    []string{legacyAdminIDAcme, legacyOwnerIDAcme},
+	}
+
+	err := New(svc, WithStrictSeparation(true)).Authorize(ctxFor("acme"), identity, "kv", "put")
+	if err == nil {
+		t.Fatal("a contract-violating resolver let a legacy Owner grant survive strict SoD")
+	}
+	var invalid *role.InvalidResolverResultError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want it to carry *role.InvalidResolverResultError", err, err)
+	}
+}
+
+func TestAuthorize_ResolverContractViolation_DoesNotFallBackToTheStaleReplica(t *testing.T) {
+	// The StaleRead fallback exists for a cold or draining node, not for a
+	// broken resolver. A primary that violates the contract is a defect;
+	// answering from the replica would hide it on a path that voids grants.
+	primary := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme: {"keys:sign"},
+	})
+	primary.byNameNil = true
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme: {"keys:sign"},
+	}).withRole(legacyRole(legacySOIDAcme, role.RoleNameSO))
+
+	identity := &auth.Identity{
+		Subject:  "so-by-legacy-id",
+		TenantID: "acme",
+		Roles:    []string{legacySOIDAcme},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	var invalid *role.InvalidResolverResultError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want the contract violation surfaced rather than masked", err, err)
+	}
+}
+
+func TestAuthorize_FallbackResolverReturningNilNil_FailsClosed(t *testing.T) {
+	// The primary is unavailable, which is the case the fallback exists for,
+	// but the fallback then breaks the contract. There is no resolved answer
+	// either way, so the deny-list denies.
+	primary := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme: {"keys:sign"},
+	})
+	primary.byNameErr = errors.New("read index not ready")
+	fallback := newMockRoleService(map[string][]permission.Permission{
+		legacySOIDAcme: {"keys:sign"},
+	})
+	fallback.byNameNil = true
+
+	identity := &auth.Identity{
+		Subject:  "so-by-legacy-id",
+		TenantID: "acme",
+		Roles:    []string{legacySOIDAcme},
+	}
+
+	err := New(primary, WithRoleServiceFallback(fallback)).
+		Authorize(ctxFor("acme"), identity, "keys", "sign")
+	if err == nil {
+		t.Fatal("a contract-violating fallback let a legacy SO reach keys:sign")
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) {
+		t.Fatalf("err = %v (%T), want *ResolveError", err, err)
+	}
+}

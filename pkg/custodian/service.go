@@ -113,6 +113,15 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 	// why one lookup is not enough.
 	existingID, err := s.findExistingID(ctx, req.TenantID, req.Username, id)
 	if err != nil {
+		// A refusal that cannot be explained afterwards is a weak refusal:
+		// this path rejects an enrolment because the store could not be read
+		// or holds a corrupt record, both of which an operator must act on.
+		s.audit.Emit(ctx, audit.AuditEvent{
+			Resource:   "custodian:" + id,
+			Action:     "register",
+			Outcome:    audit.OutcomeFailure + ":duplicate-check",
+			Attributes: map[string]any{"username": req.Username, "tenantID": req.TenantID, "error": err.Error()},
+		})
 		return nil, err
 	}
 	if existingID != "" {
@@ -375,9 +384,15 @@ func (s *service) findExistingID(ctx context.Context, tenantID, username, derive
 
 // findByUsernameScan walks the tenant index looking for a custodian record
 // with the given username. It reports "" when the tenant has no such record.
-// An unreadable individual record is skipped rather than failing the scan: a
-// record that cannot be decoded cannot be the one this username belongs to,
-// and failing here would block enrolment on unrelated corruption.
+//
+// An undecodable record fails the scan rather than being skipped. Decoding is
+// precisely how a record's username would be learned, so a record that cannot
+// be decoded cannot be ruled OUT as this username's enrolment — and treating
+// it as absence would let the caller enrol a second custodian, under a second
+// identifier, holding a second sealed share for a username that may already
+// have one. Refusing costs an operator an explicit repair of a corrupt record
+// at ceremony time; the alternative silently splits a share holder's
+// enrolment in two.
 func (s *service) findByUsernameScan(ctx context.Context, tenantID, username string) (string, error) {
 	prefix := sysCustodianIdxTenant + tenantID + "/"
 	keys, err := s.store.List(ctx, prefix)
@@ -395,10 +410,10 @@ func (s *service) findByUsernameScan(ctx context.Context, tenantID, username str
 		}
 		var c Custodian
 		if err := json.Unmarshal(data, &c); err != nil {
-			s.logger.Warn("custodian duplicate check: skipping undecodable record",
+			s.logger.Error("custodian duplicate check: undecodable record",
 				slog.String("id", candidateID),
 				slog.String("error", err.Error()))
-			continue
+			return "", &CorruptRecordError{ID: candidateID, Err: err}
 		}
 		if c.Username == username {
 			return c.ID, nil

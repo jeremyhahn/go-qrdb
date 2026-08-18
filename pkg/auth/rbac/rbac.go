@@ -51,6 +51,7 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -294,6 +295,15 @@ func New(roles role.RoleServicer, opts ...Option) *RBACAuthorizer {
 func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName string) ([]string, error) {
 	ids, err := role.SystemRoleIDs(ctx, a.roles, tenantID, roleName)
 	if err != nil {
+		// A resolver that returns neither a role nor an error has broken its
+		// contract. That is a defect in the resolver, not the cold-node
+		// condition the fallback exists for, so it is terminal: retrying it
+		// against the stale-read replica would only mask a broken seam on a
+		// path that decides whether to void a grant.
+		var invalid *role.InvalidResolverResultError
+		if errors.As(err, &invalid) {
+			return nil, &ResolveError{Err: err}
+		}
 		if a.rolesFallback == nil {
 			return nil, &ResolveError{Err: err}
 		}
@@ -302,6 +312,8 @@ func (a *RBACAuthorizer) systemRoleIDs(ctx context.Context, tenantID, roleName s
 		// and keeps a cold or draining node authorizing.
 		fids, ferr := role.SystemRoleIDs(ctx, a.rolesFallback, tenantID, roleName)
 		if ferr != nil {
+			// The fallback failed too — including by breaking the same
+			// contract. Either way there is no resolved answer, so deny.
 			return nil, &ResolveError{Err: err}
 		}
 		ids = fids

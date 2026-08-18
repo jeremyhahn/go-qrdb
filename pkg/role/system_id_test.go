@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,8 +346,69 @@ func TestBuiltInRoles_SeedingKeepsLegacyRecord(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Resolver contract violations
+// ---------------------------------------------------------------------------
+
+func TestResolveSystemRoleID_NilRoleWithNilError_IsRefused(t *testing.T) {
+	// A resolver that reports neither a role nor an error has broken its
+	// contract. Reading that as "no such role" would hand back the canonical
+	// identifier, which on a legacy-seeded cluster names no record: a grant
+	// written against it confers nothing, and a control matching against it
+	// stops recognising the grant it exists to void.
+	ctx := context.Background()
+
+	got, err := ResolveSystemRoleID(ctx, nilNameResolver{}, "acme", RoleNameAdmin)
+	if err == nil {
+		t.Fatalf("ResolveSystemRoleID = %q, want an error for a contract-violating resolver", got)
+	}
+	var invalid *InvalidResolverResultError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want *InvalidResolverResultError", err, err)
+	}
+	if invalid.Name != RoleNameAdmin || invalid.TenantID != "acme" {
+		t.Errorf("error names %s in %s, want %s in acme", invalid.Name, invalid.TenantID, RoleNameAdmin)
+	}
+	if got != "" {
+		t.Errorf("ResolveSystemRoleID = %q, want an empty identifier alongside the error", got)
+	}
+}
+
+func TestSystemRoleIDs_NilRoleWithNilError_IsRefused(t *testing.T) {
+	// SystemRoleIDs feeds the SO deny-list and the strict-SoD Owner strip, so
+	// it must not answer with a partial set when the store cannot be trusted
+	// to have been consulted.
+	ids, err := SystemRoleIDs(context.Background(), nilNameResolver{}, "acme", RoleNameSO)
+	if err == nil {
+		t.Fatalf("SystemRoleIDs = %v, want an error for a contract-violating resolver", ids)
+	}
+	var invalid *InvalidResolverResultError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v (%T), want *InvalidResolverResultError", err, err)
+	}
+	if ids != nil {
+		t.Errorf("SystemRoleIDs = %v, want no identifiers alongside the error", ids)
+	}
+}
+
+func TestInvalidResolverResultError_Message(t *testing.T) {
+	err := &InvalidResolverResultError{Name: RoleNameSO, TenantID: "acme"}
+	msg := err.Error()
+	if !strings.Contains(msg, RoleNameSO) || !strings.Contains(msg, "acme") {
+		t.Errorf("Error() = %q, want it to name both the role and the tenant", msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// nilNameResolver is a NameResolver that breaks its contract by reporting
+// neither a role nor an error.
+type nilNameResolver struct{}
+
+func (nilNameResolver) GetRoleByName(_ context.Context, _, _ string) (*Role, error) {
+	return nil, nil
+}
 
 // errNameResolver is a NameResolver whose every lookup fails.
 type errNameResolver struct{ err error }

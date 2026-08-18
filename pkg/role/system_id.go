@@ -60,7 +60,9 @@ type NameResolver interface {
 // A nil svc yields the canonical identifier — the caller has no store to
 // consult, so there is no persisted identifier to prefer. Any store error
 // other than "no such role" is returned; callers must treat it as a failure
-// to resolve rather than as an absent role.
+// to resolve rather than as an absent role. A resolver that returns neither
+// a role nor an error has broken its contract and yields
+// InvalidResolverResultError for the same reason.
 func ResolveSystemRoleID(ctx context.Context, svc NameResolver, tenantID, roleName string) (string, error) {
 	if tenantID == "" {
 		tenantID = tenant.SystemTenantID
@@ -78,11 +80,13 @@ func ResolveSystemRoleID(ctx context.Context, svc NameResolver, tenantID, roleNa
 		}
 		return "", err
 	}
-	// A nil role with a nil error breaks the RoleServicer contract, but the
-	// resolver is reached from the authorization path, where a nil
-	// dereference would be an outage. Read it as "no such role".
+	// A nil role with a nil error breaks the RoleServicer contract. Refuse
+	// it rather than dereferencing it (an outage) or reading it as "no such
+	// role" (a fail-open: the persisted identifier would drop out of the
+	// answer, and the callers that void a grant by identifier would stop
+	// recognising a legacy one). Callers fail closed on this error.
 	if r == nil {
-		return canonical, nil
+		return "", &InvalidResolverResultError{Name: roleName, TenantID: tenantID}
 	}
 	return r.ID, nil
 }

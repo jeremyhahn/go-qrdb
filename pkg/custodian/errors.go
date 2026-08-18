@@ -84,3 +84,27 @@ func (e *StoreError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *StoreError) Unwrap() error { return e.Err }
+
+// CorruptRecordError is returned when a custodian record in the tenant index
+// cannot be decoded during duplicate detection.
+//
+// Registration refuses instead of skipping the record. Decoding is how a
+// record's username is learned, so an undecodable record cannot be ruled out
+// as the requested username's existing enrolment; skipping it would allow a
+// second custodian — with a second sealed share — to be enrolled for a
+// username that may already hold one. An operator repairs or quarantines the
+// record, which is a deliberate act rather than a silent one.
+type CorruptRecordError struct {
+	// ID is the custodian identifier whose record could not be decoded.
+	ID string
+	// Err is the underlying decode failure.
+	Err error
+}
+
+// Error returns a human-readable description of the corrupt record.
+func (e *CorruptRecordError) Error() string {
+	return fmt.Sprintf("custodian: record %s is corrupt and cannot be decoded: %v", e.ID, e.Err)
+}
+
+// Unwrap returns the underlying decode failure.
+func (e *CorruptRecordError) Unwrap() error { return e.Err }

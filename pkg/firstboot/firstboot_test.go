@@ -176,23 +176,51 @@ type fakeRoles struct {
 	createErr    error
 	existsByName map[string]bool
 	createCalls  []role.CreateRoleRequest
+	seeded       []role.Role
 }
 
 func (f *fakeRoles) CreateRole(_ context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
 	f.createCalls = append(f.createCalls, *req)
 	if f.existsByName[req.Name] {
+		// Already present under the identifier the request carries, which is
+		// what a restart of the same release looks like. The record is still
+		// in the store, so GetRoleByName must find it.
+		f.remember(role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID})
 		return nil, &role.RoleNameExistsError{Name: req.Name, TenantID: req.TenantID}
 	}
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
 	f.createCount.Add(1)
+	f.remember(role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions})
 	return &role.Role{ID: req.ID, Name: req.Name, TenantID: req.TenantID, Permissions: req.Permissions}, nil
 }
 
+// remember records a role as persisted, so the name lookup below answers as a
+// real store would.
+func (f *fakeRoles) remember(r role.Role) {
+	for i := range f.seeded {
+		if f.seeded[i].TenantID == r.TenantID && f.seeded[i].Name == r.Name {
+			return
+		}
+	}
+	f.seeded = append(f.seeded, r)
+}
+
 func (f *fakeRoles) GetRole(_ context.Context, _ string) (*role.Role, error) { return nil, nil }
-func (f *fakeRoles) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
-	return nil, nil
+
+// GetRoleByName makes fakeRoles a role.NameResolver, as qrdb's own
+// role.RoleServicer is. It answers from what has been persisted and reports a
+// typed not-found otherwise — never (nil, nil), which is a contract violation
+// the resolution seam deliberately refuses.
+func (f *fakeRoles) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
+	for i := range f.seeded {
+		if f.seeded[i].TenantID == tenantID && f.seeded[i].Name == name {
+			r := f.seeded[i]
+			return &r, nil
+		}
+	}
+	return nil, &role.RoleNotFoundError{ID: tenantID + "/" + name}
 }
 func (f *fakeRoles) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
 	return nil, nil

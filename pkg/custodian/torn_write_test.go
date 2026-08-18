@@ -226,3 +226,84 @@ func custodianIDFromTenantIndex(t *testing.T, store *tornKV, tenantID string) st
 	}
 	return keys[0][len(prefix):]
 }
+
+func TestRegisterCustodian_CorruptLegacyRecord_RefusesRatherThanEnrolsTwice(t *testing.T) {
+	// A legacy primary record that cannot be decoded, with no username index
+	// to identify it by. Decoding is how a record's username is learned, so
+	// this record cannot be ruled out as alice's existing enrolment —
+	// skipping it would enrol a second alice, under a second identifier,
+	// holding a second sealed share while the first is still out there.
+	ctx := context.Background()
+	store := newTornKV()
+	svc := newTornService(t, store)
+
+	if err := store.Put(ctx, "__sys:custodian/"+legacyCustodianIDAlice, []byte("{not json")); err != nil {
+		t.Fatalf("put corrupt primary: %v", err)
+	}
+	if err := store.Put(ctx, "__sys:custodian-idx/tenant/tenant-1/"+legacyCustodianIDAlice,
+		[]byte(legacyCustodianIDAlice)); err != nil {
+		t.Fatalf("put tenant index: %v", err)
+	}
+
+	req, _ := testRegisterRequest(t)
+	_, err := svc.RegisterCustodian(ctx, req)
+	if err == nil {
+		t.Fatal("registration proceeded past a record it could not rule out")
+	}
+	var corrupt *custodian.CorruptRecordError
+	if !errors.As(err, &corrupt) {
+		t.Fatalf("err = %v (%T), want *custodian.CorruptRecordError", err, err)
+	}
+	if corrupt.ID != legacyCustodianIDAlice {
+		t.Errorf("CorruptRecordError.ID = %s, want %s", corrupt.ID, legacyCustodianIDAlice)
+	}
+
+	// Nothing was written: no second enrolment, and the corrupt record is
+	// left exactly as found for an operator to repair.
+	keys, err := store.List(ctx, "__sys:custodian-idx/tenant/tenant-1/")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Errorf("tenant index holds %d entries, want the 1 corrupt record only", len(keys))
+	}
+	data, err := store.Get(ctx, "__sys:custodian/"+legacyCustodianIDAlice)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(data) != "{not json" {
+		t.Errorf("corrupt record = %q, want it left untouched", string(data))
+	}
+}
+
+func TestRegisterCustodian_CorruptRecordInAnotherTenant_DoesNotBlockEnrolment(t *testing.T) {
+	// The refusal is scoped to the tenant being scanned: corruption in some
+	// other tenant is not this registration's problem.
+	ctx := context.Background()
+	store := newTornKV()
+	svc := newTornService(t, store)
+
+	if err := store.Put(ctx, "__sys:custodian/other-tenant-record", []byte("{not json")); err != nil {
+		t.Fatalf("put corrupt primary: %v", err)
+	}
+	if err := store.Put(ctx, "__sys:custodian-idx/tenant/tenant-2/other-tenant-record",
+		[]byte("other-tenant-record")); err != nil {
+		t.Fatalf("put tenant index: %v", err)
+	}
+
+	req, _ := testRegisterRequest(t)
+	if _, err := svc.RegisterCustodian(ctx, req); err != nil {
+		t.Fatalf("RegisterCustodian: %v", err)
+	}
+}
+
+func TestCorruptRecordError_MessageAndUnwrap(t *testing.T) {
+	cause := errors.New("invalid character 'n'")
+	err := &custodian.CorruptRecordError{ID: "abc", Err: cause}
+	if !strings.Contains(err.Error(), "abc") {
+		t.Errorf("Error() = %q, want it to name the record", err.Error())
+	}
+	if !errors.Is(err, cause) {
+		t.Error("Unwrap() does not expose the decode failure")
+	}
+}
