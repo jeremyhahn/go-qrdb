@@ -1140,6 +1140,55 @@ fmt:
 	echo "All files formatted correctly"
 
 # ============================================================================
+# Release hygiene
+# ============================================================================
+
+# release-versioning.md P2: the nested sdk/go module is tagged in lockstep with
+# the root module. When a root vX.Y.Z tag ships without sdk/go/vX.Y.Z, `go get`
+# at latest resolves the root to X.Y.Z and sdk/go to the previous release, and
+# any symbol the release removed from a package sdk/go re-exports breaks the
+# consumer's build (issue #6: sdk/go v0.5.8-alpha still aliased
+# statemachine.CachedDiskBackend, deleted in v0.5.9-alpha).
+#
+# Every root tag must have an sdk/go counterpart at the same commit, and no
+# sdk/go tag may exist without its root. Reads the tags in the working clone,
+# so a shallow or tagless checkout must fetch them first.
+.PHONY: check-tag-lockstep
+check-tag-lockstep:
+	@ROOT_TAGS=$$(git tag --list 'v*'); \
+	if [ -z "$${ROOT_TAGS}" ]; then \
+		echo "no root version tags in this clone — fetch them before running this check"; \
+		exit 1; \
+	fi; \
+	FAILED=0; \
+	for TAG in $${ROOT_TAGS}; do \
+		SDK_TAG="sdk/go/$${TAG}"; \
+		if ! git rev-parse -q --verify "refs/tags/$${SDK_TAG}^{commit}" >/dev/null; then \
+			echo "MISSING  $${SDK_TAG} — root tag $${TAG} has no sdk/go counterpart"; \
+			FAILED=1; \
+			continue; \
+		fi; \
+		ROOT_SHA=$$(git rev-parse "refs/tags/$${TAG}^{commit}"); \
+		SDK_SHA=$$(git rev-parse "refs/tags/$${SDK_TAG}^{commit}"); \
+		if [ "$${ROOT_SHA}" != "$${SDK_SHA}" ]; then \
+			echo "SKEW     $${TAG} is $${ROOT_SHA} but $${SDK_TAG} is $${SDK_SHA}"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	for SDK_TAG in $$(git tag --list 'sdk/go/v*'); do \
+		TAG="$${SDK_TAG#sdk/go/}"; \
+		if ! git rev-parse -q --verify "refs/tags/$${TAG}^{commit}" >/dev/null; then \
+			echo "ORPHAN   $${SDK_TAG} — no matching root tag $${TAG}"; \
+			FAILED=1; \
+		fi; \
+	done; \
+	if [ "$${FAILED}" -ne 0 ]; then \
+		echo "root and sdk/go tags are not in lockstep (release-versioning.md P2)"; \
+		exit 1; \
+	fi; \
+	echo "root and sdk/go tags are in lockstep"
+
+# ============================================================================
 # Security scanning
 # ============================================================================
 

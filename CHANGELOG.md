@@ -100,6 +100,27 @@ are not reconstructed here — their history is in the git log.
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
 
+- **`make check-tag-lockstep`** and the `Release tag lockstep` CI job:
+  every root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same
+  commit, and no `sdk/go` tag may exist without its root
+  (release-versioning.md P2). `v0.5.9-alpha` was tagged on the root module
+  alone, so `go get` at latest resolved the root to `v0.5.9-alpha` and
+  `sdk/go` to `v0.5.8-alpha` — a pair that does not compile, because the
+  older `sdk/go` still aliased the symbols removed below. The tag has since
+  been cut; the gate is what keeps the next release from repeating it.
+  Reported by go-xkms (#6).
+
+### Removed
+
+- **`statemachine.CachedDiskBackend` and `NewCachedDiskBackend`**, with
+  their `sdk/go` aliases — a breaking change to an exported API, shipped
+  in `v0.5.9-alpha`. Both were a reserved placeholder: a methodless struct
+  no registry ever provided, so the `cached-disk` SM backend passed config
+  validation and then failed at boot. There is no replacement and nothing
+  to migrate — no build that compiled against these symbols was running a
+  cached disk backend. The disk-backed path is `sm_type: disk`, now
+  composable over any storage backend via `raft.sm_storage`.
+
 ## [0.5.8-alpha] - 2026-08-17
 
 ### Added
