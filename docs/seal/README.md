@@ -25,7 +25,7 @@ The first two ship inside qrdb. The third ships in go-xkms and is **registered i
 - [multi-tenant.md](multi-tenant.md) — Per-tenant barrier isolation via `NamespacedBackend`.
 - [compliance.md](compliance.md) — FIPS, FedRAMP, PCI-DSS, HIPAA mapping.
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: transparent decryption, strategy-fixed-at-init, enabling encryption on an existing `none` deployment via backup/restore, and how encrypted backups are recovered.
-- [../pin/README.md](../pin/README.md) — PIN backend used by the SO/User PIN ceremony.
+- [../pin/README.md](../auth-factors/architecture.md) — PIN backend used by the SO/User PIN ceremony.
 
 ## Three-Layer Architecture
 
@@ -179,7 +179,7 @@ Use cases:
 | Root token generation | One-time admin token via share reconstruction | [shamir.md](shamir.md) |
 | Audit logging | Structured audit events for all barrier operations | Inline below |
 | Per-node key custody | Each node holds its own system barrier KEK; tenant keys securely transported via mTLS+HPKE | [Per-Node Key Architecture](#per-node-key-architecture) |
-| Tenant key delivery | Secure cross-node transport of tenant root keys with per-node re-wrapping | [../multi-tenancy.md](../multi-tenancy.md#per-node-independent-key-design) |
+| Tenant key delivery | Secure cross-node transport of tenant root keys with per-node re-wrapping | [../multi-tenancy.md](../multi-tenancy/architecture.md#per-node-independent-key-design) |
 
 ## Per-Node Key Architecture
 
@@ -194,7 +194,7 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication. See
-  [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy.md#per-node-independent-key-design).
+  [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy/architecture.md#per-node-independent-key-design).
 
 ## Transparent At-Rest Encryption via StorageBarrier
 
@@ -583,6 +583,6 @@ The Tenants admin view lets the **tenant admin choose the barrier strategy** —
 
 - [go-quicraft docs/06-crypto.md](https://github.com/jeremyhahn/go-quicraft/blob/main/docs/06-crypto.md) — Minimal barrier, memguard, epoch rotation, software/none/shamir primitives
 - [go-xkms docs/seal/README.md](https://github.com/jeremyhahn/go-xkms/blob/main/docs/seal/README.md) — Hardware sealing strategies that register into qrdb's `StrategyRegistry`
-- [../pin/README.md](../pin/README.md) — PIN backend interface (canonical PIN contract for the stack)
-- [../credentials/README.md](../credentials/README.md) — Versioned credential rotation backed by the barrier
-- [../audit/README.md](../audit/README.md) — Audit event logging and query API
+- [../pin/README.md](../auth-factors/architecture.md) — PIN backend interface (canonical PIN contract for the stack)
+- [../credentials/README.md](../credentials/architecture.md) — Versioned credential rotation backed by the barrier
+- [../audit/README.md](../audit/architecture.md) — Audit event logging and query API

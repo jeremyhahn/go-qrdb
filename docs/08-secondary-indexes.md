@@ -534,6 +534,6 @@ field values sort contiguously in storage.
 ## Cross-References
 
 - [Query Planner](16-query-planner.md) -- Automatic index selection
-- [MVCC Engine](02-mvcc.md) -- Underlying key-value versioning
+- [MVCC Engine](key-value/engineering.md) -- Underlying key-value versioning
 - [Configuration](12-configuration.md) -- `index.max_indexes` setting
-- [API Reference](api.md) -- Index creation/query endpoints
+- [API Reference](api-server/api.md) -- Index creation/query endpoints

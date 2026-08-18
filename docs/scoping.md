@@ -105,7 +105,7 @@ internal `\x1f` namespace-scoping separator), preventing key-injection attacks.
 > un-tenanted identities may pool into `system`. The separate **per-tenant
 > isolation ladder** (`prefix` / `barrier` / `volume` / `raft`), which controls
 > how strongly an individual tenant's data is separated, is documented in
-> [multi-tenancy.md](multi-tenancy.md).
+> [multi-tenancy.md](multi-tenancy/architecture.md).
 
 QRDB supports two tenant isolation postures, selected via `tenant.strict_isolation`
 in the YAML configuration (or forced to strict by a FIPS-140 build):
@@ -165,7 +165,7 @@ not by a request parameter.
 
 ## See Also
 
-- [multi-tenancy.md](multi-tenancy.md) — Isolation ladder, quotas, and entitlements
+- [multi-tenancy.md](multi-tenancy/architecture.md) — Isolation ladder, quotas, and entitlements
 - [databases/README.md](databases/README.md) — Database management and lifecycle
 - [seal/multi-tenant.md](seal/multi-tenant.md) — Tenant encryption isolation
-- [api.md](api.md) — REST and gRPC API reference
+- [api.md](api-server/api.md) — REST and gRPC API reference

@@ -48,7 +48,7 @@ the MCP `database` tool argument; the Go/TypeScript SDKs expose
 supplied, the request resolves to the implicit bootstrap database `system`
 (`tenant.DefaultDatabase`). The **tenant**, by contrast, is never client-supplied
 — it comes from the authenticated identity. See [scoping.md](../scoping.md) for
-the request-time scoping model and [multi-tenancy.md](../multi-tenancy.md) for the
+the request-time scoping model and [multi-tenancy.md](../multi-tenancy/architecture.md) for the
 per-tenant isolation ladder, quotas, and entitlements.
 
 ---
@@ -278,7 +278,7 @@ Create a dedicated-Raft database with a replication factor. `--replicas` applies
 to the `raft` backend only and defaults to `1`; a higher value is validated
 against the tenant's `MaxReplicasPerGroup` / `MaxTotalReplicas` quota and clamped
 to the live cluster size (multi-node replication of tenant raft groups is in
-development — see [multi-tenancy.md](../multi-tenancy.md)):
+development — see [multi-tenancy.md](../multi-tenancy/architecture.md)):
 
 ```bash
 qrdb database create payments --engine kv --backend raft --replicas 3
@@ -678,6 +678,6 @@ with `atomic.Value` (values: `open`, `closed`, `error`).
 
 - [Architecture Overview](../01-architecture.md)
 - [Configuration Reference](../12-configuration.md)
-- [API Reference](../api.md)
+- [API Reference](../api-server/api.md)
 - [Tenant & Database Scoping](../scoping.md)
-- [Multi-Tenancy: Isolation, Quotas & Entitlements](../multi-tenancy.md)
+- [Multi-Tenancy: Isolation, Quotas & Entitlements](../multi-tenancy/architecture.md)

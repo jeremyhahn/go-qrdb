@@ -576,11 +576,11 @@ and build instructions.
 
 ## Cross-References
 
-- [API Reference](api.md) -- REST and gRPC endpoint specifications
-- [MVCC Engine](02-mvcc.md) -- revision tracking internals
-- [Transactions](03-transactions.md) -- compare-and-swap semantics
+- [API Reference](api-server/api.md) -- REST and gRPC endpoint specifications
+- [MVCC Engine](key-value/engineering.md) -- revision tracking internals
+- [Transactions](transactions/engineering.md) -- compare-and-swap semantics
 - [Configuration](12-configuration.md) -- complete YAML reference
-- [Operations](13-operations.md) -- deployment and monitoring
+- [Operations](clustering/cli.md) -- deployment and monitoring
 - [Authentication and RBAC](auth/README.md) -- pluggable auth, RBAC authorizer, auth middleware
 - [Seal / CA Key Lifecycle](seal/README.md) -- barrier-sealed CA private key protection
 - [GUI](gui/README.md) -- desktop and browser GUI architecture

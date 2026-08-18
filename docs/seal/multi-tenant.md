@@ -12,7 +12,7 @@ The barrier supports per-tenant encryption isolation through `BarrierRegistry` a
 A tenant's isolation mode is set on `TenantInfo.IsolationType`. This page focuses
 on the **cryptographic barrier** behavior of each mode; the full isolation ladder
 (including its storage and Raft implications, quotas, and entitlements) is
-documented in [../multi-tenancy.md](../multi-tenancy.md).
+documented in [../multi-tenancy.md](../multi-tenancy/architecture.md).
 
 | Strategy | Keyspace Prefixing | Cryptographic Barrier | Notes |
 |----------|--------------------|-----------------------|-------|
@@ -341,7 +341,7 @@ type TenantBarrierStatusResponse struct {
 
 ## See Also
 
-- [../multi-tenancy.md](../multi-tenancy.md) — isolation ladder, quotas, and entitlements
+- [../multi-tenancy.md](../multi-tenancy/architecture.md) — isolation ladder, quotas, and entitlements
 - [../scoping.md](../scoping.md) — request-time tenant + database scoping
 - [shamir.md](shamir.md) — Shamir threshold unsealing and unseal-key indirection
 - [so-share-distribution-design.md](so-share-distribution-design.md) — Security Officer share distribution

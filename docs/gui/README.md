@@ -297,8 +297,8 @@ embedded via `//go:embed`. No external files are needed at runtime.
 ## Cross-References
 
 - [TypeScript SDK](../typescript-sdk/README.md) -- `@qrdb/sdk` package documentation
-- [CLI Reference](../cli/README.md) -- CLI command tree (same binary, different mode)
-- [Go SDK](../sdk/README.md) -- Go SDK used by Wails bindings
+- [CLI Reference](../api-server/cli.md) -- CLI command tree (same binary, different mode)
+- [Go SDK](../api-server/engineering.md) -- Go SDK used by Wails bindings
 - [Configuration](../12-configuration.md) -- Server configuration reference
 - [Seal Package](../seal/README.md) -- Seal/unseal lifecycle
 - [Authentication](../auth/README.md) -- mTLS identity extraction

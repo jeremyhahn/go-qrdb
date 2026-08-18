@@ -16,7 +16,7 @@ GORM ──▶ sdk/go/gorm (Dialector, Migrator) ──▶ sdk/go/driver ("qrdb"
 ```
 
 The SQL surface underneath is go-mysql-server, so everything in
-[README.md](README.md) — the relational table catalog, DML, secondary indexes,
+[README.md](architecture.md) — the relational table catalog, DML, secondary indexes,
 foreign keys, interactive transactions — is what GORM is driving. Read that
 document for the engine's semantics; this one covers the dialector.
 
@@ -130,7 +130,7 @@ for the same storage locks, exactly as two processes would.
 To reach a running `qrdbd` over its MySQL wire port, use the **stock**
 `gorm.io/driver/mysql` with mTLS — not this dialector. QRDB's MySQL listener
 speaks MySQL, and its authentication is mTLS-only (CN maps to the username, OU
-to the tenant); see [README.md](README.md#authentication). The same applies to
+to the tenant); see [README.md](architecture.md#authentication). The same applies to
 `gorm.io/driver/postgres` against the PostgreSQL listener.
 
 ## Why `Dialector.Name()` reports `"mysql"`
@@ -283,7 +283,7 @@ The whole transaction is buffered and committed as **one** MVCC compare-and-swap
 against the Raft group. Reads inside it are served from a pinned snapshot
 overlaid with the transaction's own writes; conflicts are resolved
 first-committer-wins. The full model, including savepoint semantics and the
-write-set size ceilings, is in [README.md](README.md#transaction-control).
+write-set size ceilings, is in [README.md](architecture.md#transaction-control).
 
 **Nested transactions use savepoints.** `Dialector` implements
 `gorm.SavePointerDialectorInterface`, so GORM's nested `db.Transaction(...)`
@@ -460,4 +460,4 @@ that file is the source of truth and is updated with each measurement.
 | Column type mapping | `sdk/go/gorm/datatype.go` |
 | DSN grammar and schemes | `sdk/go/driver/dsn.go`, `sdk/go/driver/driver.go` |
 | `node://` connector | `sdk/go/driver/node/node.go` |
-| Engine semantics | [README.md](README.md) |
+| Engine semantics | [README.md](architecture.md) |

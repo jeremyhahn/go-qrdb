@@ -162,7 +162,7 @@ srv := server.New(cfg, kvSvc, adminSvc, server.WithFactorRegistry(reg))
 
 - [../auth/roles.md](../auth/roles.md) — Custodian role and permissions
 - [custodians.md](custodians.md) — Custodian lifecycle and share-delivery protocol
-- [../ceremony/README.md](../ceremony/README.md) — How the ceremony consumes factors during enrolment
+- [../ceremony/README.md](../ceremony/architecture.md) — How the ceremony consumes factors during enrolment
 - [go-xkms docs](https://github.com/jeremyhahn/go-xkms/tree/main/docs/authfactors) — Hardware factor implementations (FIDO2, PIV, PKCS#11) with attestation
 - [NIST SP 800-73-4](https://csrc.nist.gov/publications/detail/sp/800-73/4/final) — PIV standard
 - [PKCS#11 v2.40](http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/os/pkcs11-base-v2.40-os.html) — Cryptoki standard

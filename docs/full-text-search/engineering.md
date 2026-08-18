@@ -1,0 +1,148 @@
+# Full-Text Search — Engineering Contract
+
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+
+> **Build-tag gated: `qrdb_fts`** (`WITH_QRDB_FTS=1` in the Makefile). Without
+> the tag, `pkg/fts` is the stub in `stub.go` and `Available()` returns false.
+
+## Exported surface
+
+`pkg/fts` — in-process only; there is no SDK, CLI or wire surface (see
+[api.md](api.md)).
+
+```go
+// Availability
+func Available() bool          // true only in a qrdb_fts build
+
+// Analyzer
+type Stemmer interface { /* stemming contract */ }
+type Analyzer struct{ /* ... */ }
+type AnalyzerOption func(*Analyzer)
+
+func NewAnalyzer(opts ...AnalyzerOption) *Analyzer
+func WithStemmer(s Stemmer) AnalyzerOption
+func WithStopWords(words []string) AnalyzerOption
+
+type SimpleStemmer struct{}
+
+// Tokenizer
+type Tokenizer struct{ /* ... */ }
+type TokenPosition struct{ /* ... */ }
+
+func NewTokenizer() *Tokenizer
+func NewTokenizerWithStopWords(words []string) *Tokenizer
+
+// Inverted index (low level)
+type InvertedIndex struct{ /* ... */ }
+
+func NewInvertedIndex(store storage.Storage, name string, analyzer *Analyzer) *InvertedIndex
+func (idx *InvertedIndex) Index(entityKey []byte, text string) error
+func (idx *InvertedIndex) Remove(entityKey []byte) error
+func (idx *InvertedIndex) Search(query string) ([][]byte, error)
+func (idx *InvertedIndex) SearchOr(query string) ([][]byte, error)
+
+// FTSIndex (high level, for DAO integration)
+type FTSIndex struct{ /* ... */ }
+type FTSOption func(*ftsConfig)
+
+func NewFTSIndex(store storage.Storage, name string, opts ...FTSOption) *FTSIndex
+func WithAnalyzer(a *Analyzer) FTSOption
+func (f *FTSIndex) IndexDocument(entityKey []byte, text string) error
+func (f *FTSIndex) RemoveDocument(entityKey []byte) error
+func (f *FTSIndex) Search(query string) ([][]byte, error)
+func (f *FTSIndex) SearchOr(query string) ([][]byte, error)
+```
+
+Usage:
+
+```go
+// Default: no stemming
+idx := fts.NewFTSIndex(store, "messages.Body")
+
+// With stemming
+analyzer := fts.NewAnalyzer(fts.WithStemmer(fts.SimpleStemmer{}))
+idx = fts.NewFTSIndex(store, "messages.Body", fts.WithAnalyzer(analyzer))
+
+_ = idx.IndexDocument([]byte("messages/12345"),
+	"Hey, are we still meeting tomorrow at the coffee shop?")
+
+keys, _ := idx.Search("meeting coffee")    // AND: both terms
+keys, _ = idx.SearchOr("meeting lunch")    // OR: either term
+```
+
+## Invariants
+
+- **Default analysis does not stem.** `NewAnalyzer()` with no options
+  tokenizes and lowercases only. Stemming changes what is stored, so turning it
+  on requires reindexing.
+- **`Search` is AND, `SearchOr` is OR.** AND intersects postings starting from
+  the smallest set.
+- **Results are unordered.** There is no relevance score, so a caller must not
+  read the slice order as ranking.
+- **Tokenization rules**: whitespace and punctuation split; tokens lowercase;
+  CJK (Han, Katakana, Hiragana) one token per character; English stop words
+  removed by default; emoji treated as punctuation and not indexed.
+- **Positions are stored but unused.** The value at a term key is the position;
+  no search path reads it yet.
+- **The index and the documents share one `storage.Storage`.** FTS inherits its
+  store's tenant scope and barrier state rather than holding its own.
+- **`Available()` is the only correct availability probe.** Both the real
+  implementation and the stub define it, so a caller compiles either way.
+
+## Storage layout
+
+```
+fts:{indexName}:term:{token}:{entityKey}{uint32BE(len)}  ->  uint32BE(position)
+fts:{indexName}:doc:{entityKey}                          ->  uint32BE(termCount)
+```
+
+The `fts:` prefix keeps FTS data from colliding with entity data and secondary
+indexes in the same store.
+
+**Compatibility**: the key layout and the `uint32BE` encoding are the on-disk
+format. Changing the analyzer configuration (stemmer, stop words) changes which
+tokens are written, so it is a reindex, not a migration.
+
+## Error semantics
+
+`pkg/fts` returns a package-local typed error (`ftsError`); `fmt.Errorf` is not
+used.
+
+| Condition | Behavior |
+|---|---|
+| Built without `qrdb_fts` | `Available()` is false; the stub provides no index type |
+| Storage write failure during indexing | error returned; the document is not partially searchable in a way the caller cannot see |
+| Query with only stop words | empty result — every term was removed by the analyzer |
+| `Remove` for an unindexed key | no-op |
+
+## Performance characteristics
+
+- **Indexing**: O(T) per document, T = unique terms. Writes are batched to
+  minimize storage round-trips.
+- **Search**: O(T × K), T = query terms, K = average postings per term. AND
+  search intersects starting from the smallest posting set.
+- **Storage**: one entry per term-entity pair. A corpus of 100k documents with
+  ~20 unique terms each yields on the order of 2M index entries.
+- **`Remove` scans all term entries** — O(total index entries). This is the
+  sharpest cost in the current implementation and is the reason bulk deletion is
+  expensive.
+
+## Test strategy
+
+- **Unit**, all under the `qrdb_fts` tag: analyzer (basic, with stemmer, stemmer
+  deduplication, custom stop words, positions), `SimpleStemmer` (common
+  suffixes, short words), inverted index (index and search, OR search, no
+  results), tokenizer (CJK, emoji, stop words).
+- **Stub tests** verify the non-tagged build compiles and `Available()` reports
+  false.
+- **Lint** runs with the build tags joined, so tagged code is linted rather than
+  skipped.
+- **Not covered by the integration parity suite**, because there is no transport
+  surface to exercise.
+
+## Known gaps
+
+- **No SDK, CLI or wire surface** — see [api.md](api.md). This is an export
+  obligation defect, not a scope decision.
+- No phrase queries (positions stored, unused), no relevance ranking, no field
+  boosting, no fuzzy matching, single-language stop words.
