@@ -151,6 +151,15 @@ jobs:
   security:
     name: Security
     runs-on: ubuntu-latest
+    # ci-template v1.6: the Go toolchain is cgroup-unaware — in a 16 GB job
+    # container it sees the HOST's 24 cores and 94 GB, so gosec ran 24 workers
+    # and the GC grew the heap to ~27 GB, swapping 11 GB of anonymous memory
+    # and stalling the whole host (memory PSI 98, 43% CPU in iowait; measured
+    # 2026-08-18 from the live cgroup). GOMEMLIMIT makes the GC respect the
+    # container budget; GOMAXPROCS bounds the worker fan-out.
+    env:
+      GOMEMLIMIT: 10GiB
+      GOMAXPROCS: 8
     steps:
       - uses: actions/checkout@v6
 
