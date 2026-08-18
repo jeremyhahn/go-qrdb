@@ -1,23 +1,22 @@
-<!--
-Copyright 2026 Jeremy Hahn
-Licensed under the Apache License, Version 2.0
--->
+# Clustering — Architecture
 
-# Peer Discovery & Cluster Membership
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
 
-This document describes how a go-qrdb cluster forms and how its Raft membership
-is maintained over time. Two distinct concerns are covered:
+Covers peer discovery, cluster formation, membership, node administration and
+shard rebalancing. **Raft mode only** — see
+[../run-modes/](../run-modes/architecture.md).
 
-1. **Peer discovery** — how a node finds the other Raft peers it should form or
-   join a shard with, at startup.
-2. **Cluster membership** — how membership is reconciled at runtime as nodes
-   join and leave.
+## Problem
 
-> **Scope note.** This is *peer* discovery for Raft cluster formation. It is
-> distinct from **service discovery** (registering and resolving application
-> service instances), which is built on go-qrdb's lease + watch + KV primitives
-> by downstream consumers such as go-quicbaas. It is also distinct from **trust
-> bootstrap** (Noise/SPKI/DANE CA establishment) — see [bootstrap.md](bootstrap.md).
+Turning a set of processes into a Raft cluster needs three things a consensus
+library does not provide: finding the peers, deciding when there are enough of
+them to start, and keeping the membership correct as nodes come and go. Leaving
+those to each deployment means each one invents its own, subtly wrong.
+
+## Shape chosen
+
+Discovery, bootstrap orchestration and membership live **here**, above the
+consensus primitives.
 
 ## Ownership
 
@@ -31,7 +30,16 @@ is maintained over time. Two distinct concerns are covered:
 The discovery engine and bootstrap orchestration live in go-qrdb, the layer
 that actually owns the cluster. go-quicraft is reduced to Raft primitives only.
 
-## Discovery engine (`pkg/discovery`)
+That split is the central decision: go-quicraft is reduced to Raft primitives
+(`StartShard`, `GetLeaderID`, replica add/remove) and go-qrdb owns the layer
+that actually knows what a cluster is.
+
+**Cluster discovery is not service discovery**, and not trust bootstrap.
+Registering and resolving *application* service instances is built by downstream
+consumers (go-quicbaas) on this store's lease + watch + KV primitives. Noise /
+SPKI / DANE CA establishment is [../trust-bootstrap/](../trust-bootstrap/).
+
+## Discovery engine
 
 A discovery *method* satisfies a small interface:
 
@@ -67,6 +75,10 @@ The `Manager` chains methods with retry, returning the first non-empty result.
 `pkg/cluster` turns discovered peers into a running Raft shard. The reusable
 entry point is transport-neutral and embeddable:
 
+The `Manager` chains methods with retry, returning the first non-empty result.
+
+## Bootstrap orchestration
+
 ```go
 opts := cluster.Options{
     Method:      "multicast",
@@ -90,7 +102,9 @@ Configuration lives under the `discovery` block — see
 
 `cluster.MembershipManager` reconciles the Raft group as nodes join and leave,
 realizing the etcd-style **lease + watch** membership pattern on go-qrdb's own
-primitives:
+
+## Dynamic membership — opt-in
+
 
 - Each node registers a member entry (`__sys:cluster/members/{nodeID}`, in the
   system namespace so it is hidden from user KV scans) backed by a
@@ -138,7 +152,9 @@ control-plane operations — it adds no new wire RPCs:
 ```go
 cc := client.Cluster()
 members, _ := cc.Members(ctx, shardID)          // filtered from Peers()
-leader, ok, _ := cc.Leader(ctx, shardID)         // from GetShardState()
+
+## SDK `Cluster()` client
+
 _ = cc.AddReplica(ctx, shardID, id, raftAddr)    // delegates to AddMember
 _ = cc.RemoveReplica(ctx, shardID, id)           // delegates to RemoveMember
 ch, _ := cc.WatchMembership(ctx, shardID)        // polls + emits deltas
@@ -150,3 +166,61 @@ for ev := range ch {
 `WatchMembership` polls (rather than using a dedicated streaming RPC) so it
 works over every transport, including the unary-only REST transport. The poll
 cadence is `DefaultMembershipPollInterval`.
+
+### Alternatives rejected
+
+- **Discovery inside go-quicraft.** Rejected: consensus and cluster formation
+  are different concerns with different dependency graphs, and putting
+  discovery below the store meant the store could not use its own primitives to
+  do it.
+- **A Kubernetes-specific discovery method.** Rejected: `dns` against a headless
+  Service covers it. A dedicated method would be one more thing to maintain for
+  no capability.
+- **A default multicast secret.** Rejected outright: multicast announcements are
+  HMAC-SHA256 authenticated with an **operator-chosen** PSK and there is no
+  default. A shipped default secret is not authentication.
+- **Dynamic membership on by default.** Rejected: automatic Raft reconfiguration
+  is exactly the machinery that can destroy a cluster during a transient
+  liveness blip. It is opt-in, leader-only, and quorum-guarded.
+- **A revision-resumed membership watch.** Rejected in favour of a full
+  `ListMembers` snapshot on startup and after a watch re-subscribe. It is
+  O(cluster size), membership sets are small, and reconnects are rare — the
+  simple rescan converges in both directions.
+- **A dedicated streaming RPC for `WatchMembership`.** Rejected so the facade
+  works over every transport including unary-only REST; it polls at
+  `DefaultMembershipPollInterval`.
+
+## Component boundaries
+
+| Piece | Package | Owner |
+|---|---|---|
+| Discovery methods and `Manager` | `pkg/discovery` | go-qrdb |
+| Bootstrap orchestration, `MembershipManager` | `pkg/cluster` | go-qrdb |
+| Node admin (health, status, peers, drain, snapshot, shards, topology) | `pkg/service` admin | go-qrdb |
+| Shard rebalancing | `pkg/placement`, `pkg/service` | go-qrdb |
+| Raft primitives, leader election, log | — | **go-quicraft** |
+| SDK surface | `sdk/go` (`Client.Admin()`, `Client.Cluster()`, rebalance client) | go-qrdb |
+
+## Trust boundaries
+
+- **Multicast discovery requires an operator PSK** and authenticates
+  announcements with HMAC-SHA256. Without a secret the method does not run.
+- **Membership entries live under `__sys:cluster/members/{nodeID}`**, inside the
+  internal namespace, so they are hidden from user KV scans.
+- **Every admin verb carries its own permission** — `admin:health`,
+  `admin:status`, `admin:peers`, `admin:add_member`, `admin:remove_member`,
+  `admin:snapshot`, `admin:drain`, `admin:capabilities`, `admin:start_shard`,
+  `admin:shard_state`. Adding and removing replicas are separately gated from
+  reading peers.
+- **`GET /health` is a public route** so a load balancer can probe an
+  unauthenticated node; nothing else in this feature is.
+- **Rebalance `execute` physically moves shards** and is gated apart from the
+  read-only `stats`/`plan`/`report`.
+
+## What this feature deliberately does not do
+
+- **No service discovery.** Application service registries are a consumer
+  concern built on lease + watch + KV.
+- **No trust bootstrap.** See [../trust-bootstrap/](../trust-bootstrap/).
+- **No automatic rebalancing.** Plans are generated and executed deliberately.
+- **No cross-cluster federation.**
