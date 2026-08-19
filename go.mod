@@ -31,7 +31,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-objstore v0.2.2-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.8.0-alpha
 	github.com/jeremyhahn/go-quicraft v0.6.2-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0

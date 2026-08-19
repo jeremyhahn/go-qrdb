@@ -11,6 +11,14 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.8.0-alpha] - 2026-08-19
+
+MINOR, not PATCH: the `kvstore.KVStore` index contract changes (a store that
+cannot index MUST now return `ErrIndexUnsupported`; `(nil, nil)` is
+forbidden), `EntityIndex` gains fields, and `seal.NewTenantSharedKVStore`
+returns a type that no longer always satisfies `AtomicKVStore`. Pre-1.0, MINOR
+is where added API and breakage both live.
+
 ### Fixed
 
 - **`QueryIndex` no longer lies on `StoreResolver`-returned stores** (#31, #32).
