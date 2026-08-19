@@ -314,6 +314,39 @@ through `pkg/role` in a FIPS build.
   a legacy cluster's user records produces a grant that resolves to no role and
   silently strips the user's permissions.
 
+### Fixed — release integrity
+
+- **Every previously published tag was unbuildable for a consumer that reached
+  `pkg/ceremony`, `pkg/api/rest` or `cmd/qrdb`.** The root `go.mod` recorded
+  `github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0-00010101000000-000000000000`, a
+  placeholder that resolves to nothing. A `replace` directive only applies in
+  the main module, so the in-repo `=> ./sdk/go` masked it for every check run
+  inside this repository — local builds, CI, `go list`, module-zip inspection —
+  while a downstream consumer got:
+
+  ```
+  github.com/jeremyhahn/go-qrdb/sdk/go@v0.0.0-00010101000000-000000000000:
+      invalid version: unknown revision 000000000000
+  ```
+
+  Those three package trees import `sdk/go/transport`, so the failure is
+  reachable, not theoretical; it was reproduced against `v0.5.9-alpha` from a
+  scratch module with `GOWORK=off`. The reciprocal pin was stale in the same
+  way: `sdk/go` required the root at `v0.4.0-alpha`, five minor versions
+  behind.
+
+  Both cross-module requirements now name the release they ship in
+  (`v0.6.0-alpha`), which the lockstep tagging rule guarantees exists — the
+  root and `sdk/go` tags are pushed atomically. The `replace` directives stay,
+  because in-repo development must still build against the working tree rather
+  than a published copy of its own code.
+
+  This is the defect `release-versioning.md` §2 mandates a throwaway-consumer
+  check for, and the reason that check is mandatory: no test that runs inside
+  the repository can see it. It is also the same failure that condemned
+  `v0.2.0-alpha`, which means it regressed and went unnoticed for many
+  releases.
+
 ### Fixed — tests
 
 - **`TestDefaultHasher_NonFIPSMode` pinned the toolchain instead of the
