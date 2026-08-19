@@ -316,8 +316,8 @@ through `pkg/role` in a FIPS build.
 
 ### Fixed — release integrity
 
-- **Every previously published tag was unbuildable for a consumer that reached
-  `pkg/ceremony`, `pkg/api/rest` or `cmd/qrdb`.** The root `go.mod` recorded
+- **Every previously published tag recorded an unresolvable requirement for its
+  own SDK submodule.** The root `go.mod` recorded
   `github.com/jeremyhahn/go-qrdb/sdk/go v0.0.0-00010101000000-000000000000`, a
   placeholder that resolves to nothing. A `replace` directive only applies in
   the main module, so the in-repo `=> ./sdk/go` masked it for every check run
@@ -329,11 +329,22 @@ through `pkg/role` in a FIPS build.
       invalid version: unknown revision 000000000000
   ```
 
-  Those three package trees import `sdk/go/transport`, so the failure is
-  reachable, not theoretical; it was reproduced against `v0.5.9-alpha` from a
-  scratch module with `GOWORK=off`. The reciprocal pin was stale in the same
-  way: `sdk/go` required the root at `v0.4.0-alpha`, five minor versions
-  behind.
+  `pkg/ceremony`, `pkg/api/rest` and `cmd/qrdb` import `sdk/go/transport`, so
+  the failure is reachable rather than theoretical: a scratch module that does
+  `go get github.com/jeremyhahn/go-qrdb@v0.5.9-alpha` and imports
+  `pkg/ceremony` cannot even `go mod tidy`. Reproduced with `GOWORK=off`.
+
+  **Why nobody hit it.** Every current consumer — go-xkms, go-quicbaas,
+  go-trusted-platform — carries its own explicit
+  `require github.com/jeremyhahn/go-qrdb/sdk/go` line at a real version,
+  because each also imports `sdk/go/transport` directly. Their own requirement
+  satisfies the import, and the root module's nonsense version is never
+  consulted. The defect therefore bites a NEW consumer that reaches a root
+  package without independently depending on the SDK, which is precisely what
+  the mandated throwaway-consumer check constructs. Latent, not dormant.
+
+  The reciprocal pin was stale in the same way: `sdk/go` required the root at
+  `v0.4.0-alpha`, five minor versions behind.
 
   Both cross-module requirements now name the release they ship in
   (`v0.6.0-alpha`), which the lockstep tagging rule guarantees exists — the
