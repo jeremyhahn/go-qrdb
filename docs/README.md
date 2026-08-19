@@ -131,6 +131,7 @@ They are listed below and are linked from the feature folder that owns them.
 | [gui/README.md](gui/README.md), [typescript-sdk/README.md](typescript-sdk/README.md) | [desktop-gui](desktop-gui/) |
 | [design/](design/) | design records — read as history and intent, **not** as shipped behaviour |
 | [clusterenroll-noise-gap.md](clusterenroll-noise-gap.md), [invite-notfound-ambiguity.md](invite-notfound-ambiguity.md) | open questions |
+| [future/sqlite-vfs.md](future/sqlite-vfs.md) | future enhancement — proposed, **not implemented**: qrdb as a drop-in SQLite storage backend via a custom VFS |
 
 ## Module
 

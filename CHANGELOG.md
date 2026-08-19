@@ -11,6 +11,44 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.7.0-alpha] - 2026-08-19
+
+MINOR rather than PATCH: no qrdb API moves here, but `go-truststrap` advances a
+MINOR of its own and reaches consumers through this module's requirement graph,
+so anything composing both takes the change transitively.
+
+### Changed
+
+- **`go-truststrap` v0.1.4-alpha to v0.2.0-alpha.** Closes the short-HMAC-key
+  finding under `GODEBUG=fips140=only` outright, and converts the Noise X25519
+  finding from an uncontrolled runtime rejection into a deliberate typed
+  refusal — but only in a build that carries the `fips` tag, which this
+  module's FIPS job does not currently pass. See below.
+
+### FIPS 140-3 posture
+
+Measured on this commit, Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only`,
+with the same build tags `make test` uses. Three findings were tracked; **two
+remain**, both attributable outside this module, and neither closable from a
+change to this repository alone:
+
+- **GCM with caller-supplied IVs** — every rejection originates in
+  `go-quicraft@v0.6.2-alpha/pkg/seal` (`algorithm.go`, `strategy_software.go`).
+  qrdb's own five GCM construction sites already use
+  `cipher.NewGCMWithRandomNonce`. Fixed upstream in `go-quicraft@v0.7.0-alpha`;
+  taking that bump is gated on the wrapped-root-key dual-read migration
+  (go-qrdb#23), because the new construction reports `NonceSize() == 0` and an
+  existing sealed store would stop unsealing.
+- **X25519 in the Noise handshake** (`pkg/clusterenroll`) — `go-truststrap`
+  v0.2.0-alpha splits `pkg/noiseproto` on a `fips` build tag: the `!fips`
+  variant performs X25519, the `fips` variant refuses with
+  `ErrFIPSUnsupported`. The bump therefore does **not** make the package pass;
+  it makes the failure honest. Noise_NK has no approved DH to move to, so what
+  remains is a product question about whether cluster enrollment is available
+  at all in a FIPS build — not a version to bump to.
+
+The `short HMAC keys` finding is closed and has zero occurrences.
+
 ## [0.6.0-alpha] - 2026-08-18
 
 MINOR, not PATCH: pre-1.0 this is where breakage lives, and this release moves

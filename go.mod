@@ -14,7 +14,7 @@ go 1.26.6
 // against a different copy of its own code. sdk/go carries the mirror-image
 // replace for this module, and sdk/go/gorm/conformance carries both.
 
-require github.com/jeremyhahn/go-truststrap v0.1.4-alpha
+require github.com/jeremyhahn/go-truststrap v0.2.0-alpha
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.15.0
@@ -25,14 +25,13 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.4
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
-	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jeremyhahn/go-codec v1.4.0
 	github.com/jeremyhahn/go-objstore v0.2.2-alpha
-	github.com/jeremyhahn/go-qrdb/sdk/go v0.6.0-alpha
+	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
 	github.com/jeremyhahn/go-quicraft v0.6.2-alpha
 	github.com/jeroenrinzema/psql-wire v0.18.0
 	github.com/mark3labs/mcp-go v0.45.0
@@ -98,6 +97,7 @@ require (
 	github.com/envoyproxy/go-control-plane/envoy v1.37.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
+	github.com/flynn/noise v1.1.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/gin-contrib/sse v1.1.1 // indirect
 	github.com/gin-gonic/gin v1.12.0 // indirect

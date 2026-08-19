@@ -9,7 +9,7 @@ require (
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/google/uuid v1.6.0
 	github.com/jeremyhahn/go-objstore v0.2.2-alpha
-	github.com/jeremyhahn/go-qrdb v0.6.0-alpha
+	github.com/jeremyhahn/go-qrdb v0.7.0-alpha
 	github.com/jeremyhahn/go-quicraft v0.6.2-alpha
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.61.0
@@ -113,7 +113,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
 	github.com/jeremyhahn/go-codec v1.4.0 // indirect
-	github.com/jeremyhahn/go-truststrap v0.1.4-alpha // indirect
+	github.com/jeremyhahn/go-truststrap v0.2.0-alpha // indirect
 	github.com/jeroenrinzema/psql-wire v0.18.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
