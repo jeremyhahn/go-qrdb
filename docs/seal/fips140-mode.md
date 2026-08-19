@@ -263,7 +263,7 @@ one-way, and go-qrdb consumes both modules as tagged releases.
 
 | Finding | Call sites | Effect on the suite | Tracking |
 |---|---|---|---|
-| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#7`, `#8` — **FIXED UPSTREAM, AWAITING A TAG** |
+| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#7`, `#8` — **fixed and tagged upstream; the bump is blocked here by [#23](https://github.com/jeremyhahn/go-qrdb/issues/23)** |
 | `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5`, `#9` — open |
 
 The two are not in the same state, and the difference decides what happens next.

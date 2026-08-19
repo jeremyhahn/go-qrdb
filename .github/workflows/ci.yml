@@ -352,13 +352,17 @@ jobs:
     #
     #   * go-quicraft pkg/seal built its barrier AEAD with cipher.NewGCM,
     #     which fails every sealed-storage test: 693 rejections across 15 of
-    #     the 16 packages. FIXED UPSTREAM, AWAITING A TAG: quicraft main uses
-    #     cipher.NewGCMWithRandomNonce and compiles ChaCha20 out behind
-    #     //go:build !fips (jeremyhahn/go-quicraft#7, #8, both closed). The
-    #     newest quicraft TAG is still v0.6.2-alpha, which predates the fix,
-    #     and deps resolve from tags. A quicraft release plus the bump here
-    #     turns 14 of the 16 green outright; cmd/qrdbd carries BOTH findings
-    #     and stays red with pkg/clusterenroll until the second one is settled.
+    #     the 16 packages. FIXED UPSTREAM AND TAGGED as v0.7.0-alpha
+    #     (cipher.NewGCMWithRandomNonce, ChaCha20 compiled out behind
+    #     //go:build !fips; quicraft#7 and #8 closed). We are NOT on it, and
+    #     that is deliberate: NewGCMWithRandomNonce reports NonceSize() == 0
+    #     and embeds the nonce in the ciphertext, so pkg/seal/unsealkey.go
+    #     writes a wrapped root key whose Nonce field is empty -- and REJECTS
+    #     a blob written by the old version as corrupt. An existing sealed
+    #     store would stop unsealing. Needs a dual-read migration first;
+    #     tracked in go-qrdb#23. The bump turns 14 of the 16 green when it
+    #     lands (cmd/qrdbd carries BOTH findings and stays red alongside
+    #     pkg/clusterenroll until truststrap is settled).
     #   * go-truststrap pkg/noiseproto performs the Noise handshake over
     #     X25519 (jeremyhahn/go-truststrap#5, #9, open), which fails
     #     pkg/clusterenroll and cmd/qrdbd -- 15 rejections. Still on main
