@@ -80,6 +80,15 @@ var NewKVService = service.NewKVService
 // NewAdminService creates a new AdminService.
 var NewAdminService = service.NewAdminService
 
+// NewTransactionService creates a new TransactionServicer.
+//
+// Re-exported alongside NewKVService and NewAdminService because the embedded
+// transport needs all three: a consumer that wires embedded.WithTransactionService
+// otherwise has to import go-qrdb/pkg/service directly for this one constructor,
+// which defeats the point of the SDK surface. Reported by go-xkms, whose CA key
+// store reaches PutIfAbsent and CompareAndSwap through this service.
+var NewTransactionService = service.NewTransactionService
+
 // NewBackendKVService creates a new BackendKVService.
 var NewBackendKVService = service.NewBackendKVService
 
