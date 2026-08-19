@@ -232,11 +232,18 @@ func TestCrossVersion_WrongPasswordRejected(t *testing.T) {
 
 // --- DefaultHasher FIPS selection tests ---
 
+// The expectation goes through wantVersion because clearing GOFIPS140 does not
+// clear FIPS mode: seal.FIPSEnabled consults crypto/fips140.Enabled before it
+// falls back to the variable, and GOFIPS140 selects the module at BUILD time,
+// so t.Setenv cannot retract at run time what the linker already decided. Under
+// the FIPS 140-3 job DefaultHasher therefore answers PBKDF2-SHA256, which is
+// the correct answer for that binary — Argon2id is not an approved KDF. Pinning
+// the literal Argon2id version here asserted the toolchain, not the selector.
 func TestDefaultHasher_NonFIPSMode(t *testing.T) {
 	t.Setenv("GOFIPS140", "")
 	h := kdf.DefaultHasher()
-	if h.Version() != kdf.VersionArgon2id {
-		t.Fatalf("DefaultHasher (non-FIPS): expected %q, got %q", kdf.VersionArgon2id, h.Version())
+	if want := wantVersion(false); h.Version() != want {
+		t.Fatalf("DefaultHasher (non-FIPS): expected %q, got %q", want, h.Version())
 	}
 }
 
