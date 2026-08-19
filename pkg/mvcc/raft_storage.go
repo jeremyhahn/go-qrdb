@@ -117,19 +117,26 @@ func NewRaftStorage(config *RaftStorageConfig) (*RaftStorage, error) {
 		shardID:  config.ShardID,
 	}
 
-	// Load compacted revision from storage (defaults to 0 if not found)
+	// Load compacted revision from storage (defaults to 0 if not found).
+	//
+	// Absence has two spellings and both mean "fresh store, compacted stays 0":
+	// storage.Reader.Get documents (nil, nil) and every shipped engine returns
+	// it, while a decorator may report a typed ErrNotFound. Testing only the
+	// error arm let an empty read fall through to DecodeRevision, which
+	// rejects a zero-length slice — the same defect as in newRevisionManager,
+	// and the reason a fresh store could not be opened with any engine.
 	compactedData, err := config.Store.Get(CompactedKey())
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, errors.Wrapf(
-				err,
-				errors.ErrStorage,
-				"mvcc.NewRaftStorage",
-				"failed to load compacted revision",
-			)
-		}
-		// Not found is expected for fresh stores: compacted stays 0
-	} else {
+	switch {
+	case err != nil && !errors.IsNotFound(err):
+		return nil, errors.Wrapf(
+			err,
+			errors.ErrStorage,
+			"mvcc.NewRaftStorage",
+			"failed to load compacted revision",
+		)
+	case err != nil || len(compactedData) == 0:
+		// Absent: compacted stays 0.
+	default:
 		compactedRev, decErr := DecodeRevision(compactedData)
 		if decErr != nil {
 			return nil, errors.Wrapf(

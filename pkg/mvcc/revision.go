@@ -40,40 +40,53 @@ func newRevisionManager(store storage.Storage) (*revisionManager, error) {
 		lastSync: 0,
 	}
 
-	// Load current revision from storage
+	// Load current revision from storage. An ABSENT key is the ordinary state
+	// of a store that has never been written to, and storage.Reader.Get spells
+	// that as (nil, nil) rather than as an error — every engine honours it
+	// (memory, file and pebble all `return nil, nil`). Testing only
+	// errors.IsNotFound(err) therefore never fired against a real engine: err
+	// was nil, execution fell through, and DecodeRevision(nil) rejected the
+	// empty slice with "revision data must be 8 bytes", so mvcc.NewRaftStorage
+	// could not be constructed over a fresh store with ANY engine.
+	//
+	// The IsNotFound arm is retained because it is not redundant: an engine or
+	// decorator MAY report absence as a typed error, and both spellings must
+	// mean "start at revision 1" rather than one of them meaning "corrupt".
 	data, err := store.Get(RevisionKey())
-	if err != nil {
-		// If not found, start at revision 1
-		if errors.IsNotFound(err) {
-			rm.current = 1
-			rm.lastSync = 1
-			// Persist initial revision
-			if err := rm.persist(); err != nil {
-				return nil, err
-			}
-			return rm, nil
-		}
+	switch {
+	case err != nil && errors.IsNotFound(err):
+		// Absence reported as a typed error.
+	case err != nil:
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
 			"revisionManager.newRevisionManager",
 			"failed to load current revision",
 		)
+	case len(data) == 0:
+		// Absence reported as the documented (nil, nil).
+	default:
+		rev, decErr := DecodeRevision(data)
+		if decErr != nil {
+			return nil, errors.Wrapf(
+				decErr,
+				errors.ErrStorage,
+				"revisionManager.newRevisionManager",
+				"failed to decode revision",
+			)
+		}
+		rm.current = rev
+		rm.lastSync = rev
+		return rm, nil
 	}
 
-	rev, err := DecodeRevision(data)
-	if err != nil {
-		return nil, errors.Wrapf(
-			err,
-			errors.ErrStorage,
-			"revisionManager.newRevisionManager",
-			"failed to decode revision",
-		)
+	// Fresh store: seed at revision 1 and persist it so a later reader sees a
+	// decodable value rather than taking this path a second time.
+	rm.current = 1
+	rm.lastSync = 1
+	if err := rm.persist(); err != nil {
+		return nil, err
 	}
-
-	rm.current = rev
-	rm.lastSync = rev
-
 	return rm, nil
 }
 

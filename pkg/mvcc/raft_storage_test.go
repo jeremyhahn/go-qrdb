@@ -59,6 +59,16 @@ func (m *memStorage) Get(key []byte) ([]byte, error) {
 	}
 	v, ok := m.data[string(key)]
 	if !ok {
+		// NOTE: this contradicts storage.Reader.Get, which is documented as
+		// "Returns nil, nil when key does not exist" and which memory, file
+		// and pebble all honour. Correcting it here turns 59 of this
+		// package's 374 tests red, because pkg/mvcc's read path relies on the
+		// error spelling in roughly twenty places — a separate remediation,
+		// tracked in go-qrdb#24, deliberately NOT folded into a release.
+		//
+		// It is left as-is so the divergence stays visible in one place
+		// rather than being half-fixed. The construction path no longer
+		// depends on it: revision_freshstore_test.go drives the REAL engines.
 		return nil, errors.New(errors.ErrNotFound, "memStorage.Get", "key not found")
 	}
 	cp := make([]byte, len(v))
