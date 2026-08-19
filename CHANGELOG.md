@@ -26,6 +26,21 @@ so anything composing both takes the change transitively.
   closed here: this module's FIPS job does not pass `-tags fips`, so it still
   compiles the `!fips` variant.
 
+### Fixed
+
+- **`make test` sets an explicit `-timeout=30m`.** It previously set none and
+  inherited `go test`'s 10m per-package default, which `pkg/seal` had been
+  living inside by a margin of ten seconds: `589.797s` on the last passing run
+  against a 600s budget — 98.3% — and then `600.442s` on the next one, which
+  failed. Nothing about the package changed between those two runs; it is slow
+  by design (Argon2id under `-race`) and the budget was always too small for it.
+  The failure shape is the reason this mattered more than the delay: the timeout
+  kills the whole test binary and names whichever test was starting when the
+  alarm fired, so an exhausted budget reads as a hang in an unrelated package.
+  Bounded rather than removed, so a genuine deadlock still fails; the CI job
+  already allows 90 minutes and `test/integration` keeps its own `-timeout=25m`,
+  which still applies because a later `-timeout` wins.
+
 ### FIPS 140-3 posture
 
 Measured on this commit — Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only`,
