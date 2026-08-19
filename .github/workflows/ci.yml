@@ -346,21 +346,35 @@ jobs:
     #
     # TWO findings keep it red. Both are upstream; nothing left in THIS
     # repository blocks the job, and neither is closable from a change to this
-    # workflow:
+    # workflow. Measured 2026-08-18 on Go 1.26.6: 106 packages pass, 16 fail,
+    # and every failing test in all 16 carries one of the two rejections below
+    # in its own output -- there is no qrdb-side residue.
     #
-    #   * go-quicraft pkg/seal builds its barrier AEAD with cipher.NewGCM
-    #     (jeremyhahn/go-quicraft#5), which fails every sealed-storage test.
-    #     Still present in v0.6.2-alpha (pkg/seal/algorithm.go,
-    #     pkg/seal/strategy_software.go).
+    #   * go-quicraft pkg/seal built its barrier AEAD with cipher.NewGCM,
+    #     which fails every sealed-storage test: 693 rejections across 15 of
+    #     the 16 packages. FIXED UPSTREAM, AWAITING A TAG: quicraft main uses
+    #     cipher.NewGCMWithRandomNonce and compiles ChaCha20 out behind
+    #     //go:build !fips (jeremyhahn/go-quicraft#7, #8, both closed). The
+    #     newest quicraft TAG is still v0.6.2-alpha, which predates the fix,
+    #     and deps resolve from tags. A quicraft release plus the bump here
+    #     turns 14 of the 16 green outright; cmd/qrdbd carries BOTH findings
+    #     and stays red with pkg/clusterenroll until the second one is settled.
     #   * go-truststrap pkg/noiseproto performs the Noise handshake over
-    #     X25519 (jeremyhahn/go-truststrap#5), which fails pkg/clusterenroll.
-    #     Still present in v0.1.4-alpha (pkg/noiseproto/keys.go).
+    #     X25519 (jeremyhahn/go-truststrap#5, #9, open), which fails
+    #     pkg/clusterenroll and cmd/qrdbd -- 15 rejections. Still on main
+    #     (pkg/noiseproto/keys.go calls curve25519.X25519), and NOT a bug fix:
+    #     Noise_NK has no approved DH to move to, so it needs a product
+    #     decision (compile noiseproto out under the fips tag, or refuse
+    #     enrollment under fips140.Enabled()). Not go-qrdb's call.
     #
     # CLOSED: pkg/role and pkg/custodian no longer derive deterministic IDs
     # with uuid.NewSHA1 (#8, #10) — they use UUIDv8 over SHA-256 with a
     # dual-read compatibility path for identifiers persisted before the
     # migration. The only remaining uuid.NewSHA1 references are frozen legacy
-    # literals in test comments.
+    # literals in test comments. Confirmed by measurement: zero crypto/sha1
+    # panics in the run above. NOTE that this landed AFTER v0.5.9-alpha, so a
+    # consumer on that tag still hits the package-init panic; the fix reaches
+    # them only through v0.6.0-alpha or later.
     #
     # ARM IT IN THE CHANGE THAT CLOSES THE LAST ONE, not later: add `fips`
     # here, add RESULT_FIPS to the env block, and add a `check fips` call to the

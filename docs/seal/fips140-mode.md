@@ -39,7 +39,7 @@ The job scope is deliberately identical to the ordinary `Test` job — the same
 suite does not tell you the product is FIPS-clean.
 
 The job is **not** in `ci-gate`'s `needs` and is therefore not a required
-check — see [Open blockers](#open-blockers) for the three findings that keep it
+check — see [Open blockers](#open-blockers) for the two findings that keep it
 red and [Arming the gate](#arming-the-gate) for the exact change that makes it
 required.
 
@@ -80,10 +80,17 @@ existing wire formats; the rest are not free, and each states its cost below —
 a configuration minimum, one enrollment path refused in FIPS mode, and one
 export format refused under strict enforcement.
 
-One in-repo finding is deliberately **not** remediated here: the SHA-1 in the
-deterministic role and custodian identifiers (`uuid.NewSHA1`). It has its own
-issue and its own change; see [Open blockers](#open-blockers) for why it is not
-folded in.
+The SHA-1 in the deterministic role and custodian identifiers (`uuid.NewSHA1`)
+was carried separately, under its own issues (#8, #10), and has since landed:
+both derivations are RFC 9562 §5.8 UUIDv8 over SHA-256, with a dual-read path
+for identifiers persisted before the migration. It is recorded under
+[UUIDv8 identifiers](#uuidv8--sha-1-role-and-custodian-identifiers) below
+rather than in [Open blockers](#open-blockers), where it used to sit.
+
+**Every remaining FIPS failure in this repository is upstream.** As of the
+measurement below there is not one non-approved primitive left on a go-qrdb
+call site — 693 of the 708 rejections come from `go-quicraft`'s barrier AEAD
+and the other 15 from `go-truststrap`'s Noise handshake.
 
 ### AES-GCM — `cipher.NewGCM` → `cipher.NewGCMWithRandomNonce`
 
@@ -183,6 +190,49 @@ PCI DSS or HIPAA prohibits a SHA-1 identifier that protects nothing. Contrast
 the X25519 case above, which is guarded on `Enabled()` because that primitive
 really does protect a Shamir share.
 
+### UUIDv8 — SHA-1 role and custodian identifiers
+
+`pkg/role.deterministicUUID` and the matching derivation in `pkg/custodian`
+built their stable identifiers with `uuid.NewSHA1`, an RFC 4122 v5 name-based
+UUID. `crypto/sha1` **panics** under `only`, and both derivations run during
+package initialization and tenant seeding, so this was the widest of the
+findings: it took out `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`,
+`pkg/firstboot`, `pkg/custodian` and every package that seeds a tenant — and,
+because the panic happens before a test body runs, it reached any downstream
+consumer that authorized through `pkg/role` at all.
+
+Both derivations are now RFC 9562 §5.8 **UUIDv8 over SHA-256**. UUIDv8 is the
+version reserved for application-defined derivations, which is the only place a
+SHA-256 name-based UUID can live: RFC 4122 fixes v3 to MD5 and v5 to SHA-1. The
+inputs are length-prefixed before hashing so the encoding is injective —
+without framing, tenant `a/b` with role `c` and tenant `a` with role `b/c`
+would collide on one identifier.
+
+**These identifiers are persisted data** — role primary keys, both secondary
+indexes, and the contents of every user record's `RoleIDs` — so the change is
+versioned, not a flag day. Writes emit only the v8 form; reads accept both.
+Re-deriving from a tenant and a role NAME is the direction that needs care,
+because on an already-seeded cluster the v8 identifier names no record:
+`role.ResolveSystemRoleID` answers from the store's name index and falls back
+to the canonical value, and `role.SystemRoleIDs` returns the whole set so that
+the SO deny-list and the separation-of-duties Owner strip match a legacy grant
+instead of letting it escape a control that exists to void it.
+
+### KDF selection — a test that pinned the toolchain instead of the selector
+
+`kdf.DefaultHasher` picks PBKDF2-SHA256 under FIPS and Argon2id otherwise,
+which is correct in both modes: Argon2id is not an approved KDF.
+`TestDefaultHasher_NonFIPSMode` asserted the literal Argon2id version after
+clearing `GOFIPS140`, and that premise does not hold in a FIPS binary —
+`seal.FIPSEnabled` consults `crypto/fips140.Enabled` before it falls back to
+the variable, and `GOFIPS140` selects the module at BUILD time, so `t.Setenv`
+cannot retract at run time what the linker already decided.
+
+The expectation now routes through the `wantVersion` helper the package's other
+FIPS-selection tests already use, which folds `fips140.Enabled()` into the
+answer. Nothing is skipped and no coverage is dropped: the test still asserts
+Argon2id on an ordinary run and asserts PBKDF2-SHA256 under the FIPS job.
+
 ## Exemption register
 
 One exemption. Every other non-approved primitive in this repository is either
@@ -207,56 +257,69 @@ policy requires, on every pull request, where the number cannot be quietly lost.
 That is a strict improvement over having no FIPS coverage at all; it is not a
 claim of compliance.
 
-Three findings stand between the job and green. None of them can be closed from
-this pull request.
+Two findings stand between the job and green, and **both are in dependencies**.
+Neither can be closed from this repository: the composition direction is
+one-way, and go-qrdb consumes both modules as tagged releases.
 
 | Finding | Call sites | Effect on the suite | Tracking |
 |---|---|---|---|
-| SHA-1 in the deterministic role and custodian identifiers | `pkg/role/store.go` (`deterministicUUID`, via `SystemRoleID`), `pkg/custodian/service.go` | `crypto/sha1` **panics**, taking out `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`, `pkg/firstboot`, `pkg/custodian` and every package that seeds a tenant | [#8](https://github.com/jeremyhahn/go-qrdb/issues/8) / [#10](https://github.com/jeremyhahn/go-qrdb/issues/10) |
-| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#5` |
-| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5` |
+| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#7`, `#8` — **FIXED UPSTREAM, AWAITING A TAG** |
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5`, `#9` — open |
+
+The two are not in the same state, and the difference decides what happens next.
+
+**go-quicraft has already fixed it.** `pkg/seal/algorithm.go` on `main` builds
+the AEAD with `cipher.NewGCMWithRandomNonce` and compiles the ChaCha20 variants
+out behind `//go:build !fips`; issues #7 and #8 are closed. What is missing is a
+**release** — the newest tag is still `v0.6.2-alpha`, which predates the fix,
+and first-party modules resolve from tags rather than branches
+(`automatethethings` `software/conventions/dependency-resolution.md`). A
+go-quicraft tag, and the dependency bump that follows it here, turns 14 of the
+16 failing packages green on its own. `pkg/clusterenroll` and `cmd/qrdbd` stay
+red — `cmd/qrdbd` carries both findings.
+
+**go-truststrap has not, and it is not a bug fix.** `pkg/noiseproto/keys.go` on
+`main` still calls `curve25519.X25519`. Noise_NK has no FIPS-approved DH to move
+to, so there is nothing to substitute; the question is what a FIPS deployment
+does about cluster enrollment, and it is a product decision rather than an
+engineering one. The two candidate answers on the table are compiling
+`noiseproto` out under the `fips` tag — the precedent go-quicraft just set for
+ChaCha20 — or having `pkg/clusterenroll` refuse enrollment when
+`fips140.Enabled()`, exactly as `pkg/ceremony` already refuses an Ed25519
+external officer. **Neither is go-qrdb's call to make.**
 
 ### Measured status
 
 Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
-**102 packages pass, 20 fail**, and every one of the 20 attributes to a finding
-above.
+**106 packages pass, 16 fail**, and every one of the 16 attributes to a finding
+above. `go build ./...` against the module is clean.
 
 | Blocker | Failing packages |
 |---|---|
-| SHA-1 identifiers | `pkg/role`, `pkg/auth/rbac`, `pkg/bootstrap`, `pkg/firstboot`, `pkg/custodian`, `cmd/qrdbd` |
-| `quicraft/seal` AEAD | `pkg/atrest`, `pkg/ceremony`, `pkg/clusterkeys`, `pkg/credentials`, `pkg/database`, `pkg/seal`, `pkg/seal/encfs`, `pkg/secret`, `pkg/server`, `pkg/server/lifecycle`, `pkg/service`, `pkg/store`, `pkg/tenant`, `cmd/qrdbd` |
+| `quicraft/seal` AEAD | `pkg/atrest`, `pkg/bootstrap`, `pkg/ceremony`, `pkg/clusterkeys`, `pkg/credentials`, `pkg/database`, `pkg/seal`, `pkg/seal/encfs`, `pkg/secret`, `pkg/server`, `pkg/server/lifecycle`, `pkg/service`, `pkg/store`, `pkg/tenant`, `cmd/qrdbd` |
 | Noise X25519 | `pkg/clusterenroll`, `cmd/qrdbd` |
 
-All 652 occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
+All 693 occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
 allowed in FIPS 140-only mode` in that run are the body of a
 `quicraft/seal: cipher creation failed: ...` error — **none is a qrdb call
-site**, which is what the AES-GCM remediation above was for. There are zero
-`crypto/hmac: use of keys shorter than 112 bits` occurrences, which is what the
-shared-secret minimum was for. Re-derive the attribution with:
+site**, which is what the AES-GCM remediation above was for. The other 15
+rejections are `crypto/ecdh: use of X25519 is not allowed`, all from the Noise
+handshake. There are zero `crypto/sha1` panics, which is what the UUIDv8
+migration was for, and zero `crypto/hmac: use of keys shorter than 112 bits`,
+which is what the shared-secret minimum was for. Re-derive the attribution with:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'quicraft/seal: cipher creation failed: crypto/cipher: use of GCM with arbitrary IVs'
 ```
 
-The two dependency findings cannot be fixed here at all — the composition
-direction is one-way, and both tracking issues are open and blocked on an owner
-decision at the time of writing.
-
-The identifier finding is in this repository, and it is a change of **persisted
-identity data**: a store seeded by an older build keeps its version 5 role and
-custodian IDs, so re-deriving them with an approved hash requires a dual-read
-compatibility path across the role name index, every user record's `RoleIDs`,
-the RBAC Owner/SO deny-list and custodian duplicate detection — otherwise an
-in-place upgrade silently strips an admin's permissions or lets an enrolled
-custodian re-enrol under a second ID. That work is scoped, designed and in
-review on its own issue. Duplicating it here, in a change whose subject is the
-CI job, would put two derivations of the same identifier in the tree; the repo's
-no-cruft policy allows exactly one canonical home per capability.
+Every failing test in every one of those 16 packages carries one of the two
+rejections in its own output. There is no residue: no failing test in this
+suite is explained by anything other than a dependency's non-approved
+primitive.
 
 ### Arming the gate
 
-Once all three findings are closed and this module bumps to
+Once both findings are closed and this module bumps to
 approved-algorithm dependency releases, `fips` becomes a required check in
 three lines of `.github/workflows/ci.yml`: add `fips` to `ci-gate`'s `needs`,
 add `RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop.

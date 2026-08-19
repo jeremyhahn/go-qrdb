@@ -11,6 +11,27 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.6.0-alpha] - 2026-08-18
+
+MINOR, not PATCH: pre-1.0 this is where breakage lives, and this release moves
+the derivation of persisted role and custodian identifiers, tightens the
+multicast shared-secret contract, and removes `statemachine.CachedDiskBackend`.
+
+Two housekeeping defects are closed here rather than left to rot. `VERSION` had
+read `0.5.7-alpha` through both the `v0.5.8-alpha` and `v0.5.9-alpha` tags — the
+unreconciled-sources-of-truth failure `release-versioning.md` §2 warns about —
+and neither of those tags got a CHANGELOG section, so their content was still
+sitting under `[Unreleased]`. It is folded into this entry. `v0.5.9-alpha` in
+particular carried the `CachedDiskBackend` removal, a breaking change published
+as a PATCH; consumers that pinned back to `v0.5.8-alpha` over it should move
+forward to this release.
+
+**Consumers on `v0.5.9-alpha` or earlier should upgrade.** The UUIDv8 migration
+below is what stops `pkg/role` panicking in package init under
+`GODEBUG=fips140=only`; it landed after `v0.5.9-alpha` was cut, so every tagged
+release before this one still takes down any downstream binary that authorizes
+through `pkg/role` in a FIPS build.
+
 ### Added
 
 - **Protected resolution targets for `ConfigProcessor` (`pkg/secret`).** A
@@ -265,6 +286,48 @@ are not reconstructed here — their history is in the git log.
   `CurrentDEKVersion(ctx) (uint64, error)`: the DEK bytes never crossed that
   boundary usefully — the embedded transport already discarded them, and no
   transport exposes DEK material.
+
+### Changed — FIPS 140-3 identifiers
+
+- **Deterministic role and custodian identifiers moved from UUIDv5 (SHA-1) to
+  RFC 9562 §5.8 UUIDv8 over SHA-256.** `crypto/sha1` panics under
+  `GODEBUG=fips140=only`, and both derivations run during package
+  initialization and tenant seeding, so before this change a FIPS build died
+  before a single test body ran — including in any downstream binary that
+  authorizes through `pkg/role`. UUIDv8 is the version reserved for
+  application-defined derivations, and it is the only one available: RFC 4122
+  fixes v3 to MD5 and v5 to SHA-1, so no versioned name-based UUID can carry an
+  approved hash. Inputs are length-prefixed before hashing so the encoding is
+  injective — unframed, tenant `a/b` with role `c` and tenant `a` with role
+  `b/c` would collide on one identifier. The 36-character UUID text shape is
+  unchanged, so no index key or wire format reformats.
+
+  **These identifiers are persisted data**, so the change is versioned rather
+  than a flag day: writes emit only the v8 form and reads accept both. A
+  cluster seeded by an older build keeps its v5 identifiers, and code holding a
+  tenant plus a role NAME must not re-derive — on such a cluster the v8 value
+  names no record at all. Use `role.ResolveSystemRoleID`, which answers from
+  the store's name index and falls back to the canonical value, and
+  `role.SystemRoleIDs`, which returns every identifier denoting the role so
+  that the SO deny-list and the separation-of-duties Owner strip still match a
+  grant made before the migration. Writing a canonical identifier straight into
+  a legacy cluster's user records produces a grant that resolves to no role and
+  silently strips the user's permissions.
+
+### Fixed — tests
+
+- **`TestDefaultHasher_NonFIPSMode` pinned the toolchain instead of the
+  selector.** It cleared `GOFIPS140` and asserted the literal Argon2id version,
+  but `seal.FIPSEnabled` consults `crypto/fips140.Enabled` before falling back
+  to the variable, and `GOFIPS140` selects the module at BUILD time — `t.Setenv`
+  cannot retract at run time what the linker already decided. The expectation
+  now routes through the `wantVersion` helper the package's other FIPS-selection
+  tests already use. No coverage is dropped and nothing is skipped: the test
+  asserts Argon2id on an ordinary run and PBKDF2-SHA256 under the FIPS job,
+  which is the correct answer for a FIPS binary because Argon2id is not an
+  approved KDF. This was the last go-qrdb-side failure under
+  `GODEBUG=fips140=only`; the remainder are upstream (see
+  `docs/seal/fips140-mode.md`).
 
 ## [0.5.8-alpha] - 2026-08-17
 
@@ -587,7 +650,8 @@ ProtoBuf codecs are unaffected.
 - Playwright's generated `playwright-report/` and `test-results/` output no
   longer ships in the repository.
 
-[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.3.0-alpha...HEAD
+[Unreleased]: https://github.com/jeremyhahn/go-qrdb/compare/v0.6.0-alpha...HEAD
+[0.6.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.5.9-alpha...v0.6.0-alpha
 [0.3.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.1-alpha...v0.3.0-alpha
 [0.2.1-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.2.0-alpha...v0.2.1-alpha
 [0.2.0-alpha]: https://github.com/jeremyhahn/go-qrdb/compare/v0.1.1-alpha...v0.2.0-alpha
