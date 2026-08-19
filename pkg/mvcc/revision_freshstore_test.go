@@ -68,7 +68,20 @@ func freshEngines() []engineFixture {
 			name: "pebble",
 			open: func(t *testing.T) storage.Storage {
 				t.Helper()
-				s, err := pebble.New(&pebble.Config{DataDir: t.TempDir()})
+				// CacheSize and MemTableSize are set explicitly and small.
+				// Config.WithDefaults would otherwise give each instance a
+				// 128 MB block cache and a 64 MB memtable, and these fixtures
+				// open one per subtest. `go test ./pkg/... ./cmd/...` runs
+				// package binaries concurrently, so that much per-instance
+				// memory does not stay inside this package: it competes with
+				// whatever else is running and can get an unrelated package's
+				// binary OOM-killed. These tests store one 8-byte revision;
+				// they need no cache at all.
+				s, err := pebble.New(&pebble.Config{
+					DataDir:      t.TempDir(),
+					CacheSize:    1 << 20, // 1 MB
+					MemTableSize: 1 << 20, // 1 MB
+				})
 				if err != nil {
 					t.Fatalf("pebble.New: %v", err)
 				}
