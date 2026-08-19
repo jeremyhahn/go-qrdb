@@ -394,6 +394,15 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 		return false, nil
 	}
 
+	// Resolve under the IDENTITY's tenant, not the request's. kvRoleStore's
+	// ownership check reads the context tenant, so on a cross-tenant request
+	// — a system-tenant identity acting on tenant X — the request context
+	// hides the identity's own system-tenant role and the lookup comes back
+	// RoleNotFound. That reads as genuine absence, leaves the legacy
+	// identifier out of the set, and silently switches off the SO deny-list
+	// for exactly the privileged caller it exists to constrain.
+	ctx = tenant.WithTenantID(ctx, identity.TenantID)
+
 	ids, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, roleName)
 	if err != nil {
 		return false, err
@@ -443,6 +452,12 @@ func (a *RBACAuthorizer) effectiveRoles(ctx context.Context, identity *auth.Iden
 	if len(identity.Roles) == 0 {
 		return identity.Roles, nil
 	}
+	// Same tenant-scoping as holdsSystemRole: the Owner role being stripped is
+	// the identity's own tenant's, so it must be resolved under that tenant's
+	// context or a cross-tenant request cannot see it and the strip silently
+	// stops applying.
+	ctx = tenant.WithTenantID(ctx, identity.TenantID)
+
 	ownerIDs, authoritative, err := a.systemRoleIDs(ctx, identity.TenantID, role.RoleNameOwner)
 	if err != nil {
 		return nil, err
