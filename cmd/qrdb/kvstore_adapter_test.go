@@ -274,14 +274,20 @@ func TestKVServiceAdapter_Exists_NotFound(t *testing.T) {
 	}
 }
 
-func TestKVServiceAdapter_RegisterEntityIndexes_NilRegisterer(t *testing.T) {
+// TestKVServiceAdapter_RegisterEntityIndexes_NilRegistererRefuses pins the
+// typed refusal.
+//
+// It previously asserted a nil error, which told a DAO its indexes were
+// registered when this adapter maintains none — every later index query then
+// answered empty with no error. Registration is the only point at which the
+// incapability can be reported.
+func TestKVServiceAdapter_RegisterEntityIndexes_NilRegistererRefuses(t *testing.T) {
 	svc := newAdapterMockKVService()
 	adapter := newKVServiceAdapter(svc, nil, nil)
 
-	// nil registerer — should be a no-op (returns nil).
 	err := adapter.RegisterEntityIndexes("users", []kvstore.EntityIndex{{FieldName: "Email"}})
-	if err != nil {
-		t.Fatalf("RegisterEntityIndexes with nil registerer: expected nil, got %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 }
 
@@ -296,7 +302,7 @@ func TestKVServiceAdapter_RegisterEntityIndexes_WithRegisterer(t *testing.T) {
 			return nil
 		},
 	}
-	adapter := newKVServiceAdapter(svc, registerer, nil)
+	adapter := newKVServiceAdapter(svc, registerer, noopLookup)
 
 	idx := kvstore.EntityIndex{FieldName: "email", JSONFieldName: "email"}
 	err := adapter.RegisterEntityIndexes("users", []kvstore.EntityIndex{idx})
@@ -323,31 +329,35 @@ func (m *mockEntityRegisterer) RegisterEntityType(entityType string, indexes []k
 	return nil
 }
 
-func TestKVServiceAdapter_QueryIndex_NilLookup(t *testing.T) {
+// TestKVServiceAdapter_QueryIndex_NilLookupRefuses pins the typed refusal;
+// see TestKVServiceAdapter_RegisterEntityIndexes_NilRegistererRefuses.
+func TestKVServiceAdapter_QueryIndex_NilLookupRefuses(t *testing.T) {
 	svc := newAdapterMockKVService()
 	adapter := newKVServiceAdapter(svc, nil, nil)
 
 	ctx := context.Background()
 	keys, err := adapter.QueryIndex(ctx, "users.Email", []byte("test@example.com"))
-	if err != nil {
-		t.Fatalf("QueryIndex with nil lookup: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("QueryIndex = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if keys != nil {
-		t.Error("expected nil keys when lookup is nil")
+		t.Error("a refused query carries no results")
 	}
 }
 
-func TestKVServiceAdapter_ScanIndex_NilLookup(t *testing.T) {
+// TestKVServiceAdapter_ScanIndex_NilLookupRefuses pins the typed refusal; see
+// TestKVServiceAdapter_RegisterEntityIndexes_NilRegistererRefuses.
+func TestKVServiceAdapter_ScanIndex_NilLookupRefuses(t *testing.T) {
 	svc := newAdapterMockKVService()
 	adapter := newKVServiceAdapter(svc, nil, nil)
 
 	ctx := context.Background()
 	result, err := adapter.ScanIndex(ctx, "users.Name", []byte("a"), []byte("z"))
-	if err != nil {
-		t.Fatalf("ScanIndex with nil lookup: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("ScanIndex = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Error("expected nil result when lookup is nil")
+		t.Error("a refused scan carries no results")
 	}
 }
 
@@ -378,31 +388,36 @@ func TestKVServiceAdapter_QueryIndex_LookupUnexpectedType(t *testing.T) {
 	}
 }
 
-func TestKVServiceAdapter_QueryCompoundIndex_ReturnsNil(t *testing.T) {
+// TestKVServiceAdapter_QueryCompoundIndex_Refuses pins the typed refusal. The
+// adapter exposes no compound operations, and (nil, nil) is indistinguishable
+// from a compound index with no matches.
+func TestKVServiceAdapter_QueryCompoundIndex_Refuses(t *testing.T) {
 	svc := newAdapterMockKVService()
 	adapter := newKVServiceAdapter(svc, nil, nil)
 
 	ctx := context.Background()
 	keys, err := adapter.QueryCompoundIndex(ctx, "idx", [][]byte{[]byte("v")})
-	if err != nil {
-		t.Fatalf("QueryCompoundIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("QueryCompoundIndex = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if keys != nil {
-		t.Error("expected nil keys from QueryCompoundIndex stub")
+		t.Error("a refused query carries no results")
 	}
 }
 
-func TestKVServiceAdapter_ScanCompoundIndex_ReturnsNil(t *testing.T) {
+// TestKVServiceAdapter_ScanCompoundIndex_Refuses pins the typed refusal; see
+// TestKVServiceAdapter_QueryCompoundIndex_Refuses.
+func TestKVServiceAdapter_ScanCompoundIndex_Refuses(t *testing.T) {
 	svc := newAdapterMockKVService()
 	adapter := newKVServiceAdapter(svc, nil, nil)
 
 	ctx := context.Background()
 	result, err := adapter.ScanCompoundIndex(ctx, "idx", [][]byte{[]byte("v")}, nil, nil)
-	if err != nil {
-		t.Fatalf("ScanCompoundIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("ScanCompoundIndex = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Error("expected nil result from ScanCompoundIndex stub")
+		t.Error("a refused scan carries no results")
 	}
 }
 
@@ -472,4 +487,65 @@ func isIndexQueryError(err error, target **kvstore.IndexQueryError) bool {
 		return true
 	}
 	return false
+}
+
+// noopLookup is a lookup that answers nothing. Its presence, not its answers,
+// is what RegisterEntityIndexes requires: an adapter with a registerer but NO
+// lookup can create indexes it could never read, so it refuses registration
+// rather than reporting a capability it does not have.
+func noopLookup(_ context.Context, _ interface{}) (interface{}, error) {
+	return nil, nil
+}
+
+// TestKVServiceAdapter_RegisterEntityIndexes_RefusesCompound covers a review
+// finding. QueryCompoundIndex and ScanCompoundIndex on this adapter refuse
+// unconditionally — it exposes no compound operations at all — so forwarding a
+// compound definition to the registerer and returning nil told the caller a
+// compound index existed that it could never query. Registration success has
+// to be an accurate capability statement or it is worse than no answer.
+func TestKVServiceAdapter_RegisterEntityIndexes_RefusesCompound(t *testing.T) {
+	var forwarded int
+	registerer := &mockEntityRegisterer{
+		registerFn: func(_ string, _ []kvstore.EntityIndex) error {
+			forwarded++
+			return nil
+		},
+	}
+	adapter := newKVServiceAdapter(newAdapterMockKVService(), registerer, noopLookup)
+
+	err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{{
+		FieldNames:     []string{"Team", "Name"},
+		JSONFieldNames: []string{"team", "name"},
+	}})
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+	if forwarded != 0 {
+		t.Error("a refused definition must not reach the registerer")
+	}
+}
+
+// TestKVServiceAdapter_RegisterEntityIndexes_RefusesWithoutLookup covers the
+// other half: a registerer with NO lookup can create indexes it can never read,
+// because both query methods refuse when lookup is nil. Reporting successful
+// registration there is a false capability statement.
+func TestKVServiceAdapter_RegisterEntityIndexes_RefusesWithoutLookup(t *testing.T) {
+	var forwarded int
+	registerer := &mockEntityRegisterer{
+		registerFn: func(_ string, _ []kvstore.EntityIndex) error {
+			forwarded++
+			return nil
+		},
+	}
+	adapter := newKVServiceAdapter(newAdapterMockKVService(), registerer, nil)
+
+	err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{
+		{FieldName: "Team", JSONFieldName: "team"},
+	})
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+	if forwarded != 0 {
+		t.Error("a refused registration must not reach the registerer")
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -98,8 +99,14 @@ func (b kvSealBackend) Get(ctx context.Context, key string) ([]byte, error) {
 // wiring (cmd/qrdbd) that needs a replicated KV handle — e.g. binding the
 // volume pool's replicated cursor store — without reaching into lifecycle
 // internals. A missing key reads back as (nil, nil) per the kvstore contract.
+// The returned store carries NO index subsystem, so its index operations
+// return kvstore.ErrIndexUnsupported. That is correct for its callers — the
+// volume pool's replicated cursor is a single cluster-wide scalar with
+// nothing to index — and it is honest: a DAO built over it plans full scans
+// rather than reading an index that was never maintained. Callers that need
+// indexes take the store from Node.StoreResolver, which carries one.
 func NewKVStoreAdapter(svc service.KVServicer) kvstore.KVStore {
-	return newKVStoreAdapter(svc)
+	return newKVStoreAdapter(svc, nil)
 }
 
 // NewReplicatedSealBackend returns a seal.StorageBackend backed by the
@@ -108,15 +115,44 @@ func NewKVStoreAdapter(svc service.KVServicer) kvstore.KVStore {
 // slot-assignment record relies on (first writer wins). tx is required for
 // PutIfAbsent; Get returns seal.ErrSecretNotFound for a missing key.
 func NewReplicatedSealBackend(svc service.KVServicer, tx service.TransactionServicer) seal.StorageBackend {
-	return kvSealBackend{KVStore: newKVStoreAdapter(svc), tx: tx}
+	return kvSealBackend{KVStore: newKVStoreAdapter(svc, nil), tx: tx}
 }
 
 // kvStoreAdapter adapts service.KVServicer to the kvstore.KVStore interface
-// so that internal stores (user, role, cert) can use the replicated KV
-// service for storage. Index operations are no-ops: lifecycle-layer stores
-// do not require secondary indexes.
+// so that internal stores (user, role, cert) — and any DAO a consumer builds
+// over a StoreResolver-returned store — can use the replicated KV service for
+// storage.
+//
+// idx carries the node's IndexServicer, which reaches the SAME KVEngine that
+// backs svc on the same shard. That is what makes secondary indexes real
+// here rather than a second index implementation layered on top: the engine
+// already maintains every registered index inside the Raft-applied write
+// batch (pkg/engine/kv_engine.go handleKVPut → UpdateIndexesBatch) and
+// backfills on registration, so the adapter only has to route registration
+// and lookups to it. Index entries are therefore replicated, crash-safe, and
+// atomic with the data write — none of which a KV-level mirror-key scheme
+// could offer.
+//
+// When idx is nil the adapter has no index subsystem to route to and every
+// index method returns kvstore.ErrIndexUnsupported. It never returns an empty
+// result set to mean "cannot": see kvstore.ErrIndexUnsupported.
 type kvStoreAdapter struct {
 	svc service.KVServicer
+	idx service.IndexServicer
+}
+
+// Compile-time proof that the adapter offers the atomic capability. The
+// engine has a native compare-and-set on every backend, so refusing here
+// would be a lie in the opposite direction.
+var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
+
+// PutIfAbsent atomically stores value under key only when key is absent,
+// delegating to the KV service's own primitive. Every engine implements that
+// natively — Raft evaluates the condition inside the state machine so
+// replicas cannot diverge — which is the cross-node guarantee an in-process
+// check-then-put cannot provide.
+func (a *kvStoreAdapter) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return a.svc.PutIfAbsent(ctx, key, value)
 }
 
 // Put stores a key-value pair through the KV service.
@@ -175,30 +211,108 @@ func (a *kvStoreAdapter) Exists(ctx context.Context, key string) (bool, error) {
 	return data != nil, nil
 }
 
-// RegisterEntityIndexes is a no-op: lifecycle-layer stores do not use
-// secondary indexes.
-func (a *kvStoreAdapter) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
+// RegisterEntityIndexes creates one engine-backed secondary index per
+// definition, named "{entityType}.{FieldName}" to match both the DAO's
+// lookup name (pkg/dao indexName) and the engine's own convention
+// (KVEngine.buildIndexName). Creation goes through Raft, is idempotent, and
+// backfills the index from the keys already under "{entityType}/".
+//
+// A compound definition is REFUSED with kvstore.ErrIndexUnsupported, not
+// skipped. IndexServicer carries no compound creation verb, so this adapter
+// can neither create nor query one — and skipping while returning nil would
+// tell the caller its compound indexes exist. pkg/dao would then advertise
+// them to the planner, route a query to QueryCompoundIndex, and get a refusal
+// where a full scan would have been correct. Registration is the only point
+// at which that can be reported honestly.
+func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
+	if a.idx == nil {
+		return kvstore.ErrIndexUnsupported
+	}
+	ctx := context.Background()
+	for _, ei := range indexes {
+		if ei.IsCompound() {
+			return kvstore.ErrIndexUnsupported
+		}
+		// A case-INSENSITIVE definition is refused for the same reason a
+		// compound one is: this path cannot honour it.
+		// service.IndexServicer.CreateIndex encodes its request with
+		// protocol.EncodeIndexCreate, whose wire format carries name, field,
+		// unique, sparse and numeric — and no case-sensitivity flag — so
+		// KVEngine.handleIndexCreate builds every index with
+		// CaseSensitive:true. Accepting the definition would create a
+		// case-SENSITIVE index while telling the DAO it had a case-insensitive
+		// one, and a lookup for "Alpha" over a stored "alpha" would come back
+		// empty with a nil error.
+		//
+		// Carrying the flag through the Raft command encoding is the real fix
+		// and is deliberately not done here: it changes a command format that
+		// existing Raft logs replay through. Tracked as #34; until then the
+		// DAO plans a correct full scan.
+		//
+		// This only fires for an explicit `index:"case_insensitive"` tag —
+		// index.ParseIndexTags defaults CaseSensitive to true, so ordinary
+		// `index:"true"` and `index:"unique"` fields keep their real index.
+		if !ei.CaseSensitive {
+			return kvstore.ErrIndexUnsupported
+		}
+		cfg := index.IndexConfig{Unique: ei.Unique, Sparse: ei.Sparse}
+		if ei.Unique {
+			cfg.Type = index.IndexTypeUnique
+		}
+		// The engine decides which indexes a write maintains by matching the
+		// index NAME against the key's entity type: KVEngine.filterIndexes
+		// accepts "{entityType}." and, when the engine has a database
+		// namespace, "{engineDatabase}.{entityType}.". Nothing else is ever
+		// updated.
+		//
+		// This adapter cannot see the engine's database setting, so it cannot
+		// verify that a caller-qualified name — what a DAO built with
+		// WithDatabase supplies — is one the engine will maintain. Creating
+		// it anyway would succeed, leave the index permanently un-updated,
+		// and answer every query on it empty with a nil error. That is the
+		// exact failure this change exists to remove, so a name this adapter
+		// cannot vouch for is refused and the DAO plans a correct full scan.
+		//
+		// Threading the engine's database scope through so the qualified form
+		// can be honoured is tracked as #38.
+		name := ei.ResolvedName(entityType)
+		if name != entityType+"."+ei.FieldName {
+			return kvstore.ErrIndexUnsupported
+		}
+		if err := a.idx.CreateIndex(ctx, name, ei.JSONFieldName, cfg); err != nil {
+			return &kvstore.IndexRegistrationError{EntityType: entityType, Err: err}
+		}
+	}
 	return nil
 }
 
-// QueryIndex is a no-op: lifecycle-layer stores do not use secondary indexes.
-func (a *kvStoreAdapter) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
+// QueryIndex performs an exact-match lookup through the engine's index
+// subsystem and returns the matching entity keys.
+func (a *kvStoreAdapter) QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
+	if a.idx == nil {
+		return nil, kvstore.ErrIndexUnsupported
+	}
+	return a.idx.Query(ctx, indexName, value)
 }
 
-// ScanIndex is a no-op: lifecycle-layer stores do not use secondary indexes.
-func (a *kvStoreAdapter) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+// ScanIndex performs a range scan over the named index for values in the
+// half-open interval [start, end).
+func (a *kvStoreAdapter) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
+	if a.idx == nil {
+		return nil, kvstore.ErrIndexUnsupported
+	}
+	return a.idx.Scan(ctx, indexName, start, end)
 }
 
-// QueryCompoundIndex is a no-op: lifecycle-layer stores do not use compound
-// indexes.
+// QueryCompoundIndex refuses: service.IndexServicer exposes no compound
+// index operations, so this adapter can neither create nor query one. It
+// returns kvstore.ErrIndexUnsupported rather than an empty result, so a DAO
+// plans a full scan instead of concluding the entity does not exist.
 func (a *kvStoreAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanCompoundIndex is a no-op: lifecycle-layer stores do not use compound
-// indexes.
+// ScanCompoundIndex refuses; see QueryCompoundIndex.
 func (a *kvStoreAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

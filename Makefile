@@ -543,9 +543,13 @@ test-mcp:
 .PHONY: test-sql
 test-sql: test-sql-provider test-sql-engine test-sql-mysql test-sql-pgsql test-sql-query test-sql-catalog test-sql-privilege test-sql-pgcatalog
 
+# TAG_FLAG is required, not optional: the SDK's DAO consumer tests construct
+# a DAO, which needs a codec, and the codecs are behind build tags — without
+# it every such test fails with "codec \"json\" is not supported in this
+# build". The root `test` target has always passed it; this one had not.
 .PHONY: test-sdk
 test-sdk:
-	cd $(SDK_DIR) && $(GOTEST) ./...
+	cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) ./...
 
 # The qrdbd integration-test harness shared by test/integration and the
 # GORM conformance module. It is part of
@@ -553,7 +557,7 @@ test-sdk:
 # run it alone.
 .PHONY: test-testutil-qrdbdharness
 test-testutil-qrdbdharness: ## Run unit tests for the shared qrdbd test harness
-	cd $(SDK_DIR) && $(GOTEST) $(SDK_PKG_QRDBDHARNESS)
+	cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) $(SDK_PKG_QRDBDHARNESS)
 
 # ============================================================================
 # E2E tests (Playwright – always run in devcontainer)
@@ -1088,14 +1092,14 @@ coverage-sql: coverage-sql-provider coverage-sql-engine coverage-sql-mysql cover
 
 .PHONY: coverage-sdk
 coverage-sdk: | _cover-dir
-	cd $(SDK_DIR) && $(GOTEST) -coverprofile=../../$(COVER_DIR)/sdk.out ./...
+	cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) -coverprofile=../../$(COVER_DIR)/sdk.out ./...
 	$(call check-coverage,$(COVER_DIR)/sdk.out,sdk)
 
 # Included in coverage-sdk's ./... profile; this target gates the harness
 # package on its own so a regression there is attributable.
 .PHONY: coverage-testutil-qrdbdharness
 coverage-testutil-qrdbdharness: | _cover-dir ## Coverage for the shared qrdbd test harness
-	cd $(SDK_DIR) && $(GOTEST) -coverprofile=../../$(COVER_DIR)/testutil-qrdbdharness.out $(SDK_PKG_QRDBDHARNESS)
+	cd $(SDK_DIR) && $(GOTEST) $(TAG_FLAG) -coverprofile=../../$(COVER_DIR)/testutil-qrdbdharness.out $(SDK_PKG_QRDBDHARNESS)
 	$(call check-coverage,$(COVER_DIR)/testutil-qrdbdharness.out,testutil-qrdbdharness)
 
 _cover-dir:

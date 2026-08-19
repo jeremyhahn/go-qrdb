@@ -850,16 +850,34 @@ func (a *serverKVAdapter) Exists(ctx context.Context, key string) (bool, error) 
 	return val != nil, nil
 }
 
-func (a *serverKVAdapter) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error { return nil }
+// RegisterEntityIndexes refuses with kvstore.ErrIndexUnsupported: this
+// adapter wraps a bare KVServicer with no index subsystem behind it.
+//
+// It previously returned nil here and (nil, nil) from every query, which
+// meant a DAO built over it answered index queries with an empty result and
+// no error — indistinguishable from "no matches". The typed refusal lets
+// pkg/dao detect the gap at construction and plan full scans, so the same
+// queries now return correct results.
+func (a *serverKVAdapter) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
+	return kvstore.ErrIndexUnsupported
+}
+
+// QueryIndex refuses; see RegisterEntityIndexes.
 func (a *serverKVAdapter) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
+
+// ScanIndex refuses; see RegisterEntityIndexes.
 func (a *serverKVAdapter) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
+
+// QueryCompoundIndex refuses; see RegisterEntityIndexes.
 func (a *serverKVAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
+
+// ScanCompoundIndex refuses; see RegisterEntityIndexes.
 func (a *serverKVAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

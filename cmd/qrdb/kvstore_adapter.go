@@ -103,10 +103,34 @@ func (a *kvServiceAdapter) Exists(ctx context.Context, key string) (bool, error)
 }
 
 // RegisterEntityIndexes delegates index registration to the engine-level
-// EntityRegisterer. Returns nil when no registerer is configured.
+// EntityRegisterer.
+//
+// With no registerer configured this adapter maintains no indexes, so it
+// returns kvstore.ErrIndexUnsupported rather than nil. Reporting success
+// would tell a DAO its indexes exist, and every subsequent index query would
+// then answer empty with no error — the silent "no records" the KVStore
+// contract now forbids.
 func (a *kvServiceAdapter) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
 	if a.registerer == nil {
-		return nil
+		return kvstore.ErrIndexUnsupported
+	}
+	// A registerer without a lookup can create indexes it can never answer
+	// from: QueryIndex and ScanIndex below both refuse when lookup is nil.
+	// Reporting successful registration in that state is a false capability
+	// statement — the caller would plan against an index it cannot read.
+	if a.lookup == nil {
+		return kvstore.ErrIndexUnsupported
+	}
+	for _, ei := range indexes {
+		// Compound definitions are refused, because QueryCompoundIndex and
+		// ScanCompoundIndex below refuse unconditionally — this adapter
+		// exposes no compound operations at all. Forwarding the definition
+		// and returning nil would tell the caller a compound index exists
+		// that it can never query, which is the same false success in a
+		// different place.
+		if ei.IsCompound() {
+			return kvstore.ErrIndexUnsupported
+		}
 	}
 	return a.registerer.RegisterEntityType(entityType, indexes)
 }
@@ -114,7 +138,7 @@ func (a *kvServiceAdapter) RegisterEntityIndexes(entityType string, indexes []kv
 // QueryIndex performs an exact-match query on the named index.
 func (a *kvServiceAdapter) QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error) {
 	if a.lookup == nil {
-		return nil, nil
+		return nil, kvstore.ErrIndexUnsupported
 	}
 	result, err := a.lookup(ctx, index.IndexQueryRequest{
 		IndexName: indexName,
@@ -133,7 +157,7 @@ func (a *kvServiceAdapter) QueryIndex(ctx context.Context, indexName string, val
 // ScanIndex performs a range scan on the named index.
 func (a *kvServiceAdapter) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
 	if a.lookup == nil {
-		return nil, nil
+		return nil, kvstore.ErrIndexUnsupported
 	}
 	result, err := a.lookup(ctx, index.IndexScanRequest{
 		IndexName: indexName,
@@ -150,12 +174,15 @@ func (a *kvServiceAdapter) ScanIndex(ctx context.Context, indexName string, star
 	return entries, nil
 }
 
-// QueryCompoundIndex performs an exact-match query on a compound index.
+// QueryCompoundIndex refuses with kvstore.ErrIndexUnsupported: this adapter
+// exposes no compound index operations. Returning (nil, nil) would be
+// indistinguishable from a compound index with no matches, so a DAO would
+// report "no records" for a query it never performed.
 func (a *kvServiceAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanCompoundIndex performs a prefix + range scan on a compound index.
+// ScanCompoundIndex refuses; see QueryCompoundIndex.
 func (a *kvServiceAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

@@ -11,6 +11,183 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`QueryIndex` no longer lies on `StoreResolver`-returned stores** (#31, #32).
+  Every `kvstore.KVStore` a consumer could reach implemented `QueryIndex` as
+  `return nil, nil`, and `pkg/dao`'s query planner built its index catalog from
+  the entity's struct tags by reflection rather than from what the store could
+  serve. A field tagged `index:"true"` therefore routed to `QueryIndex` and came
+  back with **zero results and a nil error**, while the same field WITHOUT the
+  tag fell back to a full scan and was correct — so adding the index is what
+  broke the query, and it failed toward "nothing found" with nothing logged.
+  - `lifecycle.kvStoreAdapter` — the store the system tenant resolves to — now
+    maintains **real** secondary indexes by routing registration and lookups to
+    the node's `IndexServicer`, which reaches the same `KVEngine` that applies
+    its writes. Index entries are maintained inside the Raft-applied batch,
+    backfilled on registration, and replicated.
+  - Stores that genuinely cannot index (`seal.tenantSharedKVStore`,
+    `seal.tenantBarrierKVStore`, `embedded.serverKVAdapter`, the `cmd/qrdb`
+    and `cmd/qrdbd` KV service adapters when built without a registerer or
+    lookup, and any adapter built without an index subsystem) now return the
+    new typed `kvstore.ErrIndexUnsupported` instead of an empty result. So do
+    the definitions a store cannot serve even when it can serve others: a
+    COMPOUND definition on any adapter whose compound query methods refuse, a
+    case-insensitive one on the engine-backed paths (#34), and a
+    database-qualified name the engine will not maintain (#38). Registration
+    success is a capability statement, so it may not be given for something
+    the store could never answer.
+  - `pkg/dao` probes the capability at construction, **per index kind**. A
+    refusing store yields an empty planner catalog for that kind, so tagged
+    fields are answered by **full scan and are correct**; a direct
+    `QueryByIndex`/`ScanByIndex`/compound call fails closed with the typed
+    error. Single-field and compound definitions are registered in separate
+    calls because a store can serve one and not the other — the lifecycle
+    adapter has real single-field indexes through the engine and no compound
+    verb at all — so a compound refusal no longer costs a working single-field
+    index, and a compound query over a store without compound support falls
+    back to a scan rather than erroring. `dao.New` no longer discards the
+    result of `RegisterEntityIndexes`: any non-capability error now fails
+    construction.
+  - **`WithDatabase` DAOs registered an index name they never queried.**
+    `pkg/dao` resolves a database-scoped index as
+    `{database}.{entityType}.{field}`, but every store composed the
+    unqualified `{entityType}.{field}` itself, so such a DAO advertised an
+    index, planned a lookup, and queried a name nobody created. `EntityIndex`
+    gains an `IndexName` field carrying the caller's resolved name, which
+    every store now uses verbatim via `EntityIndex.ResolvedName` — except the
+  engine-backed `lifecycle.kvStoreAdapter`, which REFUSES a qualified name
+  (tracked as #38). `KVEngine.filterIndexes` decides which indexes a write
+  maintains by matching the name against the key's entity type, and the
+  adapter cannot see the engine's database setting — so a qualified name would
+  be created, never updated, and answer every query empty with a nil error.
+  Refusing makes a `WithDatabase` DAO over a lifecycle store full-scan, which
+  is correct.
+  - The SDK transport adapter composed `entityType + "." + ei.FieldName` for a
+    COMPOUND definition, where `FieldName` is empty — creating a garbage index
+    named `{entityType}.` while reporting success. It now refuses compound
+    definitions.
+- **`seal.tenantSharedKVStore` no longer advertises atomicity it may not
+  have** (#30). `kvstore.AtomicKVStore` is optional and discovered by type
+  assertion precisely so a caller can fail closed at CONSTRUCTION, but a
+  single wrapper type that always defined `PutIfAbsent` made that assertion
+  succeed unconditionally — a guard that always passes is not a guard. The
+  wrapper is now two types, and only the one over an atomic shared store
+  carries the method.
+- **`seal.tenantSharedKVStore.PutIfAbsent` no longer degrades silently** (#30).
+  When the backing shared store was not an `AtomicKVStore` it fell back to
+  `Exists`-then-`Put` — the exact TOCTOU the capability exists to eliminate,
+  delivered while reporting success, so two nodes could both win a
+  create-if-absent race. It now returns `kvstore.ErrAtomicWriteUnsupported`.
+- **The system tenant has an atomic path again** (#30).
+  `lifecycle.kvStoreAdapter` had no `PutIfAbsent` at all, so
+  `Resolve(ctx, SystemTenantID)` returned a store with no atomic write even
+  though the engine beneath it has a native compare-and-set. It now implements
+  `kvstore.AtomicKVStore` by delegating to `service.KVServicer.PutIfAbsent`.
+
+### Added
+
+- **`kvstore.MemoryKVStore` / `sdk.NewMemoryKVStore`** (#29) — a supported
+  in-process `KVStore` with genuine single-process atomicity and **real** index
+  maintenance on the write path. Consumers can unit-test DAO code without
+  booting a node and without hand-writing a twelve-method index-aware fake per
+  repository. Unique indexes are enforced on the write path
+  (`*index.UniqueViolationError`), so a test store never accepts a duplicate
+  the real engine would reject; `CaseSensitive` and `Sparse` are honoured
+  rather than accepted and ignored (a case-insensitive index that never
+  normalized would answer a differently cased probe with an empty result, and
+  a unique one would admit both `A` and `a`); and a registration whose
+  backfill fails publishes no index at all rather than leaving a half-filled
+  one visible. A value it cannot DECODE under an indexed key prefix is now
+  refused (`UnindexableValueError`) rather than stored unindexed: storing it
+  reported successful index maintenance that did not happen, leaving the
+  record invisible to every index query and outside every unique constraint,
+  both with nil errors — reachable simply by configuring a DAO with the
+  MsgPack or CBOR codec this change re-exports. Index READS hold the store's
+  read lock for the whole lookup rather than just long enough to fetch the
+  index pointer: a `Put` updates an index in several steps, and a reader that
+  released the lock early could observe the key under neither the old term nor
+  the new one and report "no matches" with a nil error. The document `null`
+  is rejected too: it unmarshals into a nil map WITHOUT error, so it passed as
+  a decodable object and then produced no index entries — the record existed
+  under an indexed prefix and was invisible to every index query. An empty
+  object `{}` remains acceptable, being a real object that simply carries no
+  value for the field.
+- **`sdk.AtomicKVStore`** (#28) — SDK consumers can now make the fail-closed
+  capability assertion at construction without importing `pkg/kvstore`, which
+  `docs/00` L3 forbids.
+- **`sdk.ErrKVIndexUnsupported`, `sdk.ErrKVAtomicWriteUnsupported`** (#28) — the
+  typed refusals, reachable with `errors.Is` from a consumer.
+- **The missing DAO surface at `sdk/go`** (#28): `DAOWithShard`, `DAOWithCodec`,
+  `DAOWithTimeout`, `DAOWithPartition`, `DAOWithDatabase`; `DAOCodecType` with
+  `DAOCodecJSON`/`DAOCodecMsgPack`/`DAOCodecCBOR`; `DAOSortDirection` with
+  `DAOSortAscending`/`DAOSortDescending`; and `DAOUnitOfWork`,
+  `DAOTransactional`, `DAOVersioned`, `DAOTimestamped`. They carry the `DAO`
+  prefix because the SDK root already has `ClientOption` namesakes —
+  `sdk.WithTimeout` is a `ClientOption`, so an unprefixed re-export would fail
+  at every call site with a type mismatch.
+
+### Changed
+
+- `kvstore.KVStore`'s index-method contract is explicit: a store that cannot
+  index MUST return `ErrIndexUnsupported`; `(nil, nil)` is forbidden because it
+  is indistinguishable from a maintained index with no matches. A store that
+  cannot serve a definition MUST refuse it at registration rather than skipping
+  it and returning nil — skipping tells the caller an index exists.
+- `RegisterEntityIndexes` is documented as ACCUMULATING per entity type rather
+  than replacing, which `pkg/dao`'s split single/compound registration relies
+  on.
+- `kvstore.EntityIndex` gains `IndexName` and the `ResolvedName` helper.
+- The five `TestKVStoreAdapter_*_NoOp` and five `TestTenantBarrierKVStore_*_NoOp`
+  tests asserted the `(nil, nil)` behaviour and passed, which is why the defect
+  survived — a green test declared it the intended contract. They now assert the
+  typed refusal, or are replaced by tests that assert engine-backed answers.
+
+### Known limitations
+
+- **`index:"case_insensitive"` is refused on the engine-backed and transport
+  paths** (tracked as #34). `protocol.EncodeIndexCreate` carries no
+  case-sensitivity flag, so `KVEngine.handleIndexCreate` builds every index
+  case-sensitive; accepting the definition would create a case-SENSITIVE index
+  while reporting success, and a lookup for `"Alpha"` over a stored `"alpha"`
+  would return empty with a nil error. `lifecycle.kvStoreAdapter` and the SDK
+  transport adapter therefore refuse it, so a DAO plans a correct full scan.
+  Carrying the flag changes a Raft command format that existing logs replay
+  through, which is its own change. Only an explicit `case_insensitive` tag is
+  affected: `index.ParseIndexTags` defaults to case-sensitive, so ordinary
+  `index:"true"` and `index:"unique"` fields keep their real engine index.
+- **The SDK transport adapter refuses an OPEN range bound** (tracked as #36).
+  `transport.IndexClient.IndexScan` takes plain strings, so there is no way to
+  express "unbounded": a nil bound arrived as `""`, which every index reads as
+  an explicit empty bound and REST rejects as a missing parameter. Since the
+  planner leaves one side nil for every one-sided range, `Team >= "beta"`
+  became `["beta", "")` and returned empty with a nil error. `ScanIndex` now
+  refuses a nil bound so the caller sees the incapability rather than a wrong
+  answer.
+- **Numerically ordered fields are no longer advertised to the query
+  planner** (#35 restores them properly). Index terms are decimal text
+  compared lexicographically, so `"10"` sorts before `"2"` and `Age >= 2`
+  returned an INCOMPLETE result — worse than empty, because a partial answer
+  looks like a real one. This change is what makes those index paths live, so
+  leaving the ordering enabled would have converted a uniformly-empty answer
+  into a silently-partial one.
+  `buildCatalog` therefore omits numeric single-field indexes and compound
+  indexes with a numeric member, and the planner chooses a correct full scan.
+  The cost is the sound numeric EQUALITY lookup losing its index — slower, not
+  wrong — and the direct `QueryByIndex` path is unaffected. The surgical fix
+  (the planner refusing only RANGE plans on such fields, using the `FieldType`
+  it already carries) changes `pkg/planner`'s documented contract, which is an
+  owner decision; #35 carries it with the analysis.
+- **Barrier-encrypted tenant stores still cannot index.**
+  `seal.tenantSharedKVStore` and `seal.tenantBarrierKVStore` hold only
+  ciphertext, so nothing beneath them can read a field value. Indexing above the
+  barrier would put the indexed value into an index KEY in the shared store, in
+  the clear, defeating the isolation those types exist to provide; a
+  keyed/deterministic index term preserves it for exact match but destroys the
+  ordering range scans need. That is a cryptographic design decision and is not
+  made here. Until it is ruled on these stores refuse, and a DAO over them
+  answers correctly by full scan.
+
 ## [0.7.0-alpha] - 2026-08-19
 
 MINOR rather than PATCH: no qrdb API moves here, but `go-truststrap` advances a

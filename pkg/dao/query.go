@@ -16,11 +16,13 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/planner"
 )
 
@@ -247,6 +249,33 @@ func (q *QueryBuilder[E]) executeQuery() ([]E, error) {
 	p := planner.New(catalog)
 	plan := p.Plan(predicates)
 
+	entities, err := q.executePlan(plan)
+	if err == nil {
+		return entities, nil
+	}
+
+	// A store may only discover it cannot serve THIS query when it sees it —
+	// the SDK transport adapter, for instance, accepts index registration but
+	// cannot express an open range bound over a string-typed wire call. The
+	// capability probe at construction cannot predict that.
+	//
+	// A planned query names no access path in its signature, so it is free to
+	// choose another one, and the full scan is always available. Falling back
+	// keeps the result CORRECT, which is the whole objective; propagating the
+	// refusal would fail an ordinary valid query that a slower path answers
+	// fine.
+	//
+	// This is deliberately confined to the planner. A direct QueryByIndex or
+	// ScanByIndex call names its access path, so it cannot silently
+	// substitute one and still fails closed with the typed error.
+	if errors.Is(err, kvstore.ErrIndexUnsupported) {
+		return q.fullScanWithFilters()
+	}
+	return nil, err
+}
+
+// executePlan dispatches one plan to its execution strategy.
+func (q *QueryBuilder[E]) executePlan(plan *planner.Plan) ([]E, error) {
 	switch plan.Type {
 	case planner.PlanIndexLookup:
 		return q.executeIndexLookup(plan)
@@ -261,6 +290,22 @@ func (q *QueryBuilder[E]) executeQuery() ([]E, error) {
 	default:
 		return q.executeFullScan(plan)
 	}
+}
+
+// fullScanWithFilters scans every entity and applies all of the query's
+// filters, which is the access path a refused index plan falls back to. It
+// re-evaluates EVERY predicate rather than the plan's post-filters, because
+// the plan expected the index to have applied the leading one.
+func (q *QueryBuilder[E]) fullScanWithFilters() ([]E, error) {
+	entities, err := q.fullScan()
+	if err != nil {
+		return nil, err
+	}
+	predicates := make([]planner.Predicate, len(q.filters))
+	for i, f := range q.filters {
+		predicates[i] = filterToPredicate(f)
+	}
+	return q.applyPostFilters(entities, predicates), nil
 }
 
 // executeIndexLookup executes an exact-value index lookup and applies
@@ -496,11 +541,43 @@ func (d *genericDAO[E]) validFieldMap() map[string]struct{} {
 	return fields
 }
 
+// isNumericKind reports whether a struct field's kind is ordered numerically
+// rather than lexicographically, which is what makes a range plan over its
+// decimal-text index terms unsound. Signed, unsigned and floating-point kinds
+// all qualify; bool and string do not.
+func isNumericKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
 // buildCatalog constructs a planner.IndexCatalog from the DAO's
 // entity struct tags. Index definitions are derived from struct fields
 // tagged with `index:"true"` or `index:"unique"`, which were already
 // parsed and registered at DAO construction time.
 func (d *genericDAO[E]) buildCatalog() planner.IndexCatalog {
+	// A store that refused registration maintains nothing of that kind, so
+	// it can answer nothing of that kind. Advertising the entity's struct-tag
+	// indexes to the planner anyway is what produced the silent empty result:
+	// the plan routed to KVStore.QueryIndex, the store returned no keys, and
+	// the query reported success. Omitting them makes the plan a full scan —
+	// slower, and correct.
+	//
+	// The two kinds are filtered independently because a store can serve one
+	// and not the other: lifecycle.kvStoreAdapter has real single-field
+	// indexes through the engine and no compound verb at all. Suppressing
+	// both on a compound refusal would throw away a working index; keeping
+	// compound on a compound refusal routes the planner into a method that
+	// errors, where a full scan would have answered.
+	if d.indexesUnsupported && d.compoundIndexesUnsupported {
+		return planner.NewStaticCatalog(nil)
+	}
+
 	entity := d.newEntity()
 	eType := reflect.TypeOf(entity)
 	if eType.Kind() == reflect.Pointer {
@@ -510,41 +587,69 @@ func (d *genericDAO[E]) buildCatalog() planner.IndexCatalog {
 	var infos []planner.IndexInfo
 
 	// Single-field indexes from struct tags.
-	for i := 0; i < eType.NumField(); i++ {
-		f := eType.Field(i)
-		indexTag := f.Tag.Get("index")
-		if indexTag == "" {
-			continue
-		}
+	if !d.indexesUnsupported {
+		for i := 0; i < eType.NumField(); i++ {
+			f := eType.Field(i)
+			indexTag := f.Tag.Get("index")
+			if indexTag == "" {
+				continue
+			}
 
-		unique := indexTag == "unique"
-		indexName := d.entityType + "." + f.Name
-		infos = append(infos, planner.IndexInfo{
-			Name:      indexName,
-			FieldName: f.Name,
-			Unique:    unique,
-			FieldType: f.Type.Kind().String(),
-		})
+			// A NUMERICALLY ordered field is not advertised. Index terms are
+			// stored as decimal text and compared lexicographically, so
+			// "10" sorts before "2": a range plan on Age >= 2 scans from
+			// "2" and MISSES the record stored as 10, returning an
+			// incomplete result with a nil error.
+			//
+			// The surgical fix is for the planner to refuse a RANGE plan on
+			// such a field while still using the index for equality — it
+			// already carries FieldType for decisions like this. That
+			// changes pkg/planner's documented contract, which is an
+			// architecture decision reserved to the owner, so it is filed as
+			// #35 with the analysis rather than taken here.
+			//
+			// Omitting the field entirely is the conservative move this
+			// package CAN make on its own: it costs the sound equality
+			// lookup a full scan, which is slower and correct, and the
+			// direct QueryByIndex path still uses the index. Correctness
+			// first; #35 restores the performance.
+			if isNumericKind(f.Type.Kind()) {
+				continue
+			}
+
+			unique := indexTag == "unique"
+			infos = append(infos, planner.IndexInfo{
+				Name:      d.indexName(f.Name),
+				FieldName: f.Name,
+				Unique:    unique,
+				FieldType: f.Type.Kind().String(),
+			})
+		}
 	}
 
 	// Compound indexes from CompoundIndexRegisterer interface.
-	if cr, ok := any(entity).(index.CompoundIndexRegisterer); ok {
+	if cr, ok := any(entity).(index.CompoundIndexRegisterer); ok && !d.compoundIndexesUnsupported {
 		for _, def := range cr.CompoundIndexes() {
-			// Build the compound index name matching the engine's convention.
-			joined := def.Fields[0]
-			for _, f := range def.Fields[1:] {
-				joined += "_" + f
-			}
-			idxName := d.entityType + "." + joined
+			// The name must match what New registered, or the planner routes
+			// a query to an index nobody created.
+			idxName := d.compoundIndexName(def.Fields)
 
-			// Resolve field types from the struct.
+			// Resolve field types from the struct. A compound index with ANY
+			// numeric member is not advertised either: its key encoding is
+			// built from the same decimal-text terms, so both its range
+			// scans and its prefix ordering inherit the problem above.
 			fieldTypes := make([]string, len(def.Fields))
+			numeric := false
 			for i, fieldName := range def.Fields {
 				if sf, found := eType.FieldByName(fieldName); found {
 					fieldTypes[i] = sf.Type.Kind().String()
+					numeric = numeric || isNumericKind(sf.Type.Kind())
 				} else {
 					fieldTypes[i] = "string"
 				}
+			}
+			if numeric {
+				continue
 			}
 
 			infos = append(infos, planner.IndexInfo{

@@ -58,6 +58,86 @@ var NewFieldHashGenerator = dao.NewFieldHashGenerator
 var WithIDGenerator = dao.WithIDGenerator
 
 // ---------------------------------------------------------------------------
+// DAO options
+//
+// These cross the SDK boundary under the DAOWith* name rather than the
+// upstream WithX name because the SDK root already has ClientOption
+// namesakes. sdk.WithTimeout is a ClientOption, so re-exporting the DAO
+// option under the same identifier would either shadow it or produce a
+// type-mismatch error at every call site — the confusing failure mode
+// data-access.md records. The prefix makes which one you have unambiguous.
+// ---------------------------------------------------------------------------
+
+// DAOWithShard sets the Raft shard ID a DAO stores its entities in. Ignored
+// in local and memory modes.
+var DAOWithShard = dao.WithShard
+
+// DAOWithCodec sets the serialization codec, one of the DAOCodec* constants.
+var DAOWithCodec = dao.WithCodec
+
+// DAOWithTimeout sets the per-operation timeout applied to a DAO's context
+// deadlines. Distinct from sdk.WithTimeout, which is a ClientOption.
+var DAOWithTimeout = dao.WithTimeout
+
+// DAOWithPartition selects the storage partition, which must be registered
+// with the DAOFactory.
+var DAOWithPartition = dao.WithPartition
+
+// DAOWithDatabase sets the database namespace prefix used to resolve index
+// names, giving databases that share a shard their own index space.
+var DAOWithDatabase = dao.WithDatabase
+
+// ---------------------------------------------------------------------------
+// DAO codec selection
+// ---------------------------------------------------------------------------
+
+// DAOCodecType identifies a DAO serialization codec.
+type DAOCodecType = dao.CodecType
+
+// DAOCodecJSON selects standard JSON encoding. Always available.
+const DAOCodecJSON = dao.CodecJSON
+
+// DAOCodecMsgPack selects MessagePack binary encoding, subject to build tags.
+const DAOCodecMsgPack = dao.CodecMsgPack
+
+// DAOCodecCBOR selects CBOR binary encoding, subject to build tags.
+const DAOCodecCBOR = dao.CodecCBOR
+
+// ---------------------------------------------------------------------------
+// DAO sort order
+// ---------------------------------------------------------------------------
+
+// DAOSortDirection is the ordering passed to QueryBuilder.OrderBy and carried
+// in PageQuery.SortOrder.
+type DAOSortDirection = dao.SortDirection
+
+// DAOSortAscending orders results ascending.
+const DAOSortAscending = dao.SortAscending
+
+// DAOSortDescending orders results descending.
+const DAOSortDescending = dao.SortDescending
+
+// ---------------------------------------------------------------------------
+// DAO transaction and entity-trait types
+//
+// Only the ERRORS of these types crossed the boundary before, so a consumer
+// could test for a failure it could not name the type of.
+// ---------------------------------------------------------------------------
+
+// DAOUnitOfWork batches entity mutations and applies them atomically.
+type DAOUnitOfWork = dao.UnitOfWork
+
+// DAOTransactional is a GenericDAO that can enlist in a transaction.
+type DAOTransactional[E dao.Entity] = dao.TransactionalDAO[E]
+
+// DAOVersioned is implemented by entities carrying an optimistic-concurrency
+// version, which SaveWithCondition compares against.
+type DAOVersioned = dao.Versioned
+
+// DAOTimestamped is implemented by entities carrying create/modify times.
+type DAOTimestamped = dao.Timestamped
+
+// ---------------------------------------------------------------------------
 // DAO Pager interface
 // ---------------------------------------------------------------------------
 

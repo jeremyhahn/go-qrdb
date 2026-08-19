@@ -24,6 +24,22 @@ import "context"
 // For single-field indexes, FieldName and JSONFieldName are used.
 // For compound indexes, FieldNames and JSONFieldNames are used instead.
 type EntityIndex struct {
+	// IndexName is the fully resolved name the index must be created under.
+	//
+	// When empty a store composes "{entityType}.{FieldName}". When set it is
+	// authoritative and the store MUST use it verbatim, because the caller is
+	// the only party that knows the name it will later look the index up by:
+	// a DAO configured with WithDatabase resolves
+	// "{database}.{entityType}.{FieldName}", and a store that composed the
+	// unqualified name would create an index that every query then misses —
+	// advertising an index, planning a lookup, and querying a name nobody
+	// created.
+	//
+	// It is a separate field rather than a qualified EntityType because the
+	// entity type is also the "{entityType}/" key prefix a store filters
+	// writes by, and those two must not be conflated.
+	IndexName string
+
 	// FieldName is the Go struct field name (used as the index name component).
 	// Used for single-field indexes. Ignored when FieldNames is non-empty.
 	FieldName string
@@ -53,6 +69,19 @@ type EntityIndex struct {
 // IsCompound reports whether the index covers multiple fields.
 func (ei EntityIndex) IsCompound() bool {
 	return len(ei.FieldNames) > 1
+}
+
+// ResolvedName returns the name this index must be created and queried under:
+// IndexName when the caller supplied one, otherwise "{entityType}.{FieldName}".
+//
+// Every store uses this rather than composing the name itself, so a caller
+// that resolves index names differently — a DAO with a database namespace —
+// cannot end up querying a name the store never created.
+func (ei EntityIndex) ResolvedName(entityType string) string {
+	if ei.IndexName != "" {
+		return ei.IndexName
+	}
+	return entityType + "." + ei.FieldName
 }
 
 // EntityRegisterer allows entity types to register their index definitions.
@@ -98,11 +127,29 @@ type KVStore interface {
 
 	// RegisterEntityIndexes registers index definitions for an entity type.
 	// The engine creates storage-backed indexes and backfills them from
-	// existing data. Registration is idempotent.
+	// existing data.
+	//
+	// Registration is idempotent and ACCUMULATES: repeated calls for the same
+	// entity type add definitions rather than replacing the set, and a
+	// definition already registered is a no-op. Callers rely on this —
+	// pkg/dao registers single-field and compound definitions in separate
+	// calls, because a store can serve one kind and not the other, and a
+	// store that replaced the set would drop the first kind.
+	//
+	// A store that cannot maintain secondary indexes MUST return
+	// ErrIndexUnsupported here rather than reporting success it will not
+	// deliver. Registration is the only point at which a caller can learn
+	// the capability before it depends on it.
 	RegisterEntityIndexes(entityType string, indexes []EntityIndex) error
 
 	// QueryIndex performs an exact-match query on the named index.
 	// Returns the entity keys matching the given value.
+	//
+	// A store that cannot serve index queries MUST return
+	// ErrIndexUnsupported. Returning (nil, nil) is forbidden: it is
+	// indistinguishable from a maintained index with no matches, which
+	// turns a broken query into a silent "no records" answer. The same
+	// rule binds ScanIndex, QueryCompoundIndex and ScanCompoundIndex.
 	QueryIndex(ctx context.Context, indexName string, value []byte) ([][]byte, error)
 
 	// ScanIndex performs a range scan on the named index.

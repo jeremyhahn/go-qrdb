@@ -332,7 +332,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	n.Backup = service.NewBackupService(service.NewHostShardSnapshotProvider(infra.Host), backupOpts...)
 
 	// Auth services (user, role) backed by KV storage.
-	authStore := newKVStoreAdapter(n.KV)
+	authStore := newKVStoreAdapter(n.KV, n.Index)
 	userIDGen, err := dao.NewSnowflakeGenerator(resolveReplicaID(infra.ReplicaID))
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
@@ -354,7 +354,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// API that go-xkms exposes as its custodian-group and share endpoints. The
 	// node hosts no seal barrier of its own, so these use the KV store directly;
 	// any at-rest encryption is provided by a barrier layered over KV upstream.
-	custodianStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV), tx: n.Transaction}
+	custodianStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
 	custodianGroupSvc, err := ceremony.NewCustodianGroupService(custodianStore, log)
 	if err != nil {
 		return nil, &CustodianGroupServiceError{Err: err}
@@ -505,7 +505,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		// When the seal subsystem is disabled, wire a KV-backed tenant service
 		// so tenant CRUD operates through Raft consensus. Barrier operations
 		// on this implementation return ErrBarrierNotEnabled.
-		kvTenantSvc, err := tenant.NewKVTenantService(newKVStoreAdapter(n.KV), log)
+		kvTenantSvc, err := tenant.NewKVTenantService(newKVStoreAdapter(n.KV, n.Index), log)
 		if err != nil {
 			return nil, &TenantServiceError{Err: err}
 		}
@@ -620,7 +620,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// Raft consensus. (Previously this used infra.SealBarrier, the
 		// node-local seal store, which left a created tenant invisible to
 		// followers and broke tenant resolution after a leader change/restart.)
-		tenantMetaStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV), tx: n.Transaction}
+		tenantMetaStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
 		tenantSvcInst, err := tenant.NewTenantService(
 			tenantMetaStore, infra.BarrierRegistry, log, tenantOpts...)
 		if err != nil {
@@ -642,7 +642,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 
 		// CertProvider uses the KV service as its underlying store and the
 		// barrier for transparent encryption of certificate material.
-		certStore := newKVStoreAdapter(n.KV)
+		certStore := newKVStoreAdapter(n.KV, n.Index)
 		n.CertProv = cert.NewDefaultProvider(certStore, infra.SealBarrier)
 	}
 
@@ -768,8 +768,13 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 
 // newKVStoreAdapter returns a kvstore.KVStore backed by the given KVServicer.
 // Writes are proposed through the service; reads are linearizable.
-func newKVStoreAdapter(svc service.KVServicer) kvstore.KVStore {
-	return &kvStoreAdapter{svc: svc}
+//
+// idx is the IndexServicer for the SAME shard, which is what makes the
+// returned store's secondary indexes real. Pass nil only where no index
+// subsystem exists; the store then refuses index operations with
+// kvstore.ErrIndexUnsupported rather than answering them empty.
+func newKVStoreAdapter(svc service.KVServicer, idx service.IndexServicer) kvstore.KVStore {
+	return &kvStoreAdapter{svc: svc, idx: idx}
 }
 
 // newMinimalLogger wraps a *slog.Logger as a *logger.Logger for packages

@@ -109,17 +109,39 @@ func (a *kvStoreAdapter) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // RegisterEntityIndexes creates a secondary index for each provided
-// EntityIndex definition. The index name is composed as
-// "entityType.FieldName". Registration is idempotent at the server level.
+// EntityIndex definition, under the definition's resolved name. Registration
+// is idempotent at the server level.
+//
+// A compound definition is REFUSED with kvstore.ErrIndexUnsupported:
+// transport.IndexClient has no compound creation verb, and the compound query
+// methods below cannot serve one either. Previously this composed
+// entityType + "." + ei.FieldName for a compound definition, where FieldName
+// is empty — creating a garbage index named "{entityType}." while telling the
+// caller its compound index existed.
 func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
 	ctx := context.Background()
 	for _, ei := range indexes {
-		indexName := entityType + "." + ei.FieldName
+		if ei.IsCompound() {
+			return kvstore.ErrIndexUnsupported
+		}
+		// transport.IndexConfig carries Unique, Sparse and Numeric and no
+		// case-sensitivity flag, so a case-INSENSITIVE definition would be
+		// created case-sensitive on the server while this adapter reported
+		// success — and a lookup for "Alpha" over a stored "alpha" would come
+		// back empty with a nil error. Refuse instead; the DAO then plans a
+		// correct full scan. Tracked as #34.
+		//
+		// This only fires for an explicit `index:"case_insensitive"` tag —
+		// index.ParseIndexTags defaults CaseSensitive to true, so ordinary
+		// `index:"true"` and `index:"unique"` fields keep their real index.
+		if !ei.CaseSensitive {
+			return kvstore.ErrIndexUnsupported
+		}
 		cfg := transport.IndexConfig{
 			Unique: ei.Unique,
 			Sparse: ei.Sparse,
 		}
-		if err := a.index.IndexCreate(ctx, indexName, ei.JSONFieldName, cfg); err != nil {
+		if err := a.index.IndexCreate(ctx, ei.ResolvedName(entityType), ei.JSONFieldName, cfg); err != nil {
 			return err
 		}
 	}
@@ -144,7 +166,23 @@ func (a *kvStoreAdapter) QueryIndex(ctx context.Context, indexName string, value
 // ScanIndex performs a range scan on the named index for values in the
 // half-open interval [start, end). Returns a map of field values to the
 // entity keys that share that value.
+//
+// An OPEN bound is refused with kvstore.ErrIndexUnsupported.
+// transport.IndexClient.IndexScan takes plain strings, so there is no way to
+// express "unbounded" over it — a nil bound would arrive as "", which every
+// index implementation reads as an explicit empty bound rather than an open
+// one, and REST rejects it as a missing parameter outright.
+//
+// That matters because the planner leaves one side nil for every one-sided
+// range: Team >= "beta" would become ["beta", "") and return an empty result
+// with a nil error over an index holding matches. Refusing makes pkg/dao's
+// caller see the incapability instead of a wrong answer. Carrying optional
+// bounds through the transport contract is the real fix and is tracked as
+// go-qrdb#36.
 func (a *kvStoreAdapter) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
+	if start == nil || end == nil {
+		return nil, kvstore.ErrIndexUnsupported
+	}
 	resp, err := a.index.IndexScan(ctx, indexName, string(start), string(end))
 	if err != nil {
 		return nil, err
@@ -160,14 +198,19 @@ func (a *kvStoreAdapter) ScanIndex(ctx context.Context, indexName string, start,
 	return result, nil
 }
 
-// QueryCompoundIndex performs an exact-match query on a compound index.
-// Returns nil until the transport layer exposes compound index operations.
+// QueryCompoundIndex refuses with kvstore.ErrIndexUnsupported:
+// transport.IndexClient exposes no compound index operations, so this adapter
+// can neither create nor query one.
+//
+// It previously returned (nil, nil), which a DAO could not tell apart from a
+// compound index with no matches — so a compound query over any transport
+// answered "no records" with no error. The typed refusal lets pkg/dao plan a
+// full scan instead.
 func (a *kvStoreAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanCompoundIndex performs a prefix + range scan on a compound index.
-// Returns nil until the transport layer exposes compound index operations.
+// ScanCompoundIndex refuses; see QueryCompoundIndex.
 func (a *kvStoreAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

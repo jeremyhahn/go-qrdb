@@ -9,6 +9,23 @@
 ```go
 func (c *Client) Index() transport.IndexClient
 func (c *Client) KVStore() KVStore   // routes index ops to IndexClient
+
+// Store capability, for consumers that must know before they depend on it.
+type AtomicKVStore = kvstore.AtomicKVStore
+var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
+var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
+
+// An in-process store with real index maintenance and real atomicity, for
+// unit-testing DAO code without booting a node.
+var NewMemoryKVStore = kvstore.NewMemoryKVStore
+type MemoryKVStore = kvstore.MemoryKVStore
+
+// DAO options, codec constants and sort directions. Prefixed because the SDK
+// root has ClientOption namesakes — sdk.WithTimeout is a ClientOption.
+var DAOWithShard, DAOWithCodec, DAOWithTimeout, DAOWithPartition, DAOWithDatabase
+const DAOCodecJSON, DAOCodecMsgPack, DAOCodecCBOR
+const DAOSortAscending, DAOSortDescending
+type DAOUnitOfWork, DAOTransactional[E], DAOVersioned, DAOTimestamped
 ```
 
 `sdk/go/transport`:
@@ -110,6 +127,19 @@ significant** — the first field is the leading prefix field.
 - **Index entries live under the reserved `__idx:` namespace** and are invisible
   to user KV enumeration — see
   [../key-value/engineering.md](../key-value/engineering.md).
+- **A store that cannot index says so; it never answers empty.**
+  `kvstore.KVStore` implementations return `kvstore.ErrIndexUnsupported` from
+  `RegisterEntityIndexes` and from every index query method when they maintain
+  no indexes. `(nil, nil)` is forbidden — it is indistinguishable from a
+  maintained index with no matches.
+- **The planner's catalog reflects the STORE, not just the entity.** `pkg/dao`
+  probes the capability at construction; a refusing store yields an empty
+  catalog, so tagged fields are answered by full scan rather than by an index
+  nobody maintains. Without this, adding an `index:` tag is what breaks a
+  query.
+- **Only `ErrIndexUnsupported` degrades.** Any other registration error fails
+  DAO construction. Treating a transient index-subsystem failure as a
+  capability statement would permanently downgrade the DAO to full scans.
 
 ## Query security
 
@@ -186,6 +216,11 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Non-whitelisted operator | parse error | **yes** |
 | Missing `index:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
+| Store maintains no indexes — `RegisterEntityIndexes` | `kvstore.ErrIndexUnsupported`; DAO plans full scans | **yes** — the capability is recorded, results stay correct |
+| Store maintains no indexes — `QueryByIndex` / `ScanByIndex` / compound | `kvstore.ErrIndexUnsupported` | **yes** — a named access path cannot be silently substituted |
+| Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
+| Registration fails for any other reason | DAO construction fails | **yes** |
+| Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
 
 The unknown-index refusal matters: degrading to a full scan would turn a typo
 into a silent performance cliff on a production dataset.

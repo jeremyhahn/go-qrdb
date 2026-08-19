@@ -375,8 +375,8 @@ func TestKVStoreAdapter_RegisterEntityIndexes(t *testing.T) {
 	adapter := newTestAdapter(&mockTransportKV{}, idx)
 
 	indexes := []kvstore.EntityIndex{
-		{FieldName: "Name", JSONFieldName: "name", Unique: false, Sparse: false},
-		{FieldName: "Email", JSONFieldName: "email", Unique: true, Sparse: true},
+		{FieldName: "Name", JSONFieldName: "name", Unique: false, Sparse: false, CaseSensitive: true},
+		{FieldName: "Email", JSONFieldName: "email", Unique: true, Sparse: true, CaseSensitive: true},
 	}
 
 	if err := adapter.RegisterEntityIndexes("user", indexes); err != nil {
@@ -416,7 +416,7 @@ func TestKVStoreAdapter_RegisterEntityIndexes_Error(t *testing.T) {
 	adapter := newTestAdapter(&mockTransportKV{}, idx)
 
 	indexes := []kvstore.EntityIndex{
-		{FieldName: "Name", JSONFieldName: "name"},
+		{FieldName: "Name", JSONFieldName: "name", CaseSensitive: true},
 	}
 
 	if err := adapter.RegisterEntityIndexes("entity", indexes); !errors.Is(err, sentinel) {
@@ -532,4 +532,103 @@ func TestKVStoreAdapter_ScanIndex_Error(t *testing.T) {
 // assertion declared in kvstore_adapter.go remains valid.
 func TestKVStoreAdapter_CompileTimeCheck(t *testing.T) {
 	var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
+}
+
+// TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions pins
+// the two definitions this adapter cannot honour.
+//
+// transport.IndexConfig carries Unique, Sparse and Numeric and no
+// case-sensitivity flag, so a case-INSENSITIVE index would be created
+// case-sensitive on the server while this adapter reported success — and a
+// lookup for "Alpha" over a stored "alpha" would come back empty with a nil
+// error. A COMPOUND definition was worse: the adapter composed
+// entityType + "." + ei.FieldName, and FieldName is empty for a compound
+// index, so it created a garbage index named "entity." and reported success.
+//
+// Both now refuse, so pkg/dao plans a correct full scan. The case-sensitivity
+// gap is tracked as go-qrdb#34; the refusal is narrow, since
+// index.ParseIndexTags defaults CaseSensitive to true.
+func TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions(t *testing.T) {
+	var created int
+	idx := &mockTransportIndex{
+		createFn: func(_ context.Context, _, _ string, _ transport.IndexConfig) error {
+			created++
+			return nil
+		},
+	}
+	adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+	caseInsensitive := []kvstore.EntityIndex{
+		{FieldName: "Name", JSONFieldName: "name", CaseSensitive: false},
+	}
+	if err := adapter.RegisterEntityIndexes("entity", caseInsensitive); !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("case-insensitive definition = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+
+	compound := []kvstore.EntityIndex{{
+		FieldNames:     []string{"Team", "Name"},
+		JSONFieldNames: []string{"team", "name"},
+		CaseSensitive:  true,
+	}}
+	if err := adapter.RegisterEntityIndexes("entity", compound); !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("compound definition = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+
+	if created != 0 {
+		t.Errorf("created %d indexes; a refused definition must create none", created)
+	}
+}
+
+// TestKVStoreAdapter_ScanIndexRefusesAnOpenBound covers a review finding.
+//
+// transport.IndexClient.IndexScan takes plain strings, so an open bound
+// cannot be expressed over it: a nil arrived as "", which every index
+// implementation reads as an explicit empty bound rather than an open one,
+// and REST rejects it as a missing parameter. Since the planner leaves one
+// side nil for every one-sided range, Team >= "beta" became ["beta", "") and
+// returned an empty result with a nil error over an index holding matches.
+//
+// Refusing surfaces the incapability instead of a wrong answer. Carrying
+// optional bounds through the transport contract is tracked as go-qrdb#36.
+func TestKVStoreAdapter_ScanIndexRefusesAnOpenBound(t *testing.T) {
+	var called int
+	idx := &mockTransportIndex{
+		scanFn: func(_ context.Context, _, _, _ string) (*transport.IndexScanResponse, error) {
+			called++
+			return &transport.IndexScanResponse{}, nil
+		},
+	}
+	adapter := newTestAdapter(&mockTransportKV{}, idx)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name       string
+		start, end []byte
+	}{
+		{"open upper", []byte("beta"), nil},
+		{"open lower", nil, []byte("beta")},
+		{"both open", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := adapter.ScanIndex(ctx, "member.Team", tc.start, tc.end)
+			if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+				t.Fatalf("ScanIndex = %v; want kvstore.ErrIndexUnsupported", err)
+			}
+			if got != nil {
+				t.Errorf("a refused scan carries no results, got %v", got)
+			}
+		})
+	}
+
+	if called != 0 {
+		t.Errorf("transport was called %d times; a refused scan must not reach it", called)
+	}
+
+	// A fully bounded scan still works.
+	if _, err := adapter.ScanIndex(ctx, "member.Team", []byte("a"), []byte("z")); err != nil {
+		t.Fatalf("a fully bounded scan must still work: %v", err)
+	}
+	if called != 1 {
+		t.Errorf("transport called %d times; want 1", called)
+	}
 }

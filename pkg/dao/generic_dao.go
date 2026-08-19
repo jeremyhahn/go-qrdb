@@ -43,6 +43,23 @@ type genericDAO[E Entity] struct {
 	// secondary index lookups. When non-empty, index names are resolved
 	// as "{database}.{entityType}.{fieldName}".
 	database string
+	// indexesUnsupported records that the store refused index registration
+	// with kvstore.ErrIndexUnsupported. It is set once at construction and
+	// read-only thereafter.
+	//
+	// It exists because the query planner used to derive its index catalog
+	// purely from the entity's struct tags, never asking the store. A field
+	// tagged `index:"true"` therefore routed to KVStore.QueryIndex on stores
+	// that maintain no indexes, which answered (nil, nil) — so adding an
+	// index is what BROKE the query, and it failed toward "nothing found"
+	// with no error. When this is true buildCatalog advertises nothing, the
+	// planner falls back to full scans, and results are correct.
+	indexesUnsupported bool
+	// compoundIndexesUnsupported records the same for COMPOUND indexes,
+	// tracked separately because a store can serve one kind and not the
+	// other: lifecycle.kvStoreAdapter maintains real single-field indexes
+	// through the engine but has no compound verb at all.
+	compoundIndexesUnsupported bool
 }
 
 // Ensure genericDAO implements GenericDAO.
@@ -111,11 +128,16 @@ func New[E Entity](
 		hasCompoundIndexes = len(cr.CompoundIndexes()) > 0
 	}
 	if (parseErr == nil && len(indexMeta) > 0) || hasCompoundIndexes {
-		// Convert IndexMetadata to EntityIndex definitions.
-		entityIndexes := make([]kvstore.EntityIndex, 0, len(indexMeta))
+		// Convert IndexMetadata to EntityIndex definitions. IndexName is set
+		// to the name THIS DAO will look the index up by, which is
+		// database-qualified when WithDatabase is in play. Leaving the store
+		// to compose the name is how a WithDatabase DAO ends up creating
+		// "member.Team" and querying "tenantdb.member.Team".
+		singleIndexes := make([]kvstore.EntityIndex, 0, len(indexMeta))
 		for fieldName, meta := range indexMeta {
 			jsonName := jsonFieldName(eType, fieldName)
-			entityIndexes = append(entityIndexes, kvstore.EntityIndex{
+			singleIndexes = append(singleIndexes, kvstore.EntityIndex{
+				IndexName:     dao.indexName(fieldName),
 				FieldName:     fieldName,
 				JSONFieldName: jsonName,
 				Unique:        meta.Config.Unique || meta.Config.Type == index.IndexTypeUnique,
@@ -123,14 +145,16 @@ func New[E Entity](
 				CaseSensitive: meta.Config.CaseSensitive,
 			})
 		}
-		// Register compound indexes from CompoundIndexRegisterer interface.
+		// Compound indexes from the CompoundIndexRegisterer interface.
+		var compoundIndexes []kvstore.EntityIndex
 		if cr, ok := any(entity).(index.CompoundIndexRegisterer); ok {
 			for _, def := range cr.CompoundIndexes() {
 				jsonNames := make([]string, len(def.Fields))
 				for i, fieldName := range def.Fields {
 					jsonNames[i] = jsonFieldName(eType, fieldName)
 				}
-				entityIndexes = append(entityIndexes, kvstore.EntityIndex{
+				compoundIndexes = append(compoundIndexes, kvstore.EntityIndex{
+					IndexName:      dao.compoundIndexName(def.Fields),
 					FieldNames:     def.Fields,
 					JSONFieldNames: jsonNames,
 					Unique:         def.Unique,
@@ -140,8 +164,36 @@ func New[E Entity](
 			}
 		}
 
-		// Register indexes at the engine level (idempotent).
-		_ = store.RegisterEntityIndexes(entityType, entityIndexes)
+		// Register each KIND separately, because a store can serve one and
+		// not the other: the lifecycle adapter maintains real single-field
+		// indexes through the engine but has no compound verb at all.
+		// Registering them together would let one kind's refusal disable the
+		// other — or, worse, let a store accept the batch and silently drop
+		// the compound definitions, which is what it used to do. The DAO
+		// would then advertise compound indexes to the planner, route a query
+		// to QueryCompoundIndex, and get a refusal where a full scan was
+		// correct.
+		//
+		// Neither result is discarded. ErrIndexUnsupported is a capability
+		// statement and downgrades that kind to full scans; any other error
+		// is a real failure and fails construction, because continuing would
+		// leave the DAO believing it has indexes the store never created.
+		if len(singleIndexes) > 0 {
+			if regErr := store.RegisterEntityIndexes(entityType, singleIndexes); regErr != nil {
+				if !errors.Is(regErr, kvstore.ErrIndexUnsupported) {
+					return nil, regErr
+				}
+				dao.indexesUnsupported = true
+			}
+		}
+		if len(compoundIndexes) > 0 {
+			if regErr := store.RegisterEntityIndexes(entityType, compoundIndexes); regErr != nil {
+				if !errors.Is(regErr, kvstore.ErrIndexUnsupported) {
+					return nil, regErr
+				}
+				dao.compoundIndexesUnsupported = true
+			}
+		}
 	}
 
 	// Register entity type in global entity registry for SQL bridge.
@@ -448,6 +500,57 @@ func (d *genericDAO[E]) indexName(fieldName string) string {
 	return d.entityType + "." + fieldName
 }
 
+// scanBound renders one side of an index range for the store, preserving an
+// OPEN bound as nil.
+//
+// fmt.Sprint(nil) is the string "<nil>", and the planner leaves one side nil
+// for every one-sided range — `Team > "alpha"` sets RangeStart only. Rendering
+// that as "<nil>" produced the range ["alpha", "<nil>"), and since "<" sorts
+// below every lowercase term the range is empty: the query returned NOTHING,
+// with a nil error, over an index that held matches.
+//
+// ScanByCompoundIndex already guarded its bounds this way, which is what makes
+// the single-field path an oversight rather than a design.
+func scanBound(v interface{}) []byte {
+	if isNilValue(v) {
+		return nil
+	}
+	return []byte(fmt.Sprint(v))
+}
+
+// isNilValue reports whether v is nil, including a TYPED nil carried in a
+// non-nil interface — a (*string)(nil) passed as interface{} is not == nil,
+// but fmt.Sprint renders it "<nil>" just the same, so the untyped check alone
+// leaves the bug reachable through any nilable typed bound.
+func isNilValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map,
+		reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
+// compoundIndexName constructs the storage index name for a compound index,
+// matching the convention buildCatalog advertises to the planner and the
+// engine's own naming: the fields joined by "_" in declaration order, under
+// the same database qualification single-field indexes use.
+func (d *genericDAO[E]) compoundIndexName(fields []string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	joined := fields[0]
+	for _, f := range fields[1:] {
+		joined += "_" + f
+	}
+	return d.indexName(joined)
+}
+
 // ensureTimeout returns a context with the DAO's timeout applied.
 // If the context already has a deadline, it is returned unchanged.
 func (d *genericDAO[E]) ensureTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -513,10 +616,8 @@ func (d *genericDAO[E]) QueryOneByIndex(ctx context.Context, fieldName string, v
 // range [start, end).
 func (d *genericDAO[E]) ScanByIndex(ctx context.Context, fieldName string, start, end interface{}) ([]E, error) {
 	indexName := d.indexName(fieldName)
-	startBytes := []byte(fmt.Sprint(start))
-	endBytes := []byte(fmt.Sprint(end))
 
-	scanResult, err := d.store.ScanIndex(ctx, indexName, startBytes, endBytes)
+	scanResult, err := d.store.ScanIndex(ctx, indexName, scanBound(start), scanBound(end))
 	if err != nil {
 		return nil, err
 	}
@@ -661,13 +762,10 @@ func (d *genericDAO[E]) ScanByCompoundIndex(ctx context.Context, indexName strin
 		prefix[i] = []byte(fmt.Sprint(v))
 	}
 
-	var start, end []byte
-	if rangeStart != nil {
-		start = []byte(fmt.Sprint(rangeStart))
-	}
-	if rangeEnd != nil {
-		end = []byte(fmt.Sprint(rangeEnd))
-	}
+	// scanBound rather than a bare nil check: a TYPED nil is not == nil but
+	// still renders as "<nil>", which would become a bound sorting below
+	// every term instead of an open one.
+	start, end := scanBound(rangeStart), scanBound(rangeEnd)
 
 	result, err := d.store.ScanCompoundIndex(ctx, indexName, prefix, start, end)
 	if err != nil {

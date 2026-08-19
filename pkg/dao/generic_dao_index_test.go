@@ -92,11 +92,17 @@ func newIndexAwareMemoryKVStore() *indexAwareMemoryKVStore {
 }
 
 // RegisterEntityIndexes records entity index registrations for verification.
+//
+// Registrations ACCUMULATE per entity type rather than replacing, matching the
+// kvstore.KVStore contract. dao.New registers single-field and compound
+// definitions in separate calls — a store can serve one kind and not the other
+// — and a double replaced the first set with the second, losing the
+// single-field JSON field names QueryIndex below resolves through.
 func (s *indexAwareMemoryKVStore) RegisterEntityIndexes(entityType string, indexes []kvstore.EntityIndex) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.registrations[entityType] = indexes
+	s.registrations[entityType] = append(s.registrations[entityType], indexes...)
 	return nil
 }
 

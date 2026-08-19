@@ -154,7 +154,7 @@ func TestKVStoreAdapter_Put_Success(t *testing.T) {
 			return nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	if err := adapter.Put(context.Background(), "hello", []byte("world")); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -172,7 +172,7 @@ func TestKVStoreAdapter_Put_Error(t *testing.T) {
 	mock := &mockKVServicer{
 		putFn: func(_ context.Context, _ string, _ []byte) error { return sentinel },
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	if err := adapter.Put(context.Background(), "k", []byte("v")); !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got %v", err)
@@ -189,7 +189,7 @@ func TestKVStoreAdapter_Get_Success(t *testing.T) {
 			return []byte("value"), nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	val, err := adapter.Get(context.Background(), "key")
 	if err != nil {
@@ -206,7 +206,7 @@ func TestKVStoreAdapter_Get_KeyNotFound_ReturnsNilNil(t *testing.T) {
 			return nil, &service.KeyNotFoundError{Key: "missing"}
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	val, err := adapter.Get(context.Background(), "missing")
 	if err != nil {
@@ -224,7 +224,7 @@ func TestKVStoreAdapter_Get_OtherError(t *testing.T) {
 			return nil, sentinel
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	_, err := adapter.Get(context.Background(), "key")
 	if !errors.Is(err, sentinel) {
@@ -244,7 +244,7 @@ func TestKVStoreAdapter_Delete_Success(t *testing.T) {
 			return nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	if err := adapter.Delete(context.Background(), "delkey"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -259,7 +259,7 @@ func TestKVStoreAdapter_Delete_Error(t *testing.T) {
 	mock := &mockKVServicer{
 		deleteFn: func(_ context.Context, _ string) error { return sentinel },
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	if err := adapter.Delete(context.Background(), "k"); !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got %v", err)
@@ -276,7 +276,7 @@ func TestKVStoreAdapter_Scan_Success(t *testing.T) {
 			return map[string][]byte{"a": []byte("1"), "b": []byte("2")}, nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	collected := make(map[string]string)
 	err := adapter.Scan(context.Background(), "pfx/", func(key string, value []byte) error {
@@ -298,7 +298,7 @@ func TestKVStoreAdapter_Scan_ServiceError(t *testing.T) {
 			return nil, sentinel
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	err := adapter.Scan(context.Background(), "", func(_ string, _ []byte) error { return nil })
 	if !errors.Is(err, sentinel) {
@@ -312,7 +312,7 @@ func TestKVStoreAdapter_Scan_CallbackError(t *testing.T) {
 			return map[string][]byte{"k": []byte("v")}, nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	sentinel := errors.New("callback abort")
 	err := adapter.Scan(context.Background(), "", func(_ string, _ []byte) error {
@@ -333,7 +333,7 @@ func TestKVStoreAdapter_List_Success(t *testing.T) {
 			return []string{"a", "b"}, nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	result, err := adapter.List(context.Background(), "ns/")
 	if err != nil {
@@ -349,7 +349,7 @@ func TestKVStoreAdapter_List_Error(t *testing.T) {
 	mock := &mockKVServicer{
 		listFn: func(_ context.Context, _ string) ([]string, error) { return nil, sentinel },
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	_, err := adapter.List(context.Background(), "ns/")
 	if !errors.Is(err, sentinel) {
@@ -367,7 +367,7 @@ func TestKVStoreAdapter_Exists_True(t *testing.T) {
 			return []byte("data"), nil
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	ok, err := adapter.Exists(context.Background(), "key")
 	if err != nil {
@@ -384,7 +384,7 @@ func TestKVStoreAdapter_Exists_KeyNotFound_ReturnsFalseNil(t *testing.T) {
 			return nil, &service.KeyNotFoundError{Key: "absent"}
 		},
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	ok, err := adapter.Exists(context.Background(), "absent")
 	if err != nil {
@@ -400,7 +400,7 @@ func TestKVStoreAdapter_Exists_OtherError(t *testing.T) {
 	mock := &mockKVServicer{
 		getFn: func(_ context.Context, _ string) ([]byte, error) { return nil, sentinel },
 	}
-	adapter := newKVStoreAdapter(mock)
+	adapter := newKVStoreAdapter(mock, nil)
 
 	_, err := adapter.Exists(context.Background(), "key")
 	if !errors.Is(err, sentinel) {
@@ -630,56 +630,10 @@ func TestResolveReplicaID_NonZeroPassesThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// No-op index methods
+// The five TestKVStoreAdapter_*_NoOp tests that used to live here asserted
+// that every index method returned (nil, nil). They passed, and that is
+// precisely why the defect survived: a green test declared "answers every
+// index query with an empty result and no error" to be the intended
+// contract. They are replaced by kv_adapter_index_test.go, which asserts
+// the engine-backed answers and the typed refusal.
 // ---------------------------------------------------------------------------
-
-func TestKVStoreAdapter_RegisterEntityIndexes_NoOp(t *testing.T) {
-	adapter := newKVStoreAdapter(&mockKVServicer{})
-	if err := adapter.RegisterEntityIndexes("entity", []kvstore.EntityIndex{}); err != nil {
-		t.Errorf("RegisterEntityIndexes: %v", err)
-	}
-}
-
-func TestKVStoreAdapter_QueryIndex_NoOp(t *testing.T) {
-	adapter := newKVStoreAdapter(&mockKVServicer{})
-	result, err := adapter.QueryIndex(context.Background(), "idx", []byte("val"))
-	if err != nil {
-		t.Errorf("QueryIndex: %v", err)
-	}
-	if result != nil {
-		t.Errorf("expected nil result, got %v", result)
-	}
-}
-
-func TestKVStoreAdapter_ScanIndex_NoOp(t *testing.T) {
-	adapter := newKVStoreAdapter(&mockKVServicer{})
-	result, err := adapter.ScanIndex(context.Background(), "idx", []byte("start"), []byte("end"))
-	if err != nil {
-		t.Errorf("ScanIndex: %v", err)
-	}
-	if result != nil {
-		t.Errorf("expected nil result, got %v", result)
-	}
-}
-
-func TestKVStoreAdapter_QueryCompoundIndex_NoOp(t *testing.T) {
-	adapter := newKVStoreAdapter(&mockKVServicer{})
-	result, err := adapter.QueryCompoundIndex(context.Background(), "idx", [][]byte{[]byte("v1")})
-	if err != nil {
-		t.Errorf("QueryCompoundIndex: %v", err)
-	}
-	if result != nil {
-		t.Errorf("expected nil result, got %v", result)
-	}
-}
-
-func TestKVStoreAdapter_ScanCompoundIndex_NoOp(t *testing.T) {
-	adapter := newKVStoreAdapter(&mockKVServicer{})
-	result, err := adapter.ScanCompoundIndex(context.Background(), "idx", [][]byte{[]byte("v1")}, []byte("s"), []byte("e"))
-	if err != nil {
-		t.Errorf("ScanCompoundIndex: %v", err)
-	}
-	if result != nil {
-		t.Errorf("expected nil result, got %v", result)
-	}
-}

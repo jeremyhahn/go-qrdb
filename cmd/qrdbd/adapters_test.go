@@ -496,17 +496,23 @@ func TestKVServiceAdapter_List_Empty(t *testing.T) {
 // kvServiceAdapter.QueryCompoundIndex tests
 // ---------------------------------------------------------------------------
 
-func TestKVServiceAdapter_QueryCompoundIndex_NoOp(t *testing.T) {
+// TestKVServiceAdapter_QueryCompoundIndex_Refuses pins the typed refusal.
+//
+// These tests previously asserted a nil error and a nil result — the
+// (nil, nil) answer the KVStore contract now forbids, because it is
+// indistinguishable from a compound index with no matches. A DAO over this
+// adapter would have reported "no records" for a lookup it never performed.
+func TestKVServiceAdapter_QueryCompoundIndex_Refuses(t *testing.T) {
 	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 	result, err := adapter.QueryCompoundIndex(context.Background(), "idx", [][]byte{[]byte("v1")})
-	require.NoError(t, err)
-	assert.Nil(t, result)
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
+	assert.Nil(t, result, "a refused query carries no results")
 }
 
-func TestKVServiceAdapter_QueryCompoundIndex_EmptyValues(t *testing.T) {
+func TestKVServiceAdapter_QueryCompoundIndex_RefusesEmptyValues(t *testing.T) {
 	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 	result, err := adapter.QueryCompoundIndex(context.Background(), "", nil)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
 	assert.Nil(t, result)
 }
 
@@ -514,17 +520,19 @@ func TestKVServiceAdapter_QueryCompoundIndex_EmptyValues(t *testing.T) {
 // kvServiceAdapter.ScanCompoundIndex tests
 // ---------------------------------------------------------------------------
 
-func TestKVServiceAdapter_ScanCompoundIndex_NoOp(t *testing.T) {
+// TestKVServiceAdapter_ScanCompoundIndex_Refuses pins the typed refusal; see
+// TestKVServiceAdapter_QueryCompoundIndex_Refuses.
+func TestKVServiceAdapter_ScanCompoundIndex_Refuses(t *testing.T) {
 	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 	result, err := adapter.ScanCompoundIndex(context.Background(), "idx", [][]byte{[]byte("v1")}, []byte("start"), []byte("end"))
-	require.NoError(t, err)
-	assert.Nil(t, result)
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
+	assert.Nil(t, result, "a refused scan carries no results")
 }
 
-func TestKVServiceAdapter_ScanCompoundIndex_EmptyValues(t *testing.T) {
+func TestKVServiceAdapter_ScanCompoundIndex_RefusesEmptyValues(t *testing.T) {
 	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 	result, err := adapter.ScanCompoundIndex(context.Background(), "", nil, nil, nil)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
 	assert.Nil(t, result)
 }
 

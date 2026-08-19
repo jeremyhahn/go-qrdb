@@ -28,8 +28,12 @@ import (
 // read can never resolve another tenant's record even by accident.
 const tenantIAMSharedPrefix = "__tiam:"
 
-// Compile-time interface check.
-var _ kvstore.KVStore = (*tenantSharedKVStore)(nil)
+// Compile-time interface checks. Note which type carries which: the base
+// wrapper is NOT an AtomicKVStore, and only the atomic variant is.
+var (
+	_ kvstore.KVStore       = (*tenantSharedKVStore)(nil)
+	_ kvstore.AtomicKVStore = (*atomicTenantSharedKVStore)(nil)
+)
 
 // tenantSharedKVStore persists a dedicated-isolation tenant's IAM records
 // in the SHARED replicated store, encrypted with the tenant's own DEK.
@@ -51,8 +55,10 @@ var _ kvstore.KVStore = (*tenantSharedKVStore)(nil)
 // Encrypt/Decrypt closed, and the store resolver additionally refuses to
 // hand this store out at all while sealed.
 //
-// Index operations are no-ops, exactly as on tenantBarrierKVStore: the IAM
-// stores maintain their own manual secondary-index keys.
+// Index operations REFUSE with kvstore.ErrIndexUnsupported, exactly as on
+// tenantBarrierKVStore: the shared store holds only ciphertext for this
+// tenant, so nothing beneath this wrapper can read a field value to index.
+// See RegisterEntityIndexes.
 type tenantSharedKVStore struct {
 	barrier *TenantBarrier
 	shared  kvstore.KVStore
@@ -62,6 +68,17 @@ type tenantSharedKVStore struct {
 // NewTenantSharedKVStore wraps the shared replicated store as a
 // tenant-DEK-encrypting kvstore.KVStore for the given tenant's IAM. See
 // tenantSharedKVStore for the placement/replication rationale.
+// The returned store implements kvstore.AtomicKVStore ONLY when the shared
+// store does. That distinction is the point of the two types: AtomicKVStore
+// is optional and discovered by type assertion precisely so a caller can fail
+// closed at CONSTRUCTION —
+//
+//	atomic, ok := store.(kvstore.AtomicKVStore)
+//	if !ok { return ErrAtomicWriteUnsupported }
+//
+// — and a single type that always defines PutIfAbsent makes that assertion
+// succeed unconditionally, so the caller learns the truth only at the first
+// write. A guard that always passes is not a guard.
 func NewTenantSharedKVStore(barrier *TenantBarrier, shared kvstore.KVStore) (kvstore.KVStore, error) {
 	if barrier == nil {
 		return nil, ErrNilTenantBarrier
@@ -69,11 +86,44 @@ func NewTenantSharedKVStore(barrier *TenantBarrier, shared kvstore.KVStore) (kvs
 	if shared == nil {
 		return nil, ErrNilStorageBackend
 	}
-	return &tenantSharedKVStore{
+	base := &tenantSharedKVStore{
 		barrier: barrier,
 		shared:  shared,
 		prefix:  tenantIAMSharedPrefix + barrier.TenantID() + "/",
-	}, nil
+	}
+	if atomicShared, ok := shared.(kvstore.AtomicKVStore); ok {
+		return &atomicTenantSharedKVStore{
+			tenantSharedKVStore: base,
+			shared:              atomicShared,
+		}, nil
+	}
+	return base, nil
+}
+
+// atomicTenantSharedKVStore is the tenant IAM wrapper over a shared store that
+// CAN perform an atomic conditional write. It exists as a separate type so
+// the kvstore.AtomicKVStore assertion answers honestly; everything else is
+// inherited from the embedded base wrapper.
+type atomicTenantSharedKVStore struct {
+	*tenantSharedKVStore
+	shared kvstore.AtomicKVStore
+}
+
+// PutIfAbsent encrypts value with the tenant DEK and stores it only when the
+// key is absent. The atomicity is the shared store's, which this type only
+// exists to have proved; the wrapper adds the tenant scoping and encryption.
+//
+// The check and the write must be one operation. The fallback that used to
+// live here — Exists then Put — was the exact TOCTOU AtomicKVStore exists to
+// eliminate, delivered silently: the assertion passed, the call returned
+// stored=true, and two nodes racing the same create-if-absent could both win,
+// redeeming a single-use token twice.
+func (s *atomicTenantSharedKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	ciphertext, err := s.barrier.Barrier().Encrypt(value)
+	if err != nil {
+		return false, err
+	}
+	return s.shared.PutIfAbsent(ctx, s.prefix+key, ciphertext)
 }
 
 // Put encrypts value with the tenant DEK and stores it under the
@@ -86,27 +136,11 @@ func (s *tenantSharedKVStore) Put(ctx context.Context, key string, value []byte)
 	return s.shared.Put(ctx, s.prefix+key, ciphertext)
 }
 
-// PutIfAbsent encrypts and stores value only when the key is absent. The
-// atomicity is the shared store's when it implements AtomicKVStore;
-// otherwise it degrades to the same check-then-put every non-atomic
-// KVStore provides.
-func (s *tenantSharedKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	ciphertext, err := s.barrier.Barrier().Encrypt(value)
-	if err != nil {
-		return false, err
-	}
-	if atomicStore, ok := s.shared.(kvstore.AtomicKVStore); ok {
-		return atomicStore.PutIfAbsent(ctx, s.prefix+key, ciphertext)
-	}
-	exists, err := s.shared.Exists(ctx, s.prefix+key)
-	if err != nil {
-		return false, err
-	}
-	if exists {
-		return false, nil
-	}
-	return true, s.shared.Put(ctx, s.prefix+key, ciphertext)
-}
+// The base wrapper deliberately has NO PutIfAbsent. See
+// NewTenantSharedKVStore: defining one here would make the
+// kvstore.AtomicKVStore assertion succeed even over a shared store that
+// cannot perform an atomic write, which is the guard this whole split exists
+// to keep honest.
 
 // Get retrieves and decrypts the value for key, returning (nil, nil) when
 // the key does not exist.
@@ -156,27 +190,43 @@ func (s *tenantSharedKVStore) Exists(ctx context.Context, key string) (bool, err
 	return s.shared.Exists(ctx, s.prefix+key)
 }
 
-// RegisterEntityIndexes is a no-op; the IAM stores keep manual indexes.
+// RegisterEntityIndexes refuses with kvstore.ErrIndexUnsupported.
+//
+// This store's whole purpose is that the shared replicated store holds only
+// ciphertext (see the type comment). The engine underneath therefore cannot
+// extract a JSON field from any value it holds for this tenant, so it cannot
+// maintain an index over one. Building the index ABOVE the encryption — the
+// only place the plaintext exists — would put the indexed field value into
+// an index KEY in the shared store, in the clear, which is precisely the
+// isolation this type is here to provide. That is a cryptographic design
+// decision (deterministic/keyed-hash index terms, and what it costs range
+// scans), not an implementation detail, and it is not made here.
+//
+// Refusing is not a regression: it is the honest form of what these methods
+// already did. They returned (nil, nil), so every DAO index query over a
+// dedicated tenant answered "no records" with no error. With the typed error
+// pkg/dao detects the missing capability at construction and plans full
+// scans instead, so those same queries now return CORRECT results.
 func (s *tenantSharedKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
-	return nil
+	return kvstore.ErrIndexUnsupported
 }
 
-// QueryIndex is a no-op; the IAM stores keep manual indexes.
+// QueryIndex refuses; see RegisterEntityIndexes.
 func (s *tenantSharedKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanIndex is a no-op; the IAM stores keep manual indexes.
+// ScanIndex refuses; see RegisterEntityIndexes.
 func (s *tenantSharedKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// QueryCompoundIndex is a no-op; the IAM stores keep manual indexes.
+// QueryCompoundIndex refuses; see RegisterEntityIndexes.
 func (s *tenantSharedKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanCompoundIndex is a no-op; the IAM stores keep manual indexes.
+// ScanCompoundIndex refuses; see RegisterEntityIndexes.
 func (s *tenantSharedKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

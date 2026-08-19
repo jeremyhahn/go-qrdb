@@ -155,7 +155,7 @@ func TestKVServiceAdapter_RegisterEntityIndexes_WithRegisterer(t *testing.T) {
 		},
 	}
 	mock := &mockKVServicer{}
-	adapter := newKVServiceAdapter(mock, registerer, nil)
+	adapter := newKVServiceAdapter(mock, registerer, noopLookup)
 
 	indexes := []kvstore.EntityIndex{
 		{FieldName: "Email", JSONFieldName: "email"},
@@ -166,13 +166,19 @@ func TestKVServiceAdapter_RegisterEntityIndexes_WithRegisterer(t *testing.T) {
 	assert.Equal(t, indexes, capturedIndexes)
 }
 
+// TestKVServiceAdapter_RegisterEntityIndexes_NilRegisterer pins the typed refusal.
+//
+// It previously asserted a nil error and an empty result — the (nil, nil)
+// answer the KVStore contract now forbids, because it is indistinguishable
+// from a maintained index with no matches. A DAO over this adapter would have
+// reported "no records" for a lookup it never performed.
 func TestKVServiceAdapter_RegisterEntityIndexes_NilRegisterer(t *testing.T) {
 	mock := &mockKVServicer{}
 	adapter := newKVServiceAdapter(mock, nil, nil)
 
-	// Must return nil without panic when registerer is nil.
 	err := adapter.RegisterEntityIndexes("user", []kvstore.EntityIndex{{FieldName: "Email", JSONFieldName: "email"}})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported,
+		"with no registerer this adapter maintains no indexes and must say so")
 }
 
 func TestKVServiceAdapter_RegisterEntityIndexes_RegistrarError(t *testing.T) {
@@ -183,7 +189,7 @@ func TestKVServiceAdapter_RegisterEntityIndexes_RegistrarError(t *testing.T) {
 		},
 	}
 	mock := &mockKVServicer{}
-	adapter := newKVServiceAdapter(mock, registerer, nil)
+	adapter := newKVServiceAdapter(mock, registerer, noopLookup)
 
 	err := adapter.RegisterEntityIndexes("user", nil)
 	require.Error(t, err)
@@ -194,13 +200,18 @@ func TestKVServiceAdapter_RegisterEntityIndexes_RegistrarError(t *testing.T) {
 // kvstore_adapter.go: QueryIndex (lines 120-136) - not covered yet
 // ---------------------------------------------------------------------------
 
+// TestKVServiceAdapter_QueryIndex_NilLookup pins the typed refusal.
+//
+// It previously asserted a nil error and an empty result — the (nil, nil)
+// answer the KVStore contract now forbids, because it is indistinguishable
+// from a maintained index with no matches. A DAO over this adapter would have
+// reported "no records" for a lookup it never performed.
 func TestKVServiceAdapter_QueryIndex_NilLookup(t *testing.T) {
-	mock := &mockKVServicer{}
-	adapter := newKVServiceAdapter(mock, nil, nil)
+	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 
-	result, err := adapter.QueryIndex(context.Background(), "email", []byte("alice@example.com"))
-	require.NoError(t, err)
-	assert.Nil(t, result)
+	got, err := adapter.QueryIndex(context.Background(), "user.Email", []byte("a@example.com"))
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
+	require.Nil(t, got, "a refused query carries no results")
 }
 
 func TestKVServiceAdapter_QueryIndex_WithLookup(t *testing.T) {
@@ -254,13 +265,18 @@ func TestKVServiceAdapter_QueryIndex_UnexpectedResultType(t *testing.T) {
 // kvstore_adapter.go: ScanIndex (lines 140-157) - not covered yet
 // ---------------------------------------------------------------------------
 
+// TestKVServiceAdapter_ScanIndex_NilLookup pins the typed refusal.
+//
+// It previously asserted a nil error and an empty result — the (nil, nil)
+// answer the KVStore contract now forbids, because it is indistinguishable
+// from a maintained index with no matches. A DAO over this adapter would have
+// reported "no records" for a lookup it never performed.
 func TestKVServiceAdapter_ScanIndex_NilLookup(t *testing.T) {
-	mock := &mockKVServicer{}
-	adapter := newKVServiceAdapter(mock, nil, nil)
+	adapter := newKVServiceAdapter(&mockKVServicer{}, nil, nil)
 
-	result, err := adapter.ScanIndex(context.Background(), "age", []byte("18"), []byte("65"))
-	require.NoError(t, err)
-	assert.Nil(t, result)
+	got, err := adapter.ScanIndex(context.Background(), "user.Email", []byte("a"), []byte("z"))
+	require.ErrorIs(t, err, kvstore.ErrIndexUnsupported)
+	require.Nil(t, got, "a refused scan carries no results")
 }
 
 func TestKVServiceAdapter_ScanIndex_WithLookup(t *testing.T) {
@@ -533,4 +549,65 @@ func TestBridgeTestUser_RegistryUnmarshalFunc_InvalidJSON(t *testing.T) {
 
 	_, err := reg.UnmarshalFunc([]byte("not-json"))
 	require.Error(t, err, "invalid JSON must return an error from UnmarshalFunc")
+}
+
+// noopLookup is a lookup that answers nothing. Its presence, not its answers,
+// is what RegisterEntityIndexes requires: an adapter with a registerer but NO
+// lookup can create indexes it could never read, so it refuses registration
+// rather than reporting a capability it does not have.
+func noopLookup(_ context.Context, _ interface{}) (interface{}, error) {
+	return nil, nil
+}
+
+// TestKVServiceAdapter_RegisterEntityIndexes_RefusesCompound covers a review
+// finding. QueryCompoundIndex and ScanCompoundIndex on this adapter refuse
+// unconditionally — it exposes no compound operations at all — so forwarding a
+// compound definition to the registerer and returning nil told the caller a
+// compound index existed that it could never query. Registration success has
+// to be an accurate capability statement or it is worse than no answer.
+func TestKVServiceAdapter_RegisterEntityIndexes_RefusesCompound(t *testing.T) {
+	var forwarded int
+	registerer := &mockEntityRegisterer{
+		registerFn: func(_ string, _ []kvstore.EntityIndex) error {
+			forwarded++
+			return nil
+		},
+	}
+	adapter := newKVServiceAdapter(&mockKVServicer{}, registerer, noopLookup)
+
+	err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{{
+		FieldNames:     []string{"Team", "Name"},
+		JSONFieldNames: []string{"team", "name"},
+	}})
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+	if forwarded != 0 {
+		t.Error("a refused definition must not reach the registerer")
+	}
+}
+
+// TestKVServiceAdapter_RegisterEntityIndexes_RefusesWithoutLookup covers the
+// other half: a registerer with NO lookup can create indexes it can never read,
+// because both query methods refuse when lookup is nil. Reporting successful
+// registration there is a false capability statement.
+func TestKVServiceAdapter_RegisterEntityIndexes_RefusesWithoutLookup(t *testing.T) {
+	var forwarded int
+	registerer := &mockEntityRegisterer{
+		registerFn: func(_ string, _ []kvstore.EntityIndex) error {
+			forwarded++
+			return nil
+		},
+	}
+	adapter := newKVServiceAdapter(&mockKVServicer{}, registerer, nil)
+
+	err := adapter.RegisterEntityIndexes("member", []kvstore.EntityIndex{
+		{FieldName: "Team", JSONFieldName: "team"},
+	})
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+	if forwarded != 0 {
+		t.Error("a refused registration must not reach the registerer")
+	}
 }

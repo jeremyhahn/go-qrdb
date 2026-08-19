@@ -33,11 +33,12 @@ var _ kvstore.KVStore = (*tenantBarrierKVStore)(nil)
 // therefore both physically namespaced and cryptographically isolated
 // from the shared system store and from every other tenant.
 //
-// Index operations are no-ops: the user and role stores maintain their
-// own MANUAL secondary-index keys (username/cert-thumbprint, name) via
-// Put/Get/Delete/Scan and never call the kvstore index API. This mirrors
-// the lifecycle-layer kvStoreAdapter, whose index methods are likewise
-// no-ops for the same stores.
+// Index operations REFUSE with kvstore.ErrIndexUnsupported. The user and
+// role stores maintain their own MANUAL secondary-index keys
+// (username/cert-thumbprint, name) via Put/Get/Delete/Scan and never call
+// the kvstore index API, and the barrier stores ciphertext, so nothing
+// beneath this wrapper can read a field value to index. See
+// RegisterEntityIndexes.
 type tenantBarrierKVStore struct {
 	barrier *TenantBarrier
 }
@@ -115,28 +116,35 @@ func (s *tenantBarrierKVStore) Exists(ctx context.Context, key string) (bool, er
 	return ok, nil
 }
 
-// RegisterEntityIndexes is a no-op: the IAM stores maintain their own
-// manual secondary-index keys and do not use the kvstore index API.
+// RegisterEntityIndexes refuses with kvstore.ErrIndexUnsupported: the
+// TenantBarrier stores ciphertext, so nothing beneath this wrapper can read
+// a field value to index it, and indexing above the barrier is the same
+// cryptographic design question tenantSharedKVStore documents.
+//
+// The methods previously returned (nil, nil), which made every DAO index
+// query over this store answer "no records" with no error. The typed error
+// lets pkg/dao detect the gap at construction and plan full scans, so the
+// same queries now return correct results.
 func (s *tenantBarrierKVStore) RegisterEntityIndexes(_ string, _ []kvstore.EntityIndex) error {
-	return nil
+	return kvstore.ErrIndexUnsupported
 }
 
-// QueryIndex is a no-op: see RegisterEntityIndexes.
+// QueryIndex refuses; see RegisterEntityIndexes.
 func (s *tenantBarrierKVStore) QueryIndex(_ context.Context, _ string, _ []byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanIndex is a no-op: see RegisterEntityIndexes.
+// ScanIndex refuses; see RegisterEntityIndexes.
 func (s *tenantBarrierKVStore) ScanIndex(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// QueryCompoundIndex is a no-op: see RegisterEntityIndexes.
+// QueryCompoundIndex refuses; see RegisterEntityIndexes.
 func (s *tenantBarrierKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]byte) ([][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }
 
-// ScanCompoundIndex is a no-op: see RegisterEntityIndexes.
+// ScanCompoundIndex refuses; see RegisterEntityIndexes.
 func (s *tenantBarrierKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
-	return nil, nil
+	return nil, kvstore.ErrIndexUnsupported
 }

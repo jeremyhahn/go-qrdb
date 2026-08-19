@@ -66,7 +66,21 @@ func TestCompoundDAO_EntityImplementsCompoundIndexRegisterer(t *testing.T) {
 	assert.Equal(t, []string{"ConversationID", "IsRead"}, defs[1].Fields)
 }
 
-func TestCompoundDAO_BuildCatalog_IncludesCompoundIndexes(t *testing.T) {
+// TestCompoundDAO_BuildCatalog_OmitsNumericallyOrderedIndexes replaces a test
+// that required every declared index to be advertised to the planner,
+// including ones over numeric fields.
+//
+// compoundTestMessage's Timestamp is an int64 and IsRead a bool, and index
+// terms are stored as decimal text compared lexicographically — so "10" sorts
+// before "2" and a range plan over Timestamp returns an INCOMPLETE result
+// with a nil error. Advertising such an index is what lets the planner choose
+// it. Both compound definitions lead with ConversationID but carry a numeric
+// or bool member, so neither survives either.
+//
+// Omitting them makes the planner choose a full scan, which is correct. The
+// direct QueryByCompoundIndex / QueryByIndex paths are unaffected. Restoring
+// order-preserving numeric index encoding is tracked as #35.
+func TestCompoundDAO_BuildCatalog_OmitsNumericallyOrderedIndexes(t *testing.T) {
 	store := newCompoundTestStore()
 
 	dao, err := New[*compoundTestMessage](
@@ -76,25 +90,22 @@ func TestCompoundDAO_BuildCatalog_IncludesCompoundIndexes(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Access the internal genericDAO to call buildCatalog.
 	gDAO := dao.(*genericDAO[*compoundTestMessage])
-	catalog := gDAO.buildCatalog()
+	indexes := gDAO.buildCatalog().AvailableIndexes()
 
-	indexes := catalog.AvailableIndexes()
-
-	// Should have: 3 single-field (ConversationID, Timestamp, IsRead)
-	// + 2 compound (ConversationID_Timestamp, ConversationID_IsRead)
-	assert.GreaterOrEqual(t, len(indexes), 5, "expected at least 5 indexes in catalog")
-
-	// Find compound indexes.
-	var compoundNames []string
+	var names []string
 	for _, idx := range indexes {
-		if idx.IsCompound() {
-			compoundNames = append(compoundNames, idx.Name)
-		}
+		names = append(names, idx.Name)
 	}
-	assert.Contains(t, compoundNames, "messages.ConversationID_Timestamp")
-	assert.Contains(t, compoundNames, "messages.ConversationID_IsRead")
+
+	// The string field keeps its index.
+	assert.Contains(t, names, "messages.ConversationID")
+
+	// The numeric one does not, nor does any compound index containing it.
+	assert.NotContains(t, names, "messages.Timestamp",
+		"a numerically ordered field must not be advertised for planning")
+	assert.NotContains(t, names, "messages.ConversationID_Timestamp",
+		"a compound index with a numeric member inherits the ordering problem")
 }
 
 func TestCompoundDAO_Registration_PassesCompoundIndexesToStore(t *testing.T) {

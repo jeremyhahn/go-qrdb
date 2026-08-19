@@ -14,6 +14,7 @@ package seal
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -103,53 +104,62 @@ func TestTenantBarrierKVStore_List(t *testing.T) {
 	}
 }
 
-func TestTenantBarrierKVStore_RegisterEntityIndexes_NoOp(t *testing.T) {
+// TestTenantBarrierKVStore_RegisterEntityIndexes_Refuses pins the typed
+// refusal that replaced a silent no-op.
+//
+// These five tests previously asserted the OPPOSITE — (nil, nil) — and
+// passing was the whole problem: they codified "answers every index query
+// with an empty result and no error" as the intended contract, so the defect
+// had a green test defending it. Asserting the error is what makes the empty
+// answer unreachable.
+func TestTenantBarrierKVStore_RegisterEntityIndexes_Refuses(t *testing.T) {
 	store, _ := newInitializedKVStore(t)
-	if err := store.RegisterEntityIndexes("entity", []kvstore.EntityIndex{}); err != nil {
-		t.Fatalf("RegisterEntityIndexes: %v", err)
+	err := store.RegisterEntityIndexes("entity", []kvstore.EntityIndex{})
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 }
 
-func TestTenantBarrierKVStore_QueryIndex_NoOp(t *testing.T) {
+func TestTenantBarrierKVStore_QueryIndex_Refuses(t *testing.T) {
 	store, _ := newInitializedKVStore(t)
 	result, err := store.QueryIndex(context.Background(), "idx", []byte("key"))
-	if err != nil {
-		t.Fatalf("QueryIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("QueryIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Errorf("QueryIndex no-op: expected nil result, got %v", result)
+		t.Errorf("QueryIndex returned %v alongside a refusal; a refused query carries no results", result)
 	}
 }
 
-func TestTenantBarrierKVStore_ScanIndex_NoOp(t *testing.T) {
+func TestTenantBarrierKVStore_ScanIndex_Refuses(t *testing.T) {
 	store, _ := newInitializedKVStore(t)
 	result, err := store.ScanIndex(context.Background(), "idx", []byte("lo"), []byte("hi"))
-	if err != nil {
-		t.Fatalf("ScanIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("ScanIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Errorf("ScanIndex no-op: expected nil result, got %v", result)
+		t.Errorf("ScanIndex returned %v alongside a refusal; a refused query carries no results", result)
 	}
 }
 
-func TestTenantBarrierKVStore_QueryCompoundIndex_NoOp(t *testing.T) {
+func TestTenantBarrierKVStore_QueryCompoundIndex_Refuses(t *testing.T) {
 	store, _ := newInitializedKVStore(t)
 	result, err := store.QueryCompoundIndex(context.Background(), "idx", [][]byte{[]byte("k")})
-	if err != nil {
-		t.Fatalf("QueryCompoundIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("QueryCompoundIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Errorf("QueryCompoundIndex no-op: expected nil result, got %v", result)
+		t.Errorf("QueryCompoundIndex returned %v alongside a refusal; a refused query carries no results", result)
 	}
 }
 
-func TestTenantBarrierKVStore_ScanCompoundIndex_NoOp(t *testing.T) {
+func TestTenantBarrierKVStore_ScanCompoundIndex_Refuses(t *testing.T) {
 	store, _ := newInitializedKVStore(t)
 	result, err := store.ScanCompoundIndex(context.Background(), "idx", [][]byte{[]byte("k")}, []byte("lo"), []byte("hi"))
-	if err != nil {
-		t.Fatalf("ScanCompoundIndex: %v", err)
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("ScanCompoundIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 	if result != nil {
-		t.Errorf("ScanCompoundIndex no-op: expected nil result, got %v", result)
+		t.Errorf("ScanCompoundIndex returned %v alongside a refusal; a refused query carries no results", result)
 	}
 }

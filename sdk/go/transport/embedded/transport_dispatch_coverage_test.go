@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kv"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -357,26 +358,46 @@ func TestEmbeddedServerKVAdapter_BasicCRUD(t *testing.T) {
 	}
 }
 
-func TestEmbeddedServerKVAdapter_Indexes(t *testing.T) {
+// TestEmbeddedServerKVAdapter_IndexesRefuse pins the typed refusal.
+//
+// This test previously asserted that every index method returned a nil error
+// (and, for the queries, a nil result). It passed, and that is exactly how the
+// defect survived: a green test declared "answers every index query with an
+// empty result and no error" to be the intended contract, when that answer is
+// indistinguishable from a maintained index with no matches. The adapter wraps
+// a bare KVServicer with no index subsystem behind it, so the honest answer is
+// kvstore.ErrIndexUnsupported — which lets pkg/dao plan a full scan instead of
+// concluding the entity does not exist.
+func TestEmbeddedServerKVAdapter_IndexesRefuse(t *testing.T) {
 	svc := newMockKVService()
 	a := newServerKVAdapter(svc)
 	ctx := context.Background()
 
-	if err := a.RegisterEntityIndexes("user", nil); err != nil {
-		t.Fatalf("RegisterEntityIndexes: %v", err)
+	if err := a.RegisterEntityIndexes("user", nil); !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 
-	if _, err := a.QueryIndex(ctx, "x", []byte("v")); err != nil {
-		t.Fatalf("QueryIndex: %v", err)
+	keys, err := a.QueryIndex(ctx, "x", []byte("v"))
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Errorf("QueryIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
-	if _, err := a.ScanIndex(ctx, "x", []byte("a"), []byte("z")); err != nil {
-		t.Fatalf("ScanIndex: %v", err)
+	if keys != nil {
+		t.Errorf("QueryIndex returned %v alongside a refusal", keys)
 	}
-	if _, err := a.QueryCompoundIndex(ctx, "x", [][]byte{[]byte("v")}); err != nil {
-		t.Fatalf("QueryCompoundIndex: %v", err)
+
+	entries, err := a.ScanIndex(ctx, "x", []byte("a"), []byte("z"))
+	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Errorf("ScanIndex error = %v; want kvstore.ErrIndexUnsupported", err)
 	}
-	if _, err := a.ScanCompoundIndex(ctx, "x", [][]byte{[]byte("p")}, []byte("a"), []byte("z")); err != nil {
-		t.Fatalf("ScanCompoundIndex: %v", err)
+	if entries != nil {
+		t.Errorf("ScanIndex returned %v alongside a refusal", entries)
+	}
+
+	if _, err := a.QueryCompoundIndex(ctx, "x", [][]byte{[]byte("v")}); !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Errorf("QueryCompoundIndex = %v; want kvstore.ErrIndexUnsupported", err)
+	}
+	if _, err := a.ScanCompoundIndex(ctx, "x", [][]byte{[]byte("p")}, []byte("a"), []byte("z")); !errors.Is(err, kvstore.ErrIndexUnsupported) {
+		t.Errorf("ScanCompoundIndex = %v; want kvstore.ErrIndexUnsupported", err)
 	}
 }
 
