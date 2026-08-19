@@ -15,7 +15,16 @@ LDFLAGS       := -X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X m
 
 # Go tooling
 GO            := go
-GOTEST        := $(GO) test -race -count=1 -v
+# -timeout=30m, because go test defaults to 10m and this suite does not fit.
+# pkg/seal alone measured 589.8s on a PASSING run -- 98% of the 10m default,
+# under -race with Argon2id KDF work that is meant to be slow. Any load on a
+# shared runner tips it over, and the whole job then dies as
+# "panic: test timed out after 10m0s" naming whichever package was unlucky,
+# which reads like a hang in that package rather than a budget that was always
+# too small. That is a runaway guard, not a correctness gate: the CI job itself
+# allows 90 minutes, and the integration target already sets its own 25m.
+# Raising it removes a false red; it does not weaken any assertion.
+GOTEST        := $(GO) test -race -count=1 -v -timeout=30m
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt
