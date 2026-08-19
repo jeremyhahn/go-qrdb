@@ -346,9 +346,11 @@ jobs:
     #
     # TWO findings keep it red. Both are upstream; nothing left in THIS
     # repository blocks the job, and neither is closable from a change to this
-    # workflow. Measured 2026-08-18 on Go 1.26.6: 106 packages pass, 16 fail,
-    # and every failing test in all 16 carries one of the two rejections below
-    # in its own output -- there is no qrdb-side residue.
+    # workflow. Re-measured 2026-08-19 on Go 1.26.6 against go-truststrap
+    # v0.2.0-alpha: 122 packages, 106 pass, 16 fail -- unchanged from the
+    # 2026-08-18 measurement, because that bump moves no package from red to
+    # green. Every failing test in all 16 carries one of the two rejections
+    # below in its own output; there is no qrdb-side residue.
     #
     #   * go-quicraft pkg/seal built its barrier AEAD with cipher.NewGCM,
     #     which fails every sealed-storage test: 693 rejections across 15 of
@@ -364,12 +366,20 @@ jobs:
     #     lands (cmd/qrdbd carries BOTH findings and stays red alongside
     #     pkg/clusterenroll until truststrap is settled).
     #   * go-truststrap pkg/noiseproto performs the Noise handshake over
-    #     X25519 (jeremyhahn/go-truststrap#5, #9, open), which fails
-    #     pkg/clusterenroll and cmd/qrdbd -- 15 rejections. Still on main
-    #     (pkg/noiseproto/keys.go calls curve25519.X25519), and NOT a bug fix:
-    #     Noise_NK has no approved DH to move to, so it needs a product
-    #     decision (compile noiseproto out under the fips tag, or refuse
-    #     enrollment under fips140.Enabled()). Not go-qrdb's call.
+    #     X25519, which fails pkg/clusterenroll (7), pkg/ceremony (8) and
+    #     cmd/qrdbd (8) -- 23 rejections. pkg/ceremony is newly counted: it
+    #     used to fail on GCM before execution reached the Noise path.
+    #     Noise_NK has no approved DH to move to, so this NEVER closes by
+    #     moving to a newer version -- it closes by Noise being absent from a
+    #     FIPS build. v0.2.0-alpha builds the mechanism: pkg/noiseproto now
+    #     splits on a `fips` build tag (dh.go //go:build !fips does X25519,
+    #     dh_fips.go //go:build fips returns ErrFIPSUnsupported). This job does
+    #     not pass -tags fips, so it still compiles the !fips variant and takes
+    #     the runtime rejection. The product decision has since been made by
+    #     the owner -- omit Noise from FIPS builds -- so the remaining qrdb-side
+    #     work is to build-tag the Noise-based clusterenroll path out of FIPS
+    #     builds to match, WITHOUT skip guards: a FIPS build asserts enrollment
+    #     is unavailable, it does not skip the test.
     #
     # CLOSED: pkg/role and pkg/custodian no longer derive deterministic IDs
     # with uuid.NewSHA1 (#8, #10) — they use UUIDv8 over SHA-256 with a

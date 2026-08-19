@@ -19,35 +19,44 @@ so anything composing both takes the change transitively.
 
 ### Changed
 
-- **`go-truststrap` v0.1.4-alpha to v0.2.0-alpha.** Closes the short-HMAC-key
-  finding under `GODEBUG=fips140=only` outright, and converts the Noise X25519
-  finding from an uncontrolled runtime rejection into a deliberate typed
-  refusal — but only in a build that carries the `fips` tag, which this
-  module's FIPS job does not currently pass. See below.
+- **`go-truststrap` v0.1.4-alpha to v0.2.0-alpha.** It splits `pkg/noiseproto`
+  on a `fips` build tag — `dh.go` (`//go:build !fips`) performs X25519,
+  `dh_fips.go` (`//go:build fips`) refuses with `ErrFIPSUnsupported`. That tag
+  is the mechanism by which the Noise finding below gets closed. It is not
+  closed here: this module's FIPS job does not pass `-tags fips`, so it still
+  compiles the `!fips` variant.
 
 ### FIPS 140-3 posture
 
-Measured on this commit, Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only`,
-with the same build tags `make test` uses. Three findings were tracked; **two
-remain**, both attributable outside this module, and neither closable from a
-change to this repository alone:
+Measured on this commit — Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only`,
+`-race`, and the same build tags `make test` uses:
+
+    122 packages: 106 pass, 16 fail
+    693 GCM rejections across 15 packages
+     23 X25519 rejections across 3 packages
+
+**This bump moves no package from red to green.** The pass/fail split and the
+GCM count are identical to the pre-bump measurement recorded in `ci.yml`, and
+the count is stated here so the next person does not have to re-derive it to
+find that out. Both remaining findings originate outside this module:
 
 - **GCM with caller-supplied IVs** — every rejection originates in
   `go-quicraft@v0.6.2-alpha/pkg/seal` (`algorithm.go`, `strategy_software.go`).
   qrdb's own five GCM construction sites already use
-  `cipher.NewGCMWithRandomNonce`. Fixed upstream in `go-quicraft@v0.7.0-alpha`;
-  taking that bump is gated on the wrapped-root-key dual-read migration
-  (go-qrdb#23), because the new construction reports `NonceSize() == 0` and an
-  existing sealed store would stop unsealing.
-- **X25519 in the Noise handshake** (`pkg/clusterenroll`) — `go-truststrap`
-  v0.2.0-alpha splits `pkg/noiseproto` on a `fips` build tag: the `!fips`
-  variant performs X25519, the `fips` variant refuses with
-  `ErrFIPSUnsupported`. The bump therefore does **not** make the package pass;
-  it makes the failure honest. Noise_NK has no approved DH to move to, so what
-  remains is a product question about whether cluster enrollment is available
-  at all in a FIPS build — not a version to bump to.
+  `cipher.NewGCMWithRandomNonce`, so there is no qrdb-side residue. Fixed
+  upstream in `go-quicraft@v0.7.0-alpha`; taking that bump is gated on the
+  wrapped-root-key dual-read migration (go-qrdb#23), because the new
+  construction reports `NonceSize() == 0` and an existing sealed store would
+  stop unsealing.
+- **X25519 in the Noise handshake** — `pkg/clusterenroll` (7), `pkg/ceremony`
+  (8) and `cmd/qrdbd` (8). Noise_NK has no approved DH to move to, so this
+  never closes by moving to a newer version; it closes by Noise being absent
+  from a FIPS build. `pkg/ceremony` is newly counted here: it previously failed
+  on GCM before reaching the Noise path.
 
-The `short HMAC keys` finding is closed and has zero occurrences.
+Neither finding is closable by editing the FIPS job, and it stays out of
+`ci-gate` while they stand. Nothing in this repository claims the module
+operates under `fips140=only`.
 
 ## [0.6.0-alpha] - 2026-08-18
 
