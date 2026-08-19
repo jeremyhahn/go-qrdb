@@ -107,26 +107,54 @@ func TestEncryptInvalidKeyLength(t *testing.T) {
 	}
 }
 
-func TestEncryptRandReaderFailure(t *testing.T) {
+// TestEncryptNonceIsModuleOwned asserts that Encrypt no longer draws the nonce
+// from randReader: NewGCMWithRandomNonce samples it inside the FIPS module, so
+// a failing package reader cannot affect Encrypt. This replaces the former
+// TestEncryptRandReaderFailure, whose "generate nonce" error path no longer
+// exists.
+func TestEncryptNonceIsModuleOwned(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		t.Fatalf("rand.Read: %v", err)
 	}
 
+	var ciphertext []byte
 	withFailReader(func() {
-		_, err := Encrypt(key, []byte("test"))
-		if err == nil {
-			t.Fatal("expected error when rand reader fails")
-		}
-
-		var cipherErr *CipherError
-		if !errors.As(err, &cipherErr) {
-			t.Fatalf("expected *CipherError, got %T: %v", err, err)
-		}
-		if cipherErr.Op != "generate nonce" {
-			t.Fatalf("expected Op=%q, got %q", "generate nonce", cipherErr.Op)
+		var err error
+		ciphertext, err = Encrypt(key, []byte("test"))
+		if err != nil {
+			t.Fatalf("Encrypt must not depend on randReader: %v", err)
 		}
 	})
+
+	plaintext, err := Decrypt(key, ciphertext)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if string(plaintext) != "test" {
+		t.Fatalf("round trip mismatch: got %q", plaintext)
+	}
+}
+
+// TestEncryptNoncesAreUnique asserts the module-owned nonce actually varies,
+// which is the property NewGCMWithRandomNonce exists to guarantee.
+func TestEncryptNoncesAreUnique(t *testing.T) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+
+	first, err := Encrypt(key, []byte("test"))
+	if err != nil {
+		t.Fatalf("Encrypt 1: %v", err)
+	}
+	second, err := Encrypt(key, []byte("test"))
+	if err != nil {
+		t.Fatalf("Encrypt 2: %v", err)
+	}
+	if bytes.Equal(first[:12], second[:12]) {
+		t.Fatal("two encryptions reused the same nonce")
+	}
 }
 
 func TestEncryptGCMFailure(t *testing.T) {

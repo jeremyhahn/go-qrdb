@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // ClusterDEKManager manages the cluster-wide Data Encryption Key (DEK) used
@@ -32,11 +33,16 @@ type ClusterDEKManager struct {
 	barrier seal.EncryptionBarrier
 
 	// Current DEK state (protected by mu).
-	dekPlaintext []byte // Current DEK in plaintext (memory only)
-	dekWrapped   []byte // Current DEK wrapped with master key
-	dekVersion   uint64 // Current DEK version (atomic for reads)
-	algorithm    string // Encryption algorithm
-	keyBytes     int    // Key size in bytes
+	//
+	// dekPlaintext is the live cluster DEK. It is held in mlocked,
+	// guard-paged memory for the manager's lifetime so the plaintext key
+	// never lands on the ordinary Go heap, where it would survive in
+	// freed-but-unzeroed pages and in core dumps.
+	dekPlaintext *secure.Buffer // Current DEK in plaintext (mlocked, memory only)
+	dekWrapped   []byte         // Current DEK wrapped with master key
+	dekVersion   uint64         // Current DEK version (atomic for reads)
+	algorithm    string         // Encryption algorithm
+	keyBytes     int            // Key size in bytes
 
 	// Initialization state.
 	initialized atomic.Bool
@@ -176,21 +182,26 @@ func (m *ClusterDEKManager) Initialize(ctx context.Context, algorithm string, ke
 		return &SealedError{Op: "ClusterDEKManager.Initialize"}
 	}
 
-	// Generate new DEK.
-	dekPlaintext := make([]byte, keyBytes)
-	if _, err := io.ReadFull(rand.Reader, dekPlaintext); err != nil {
+	// Generate the new DEK straight into mlocked memory: the plaintext key
+	// never exists on the ordinary heap, not even transiently.
+	dekBuf, err := secure.NewBuffer(keyBytes)
+	if err != nil {
+		return &CryptoError{Op: "ClusterDEKManager.Initialize", Detail: "allocate protected DEK buffer", Err: err}
+	}
+	if _, err := io.ReadFull(rand.Reader, dekBuf.Bytes()); err != nil {
+		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Initialize", Detail: "generate random DEK", Err: err}
 	}
 
 	// Encrypt DEK with barrier (epoch-based AES-256-GCM).
-	dekWrapped, err := m.barrier.Encrypt(dekPlaintext)
+	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
-		SecureMemZero(dekPlaintext)
+		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Initialize", Detail: "encrypt DEK with barrier", Err: err}
 	}
 
 	// Store DEK state.
-	m.dekPlaintext = dekPlaintext
+	m.dekPlaintext = dekBuf
 	m.dekWrapped = dekWrapped
 	atomic.StoreUint64(&m.dekVersion, 1)
 	m.algorithm = algorithm
@@ -266,12 +277,22 @@ func (m *ClusterDEKManager) GetStatus(ctx context.Context) (interface{}, error) 
 // Rotate generates a new cluster DEK version and initiates re-encryption.
 // The old version remains available for decryption during the transition.
 func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
+	// Lock-free rejection of the uninitialized manager; the authoritative
+	// check is the one below, taken under the lock Close holds while it
+	// destroys the DEK. Without it, a Rotate that passed this fast path and
+	// then waited for a concurrent Close would install fresh key material
+	// into a closed manager: mlocked memory nothing would ever destroy,
+	// invisible to every checked accessor.
 	if !m.initialized.Load() {
 		return &NotInitializedError{Op: "ClusterDEKManager.Rotate", Resource: "cluster DEK"}
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if !m.initialized.Load() {
+		return &NotInitializedError{Op: "ClusterDEKManager.Rotate", Resource: "cluster DEK"}
+	}
 
 	oldVersion := atomic.LoadUint64(&m.dekVersion)
 
@@ -283,24 +304,28 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 		return &SealedError{Op: "ClusterDEKManager.Rotate"}
 	}
 
-	// Generate new DEK.
-	dekPlaintext := make([]byte, m.keyBytes)
-	if _, err := io.ReadFull(rand.Reader, dekPlaintext); err != nil {
+	// Generate the new DEK straight into mlocked memory, as Initialize does.
+	dekBuf, err := secure.NewBuffer(m.keyBytes)
+	if err != nil {
+		return &CryptoError{Op: "ClusterDEKManager.Rotate", Detail: "allocate protected DEK buffer", Err: err}
+	}
+	if _, err := io.ReadFull(rand.Reader, dekBuf.Bytes()); err != nil {
+		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Rotate", Detail: "generate random DEK", Err: err}
 	}
 
 	// Encrypt new DEK with barrier (epoch-based AES-256-GCM).
-	dekWrapped, err := m.barrier.Encrypt(dekPlaintext)
+	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
-		SecureMemZero(dekPlaintext)
+		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Rotate", Detail: "encrypt DEK with barrier", Err: err}
 	}
 
-	// Zero out old DEK.
-	SecureMemZero(m.dekPlaintext)
+	// Wipe and release the old DEK's protected memory.
+	m.dekPlaintext.Destroy()
 
 	// Update to new DEK.
-	m.dekPlaintext = dekPlaintext
+	m.dekPlaintext = dekBuf
 	m.dekWrapped = dekWrapped
 	newVersion := oldVersion + 1
 	atomic.StoreUint64(&m.dekVersion, newVersion)
@@ -319,33 +344,110 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 	return nil
 }
 
-// GetCurrentDEK returns the current cluster DEK (for local encryption).
-// Returns a copy of the DEK to prevent external modification.
-func (m *ClusterDEKManager) GetCurrentDEK() ([]byte, error) {
+// WrapKey encrypts plaintext key material with the live cluster DEK using
+// AES-256-GCM and returns the wrapped form (nonce || ciphertext || tag).
+//
+// The cluster DEK is applied inside the manager, under its state lock: the key
+// bytes never leave protected memory and are never exposed to the caller.
+func (m *ClusterDEKManager) WrapKey(plaintext []byte) ([]byte, error) {
+	var wrapped []byte
+	if err := m.withCurrentDEK("WrapKey", func(dek []byte) error {
+		var err error
+		wrapped, err = AESGCMEncrypt(dek, plaintext)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return wrapped, nil
+}
+
+// UnwrapKey decrypts key material that WrapKey wrapped with the live cluster
+// DEK. As in WrapKey, the cluster DEK is applied inside the manager and never
+// crosses the API boundary.
+//
+// The returned plaintext is the CALLER's key material — a tenant DEK, not the
+// cluster DEK — and it is ordinary heap memory, exactly as it was before the
+// cluster DEK moved into a protected buffer. The tenant key path is heap-
+// resident end to end (defaultTenantDEKManager caches plaintext []byte, and
+// the exported TenantDEKManager interface returns []byte), so returning a
+// *secure.Buffer here would only move the copy one call further out rather
+// than protect it. Converting that path is a breaking change to an exported
+// interface and is tracked with the audit's other exported-surface rulings
+// in #22.
+func (m *ClusterDEKManager) UnwrapKey(wrapped []byte) ([]byte, error) {
+	if len(wrapped) < AESGCMOverhead {
+		return nil, &CiphertextTooShortError{Op: "ClusterDEKManager.UnwrapKey", Detail: "wrapped key too short"}
+	}
+
+	var plaintext []byte
+	if err := m.withCurrentDEK("UnwrapKey", func(dek []byte) error {
+		var err error
+		plaintext, err = AESGCMDecrypt(dek, wrapped)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return plaintext, nil
+}
+
+// withCurrentDEK invokes fn with the live cluster DEK held under the manager's
+// state lock. It is deliberately unexported: the slice handed to fn aliases
+// the mlocked buffer, so lending it outside this package would let a caller
+// mutate the live key or retain it past the call, defeating both the key's
+// integrity and the protected-memory boundary. External callers reach the DEK
+// only through the cryptographic operations above, which apply it in place.
+//
+// fn must not retain or mutate the slice, and must not call back into the
+// manager: the state lock is held for the duration of the call. op names the
+// exported operation on whose behalf the DEK is read, so returned errors
+// identify the caller's entry point rather than this helper.
+func (m *ClusterDEKManager) withCurrentDEK(op string, fn func(dek []byte) error) error {
+	// Lock-free rejection of the never-initialized manager. It is only a fast
+	// path: the authoritative check is the buffer test below, taken under the
+	// lock Close holds while it destroys the DEK.
 	if !m.initialized.Load() {
-		return nil, &NotInitializedError{Op: "ClusterDEKManager.GetCurrentDEK", Resource: "cluster DEK"}
+		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "cluster DEK"}
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if m.dekPlaintext == nil {
-		return nil, &NotInitializedError{Op: "ClusterDEKManager.GetCurrentDEK", Resource: "DEK plaintext"}
+	// Bytes reports nil for both an absent and an already-destroyed buffer.
+	plaintext := m.dekPlaintext.Bytes()
+	if plaintext == nil {
+		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "DEK plaintext"}
 	}
-
-	// Return a copy to prevent external modification.
-	dek := make([]byte, len(m.dekPlaintext))
-	copy(dek, m.dekPlaintext)
 
 	// Update metrics.
 	m.metrics.dekAccesses.Add(1)
 
-	return dek, nil
+	return fn(plaintext)
 }
 
-// GetDEKVersion returns the current DEK version number.
+// GetDEKVersion returns the current DEK version number, or 0 when the cluster
+// DEK has not been initialized.
 func (m *ClusterDEKManager) GetDEKVersion() uint64 {
 	return atomic.LoadUint64(&m.dekVersion)
+}
+
+// CurrentVersion returns the current DEK version, and a NotInitializedError
+// when no cluster DEK has been established yet. It is the checked counterpart
+// of GetDEKVersion, for callers that must distinguish "version 0" from "no DEK".
+//
+// The state is read under the same lock Initialize, Rotate and Close take, so
+// a returned version always belongs to a DEK that existed at the instant of
+// the call: a Close racing this call either has not yet entered its critical
+// section (the version is still live) or has already left it (this returns the
+// error). A lock-free check of initialized would leave a window in which Close
+// destroys the DEK between the check and the version load.
+func (m *ClusterDEKManager) CurrentVersion() (uint64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.initialized.Load() {
+		return 0, &NotInitializedError{Op: "ClusterDEKManager.CurrentVersion", Resource: "cluster DEK"}
+	}
+	return atomic.LoadUint64(&m.dekVersion), nil
 }
 
 // SyncToNode synchronizes the DEK to a specific node.
@@ -489,11 +591,10 @@ func (m *ClusterDEKManager) Close() error {
 	}
 	m.reencryptionMu.Unlock()
 
-	// Zero out DEK from memory.
-	if m.dekPlaintext != nil {
-		SecureMemZero(m.dekPlaintext)
-		m.dekPlaintext = nil
-	}
+	// Wipe and release the DEK's protected memory. Destroy is nil-safe and
+	// idempotent, so a double Close is harmless.
+	m.dekPlaintext.Destroy()
+	m.dekPlaintext = nil
 
 	m.dekWrapped = nil
 	m.initialized.Store(false)

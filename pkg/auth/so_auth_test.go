@@ -16,6 +16,7 @@ package auth_test
 
 import (
 	"context"
+	"crypto/fips140"
 	"errors"
 	"log/slog"
 	"os"
@@ -395,10 +396,16 @@ func TestRotateSOPIN_WrongOldPIN(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestVerifySOPIN_ArgonHashPrefix(t *testing.T) {
-	// Without GOFIPS140, hash record should start with 'A' (Argon2id).
-	if os.Getenv("GOFIPS140") != "" {
-		t.Skip("FIPS mode is set; skipping Argon2id path test")
+	// GOFIPS140=off is an explicit request for non-FIPS operation, so the
+	// record must be Argon2id ('A'). A binary built with the FIPS 140-3
+	// module active is in FIPS mode whatever the environment says, so the
+	// expectation folds that in rather than skipping the case.
+	t.Setenv("GOFIPS140", "off")
+	want := byte('A')
+	if fips140.Enabled() {
+		want = 'P'
 	}
+
 	ctx := context.Background()
 	store := newSOMemKV()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -408,16 +415,16 @@ func TestVerifySOPIN_ArgonHashPrefix(t *testing.T) {
 		t.Fatalf("SetSOPIN: %v", err)
 	}
 
-	// Inspect stored record; should start with 'A'.
+	// Inspect stored record; the KDF tag must match the detected mode.
 	record, _ := store.Get(ctx, "__sys:so-pin-commit/t1")
-	if len(record) == 0 || record[0] != 'A' {
-		t.Errorf("expected Argon2id record starting with 'A', got: %q", record)
+	if len(record) == 0 || record[0] != want {
+		t.Errorf("expected record with KDF tag %q, got: %q", want, record)
 	}
 }
 
 func TestVerifySOPIN_PBKDF2HashPrefix(t *testing.T) {
-	// With GOFIPS140 set, hash record should start with 'P' (PBKDF2-SHA256).
-	t.Setenv("GOFIPS140", "1")
+	// With GOFIPS140 requesting FIPS, the record starts with 'P' (PBKDF2-SHA256).
+	t.Setenv("GOFIPS140", "v1.0.0")
 
 	ctx := context.Background()
 	store := newSOMemKV()

@@ -67,8 +67,8 @@ for tenant X without being an admin of the system tenant.
 
 ## Built-in roles
 
-Six roles are bootstrapped by `firstboot.Initialize` with deterministic UUID v5
-identifiers, undeletable — see [../firstboot/](../firstboot/architecture.md) for
+Six roles are bootstrapped by `firstboot.Initialize` with deterministic UUIDv8
+(SHA-256) identifiers, undeletable — see [../firstboot/](../firstboot/architecture.md) for
 the permission matrix. The load-bearing one is the **Security Officer's explicit
 denial of crypto operations**: governance and key use are different people, and
 that is the FIPS 140-3 AS10.03 separation-of-duties control.

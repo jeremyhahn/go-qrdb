@@ -26,8 +26,10 @@
 // selects the correct algorithm for verification, enabling a FIPS-mode binary
 // to verify an Argon2id hash (and vice-versa) without re-hashing.
 //
-// KDF selection for new hashes is controlled by the GOFIPS140 environment
-// variable: when set, PBKDF2-SHA256 is selected; otherwise Argon2id is used.
+// KDF selection for new hashes follows FIPS 140 mode as reported by the
+// stack-wide predicate in go-quicraft/pkg/seal (re-exported as
+// seal.FIPSEnabled): in FIPS mode PBKDF2-SHA256 is selected, otherwise
+// Argon2id.
 package kdf
 
 import (
@@ -38,12 +40,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 )
 
 const (
@@ -73,9 +76,6 @@ const (
 
 	// defaultPBKDF2KeyLen is the PBKDF2 derived key length in bytes.
 	defaultPBKDF2KeyLen = 32
-
-	// envGOFIPS140 is the environment variable that triggers FIPS mode.
-	envGOFIPS140 = "GOFIPS140"
 )
 
 // Sentinel errors returned by the kdf package.
@@ -122,9 +122,12 @@ var hashers = map[string]Hasher{
 }
 
 // DefaultHasher returns the Hasher appropriate for the current environment:
-// PBKDF2-SHA256 when GOFIPS140 is set, Argon2id otherwise.
+// PBKDF2-SHA256 in FIPS 140 mode, Argon2id otherwise. FIPS detection is the
+// stack-wide predicate in go-quicraft/pkg/seal (re-exported as
+// seal.FIPSEnabled), so GOFIPS140=off selects Argon2id rather than being
+// misread as a request for FIPS.
 func DefaultHasher() Hasher {
-	if os.Getenv(envGOFIPS140) != "" {
+	if quicraftseal.FIPSEnabled() {
 		return hashers[VersionPBKDF2SHA256]
 	}
 	return hashers[VersionArgon2id]

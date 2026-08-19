@@ -23,8 +23,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// Compile-time interface check.
-var _ kvstore.KVStore = (*kvServiceAdapter)(nil)
+// Compile-time interface checks. The adapter also carries the optional atomic
+// conditional write, so callers that need exactly-once semantics — custodian
+// registration claiming a username, invite redemption — get the Raft-native
+// guarantee rather than being refused.
+var (
+	_ kvstore.KVStore       = (*kvServiceAdapter)(nil)
+	_ kvstore.AtomicKVStore = (*kvServiceAdapter)(nil)
+)
 
 // kvServiceAdapter adapts service.KVServicer to the kvstore.KVStore interface
 // so that internal stores (user, role, audit) can use Raft-replicated storage.
@@ -50,6 +56,18 @@ func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegist
 // Put stores a key-value pair through the Raft-replicated KV service.
 func (a *kvServiceAdapter) Put(ctx context.Context, key string, value []byte) error {
 	return a.svc.Put(ctx, key, value)
+}
+
+// PutIfAbsent stores value under key only when the key is absent, reporting
+// whether this call created it.
+//
+// The condition is evaluated by the KV service, not here: KVServicer.PutIfAbsent
+// proposes a conditional command that every engine resolves natively — Raft
+// inside the state machine, so replicas cannot diverge. A Get followed by a Put
+// in this adapter would reintroduce exactly the window the operation exists to
+// close.
+func (a *kvServiceAdapter) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	return a.svc.PutIfAbsent(ctx, key, value)
 }
 
 // Get retrieves a value by key. Returns nil, nil when the key does not

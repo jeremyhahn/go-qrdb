@@ -61,26 +61,20 @@ func (m *mockHSMStrategy) BarrierEncryptor(context.Context, []byte) (SymmetricEn
 }
 
 func (m *mockHSMStrategy) SealRootKey(_ context.Context, rootKey []byte, _ Credentials) (*SealedRootKey, error) {
-	g := m.aeadNoT()
-	nonce := make([]byte, g.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-	ct := g.Seal(nonce, nonce, rootKey, nil)
+	ct := m.aeadNoT().Seal(nil, nil, rootKey, nil)
 	return &SealedRootKey{Strategy: m.id, Version: 1, Ciphertext: ct}, nil
 }
 
 func (m *mockHSMStrategy) UnsealRootKey(_ context.Context, sealed *SealedRootKey, _ Credentials) ([]byte, error) {
-	g := m.aeadNoT()
-	ns := g.NonceSize()
-	nonce, ct := sealed.Ciphertext[:ns], sealed.Ciphertext[ns:]
-	return g.Open(nil, nonce, ct, nil)
+	return m.aeadNoT().Open(nil, nil, sealed.Ciphertext, nil)
 }
 
 // aeadNoT builds the AEAD without *testing.T (used on the interface methods).
 func (m *mockHSMStrategy) aeadNoT() cipher.AEAD {
 	blk, _ := aes.NewCipher(m.kek)
-	g, _ := cipher.NewGCM(blk)
+	// NewGCMWithRandomNonce is the FIPS-approved construction: it samples the
+	// nonce itself and prepends it, which is the layout this double already used.
+	g, _ := cipher.NewGCMWithRandomNonce(blk)
 	return g
 }
 

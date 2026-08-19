@@ -19,6 +19,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/pem"
@@ -476,6 +477,33 @@ func TestSealWithECIES_UnsupportedCurve(t *testing.T) {
 func TestSealWithX25519FromEd25519_WrongKeySize(t *testing.T) {
 	_, err := sealWithX25519FromEd25519(ed25519.PublicKey(make([]byte, 10)), []byte("payload"))
 	assert.ErrorIs(t, err, ErrUnsupportedKeyAlgorithm)
+}
+
+// ---------------------------------------------------------------------------
+// sealShareToPublicKey — Ed25519 recipients are refused in FIPS mode
+// ---------------------------------------------------------------------------
+
+// TestSealShareToPublicKey_Ed25519FIPSGuard asserts the mode-dependent
+// contract for an Ed25519 officer key. Sealing to such a key requires the
+// birational map to X25519, and X25519 is not FIPS 140-3 approved, so in FIPS
+// mode the enrollment must be refused with ErrAlgorithmNotFIPSApproved rather
+// than completed. Outside FIPS mode the capability is unchanged. Both branches
+// are real assertions: the FIPS CI job proves the refusal, the ordinary test
+// job proves the seal still works.
+func TestSealShareToPublicKey_Ed25519FIPSGuard(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	sealed, err := sealShareToPublicKey(pub, []byte("payload"))
+
+	if fips140.Enabled() {
+		assert.ErrorIs(t, err, ErrAlgorithmNotFIPSApproved)
+		assert.Nil(t, sealed)
+		return
+	}
+
+	require.NoError(t, err)
+	assert.NotEmpty(t, sealed)
 }
 
 // ---------------------------------------------------------------------------

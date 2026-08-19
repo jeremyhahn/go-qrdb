@@ -144,6 +144,23 @@ type Dependencies struct {
 	// Roles is the role-creation surface. Required.
 	Roles RoleCreator
 
+	// RoleResolver resolves a system role to the identifier it is actually
+	// persisted under, so grants bind to that record rather than to a
+	// freshly derived identifier. On a cluster seeded before system role
+	// IDs moved off UUIDv5/SHA-1, the seeded roles keep their legacy
+	// identifiers (seeding is name-unique and tolerates already-exists),
+	// and a grant written against the derived identifier would name no
+	// role at all.
+	//
+	// Leaving it nil is safe in two cases, and refused otherwise. It is
+	// safe when Roles itself implements role.NameResolver — qrdb's own
+	// role.RoleServicer does, and it is then used automatically — and when
+	// this run actually seeds the roles, where the derived identifier is
+	// the one being written. If the roles already existed and nothing can
+	// resolve them, first-boot fails with UnresolvableSystemRoleError
+	// rather than writing a guessed grant.
+	RoleResolver role.NameResolver
+
 	// CA issues the platform admin certificate (Path A: generate-and-distribute).
 	// Optional: used when no AdminCSRPEM is supplied.
 	CA CertProvider
@@ -235,7 +252,8 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	}
 
 	// Step 2: built-in roles. Tolerates already-exists for idempotency.
-	if err := registerBuiltInRoles(ctx, deps, tenantID, result); err != nil {
+	rolesPreexisted, err := registerBuiltInRoles(ctx, deps, tenantID, result)
+	if err != nil {
 		return nil, err
 	}
 
@@ -243,7 +261,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	// already-exists for idempotency. Cert generation only runs on the
 	// initial create so a re-run does not rotate the platform key
 	// material.
-	adminUser, created, err := createAdminUser(ctx, deps, tenantID)
+	adminUser, created, err := createAdminUser(ctx, deps, tenantID, rolesPreexisted)
 	if err != nil {
 		return nil, err
 	}
@@ -338,10 +356,32 @@ func createSystemTenant(ctx context.Context, deps Dependencies, result *Result) 
 	return &SystemTenantCreationError{Cause: err}
 }
 
+// roleResolver returns the name resolver first-boot should use: the explicit
+// dependency when supplied, otherwise the Roles surface itself when it
+// implements role.NameResolver — which qrdb's own role.RoleServicer does.
+// Falling back this way means a caller that wires only Roles still binds
+// grants to persisted identifiers instead of silently deriving them; the
+// explicit field exists for adapters whose role-creation surface genuinely
+// cannot answer lookups by name.
+func roleResolver(deps Dependencies) role.NameResolver {
+	if deps.RoleResolver != nil {
+		return deps.RoleResolver
+	}
+	if r, ok := deps.Roles.(role.NameResolver); ok {
+		return r
+	}
+	return nil
+}
+
 // registerBuiltInRoles installs every role returned by role.BuiltInRoles
 // under the supplied tenant. Already-exists for any individual role is
 // treated as idempotent success; only structural errors propagate.
-func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) error {
+//
+// It reports whether any role was found to already exist. That distinguishes
+// a store this run seeded — where deriving a system role ID is exactly right,
+// because it is the identifier just written — from one seeded earlier, whose
+// identifiers this code may be unable to derive at all.
+func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID string, result *Result) (preexisting bool, err error) {
 	roles := role.BuiltInRoles(tenantID)
 	// Under the standard (non-strict) posture also seed the Owner
 	// convenience role. In strict mode it is omitted entirely so a
@@ -372,11 +412,12 @@ func registerBuiltInRoles(ctx context.Context, deps Dependencies, tenantID strin
 				slog.String("name", r.Name),
 				slog.String("tenant", tenantID),
 			)
+			preexisting = true
 			continue
 		}
-		return &RolesRegistrationError{Role: r.Name, Cause: createErr}
+		return false, &RolesRegistrationError{Role: r.Name, Cause: createErr}
 	}
-	return nil
+	return preexisting, nil
 }
 
 // createAdminUser creates the platform admin user inside the supplied
@@ -489,8 +530,22 @@ func spkiThumbprintFromCertPEM(certPEM []byte) (string, error) {
 
 // createAdminUser creates the bootstrap admin. It returns the created user
 // (nil when the admin already existed), a created flag, and an error.
-func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*user.User, bool, error) {
-	adminRoleID := role.SystemRoleID(tenantID, role.RoleNameAdmin)
+func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, rolesPreexisted bool) (*user.User, bool, error) {
+	resolver := roleResolver(deps)
+	// Deriving a system role ID is correct only when this run seeded the
+	// store, because the derived value is then exactly what was written. If
+	// the roles were already there and nothing can tell us which identifiers
+	// they carry, the derived value is a guess — and on a cluster seeded
+	// before the UUIDv5 migration it is the wrong guess, producing an admin
+	// bound to no role at all while bootstrap reports success.
+	if resolver == nil && rolesPreexisted {
+		return nil, false, &UnresolvableSystemRoleError{Role: role.RoleNameAdmin, TenantID: tenantID}
+	}
+
+	adminRoleID, err := role.ResolveSystemRoleID(ctx, resolver, tenantID, role.RoleNameAdmin)
+	if err != nil {
+		return nil, false, err
+	}
 	roleIDs := []string{adminRoleID}
 
 	// Under the standard (non-strict) posture, also grant the Owner role so
@@ -499,7 +554,11 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string) (*
 	// keeps only the canonical Admin@system grant and data-plane/governance
 	// duties require the operator/SO identities.
 	if !deps.SeparationOfDuties {
-		roleIDs = append(roleIDs, role.SystemRoleID(tenantID, role.RoleNameOwner))
+		ownerRoleID, ownerErr := role.ResolveSystemRoleID(ctx, resolver, tenantID, role.RoleNameOwner)
+		if ownerErr != nil {
+			return nil, false, ownerErr
+		}
+		roleIDs = append(roleIDs, ownerRoleID)
 	}
 
 	adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{

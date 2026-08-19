@@ -91,8 +91,9 @@ which walks the category definitions and calls `Register` for each.
   verification is the registered `authfactors.Factor`'s job.
 - **`Enabled: false` blocks authentication** and is reversible; `System: true`
   records are undeletable.
-- **Built-in role IDs are deterministic** UUID v5 — see
-  [../firstboot/](../firstboot/engineering.md).
+- **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
+  [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
+  rules under [Persistence](#persistence).
 
 ## Error semantics
 
@@ -114,9 +115,34 @@ unchecked call panics rather than failing cleanly.
 - Users and roles live under the internal `__sys:` namespace, Raft-replicated,
   invisible to user KV enumeration.
 - Roles are at `__sys:role/<id>` with deterministic identifiers for the built-in
-  six.
+  six: RFC 9562 §5.8 **UUIDv8 over SHA-256** of a fixed
+  `"go-qrdb:role-namespace/v8/"` prefix plus the length-framed tenant ID and
+  role name (`pkg/role.SystemRoleID`).
 - User lookup by certificate thumbprint is a secondary index —
   `GET /users/by-cert-thumbprint/{thumbprint}`.
+
+**Identifier compatibility.** The derivation was UUIDv5 (name-based, SHA-1)
+until the FIPS 140-3 migration: SHA-1 does not exist under FIPS 140-3, and RFC
+4122 fixes v3 to MD5 and v5 to SHA-1, so v8 — the version reserved for
+application-defined derivations — is the only name-based form an approved hash
+can take. The 36-character UUID text shape is unchanged, so no index key or wire
+format moved with it.
+
+These identifiers are persisted data (role primary keys, both secondary indexes,
+and every user record's `RoleIDs`), so the change is versioned rather than a flag
+day: **writes emit only the v8 form, reads accept both.** A cluster seeded before
+the migration keeps its roles under their UUIDv5 identifiers — seeding is
+name-unique and tolerates already-exists, so those records are never replaced —
+and nothing already persisted becomes unresolvable:
+
+| Direction | How it stays correct |
+|-----------|----------------------|
+| Identifier → role | Unchanged: a stored identifier is looked up verbatim, so `GetRole`, `ListRoles` and `ResolvePermissions` resolve a legacy record as they always did. |
+| Tenant + name → identifier | `role.ResolveSystemRoleID` answers from the name index rather than from a hash, so a grant binds to the record that exists. Bootstrap and first boot use it when assigning system roles. |
+| "Is this identifier role X?" | `role.SystemRoleIDs` returns both the canonical and the persisted identifier. The RBAC authorizer matches against the whole set, so the SO deny-list (FIPS 140-3 AS10.03) and the strict-separation-of-duties Owner strip still void a grant made before the migration. |
+
+No capability is absent from a FIPS build as a result: the v8 derivation is the
+only one compiled, in every build.
 
 **Compatibility**: the thumbprint derivation (base64url SHA-256 over SPKI) is
 part of the on-disk contract. Changing it invalidates every existing binding.

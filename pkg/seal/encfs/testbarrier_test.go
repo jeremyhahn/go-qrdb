@@ -41,7 +41,10 @@ func newFakeBarrier(t interface {
 	if err != nil {
 		t.Fatalf("aes: %v", err)
 	}
-	aead, err := cipher.NewGCM(blk)
+	// NewGCMWithRandomNonce is the FIPS-approved construction; it samples the
+	// nonce itself and prepends it, which is the same layout this fake wrote
+	// by hand.
+	aead, err := cipher.NewGCMWithRandomNonce(blk)
 	if err != nil {
 		t.Fatalf("gcm: %v", err)
 	}
@@ -52,13 +55,8 @@ func (b *fakeBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	if b.sealed.Load() {
 		return nil, seal.ErrSealed
 	}
-	var nonce [12]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, err
-	}
-	out := make([]byte, 0, len(nonce)+len(plaintext)+16)
-	out = append(out, nonce[:]...)
-	return b.aead.Seal(out, nonce[:], plaintext, nil), nil
+	out := make([]byte, 0, 12+len(plaintext)+16)
+	return b.aead.Seal(out, nil, plaintext, nil), nil
 }
 
 func (b *fakeBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
@@ -68,9 +66,7 @@ func (b *fakeBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < 12+16 {
 		return nil, errors.New("fakeBarrier: ciphertext too short")
 	}
-	nonce := ciphertext[:12]
-	body := ciphertext[12:]
-	return b.aead.Open(nil, nonce, body, nil)
+	return b.aead.Open(nil, nil, ciphertext, nil)
 }
 
 func (b *fakeBarrier) seal()   { b.sealed.Store(true) }

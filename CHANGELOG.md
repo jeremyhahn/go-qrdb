@@ -162,6 +162,26 @@ are not reconstructed here — their history is in the git log.
   new profile fields (the last funnel site). Downstream notified:
   go-quicbaas#4.
 
+- **Release tag lockstep check.** `make check-tag-lockstep`
+  (`scripts/check-tag-lockstep.sh`) checks release-versioning.md P2: every
+  root `vX.Y.Z` tag must have an `sdk/go/vX.Y.Z` tag at the same commit, and
+  no `sdk/go` tag may exist without its root. The new `Release Lockstep`
+  workflow runs it on version-tag pushes in both namespaces (`v*` and
+  `sdk/go/v*`) — within a minute of publication, rather than days later in a
+  consumer's dependency bump — and re-audits the whole tag set on every merge
+  to `main`. It detects a skewed release; it
+  cannot prevent one, because a tag is visible the moment it is pushed
+  (go-qrdb#13 tracks enforcement). The preventive step is running the check
+  before publishing both tags in one atomic push
+  (`git push --atomic origin vX.Y.Z sdk/go/vX.Y.Z`). `make test-tag-lockstep` covers
+  the rejection branches against throwaway repositories, since this
+  repository's own tag set is permanently valid and exercises only the
+  accepting branch. `v0.5.9-alpha` was tagged on the root module alone, so
+  `go get` at latest resolved the root to `v0.5.9-alpha` and `sdk/go` to
+  `v0.5.8-alpha` — a pair that does not compile, because the older `sdk/go`
+  still aliased the symbols removed below. The tag has since been cut.
+  Reported by go-xkms (#6).
+
 ### Deprecated
 
 - **Plaintext-into-`string` secret resolution (`pkg/secret`).** Resolving a
@@ -179,7 +199,32 @@ are not reconstructed here — their history is in the git log.
   paths (`%v`, `fmt.Sprint`, structured logging) are redacted now, as noted
   above, so what remains deferred is only the deliberate call.
 
+### Removed
+
+- **`statemachine.CachedDiskBackend` and `NewCachedDiskBackend`**, with
+  their `sdk/go` aliases — a breaking change to an exported API, shipped
+  in `v0.5.9-alpha`. Both were a reserved placeholder: a methodless struct
+  no registry ever provided, so the `cached-disk` SM backend passed config
+  validation and then failed at boot. There is no replacement and nothing
+  to migrate — no build that compiled against these symbols was running a
+  cached disk backend. The disk-backed path is `sm_type: disk`, now
+  composable over any storage backend via `raft.sm_storage`.
+
 ### Fixed — SECURITY
+
+- **`GOFIPS140=off` was read as a FIPS request.** SO PIN hashing in
+  `pkg/auth` picked its KDF with `os.Getenv("GOFIPS140") != ""`, so the one
+  value that explicitly means "not FIPS" selected PBKDF2-SHA256, and
+  `crypto/fips140.Enabled()` was never consulted at all. Every
+  FIPS-conditional path in the tree now routes through a single predicate,
+  `seal.FIPSEnabled` (re-exported from `go-quicraft/pkg/seal`): the Go
+  runtime's FIPS 140-3 module state first, `GOFIPS140` as an environmental
+  fallback, and `off` honoured as disabled. `pkg/seal/kdf.DefaultHasher`
+  loses the same env-only test, and `pkg/pin.AutoDetectHashConfig` — which
+  was blind to the environment entirely — now honours a `GOFIPS140` FIPS
+  request. Stored hashes are unaffected: each record carries its own
+  algorithm/version tag and verification still routes by that tag, so a
+  hash written in either mode continues to verify in the other.
 
 - **A resolver reporting success with no value is now refused
   (`pkg/secret`).** `SecretResolver` requires a non-nil `SecretValue` on
@@ -196,6 +241,30 @@ are not reconstructed here — their history is in the git log.
   secret in a `SecretValue`" pattern strictly worse than a plain `string`
   field. A `SecretValue` is now a protected leaf the walk resolves into and
   never descends through.
+
+### Changed — protected memory
+
+- **The live cluster DEK is held in mlocked memory, and never copied out.**
+  `dek.ClusterDEKManager` kept the plaintext cluster DEK in an ordinary
+  `[]byte` for the manager's whole lifetime. It is now a `*secure.Buffer`
+  (mlocked, guard-paged, wiped on destroy): the key is generated straight
+  into protected memory rather than being copied there, and the superseded
+  buffer is destroyed on `Rotate` and on `Close`.
+
+  **BREAKING (service seam):** `ClusterDEKManager.GetCurrentDEK() ([]byte,
+  error)` is gone, and no exported API replaces it: the key is now applied
+  inside the manager by `WrapKey(plaintext []byte) ([]byte, error)` and
+  `UnwrapKey(wrapped []byte) ([]byte, error)`, which perform the AES-256-GCM
+  key wrapping under the manager's state lock. Neither a heap-backed copy nor
+  a slice aliasing protected memory crosses the API boundary, so no caller
+  can retain the key past a call or mutate the live key.
+  `ClusterDEKManager.CurrentVersion()` is the checked
+  counterpart of `GetDEKVersion` for callers that must distinguish
+  "version 0" from "no DEK". Correspondingly,
+  `service.DEKServicer.GetCurrentDEK(ctx) ([]byte, uint64, error)` becomes
+  `CurrentDEKVersion(ctx) (uint64, error)`: the DEK bytes never crossed that
+  boundary usefully — the embedded transport already discarded them, and no
+  transport exposes DEK material.
 
 ## [0.5.8-alpha] - 2026-08-17
 

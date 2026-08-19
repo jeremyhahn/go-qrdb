@@ -111,7 +111,7 @@ available in memory via `seal.EncryptionBarrier.Decrypt()`.
 
 ## Persistence
 
-- Roles: `__sys:role/<id>` with deterministic UUID v5 identifiers.
+- Roles: `__sys:role/<id>` with deterministic UUIDv8 (SHA-256) identifiers.
 - Users and their certificate bindings: see
   [../identity-rbac/](../identity-rbac/engineering.md).
 - Certificates: see

@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -548,12 +549,20 @@ func ownerPermissions() []permission.Permission {
 	return permission.All()
 }
 
-// SystemRoleID returns the deterministic UUID for any named system role in
-// the given tenant. It is used by the RBAC authorizer for fast identity
-// checks (e.g., the SO deny-list match by deterministic role ID) and by
-// the bootstrap flow to grant the canonical Admin@system role with a
-// stable cluster-wide identifier. An empty tenantID defaults to
+// SystemRoleID returns the canonical deterministic UUID for any named
+// system role in the given tenant. It is used by the RBAC authorizer for
+// fast identity checks (e.g., the SO deny-list match by deterministic role
+// ID) and by the bootstrap flow to grant the canonical Admin@system role
+// with a stable cluster-wide identifier. An empty tenantID defaults to
 // SystemTenantID to match BuiltInRoles behavior.
+//
+// A cluster seeded before the move off UUIDv5 still holds its system roles
+// under their legacy identifiers; seeding is name-unique, so those records
+// are never replaced by ones keyed on the value returned here. Code that
+// must address the role AS PERSISTED — granting it to a user, or deciding
+// whether an existing grant denotes it — resolves through the role store
+// with ResolveSystemRoleID or SystemRoleIDs instead of calling this
+// function directly.
 func SystemRoleID(tenantID, roleName string) string {
 	if tenantID == "" {
 		tenantID = tenant.SystemTenantID
@@ -561,14 +570,45 @@ func SystemRoleID(tenantID, roleName string) string {
 	return deterministicUUID(tenantID, roleName)
 }
 
-// deterministicUUID generates a deterministic UUID v5 from a namespace
-// derived from the tenant ID and role name combination.
+// systemRoleNamespace domain-separates role identifiers from every other
+// SHA-256 derivation in the system. UUIDv8 leaves the derivation entirely
+// to the application (RFC 9562 §5.8), so unlike a v3/v5 namespace this is
+// hashed as a literal prefix rather than as sixteen namespace bytes.
+const systemRoleNamespace = "go-qrdb:role-namespace/v8/"
+
+// deterministicUUID derives the stable identifier of a named role in a
+// tenant as an RFC 9562 §5.8 UUIDv8 over SHA-256. UUIDv8 is the version
+// reserved for custom, application-defined derivations, which is what a
+// name-based UUID over an approved hash is: RFC 4122 fixes v3 to MD5 and
+// v5 to SHA-1, neither of which exists under FIPS 140-3, so no versioned
+// name-based UUID can carry a SHA-256 derivation.
+//
+// The result keeps the 36-character UUID text shape, so no caller, index
+// key, or wire format reformats. It is NOT the value the SHA-1 derivation
+// produced for the same inputs — see SystemRoleID for how already-seeded
+// clusters keep resolving.
+//
+// tenantID and name are length-prefixed rather than merely joined so that
+// the encoding is injective: without framing, tenant "a/b" with role "c"
+// and tenant "a" with role "b/c" would hash identically and two distinct
+// roles would collide on one identifier.
 func deterministicUUID(tenantID, name string) string {
-	// Create a deterministic namespace UUID from a SHA-256 hash of a
-	// fixed prefix so the result is stable across builds.
-	nsData := sha256.Sum256([]byte("go-qrdb:role-namespace"))
-	ns, _ := uuid.FromBytes(nsData[:16])
-	return uuid.NewSHA1(ns, []byte(tenantID+"/"+name)).String()
+	buf := make([]byte, 0, len(systemRoleNamespace)+len(tenantID)+len(name)+16)
+	buf = append(buf, systemRoleNamespace...)
+	buf = strconv.AppendInt(buf, int64(len(tenantID)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, tenantID...)
+	buf = strconv.AppendInt(buf, int64(len(name)), 10)
+	buf = append(buf, ':')
+	buf = append(buf, name...)
+
+	sum := sha256.Sum256(buf)
+
+	var u uuid.UUID
+	copy(u[:], sum[:len(u)])
+	u[6] = (u[6] & 0x0f) | 0x80 // version 8
+	u[8] = (u[8] & 0x3f) | 0x80 // RFC 9562 variant (10xx)
+	return u.String()
 }
 
 // custodianPermissions returns the permission set for the Custodian built-in role.

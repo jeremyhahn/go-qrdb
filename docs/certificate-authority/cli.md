@@ -76,6 +76,11 @@ stops authenticating.
 
 Export a certificate and key as a PKCS#12 archive.
 
+Unavailable when the daemon runs with `GODEBUG=fips140=only`: the format's
+`localKeyId` attribute is a SHA-1 certificate fingerprint, which the Go
+Cryptographic Module refuses to compute under strict enforcement. See
+[../seal/fips140-mode.md](../seal/fips140-mode.md).
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--cert-pem` | string | path to the certificate PEM |

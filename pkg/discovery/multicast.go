@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -42,6 +43,16 @@ const (
 
 	// maxAddrLen is the maximum address length.
 	maxAddrLen = 253
+
+	// MinSharedSecretLen is the shortest multicast shared secret accepted as
+	// an HMAC-SHA256 key. FIPS 140-3 (SP 800-107 §5.3.4) sets the floor for an
+	// HMAC key at 112 bits, and crypto/hmac PANICS on a shorter key under
+	// GODEBUG=fips140=only -- a node configured with a short secret would take
+	// the process down on its first announcement. 16 bytes is the next whole
+	// byte count at or above the floor and is what an operator should be
+	// supplying regardless: the secret is the only thing authenticating
+	// membership announcements.
+	MinSharedSecretLen = 16
 
 	// readBufferSize is the UDP read buffer size.
 	readBufferSize = 512
@@ -582,7 +593,12 @@ func (md *MulticastDiscovery) sendAnnouncement() {
 // EncodeMulticastMessage encodes a discovery message with HMAC authentication
 // and a monotonic timestamp for replay protection.
 // Format: [deploymentID:8 LE][nodeID:8 LE][timestamp:8 LE][addrLen:2 LE][addr:addrLen][hmac:32].
+// The secret must be at least MinSharedSecretLen bytes.
 func EncodeMulticastMessage(deploymentID, nodeID uint64, addr string, secret []byte) ([]byte, error) {
+	if err := validateSharedSecret(secret); err != nil {
+		return nil, err
+	}
+
 	addrBytes := []byte(addr)
 	if len(addrBytes) > maxAddrLen {
 		return nil, &Error{
@@ -612,6 +628,9 @@ func EncodeMulticastMessage(deploymentID, nodeID uint64, addr string, secret []b
 // nanoseconds. Messages older than maxAge are rejected as replays.
 // If maxAge is 0, no timestamp validation is performed.
 func DecodeMulticastMessage(data, secret []byte, maxAge time.Duration) (deploymentID, nodeID uint64, addr string, err error) {
+	if secErr := validateSharedSecret(secret); secErr != nil {
+		return 0, 0, "", secErr
+	}
 	if len(data) < headerSize+hmacSize {
 		return 0, 0, "", &Error{
 			Method: "multicast",
@@ -654,6 +673,23 @@ func DecodeMulticastMessage(data, secret []byte, maxAge time.Duration) (deployme
 	}
 
 	return deploymentID, nodeID, addr, nil
+}
+
+// validateSharedSecret rejects a shared secret too short to be a FIPS-approved
+// HMAC-SHA256 key. Callers must run this before any computeHMAC call: under
+// GODEBUG=fips140=only crypto/hmac panics on an under-length key rather than
+// returning an error, so the check has to happen ahead of the primitive.
+func validateSharedSecret(secret []byte) error {
+	if len(secret) < MinSharedSecretLen {
+		return &Error{
+			Method: "multicast",
+			Err: &ValidationError{
+				Field:  "SharedSecret",
+				Reason: "must be at least " + strconv.Itoa(MinSharedSecretLen) + " bytes",
+			},
+		}
+	}
+	return nil
 }
 
 // computeHMAC computes HMAC-SHA256 over data with the given key.

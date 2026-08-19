@@ -16,7 +16,7 @@ A barrier is protected by exactly one of three core strategies:
 | Protection | Credential | Notes |
 |------------|-----------|-------|
 | `none` | none | Identity passthrough; data stored in cleartext. Dev/test or OS-level FDE. |
-| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 under GOFIPS140). Supplied at `Initialize` and every `Unseal`; **never stored in config and never derived from a deployment ID**. Backed by `DeferredSoftwareStrategy`. |
+| `passphrase` | admin-supplied passphrase | KDF'd (Argon2id, or PBKDF2-SHA256 in FIPS 140 mode — see `seal.FIPSEnabled`). Supplied at `Initialize` and every `Unseal`; **never stored in config and never derived from a deployment ID**. Backed by `DeferredSoftwareStrategy`. |
 | `shamir` | M-of-N shares | Shares enrolled via the M-of-N ceremony. |
 
 Hardware strategies (`tpm2` / `pkcs11` / cloud KMS / Vault) are xkms-provided extensions of `passphrase`, registered into qrdb's `StrategyRegistry` at composition time — not new core options. See [seal/README.md](seal/README.md).
@@ -89,18 +89,22 @@ The barrier status is checked via `BarrierStatus`. If sealed, data operations ar
 
 ### 6. Role and User Bootstrap
 
-The daemon creates six system roles deterministically on first init. Each role is assigned a fixed UUID v5 derived from its name to ensure cross-cluster stability.
+The daemon creates six system roles deterministically on first init. Each role is
+assigned a fixed UUIDv8 (RFC 9562 §5.8, derived over SHA-256) from its tenant and
+name to ensure cross-cluster stability. Roles seeded before the FIPS 140-3
+migration off UUIDv5/SHA-1 keep their legacy identifiers and still resolve; see
+[roles/README.md](roles/README.md#storage-schema).
 
 **System Roles** (undeletable, persist at `__sys:role/<id>`):
 
 | Role | UUID | Permissions | Notes |
 |------|------|-----------|-------|
-| Security Officer (SO) | `uuid5(namespace, "go-qrdb/role/SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
-| Admin | `uuid5(namespace, "go-qrdb/role/Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
-| Operator | `uuid5(namespace, "go-qrdb/role/Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
-| User | `uuid5(namespace, "go-qrdb/role/User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
-| Auditor | `uuid5(namespace, "go-qrdb/role/Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
-| Custodian | `uuid5(namespace, "go-qrdb/role/Custodian")` | `barrier:unseal-share` | Shamir share holder only |
+| Security Officer (SO) | `SystemRoleID(tenantID, "SO")` | `so:*`, `barrier:*`, `certificate:*`, `audit:read`, `role:*`, `user:*` (crypto ops explicitly denied) | Governance only; dual-factor auth required |
+| Admin | `SystemRoleID(tenantID, "Admin")` | `keys:*` (except delete infrastructure), `certificate:*`, `tenant:*`, `backup:*`, `audit:read` | Day-to-day key lifecycle |
+| Operator | `SystemRoleID(tenantID, "Operator")` | `keys:sign`, `keys:encrypt`, `keys:decrypt`, `keys:verify`, `barrier:seal`, `barrier:unseal`, `audit:read` | Routine operations |
+| User | `SystemRoleID(tenantID, "User")` | `keys:sign`, `keys:verify`, `keys:encrypt`, `keys:decrypt` | Crypto ops only |
+| Auditor | `SystemRoleID(tenantID, "Auditor")` | `audit:read`, `system:read`, `*:list`, `*:get-metadata` | Read-only everywhere |
+| Custodian | `SystemRoleID(tenantID, "Custodian")` | `barrier:unseal-share` | Shamir share holder only |
 
 An admin user for the system tenant is also created:
 

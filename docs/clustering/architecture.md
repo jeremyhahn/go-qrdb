@@ -61,7 +61,7 @@ Four methods ship:
 | Method      | Mechanism                                                                |
 |-------------|--------------------------------------------------------------------------|
 | `static`    | Fixed member list from `raft.peers` (`id=address` specs).                |
-| `multicast` | HMAC-SHA256-authenticated UDP multicast announcements (opt-in; requires an operator-chosen PSK — there is no default secret). |
+| `multicast` | HMAC-SHA256-authenticated UDP multicast announcements (opt-in; requires an operator-chosen PSK of at least `discovery.MinSharedSecretLen` (16) bytes — there is no default secret). |
 | `dns`       | DNS SRV lookup at `{service}.{proto}.{domain}` (default `_raft._udp`).   |
 | `token`     | etcd-style registration with a shared-token HTTP discovery service.      |
 

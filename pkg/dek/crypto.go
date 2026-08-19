@@ -11,33 +11,40 @@ package dek
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
-	"io"
 )
+
+// aesGCMNonceSize is the length of the nonce that NewGCMWithRandomNonce
+// prepends to every ciphertext. The AEAD reports NonceSize() == 0 because
+// callers never supply a nonce, so the framing length is named here instead.
+const aesGCMNonceSize = 12
 
 // AESGCMOverhead is the total overhead added by AES-GCM encryption:
 // 12-byte nonce prepended + 16-byte authentication tag appended.
-const AESGCMOverhead = 12 + 16
+const AESGCMOverhead = aesGCMNonceSize + 16
 
 // AESGCMEncrypt encrypts plaintext with the given key using AES-256-GCM.
 // The returned ciphertext is formatted as: nonce || ciphertext || tag.
+//
+// The AEAD is built with cipher.NewGCMWithRandomNonce because SP 800-38D
+// requires the module to own nonce generation; cipher.NewGCM (arbitrary IVs)
+// is rejected under GODEBUG=fips140=only. The construction prepends the
+// 12-byte nonce it samples, which is the layout this function already
+// produced, so previously wrapped DEKs stay unwrappable.
 func AESGCMEncrypt(key, plaintext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, &CryptoError{Op: "AESGCMEncrypt", Detail: "create cipher", Err: err}
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, &CryptoError{Op: "AESGCMEncrypt", Detail: "create GCM", Err: err}
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, &CryptoError{Op: "AESGCMEncrypt", Detail: "generate nonce", Err: err}
-	}
-
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	// The nonce argument must be empty: the AEAD samples the nonce itself and
+	// prepends it to the returned ciphertext.
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
+	return gcm.Seal(nil, nil, plaintext, nil), nil
 }
 
 // AESGCMDecrypt decrypts ciphertext that was encrypted with AESGCMEncrypt.
@@ -48,20 +55,21 @@ func AESGCMDecrypt(key, ciphertext []byte) ([]byte, error) {
 		return nil, &CryptoError{Op: "AESGCMDecrypt", Detail: "create cipher", Err: err}
 	}
 
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, &CryptoError{Op: "AESGCMDecrypt", Detail: "create GCM", Err: err}
 	}
 
-	nonceSize := gcm.NonceSize()
-	if len(ciphertext) < nonceSize {
+	if len(ciphertext) < aesGCMNonceSize {
 		return nil, &CiphertextTooShortError{
 			Op:     "AESGCMDecrypt",
 			Detail: "ciphertext shorter than nonce",
 		}
 	}
 
-	plaintext, err := gcm.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	// The nonce argument must be empty: the AEAD reads the nonce back off the
+	// front of ciphertext.
+	plaintext, err := gcm.Open(nil, nil, ciphertext, nil)
 	if err != nil {
 		return nil, &CryptoError{Op: "AESGCMDecrypt", Detail: "decrypt", Err: err}
 	}

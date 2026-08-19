@@ -28,6 +28,7 @@
 package clusterenroll
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/pem"
@@ -40,7 +41,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flynn/noise"
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
 	"github.com/jeremyhahn/go-truststrap/pkg/truststrap"
@@ -174,12 +174,16 @@ type AdvertiseOptions struct {
 // public key as the trust anchor.
 type Advertiser struct {
 	noiseSrv *noiseboot.Server
-	noiseKey *noise.DHKey
+	noiseKey *noiseproto.StaticKey
 }
 
-// Stop gracefully shuts down the bootstrap server. It is safe to call on a
-// nil receiver and on a zero-value Advertiser (where the internal server was
-// never started).
+// Stop gracefully shuts down the bootstrap server and releases the static
+// key's protected pages. It is safe to call on a nil receiver and on a
+// zero-value Advertiser (where the internal server was never started).
+//
+// The key is destroyed only after the server has stopped: the running server
+// holds a noise.DHKey aliasing the protected region, and reading it after
+// Destroy would touch freed pages.
 func (a *Advertiser) Stop() {
 	if a == nil || a.noiseSrv == nil {
 		return
@@ -187,6 +191,7 @@ func (a *Advertiser) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = a.noiseSrv.Stop(ctx)
+	a.noiseKey.Destroy()
 }
 
 // NoisePublicKey returns the Curve25519 public key as raw bytes. Returns nil
@@ -486,7 +491,7 @@ func StartAdvertiser(mat *clustertls.Material, opts AdvertiseOptions, dataDir st
 func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptions, dataDir string, logger *slog.Logger) (*Advertiser, error) {
 	keyPath := filepath.Join(dataDir, NoiseKeyFile)
 
-	var noiseKey *noise.DHKey
+	var noiseKey *noiseproto.StaticKey
 	var err error
 
 	if fileExists(keyPath) {
@@ -494,7 +499,12 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		if readErr != nil {
 			return nil, &ServerError{Protocol: "noise", Err: readErr}
 		}
-		noiseKey, err = noiseproto.DecodeStaticKey(strings.TrimSpace(string(hexData)))
+		// DecodeStaticKey writes the private scalar straight into protected
+		// memory, so the hex never passes through an immutable Go string.
+		// The file bytes are ours to wipe once decoded.
+		trimmed := bytes.TrimSpace(hexData)
+		noiseKey, err = noiseproto.DecodeStaticKey(trimmed)
+		noiseproto.WipeBytes(hexData)
 		if err != nil {
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
@@ -504,11 +514,20 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		if err != nil {
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
-		hexEncoded := noiseproto.EncodeStaticKey(noiseKey)
-		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		// The hex encoding is as sensitive as the key itself: wipe the buffer
+		// once it has reached the file.
+		hexEncoded := make([]byte, noiseproto.HexKeySize)
+		defer noiseproto.WipeBytes(hexEncoded)
+		if err := noiseproto.EncodeStaticKey(hexEncoded, noiseKey); err != nil {
+			noiseKey.Destroy()
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
-		if err := os.WriteFile(keyPath, []byte(hexEncoded), 0o600); err != nil {
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			noiseKey.Destroy()
+			return nil, &ServerError{Protocol: "noise", Err: err}
+		}
+		if err := os.WriteFile(keyPath, hexEncoded, 0o600); err != nil {
+			noiseKey.Destroy()
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
 		logger.Info("generated and persisted Noise static key", "path", keyPath)
@@ -519,17 +538,21 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 		listenPort = DefaultNoisePort
 	}
 
+	// The embedded DHKey aliases the protected private scalar; the Advertiser
+	// owns the StaticKey from here and releases it in Stop.
 	srv, err := noiseboot.NewServer(&noiseboot.ServerConfig{
 		ListenAddr: "0.0.0.0:" + strconv.Itoa(listenPort),
-		StaticKey:  noiseKey,
+		StaticKey:  &noiseKey.DHKey,
 		CABundler:  provider,
 		Logger:     logger,
 	})
 	if err != nil {
+		noiseKey.Destroy()
 		return nil, &ServerError{Protocol: "noise", Err: err}
 	}
 
 	if err := srv.Start(); err != nil {
+		noiseKey.Destroy()
 		return nil, &ServerError{Protocol: "noise", Err: err}
 	}
 

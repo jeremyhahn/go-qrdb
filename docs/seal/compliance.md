@@ -116,7 +116,7 @@ go-qrdb addresses encryption, access control, and breach notification requiremen
 | **Custodian Enrollment & Challenge-Response** | 4 | Shipped | Custodian metadata persisted; share encrypted via ECDH + AES-GCM |
 | **Auth Factor framework (Factor interface + FactorRegistry)** | 3 | Shipped | qrdb owns the `Factor` framework and the software mTLS reference factor. FIDO2, PIV, PKCS#11 factor implementations live in go-xkms and register through `WithFactorRegistry`. |
 | **PKCS#11 Seal Strategy** | 5 | Shipped (in go-xkms) | Hardware seal strategies live in go-xkms and register into qrdb's `seal.StrategyRegistry`. |
-| **FIPS-Aware KDF** | 5 | Shipped | `crypto/fips140.Enabled()` selects PBKDF2-SHA256 (NIST SP 800-132); Argon2id otherwise. Both adapters always registered for cross-version unseal. |
+| **FIPS-Aware KDF** | 5 | Shipped | `seal.FIPSEnabled()` — the runtime FIPS module state, then `GOFIPS140` (with `off` honoured as disabled) — selects PBKDF2-SHA256 (NIST SP 800-132); Argon2id otherwise. Both adapters always registered for cross-version unseal. |
 | **PIN Management (canonical `pkg/pin`)** | 2 | Shipped | `pin.PINBackend` + `SoftwareBackend` in qrdb; TPM2 / PKCS#11 hardware backends in go-xkms injected via `WithPINBackend`. |
 | **Versioned Credential Rotation** | 8 | Shipped | `pkg/credentials.RotateCredential` with grace periods; see `docs/credentials/README.md`. |
 | **Audit Event Logging** | 6 | Shipped | Hash-chained, tamper-evident, query API across all protocols |
@@ -159,6 +159,7 @@ Each phase includes compliance verification:
 
 ## See Also
 
+- [fips140-mode.md](fips140-mode.md) — The `GODEBUG=fips140=only` CI job, the approved-algorithm remediation, the exemption register, and the findings still open
 - [roles.md](../auth/roles.md) — Canonical six-role definitions and SoD constraints
 - [enabling-encryption.md](enabling-encryption.md) — Encryption-at-rest lifecycle: why disabling encryption is not a casual toggle, enabling it on an existing `none` deployment, and encrypted-backup recovery
 - [custodians.md](../seal/custodians.md) — Custodian lifecycle and share-delivery protocol

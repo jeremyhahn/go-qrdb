@@ -49,7 +49,7 @@ At bootstrap the ceremony does the following with each PIN it receives from the 
 
 For an M-of-N initialisation the User PIN is **also** the Shamir secret. The User PIN bytes are split via `shamir.Split` and the original bytes are wiped from local memory once the shares are produced; the PIN itself is never persisted in plaintext anywhere.
 
-When no `WithPINBackend` is supplied the daemon constructs a default `pin.SoftwareBackend` (Argon2id / PBKDF2 auto-selected by `crypto/fips140.Enabled()`) backed by the barrier-protected storage. Hardware deployments inject TPM2 / PKCS#11 backends from go-xkms through the same option without ceremony needing to know which backend it is talking to.
+When no `WithPINBackend` is supplied the daemon constructs a default `pin.SoftwareBackend` (Argon2id / PBKDF2 auto-selected by `seal.FIPSEnabled()`) backed by the barrier-protected storage. Hardware deployments inject TPM2 / PKCS#11 backends from go-xkms through the same option without ceremony needing to know which backend it is talking to.
 
 > **Migration note**: The legacy `credentialSOPin` / `credentialUserPin` storage keys remain readable for in-place upgrades from older deployments. New writes go exclusively through the `pin.PINBackend`; the legacy keys are wiped on first successful PIN backend write.
 

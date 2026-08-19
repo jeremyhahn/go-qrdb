@@ -23,6 +23,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -335,13 +336,7 @@ func enrollAndDecrypt_ECDSA(t *testing.T, curve elliptic.Curve, ecdhCurve ecdh.C
 	shared, err := ecdhPriv.ECDH(ephPubKey)
 	require.NoError(t, err)
 
-	contentKey := deriveTestContentKey(t, shared)
-	block, err := aes.NewCipher(contentKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	plain, err := gcm.Open(nil, nonce, ciphertext, []byte(externalOfficerHKDFInfo))
-	require.NoError(t, err)
+	plain := openTestEnvelope(t, deriveTestContentKey(t, shared), nonce, ciphertext)
 	assert.Equal(t, shareCopy, plain)
 }
 
@@ -361,6 +356,15 @@ func TestEnrollExternalOfficer_Ed25519_RoundTrip(t *testing.T) {
 		PubKeyPEM:  pubPEM,
 		ShareBytes: share,
 	})
+
+	// Sealing to an Ed25519 key needs the birational map to X25519, which is
+	// not FIPS 140-3 approved, so in FIPS mode the enrollment is refused
+	// outright. Both branches are real assertions: the FIPS CI job proves the
+	// refusal, the ordinary test job proves the envelope still round-trips.
+	if fips140.Enabled() {
+		require.ErrorIs(t, err, ErrAlgorithmNotFIPSApproved)
+		return
+	}
 	require.NoError(t, err)
 
 	sealed, err := base64.StdEncoding.DecodeString(resp.SealedShare)
@@ -372,13 +376,7 @@ func TestEnrollExternalOfficer_Ed25519_RoundTrip(t *testing.T) {
 	shared, err := curve25519.X25519(x25519Priv, ephPub)
 	require.NoError(t, err)
 
-	contentKey := deriveTestContentKey(t, shared)
-	block, err := aes.NewCipher(contentKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	plain, err := gcm.Open(nil, nonce, ciphertext, []byte(externalOfficerHKDFInfo))
-	require.NoError(t, err)
+	plain := openTestEnvelope(t, deriveTestContentKey(t, shared), nonce, ciphertext)
 	assert.Equal(t, shareCopy, plain)
 }
 
@@ -443,13 +441,7 @@ func TestEnrollExternalOfficer_CertPath_Success(t *testing.T) {
 	require.NoError(t, err)
 	shared, err := ecdhPriv.ECDH(ephPubKey)
 	require.NoError(t, err)
-	contentKey := deriveTestContentKey(t, shared)
-	block, err := aes.NewCipher(contentKey)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	plain, err := gcm.Open(nil, nonce, ciphertext, []byte(externalOfficerHKDFInfo))
-	require.NoError(t, err)
+	plain := openTestEnvelope(t, deriveTestContentKey(t, shared), nonce, ciphertext)
 	assert.Equal(t, shareCopy, plain)
 }
 
@@ -501,6 +493,28 @@ func unwrapPKIXECPubKey(t *testing.T, der []byte) []byte {
 		// already an ECDH public key encoded as raw bytes.
 		return der
 	}
+}
+
+// openTestEnvelope models the officer-side inverse of the ceremony envelope:
+// derive the content key, then open the AEAD. It rejoins the wire format's
+// separate nonce and ciphertext fields because NewGCMWithRandomNonce -- the
+// only GCM construction approved under GODEBUG=fips140=only -- expects the
+// nonce prepended. That this still opens an envelope the service produced is
+// the compatibility check: the bytes on the wire are unchanged.
+func openTestEnvelope(t *testing.T, contentKey, nonce, ciphertext []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(contentKey)
+	require.NoError(t, err)
+	gcm, err := cipher.NewGCMWithRandomNonce(block)
+	require.NoError(t, err)
+
+	sealed := make([]byte, 0, len(nonce)+len(ciphertext))
+	sealed = append(sealed, nonce...)
+	sealed = append(sealed, ciphertext...)
+
+	plain, err := gcm.Open(nil, nil, sealed, []byte(externalOfficerHKDFInfo))
+	require.NoError(t, err)
+	return plain
 }
 
 func deriveTestContentKey(t *testing.T, shared []byte) []byte {

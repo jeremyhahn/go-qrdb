@@ -24,10 +24,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/pbkdf2"
+
+	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -38,9 +39,6 @@ const (
 	// soPINCommitPrefix is the KV key prefix for hash-committed SO PINs.
 	// Full key: __sys:so-pin-commit/{tenantID}.
 	soPINCommitPrefix = "__sys:so-pin-commit/"
-
-	// envGOFIPS140 is the environment variable that controls FIPS mode.
-	envGOFIPS140 = "GOFIPS140"
 
 	// argon2idTime is the Argon2id iteration count.
 	argon2idTime = 3
@@ -93,7 +91,7 @@ var (
 // mTLS identity (established externally) + in-band PIN on every request.
 //
 // The PIN is hash-committed at SO bootstrap via SetSOPIN using Argon2id
-// (standard mode) or PBKDF2-SHA256 (GOFIPS140=1). The hash record is
+// (standard mode) or PBKDF2-SHA256 (FIPS mode). The hash record is
 // persisted at __sys:so-pin-commit/{tenantID} via Raft so all nodes can
 // verify. Verification is constant-time.
 //
@@ -129,7 +127,7 @@ var (
 )
 
 // SetSOPIN commits the hash of newPIN for the given tenant. It uses Argon2id
-// in standard mode or PBKDF2-SHA256 in FIPS mode (GOFIPS140 env var set).
+// in standard mode or PBKDF2-SHA256 in FIPS mode (see fipsEnabled).
 //
 // newPIN is wrapped in a *secure.Buffer and destroyed after hashing.
 // Returns ErrSOPINAlreadySet if a PIN is already committed for the tenant.
@@ -294,9 +292,13 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 	return nil
 }
 
-// fipsEnabled returns true when the GOFIPS140 environment variable is non-empty.
+// fipsEnabled reports whether FIPS 140 mode is in effect. Detection is
+// delegated to the stack-wide predicate in go-quicraft/pkg/seal (re-exported
+// as seal.FIPSEnabled), which keys off crypto/fips140.Enabled first and
+// treats GOFIPS140=off as disabled — the previous local implementation read
+// only the environment variable and misread "off" as FIPS-ENABLED.
 func fipsEnabled() bool {
-	return os.Getenv(envGOFIPS140) != ""
+	return quicraftseal.FIPSEnabled()
 }
 
 // hashPIN derives a hash record from the PIN bytes. The record format is:

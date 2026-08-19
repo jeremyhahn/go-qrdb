@@ -16,7 +16,6 @@ package ceremony
 
 import (
 	"context"
-	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -163,11 +162,24 @@ func TestNewLocalCA_BadCertPEM(t *testing.T) {
 func TestNewLocalCA_BadKeyPEM(t *testing.T) {
 	certPEM, _, _ := newTestCAPEM(t)
 
-	// X25519 key: parses as PKCS#8 but does not implement crypto.Signer.
-	x25519Key, err := ecdh.X25519().GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	x25519DER, err := x509.MarshalPKCS8PrivateKey(x25519Key)
-	require.NoError(t, err)
+	// An X25519 PKCS#8 key, as a static DER fixture rather than a generated
+	// one: crypto/ecdh refuses to generate an X25519 key under
+	// GODEBUG=fips140=only, and this test is about parseCAPrivateKeyPEM's
+	// rejection, not about X25519. Either way NewLocalCA must return a
+	// *CAKeyParseError -- outside FIPS mode because *ecdh.PrivateKey is not a
+	// crypto.Signer, in FIPS mode because the parse itself is refused.
+	//
+	// SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.110 (id-X25519) },
+	//            OCTET STRING { OCTET STRING (32-byte scalar) } }
+	x25519DER := append([]byte{
+		0x30, 0x2e,
+		0x02, 0x01, 0x00,
+		0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e,
+		0x04, 0x22, 0x04, 0x20,
+	}, make([]byte, 32)...)
+	for i := 16; i < len(x25519DER); i++ {
+		x25519DER[i] = byte(i - 15)
+	}
 	x25519PEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: x25519DER})
 
 	tests := []struct {

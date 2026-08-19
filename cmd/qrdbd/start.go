@@ -761,7 +761,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 
 // resolveAutoConfig auto-generates replica-id, port, and data-dir for
 // non-static discovery methods when the user hasn't explicitly set them.
-// This allows users to run `qrdbd start --discovery multicast --multicast-secret test`
+// This allows users to run `qrdbd start --discovery multicast --multicast-secret <16+ byte psk>`
 // in multiple terminals without manually assigning unique values.
 func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 	if f.discoveryMethod == "static" {
@@ -3039,11 +3039,12 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 				Strategy:           sealStrategy,
 				SeparationOfDuties: strictSoD,
 			}, bootstrap.Dependencies{
-				Tenants:  tenantSvc,
-				Users:    userSvc,
-				Roles:    roleSvc,
-				Barriers: barriers,
-				Logger:   slog.Default(),
+				Tenants:      tenantSvc,
+				Users:        userSvc,
+				Roles:        roleSvc,
+				RoleResolver: roleSvc,
+				Barriers:     barriers,
+				Logger:       slog.Default(),
 			})
 			return bsErr
 		}
@@ -3054,6 +3055,7 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 			Tenants:            tenantSvc,
 			Users:              userSvc,
 			Roles:              roleSvc,
+			RoleResolver:       roleSvc,
 			Logger:             slog.Default(),
 			SeparationOfDuties: strictSoD,
 		})

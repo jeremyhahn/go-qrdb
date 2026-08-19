@@ -23,6 +23,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/fips140"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -51,6 +52,10 @@ var validAuthFactors = map[string]struct{}{
 // derivation collision with another HKDF user cannot produce a usable
 // content key.
 const externalOfficerHKDFInfo = "go-qrdb/ceremony/external-officer/v1"
+
+// envelopeNonceLen is the AES-GCM nonce length carried as its own field in
+// the envelope wire format described on sealWithECIES.
+const envelopeNonceLen = 12
 
 // EnrollExternalOfficerRequest carries the inputs for
 // CeremonyService.EnrollExternalOfficer. Exactly one of CertPEM and
@@ -276,6 +281,16 @@ func sealShareToPublicKey(pubKey crypto.PublicKey, shareBytes []byte) ([]byte, e
 	case *ecdsa.PublicKey:
 		return sealWithECIES(pk, shareBytes)
 	case ed25519.PublicKey:
+		// Ed25519 is a signature algorithm, so the only way to seal to such a
+		// key is the birational map to X25519 -- and X25519 is not on the FIPS
+		// 140-3 approved list, so crypto/ecdh rejects it under
+		// GODEBUG=fips140=only. There is no approved substitute for an Ed25519
+		// recipient: the officer has to enrol an RSA or NIST-curve key
+		// instead. Refuse here with an actionable error rather than letting a
+		// low-level ECDH failure surface as "share sealing failed".
+		if fips140.Enabled() {
+			return nil, ErrAlgorithmNotFIPSApproved
+		}
 		return sealWithX25519FromEd25519(pk, shareBytes)
 	default:
 		return nil, ErrUnsupportedKeyAlgorithm
@@ -346,13 +361,10 @@ func sealWithECIES(pub *ecdsa.PublicKey, shareBytes []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, &EnvelopeSealError{Err: err}
+	nonce, ciphertext, err := sealEnvelope(aead, shareBytes, []byte(externalOfficerHKDFInfo))
+	if err != nil {
+		return nil, err
 	}
-
-	// #nosec G407 -- nonce is freshly randomized via rand.Read above (not hardcoded); the content key is also unique per call (fresh ephemeral ECDH + HKDF), so the nonce/key pair never repeats. gosec cannot see through rand.Read populating the make() buffer.
-	ciphertext := aead.Seal(nil, nonce, shareBytes, []byte(externalOfficerHKDFInfo))
 
 	ephemeralDER, err := x509.MarshalPKIXPublicKey(ephemeral.PublicKey())
 	if err != nil {
@@ -404,13 +416,10 @@ func sealWithX25519FromEd25519(pub ed25519.PublicKey, shareBytes []byte) ([]byte
 		return nil, err
 	}
 
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, &EnvelopeSealError{Err: err}
+	nonce, ciphertext, err := sealEnvelope(aead, shareBytes, []byte(externalOfficerHKDFInfo))
+	if err != nil {
+		return nil, err
 	}
-
-	// #nosec G407 -- nonce is freshly randomized via rand.Read above (not hardcoded); the content key is also unique per call (fresh ephemeral X25519 + HKDF), so the nonce/key pair never repeats. gosec cannot see through rand.Read populating the make() buffer.
-	ciphertext := aead.Seal(nil, nonce, shareBytes, []byte(externalOfficerHKDFInfo))
 
 	// For X25519 we ship the raw 32-byte public point; wrap it as a
 	// PKIX-style "raw key" by recording the public bytes verbatim.
@@ -452,16 +461,36 @@ func deriveContentKey(sharedSecret []byte) ([]byte, error) {
 }
 
 // newAESGCM constructs an AEAD over the provided 32-byte AES-256 key.
+//
+// cipher.NewGCMWithRandomNonce is the only GCM construction approved under
+// GODEBUG=fips140=only: SP 800-38D requires the module to own nonce
+// generation, so cipher.NewGCM (arbitrary IVs) is rejected. The returned AEAD
+// reports NonceSize() == 0 and prepends the nonce it samples to the sealed
+// output -- use sealEnvelope rather than calling Seal directly.
 func newAESGCM(key []byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, &EnvelopeSealError{Err: err}
 	}
-	aead, err := cipher.NewGCM(block)
+	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
 		return nil, &EnvelopeSealError{Err: err}
 	}
 	return aead, nil
+}
+
+// sealEnvelope seals plaintext under aead and splits the module-generated
+// nonce back off the front of the result, because the envelope wire format
+// carries the nonce as its own field. The bytes handed to packEnvelope are
+// identical to those produced when this code sampled the nonce itself, so
+// envelopes already delivered to external officers remain decryptable.
+func sealEnvelope(aead cipher.AEAD, plaintext, aad []byte) (nonce, ciphertext []byte, err error) {
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
+	sealed := aead.Seal(nil, nil, plaintext, aad)
+	if len(sealed) < envelopeNonceLen {
+		return nil, nil, &EnvelopeSealError{Err: ErrShareSealFailed}
+	}
+	return sealed[:envelopeNonceLen:envelopeNonceLen], sealed[envelopeNonceLen:], nil
 }
 
 // packEnvelope concatenates the wire fields with a length-prefixed

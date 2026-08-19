@@ -14,7 +14,7 @@ go 1.26.6
 // against a different copy of its own code. sdk/go carries the mirror-image
 // replace for this module, and sdk/go/gorm/conformance carries both.
 
-require github.com/jeremyhahn/go-truststrap v0.1.3-alpha
+require github.com/jeremyhahn/go-truststrap v0.1.4-alpha
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.15.0

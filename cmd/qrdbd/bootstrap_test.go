@@ -584,22 +584,27 @@ func startTestBootstrapServer(t *testing.T, caCertPEM, caKeyPEM []byte) (pubKeyH
 
 	srv, err := noiseboot.NewServer(&noiseboot.ServerConfig{
 		ListenAddr: "127.0.0.1:0",
-		StaticKey:  key,
+		StaticKey:  &key.DHKey,
 		CABundler:  provider,
 		Logger:     testLogger(),
 	})
 	if err != nil {
+		key.Destroy()
 		t.Fatalf("noiseboot.NewServer: %v", err)
 	}
 
 	if err := srv.Start(); err != nil {
+		key.Destroy()
 		t.Fatalf("noiseboot.Server.Start: %v", err)
 	}
 
+	// Release the key's protected pages only after the server has stopped —
+	// it holds a noise.DHKey aliasing them for the life of the listener.
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Stop(ctx)
+		key.Destroy()
 	})
 
 	return encoding_hex.EncodeToString(key.Public), srv.Addr().String()
