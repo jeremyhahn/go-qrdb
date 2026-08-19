@@ -344,17 +344,23 @@ jobs:
     # that cannot pass would only freeze the repository without closing a
     # single finding.
     #
-    # Three findings keep it red, all tracked, none closable from a change to
-    # this workflow:
+    # TWO findings keep it red. Both are upstream; nothing left in THIS
+    # repository blocks the job, and neither is closable from a change to this
+    # workflow:
     #
-    #   * pkg/role and pkg/custodian derive deterministic IDs with uuid.NewSHA1
-    #     (#8, #10). Re-deriving them with an approved hash rewrites persisted
-    #     identity data and needs a dual-read compatibility path, which is in
-    #     review on its own issue.
     #   * go-quicraft pkg/seal builds its barrier AEAD with cipher.NewGCM
     #     (jeremyhahn/go-quicraft#5), which fails every sealed-storage test.
+    #     Still present in v0.6.2-alpha (pkg/seal/algorithm.go,
+    #     pkg/seal/strategy_software.go).
     #   * go-truststrap pkg/noiseproto performs the Noise handshake over
     #     X25519 (jeremyhahn/go-truststrap#5), which fails pkg/clusterenroll.
+    #     Still present in v0.1.4-alpha (pkg/noiseproto/keys.go).
+    #
+    # CLOSED: pkg/role and pkg/custodian no longer derive deterministic IDs
+    # with uuid.NewSHA1 (#8, #10) — they use UUIDv8 over SHA-256 with a
+    # dual-read compatibility path for identifiers persisted before the
+    # migration. The only remaining uuid.NewSHA1 references are frozen legacy
+    # literals in test comments.
     #
     # ARM IT IN THE CHANGE THAT CLOSES THE LAST ONE, not later: add `fips`
     # here, add RESULT_FIPS to the env block, and add a `check fips` call to the
