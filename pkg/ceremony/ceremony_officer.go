@@ -281,7 +281,7 @@ func sealSharesToOfficers(
 		return 0, ErrOfficerCountMismatch
 	}
 
-	shares, err := shamir.Split(shareSecret, threshold, total)
+	shares, err := shamir.Split(shareSecret, threshold, total) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
 	if err != nil {
 		return 0, &ShamirSplitError{Err: err}
 	}
@@ -302,7 +302,7 @@ func sealSharesToOfficers(
 
 	// Wipe plaintext share values from the in-process slice.
 	for i := range shares {
-		wipeString(&shares[i].Value)
+		wipeString(&shares[i].Value) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
 	}
 
 	return len(officers), nil

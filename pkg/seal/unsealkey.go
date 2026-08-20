@@ -43,6 +43,31 @@ import (
 // for those the reconstructed secret IS the root key (legacy direct mode)
 // and unsealing behaves exactly as before. The first Rekey upgrades a
 // legacy barrier in place by writing its first wrapped blob.
+//
+// # Nonce framing
+//
+// The envelope carries the AEAD nonce in its own field, beside the
+// ciphertext. That predates go-quicraft v0.7.0-alpha, which moved pkg/seal to
+// cipher.NewGCMWithRandomNonce -- the only GCM construction approved under
+// GODEBUG=fips140=only, since SP 800-38D requires the module itself to own
+// nonce generation. The AEAD that package now hands back samples its own
+// nonce, reports NonceSize() == 0, and returns nonce ‖ ciphertext ‖ tag.
+//
+// This code keeps writing the two fields, splitting the module-generated
+// nonce off the front of the sealed output and re-joining it before Open, so
+// the persisted bytes are unchanged in both directions. Nothing about the
+// envelope needed to change and nothing about it did: a wrapped root key is
+// written once at initialization and read on every unseal for the life of the
+// barrier, and it is the one blob whose loss costs the store, so a format
+// change here would need a migration run while the barrier is still sealed --
+// that is, while the key material needed to authenticate the migration is by
+// definition unavailable. pkg/ceremony's sealEnvelope splits the same prefix
+// for the same reason.
+//
+// The nonce field is validated against the WIRE width the envelope's own
+// algorithm declares (SymmetricAlgorithm.NonceSize, which stayed 12), never
+// against cipher.AEAD.NonceSize, which is now zero and would accept a nonce
+// field of any length at all.
 
 const (
 	// wrappedRootKeyPathSuffix is appended to the configured RootKeyPath to
@@ -107,14 +132,19 @@ func generateUnsealKey() ([]byte, error) {
 // wrapRootKey AEAD-encrypts rootKey under unsealKey and returns the
 // serialized wrapped-blob bytes ready for persistence. Neither input slice
 // is wiped; the caller owns both.
+//
+// The AEAD samples its own nonce and prepends it to the sealed output (see
+// the Nonce framing note above); the prefix is split back off so the envelope
+// keeps carrying it as its own field.
 func (b *StorageBarrier) wrapRootKey(unsealKey, rootKey []byte) ([]byte, error) {
 	aead, err := b.unsealKeyAEAD(unsealKey)
 	if err != nil {
 		return nil, err
 	}
 
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	wireLen := AlgAES256GCM.NonceSize()
+	nonce, ciphertext, err := sealWrapped(aead, wireLen, rootKey, b.wrappedRootKeyAAD())
+	if err != nil {
 		return nil, err
 	}
 
@@ -122,9 +152,120 @@ func (b *StorageBarrier) wrapRootKey(unsealKey, rootKey []byte) ([]byte, error) 
 		Version:    wrappedRootKeyVersion,
 		Algorithm:  byte(AlgAES256GCM),
 		Nonce:      nonce,
-		Ciphertext: aead.Seal(nil, nonce, rootKey, b.wrappedRootKeyAAD()),
+		Ciphertext: ciphertext,
 	}
 	return json.Marshal(&wrapped)
+}
+
+// sealWrapped seals plaintext and returns the envelope's two fields, honouring
+// EITHER of the nonce conventions an AEADProvider is allowed to follow.
+//
+// BarrierConfig.AEADProvider is an injectable extension point — go-qrdb
+// re-exports it and go-xkms re-exports it again for hardware-backed providers —
+// and go-quicraft's AEADProvider contract admits two kinds of AEAD, which
+// declare themselves through NonceSize():
+//
+//   - NonceSize() > 0: a caller-nonce AEAD. The caller draws the nonce and
+//     passes it to Seal; the sealed output carries no nonce prefix.
+//   - NonceSize() == 0: a module-nonce AEAD (cipher.NewGCMWithRandomNonce). It
+//     samples its own nonce, prepends it to the Seal output, and PANICS if
+//     handed a nonce at all.
+//
+// Both produce the same envelope, because the module-nonce prefix is exactly
+// the bytes the caller-nonce convention stores in the Nonce field. Branching
+// here rather than assuming one convention is what keeps an injected
+// caller-nonce provider working: passing it a nil nonce would panic, and
+// hard-coding a drawn nonce would panic on the module-nonce AEAD that
+// go-quicraft v0.7.0-alpha made the default.
+func sealWrapped(aead cipher.AEAD, wireLen int, plaintext, aad []byte) (nonce, ciphertext []byte, err error) {
+	if n := aead.NonceSize(); n > 0 {
+		// Caller-nonce provider. Its nonce width must match the width the
+		// envelope records for its algorithm, or the blob it produces could not
+		// be read back; fail loudly rather than persisting an unreadable one.
+		if n != wireLen {
+			return nil, nil, ErrWrappedRootKeyCorrupt
+		}
+		nonce = make([]byte, n)
+		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+			return nil, nil, err
+		}
+		return nonce, aead.Seal(nil, nonce, plaintext, aad), nil
+	}
+
+	// Module-nonce provider: it samples the nonce and prepends it, so the
+	// prefix is split back off into the envelope's own field.
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which generates a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
+	sealed := aead.Seal(nil, nil, plaintext, aad)
+	if len(sealed) < wireLen {
+		return nil, nil, ErrWrappedRootKeyCorrupt
+	}
+	return sealed[:wireLen:wireLen], sealed[wireLen:], nil
+}
+
+// unwrapRootKey validates a decoded wrapped-root-key envelope and recovers the
+// root key from it under unsealKey. The returned slice is a fresh allocation
+// the caller must wipe.
+//
+// A malformed envelope is ErrWrappedRootKeyCorrupt; an envelope that is
+// well-formed but does not open under unsealKey is ErrUnsealKeyMismatch, which
+// is the signal resolveDirectSecret turns into "these shares are wrong or were
+// revoked by a prior rekey".
+func (b *StorageBarrier) unwrapRootKey(wrapped *wrappedRootKey, unsealKey []byte) ([]byte, error) {
+	if wrapped.Version != wrappedRootKeyVersion ||
+		SymmetricAlgorithm(wrapped.Algorithm) != AlgAES256GCM {
+		return nil, ErrWrappedRootKeyCorrupt
+	}
+
+	// The AEAD is constructed BEFORE the nonce field is validated, which is
+	// the order resolveDirectSecret used before this code was extracted. It
+	// looks redundant -- the nonce check needs nothing from the AEAD -- but it
+	// fixes which error an input that fails BOTH checks reports. A wrong-length
+	// secret against a blob whose nonce field is also malformed answered
+	// ErrUnsealKeyMismatch before and must keep doing so: the two errors mean
+	// different things to a recovery operator ("your shares are wrong" versus
+	// "the stored blob is damaged"), and silently swapping them during a
+	// refactor would send one down the wrong path at the worst moment.
+	aead, err := b.unsealKeyAEAD(unsealKey)
+	if err != nil {
+		// Wrong-length secret (e.g. a legacy root-key share set submitted
+		// against an upgraded barrier) cannot be a valid unseal key.
+		return nil, ErrUnsealKeyMismatch
+	}
+
+	// The WIRE nonce width the envelope's algorithm declares -- deliberately
+	// not aead.NonceSize(), which is zero for this construction and would
+	// accept a nonce field of any length.
+	if len(wrapped.Nonce) != SymmetricAlgorithm(wrapped.Algorithm).NonceSize() {
+		return nil, ErrWrappedRootKeyCorrupt
+	}
+
+	rootKey, err := openWrapped(aead, wrapped.Nonce, wrapped.Ciphertext, b.wrappedRootKeyAAD())
+	if err != nil {
+		return nil, ErrUnsealKeyMismatch
+	}
+	return rootKey, nil
+}
+
+// openWrapped is sealWrapped's inverse and honours the same two conventions
+// (see sealWrapped for why both must be supported). The stored envelope is
+// identical either way, so which branch runs depends only on the AEAD in hand,
+// never on how the blob was written.
+func openWrapped(aead cipher.AEAD, nonce, ciphertext, aad []byte) ([]byte, error) {
+	if aead.NonceSize() > 0 {
+		// Caller-nonce provider: hand it the stored nonce directly.
+		return aead.Open(nil, nonce, ciphertext, aad)
+	}
+
+	// Module-nonce provider: rejoin the fields into the
+	// nonce ‖ ciphertext ‖ tag frame it consumes. A fresh buffer, because
+	// appending onto the stored nonce would write past its length into
+	// whatever backs it.
+	sealed := make([]byte, 0, len(nonce)+len(ciphertext))
+	sealed = append(sealed, nonce...)
+	sealed = append(sealed, ciphertext...)
+
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which reads the nonce from the front of the sealed frame. gosec reads the nil as a hardcoded IV; passing anything else makes Open panic.
+	return aead.Open(nil, nil, sealed, aad)
 }
 
 // resolveDirectSecret converts the secret reconstructed from a Shamir share
@@ -159,24 +300,5 @@ func (b *StorageBarrier) resolveDirectSecret(ctx context.Context, secret []byte)
 	if err := json.Unmarshal(blob, &wrapped); err != nil {
 		return nil, ErrWrappedRootKeyCorrupt
 	}
-	if wrapped.Version != wrappedRootKeyVersion ||
-		SymmetricAlgorithm(wrapped.Algorithm) != AlgAES256GCM {
-		return nil, ErrWrappedRootKeyCorrupt
-	}
-
-	aead, err := b.unsealKeyAEAD(secret)
-	if err != nil {
-		// Wrong-length secret (e.g. a legacy root-key share set submitted
-		// against an upgraded barrier) cannot be a valid unseal key.
-		return nil, ErrUnsealKeyMismatch
-	}
-	if len(wrapped.Nonce) != aead.NonceSize() {
-		return nil, ErrWrappedRootKeyCorrupt
-	}
-
-	rootKey, err := aead.Open(nil, wrapped.Nonce, wrapped.Ciphertext, b.wrappedRootKeyAAD())
-	if err != nil {
-		return nil, ErrUnsealKeyMismatch
-	}
-	return rootKey, nil
+	return b.unwrapRootKey(&wrapped, secret)
 }

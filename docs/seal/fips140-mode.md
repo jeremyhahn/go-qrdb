@@ -89,8 +89,9 @@ rather than in [Open blockers](#open-blockers), where it used to sit.
 
 **Every remaining FIPS failure in this repository is upstream.** As of the
 measurement below there is not one non-approved primitive left on a go-qrdb
-call site — 693 of the 708 rejections come from `go-quicraft`'s barrier AEAD
-and the other 15 from `go-truststrap`'s Noise handshake.
+call site — all 15 remaining rejections come from `go-truststrap`'s Noise
+handshake. The `go-quicraft` barrier AEAD accounted for 693 of them until the
+v0.8.0-alpha bump closed that class; see [Open blockers](#open-blockers).
 
 ### AES-GCM — `cipher.NewGCM` → `cipher.NewGCMWithRandomNonce`
 
@@ -247,6 +248,43 @@ narrowest isolation that keeps it out of the FIPS-gated path.
 |---|---|---|---|
 | SHA-1, as the `localKeyId` certificate fingerprint | `pkg/cert/pkcs12.go` → `software.sslmate.com/src/go-pkcs12` | [RFC 7292](https://www.rfc-editor.org/rfc/rfc7292) §4.2 / PKCS#12 v1.1 attribute conventions; the SHA-1 fingerprint as `localKeyId` is what OpenSSL, Java keytool and Windows CryptoAPI use to bind a key to its certificate | `encodePKCS12` returns `*PKCS12FIPSUnavailableError` when `fips140.Enforced()`, so the call never executes in the FIPS-gated path. The archive's own protection (PBKDF2-HMAC-SHA256 + AES-256-CBC) is approved and unchanged. |
 
+### Skipped tests under `fips140=only`
+
+**Two tests skip, and neither is a masked failure.** A skip in this suite is
+normally the thing the [Handling a failure](#handling-a-failure) section
+forbids, so the distinction has to be written down rather than inferred from a
+count: read `--- SKIP` here as *unreachable code*, not *hidden red*.
+
+| Test | Skipped because | Where it IS covered |
+|---|---|---|
+| `TestWrappedRootKey_CallerNonceProvider` | Constructs a caller-nonce AEAD (`cipher.NewGCM`) to exercise the caller-nonce branch of `sealWrapped`/`openWrapped` | The full non-FIPS suite |
+| `TestWrappedRootKey_RejectsMismatchedProviderNonceWidth` | Same, via `cipher.NewGCMWithNonceSize` | The full non-FIPS suite |
+
+`BarrierConfig.AEADProvider` accepts both nonce conventions go-quicraft's
+`AEADProvider` contract defines — caller-nonce (`NonceSize() > 0`) and
+module-nonce (`NonceSize() == 0`). The caller-nonce branch exists so that an
+injected hardware provider following the older convention keeps working; without
+it, such a provider is handed a nil nonce and panics.
+
+That branch is **provably unreachable under `fips140=only`**: a caller-nonce
+AEAD is one built with `cipher.NewGCM`, and that constructor is exactly what
+this enforcement level refuses. No approved way exists for any provider —
+software or hardware — to return such an AEAD here, so no FIPS deployment can
+reach the branch. Testing it under FIPS would mean asserting the behaviour of a
+configuration the module forbids, and constructing the AEAD to do so would add a
+GCM-arbitrary-IV rejection to the very count this document tracks.
+
+The skip is keyed on `fips140.Enabled()` rather than a build tag because the
+FIPS job runs the same package list with no extra tags (see [The
+job](#the-job)); a `fips`-keyed tag would exclude nothing. It is a skip rather
+than a stub AEAD because the assertions that matter — a caller-nonce provider
+opening a blob written by the module-nonce default, and opening the checked-in
+pre-bump fixture — need real AES-GCM on both sides; a fake cipher would exercise
+the branch while proving nothing about cross-convention compatibility.
+
+The justification also lives on `skipIfFIPS` in `pkg/seal/unsealkey_test.go`, so
+it is reachable from the code as well as from here.
+
 ## Open blockers
 
 **Read this before describing go-qrdb as FIPS 140-3 clean: it is not, yet.**
@@ -257,26 +295,46 @@ policy requires, on every pull request, where the number cannot be quietly lost.
 That is a strict improvement over having no FIPS coverage at all; it is not a
 claim of compliance.
 
-Two findings stand between the job and green, and **both are in dependencies**.
-Neither can be closed from this repository: the composition direction is
-one-way, and go-qrdb consumes both modules as tagged releases.
+**One finding** now stands between the job and green, and it is **in a
+dependency**. It cannot be closed from this repository: the composition
+direction is one-way, and go-qrdb consumes the module as a tagged release.
 
 | Finding | Call sites | Effect on the suite | Tracking |
 |---|---|---|---|
-| `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` | `algorithm.go`, `strategy_software.go` | every sealed-storage test fails with `quicraft/seal: cipher creation failed`, covering `pkg/atrest`, `pkg/seal`, `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more | `jeremyhahn/go-quicraft#7`, `#8` — **fixed and tagged upstream; the bump is blocked here by [#23](https://github.com/jeremyhahn/go-qrdb/issues/23)** |
-| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` fails with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5`, `#9` — open |
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` and `cmd/qrdbd` fail with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5`, `#9` — open |
 
-The two are not in the same state, and the difference decides what happens next.
+**The `go-quicraft` AEAD finding is CLOSED.** It read, until the go-quicraft
+v0.8.0-alpha bump landed here:
 
-**go-quicraft has already fixed it.** `pkg/seal/algorithm.go` on `main` builds
-the AEAD with `cipher.NewGCMWithRandomNonce` and compiles the ChaCha20 variants
-out behind `//go:build !fips`; issues #7 and #8 are closed. What is missing is a
-**release** — the newest tag is still `v0.6.2-alpha`, which predates the fix,
-and first-party modules resolve from tags rather than branches
-(`automatethethings` `software/conventions/dependency-resolution.md`). A
-go-quicraft tag, and the dependency bump that follows it here, turns 14 of the
-16 failing packages green on its own. `pkg/clusterenroll` and `cmd/qrdbd` stay
-red — `cmd/qrdbd` carries both findings.
+> `go-quicraft` `pkg/seal` builds the barrier AEAD with `cipher.NewGCM` —
+> every sealed-storage test fails, covering `pkg/atrest`, `pkg/seal`,
+> `pkg/seal/encfs`, `pkg/ceremony`, `pkg/service`, `pkg/store` and more.
+
+and it predicted that the bump "turns 14 of the 16 failing packages green on
+its own", leaving `pkg/clusterenroll` and `cmd/qrdbd` red. **Measured on both
+sides of the bump from the same base commit, that is exactly what happened**:
+14 packages moved red to green, no regressions, and the two survivors are the
+predicted pair. The GCM-with-arbitrary-IV rejection count went from 699 to
+**zero**; the X25519 count did not move, because it is the other finding.
+
+Taking that release was not a free bump — go-quicraft v0.7.0-alpha changed the
+exported AEAD's calling convention, and `pkg/seal/unsealkey.go` had to absorb it
+without moving the wrapped-root-key wire format. See the CHANGELOG entry for
+v0.9.0-alpha.
+
+**go-truststrap has not fixed its finding, and it is not a bug fix.**
+`pkg/noiseproto/keys.go` on `main` still calls `curve25519.X25519`. Noise_NK has
+no FIPS-approved DH to move to, so there is nothing to substitute; the question
+is what a FIPS deployment does about cluster enrollment, and it is a product
+decision rather than an engineering one. The two candidate answers on the table
+are compiling `noiseproto` out under the `fips` tag — the precedent go-quicraft
+set for ChaCha20 — or having `pkg/clusterenroll` refuse enrollment when
+`fips140.Enabled()`, exactly as `pkg/ceremony` already refuses an Ed25519
+external officer. **Neither is go-qrdb's call to make.**
+
+Consumers whose own FIPS jobs pass `-tags fips` would compile go-truststrap's
+`noiseproto` fips variant and close this; go-qrdb's job does not pass that tag,
+which is why the finding is still counted here.
 
 **go-truststrap has not, and it is not a bug fix.** `pkg/noiseproto/keys.go` on
 `main` still calls `curve25519.X25519`. Noise_NK has no FIPS-approved DH to move
@@ -291,31 +349,68 @@ external officer. **Neither is go-qrdb's call to make.**
 ### Measured status
 
 Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
-**106 packages pass, 16 fail**, and every one of the 16 attributes to a finding
-above. `go build ./...` against the module is clean.
+**120 packages pass, 2 fail**, and both attribute to the one finding above.
+`go build ./...` against the module is clean.
 
 | Blocker | Failing packages |
 |---|---|
-| `quicraft/seal` AEAD | `pkg/atrest`, `pkg/bootstrap`, `pkg/ceremony`, `pkg/clusterkeys`, `pkg/credentials`, `pkg/database`, `pkg/seal`, `pkg/seal/encfs`, `pkg/secret`, `pkg/server`, `pkg/server/lifecycle`, `pkg/service`, `pkg/store`, `pkg/tenant`, `cmd/qrdbd` |
 | Noise X25519 | `pkg/clusterenroll`, `cmd/qrdbd` |
 
-All 693 occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
-allowed in FIPS 140-only mode` in that run are the body of a
-`quicraft/seal: cipher creation failed: ...` error — **none is a qrdb call
-site**, which is what the AES-GCM remediation above was for. The other 15
-rejections are `crypto/ecdh: use of X25519 is not allowed`, all from the Noise
-handshake. There are zero `crypto/sha1` panics, which is what the UUIDv8
-migration was for, and zero `crypto/hmac: use of keys shorter than 112 bits`,
-which is what the shared-secret minimum was for. Re-derive the attribution with:
+Rejection counts on the same run: **0** `use of GCM with arbitrary IVs`, **15**
+`use of X25519 is not allowed`.
+
+Previously **106 pass / 16 fail** with 699 GCM rejections. The go-quicraft
+v0.8.0-alpha bump closed the GCM finding outright; see [Open
+blockers](#open-blockers) for the before/after and how it was attributed.
+
+Five tests report `--- SKIP` on this run. Three predate this section; **two are
+the caller-nonce tests** registered under [Skipped tests under
+`fips140=only`](#skipped-tests-under-fips140only), and they are unreachable
+code rather than hidden red. A skip count is not a failure count, and neither
+is it self-explanatory — check a `--- SKIP` against that register before
+reading it either way.
+
+### Reproducing this measurement
+
+The figures above are worth only as much as the method behind them, and two
+ways of getting them wrong have already been hit in this repository:
+
+- **Do not compare a fresh number against a number recorded earlier.** Measure
+  BOTH sides yourself, from the same base commit, on the same machine, in one
+  sitting. The 106/16 → 120/2 movement above was established that way — a
+  worktree at the pre-bump commit and the branch, one script — precisely so the
+  delta could be attributed to the dependency change rather than to whatever
+  else had landed in between.
+- **Re-measure after the last commit that touches test code.** A measurement
+  taken before a later commit describes a tree that is no longer being shipped.
+  That happened here: tests added after the A/B introduced
+  `cipher.NewGCM` fixtures, which broke `pkg/seal` under FIPS and silently
+  invalidated the recorded counts until the hosted review caught it.
+
+Check the log is complete before counting it — a suite killed midway produces a
+short count that looks like an improvement.
+
+**Zero** occurrences of `crypto/cipher: use of GCM with arbitrary IVs is not
+allowed in FIPS 140-only mode` remain. All **15** rejections in the current run
+are `crypto/ecdh: use of X25519 is not allowed`, from the Noise handshake. There
+are zero `crypto/sha1` panics, which is what the UUIDv8 migration was for, and
+zero `crypto/hmac: use of keys shorter than 112 bits`, which is what the
+shared-secret minimum was for. Re-derive the attribution with:
 
 ```
-GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'quicraft/seal: cipher creation failed: crypto/cipher: use of GCM with arbitrary IVs'
+GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'crypto/cipher: use of GCM with arbitrary IVs'
+GOFIPS140=latest GODEBUG=fips140=only make test 2>&1 | grep -c 'crypto/ecdh: use of X25519 is not allowed'
 ```
 
-Every failing test in every one of those 16 packages carries one of the two
-rejections in its own output. There is no residue: no failing test in this
-suite is explained by anything other than a dependency's non-approved
-primitive.
+Before the go-quicraft v0.8.0-alpha bump this read **693 of 708** GCM
+rejections, every one the body of a `quicraft/seal: cipher creation failed: ...`
+error and none of them a qrdb call site. That whole class is gone; the sentence
+is kept as history because the attribution is the evidence the remediation
+worked, not because the number is current.
+
+Every failing test in both remaining packages carries the X25519 rejection in
+its own output. There is no residue: no failing test in this suite is explained
+by anything other than a dependency's non-approved primitive.
 
 ### Arming the gate
 

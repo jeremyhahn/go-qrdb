@@ -11,6 +11,151 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+MINOR rather than PATCH: no qrdb API moves here, but `go-quicraft` advances TWO
+minors and changes cryptographic behaviour on the AES-GCM data path, which this
+module had to absorb at one call site.
+
+### Changed
+
+- **`go-quicraft` v0.6.2-alpha to v0.8.0-alpha**, `go-objstore` v0.2.2-alpha to
+  v0.3.0-alpha. `go-truststrap` (v0.2.0-alpha) and `go-codec` (v1.4.0) were
+  already current.
+
+- **The wrapped-root-key envelope absorbs go-quicraft's AEAD nonce contract
+  change.** In v0.7.0-alpha `pkg/seal` moved to `cipher.NewGCMWithRandomNonce`
+  — the only GCM construction approved under `GODEBUG=fips140=only`, since SP
+  800-38D requires the module itself to own nonce generation. Measured at the
+  two pins:
+
+  | | v0.6.2-alpha | v0.8.0-alpha |
+  |---|---|---|
+  | construction | `cipher.NewGCM` | `cipher.NewGCMWithRandomNonce` |
+  | `aead.NonceSize()` | 12 | 0 |
+  | `aead.Overhead()` | 16 | 28 |
+
+  `pkg/seal/unsealkey.go` was the one place in this repository that took a raw
+  `cipher.AEAD` from that package and framed its own nonce: `wrapRootKey` sized
+  a nonce from `aead.NonceSize()` and persisted it in the `Nonce` field of the
+  `wrappedRootKey` JSON envelope, beside `Ciphertext`, and `resolveDirectSecret`
+  length-checked that field against `aead.NonceSize()` before `Open`.
+
+  **A straight bump would have been silent and would have cost the store.**
+  Nothing fails to compile — `cipher.AEAD` is unchanged — and a fresh barrier
+  works, because new writes and new reads stay consistent with each other. But
+  the write path starts emitting a ZERO-length nonce with a 60-byte ciphertext
+  where the format has always carried 12 and 48, and the read path rejects every
+  blob written before the bump with `ErrWrappedRootKeyCorrupt`. That blob is the
+  barrier root key wrapped under the unseal key: an existing barrier stops
+  unsealing. Measured on a real pre-bump blob, not inferred.
+
+  The fix keeps the persisted bytes IDENTICAL in both directions rather than
+  migrating them. `NewGCMWithRandomNonce` emits `nonce ‖ ciphertext ‖ tag`,
+  which is exactly the pair the envelope already stored in two fields, so
+  `wrapRootKey` splits the module-generated prefix back off and `unwrapRootKey`
+  re-joins it before `Open`. Old blobs open unchanged, new blobs are
+  indistinguishable from old ones, and **no migration is required** — which is
+  the point: a wrapped root key is written once at initialization and read on
+  every unseal for the life of the barrier, so a format change here would need a
+  migration executed while the barrier is still sealed, i.e. while the key
+  material needed to authenticate it is by definition unavailable.
+  `pkg/ceremony`'s `sealEnvelope` splits the same prefix for the same reason;
+  this is that pattern, not a new one.
+
+  The envelope's nonce-length check now reads `SymmetricAlgorithm.NonceSize()`
+  — the WIRE width, which stayed 12 — instead of `cipher.AEAD.NonceSize()`,
+  which is now zero and would accept a nonce field of any length at all.
+
+  Decoding and decryption of the envelope moved out of `resolveDirectSecret`
+  into `unwrapRootKey`, so the format rules have one home and are reachable from
+  a test without standing up a storage backend.
+
+### Added
+
+- **`pkg/seal/unsealkey_legacy_format_test.go`** opens a wrapped-root-key blob
+  produced by this repository at go-quicraft v0.6.2-alpha, checked in as bytes
+  rather than regenerated. Regenerating it would let the test drift onto the new
+  format and start asserting only that the new code reads its own output — which
+  is precisely the failure mode that makes this class of break invisible. It
+  also asserts the write path still emits the 12/48 field widths, that the AAD
+  still binds the blob to its `RootKeyPath` (sealing with one barrier and
+  opening with another, so the assertion cannot pass merely because the AAD
+  changed), and that a nonce field of the wrong width is rejected. All
+  mutation-verified.
+
+### FIPS 140-3 posture — the caller-supplied-IV class is GONE
+
+Measured on both sides of this bump from the SAME base commit (414291c), one
+script, one machine, Go 1.26.6, `GOFIPS140=latest GODEBUG=fips140=only`,
+`-race`, and the build tags `make test` uses. Measuring both sides rather than
+comparing against the figure recorded for `0.7.0-alpha` is deliberate: a count
+taken by a different run on a differently loaded machine is not a baseline, and
+masked findings make counts move for reasons that have nothing to do with the
+change under test.
+
+| | before (go-quicraft v0.6.2-alpha) | after (v0.8.0-alpha) |
+|---|---|---|
+| packages passing | 106 | **120** |
+| packages failing | 16 | **2** |
+| `use of GCM with arbitrary IVs is not allowed in FIPS 140-only mode` | **699** | **0** |
+| `use of X25519 is not allowed in FIPS 140-only mode` | 15 | 15 |
+
+**Fourteen packages move red to green, and there are zero regressions** — the
+before-failing set is a strict superset of the after-failing set.
+
+The movement is attributable, not merely coincident: every one of the 699
+rejections was the AES-GCM-with-caller-IV construction that go-quicraft
+v0.7.0-alpha replaced with `cipher.NewGCMWithRandomNonce`, and the count is
+exactly zero afterwards. That whole class is closed for this module.
+
+The X25519 count is *unchanged at 15*, which is the correct outcome rather than
+a disappointing one: it is a different finding with a different owner. The two
+packages still failing — `cmd/qrdbd` and `pkg/clusterenroll` — fail on
+`clusterenroll: bootstrap server (noise) failed to start: noise: invalid key
+size: crypto/ecdh: use of X25519 is not allowed in FIPS 140-only mode`. That is
+go-truststrap's Noise handshake, closable only by compiling its `pkg/noiseproto`
+`fips` variant, which this module's FIPS job does not pass `-tags fips` to. The
+same tests fail identically before the bump and pass in the non-FIPS run.
+
+Re-measured at the branch head after the last commit touching test code, not
+carried forward from the earlier A/B run: **120 pass / 2 fail / 0 GCM / 15
+X25519**, the same figures and the same failing pair. The re-run was not
+ceremony — tests added after the A/B briefly introduced `cipher.NewGCM`
+fixtures that broke `pkg/seal` under FIPS and invalidated these counts until the
+hosted review caught it. A measurement describes the tree it was taken on.
+
+**Two tests now skip under `fips140=only`, and neither is a masked failure.**
+`TestWrappedRootKey_CallerNonceProvider` and
+`TestWrappedRootKey_RejectsMismatchedProviderNonceWidth` construct a
+caller-nonce AEAD to exercise the caller-nonce branch of
+`sealWrapped`/`openWrapped`. A caller-nonce AEAD is one built with
+`cipher.NewGCM` — exactly what this enforcement level refuses — so that branch
+is provably unreachable in a FIPS deployment: no provider, software or hardware,
+has an approved way to return such an AEAD. Both run in full outside FIPS. The
+skip is keyed on `fips140.Enabled()` rather than a build tag because the FIPS
+job passes no extra tags, and it is a skip rather than a stub AEAD because the
+assertions that matter need real AES-GCM on both sides. Registered in
+`docs/seal/fips140-mode.md` under "Skipped tests" with the same reasoning, so a
+future count does not read them as hidden red. (Five tests skip on that run in
+total; three predate this change.)
+
+Nothing here claims this module operates under `fips140=only`; two packages
+still fail and the job stays out of `ci-gate` while they do.
+
+### Not affected
+
+- Every other AEAD site in this repository — `pkg/crypto/aesgcm`,
+  `pkg/dek/crypto.go`, `pkg/ceremony/external_officer.go`,
+  `pkg/custodian/share_envelope.go` — already constructs
+  `cipher.NewGCMWithRandomNonce` from the standard library directly and passes a
+  nil nonce. None of them goes through go-quicraft's provider.
+- go-quicraft v0.8.0-alpha's `MemoryEnclave` borrow discipline (`WithBytes`,
+  `WithValue`, mutators draining borrows, no callback re-entry) reaches nothing
+  here. This module's entire use of `pkg/enclave` is `enclave.WipeBytes`, a free
+  function over ordinary slices, and its Shamir use is entirely the string
+  `Share` API — no `ProtectedShare`, `SplitProtected` or `CombineProtected`.
+  `pkg/secure`'s `enclave` field is this repository's own `memguard.Enclave`
+  wrapper, unrelated to go-quicraft's type of the same name.
+
 ## [0.8.0-alpha] - 2026-08-19
 
 MINOR, not PATCH: the `kvstore.KVStore` index contract changes (a store that

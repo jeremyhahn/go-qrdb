@@ -546,7 +546,7 @@ func (s *CeremonyService) validateConfig() error {
 // user PIN into shares, signs CSRs for each officer, and stores shares
 // in the in-memory share store. Transitions to StateEnrolling.
 func (s *CeremonyService) initializeMofN(ctx context.Context, result *InitResult) error {
-	shares, err := shamir.Split(
+	shares, err := shamir.Split( //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
 		[]byte(s.config.UserPin),
 		s.config.Threshold,
 		len(s.config.Officers),
