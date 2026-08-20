@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.9.0-alpha] - 2026-08-20
+
 MINOR rather than PATCH: no qrdb API moves here, but `go-quicraft` advances TWO
 minors and changes cryptographic behaviour on the AES-GCM data path, which this
 module had to absorb at one call site.
@@ -71,7 +73,7 @@ module had to absorb at one call site.
 
 ### Added
 
-- **`pkg/seal/unsealkey_legacy_format_test.go`** opens a wrapped-root-key blob
+- **`pkg/seal/unsealkey_test.go`** gains tests that open a wrapped-root-key blob
   produced by this repository at go-quicraft v0.6.2-alpha, checked in as bytes
   rather than regenerated. Regenerating it would let the test drift onto the new
   format and start asserting only that the new code reads its own output — which
