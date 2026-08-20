@@ -18,7 +18,12 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: "1.26.6"
+  # Latest 1.26 patch (owner ruling 2026-08-20). 1.27.0 is BLOCKED: cockroachdb/swiss
+  # fails to compile under it (undefined fastrand64/hashFn), and this module pulls
+  # swiss in transitively through pebble. Bump within 1.26 as patches ship; move to
+  # 1.27 only in the company #121 wave, after the swiss/pebble chain is bumped.
+  # setup-go 'stable' is prohibited as a spec — it flipped to 1.27.0 mid-campaign.
+  GO_VERSION: "1.26.7"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
   # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
@@ -91,7 +96,7 @@ jobs:
     # requires both, so nothing merges on red lint — but test results keep
     # existing while lint is down, instead of CI reporting failure while
     # silently verifying less than it appears to.
-    needs: [build]
+    needs: [lint, build]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -115,7 +120,7 @@ jobs:
     # requires both, so nothing merges on red lint — but test results keep
     # existing while lint is down, instead of CI reporting failure while
     # silently verifying less than it appears to.
-    needs: [build]
+    needs: [lint, build]
     timeout-minutes: 90
     # GOFIPS140 selects the Go Cryptographic Module at BUILD time; GODEBUG
     # selects the enforcement level at RUN time, and both are needed.
@@ -168,7 +173,7 @@ jobs:
     # requires both, so nothing merges on red lint — but test results keep
     # existing while lint is down, instead of CI reporting failure while
     # silently verifying less than it appears to.
-    needs: [build]
+    needs: [lint, build]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
@@ -221,6 +226,12 @@ jobs:
   security:
     name: Security
     runs-on: ubuntu-latest
+    needs: [lint, build]
+    # ci-template v1.9 staged fail-fast (owner ruling 2026-08-20): Gitea has no
+    # cancel API, so ORDERING is the only fail-fast available. lint+build run in
+    # minutes and gate the expensive tier, so a broken push reports fast and burns
+    # nothing downstream. This supersedes the lint-decoupling of #42, whose
+    # silent-skip hazard is closed by the golangci-lint pin.
     # ci-template v1.6: the Go toolchain is cgroup-unaware — in a 16 GB job
     # container it sees the HOST's 24 cores and 94 GB, so gosec ran 24 workers
     # and the GC grew the heap to ~27 GB, swapping 11 GB of anonymous memory
@@ -288,6 +299,7 @@ jobs:
   trivy:
     name: Trivy
     runs-on: ubuntu-latest
+    needs: [lint, build]
     steps:
       - uses: actions/checkout@v6
 
