@@ -1,10 +1,14 @@
 name: CI
 
 # One workflow, both hosts. Gitea Actions is GitHub-Actions-compatible, so the
-# GitHub-only mechanics (SARIF upload to code scanning, aquasecurity/trivy-action,
-# whose setup cannot authenticate to github.com from a Gitea runner) are guarded
-# on `github.server_url` and the Gitea leg installs the Trivy CLI instead.
+# GitHub-only mechanics (SARIF upload to code scanning, and actions whose setup
+# cannot authenticate to github.com from a Gitea runner) are guarded on
+# `github.server_url`, and the Gitea leg installs the equivalent CLI instead.
 # See automatethethings software/conventions/devops.md §1 and §8.
+#
+# This is the PUSH path, and it holds only jobs that can pass and do gate.
+# ci-template v1.9 moved the known-red and long-horizon jobs — fips and trivy —
+# to nightly.yml (owner ruling 2026-08-20, go-qrdb#48).
 
 on:
   push:
@@ -122,59 +126,6 @@ jobs:
       # is empty and packages such as pkg/invite fail at run time while
       # pkg/api/mcp, pkg/api/unix and pkg/server fail to build at all.
       - name: Unit tests (race)
-        run: make test
-
-  fips:
-    name: FIPS 140-3
-    runs-on: ubuntu-latest
-    # needs deliberately EXCLUDES lint (#42, 2026-08-19): a linter tooling
-    # outage must never stop tests from EXECUTING. The ci-gate job still
-    # requires both, so nothing merges on red lint — but test results keep
-    # existing while lint is down, instead of CI reporting failure while
-    # silently verifying less than it appears to.
-    needs: [lint, build]
-    timeout-minutes: 90
-    # GOFIPS140 selects the Go Cryptographic Module at BUILD time; GODEBUG
-    # selects the enforcement level at RUN time, and both are needed.
-    #
-    # "only" rather than "on": "on" loads the module but still PERMITS
-    # non-approved algorithms, so a regulated path using MD5, SHA-1 or GCM with
-    # a caller-chosen IV passes silently and the gate reports green on exactly
-    # the thing it exists to catch. "only" makes those operations error or
-    # panic. Ratified by the owner 2026-08-17; see automatethethings
-    # software/conventions/configuration.md §5 and docs/seal/fips140-mode.md.
-    #
-    # If this job goes red, the failure IS the finding: something on a tested
-    # path is using non-approved cryptography. Fix the call site, or -- when an
-    # external format mandates the primitive -- isolate it and record a cited
-    # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
-    # a build tag that skips the job, or narrow the package list.
-    #
-    # It IS red today, on three tracked findings, and it is deliberately not
-    # part of ci-gate while that is true -- see the comment on ci-gate below
-    # and the "Open blockers" section of docs/seal/fips140-mode.md. Nothing in
-    # this repository claims the module operates under fips140=only until this
-    # job passes and joins ci-gate.
-    env:
-      GOFIPS140: latest
-      GODEBUG: fips140=only
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      # GODEBUG is a runtime setting and cannot fail a compile, but building
-      # against the module first keeps a genuine build break from being
-      # reported as a test failure.
-      - name: Build all packages against the FIPS module
-        run: go build ./...
-
-      # The same target the Test job runs, with the same build tags. The scope
-      # is deliberately identical: a FIPS job over a subset of the suite
-      # cannot tell you the product is FIPS-clean.
-      - name: Unit tests (race, FIPS 140-only)
         run: make test
 
   integration-standalone:
@@ -324,69 +275,6 @@ jobs:
       - name: go mod verify
         run: make mod-verify
 
-  trivy:
-    name: Trivy
-    runs-on: ubuntu-latest
-    needs: [lint, build]
-    steps:
-      - uses: actions/checkout@v6
-
-      # GitHub leg: a fresh source-scoped scan is uploaded to code scanning on
-      # every run so the dashboard never reflects a stale analysis, then a
-      # second pass gates on CRITICAL/HIGH. test/ holds benchmark harnesses
-      # that ship in no release.
-      - name: Trivy scan (SARIF for code scanning)
-        if: github.server_url == 'https://github.com'
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          format: sarif
-          output: trivy-results.sarif
-          exit-code: 0
-          skip-dirs: test,cmd/qrdbd/data
-
-      - name: Upload Trivy SARIF
-        if: always() && github.server_url == 'https://github.com'
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-fs
-
-      - name: Trivy gate (fail on CRITICAL/HIGH)
-        if: github.server_url == 'https://github.com'
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          severity: CRITICAL,HIGH
-          exit-code: 1
-          format: table
-          skip-dirs: test,cmd/qrdbd/data
-
-      # Gitea leg: trivy-action's setup step cannot authenticate to github.com
-      # from a Gitea runner, so install the CLI and run the identical gate.
-      # Retried: raw.githubusercontent.com intermittently answers the Gitea
-      # runner with transient HTTP errors (curl exit 22), which failed the
-      # whole job on a fetch that succeeds seconds later. Backoff keeps one
-      # network blip from reading as a security-gate failure.
-      - name: Install Trivy CLI
-        if: github.server_url != 'https://github.com'
-        run: |
-          for i in 1 2 3 4 5; do
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && exit 0
-            echo "trivy install attempt $i failed; retrying in $((i*10))s"
-            sleep $((i*10))
-          done
-          echo "trivy install failed after 5 attempts" >&2
-          exit 1
-
-      - name: Trivy gate (fail on CRITICAL/HIGH)
-        if: github.server_url != 'https://github.com'
-        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test,cmd/qrdbd/data .
-
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
@@ -397,68 +285,24 @@ jobs:
     # success while jobs fail. Adding a job means adding it to `needs` AND to
     # the env block and the loop below.
     #
-    # `fips` is ABSENT from this list because it does not pass yet, and while
-    # that is true it is NOT presented as an enforceable compliance gate: this
-    # module does not currently operate under GODEBUG=fips140=only and nothing
-    # in this repository claims it does (docs/seal/fips140-mode.md states so in
-    # its opening paragraph). The job runs on every PR to measure the remaining
-    # distance at the enforcement level the policy requires; a required check
-    # that cannot pass would only freeze the repository without closing a
-    # single finding.
+    # `fips` and `trivy` are not here because they are not in this workflow at
+    # all any more: ci-template v1.9 moved both to nightly.yml (owner ruling
+    # 2026-08-20, go-qrdb#48). Both are known-red with tracked issues — fips on
+    # #18 and #20, trivy on #42 — so running them per push produced information
+    # we already had while holding a runner for up to 90 minutes.
     #
-    # TWO findings keep it red. Both are upstream; nothing left in THIS
-    # repository blocks the job, and neither is closable from a change to this
-    # workflow. Re-measured 2026-08-19 on Go 1.26.6 against go-truststrap
-    # v0.2.0-alpha: 122 packages, 106 pass, 16 fail -- unchanged from the
-    # 2026-08-18 measurement, because that bump moves no package from red to
-    # green. Every failing test in all 16 carries one of the two rejections
-    # below in its own output; there is no qrdb-side residue.
+    # `trivy` was previously REQUIRED here, which meant the gate was red on
+    # every push from a known-red job. That is not a gate; it is a gate nobody
+    # can read. Removing it is the point of #48, not an incidental side effect
+    # of the move.
     #
-    #   * go-quicraft pkg/seal built its barrier AEAD with cipher.NewGCM,
-    #     which fails every sealed-storage test: 693 rejections across 15 of
-    #     the 16 packages. FIXED UPSTREAM AND TAGGED as v0.7.0-alpha
-    #     (cipher.NewGCMWithRandomNonce, ChaCha20 compiled out behind
-    #     //go:build !fips; quicraft#7 and #8 closed). We are NOT on it, and
-    #     that is deliberate: NewGCMWithRandomNonce reports NonceSize() == 0
-    #     and embeds the nonce in the ciphertext, so pkg/seal/unsealkey.go
-    #     writes a wrapped root key whose Nonce field is empty -- and REJECTS
-    #     a blob written by the old version as corrupt. An existing sealed
-    #     store would stop unsealing. Needs a dual-read migration first;
-    #     tracked in go-qrdb#23. The bump turns 14 of the 16 green when it
-    #     lands (cmd/qrdbd carries BOTH findings and stays red alongside
-    #     pkg/clusterenroll until truststrap is settled).
-    #   * go-truststrap pkg/noiseproto performs the Noise handshake over
-    #     X25519, which fails pkg/clusterenroll (7), pkg/ceremony (8) and
-    #     cmd/qrdbd (8) -- 23 rejections. pkg/ceremony is newly counted: it
-    #     used to fail on GCM before execution reached the Noise path.
-    #     Noise_NK has no approved DH to move to, so this NEVER closes by
-    #     moving to a newer version -- it closes by Noise being absent from a
-    #     FIPS build. v0.2.0-alpha builds the mechanism: pkg/noiseproto now
-    #     splits on a `fips` build tag (dh.go //go:build !fips does X25519,
-    #     dh_fips.go //go:build fips returns ErrFIPSUnsupported). This job does
-    #     not pass -tags fips, so it still compiles the !fips variant and takes
-    #     the runtime rejection. The product decision has since been made by
-    #     the owner -- omit Noise from FIPS builds -- so the remaining qrdb-side
-    #     work is to build-tag the Noise-based clusterenroll path out of FIPS
-    #     builds to match, WITHOUT skip guards: a FIPS build asserts enrollment
-    #     is unavailable, it does not skip the test.
-    #
-    # CLOSED: pkg/role and pkg/custodian no longer derive deterministic IDs
-    # with uuid.NewSHA1 (#8, #10) — they use UUIDv8 over SHA-256 with a
-    # dual-read compatibility path for identifiers persisted before the
-    # migration. The only remaining uuid.NewSHA1 references are frozen legacy
-    # literals in test comments. Confirmed by measurement: zero crypto/sha1
-    # panics in the run above. NOTE that this landed AFTER v0.5.9-alpha, so a
-    # consumer on that tag still hits the package-init panic; the fix reaches
-    # them only through v0.6.0-alpha or later.
-    #
-    # ARM IT IN THE CHANGE THAT CLOSES THE LAST ONE, not later: add `fips`
-    # here, add RESULT_FIPS to the env block, and add a `check fips` call to the
-    # loop. A FIPS job that can pass and is not required IS a fail-open gate.
-    # What is forbidden meanwhile is making it green dishonestly -- setting it
-    # back to fips140=on, adding continue-on-error, tag-gating a failing
-    # package out, or trimming the package list.
-    needs: [lint, build, test, integration-standalone, security, trivy]
+    # ARMING EITHER ONE AGAIN is a deliberate act, and the whole act: move the
+    # job back into this file, add it to `needs`, add its RESULT_ env var, and
+    # add a `check` call below. A job that can pass and is not required is a
+    # fail-open gate; a job that is required and cannot pass freezes the
+    # repository without closing a single finding. Neither is acceptable, which
+    # is why the two halves must move together.
+    needs: [lint, build, test, integration-standalone, security]
     steps:
       - name: Verify every job succeeded
         env:
@@ -467,26 +311,26 @@ jobs:
           RESULT_TEST: ${{ needs.test.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
-          RESULT_TRIVY: ${{ needs.trivy.result }}
         run: |
           status=0
+          # skipped is not the same as failed, and BOTH fail the gate. A
+          # skipped job means an upstream stage failed (test, integration and
+          # security all stage behind lint and build), so naming it prevents
+          # the go-qrdb#42 class: a red that reads like a test failure while
+          # the tests never ran at all.
           check() {
             name="$1"
             result="$2"
-            if [ -z "$result" ]; then
-              echo "FAIL: $name result is unreadable - failing closed"
-              status=1
-            elif [ "$result" != "success" ]; then
-              echo "FAIL: $name = $result"
-              status=1
-            else
-              echo "ok:   $name = success"
-            fi
+            case "$result" in
+              success)  echo "ok:   $name = success" ;;
+              skipped)  echo "SKIP: $name (an upstream stage failed - see its job)"; status=1 ;;
+              "")       echo "FAIL: $name result is unreadable - failing closed"; status=1 ;;
+              *)        echo "FAIL: $name = $result"; status=1 ;;
+            esac
           }
           check lint "$RESULT_LINT"
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
-          check trivy "$RESULT_TRIVY"
           exit $status

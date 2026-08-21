@@ -1,0 +1,174 @@
+# Nightly — the known-red and long-horizon jobs, off the push path.
+#
+# Adopted from the company ci-template v1.9 (software/templates/github-actions/
+# nightly.yml), owner ruling 2026-08-20: a job that is known-red with a tracked
+# issue, or that verifies a slow-moving property, does NOT run per push. It
+# produces information we already have, and it does it while holding a runner.
+#
+# The cost here was not theoretical. `fips` has `timeout-minutes: 90` and runs
+# the RACE-enabled suite under GODEBUG=fips140=only, so it took ~50 minutes per
+# pull request and then failed, exactly as its tracked issues say it will —
+# while go-qrdb#60's one-line CI fix waited over an hour for a free runner
+# behind it, on a run whose every gating job was already green (measured
+# 2026-08-21, run 4401).
+#
+# Neither job gates anything. `fips` was already absent from ci-gate's `needs`
+# for the reasons below; `trivy` was in it and is removed by this change, per
+# go-qrdb#48.
+#
+# WHEN THEIR ISSUES LAND, moving a job back to ci.yml is a deliberate act, not
+# an automatic one: add it to ci.yml, add it to ci-gate's `needs`, and add a
+# `check` call to the gate loop. A job that can pass and is not required is a
+# fail-open gate.
+#
+#   * fips — go-qrdb#18 and #20. Two upstream findings keep it red, both
+#     described in full on those issues: go-quicraft's barrier AEAD and
+#     go-truststrap's Noise handshake over X25519. What is forbidden meanwhile
+#     is making it green dishonestly — setting it back to fips140=on, adding
+#     continue-on-error, tag-gating a failing package out, or trimming the
+#     package list.
+#   * trivy — go-qrdb#42.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  # Kept in lockstep with ci.yml. Latest 1.26 patch (owner ruling 2026-08-20);
+  # 1.27.0 is BLOCKED because cockroachdb/swiss does not compile under it and
+  # pebble pulls it in transitively. setup-go 'stable' is prohibited as a spec.
+  GO_VERSION: "1.26.7"
+  # Builds never resolve through a workspace: first-party modules come from
+  # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
+  # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
+  # no credentials belong in this file.
+  GOWORK: "off"
+  GOFLAGS: "-buildvcs=false"
+
+jobs:
+  fips:
+    name: FIPS 140-3
+    runs-on: ubuntu-latest
+    # needs: none — nightly runs standalone, and build health is ci.yml's job.
+    # In ci.yml this staged behind build so a broken tree did not burn the slot,
+    # and it deliberately did NOT stage behind lint (#42, 2026-08-19): a linter
+    # tooling outage must never stop tests from EXECUTING. Neither concern
+    # survives the move, because there is nothing here to stage behind.
+    #
+    # timeout-minutes stays at 90 rather than the template's 30: this job runs
+    # the RACE-enabled suite under fips140=only, which is what takes the time.
+    # Unattended and gating nothing, a generous ceiling costs nothing; on the
+    # push path it cost a runner slot per pull request, which is why it moved.
+    timeout-minutes: 90
+    # GOFIPS140 selects the Go Cryptographic Module at BUILD time; GODEBUG
+    # selects the enforcement level at RUN time, and both are needed.
+    #
+    # "only" rather than "on": "on" loads the module but still PERMITS
+    # non-approved algorithms, so a regulated path using MD5, SHA-1 or GCM with
+    # a caller-chosen IV passes silently and the gate reports green on exactly
+    # the thing it exists to catch. "only" makes those operations error or
+    # panic. Ratified by the owner 2026-08-17; see automatethethings
+    # software/conventions/configuration.md §5 and docs/seal/fips140-mode.md.
+    #
+    # If this job goes red, the failure IS the finding: something on a tested
+    # path is using non-approved cryptography. Fix the call site, or -- when an
+    # external format mandates the primitive -- isolate it and record a cited
+    # exemption in docs/seal/fips140-mode.md. Do NOT set this back to "on", add
+    # a build tag that skips the job, or narrow the package list.
+    #
+    # It IS red today, on three tracked findings, and it is deliberately not
+    # part of ci-gate while that is true -- see the comment on ci-gate below
+    # and the "Open blockers" section of docs/seal/fips140-mode.md. Nothing in
+    # this repository claims the module operates under fips140=only until this
+    # job passes and joins ci-gate.
+    env:
+      GOFIPS140: latest
+      GODEBUG: fips140=only
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # GODEBUG is a runtime setting and cannot fail a compile, but building
+      # against the module first keeps a genuine build break from being
+      # reported as a test failure.
+      - name: Build all packages against the FIPS module
+        run: go build ./...
+
+      # The same target the Test job runs, with the same build tags. The scope
+      # is deliberately identical: a FIPS job over a subset of the suite
+      # cannot tell you the product is FIPS-clean.
+      - name: Unit tests (race, FIPS 140-only)
+        run: make test
+
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    # needs: none — nightly runs standalone; build health is ci.yml's job.
+    steps:
+      - uses: actions/checkout@v6
+
+      # GitHub leg: a fresh source-scoped scan is uploaded to code scanning on
+      # every run so the dashboard never reflects a stale analysis, then a
+      # second pass gates on CRITICAL/HIGH. test/ holds benchmark harnesses
+      # that ship in no release.
+      - name: Trivy scan (SARIF for code scanning)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: 0
+          skip-dirs: test,cmd/qrdbd/data
+
+      - name: Upload Trivy SARIF
+        if: always() && github.server_url == 'https://github.com'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url == 'https://github.com'
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          format: table
+          skip-dirs: test,cmd/qrdbd/data
+
+      # Gitea leg: trivy-action's setup step cannot authenticate to github.com
+      # from a Gitea runner, so install the CLI and run the identical gate.
+      # Retried: raw.githubusercontent.com intermittently answers the Gitea
+      # runner with transient HTTP errors (curl exit 22), which failed the
+      # whole job on a fetch that succeeds seconds later. Backoff keeps one
+      # network blip from reading as a security-gate failure.
+      - name: Install Trivy CLI
+        if: github.server_url != 'https://github.com'
+        run: |
+          for i in 1 2 3 4 5; do
+            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && exit 0
+            echo "trivy install attempt $i failed; retrying in $((i*10))s"
+            sleep $((i*10))
+          done
+          echo "trivy install failed after 5 attempts" >&2
+          exit 1
+
+      - name: Trivy gate (fail on CRITICAL/HIGH)
+        if: github.server_url != 'https://github.com'
+        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test,cmd/qrdbd/data .
