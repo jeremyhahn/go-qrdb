@@ -1129,7 +1129,14 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 
 	for _, chunk := range buildImportProposalChunks(ops, keys, rowNums) {
 		cmd := protocol.EncodeBatch(chunk.ops)
-		_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+		proposed, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+		if err == nil {
+			// A not-configured subsystem arrives in the RESULT, not as a Raft
+			// error, so a chunk that applied nothing would otherwise be counted
+			// as imported (go-qrdb#62). Treated exactly as a proposal failure
+			// from here: returned in transactional mode, per-row in the other.
+			err = checkResultError(proposed)
+		}
 		if err != nil {
 			if transactional {
 				// For transactional mode, return the error directly.

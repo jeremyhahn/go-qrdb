@@ -19,6 +19,8 @@ import (
 	"log/slog"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 )
 
 // resolveApplyError converts a handler error into the right action for the
@@ -45,7 +47,16 @@ func resolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 				slog.String("service", sncErr.Service),
 				slog.Uint64("entry_index", entryIndex))
 		}
-		return sm.Result{Data: []byte(handlerErr.Error())}, false, nil
+		// EncodeAppError, not a bare string. checkResultError recognises an
+		// application error ONLY by that prefix, so an unprefixed payload never
+		// decodes: the proposer reads the error text as an ordinary result and
+		// reports the transaction as a failed COMPARE with a nil error. For a
+		// caller, PutIfAbsent returning (false, nil) means "the key already
+		// exists" — so a misconfigured subsystem is reported as another writer
+		// having won the race, and the caller goes on to read a key that was
+		// never written (go-qrdb#62). Every other producer in the tree already
+		// encodes through this function.
+		return sm.Result{Data: protocol.EncodeAppError(handlerErr.Error())}, false, nil
 	}
 	return sm.Result{}, true, handlerErr
 }

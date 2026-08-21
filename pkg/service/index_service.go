@@ -49,9 +49,15 @@ func NewIndexService(host Host, shardID uint64) IndexServicer {
 func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error {
 	numeric := config.ValueType == index.IndexValueTypeNumeric
 	cmd := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse, numeric)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -59,9 +65,15 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 // DropIndex removes a secondary index through Raft consensus.
 func (s *IndexService) DropIndex(ctx context.Context, name string) error {
 	cmd := protocol.EncodeIndexDrop(name)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }

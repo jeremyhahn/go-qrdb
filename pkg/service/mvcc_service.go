@@ -241,9 +241,15 @@ func (s *MVCCKVService) Get(ctx context.Context, key string) ([]byte, error) {
 // Delete removes a key through Raft consensus with MVCC tombstone tracking.
 func (s *MVCCKVService) Delete(ctx context.Context, key string) error {
 	cmd := protocol.EncodeMVCCDelete([]byte(key))
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -399,9 +405,15 @@ func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byt
 // Raft consensus with MVCC tombstone tracking.
 func (s *MVCCKVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
 	cmd := protocol.EncodeMVCCDelete([]byte(key))
-	_, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -701,9 +713,15 @@ func (s *MVCCKVService) RangeWithConsistency(ctx context.Context, start, end []b
 // through Raft consensus.
 func (s *MVCCKVService) Compact(ctx context.Context, revision int64) error {
 	cmd := protocol.EncodeMVCCCompact(revision)
-	_, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }

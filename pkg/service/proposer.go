@@ -17,8 +17,7 @@ package service
 import "context"
 
 // HostProposerAdapter wraps a Host to satisfy the batch.Proposer interface
-// from go-quicraft. It discards the sm.Result value from SyncPropose,
-// returning only the error.
+// from go-quicraft, whose SyncPropose returns only an error.
 type HostProposerAdapter struct {
 	host Host
 }
@@ -28,9 +27,20 @@ func NewHostProposerAdapter(host Host) *HostProposerAdapter {
 	return &HostProposerAdapter{host: host}
 }
 
-// SyncPropose proposes a command through the underlying Host and discards
-// the result value. This satisfies the batch.Proposer interface.
+// SyncPropose proposes a command through the underlying Host, converting an
+// application error carried in the result into a Go error.
+//
+// The narrower interface cannot return an sm.Result, but that is not a licence
+// to drop what the result says. The state machine encodes a not-configured
+// subsystem INTO the result rather than returning it to Raft — returning it
+// would stall every subsequent read on the shard — so an adapter that looked
+// only at the Raft error reported a missing subsystem as a successful batch
+// (go-qrdb#62). checkResultError answers nil for an ordinary result, so this
+// changes nothing for a batch that actually applied.
 func (a *HostProposerAdapter) SyncPropose(ctx context.Context, shardID uint64, cmd []byte) error {
-	_, err := a.host.SyncPropose(ctx, shardID, cmd)
-	return err
+	result, err := a.host.SyncPropose(ctx, shardID, cmd)
+	if err != nil {
+		return err
+	}
+	return checkResultError(result)
 }

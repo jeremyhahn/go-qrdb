@@ -479,9 +479,15 @@ func (s *KVService) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return &ProposeError{Err: err}
 	}
-	_, err = s.host.SyncPropose(ctx, s.shardID, cmd)
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -605,9 +611,15 @@ func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, m
 	if err != nil {
 		return &ProposeError{Err: err}
 	}
-	_, err = s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }
@@ -620,9 +632,15 @@ func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemo
 	if err != nil {
 		return &ProposeError{Err: err}
 	}
-	_, err = s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
+	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
+	}
+	// The state machine encodes a not-configured subsystem into the RESULT
+	// rather than returning it to Raft, so discarding the result reports a
+	// missing subsystem as success (go-qrdb#62).
+	if resultErr := checkResultError(result); resultErr != nil {
+		return resultErr
 	}
 	return nil
 }

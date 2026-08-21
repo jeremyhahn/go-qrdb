@@ -138,7 +138,10 @@ func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 				k.logger.Error("statemachine: subsystem not configured, encoding as result",
 					slog.String("service", sncErr.Service),
 					slog.Uint64("entry_index", entries[i].Index))
-				results[i] = sm.Result{Data: []byte(err.Error())}
+				// Prefixed, so checkResultError decodes it — see the same
+				// encoding in resolveApplyError and go-qrdb#62 for what an
+				// unprefixed payload is read as instead.
+				results[i] = sm.Result{Data: protocol.EncodeAppError(err.Error())}
 				continue
 			}
 			return err
