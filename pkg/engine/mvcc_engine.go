@@ -702,13 +702,9 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 		return sm.Result{}, nil, err
 	}
 
-	current, getErr := s.GetInBatch(batch, key)
+	current, getErr := getInBatchAllowingAbsence(s, batch, key)
 	if getErr != nil {
-		var notFound *mvcc.KeyNotFoundError
-		if !errors.As(getErr, &notFound) {
-			return sm.Result{}, nil, getErr
-		}
-		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
+		return sm.Result{}, nil, getErr
 	}
 	if current == nil || !bytes.Equal(current.Value, expected) {
 		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
@@ -740,23 +736,38 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 	return sm.Result{Value: protocol.ResultDeleted}, notifs, nil
 }
 
-// keyIsAbsentInBatch answers the existence guard both conditional-put handlers
-// ask, distinguishing a MISSING key from a key that could not be READ.
+// getInBatchAllowingAbsence reads a key inside the apply batch, reporting a
+// MISSING key as a nil value and a key that could not be READ as an error.
 //
-// Only *mvcc.KeyNotFoundError means absent. A storage fault is returned to the
-// caller, which returns it to the Raft layer: folding it into "absent" would
-// overwrite the holder and report ResultStored, and because the fault is LOCAL
-// to one replica, replicas whose reads succeeded would decide the same entry
-// the other way and the group would diverge from an identical log.
-func keyIsAbsentInBatch(s *mvcc.Store, batch storage.Batch, key []byte) (bool, error) {
-	if _, err := s.GetInBatch(batch, key); err != nil {
+// Every apply-path guard needs this distinction and none may improvise it. Only
+// *mvcc.KeyNotFoundError means absent; anything else is a storage fault and
+// goes back to the Raft layer. A fault folded into "absent" decides the guard
+// as though the key were not there — and because the fault is LOCAL to one
+// replica, replicas whose reads succeeded decide the same log entry the other
+// way and the group diverges from an identical log (go-qrdb#41, go-qrdb#49).
+//
+// mvcc.Store.getFrom returns either an error or a non-nil KeyValue, so a nil
+// value here means absent and nothing else.
+func getInBatchAllowingAbsence(s *mvcc.Store, batch storage.Batch, key []byte) (*service.KeyValue, error) {
+	kvResult, err := s.GetInBatch(batch, key)
+	if err != nil {
 		var notFound *mvcc.KeyNotFoundError
 		if errors.As(err, &notFound) {
-			return true, nil
+			return nil, nil
 		}
+		return nil, err
+	}
+	return kvResult, nil
+}
+
+// keyIsAbsentInBatch answers the existence guard both conditional-put handlers
+// ask. It is getInBatchAllowingAbsence for callers that need only the verdict.
+func keyIsAbsentInBatch(s *mvcc.Store, batch storage.Batch, key []byte) (bool, error) {
+	kvResult, err := getInBatchAllowingAbsence(s, batch, key)
+	if err != nil {
 		return false, err
 	}
-	return false, nil
+	return kvResult == nil, nil
 }
 
 // putIfAbsentInBatch performs the write half of a conditional put whose
@@ -980,6 +991,16 @@ func handleMVCCCompact(s *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payl
 // handleTransaction processes a compare-and-swap transaction. Evaluates all
 // compares against current state, then atomically executes the success or
 // failure operation set at a single new revision.
+//
+// A compare read that FAILS is not a compare that missed. The read error used
+// to be discarded here, which made a storage fault indistinguishable from an
+// absent key — both arrived at mvcc.Evaluate as a nil value, and the branch was
+// chosen on that nil. Since a fault is local to one replica, replicas that read
+// the key successfully would run SuccessOps where the faulting replica ran
+// FailureOps, from the same log entry: state-machine divergence, which is the
+// one outcome a Raft state machine may never produce. Refusing to decide is
+// correct precisely when the fault is non-deterministic, so the transaction
+// returns the error and executes NEITHER branch (go-qrdb#49).
 func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
 	txn, err := protocol.DecodeTransaction(payload)
 	if err != nil {
@@ -989,7 +1010,10 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	succeeded := true
 	for _, dc := range txn.Compares {
 		cmp := decodedCompareToService(dc)
-		kvResult, _ := s.GetInBatch(batch, cmp.Key)
+		kvResult, getErr := getInBatchAllowingAbsence(s, batch, cmp.Key)
+		if getErr != nil {
+			return sm.Result{}, nil, getErr
+		}
 		if !mvcc.Evaluate(&cmp, kvResult) {
 			succeeded = false
 			break

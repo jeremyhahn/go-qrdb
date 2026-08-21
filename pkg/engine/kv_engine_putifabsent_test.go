@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -269,16 +270,54 @@ var errReadFault = errors.New("injected read fault")
 
 // readFaultStorage fails Get for one key, leaving every other operation
 // intact. It models a transient local read fault on a replica.
+//
+// failPrefix is the same fault expressed over a key PREFIX, which is what an
+// MVCC-plane test needs: the MVCC store reads a key's metadata under an encoded
+// meta key rather than under the key itself, so naming the raw key would arm
+// nothing.
 type readFaultStorage struct {
 	storage.Storage
-	failKey string
+	failKey    string
+	failPrefix []byte
+}
+
+// faults reports whether a read of key is the injected fault.
+func (s *readFaultStorage) faults(key []byte) bool {
+	if string(key) == s.failKey {
+		return true
+	}
+	return len(s.failPrefix) > 0 && bytes.HasPrefix(key, s.failPrefix)
 }
 
 func (s *readFaultStorage) Get(key []byte) ([]byte, error) {
-	if string(key) == s.failKey {
+	if s.faults(key) {
 		return nil, errReadFault
 	}
 	return s.Storage.Get(key)
+}
+
+// Batch wraps the underlying batch so reads made INSIDE the apply batch fault
+// too. Without this the injection is invisible to the apply path: an engine
+// reads through storage.Batch, and the memory batch reads from the storage it
+// was created by rather than from this wrapper, so an unwrapped batch would
+// answer every read successfully while Get is armed.
+func (s *readFaultStorage) Batch() storage.Batch {
+	return &readFaultBatch{Batch: s.Storage.Batch(), storage: s}
+}
+
+// readFaultBatch raises the storage's injected fault for reads made through the
+// batch. Writes and commits are untouched, so a test can still observe exactly
+// what the faulting apply wrote.
+type readFaultBatch struct {
+	storage.Batch
+	storage *readFaultStorage
+}
+
+func (b *readFaultBatch) Get(key []byte) ([]byte, error) {
+	if b.storage.faults(key) {
+		return nil, errReadFault
+	}
+	return b.Batch.Get(key)
 }
 
 // A conditional put whose EXISTENCE READ fails must not decide. Folding a read
