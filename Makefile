@@ -1130,13 +1130,17 @@ _ci: fmt vet lint security build-server test
 # reported as a lint issue, so the gate goes red for a reason that has nothing
 # to do with the code. LINT_TAGS is BUILD_TAGS comma-joined, which is the form
 # --build-tags takes.
+#
+# The time budget is NOT passed here. `run.timeout` in .golangci.yml is the one
+# place it is declared; a --timeout flag would silently override that file and
+# leave two values to keep in sync (#60).
 comma      := ,
 space      := $(subst ,, )
 LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
 
 .PHONY: lint
 lint:
-	$(GOLINT) run --build-tags "$(LINT_TAGS)" --timeout=5m ./...
+	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
 
 .PHONY: vet
 vet:

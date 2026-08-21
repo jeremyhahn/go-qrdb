@@ -3,7 +3,16 @@
 version: "2"
 
 run:
-  timeout: 5m
+  # The single declaration of the lint time budget: `make lint` deliberately
+  # passes no --timeout, because a flag would override this file (#60).
+  #
+  # Sized for a cold, contended CI runner, not a warm workstation. Measured on
+  # 2026-08-21: the tagged ./... run takes 25s here with a warm golangci-lint
+  # cache and 5m29s in CI, where every container starts with an empty one —
+  # which is how the previous 5m budget failed a run that had already printed
+  # "0 issues.". This is a ceiling that stops a hung run from holding a runner,
+  # not a performance target; do not tighten it toward the observed CI time.
+  timeout: 20m
   tests: true
 
 formatters:
