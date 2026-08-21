@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.10.0-alpha] - 2026-08-20
+
 ### Fixed — SECURITY
 
 - **`StoreResolver` no longer hands every shared-prefix tenant the same
