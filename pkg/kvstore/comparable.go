@@ -37,6 +37,22 @@ import "reflect"
 // it: pkg/invite guarded its cache and pkg/user and pkg/role — the very
 // packages invite's cache was modelled on — did not, so a contract-compliant
 // resolver crashed them (go-qrdb#41). One helper, one answer.
+//
+// The question is asked of the VALUE, not of its type. reflect.Type.Comparable
+// answers whether values of a type are comparable IN PRINCIPLE, and its own
+// documentation warns the comparison may still panic. A struct with an `any`
+// field and value receivers satisfies KVStore and is a comparable TYPE, so the
+// type-level question answers true — and using it as a key panics anyway when
+// that field currently holds a slice or a map. Measured:
+//
+//	struct{any: map[string]int}  Type.Comparable=true  Value.Comparable=false
+//	                             -> used as a map key: panics
+//	struct{any: string}          Type.Comparable=true  Value.Comparable=true
+//
+// A safety predicate that answers true for a value that panics is worse than
+// no predicate, because every caller is relying on it precisely so it does not
+// have to think about this (go-qrdb#55). reflect.Value.Comparable inspects the
+// dynamic value and is the question actually being asked.
 func UsableAsMapKey(s KVStore) bool {
-	return s != nil && reflect.TypeOf(s).Comparable()
+	return s != nil && reflect.ValueOf(s).Comparable()
 }

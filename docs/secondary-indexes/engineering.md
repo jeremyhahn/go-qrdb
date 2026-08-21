@@ -20,6 +20,15 @@ var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
 var NewMemoryKVStore = kvstore.NewMemoryKVStore
 type MemoryKVStore = kvstore.MemoryKVStore
 
+// Ask before caching anything keyed by a resolved store. KVStore is an
+// interface, so its dynamic type need not be comparable, and using a
+// non-comparable one as a map or sync.Map key panics on the first operation.
+// A store that cannot be a key is not an error: skip the cache for it.
+//
+// A func, not a var alias: a safety predicate an importer could reassign is
+// not one canonical judgement.
+func UsableAsMapKey(store KVStore) bool
+
 // DAO options, codec constants and sort directions. Prefixed because the SDK
 // root has ClientOption namesakes — sdk.WithTimeout is a ClientOption.
 var DAOWithShard, DAOWithCodec, DAOWithTimeout, DAOWithPartition, DAOWithDatabase

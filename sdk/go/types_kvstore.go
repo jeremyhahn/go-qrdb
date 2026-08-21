@@ -48,6 +48,43 @@ var NewMemoryKVStore = kvstore.NewMemoryKVStore
 // MemoryKVStore is the concrete type NewMemoryKVStore returns.
 type MemoryKVStore = kvstore.MemoryKVStore
 
+// UsableAsMapKey reports whether a KVStore value may be used as a map or
+// sync.Map key.
+//
+// Ask it before caching anything keyed by a resolved store. Store identity is
+// the natural cache key for per-tenant derived state — one DAO set per tenant's
+// backing store — but KVStore is an interface and nothing requires its dynamic
+// type to be comparable. A named slice or map type with value receivers
+// satisfies the interface perfectly well, and using such a value as a key
+// panics with "hash of unhashable type" on the FIRST operation, before any
+// tenant work runs.
+//
+// A store that cannot be a key is not an error and must not be refused: the
+// caller's choice of representation is its own. The cache is an optimization,
+// so a non-comparable store skips it and gets freshly built state:
+//
+//	if !sdk.UsableAsMapKey(store) {
+//	    return newDAOSet(store) // uncacheable, still correct
+//	}
+//
+// Re-exported because consumers building tenant-routed stores on
+// sdk.TenantStoreResolver need the identical judgement and may not import
+// pkg/kvstore (docs/00 L3). Without it the choice is a local reimplementation
+// of a predicate that must have exactly one definition, or shipping the cache
+// unguarded — which is the panic (go-qrdb#55, and #47 for the two in-repo
+// routing layers that did not make this check).
+//
+// A FUNC, not a `var f = kvstore.UsableAsMapKey` alias like the constructors
+// above it. A package-level var is assignable by any importer, and this one is
+// a safety predicate: reassigning it to return true process-wide hands the next
+// consumer a map-backed store to use as a sync.Map key, which is the panic this
+// exists to prevent — reintroduced from another package, and racily if it is
+// reassigned while another goroutine reads it. "One canonical judgement" has to
+// mean one nobody can replace.
+func UsableAsMapKey(store KVStore) bool {
+	return kvstore.UsableAsMapKey(store)
+}
+
 // ErrKVIndexUnsupported is returned by a store that cannot maintain or serve
 // secondary indexes, from RegisterEntityIndexes and from every index query
 // method. Test it with errors.Is.
