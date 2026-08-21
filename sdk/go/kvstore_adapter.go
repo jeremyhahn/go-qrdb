@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -73,8 +74,24 @@ func (a *kvStoreAdapter) Put(ctx context.Context, key string, value []byte) erro
 
 // Get retrieves a value by key from the transport's KVClient.
 // Returns nil, nil when the key does not exist.
+//
+// The translation is the point of this method rather than an aside. The two
+// sides spell absence differently — kvstore.KVStore documents (nil, nil), the
+// transports return *transport.KeyNotFoundError — and this adapter is the seam
+// between them, so it is where the difference has to be resolved. Delegating
+// verbatim, as it did, let a transport error escape through an interface whose
+// contract says absence is not an error at all, and left every caller to
+// recognise a transport type it should never have had to see (go-qrdb#58).
 func (a *kvStoreAdapter) Get(ctx context.Context, key string) ([]byte, error) {
-	return a.kv.Get(ctx, key)
+	value, err := a.kv.Get(ctx, key)
+	if err != nil {
+		var notFound *transport.KeyNotFoundError
+		if errors.As(err, &notFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return value, nil
 }
 
 // Delete removes a key by delegating to the transport's KVClient.

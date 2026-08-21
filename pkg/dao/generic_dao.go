@@ -307,7 +307,22 @@ func (d *genericDAO[E]) beginTx(_ context.Context) (DAOTransaction[E], error) {
 	return newDAOTransaction(txDAO), nil
 }
 
-// Get retrieves an entity by ID.
+// Get retrieves an entity by ID, reporting a missing entity as NotFoundError.
+//
+// Absence has TWO spellings here, and reading only the error missed the one the
+// interface actually documents. kvstore.KVStore.Get answers "(nil, nil) when key
+// does not exist", so a miss arrives as no error and no bytes — which used to
+// fall through to the codec and surface as DeserializationFailedError, making
+// every ordinary absence look like data corruption (go-qrdb#58).
+//
+// Absence is a NIL slice, not a zero-length one, and the difference is load
+// bearing. MemoryKVStore returns `make([]byte, 0)` for a stored empty value —
+// non-nil, length zero — and nil only for a key it does not hold, so the two
+// ARE distinguishable and testing len() would conflate them. A stored empty
+// record is damage, not absence: it reaches the codec and fails there. That is
+// the distinction that has to survive, because an absence reported as
+// corruption merely cries wolf, while corruption reported as absence lets a
+// caller conclude the record must be created and overwrite what was there.
 func (d *genericDAO[E]) Get(ctx context.Context, id uint64) (E, error) {
 	var zero E
 
@@ -322,6 +337,9 @@ func (d *genericDAO[E]) Get(ctx context.Context, id uint64) (E, error) {
 			return zero, NotFoundError{EntityType: d.entityType, ID: id}
 		}
 		return zero, err
+	}
+	if data == nil {
+		return zero, NotFoundError{EntityType: d.entityType, ID: id}
 	}
 
 	entity := d.newEntity()
