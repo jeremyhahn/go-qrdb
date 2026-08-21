@@ -1179,6 +1179,31 @@ check-tag-lockstep:
 test-tag-lockstep:
 	@./scripts/check-tag-lockstep_test.sh
 
+# release-versioning.md §2: VERSION, the newest CHANGELOG release heading and
+# the git tag are three statements of one fact, and until now nothing compared
+# them. The drift is not hypothetical — VERSION sat on 0.5.7-alpha through both
+# the v0.5.8-alpha and v0.5.9-alpha tags while their notes stayed under
+# [Unreleased] (go-qrdb#25).
+#
+# RELEASE_TAG is optional and only meaningful when publishing. Without it the
+# tag half is skipped, loudly:
+#
+#     make check-version-reconciled
+#     make check-version-reconciled RELEASE_TAG=v0.11.0-alpha
+#
+# Run both hygiene checks before publishing a release:
+#
+#     make check-tag-lockstep check-version-reconciled RELEASE_TAG=vX.Y.Z
+RELEASE_TAG ?=
+
+.PHONY: check-version-reconciled
+check-version-reconciled:
+	@./scripts/check-version-reconciled.sh . $(RELEASE_TAG)
+
+.PHONY: test-version-reconciled
+test-version-reconciled:
+	@./scripts/check-version-reconciled_test.sh
+
 # ============================================================================
 # Security scanning
 # ============================================================================

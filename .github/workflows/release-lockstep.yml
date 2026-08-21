@@ -69,3 +69,23 @@ jobs:
 
       - name: Audit published tags
         run: make check-tag-lockstep
+
+      # go-qrdb#25: VERSION, the newest CHANGELOG release heading and the tag
+      # are three statements of one fact and nothing compared them, which is how
+      # VERSION stayed on 0.5.7-alpha through two published releases whose notes
+      # never left [Unreleased].
+      #
+      # Fixtures first, for the same reason as above: this repository's own
+      # VERSION and CHANGELOG are reconciled, so the audit below exercises only
+      # the accepting branch and a broken check would pass it by never failing.
+      - name: Version reconciliation fixtures
+        run: make test-version-reconciled
+
+      # RELEASE_TAG is set only on the tag leg. On the main and pull_request
+      # legs it is empty and the tag half announces that it skipped — the
+      # VERSION-vs-CHANGELOG half still runs on every push, which is the half
+      # that catches a release whose notes were never written.
+      - name: Reconcile VERSION, CHANGELOG and tag
+        run: make check-version-reconciled RELEASE_TAG="${RELEASE_TAG}"
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
