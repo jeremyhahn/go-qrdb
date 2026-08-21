@@ -40,6 +40,12 @@ func (f *failingInnerKV) Put(_ context.Context, _ string, _ []byte) error { retu
 func (f *failingInnerKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
 	return false, f.err
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (f *failingInnerKV) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (f *failingInnerKV) Get(_ context.Context, _ string) ([]byte, error) {
 	return nil, f.err
 }

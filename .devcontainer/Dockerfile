@@ -66,11 +66,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CI and protobuf tooling.
-RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && \
-    go install github.com/securego/gosec/v2/cmd/gosec@latest && \
-    go install golang.org/x/vuln/cmd/govulncheck@latest && \
-    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+#
+# RETRIED (2026-08-20): same sum.golang.org flake class as the CI jobs' tool
+# installs. This image build is a THIRD site for it, and the one that hurts
+# most: `make integration-image` failing here fails the whole Integration job
+# before a single test runs. Full sumdb verification is kept — GOSUMDB=off
+# would trade a flake for a supply-chain hole. Bounded retry is inert on a
+# healthy network: it only fires on failure, and a local build gets the same
+# three attempts a runner does. Durable fix: bake these into the base image.
+RUN for i in 1 2 3; do \
+        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && \
+        go install github.com/securego/gosec/v2/cmd/gosec@latest && \
+        go install golang.org/x/vuln/cmd/govulncheck@latest && \
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+        go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
+        exit 0; \
+        echo "tool install attempt $i failed; retrying"; sleep 10; \
+    done; \
+    echo "tool install failed after 3 attempts"; exit 1
 
 WORKDIR /workspace/go-qrdb
 

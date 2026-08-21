@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
@@ -34,11 +35,11 @@ type LegacyStorage interface {
 type StorageAdapter struct {
 	inner LegacyStorage
 
-	// putIfAbsentMu serializes the Exists+Set performed by PutIfAbsent so the
+	// writeMu serializes the Exists+Set performed by PutIfAbsent so the
 	// check-then-write is atomic. LegacyStorage implementations are
 	// single-process local engines, so this mutex is the genuine atomicity
 	// mechanism — there is no other process to race with.
-	putIfAbsentMu sync.Mutex
+	writeMu sync.Mutex
 }
 
 // Compile-time interface check.
@@ -56,6 +57,13 @@ func (a *StorageAdapter) Get(_ context.Context, key string) ([]byte, error) {
 
 // Put stores the value under the given key.
 func (a *StorageAdapter) Put(_ context.Context, key string, data []byte) error {
+	// Takes writeMu so it cannot land BETWEEN a guarded operation's read and
+	// its write. Without this the guards are advisory: PutIfAbsent could
+	// overwrite a value written after its Exists check, and CompareAndDelete
+	// could delete a replacement it never compared against — a false
+	// atomicity guarantee handed to every StorageBarrier over this adapter.
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	return a.inner.Set([]byte(key), data)
 }
 
@@ -64,8 +72,8 @@ func (a *StorageAdapter) Put(_ context.Context, key string, data []byte) error {
 // putIfAbsentMu, which provides genuine atomicity for the single-process
 // legacy engines this adapter wraps.
 func (a *StorageAdapter) PutIfAbsent(_ context.Context, key string, data []byte) (bool, error) {
-	a.putIfAbsentMu.Lock()
-	defer a.putIfAbsentMu.Unlock()
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 
 	exists, err := a.inner.Exists([]byte(key))
 	if err != nil {
@@ -80,8 +88,29 @@ func (a *StorageAdapter) PutIfAbsent(_ context.Context, key string, data []byte)
 	return true, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, under the same mutex that makes PutIfAbsent indivisible.
+func (a *StorageAdapter) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	current, err := a.inner.Get([]byte(key))
+	if err != nil {
+		return false, err
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	if err := a.inner.Delete([]byte(key)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete removes the key from storage.
 func (a *StorageAdapter) Delete(_ context.Context, key string) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	return a.inner.Delete([]byte(key))
 }
 

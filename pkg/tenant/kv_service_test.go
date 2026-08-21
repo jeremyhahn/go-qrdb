@@ -15,6 +15,7 @@
 package tenant
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -45,6 +46,37 @@ func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
 	copy(cp, value)
 	m.data[key] = cp
 	return nil
+}
+
+// PutIfAbsent stores only when the key is absent. The identity index REFUSES
+// a store without it (ErrIdentityStoreNotAtomic), because a claim that reads
+// and then writes is not a claim — so a fake lacking it would model a store
+// this code deliberately rejects rather than the ones it runs against.
+func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	if _, exists := m.data[key]; exists {
+		return false, nil
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	m.data[key] = cp
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	current, ok := m.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.data, key)
+	return true, nil
 }
 
 func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {

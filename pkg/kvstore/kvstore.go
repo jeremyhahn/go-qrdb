@@ -20,6 +20,20 @@ package kvstore
 
 import "context"
 
+// ReservedPrefixSystem is the key prefix reserved for qrdb's own internal
+// system stores — users, roles, permission scopes and the other RBAC records.
+//
+// It lives here, at the layer every store shares, because two things need it
+// and neither can import the other: pkg/service enforces the reserved-prefix
+// discovery guard over it, and pkg/tenant refuses a tenant id that begins
+// with it. pkg/service re-exports it as InternalKeyPrefixSystem so its
+// existing callers are unchanged.
+//
+// It is NOT an exemption from tenant namespacing. A namespaced store confines
+// reserved keys exactly like any other; the prefix marks records as owned by
+// an internal subsystem, not as globally addressable.
+const ReservedPrefixSystem = "__sys:"
+
 // EntityIndex defines an index to be created for an entity type's field.
 // For single-field indexes, FieldName and JSONFieldName are used.
 // For compound indexes, FieldNames and JSONFieldNames are used instead.
@@ -39,6 +53,17 @@ type EntityIndex struct {
 	// entity type is also the "{entityType}/" key prefix a store filters
 	// writes by, and those two must not be conflated.
 	IndexName string
+
+	// KeyPrefix is the key prefix this index covers. When empty a store
+	// assumes "{entityType}/", which is correct only while the entity type is
+	// the LEADING segment of every key.
+	//
+	// A namespaced store breaks that assumption: its keys are
+	// "{tenant}/{entityType}/{id}", so a store inferring "{entityType}/"
+	// matches nothing and silently indexes no rows. Stating the prefix
+	// explicitly is what lets an index be maintained over keys the store did
+	// not choose the layout of.
+	KeyPrefix string
 
 	// FieldName is the Go struct field name (used as the index name component).
 	// Used for single-field indexes. Ignored when FieldNames is non-empty.
@@ -69,6 +94,15 @@ type EntityIndex struct {
 // IsCompound reports whether the index covers multiple fields.
 func (ei EntityIndex) IsCompound() bool {
 	return len(ei.FieldNames) > 1
+}
+
+// ResolvedPrefix returns the key prefix this index covers: KeyPrefix when the
+// caller supplied one, otherwise "{entityType}/".
+func (ei EntityIndex) ResolvedPrefix(entityType string) string {
+	if ei.KeyPrefix != "" {
+		return ei.KeyPrefix
+	}
+	return entityType + "/"
 }
 
 // ResolvedName returns the name this index must be created and queried under:
@@ -205,4 +239,25 @@ type AtomicKVStore interface {
 	// the check-then-write internally, and a replicated store must use its
 	// native compare-and-set so the guarantee holds across nodes.
 	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+
+	// CompareAndDelete atomically removes key only when its stored value
+	// still equals expected. It reports deleted=true when this call removed
+	// the key, and deleted=false with a nil error when the key was absent or
+	// held a different value — in which case the store is unchanged. A
+	// non-nil error means the outcome is unknown and the caller must not
+	// assume either way.
+	//
+	// It is the release half of PutIfAbsent, and exists because a guarded
+	// create paired with an UNGUARDED delete is half a primitive. Read the
+	// value, compare it, then delete, and two releasers both observe the same
+	// holder: the first deletes, a third party legitimately takes the
+	// now-absent key with PutIfAbsent, and the second delete removes THEIR
+	// value (go-qrdb#41). No amount of re-reading closes that window, because
+	// the window is between the read and the delete.
+	//
+	// Atomicity is per consistency domain, exactly as for PutIfAbsent: a
+	// single-process store serialises the compare-then-delete internally, and
+	// a replicated store must evaluate it inside its state machine so every
+	// replica decides identically from the same log position.
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
 }

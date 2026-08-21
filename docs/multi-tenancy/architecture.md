@@ -123,6 +123,123 @@ field. The database is selected separately by `X-QRDB-Database` (or its
 per-transport equivalent). Keyspace and vector namespaces are tenant-partitioned
 on top of that. Detail: [scoping.md](../scoping.md).
 
+### The resolver-served store is confined by construction
+
+`tenant.StoreResolver.Resolve` returns the `kvstore.KVStore` backing a tenant's
+resolver-served records (IAM, invitations, permission scopes — and any
+`dao.GenericDAO` a consumer builds). For a shared-prefix tenant it returns the
+system store **confined to `{tenant}/`** — the tenant alone.
+
+The confinement is a property of the store, not of the caller. That distinction
+is the whole point: a `dao.GenericDAO` keys entities `{entityType}/{id}` and has
+no tenant concept at all, so a resolver that returned the bare shared store gave
+every prefix tenant one undifferentiated keyspace — which is precisely what
+happened up to v0.8.0-alpha (#41). The IAM stores were unaffected only because
+they embed tenant segments in their own keys by hand; every DAO consumer was
+exposed, and `data-access.md` makes DAO/Entity the required default.
+
+**Identity is tenant-wide; data is per-(tenant, database).** That split is why
+this plane namespaces at `{tenant}/` and not at `ComposeNamespace`'s
+`{tenant}/{db}/`. The resolver-served store holds users, roles, permission
+scopes and invitations, and a user must authenticate whichever database a
+request names. Namespacing it per database was measured to break login
+outright: firstboot writes the admin user with no database bound to its
+context, so it landed under `{tenant}/system/` while every request carrying a
+database resolved elsewhere and found nothing. Single-database unit tests
+cannot see that; the integration stack, which authenticates for real, fails
+every suite.
+
+### A global id needs a global answer to "which store?"
+
+Identity ids are global: a user id is a Snowflake, a role id a UUID, both
+unique across the whole deployment. Identity STORAGE is not — it is confined
+per tenant, by the section above. Every transport exposes operations that name
+a record by id alone (`users delete <id>`, `roles assign --role <id>`), and
+those operations cannot assume the caller's tenant is the record's tenant.
+
+Before the keyspaces were confined they could, by accident: every prefix
+tenant shared one keyspace, so the two were the same store. Confinement ended
+the accident, and `tenant.IdentityIndex` replaces it with a deliberate lookup —
+a system-plane `id -> tenant` map in the system tenant's identity namespace, at
+`__sys:identity_idx/tenant/{kind}/{id}`.
+
+Three properties make it safe to put a cross-tenant map in the shared store:
+
+- **It carries the id and the tenant, nothing else.** The entry lives outside
+  every tenant barrier by necessity, so it may leak existence and placement and
+  must leak nothing more — no username, no role name, no permissions. Those
+  stay inside the tenant's store, behind the tenant's barrier.
+- **The record's own store still decides.** The index answers a routing
+  question only. `tenant.OwningTenant` reconciles the answer with the caller
+  through `EffectiveTenant`, exactly as `CreateUser` and `ListUsers` reconcile
+  a client-supplied tenant, and a sealed owning barrier still refuses with
+  `ErrTenantSealed` rather than falling back to a readable store.
+- **It never widens reach, and never answers a caller who may not reach the
+  record.** An unindexed id routes to the caller's own tenant, which is exactly
+  where it routed before the index existed. A caller in another tenant is also
+  routed to its own tenant and gets an ordinary not-found — returning a
+  cross-tenant denial there would confirm, to a caller who supplied only an id,
+  both that the record exists and which tenant holds it.
+
+The entry is a CLAIM, taken atomically and settled before the record is
+written. Role ids are caller-supplied — `CreateRoleRequest.ID` travels from
+the REST and gRPC surfaces straight into the store — so a last-writer-wins
+entry would let one tenant create a role carrying another tenant's role id and
+take over where that id routes. A contested id is refused
+(`RoleIDExistsError`, naming the caller's own tenant), a claim is released
+only by its holder, and a refused capture leaves nothing behind.
+
+"Atomically" is a requirement, not a preference: a store that cannot settle
+the claim in one operation is refused outright, because a read-then-write
+claim lets two proposers both observe "absent" and both win. Every state
+machine implements the conditional write it needs. A claim also succeeds only
+for the call that created it — even the holder's own re-claim is refused,
+since a create proceeding on a claim it did not win can have that claim
+released by a concurrent delete, leaving a record no by-id operation can
+reach.
+
+The entry is written and removed by the same functions that write and remove
+the record, next to the tenant and username/name indexes. A map maintained by a
+sibling caller drifts from what it describes the first time another path writes
+a record, and that is how every occurrence of this class in this repository
+began.
+
+`role.ResolvePermissions` is the one by-id method that stays context-routed. It
+resolves the CALLER's own bindings during authorization, so a binding naming
+another tenant's role must not import that role's permissions: the index is a
+routing aid, not a way to widen a grant.
+
+**There is no exempt prefix.** Every key a resolver-served store handles is
+confined, the reserved `__sys:` keyspace included. That is deliberate: an
+exemption keyed on a string prefix would be a SECOND tenancy mechanism
+alongside the namespace, and two mechanisms drift. Concretely, an earlier draft
+that exempted `__sys:` opened three escapes — a tenant id of `__sys:` produced
+the namespace `__sys:/system/` so ordinary DAO keys landed reserved; a DAO
+whose entity type began with `__sys:` wrote global records; and
+`pkg/permission`, which keys `__sys:perm_scope/{permission}` with **no** tenant
+segment of its own, had one tenant's permission scopes apply to every tenant.
+Confinement closes all three by construction rather than by rule.
+
+The IAM stores additionally embed tenant segments in their own keys
+(`__sys:users/tenant/{tenantID}/…`). That is now redundant with the namespace —
+the same duplicate-encoding class as two scoping functions — and is a
+follow-on cleanup, not a correctness issue: the namespace is what enforces
+isolation, the embedded segment merely repeats it.
+
+**Consequence for indexes, and it is a real trade.** `KVEngine` decides which
+indexes a write maintains from `entityTypeFromKey`, which returns the FIRST path
+segment — so under a namespaced key `acme/system/workitem/1` the engine reads the
+entity type as `acme`. A namespace-qualified index therefore cannot be maintained
+by the engine, and the store refuses index operations with
+`kvstore.ErrIndexUnsupported` rather than serving an index nobody updates.
+`pkg/dao` detects the refusal and plans a full scan, so **results stay correct
+and only the access path is slower**. Isolation was chosen over the index; #40
+restores the index by teaching the engine about namespaced keys.
+
+Note the same "entity type is the leading key segment" assumption existed in
+`kvstore.MemoryKVStore` and is why `EntityIndex.KeyPrefix` exists: a store must
+be told which keys an index covers rather than inferring it from the entity type.
+
 ## Per-node-independent key design
 
 For `raft` tenants replicated across nodes, the tenant root key is transported

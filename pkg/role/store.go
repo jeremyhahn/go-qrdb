@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strconv"
 	"time"
@@ -56,10 +57,18 @@ var _ RoleServicer = (*kvRoleStore)(nil)
 //	__sys:roles/id/{roleID}                      -> Role JSON (primary)
 //	__sys:roles/tenant/{tenantID}/{roleID}       -> roleID (as bytes)
 //	__sys:role_idx/name/{tenantID}/{roleName}    -> roleID (as bytes)
+//
+// One index does NOT live here: the system-plane identity index that maps a
+// role id to the tenant holding it. That entry is cross-tenant by nature and
+// belongs in the system tenant's identity namespace, so it is written
+// through an injected tenant.IdentityIndex (see WithIdentityIndex) rather
+// than into this store — a tenant's own store must not be able to write
+// outside its tenant.
 type kvRoleStore struct {
 	store        kvstore.KVStore
-	quotaChecker quota.Checker     // optional; nil skips quota enforcement
-	audit        audit.AuditLogger // optional; nil disables audit emission
+	quotaChecker quota.Checker        // optional; nil skips quota enforcement
+	audit        audit.AuditLogger    // optional; nil disables audit emission
+	identity     tenant.IdentityIndex // optional; nil skips identity-index maintenance
 }
 
 // NewStore creates a new KVStore-backed RoleServicer. The provided
@@ -87,7 +96,7 @@ func (s *kvRoleStore) WithQuotaChecker(checker quota.Checker) *kvRoleStore {
 // request, checks name uniqueness within the tenant via the secondary
 // index, validates all permissions, and atomically writes the primary
 // record plus both indexes.
-func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (*Role, error) {
+func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (created *Role, retErr error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
 	}
@@ -139,27 +148,81 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (*
 		r.Permissions = []permission.Permission{}
 	}
 
+	// CreateRoleRequest.ID is CALLER-SUPPLIED — the REST and gRPC surfaces
+	// pass it straight through — so a duplicate id must be refused rather
+	// than silently overwriting the record it collides with. This mirrors the
+	// name-uniqueness check above; it is the id's equivalent.
+	if req.ID != "" {
+		clash, cerr := s.store.Get(ctx, primaryKey(r.ID))
+		if cerr != nil {
+			return nil, &StoreError{Op: "create", Detail: "id lookup", Err: cerr}
+		}
+		if clash != nil {
+			return nil, &RoleIDExistsError{ID: r.ID, TenantID: tenantID}
+		}
+	}
+
+	// CLAIM the id across ALL tenants before anything is written. The
+	// per-tenant check above cannot see another tenant's store, and the
+	// identity index is global: without a claim, a tenant could create a role
+	// carrying ANOTHER tenant's role id, take over that id's index entry, and
+	// silently redirect every by-id operation an administrator performs on it.
+	// A conflict is reported as RoleIDExistsError naming the CALLER's tenant,
+	// so the refusal does not disclose where the id already lives.
+	claimToken, cerr := s.recordIdentity(ctx, r.ID, tenantID)
+	if cerr != nil {
+		var conflict *tenant.IdentityClaimConflictError
+		if errors.As(cerr, &conflict) {
+			return nil, &RoleIDExistsError{ID: r.ID, TenantID: tenantID}
+		}
+		return nil, &StoreError{Op: "create", Detail: "claim identity", Err: cerr}
+	}
+
+	// EVERY failure after the claim releases it. Role ids are caller-supplied
+	// names, not generated ones, so a transient write error that left the
+	// claim behind would permanently burn an id the caller chose and cannot
+	// recover: the record does not exist, so DeleteRole cannot reach it to
+	// release the claim either.
+	//
+	// This is a deferred compensation on the named return rather than a
+	// release at each write, so a write added later is covered by
+	// construction. Hand-placed compensations are the sibling-maintainer
+	// shape that produced this whole class of defect.
+	// written records the keys this call actually put, in the order the
+	// rollback must undo them: secondary indexes first, the primary last.
+	var written []string
+	defer func() {
+		if retErr != nil {
+			s.rollbackFailedCreate(ctx, written, r.ID, tenantID, claimToken)
+		}
+	}()
+
 	data, err := json.Marshal(r)
 	if err != nil {
 		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
 	}
 
-	// Write primary record.
+	// Write primary record. It is recorded LAST in `written` so the rollback
+	// removes it last, keeping the record findable while its indexes are
+	// cleaned up.
 	pk := primaryKey(r.ID)
 	if err := s.store.Put(ctx, pk, data); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put primary", Err: err}
 	}
+	written = append([]string{pk}, written...)
 
 	// Write tenant index.
 	tk := tenantIndexKey(tenantID, r.ID)
 	if err := s.store.Put(ctx, tk, []byte(r.ID)); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put tenant index", Err: err}
 	}
+	written = append([]string{tk}, written...)
 
 	// Write name index.
 	if err := s.store.Put(ctx, nameKey, []byte(r.ID)); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put name index", Err: err}
 	}
+	written = append([]string{nameKey}, written...)
 
 	s.emitAudit(ctx, "create", "role:"+r.ID, map[string]any{
 		"name":        r.Name,
@@ -309,10 +372,22 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 		return &SystemRoleImmutableError{ID: id}
 	}
 
-	// Delete primary record.
-	if err := s.store.Delete(ctx, primaryKey(id)); err != nil {
-		return &StoreError{Op: "delete", Detail: "primary", Err: err}
-	}
+	// ORDER IS LOAD-BEARING. The primary record is removed LAST of the
+	// store's writes and the identity claim after it, because that is what
+	// makes an interrupted delete recoverable by a plain retry:
+	//
+	//   - a failure before the primary delete leaves the record present, so
+	//     GetRole still finds it and the retry re-runs the index deletes,
+	//     which are idempotent;
+	//   - a failure after it leaves ONLY the claim, and "record absent" then
+	//     means every index entry is already gone — which is what lets
+	//     tenant.ReconcileDeletedIdentity finish the job instead of reporting
+	//     success over leaked index entries.
+	//
+	// Releasing the claim FIRST would be simpler and is wrong: between the
+	// release and the record delete the id is claimable, and another tenant
+	// taking it would leave this tenant's retry refused by the holder guard
+	// with its record still present — listed, undeletable, unroutable by id.
 
 	// Delete tenant index.
 	if err := s.store.Delete(ctx, tenantIndexKey(existing.TenantID, id)); err != nil {
@@ -322,6 +397,18 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 	// Delete name index.
 	if err := s.store.Delete(ctx, nameIndexKey(existing.TenantID, existing.Name)); err != nil {
 		return &StoreError{Op: "delete", Detail: "name index", Err: err}
+	}
+
+	// Delete the primary record LAST: it is what a retry keys on.
+	if err := s.store.Delete(ctx, primaryKey(id)); err != nil {
+		return &StoreError{Op: "delete", Detail: "primary", Err: err}
+	}
+
+	// Release the claim, so a stale one cannot keep routing the id to a
+	// tenant that no longer holds it. If this fails the retry path completes
+	// it (routingRoleService.DeleteRole).
+	if err := s.forgetIdentity(ctx, id, existing.TenantID); err != nil {
+		return &StoreError{Op: "delete", Detail: "identity index", Err: err}
 	}
 
 	s.emitAudit(ctx, "delete", "role:"+id, map[string]any{

@@ -9,6 +9,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -838,6 +839,61 @@ func (b *StorageBarrier) PutIfAbsent(ctx context.Context, key string, value []by
 	return b.base.PutIfAbsent(ctx, key, encrypted)
 }
 
+// guardedDeleteBackend is the release half of the storage-backend contract:
+// a delete conditioned on the value the caller last observed.
+//
+// It is ASSERTED rather than required because seal.StorageBackend is a type
+// alias for go-quicraft's interface, which carries PutIfAbsent but not its
+// guarded delete. This module cannot add a method to an upstream interface,
+// so the capability is discovered and a backend genuinely lacking it refuses
+// with ErrGuardedDeleteUnsupported rather than degrading to a read followed
+// by an unguarded delete — which is precisely the window the operation
+// exists to close (go-qrdb#41). Every backend in this repository implements
+// it; the assertion exists for the upstream gap, not for a local one.
+type guardedDeleteBackend interface {
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
+}
+
+// ErrGuardedDeleteUnsupported is returned when a storage backend offers no
+// guarded delete. There is no safe fallback: a read followed by an
+// unguarded delete can remove a value another caller legitimately wrote in
+// between.
+var ErrGuardedDeleteUnsupported = errors.New("seal: storage backend has no guarded delete")
+
+// CompareAndDelete removes key only when the value stored there still
+// decrypts to expected.
+//
+// It guards on the CIPHERTEXT this call read rather than a fresh encryption
+// of expected: encryption is randomised, so encrypting the same plaintext
+// twice yields different bytes and such a guard would refuse every time.
+// Reading the stored ciphertext, decrypting to compare in plaintext, and
+// guarding the delete on those exact bytes keeps the guarantee — any write
+// landing in between replaces them, so the guard still refuses.
+func (b *StorageBarrier) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if b.state.Load() != stateUnsealed {
+		return false, ErrSealed
+	}
+	stored, err := b.base.Get(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil {
+		return false, nil
+	}
+	plaintext, derr := b.barrier.Decrypt(nil, stored)
+	if derr != nil {
+		return false, &GetError{Key: key, Err: derr}
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	guarded, ok := b.base.(guardedDeleteBackend)
+	if !ok {
+		return false, ErrGuardedDeleteUnsupported
+	}
+	return guarded.CompareAndDelete(ctx, key, stored)
+}
+
 // Delete removes the key from storage.
 func (b *StorageBarrier) Delete(ctx context.Context, key string) error {
 	if b.IsSealed() {
@@ -995,6 +1051,19 @@ func (m *MemoryBackend) PutIfAbsent(_ context.Context, key string, data []byte) 
 	stored := make([]byte, len(data))
 	copy(stored, data)
 	m.data[key] = stored
+	return true, nil
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected, under the same lock that makes PutIfAbsent indivisible.
+func (m *MemoryBackend) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.data, key)
 	return true, nil
 }
 

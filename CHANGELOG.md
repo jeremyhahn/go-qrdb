@@ -11,6 +11,190 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed — SECURITY
+
+- **`StoreResolver` no longer hands every shared-prefix tenant the same
+  unconfined store** (#41). It returned `r.shared` itself for the system
+  tenant, every `IsolationPrefix` tenant and every unknown tenant, with no
+  keyspace prefix applied. A `dao.GenericDAO` keys entities as
+  `{entityType}/{id}` and has no tenant concept, so two prefix tenants' DAOs
+  occupied one undifferentiated keyspace: measured on a two-tenant node, one
+  tenant's `Count()` returned another's rows and one tenant's `QueryByIndex`
+  returned another's rows.
+
+  The data-level exposure pre-dates v0.8.0-alpha; the index-level exposure
+  became reachable in v0.8.0-alpha, which made those index paths real.
+
+  `Resolve` now returns a store confined to `{tenant}/` — the tenant alone.
+  This store serves IDENTITY (users, roles, permission scopes, invitations),
+  and identity belongs to a tenant rather than to one of its databases: a user
+  must authenticate whichever database a request names. Namespacing it per
+  database was measured to break login outright, because firstboot writes the
+  admin user with no database bound to its context.
+
+  `tenant.ComposeNamespace` remains the DATA plane's `{tenant}/{database}/`
+  formula, applied by the transports and the SQL provider; that scoping is
+  unaffected.
+
+  Either way the isolation is a property of the store rather than of every
+  caller remembering to prefix.
+
+  Concrete consequence: `invite.TenantStore` documented that "a redemption
+  attempted against the wrong tenant resolves to a different store and returns
+  ErrNotFound". That was true for barrier tenants and **false for prefix
+  tenants**, whose invitations shared one keyspace — and `Entity.TenantID` was
+  written but never compared, so nothing else caught it. An invitation issued
+  for prefix tenant A was redeemable through tenant B. The fix is what makes
+  the documented guarantee true; the doc comment now records the correction.
+
+### Changed — BREAKING (key layout)
+
+- **Every record a shared-prefix tenant reaches through `StoreResolver` moves
+  under `{tenant}/`.** This includes the reserved `__sys:` keyspace —
+  users, roles, permission scopes — and DAO-keyed entities alike. There is one
+  tenancy mechanism, the namespace, and no prefix exempt from it.
+
+  **Pre-release policy** (`release-versioning.md` §1): backward compatibility,
+  migrations and upgrade paths are non-goals before public release. The key
+  layout changed clean. **Wipe and re-bootstrap dev deployments** — that is the
+  upgrade path. Nothing is "orphaned"; the old layout simply ceases to exist.
+
+### Fixed — regression introduced by the isolation above
+
+- **Every IAM operation that names a record by its globally unique ID now
+  reaches the tenant that HOLDS it** (#41). Confining each tenant's keyspace
+  broke `users delete <id>`, `users get/enable/disable <id>`,
+  `roles delete <id>` and `roles assign --role <id>` for any record created
+  with `--tenant-id`: the by-id methods routed on the CALLER's tenant, and the
+  admin's tenant is `system`, so the record was looked up in a store it does
+  not live in. Measured on the integration stack: five CLI suites failing
+  identically across all five transports with `user: not found` /
+  `role: not found`.
+
+  They worked before only by accident — every prefix tenant shared one
+  keyspace, so "the caller's store" and "the record's store" were the same
+  store. That accident is exactly what #41 removes, so the by-id route is now
+  made explicit.
+
+  `tenant.IdentityIndex` is a system-plane id → tenant map living in the
+  system tenant's identity namespace — `tenant.IdentityNamespace`, the same
+  single formula, at `__sys:identity_idx/tenant/{kind}/{id}`. An entry carries
+  the id and the tenant and **nothing else**: it necessarily sits outside a
+  barrier tenant's encryption, so it may leak existence and placement, never
+  a username, role name or permission. It is written and removed by the same
+  functions that write and remove the record — `CreateUser`/`DeleteUser`,
+  `CreateRole`/`DeleteRole` — alongside their other index writes, because a
+  mapping kept in step by a sibling caller is how every instance of this class
+  began.
+
+  The entry is a CLAIM, not a write. `CreateRoleRequest.ID` is
+  caller-supplied — it travels from the REST and gRPC surfaces straight into
+  the store — so a last-writer-wins map would let one tenant create a role
+  carrying ANOTHER tenant's role id, take over that id's entry, and silently
+  redirect every by-id operation an administrator performs on it. `Record`
+  now refuses an id ANY tenant already holds — the claimant's own tenant
+  included, because a create proceeding on a claim it did not win can have
+  that claim released out from under it by a concurrent same-tenant delete,
+  leaving a record with no entry and no way to reach it by id. A claim also
+  requires a store that can settle it in one operation
+  (`kvstore.AtomicKVStore`); there is no read-then-write mode, because two
+  proposers would both observe "absent" and both win. `Record`
+  refuses a held id with `*tenant.IdentityClaimConflictError` (
+  surfaced to callers as `*role.RoleIDExistsError` → 409 / `AlreadyExists`,
+  naming the CALLER's tenant so the refusal does not disclose where the id
+  lives), `Forget` releases only a claim the named tenant holds, and the claim
+  is settled BEFORE the record is written so a refused capture leaves nothing
+  behind. `CreateRole` additionally refuses a duplicate id within the tenant,
+  closing a pre-existing silent overwrite.
+
+  `tenant.OwningTenant` is the one read-path rule both routers share: an
+  unindexed id routes to the caller's own tenant (reach never widens); an
+  indexed id routes to its owner when the caller may reach it; and a caller
+  who may NOT reach it is routed to its own tenant, where the id is genuinely
+  absent — a `CrossTenantDeniedError` there would confirm to a caller who
+  supplied only an id both that the record exists and where it lives. A sealed
+  owning barrier surfaces `tenant.ErrTenantSealed`; there is no fallback read.
+
+  No CLI or API surface changes. `role.ResolvePermissions` is deliberately NOT
+  index-routed: it resolves the caller's own bindings during authorization, and
+  routing it globally would let a binding naming another tenant's role import
+  that role's permissions.
+
+- **`pkg/engine.KVEngine` applies `kv.OpPutIfAbsent`.** The opcode already
+  existed in the command format, `kvstore.AtomicKVStore` advertised it, and
+  `service.KVService.PutIfAbsent` proposed it — but of the three state
+  machines only `PebbleStateMachine` (the `qrdbd --sm pebble` default) and
+  `MVCCEngine` had a handler. On `--sm memory`, `--sm concurrent` and every
+  `pkg/server/lifecycle` embedding, a conditional write failed the **entire
+  proposal** with `engine: unsupported operation: 0x04`. The handler mirrors
+  its two siblings exactly: the existence check runs inside the apply path so
+  every replica decides identically, a declined write is reported through
+  `Result.Value` (`kv.ResultNotStored`) rather than as an error that would
+  stall consensus, secondary and compound indexes are maintained on the stored
+  path, and the watch notification carries no `PrevKV` because the guard
+  established the key was absent. All three implementations are now pinned by
+  the same contract, including "of N conditional puts to the same key, exactly
+  one stores, under every apply grouping".
+
+- **`kvstore.AtomicKVStore` gains `CompareAndDelete`, and every state machine
+  implements it** (#41). `PutIfAbsent` guarded the create; the release was a
+  plain delete, and a guarded create paired with an unguarded delete is half a
+  primitive. Two releasers both read holder A, the first deletes, tenant B
+  legitimately claims the now-absent id, and the second delete removes **B's**
+  claim — leaving B holding a record with no routing entry, the state the
+  index exists to prevent, reached through the release path. No amount of
+  re-reading closes it, because the window is between the read and the delete.
+
+  New `protocol.OpCompareAndDelete`, handled by `KVEngine`,
+  `PebbleStateMachine` and `MVCCEngine` alike, with the comparison evaluated
+  inside the apply path so every replica decides identically. A refused delete
+  is reported through `Result.Value`, never as an error that would stall
+  consensus; a failed guard READ refuses rather than deciding, exactly as on
+  the conditional-put path. `tenant.IdentityIndex.Forget` now releases through
+  it.
+
+  Encrypting wrappers (`seal.StorageBarrier`, `seal.atomicTenantSharedKVStore`,
+  `database.BarrierBackend`) guard on the **ciphertext they read**, not on a
+  re-encryption of the expected value: encryption is randomised, so a
+  re-encrypted guard would refuse every time, while the observed ciphertext
+  still refuses whenever anything wrote in between.
+
+  One carrier genuinely cannot: `seal.StorageBackend` is a type alias for
+  go-quicraft's interface, which has `PutIfAbsent` but not its release half.
+  Those two call sites discover the capability and refuse with
+  `seal.ErrGuardedDeleteUnsupported` rather than degrading — every backend in
+  this repository implements it.
+
+### Added
+
+- `tenant.IdentityIndex`, `tenant.NewIdentityIndex`,
+  `tenant.NewResolvedIdentityIndex`, `tenant.OwningTenant`,
+  `user.WithIdentityIndex`, `role.WithIdentityIndex`,
+  `tenant.IdentityClaimConflictError`, `role.RoleIDExistsError` — see above.
+  The Option form keeps the index out of single-tenant embeddings, which have
+  nothing to route.
+- `kvstore.NewNamespacedKVStore` — a `KVStore` decorator confining every
+  operation, including index registration and queries, to a key prefix. Only
+  the variant over an atomic inner store implements `AtomicKVStore`, so the
+  capability assertion answers honestly. An empty prefix is an error rather
+  than a pass-through.
+- `kvstore.EntityIndex.KeyPrefix` and `ResolvedPrefix` — the key prefix an
+  index covers. Stores previously assumed `{entityType}/`, which holds only
+  while the entity type is the LEADING key segment; a namespaced store breaks
+  that and would silently index nothing.
+
+### Known limitation
+
+- **Shared-prefix tenants trade engine-backed indexes for isolation — the
+  system tenant included** (#40 restores them). `KVEngine` decides which
+  indexes a write maintains via `entityTypeFromKey`, which returns the FIRST
+  path segment — so a namespaced key `acme/system/workitem/1` reads as entity
+  type `acme`. The adapter refuses the namespace-qualified index name and the
+  store refuses subsequent index queries with `kvstore.ErrIndexUnsupported`.
+  Query RESULTS stay correct: `pkg/dao` detects the refusal and plans a full
+  scan, so only the access path is slower. Teaching the engine about
+  namespaced keys is #40's priority-1 mechanism.
+
 ## [0.9.0-alpha] - 2026-08-20
 
 MINOR rather than PATCH: no qrdb API moves here, but `go-quicraft` advances TWO

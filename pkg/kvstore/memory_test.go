@@ -1126,3 +1126,79 @@ func TestMemoryKVStore_EmptyJSONObjectIsAccepted(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, keyStrings(keys))
 }
+
+// A guarded delete is a DELETE: it must retract index entries exactly as
+// Delete does. Removing only the primary value leaves QueryIndex returning a
+// key that is gone, and leaves a stale UNIQUE entry rejecting a later
+// legitimate insert of the same value. The guard changes WHEN a delete
+// happens, never what a delete means.
+func TestMemoryKVStore_CompareAndDelete_RetractsIndexes(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryKVStore()
+
+	if err := s.RegisterEntityIndexes("person", []EntityIndex{
+		{FieldName: "Email", JSONFieldName: "email"},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+
+	const key = "person/1"
+	record := []byte(`{"email":"a@example.com"}`)
+	if err := s.Put(ctx, key, record); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	ids, err := s.QueryIndex(ctx, "person.Email", []byte("a@example.com"))
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("precondition: QueryIndex = (%v, %v), want one hit", ids, err)
+	}
+
+	// A REFUSED guard changes nothing, index included.
+	deleted, err := s.CompareAndDelete(ctx, key, []byte(`{"email":"other@example.com"}`))
+	if err != nil || deleted {
+		t.Fatalf("refused guard = (%v, %v), want (false, nil)", deleted, err)
+	}
+	if ids, qerr := s.QueryIndex(ctx, "person.Email", []byte("a@example.com")); qerr != nil || len(ids) != 1 {
+		t.Fatalf("index after a refused guard = (%v, %v), want it intact", ids, qerr)
+	}
+
+	// A successful guarded delete retracts the entry.
+	deleted, err = s.CompareAndDelete(ctx, key, record)
+	if err != nil || !deleted {
+		t.Fatalf("CompareAndDelete = (%v, %v), want (true, nil)", deleted, err)
+	}
+	ids, err = s.QueryIndex(ctx, "person.Email", []byte("a@example.com"))
+	if err != nil {
+		t.Fatalf("QueryIndex: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("index still returns %d id(s) for a deleted key — a guarded "+
+			"delete left the index stale", len(ids))
+	}
+}
+
+// A stale UNIQUE index entry is the sharper consequence: it rejects a later,
+// legitimate insert of the same value.
+func TestMemoryKVStore_CompareAndDelete_FreesAUniqueIndexValue(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryKVStore()
+
+	if err := s.RegisterEntityIndexes("person", []EntityIndex{
+		{FieldName: "Email", JSONFieldName: "email", Unique: true},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+
+	record := []byte(`{"email":"a@example.com"}`)
+	if err := s.Put(ctx, "person/1", record); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if deleted, err := s.CompareAndDelete(ctx, "person/1", record); err != nil || !deleted {
+		t.Fatalf("CompareAndDelete = (%v, %v), want (true, nil)", deleted, err)
+	}
+
+	// The value is free again. A stale unique entry would refuse this.
+	if err := s.Put(ctx, "person/2", record); err != nil {
+		t.Fatalf("re-inserting the freed unique value: %v — the guarded delete "+
+			"left a stale unique index entry", err)
+	}
+}

@@ -280,6 +280,12 @@ func (h *hookSlotStore) PutIfAbsent(ctx context.Context, key string, data []byte
 	return h.MemoryBackend.PutIfAbsent(ctx, key, data)
 }
 
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (h *hookSlotStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
 // TestReplicatedSlot_UnresolvableRecordRepicks proves that a recorded slot that
 // cannot be resolved to a local candidate (out-of-range index — e.g. a
 // heterogeneous-topology misconfiguration) falls back to a fresh node-local

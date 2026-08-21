@@ -500,6 +500,7 @@ func mapRoleError(err error) int {
 	var ve *role.ValidationError
 	var rnf *role.RoleNotFoundError
 	var rne *role.RoleNameExistsError
+	var rie *role.RoleIDExistsError
 	var sri *role.SystemRoleImmutableError
 	var se *role.StoreError
 	var ip *role.InvalidPermissionError
@@ -522,6 +523,11 @@ func mapRoleError(err error) int {
 	case errors.As(err, &rnf):
 		return http.StatusNotFound
 	case errors.As(err, &rne):
+		return http.StatusConflict
+	case errors.As(err, &rie):
+		// A caller-supplied role ID that is already in use — including by
+		// another tenant, which the identity-index claim refuses. Same 409 as
+		// a name clash; the error deliberately does not say where it lives.
 		return http.StatusConflict
 	case errors.As(err, &sri):
 		return http.StatusForbidden

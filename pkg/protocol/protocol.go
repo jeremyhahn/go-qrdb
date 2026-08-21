@@ -138,6 +138,19 @@ const (
 	// OpTSSetRetention sets the retention policy for a metric.
 	// Payload: [metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1].
 	OpTSSetRetention byte = 64
+
+	// OpCompareAndDelete removes a key only when its stored value still
+	// equals an expected value, evaluated inside the state machine.
+	//
+	// It is the release half of OpPutIfAbsent / kv.OpPutIfAbsent. A guarded
+	// create paired with an unguarded delete is half a primitive: the delete
+	// can un-decide what the create decided. Concretely, two releases of one
+	// key both read holder A, the first deletes, a third party legitimately
+	// takes the now-absent key, and the second delete removes THEIR value
+	// (go-qrdb#41). Only an in-state-machine comparison closes that, for the
+	// same reason the conditional put's guard must run there: every replica
+	// must decide identically from the same log position.
+	OpCompareAndDelete byte = 66
 )
 
 // Range flags (bit mask for OpMVCCRange).
@@ -218,6 +231,55 @@ func EncodeMVCCPutIfAbsent(key, value []byte, leaseID int64) []byte {
 	binary.LittleEndian.PutUint64(buf[3+len(key):], uint64(leaseID))
 	copy(buf[3+len(key)+8:], value)
 	return buf
+}
+
+// Result values reported by OpCompareAndDelete, mirroring kv.ResultStored /
+// kv.ResultNotStored so the guarded create and the guarded release read the
+// same way at a call site.
+const (
+	// ResultDeleted means this call removed the key.
+	ResultDeleted uint64 = 1
+
+	// ResultNotDeleted means the key was absent or held a different value.
+	// The store is unchanged and this is a normal outcome, not an error.
+	ResultNotDeleted uint64 = 0
+)
+
+// EncodeCompareAndDelete creates a binary conditional-delete command.
+// Format: [op:1][keyLen:2 LE][key][expected] — the remainder after the key is
+// the expected value, so an empty expected value is representable and is
+// distinct from "no expectation" (which this opcode does not offer: an
+// unconditional delete is OpFSMDelete).
+//
+// The key length is VALIDATED rather than cast. A narrow cast is not a
+// truncation the caller notices: a 65,537-byte key writes a length of 1, the
+// decoder reads a one-byte key, and the remaining bytes fold into the
+// expected value — so the state machine compares and deletes a DIFFERENT,
+// shorter key than the caller named. The expected value needs no equivalent
+// check: it is the payload remainder and has no length field of its own.
+func EncodeCompareAndDelete(key, expected []byte) ([]byte, error) {
+	if len(key) > MaxEncodableKeyLength {
+		return nil, &KeyTooLongError{Length: len(key), Max: MaxEncodableKeyLength}
+	}
+	buf := make([]byte, headerSize+2+len(key)+len(expected))
+	buf[0] = OpCompareAndDelete
+	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	copy(buf[3:], key)
+	copy(buf[3+len(key):], expected)
+	return buf, nil
+}
+
+// DecodeCompareAndDelete parses a conditional-delete payload, which is the
+// command with its op byte already stripped.
+func DecodeCompareAndDelete(payload []byte) (key, expected []byte, err error) {
+	if len(payload) < 2 {
+		return nil, nil, &InvalidCommandError{Reason: "compare and delete: payload too short"}
+	}
+	keyLen := int(binary.LittleEndian.Uint16(payload[0:2]))
+	if keyLen+2 > len(payload) {
+		return nil, nil, &InvalidCommandError{Reason: "compare and delete: key length exceeds payload"}
+	}
+	return payload[2 : 2+keyLen], payload[2+keyLen:], nil
 }
 
 // EncodeMVCCDelete creates a binary MVCC Delete command.

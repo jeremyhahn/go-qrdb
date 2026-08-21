@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -310,4 +311,71 @@ func TestStorageAdapter_PutIfAbsent_SetError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when Set fails")
 	}
+}
+
+// A guarded operation is only guarded if ordinary writes cannot land inside
+// it. The mutex used to cover PutIfAbsent's check-then-write but NOT Put or
+// Delete, so a concurrent Put could replace the value between
+// CompareAndDelete's comparison and its delete — and the guarded call would
+// remove a value it never compared against while reporting success.
+//
+// The race detector plus a concurrent writer is the honest way to assert
+// this: the interleaving is real, not simulated.
+func TestStorageAdapter_GuardedOpsExcludeConcurrentWrites(t *testing.T) {
+	backend := NewStorageAdapter(newMockLegacyStorage())
+	adapter, ok := backend.(*StorageAdapter)
+	if !ok {
+		t.Fatalf("NewStorageAdapter returned %T, want *StorageAdapter", backend)
+	}
+	ctx := context.Background()
+
+	const key = "claim"
+	const iterations = 200
+
+	for i := 0; i < iterations; i++ {
+		if err := adapter.Put(ctx, key, []byte("acme")); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var deleted bool
+		var cadErr error
+		go func() {
+			defer wg.Done()
+			deleted, cadErr = adapter.CompareAndDelete(ctx, key, []byte("acme"))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = adapter.Put(ctx, key, []byte("globex"))
+		}()
+		wg.Wait()
+
+		if cadErr != nil {
+			t.Fatalf("CompareAndDelete: %v", cadErr)
+		}
+
+		// Either the guard won (key gone, or replaced afterwards by the
+		// writer) or it lost (globex present, untouched). What must NEVER
+		// happen is the guard reporting success while globex's write is the
+		// one that disappeared without ever being compared.
+		current, err := adapter.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if deleted && current == nil {
+			continue // guard deleted acme, writer had not yet written
+		}
+		if deleted && string(current) == "globex" {
+			continue // guard deleted acme, writer then wrote globex
+		}
+		if !deleted && string(current) == "globex" {
+			continue // writer won the lock first; guard correctly refused
+		}
+		t.Fatalf("iteration %d: deleted=%v, stored=%q — a guarded delete "+
+			"removed a value it never compared against", i, deleted, current)
+	}
+
+	_ = adapter.Delete(ctx, key)
 }

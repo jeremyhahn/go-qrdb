@@ -68,6 +68,12 @@ func (s *tenantBarrierKVStore) PutIfAbsent(ctx context.Context, key string, valu
 	return s.barrier.PutIfAbsent(ctx, key, value)
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, delegating to the tenant barrier's guarded delete.
+func (s *tenantBarrierKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return s.barrier.CompareAndDelete(ctx, key, expected)
+}
+
 // Get decrypts and returns the value for key. It translates the seal
 // subsystem's ErrSecretNotFound into (nil, nil) to satisfy the
 // kvstore.KVStore contract ("returns nil, nil when key does not exist").

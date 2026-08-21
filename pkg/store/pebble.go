@@ -126,8 +126,9 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpMVCCDelete:      pebbleHandleMVCCDelete,
 
 		// Batch and transaction operations.
-		protocol.OpBatch:       pebbleHandleBatch,
-		protocol.OpTransaction: pebbleHandleTransaction,
+		protocol.OpBatch:            pebbleHandleBatch,
+		protocol.OpTransaction:      pebbleHandleTransaction,
+		protocol.OpCompareAndDelete: pebbleHandleCompareAndDelete,
 
 		// Lease operations.
 		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
@@ -918,7 +919,11 @@ func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload
 		return sm.Result{}, nil, err
 	}
 
-	if _, getErr := s.getKeyInBatch(batch, cmd.Key); getErr == nil {
+	absent, getErr := s.keyIsAbsentInBatch(batch, cmd.Key)
+	if getErr != nil {
+		return sm.Result{}, nil, getErr
+	}
+	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
 	}
 
@@ -937,6 +942,56 @@ func pebbleHandlePutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, payload
 	}
 
 	return sm.Result{Value: kv.ResultStored}, notifs, nil
+}
+
+// pebbleHandleCompareAndDelete removes a key only when its stored value still
+// equals the expected one.
+//
+// The comparison runs HERE, inside the apply path, against the state this
+// replica has applied at this entry's log position. Comparing on the proposer
+// and then proposing a plain delete leaves a window in which another caller
+// legitimately claims the key, so the delete would remove a value the
+// proposer never observed (go-qrdb#41).
+//
+// A refused delete is a normal outcome reported through Result.Value
+// (protocol.ResultNotDeleted), never an error that would stall consensus.
+//
+// The read propagates its error rather than treating a fault as "no match":
+// a local fault read that way would leave the key here while peers that read
+// successfully removed it, diverging the group from an identical log.
+func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	key, expected, err := protocol.DecodeCompareAndDelete(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	current, getErr := s.getKeyInBatch(batch, key)
+	if getErr != nil {
+		var notFound *kv.KeyNotFoundError
+		if !errors.As(getErr, &notFound) {
+			return sm.Result{}, nil, getErr
+		}
+		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
+	}
+
+	if derr := batch.Delete(key, pebble.Sync); derr != nil {
+		return sm.Result{}, nil, &WriteError{Err: derr}
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventDelete,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key},
+			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current},
+		}}
+	}
+
+	return sm.Result{Value: protocol.ResultDeleted}, notifs, nil
 }
 
 // pebbleHandleGet processes a base KV Get command (OpGet=2). Gets are
@@ -1036,7 +1091,11 @@ func pebbleHandleMVCCPutIfAbsent(s *PebbleStateMachine, batch *pebble.Batch, pay
 		return sm.Result{}, nil, err
 	}
 
-	if _, getErr := s.getKeyInBatch(batch, key); getErr == nil {
+	absent, getErr := s.keyIsAbsentInBatch(batch, key)
+	if getErr != nil {
+		return sm.Result{}, nil, getErr
+	}
+	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
 	}
 
@@ -1641,6 +1700,31 @@ var baseKVOps = map[byte]struct{}{
 func isBaseKVOp(op byte) bool {
 	_, ok := baseKVOps[op]
 	return ok
+}
+
+// keyIsAbsentInBatch answers the existence guard both conditional-put handlers
+// ask, distinguishing a MISSING key from a key that could not be READ.
+//
+// Only *kv.KeyNotFoundError means absent. Any other error is a real read
+// fault and is returned to the caller, which returns it to the Raft layer:
+// folding it into "absent" would overwrite the holder and report
+// ResultStored, and because such a fault is LOCAL to one replica, replicas
+// whose reads succeeded would decline the same entry this one stored and the
+// group would diverge from an identical log.
+//
+// It exists as a helper because the base-KV and MVCC conditional puts must
+// classify identically. They did not: the base-KV handler was corrected first
+// and the MVCC one kept reading every error as absence, which is exactly the
+// drift a shared helper prevents.
+func (s *PebbleStateMachine) keyIsAbsentInBatch(batch *pebble.Batch, key []byte) (bool, error) {
+	if _, err := s.getKeyInBatch(batch, key); err != nil {
+		var notFound *kv.KeyNotFoundError
+		if errors.As(err, &notFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 // getKeyInBatch retrieves a key's value as the apply batch sees it: the

@@ -15,6 +15,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 	"sync"
 
@@ -27,11 +28,11 @@ import (
 type BackendStorageAdapter struct {
 	inner Backend
 
-	// putIfAbsentMu serializes the check-then-write performed by PutIfAbsent.
+	// writeMu serializes the check-then-write performed by PutIfAbsent.
 	// database.Backend implementations (StandaloneBackend, BarrierBackend) are
 	// single-process local engines, so this mutex is the genuine atomicity
 	// mechanism — there is no other process to race with.
-	putIfAbsentMu sync.Mutex
+	writeMu sync.Mutex
 }
 
 // Compile-time interface check.
@@ -49,6 +50,12 @@ func (a *BackendStorageAdapter) Get(ctx context.Context, key string) ([]byte, er
 
 // Put stores value under the given string key.
 func (a *BackendStorageAdapter) Put(ctx context.Context, key string, data []byte) error {
+	// Takes writeMu so it cannot land BETWEEN a guarded operation's read and
+	// its write. Without this the guards are advisory: PutIfAbsent could
+	// overwrite a value written after its check, and CompareAndDelete could
+	// delete a replacement it never compared against.
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	return a.inner.Put(ctx, []byte(key), data)
 }
 
@@ -58,8 +65,8 @@ func (a *BackendStorageAdapter) Put(ctx context.Context, key string, data []byte
 // adapter wraps. Backend.Get returns nil, nil for a missing key, so a nil
 // value is the absence signal.
 func (a *BackendStorageAdapter) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
-	a.putIfAbsentMu.Lock()
-	defer a.putIfAbsentMu.Unlock()
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 
 	v, err := a.inner.Get(ctx, []byte(key))
 	if err != nil {
@@ -74,8 +81,30 @@ func (a *BackendStorageAdapter) PutIfAbsent(ctx context.Context, key string, dat
 	return true, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected. The same mutex that makes PutIfAbsent indivisible makes the
+// compare and the delete one operation here.
+func (a *BackendStorageAdapter) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	v, err := a.inner.Get(ctx, []byte(key))
+	if err != nil {
+		return false, err
+	}
+	if v == nil || !bytes.Equal(v, expected) {
+		return false, nil
+	}
+	if err := a.inner.Delete(ctx, []byte(key)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete removes the string key.
 func (a *BackendStorageAdapter) Delete(ctx context.Context, key string) error {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	return a.inner.Delete(ctx, []byte(key))
 }
 

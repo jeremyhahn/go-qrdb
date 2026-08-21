@@ -31,6 +31,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
@@ -62,6 +63,12 @@ type KVServicer interface {
 	// the state machine so replicas cannot diverge, MVCC uses a transaction,
 	// and the backend-storage engine uses its own atomic primitive.
 	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+
+	// CompareAndDelete atomically removes key only when its stored value
+	// still equals expected, reporting whether this call removed it. It is
+	// the release half of PutIfAbsent: an unguarded delete can un-decide what
+	// a guarded create decided (go-qrdb#41).
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
 
 	// Get retrieves a value by key with a linearizable read.
 	Get(ctx context.Context, key string) ([]byte, error)
@@ -415,6 +422,34 @@ func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (
 		return false, resultErr
 	}
 	return result.Value == kv.ResultStored, nil
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected, with the comparison evaluated inside the state machine at this
+// entry's position in the committed log — so every replica decides
+// identically from identical state.
+//
+// It deliberately does NOT read first and then propose a plain Delete: that
+// is two operations with a window between them, and in that window another
+// caller can legitimately claim the key, so the delete would remove a value
+// this caller never observed.
+//
+// A refused delete is a successful application — the state machine reports
+// protocol.ResultNotDeleted rather than an error — so consensus is never
+// stalled by losing the race.
+func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	cmd, err := protocol.EncodeCompareAndDelete([]byte(key), expected)
+	if err != nil {
+		return false, &ProposeError{Err: err}
+	}
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == protocol.ResultDeleted, nil
 }
 
 // Get retrieves a value by key with a linearizable read through the Raft

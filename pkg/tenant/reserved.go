@@ -17,6 +17,8 @@ package tenant
 import (
 	"context"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // legacyDefaultTenantID is the legacy tenant id retired in Phase 0 of
@@ -43,14 +45,44 @@ const legacyDefaultTenantID = "default"
 // tenant ids become filesystem path segments under barrier isolation
 // (volume-pool directories), so a path-traversal id like "../../x" must be
 // rejected before it ever reaches a filepath.Join sink.
-func validateReservedTenantID(ctx context.Context, id string) error {
-	// Charset check applies to ALL callers — even internal calls must not
-	// create a tenant whose id would corrupt scoped storage keys or escape
-	// its volume-pool directory.
+// validateTenantIDCharset rejects an id that would corrupt a scoped storage
+// key or escape a directory.
+//
+// It is shared by tenant creation and by the store resolver, which builds a
+// keyspace prefix from an id it may never have seen — an unknown tenant
+// deliberately falls through to the shared store. A '/' there would nest one
+// tenant's namespace INSIDE another's ("acme/system/system/" sits under
+// "acme/system/"), so a scan by the outer tenant would list the inner one's
+// keys. The check therefore has to run where the prefix is built, not only
+// where tenants are created.
+func validateTenantIDCharset(id string) error {
 	for _, b := range []byte(id) {
 		if b < 0x20 || b == '/' || b == '\\' {
 			return &InvalidTenantIDCharError{TenantID: id, Byte: b}
 		}
+	}
+	// A segment that begins with a reserved key prefix is refused as well.
+	// Confinement means it can no longer ESCAPE — a namespace of "__sys:/db/"
+	// reaches nothing another tenant owns — but it would still bury the
+	// tenant's own records under a prefix the reserved-key discovery guard
+	// filters out of user-facing enumeration, so the tenant would silently
+	// fail to list its own data. Refusing the id is cheaper than explaining
+	// that.
+	if strings.HasPrefix(id, kvstore.ReservedPrefixSystem) {
+		return &InvalidTenantIDError{
+			TenantID: id,
+			Reason:   "id must not begin with the reserved key prefix " + kvstore.ReservedPrefixSystem,
+		}
+	}
+	return nil
+}
+
+func validateReservedTenantID(ctx context.Context, id string) error {
+	// Charset check applies to ALL callers — even internal calls must not
+	// create a tenant whose id would corrupt scoped storage keys or escape
+	// its volume-pool directory.
+	if err := validateTenantIDCharset(id); err != nil {
+		return err
 	}
 	if id == "." || id == ".." {
 		return &InvalidTenantIDError{

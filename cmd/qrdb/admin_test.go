@@ -121,6 +121,12 @@ func (m *noopKVService) Put(_ context.Context, _ string, _ []byte) error { retur
 func (m *noopKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
 	return true, nil
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *noopKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (m *noopKVService) Get(_ context.Context, _ string) ([]byte, error)             { return nil, nil }
 func (m *noopKVService) Delete(_ context.Context, _ string) error                    { return nil }
 func (m *noopKVService) List(_ context.Context, _ string) ([]string, error)          { return nil, nil }

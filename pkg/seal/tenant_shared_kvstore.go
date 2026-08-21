@@ -15,6 +15,7 @@
 package seal
 
 import (
+	"bytes"
 	"context"
 	"strings"
 
@@ -124,6 +125,37 @@ func (s *atomicTenantSharedKVStore) PutIfAbsent(ctx context.Context, key string,
 		return false, err
 	}
 	return s.shared.PutIfAbsent(ctx, s.prefix+key, ciphertext)
+}
+
+// CompareAndDelete removes the namespaced key only when the value stored
+// there still decrypts to expected.
+//
+// It compares the CIPHERTEXT THIS CALL READ, not a fresh encryption of
+// expected. Encryption here is randomised — go-quicraft's seal uses
+// cipher.NewGCMWithRandomNonce — so encrypting the same plaintext twice
+// produces different bytes and a ciphertext-of-expected guard would refuse
+// every time. Reading the stored ciphertext, decrypting it to compare in
+// plaintext, and then guarding the delete on those exact bytes preserves the
+// guarantee exactly: any write landing in between replaces the stored
+// ciphertext, so the guard still refuses. The atomicity remains the shared
+// store's; this wrapper adds the tenant scoping and the encryption.
+func (s *atomicTenantSharedKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	physical := s.prefix + key
+	ciphertext, err := s.shared.Get(ctx, physical)
+	if err != nil {
+		return false, err
+	}
+	if ciphertext == nil {
+		return false, nil
+	}
+	plaintext, derr := s.barrier.Barrier().Decrypt(ciphertext)
+	if derr != nil {
+		return false, derr
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	return s.shared.CompareAndDelete(ctx, physical, ciphertext)
 }
 
 // Put encrypts value with the tenant DEK and stores it under the

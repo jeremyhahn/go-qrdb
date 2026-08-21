@@ -95,4 +95,10 @@ type AtomicBackend interface {
 	// reporting whether this call created it. stored=false with a nil error
 	// means the key already existed and the store is unchanged.
 	PutIfAbsent(ctx context.Context, key, value []byte) (stored bool, err error)
+
+	// CompareAndDelete atomically removes key only when its stored value
+	// still equals expected, reporting whether this call removed it. It is
+	// the release half of PutIfAbsent: an unguarded delete can un-decide what
+	// a guarded create decided (go-qrdb#41).
+	CompareAndDelete(ctx context.Context, key, expected []byte) (deleted bool, err error)
 }

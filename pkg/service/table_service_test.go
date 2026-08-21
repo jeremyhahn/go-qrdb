@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,6 +106,22 @@ func (f *fakeCatalogStore) PutIfAbsent(_ context.Context, key string, value []by
 	}
 	f.rev++
 	f.data[key] = &fakeCatalogRecord{value: cloneBytes(value), modRevision: f.rev, createRevision: f.rev, version: 1}
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (f *fakeCatalogStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	current, ok := f.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current.value, expected) {
+		return false, nil
+	}
+	delete(f.data, key)
 	return true, nil
 }
 

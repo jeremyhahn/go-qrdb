@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"sort"
@@ -105,6 +106,22 @@ func (s *memStore) PutIfAbsent(_ context.Context, key string, value []byte) (boo
 	}
 	s.rev++
 	s.data[key] = &memRecord{value: cloneBytes(value), modRevision: s.rev, createRevision: s.rev, version: 1}
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (s *memStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current.value, expected) {
+		return false, nil
+	}
+	delete(s.data, key)
 	return true, nil
 }
 

@@ -47,6 +47,12 @@ func (m *mockMVCCSvc) Put(_ context.Context, _ string, _ []byte) error {
 func (m *mockMVCCSvc) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
 	return true, nil
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *mockMVCCSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (m *mockMVCCSvc) Get(_ context.Context, _ string) ([]byte, error) {
 	panic("not implemented")
 }

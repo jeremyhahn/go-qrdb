@@ -136,6 +136,12 @@ func (t *TenantBarrier) PutIfAbsent(ctx context.Context, key string, value []byt
 	return t.barrier.PutIfAbsent(ctx, key, value)
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, delegating to the underlying barrier.
+func (t *TenantBarrier) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return t.barrier.CompareAndDelete(ctx, key, expected)
+}
+
 // Delete removes the key from the tenant's storage.
 func (t *TenantBarrier) Delete(ctx context.Context, key string) error {
 	return t.barrier.Delete(ctx, key)
@@ -193,6 +199,16 @@ func (n *NamespacedBackend) Put(ctx context.Context, key string, data []byte) er
 // key does not already exist. Atomicity is delegated to the base backend.
 func (n *NamespacedBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	return n.base.PutIfAbsent(ctx, n.prefix+key, data)
+}
+
+// CompareAndDelete removes the namespaced key only when its stored value
+// still equals expected.
+func (n *NamespacedBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	guarded, ok := n.base.(guardedDeleteBackend)
+	if !ok {
+		return false, ErrGuardedDeleteUnsupported
+	}
+	return guarded.CompareAndDelete(ctx, n.prefix+key, expected)
 }
 
 // Delete removes the namespaced key from storage.

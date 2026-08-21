@@ -510,6 +510,38 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			return nil, &TenantServiceError{Err: err}
 		}
 		n.Tenant = kvTenantSvc
+
+		// Route IAM here TOO. Keyspace isolation is not a property of
+		// encryption: a node with the seal subsystem off still has tenants,
+		// and they are still entitled to separate keyspaces. Leaving n.User
+		// and n.Role on the raw authStore in this branch meant every prefix
+		// tenant on a seal-disabled node shared one IAM keyspace — the exact
+		// exposure #41 closes everywhere else.
+		//
+		// The resolver takes no barrier registry here. Prefix and system
+		// tenants get their confined "{tenant}/" view of the shared store as
+		// usual; a dedicated-isolation tenant fails closed with
+		// ErrTenantSealed, because without a registry there is no barrier to
+		// route it through and serving it from the shared store would hand a
+		// tenant that asked for cryptographic isolation an unencrypted
+		// keyspace.
+		resolver, rerr := tenant.NewStoreResolver(authStore, nil, kvTenantSvc)
+		if rerr != nil {
+			return nil, &UserServiceError{Err: rerr}
+		}
+		n.StoreResolver = resolver
+
+		routedUsers, uerr := user.NewRoutingService(resolver, userIDGen)
+		if uerr != nil {
+			return nil, &UserServiceError{Err: uerr}
+		}
+		n.User = routedUsers
+
+		routedRoles, roerr := role.NewRoutingService(resolver)
+		if roerr != nil {
+			return nil, &RoleServiceError{Err: roerr}
+		}
+		n.Role = routedRoles
 	}
 
 	// Wire tenant-driven quota and entitlement enforcement into the database

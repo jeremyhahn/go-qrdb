@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -284,5 +285,79 @@ func TestBackendStorageAdapter_KeyConversion(t *testing.T) {
 	}
 	if string(got) != "data" {
 		t.Errorf("inner.Get: got %q, want %q", got, "data")
+	}
+}
+
+// afterGetBackend runs a hook immediately after the inner Get returns, which
+// is the exact instant a guarded operation has read the value and not yet
+// acted on it. It makes the interleaving deterministic instead of hoping a
+// 200-iteration race lands in a window a few instructions wide.
+type afterGetBackend struct {
+	Backend
+	afterGet func()
+}
+
+func (b *afterGetBackend) Get(ctx context.Context, key []byte) ([]byte, error) {
+	v, err := b.Backend.Get(ctx, key)
+	if b.afterGet != nil {
+		hook := b.afterGet
+		b.afterGet = nil
+		hook()
+	}
+	return v, err
+}
+
+// A guarded operation is only guarded if ordinary writes cannot land inside
+// it. writeMu used to cover PutIfAbsent's check-then-write but NOT Put or
+// Delete, so a Put landing between CompareAndDelete's comparison and its
+// delete would be removed by a guard that never compared against it — while
+// the call reported success. Every AtomicBackend consumer over this adapter
+// received a false guarantee.
+//
+// The hook replaces the writer's Put at precisely that instant. With Put
+// outside the mutex it proceeds and its value is destroyed; with Put inside
+// it, the writer blocks until the guarded operation completes, so the value
+// it writes survives.
+func TestBackendStorageAdapter_GuardedOpsExcludeConcurrentWrites(t *testing.T) {
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	inner := &afterGetBackend{Backend: NewStandaloneBackend(store)}
+	adapter := NewBackendStorageAdapter(inner)
+	ctx := context.Background()
+
+	const key = "claim"
+	if err := adapter.Put(ctx, key, []byte("acme")); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// The competing writer runs in its own goroutine because a Put that
+	// correctly takes the mutex must BLOCK here rather than deadlock the test.
+	done := make(chan struct{})
+	inner.afterGet = func() {
+		go func() {
+			defer close(done)
+			if perr := adapter.Put(ctx, key, []byte("globex")); perr != nil {
+				t.Errorf("competing Put: %v", perr)
+			}
+		}()
+		// Give the writer a chance to land if nothing is stopping it.
+		for i := 0; i < 1000; i++ {
+			runtime.Gosched()
+		}
+	}
+
+	deleted, err := adapter.CompareAndDelete(ctx, key, []byte("acme"))
+	if err != nil {
+		t.Fatalf("CompareAndDelete: %v", err)
+	}
+	<-done
+
+	current, err := adapter.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(current) != "globex" {
+		t.Fatalf("stored value = %q, want %q — the guarded delete removed a "+
+			"value it never compared against (deleted=%v)", current, "globex", deleted)
 	}
 }

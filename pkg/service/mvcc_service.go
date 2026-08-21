@@ -205,6 +205,23 @@ func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byt
 	return result.Value == kv.ResultStored, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, evaluated inside the state machine. See KVService.CompareAndDelete.
+func (s *MVCCKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	cmd, err := protocol.EncodeCompareAndDelete([]byte(key), expected)
+	if err != nil {
+		return false, &ProposeError{Err: err}
+	}
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == protocol.ResultDeleted, nil
+}
+
 // Get retrieves the latest value for a key with a linearizable read.
 // Returns KeyNotFoundError when the key does not exist.
 func (s *MVCCKVService) Get(ctx context.Context, key string) ([]byte, error) {

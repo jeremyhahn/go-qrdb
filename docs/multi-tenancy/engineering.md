@@ -31,6 +31,71 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 
 ## Invariants
 
+- **A resolver-served store is confined to its tenant's keyspace by
+  construction.** `StoreResolver.Resolve` returns the system store wrapped in
+  `kvstore.NewNamespacedKVStore` at `{tenant}/` for every shared-prefix tenant
+  (including the system tenant and unknown tenants). Returning the bare shared store gave every prefix tenant one
+  keyspace — the #41 defect. A caller must never have to remember to prefix.
+- **The resolver-served store namespaces at `{tenant}/`, not
+  `{tenant}/{db}/`.** It serves identity, and identity is tenant-wide — a user
+  authenticates whichever database a request names. Per-database namespacing
+  here breaks login, because firstboot writes the admin user with no database
+  bound. Data-plane database scoping is the transports' and SQL provider's job
+  and is unaffected.
+- **No prefix is exempt from namespacing**, the reserved `__sys:` keyspace
+  included. An exemption would be a second tenancy mechanism beside the
+  namespace; it also let a crafted tenant id, a crafted DAO entity type, and
+  `pkg/permission`'s tenantless scope keys each reach across tenants.
+- **A by-id IAM operation routes to the tenant that HOLDS the id, not the
+  caller's.** `tenant.IdentityIndex` maps `id -> tenant` in the system tenant's
+  identity namespace; `tenant.OwningTenant` is the single rule both routers
+  apply. Unindexed ids route to the caller (reach never widens), a caller who
+  may not reach the owner is routed to its own tenant and gets a plain
+  not-found (a cross-tenant denial would be an existence oracle), and a sealed
+  owning barrier refuses with `ErrTenantSealed` — never a fallback read.
+- **The index entry carries the id and the tenant ONLY.** It lives outside
+  every barrier by necessity, so it may leak existence and placement and
+  nothing else.
+- **The index is maintained by the function that writes the record**, next to
+  the record's other index writes — never by a sibling maintainer, which is how
+  every write-path/read-path divergence in this repository started.
+- **An index entry is a CLAIM, taken atomically, before the record is
+  written.** Role ids are caller-supplied, so a last-writer-wins entry would
+  let one tenant capture another's id and redirect every by-id operation on
+  it. The claim uses `kvstore.AtomicKVStore.PutIfAbsent`, which every state
+  machine implements — `PebbleStateMachine`, `MVCCEngine` and `KVEngine`,
+  the last of which gained its handler with #41. A store without it is
+  REFUSED (`tenant.ErrIdentityStoreNotAtomic`), never downgraded to
+  read-then-write. Refusing before the first write is what leaves a refused
+  capture with nothing behind.
+- **A claim is released through a GUARDED delete**
+  (`kvstore.AtomicKVStore.CompareAndDelete`), never a plain one. A guarded
+  create with an unguarded release is half a primitive: two releasers both
+  read holder A, the first deletes, another tenant legitimately claims the
+  now-absent id, and the second delete removes THEIR claim.
+- **A claim succeeds only for the call that created it.** A pre-existing entry
+  is refused whatever tenant holds it, the claimant's own included: proceeding
+  on a claim you did not win lets a concurrent same-tenant delete release it
+  under you, leaving a record no by-id operation can reach. The cost is that a
+  create dying mid-way burns its id, which is the safe direction.
+- **An empty namespace prefix is an error, not a pass-through.** It would hand
+  the caller the entire store root, which is the unconfined access the wrapper
+  exists to prevent, delivered silently.
+- **Index results crossing a namespace are dropped, not stripped.** A key
+  outside the namespace has no business in its result; passing it through
+  stripped would hand the caller another tenant's record.
+- **A store is told which keys an index covers** (`EntityIndex.KeyPrefix`)
+  rather than inferring `{entityType}/`. The inference holds only while the
+  entity type is the leading key segment, which namespacing breaks — and a
+  store that infers wrongly indexes nothing while reporting success.
+- **Shared-prefix tenants have no engine-backed indexes** (#40 restores them).
+  The engine matches writes to indexes by the first path segment of the key,
+  which a namespace displaces. The store refuses index operations with
+  `kvstore.ErrIndexUnsupported`; `pkg/dao` plans a full scan, so results are
+  correct and only slower. Isolation was chosen over the index.
+
+
+
 - **Isolation type is immutable once the tenant holds data** —
   `ErrTenantHasData`, HTTP 409.
 - **`prefix` is logical separation, not cryptographic isolation.**

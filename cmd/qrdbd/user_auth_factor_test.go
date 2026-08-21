@@ -42,6 +42,12 @@ func (fakeAuthFactorKV) Put(context.Context, string, []byte) error { return nil 
 func (fakeAuthFactorKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
 	return true, nil
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (fakeAuthFactorKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (fakeAuthFactorKV) Get(context.Context, string) ([]byte, error) { return nil, nil }
 func (fakeAuthFactorKV) Delete(context.Context, string) error        { return nil }
 func (fakeAuthFactorKV) List(context.Context, string) ([]string, error) {

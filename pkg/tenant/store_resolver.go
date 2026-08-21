@@ -28,10 +28,21 @@ import (
 //
 // The resolution depends on the tenant's isolation type:
 //
-//   - prefix / system / unknown / empty tenants resolve to the SHARED
-//     system KVStore. Their records live in the one shared store and are
-//     separated only logically by the "...tenant/{tenantID}..." key
-//     segments the IAM stores already embed.
+//   - prefix / system / unknown / empty tenants resolve to the SHARED system
+//     KVStore, CONFINED to the tenant's own keyspace at "{tenant}/". The
+//     confinement is a
+//     property of the returned store, not of the caller: a dao.GenericDAO
+//     keys entities "{entityType}/{id}" and has no tenant concept, so
+//     returning the bare shared store gave every prefix tenant one
+//     undifferentiated keyspace (#41).
+//
+//     NO prefix is exempt, the reserved "__sys:" keyspace included. An
+//     exemption would be a second tenancy mechanism beside the namespace,
+//     keyed on a string, and it let a crafted tenant id, a crafted DAO entity
+//     type and pkg/permission's tenantless scope keys each reach across
+//     tenants. The IAM stores additionally embed "...tenant/{tenantID}..."
+//     segments of their own; that is now redundant with the namespace and is
+//     a follow-on cleanup, not a second enforcement point.
 //
 //   - dedicated-isolation tenants (IsolationBarrier, IsolationVolume,
 //     IsolationRaft) resolve to a per-tenant store backed by that tenant's
@@ -105,6 +116,9 @@ type defaultStoreResolver struct {
 	tenants  isolationLookup
 
 	wrappers sync.Map // map[string]kvstore.KVStore — barrier-tenant wrappers
+	// namespaced caches the shared-store confinement wrapper per "{tenant}/"
+	// prefix.
+	namespaced sync.Map // map[string]kvstore.KVStore
 }
 
 // NewStoreResolver constructs the default StoreResolver. shared is the
@@ -115,17 +129,36 @@ func NewStoreResolver(shared kvstore.KVStore, registry *seal.BarrierRegistry, te
 	if shared == nil {
 		return nil, ErrNilStore
 	}
-	if registry == nil {
-		return nil, ErrNilRegistry
-	}
 	if tenants == nil {
 		return nil, ErrNilTenantServicer
 	}
-	return &defaultStoreResolver{
-		shared:   shared,
-		registry: registry,
-		tenants:  tenants,
-	}, nil
+	r := &defaultStoreResolver{
+		shared:  shared,
+		tenants: tenants,
+	}
+	// The registry is OPTIONAL, because keyspace isolation must not depend on
+	// encryption being enabled.
+	//
+	// It used to be required, and the consequence was that a deployment with
+	// the seal subsystem disabled got no resolver at all — its IAM stayed on
+	// the raw shared store and every prefix tenant shared one keyspace, which
+	// is the exact exposure #41 exists to close. A node that has not turned on
+	// encryption still has tenants, and they are still entitled to be separate.
+	//
+	// Without a registry, dedicated-isolation tenants cannot be served at all:
+	// there is no barrier to route them through. They fail CLOSED with
+	// ErrTenantSealed rather than falling back to the shared store, which is
+	// the same answer they get when a barrier exists but is sealed — the
+	// caller cannot reach that tenant's IAM, and the reason is not the
+	// caller's business.
+	//
+	// Assigning through the concrete-nil check keeps r.registry a genuinely
+	// nil interface: storing a typed nil *seal.BarrierRegistry would make
+	// registry != nil true and panic on first use.
+	if registry != nil {
+		r.registry = registry
+	}
+	return r, nil
 }
 
 // Resolve implements StoreResolver. See the StoreResolver doc comment for
@@ -135,7 +168,7 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 	// store. The system tenant is structurally a prefix tenant so the IAM
 	// stores work during bootstrap while tenant barriers are still sealed.
 	if IsSystemTenant(tenantID) {
-		return r.shared, nil
+		return r.sharedFor(ctx, tenantID)
 	}
 
 	info, err := r.tenants.GetTenant(ctx, tenantID)
@@ -146,7 +179,7 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 		// have not (yet) registered tenant metadata. Only a tenant that is
 		// explicitly barrier-isolated is routed through a barrier.
 		if errors.Is(err, ErrTenantNotFound) {
-			return r.shared, nil
+			return r.sharedFor(ctx, tenantID)
 		}
 		return nil, err
 	}
@@ -159,10 +192,92 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 	// volume/raft tenant's IAM fails closed instead of leaking to the shared
 	// store; all three register their barrier in the same registry.
 	if _, routed := barrierRoutedIsolation[info.EffectiveIsolationType()]; !routed {
-		return r.shared, nil
+		return r.sharedFor(ctx, tenantID)
 	}
 
 	return r.resolveBarrier(ctx, tenantID)
+}
+
+// IdentityNamespace returns the keyspace prefix a tenant's IDENTITY records
+// live under: users, roles, permission scopes and invitations.
+//
+// It is exported because more than one place must compose it and they MUST
+// agree. Firstboot seeds the system tenant's admin user and roles before the
+// StoreResolver exists, and the RBAC authorizer reads them back through the
+// resolver afterwards; if those two compose the prefix differently the admin
+// has no resolvable role bindings and every authorization check denies. That
+// is precisely what happened when the writer used the raw store and the
+// reader used a confined one, and it is the third time a divergence between a
+// write path and a read path has come from re-deriving a key prefix by hand
+// rather than calling one function.
+//
+// Note this is deliberately NOT ComposeNamespace: that is the DATA plane's
+// "{tenant}/{database}/". Identity is tenant-wide, because a user must
+// authenticate whichever database a request names.
+//
+// The empty id and SystemTenantID are the same tenant and yield the same
+// prefix; IsSystemTenant is the authority on that, so callers cannot
+// disagree about it either.
+func IdentityNamespace(tenantID string) string {
+	if IsSystemTenant(tenantID) {
+		tenantID = SystemTenantID
+	}
+	return tenantID + "/"
+}
+
+// sharedFor returns the shared store CONFINED to the tenant's keyspace.
+//
+// The namespace is the TENANT alone — "{tenant}/" — deliberately NOT
+// ComposeNamespace's "{tenant}/{db}/". This store serves a tenant's IDENTITY
+// (users, roles, permission scopes, invitations), and identity belongs to a
+// tenant, not to one of its databases: the same user must authenticate
+// whichever database a request names.
+//
+// Including the database was measured to break login outright. Firstboot
+// writes the admin user with no database bound to its context, so it landed
+// under "{tenant}/system/", while any request carrying a database resolved
+// "{tenant}/{db}/" and found nothing. Unit tests using a single database
+// could not see it; the integration stack, which authenticates for real,
+// failed every CLI suite.
+//
+// Database scoping of the DATA plane is unaffected and lives where it always
+// has — the transport registries and the SQL provider apply ComposeNamespace
+// when they key into the shared store.
+//
+// Returning r.shared itself gave every prefix tenant the same handle over one
+// undifferentiated keyspace: a dao.GenericDAO keys entities "{entityType}/{id}"
+// and has no tenant concept, so one tenant's DAO read another's rows and one
+// tenant's index answered another's query. The confinement is a property of
+// the store now, not of every caller remembering to prefix.
+//
+// Note this is deliberately NOT tenant.ComposeNamespace: that formula is the
+// DATA plane's "{tenant}/{db}/", applied by the transports and the SQL
+// provider. This plane is identity, which is tenant-wide.
+//
+// Wrappers are cached per tenant, matching the namespace.
+func (r *defaultStoreResolver) sharedFor(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+	// Validate HERE, not only at tenant creation. Resolve accepts an id it has
+	// never seen — an unknown tenant deliberately falls through to the shared
+	// store — so an id containing '/' would build a prefix nested INSIDE
+	// another tenant's namespace ("acme/evil/" sits under "acme/"), and a scan
+	// by the outer tenant would list the inner one's keys. Creation already
+	// rejects the charset; this closes the path that never goes through
+	// creation.
+	if err := validateTenantIDCharset(tenantID); err != nil {
+		return nil, err
+	}
+	// IdentityNamespace canonicalizes "" to SystemTenantID, so the two
+	// representations of the system tenant cannot end up with two namespaces.
+	prefix := IdentityNamespace(tenantID)
+	if cached, ok := r.namespaced.Load(prefix); ok {
+		return cached.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	}
+	wrapper, err := kvstore.NewNamespacedKVStore(r.shared, prefix)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := r.namespaced.LoadOrStore(prefix, wrapper)
+	return actual.(kvstore.KVStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }
 
 // resolveBarrier returns the cached per-tenant barrier KVStore for a
@@ -171,6 +286,14 @@ func (r *defaultStoreResolver) Resolve(ctx context.Context, tenantID string) (kv
 // from the underlying barrier once it is sealed — Resolve translates that
 // into ErrTenantSealed up front to fail closed.
 func (r *defaultStoreResolver) resolveBarrier(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
+	if r.registry == nil {
+		// No barrier registry on this node: a dedicated-isolation tenant has
+		// no barrier to route through, so its IAM is unreachable here. Fail
+		// closed with the same error a sealed barrier produces rather than
+		// serving it from the shared store, which would hand a tenant that
+		// asked for cryptographic isolation an unencrypted keyspace.
+		return nil, ErrTenantSealed
+	}
 	tb, err := r.registry.GetTenant(tenantID)
 	if err != nil {
 		// A barrier-isolated tenant with NO registered barrier on this node

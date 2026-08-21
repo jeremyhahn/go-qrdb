@@ -16,6 +16,7 @@
 package dao
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"sync"
@@ -63,6 +64,22 @@ func (m *memoryKVStore) PutIfAbsent(_ context.Context, key string, value []byte)
 	valueCopy := make([]byte, len(value))
 	copy(valueCopy, value)
 	m.data[key] = valueCopy
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *memoryKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.data, key)
 	return true, nil
 }
 

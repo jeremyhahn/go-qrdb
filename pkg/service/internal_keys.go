@@ -14,7 +14,11 @@
 
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+)
 
 // ---------------------------------------------------------------------------
 // Internal key namespace
@@ -75,7 +79,14 @@ import "strings"
 // stores (roles, users, and other RBAC records). Restoring or enumerating
 // keys under it through a user-facing surface is a privilege-escalation
 // vector and is refused.
-const InternalKeyPrefixSystem = "__sys:"
+//
+// It is defined in pkg/kvstore because both this guard and the tenant
+// keyspace machinery need it, and pkg/kvstore is the only layer they can
+// share without an import cycle. Note a namespaced store does NOT route
+// around its confinement for this prefix: reserved keys are namespaced like
+// any other (#41). This constant is the discovery guard's subject, not an
+// exemption.
+const InternalKeyPrefixSystem = kvstore.ReservedPrefixSystem
 
 // internalKeyPrefix is one reserved prefix together with the single property
 // that varies between them: whether the subsystem owning the namespace reads

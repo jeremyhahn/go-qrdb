@@ -3127,3 +3127,59 @@ func TestDecodeBatch_HugeCountFailsCleanly(t *testing.T) {
 		t.Fatalf("expected *InvalidCommandError, got %T", err)
 	}
 }
+
+// A key the length field cannot describe must be REFUSED at encode time, not
+// silently truncated.
+//
+// The failure mode is what makes this load-bearing: a narrow cast writes
+// len(key) mod 65536, so a 65,537-byte key encodes as length 1. The decoder
+// then reads a ONE-BYTE key and folds the remaining 65,536 bytes into the
+// expected value — and the state machine compares and deletes a different,
+// shorter key than the caller named. Silent wrong-record targeting inside a
+// replicated state machine, from input a caller can craft.
+func TestEncodeCompareAndDelete_RefusesAnUnencodableKey(t *testing.T) {
+	oversized := make([]byte, MaxEncodableKeyLength+2)
+	for i := range oversized {
+		oversized[i] = 'k'
+	}
+
+	cmd, err := EncodeCompareAndDelete(oversized, []byte("acme"))
+	if err == nil {
+		t.Fatalf("encoding a %d-byte key succeeded; it would decode as a %d-byte "+
+			"key and delete the wrong record",
+			len(oversized), len(oversized)%(MaxEncodableKeyLength+1))
+	}
+	if cmd != nil {
+		t.Fatalf("a refused encode returned %d bytes; it must return nil", len(cmd))
+	}
+
+	// The REASON, not merely that an error happened.
+	var tooLong *KeyTooLongError
+	if !errors.As(err, &tooLong) {
+		t.Fatalf("error = %T (%v), want *KeyTooLongError", err, err)
+	}
+	if tooLong.Length != len(oversized) || tooLong.Max != MaxEncodableKeyLength {
+		t.Fatalf("error = %+v, want Length=%d Max=%d",
+			tooLong, len(oversized), MaxEncodableKeyLength)
+	}
+}
+
+// The boundary itself encodes, so the guard rejects only what genuinely
+// cannot be described.
+func TestEncodeCompareAndDelete_AcceptsTheLargestEncodableKey(t *testing.T) {
+	key := make([]byte, MaxEncodableKeyLength)
+	cmd, err := EncodeCompareAndDelete(key, []byte("acme"))
+	if err != nil {
+		t.Fatalf("the largest encodable key was refused: %v", err)
+	}
+	gotKey, gotExpected, derr := DecodeCompareAndDelete(cmd[1:])
+	if derr != nil {
+		t.Fatalf("DecodeCompareAndDelete: %v", derr)
+	}
+	if len(gotKey) != len(key) {
+		t.Fatalf("round-tripped key length = %d, want %d", len(gotKey), len(key))
+	}
+	if string(gotExpected) != "acme" {
+		t.Fatalf("round-tripped expected = %q, want %q", gotExpected, "acme")
+	}
+}

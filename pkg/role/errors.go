@@ -36,6 +36,25 @@ func (e *RoleNameExistsError) Error() string {
 	return "role: name already exists: " + e.Name + " in tenant " + e.TenantID
 }
 
+// RoleIDExistsError is returned when a caller-supplied role ID is already in
+// use. CreateRoleRequest.ID travels from the REST and gRPC surfaces straight
+// into the store, so a duplicate must be refused rather than overwriting the
+// record it collides with — or, across tenants, taking over that id's entry
+// in the global identity index and redirecting every by-id operation an
+// administrator performs on it.
+//
+// TenantID is the CALLER's tenant, never the tenant already holding the id: a
+// caller that supplied only an id must not learn where that id lives.
+type RoleIDExistsError struct {
+	ID       string
+	TenantID string
+}
+
+// Error returns a human-readable description of the ID conflict.
+func (e *RoleIDExistsError) Error() string {
+	return "role: id already exists: " + e.ID + " in tenant " + e.TenantID
+}
+
 // SystemRoleImmutableError is returned when trying to delete a system role.
 type SystemRoleImmutableError struct {
 	ID string

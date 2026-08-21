@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -510,25 +511,26 @@ func (e *MVCCEngine) Close(_ context.Context) error {
 // buildUpdateHandlers constructs the op code to handler dispatch map.
 func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 	return map[byte]mvccHandler{
-		kv.OpPut:                   e.handleBaseKVPut,
-		kv.OpPutIfAbsent:           e.handleBaseKVPutIfAbsent,
-		kv.OpDelete:                e.handleBaseKVDelete,
-		protocol.OpMVCCPut:         e.handleMVCCPut,
-		protocol.OpMVCCPutIfAbsent: e.handleMVCCPutIfAbsent,
-		protocol.OpMVCCDelete:      e.handleMVCCDelete,
-		protocol.OpMVCCCompact:     handleMVCCCompact,
-		protocol.OpTransaction:     e.handleTransaction,
-		protocol.OpBatch:           e.handleBatch,
-		protocol.OpLeaseGrant:      handleLeaseGrant,
-		protocol.OpLeaseRevoke:     handleLeaseRevoke,
-		protocol.OpLeaseKeepAlive:  handleLeaseKeepAlive,
-		protocol.OpIndexCreate:     e.handleIndexCreate,
-		protocol.OpIndexDrop:       e.handleIndexDrop,
-		protocol.OpTSWrite:         e.handleTSWrite,
-		protocol.OpTSWriteBatch:    e.handleTSWriteBatch,
-		protocol.OpTSWritePoint:    e.handleTSWritePoint,
-		protocol.OpTSDeleteSeries:  e.handleTSDeleteSeries,
-		protocol.OpTSSetRetention:  e.handleTSSetRetention,
+		kv.OpPut:                    e.handleBaseKVPut,
+		kv.OpPutIfAbsent:            e.handleBaseKVPutIfAbsent,
+		kv.OpDelete:                 e.handleBaseKVDelete,
+		protocol.OpMVCCPut:          e.handleMVCCPut,
+		protocol.OpMVCCPutIfAbsent:  e.handleMVCCPutIfAbsent,
+		protocol.OpMVCCDelete:       e.handleMVCCDelete,
+		protocol.OpMVCCCompact:      handleMVCCCompact,
+		protocol.OpTransaction:      e.handleTransaction,
+		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
+		protocol.OpBatch:            e.handleBatch,
+		protocol.OpLeaseGrant:       handleLeaseGrant,
+		protocol.OpLeaseRevoke:      handleLeaseRevoke,
+		protocol.OpLeaseKeepAlive:   handleLeaseKeepAlive,
+		protocol.OpIndexCreate:      e.handleIndexCreate,
+		protocol.OpIndexDrop:        e.handleIndexDrop,
+		protocol.OpTSWrite:          e.handleTSWrite,
+		protocol.OpTSWriteBatch:     e.handleTSWriteBatch,
+		protocol.OpTSWritePoint:     e.handleTSWritePoint,
+		protocol.OpTSDeleteSeries:   e.handleTSDeleteSeries,
+		protocol.OpTSSetRetention:   e.handleTSSetRetention,
 	}
 }
 
@@ -671,10 +673,90 @@ func (e *MVCCEngine) handleBaseKVPutIfAbsent(s *mvcc.Store, _ *lease.Lessor, bat
 		return sm.Result{}, nil, err
 	}
 
-	if _, getErr := s.GetInBatch(batch, key); getErr == nil {
+	absent, getErr := keyIsAbsentInBatch(s, batch, key)
+	if getErr != nil {
+		return sm.Result{}, nil, getErr
+	}
+	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
 	}
 	return e.putIfAbsentInBatch(s, nil, batch, key, value, 0)
+}
+
+// handleCompareAndDelete removes a key only when its stored value still
+// equals the expected one.
+//
+// The comparison runs inside the apply path against the state this replica
+// has applied at this entry's log position, for the same reason the
+// conditional put's guard does: comparing on the proposer and then proposing
+// a plain delete leaves a window in which another caller legitimately claims
+// the key, so the delete removes a value the proposer never observed
+// (go-qrdb#41).
+//
+// A refused delete is reported through Result.Value, never as an error. A
+// read FAULT is returned as an error, because deciding "no match" on a fault
+// would leave the key here while peers that read successfully removed it.
+func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	key, expected, err := protocol.DecodeCompareAndDelete(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	current, getErr := s.GetInBatch(batch, key)
+	if getErr != nil {
+		var notFound *mvcc.KeyNotFoundError
+		if !errors.As(getErr, &notFound) {
+			return sm.Result{}, nil, getErr
+		}
+		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
+	}
+	if current == nil || !bytes.Equal(current.Value, expected) {
+		return sm.Result{Value: protocol.ResultNotDeleted}, nil, nil
+	}
+
+	// The write half mirrors handleMVCCDelete exactly: a tombstone at a fresh
+	// revision, lease detach, index retraction, and a DELETE notification
+	// carrying the previous value.
+	rev := s.CurrentRevision() + 1
+	prevKv, derr := s.DeleteInBatch(batch, key, rev)
+	if derr != nil {
+		return sm.Result{}, nil, derr
+	}
+	s.SetRevision(rev)
+
+	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
+		lr.DetachKey(prevKv.LeaseID, key)
+	}
+	if ierr := RemoveIndexes(e.indexes, e.indexFields, key, prevKv); ierr != nil {
+		return sm.Result{}, nil, ierr
+	}
+
+	notifs := []Notification{{
+		EventType: service.EventDelete,
+		Key:       key,
+		KV:        &service.KeyValue{Key: key, ModRevision: rev},
+		PrevKV:    prevKv,
+	}}
+	return sm.Result{Value: protocol.ResultDeleted}, notifs, nil
+}
+
+// keyIsAbsentInBatch answers the existence guard both conditional-put handlers
+// ask, distinguishing a MISSING key from a key that could not be READ.
+//
+// Only *mvcc.KeyNotFoundError means absent. A storage fault is returned to the
+// caller, which returns it to the Raft layer: folding it into "absent" would
+// overwrite the holder and report ResultStored, and because the fault is LOCAL
+// to one replica, replicas whose reads succeeded would decide the same entry
+// the other way and the group would diverge from an identical log.
+func keyIsAbsentInBatch(s *mvcc.Store, batch storage.Batch, key []byte) (bool, error) {
+	if _, err := s.GetInBatch(batch, key); err != nil {
+		var notFound *mvcc.KeyNotFoundError
+		if errors.As(err, &notFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 // putIfAbsentInBatch performs the write half of a conditional put whose
@@ -826,7 +908,11 @@ func (e *MVCCEngine) handleMVCCPutIfAbsent(s *mvcc.Store, lr *lease.Lessor, batc
 		return sm.Result{}, nil, err
 	}
 
-	if _, getErr := s.GetInBatch(batch, key); getErr == nil {
+	absent, getErr := keyIsAbsentInBatch(s, batch, key)
+	if getErr != nil {
+		return sm.Result{}, nil, getErr
+	}
+	if !absent {
 		return sm.Result{Value: kv.ResultNotStored}, nil, nil
 	}
 	return e.putIfAbsentInBatch(s, lr, batch, key, value, leaseID)

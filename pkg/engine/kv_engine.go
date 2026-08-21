@@ -253,8 +253,9 @@ func (e *KVEngine) Close(_ context.Context) error {
 // buildHandlers creates the base KV protocol handler dispatch map.
 func (e *KVEngine) buildHandlers() map[byte]kvHandler {
 	return map[byte]kvHandler{
-		kv.OpPut:    kvHandlePut,
-		kv.OpDelete: kvHandleDelete,
+		kv.OpPut:         kvHandlePut,
+		kv.OpPutIfAbsent: kvHandlePutIfAbsent,
+		kv.OpDelete:      kvHandleDelete,
 	}
 }
 
@@ -264,9 +265,10 @@ func (e *KVEngine) buildHandlers() map[byte]kvHandler {
 // UnsupportedOperationError.
 func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 	return map[byte]extHandler{
-		protocol.OpIndexCreate: e.handleIndexCreate,
-		protocol.OpIndexDrop:   e.handleIndexDrop,
-		protocol.OpBatch:       e.handleBatch,
+		protocol.OpIndexCreate:      e.handleIndexCreate,
+		protocol.OpIndexDrop:        e.handleIndexDrop,
+		protocol.OpBatch:            e.handleBatch,
+		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
 	}
 }
 
@@ -320,6 +322,146 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 	}
 
 	return sm.Result{Value: uint64(len(cmd.Value))}, nil
+}
+
+// kvHandlePutIfAbsent processes a base KV conditional put (kv.OpPutIfAbsent),
+// storing only when the key is absent.
+//
+// The existence check runs HERE, inside the apply path, against the state this
+// replica has applied up to this entry's log position — the same input on
+// every replica producing the same decision, which is what keeps the replicas
+// identical. Checking on the proposer and then proposing a plain Put would be
+// a different operation, with a window in which two proposers both observe
+// "absent" and both write.
+//
+// A declined write is a normal outcome reported through Result.Value
+// (kv.ResultNotStored), never an error: the caller that lost the race got a
+// correct answer, and an error here would stall consensus instead.
+//
+// It mirrors PebbleStateMachine's pebbleHandlePutIfAbsent and MVCCEngine's
+// handleBaseKVPutIfAbsent, which is where this opcode's semantics are defined.
+// Without a handler here, every conditional write against a KVEngine-backed
+// store failed the entire proposal with UnsupportedOperationError — including
+// the claim tenant.IdentityIndex takes before writing an identity record
+// (#41). That claim is what stops one tenant from creating a role carrying
+// ANOTHER tenant's caller-supplied role id, capturing that id's entry in the
+// system-plane index, and silently redirecting every by-id operation an
+// administrator performs on it.
+func kvHandlePutIfAbsent(e *KVEngine, cmd kv.Command) (sm.Result, error) {
+	// Decline before opening a batch: the losing caller writes nothing at all.
+	//
+	// The read error is PROPAGATED, never folded into "absent". storage.Reader
+	// documents a missing key as (nil, nil), so a non-nil error here is a real
+	// fault — and treating a fault as absence would overwrite the holder and
+	// report ResultStored. Worse, in a replicated group the fault is LOCAL:
+	// replicas whose reads succeeded would decline the same entry this one
+	// stored, and the group would diverge from an identical log. A genuine
+	// non-deterministic fault is exactly the case a state machine must return
+	// as a Go error rather than decide.
+	existing, gerr := e.stg.Get(cmd.Key)
+	if gerr != nil {
+		return sm.Result{Value: 1}, gerr
+	}
+	if existing != nil {
+		return sm.Result{Value: kv.ResultNotStored}, nil
+	}
+
+	batch := e.stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	// Queue data write.
+	if err := batch.Set(cmd.Key, cmd.Value); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	// The guard established the key is absent, so there is no previous value
+	// for the index updates to retract: prevKv is nil by construction, not by
+	// omission.
+	if len(e.indexes) > 0 {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, cmd.Key, cmd.Value, nil); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+	if len(e.compoundIndexes) > 0 {
+		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, cmd.Key, cmd.Value, nil); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+
+	// Commit atomically.
+	if err := batch.Commit(); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	// Watch notification AFTER successful commit, with no prevKv.
+	if e.hub != nil {
+		e.hub.NotifyPut(cmd.Key, &qkv.KeyValue{Key: cmd.Key, Value: cmd.Value}, nil)
+	}
+
+	return sm.Result{Value: kv.ResultStored}, nil
+}
+
+// handleCompareAndDelete removes a key only when its stored value still
+// equals the expected one.
+//
+// The comparison runs HERE, inside the apply path, against the state this
+// replica has applied at this entry's log position — the same input on every
+// replica producing the same decision. Comparing on the proposer and then
+// proposing a plain delete is two operations with a window between them, and
+// that window is the whole defect: two releasers both read holder A, the
+// first deletes, a third party legitimately claims the now-absent key, and
+// the second delete removes THEIR value (#41).
+//
+// A refused delete is a normal outcome reported through Result.Value
+// (protocol.ResultNotDeleted), never an error — the caller that lost the race
+// got a correct answer, and an error would stall consensus instead.
+//
+// The existence read PROPAGATES its error rather than treating a fault as
+// "no match". The read-fault rule applies to a delete guard exactly as it
+// does to a conditional put's: a local fault read as "value differs" would
+// leave the key on this replica while peers that read successfully removed
+// it, diverging the group from an identical log.
+func (e *KVEngine) handleCompareAndDelete(payload []byte) (sm.Result, error) {
+	key, expected, err := protocol.DecodeCompareAndDelete(payload)
+	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	current, gerr := e.stg.Get(key)
+	if gerr != nil {
+		return sm.Result{Value: 1}, gerr
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return sm.Result{Value: protocol.ResultNotDeleted}, nil
+	}
+
+	batch := e.stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	prevKv := &qkv.KeyValue{Key: key, Value: current}
+
+	if err := batch.Delete(key); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if len(e.indexes) > 0 {
+		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, key, prevKv); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+	if len(e.compoundIndexes) > 0 {
+		if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, key, prevKv); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+	if err := batch.Commit(); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	if e.hub != nil {
+		e.hub.NotifyDelete(key, &qkv.KeyValue{Key: key}, prevKv)
+	}
+
+	return sm.Result{Value: protocol.ResultDeleted}, nil
 }
 
 // kvHandleDelete removes a key, cleans up secondary indexes atomically

@@ -15,6 +15,7 @@
 package database
 
 import (
+	"bytes"
 	"context"
 )
 
@@ -112,6 +113,35 @@ func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bo
 		return false, &BarrierEncryptError{Key: string(key), Err: err}
 	}
 	return atomicInner.PutIfAbsent(ctx, key, encrypted)
+}
+
+// CompareAndDelete removes key only when the value stored there still
+// decrypts to expected. Like StorageBarrier's, it guards on the ciphertext
+// this call read: encryption is randomised, so a re-encryption of expected
+// would never match.
+func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []byte) (bool, error) {
+	if b.barrier.IsSealed() {
+		return false, &SealedError{}
+	}
+	atomicInner, ok := b.inner.(AtomicBackend)
+	if !ok {
+		return false, ErrAtomicWriteUnsupported
+	}
+	stored, err := b.inner.Get(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil {
+		return false, nil
+	}
+	plaintext, derr := b.barrier.Decrypt(nil, stored)
+	if derr != nil {
+		return false, &BarrierDecryptError{Key: string(key), Err: derr}
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	return atomicInner.CompareAndDelete(ctx, key, stored)
 }
 
 // Delete removes the key. No decryption is needed for deletion.

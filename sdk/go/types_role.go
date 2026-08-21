@@ -59,6 +59,10 @@ type CreateRoleRequest = role.CreateRoleRequest
 // exists.
 type RoleNameExistsError = role.RoleNameExistsError
 
+// RoleIDExistsError is returned when creating a role with a caller-supplied
+// ID that is already in use.
+type RoleIDExistsError = role.RoleIDExistsError
+
 // RoleNotFoundError is returned when a role ID does not exist.
 type RoleNotFoundError = role.RoleNotFoundError
 

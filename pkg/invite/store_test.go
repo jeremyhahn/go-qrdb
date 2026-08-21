@@ -13,6 +13,7 @@
 package invite
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // memKV is an in-memory kvstore.AtomicKVStore for these tests.
@@ -49,6 +51,22 @@ func (m *memKV) PutIfAbsent(_ context.Context, key string, value []byte) (bool, 
 		return false, nil
 	}
 	m.data[key] = append([]byte(nil), value...)
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *memKV) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.data, key)
 	return true, nil
 }
 
@@ -447,7 +465,9 @@ func newStubResolver() *stubResolver {
 	return &stubResolver{stores: make(map[string]*memKV), fail: make(map[string]error)}
 }
 
-func (r *stubResolver) Resolve(_ context.Context, tenantID string) (kvstore.KVStore, error) {
+// Resolve mirrors the production resolver, which namespaces per TENANT: the
+// store serves identity, and identity is tenant-wide rather than per-database.
+func (r *stubResolver) Resolve(ctx context.Context, tenantID string) (kvstore.KVStore, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err, sealed := r.fail[tenantID]; sealed {
@@ -521,5 +541,180 @@ func TestTenantStoreSealedTenantFailsClosed(t *testing.T) {
 func TestNewTenantStoreRequiresResolver(t *testing.T) {
 	if _, err := NewTenantStore(nil); !errors.Is(err, ErrNilStoreResolver) {
 		t.Fatalf("NewTenantStore(nil) err = %v, want ErrNilStoreResolver", err)
+	}
+}
+
+// TestTenantStoreIsolatesInvitationsByDatabase covers a review finding: the
+// TenantStore cached its DAOStore by tenantID alone while the resolver
+// resolves per {tenant}/{db}/.
+//
+// TestTenantStoreInvitationsAreTenantWide replaces a test that asserted a
+// tenant's databases hold SEPARATE invitations.
+//
+// That followed from an earlier draft where StoreResolver namespaced at
+// "{tenant}/{db}/". It namespaces at "{tenant}/" now, because the store also
+// serves identity and identity is tenant-wide — namespacing it per database
+// broke login outright, since firstboot writes the admin user with no database
+// bound. An invitation is identity too: it is issued to a person for a tenant,
+// not for one of that tenant's databases, so it must redeem the same whichever
+// database the redeeming request names.
+func TestTenantStoreInvitationsAreTenantWide(t *testing.T) {
+	resolver := newStubResolver()
+	store, err := NewTenantStore(resolver)
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+
+	ctxA := tenant.WithDatabase(context.Background(), "alpha")
+	ctxB := tenant.WithDatabase(context.Background(), "beta")
+
+	token, _, err := store.Create(ctxA, "user-1", "acme", time.Hour)
+	if err != nil {
+		t.Fatalf("Create in database alpha: %v", err)
+	}
+
+	if _, err := store.Lookup(ctxB, "acme", token); err != nil {
+		t.Fatalf("Lookup from database beta = %v; an invitation is tenant-wide and "+
+			"must resolve whichever database the request names", err)
+	}
+	if _, err := store.Redeem(ctxB, "acme", token); err != nil {
+		t.Errorf("Redeem from database beta: %v", err)
+	}
+
+	// And it is single-use across the tenant, not once per database.
+	if _, err := store.Redeem(ctxA, "acme", token); !errors.Is(err, ErrAlreadyRedeemed) {
+		t.Errorf("second Redeem = %v; want ErrAlreadyRedeemed — one invitation, one use", err)
+	}
+}
+
+// TestTenantStoreFailsClosedAfterTenantBecomesSealed covers a review finding:
+// a fail-OPEN path created by consulting the cache before the resolver.
+//
+// A lookup for an UNKNOWN tenant used to cache that tenant's shared-prefix
+// store under its id. If the tenant was then created with barrier isolation
+// and its barrier was sealed, every later invitation operation kept using the
+// cached unencrypted shared store — never consulting the barrier, never
+// surfacing ErrTenantSealed, and operating on plaintext while the barrier sat
+// sealed. That is the precise opposite of the fail-closed guarantee
+// TenantStore documents.
+//
+// The resolver now runs on every call, before any cache lookup, and the cache
+// is keyed by the RESOLVED store rather than the tenant id.
+func TestTenantStoreFailsClosedAfterTenantBecomesSealed(t *testing.T) {
+	resolver := newStubResolver()
+	store, err := NewTenantStore(resolver)
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	ctx := context.Background()
+
+	// Prime the cache while the tenant is still unknown / unsealed.
+	if _, err := store.Lookup(ctx, "acme", "no-such-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("priming Lookup = %v; want ErrNotFound", err)
+	}
+
+	// The tenant is now barrier-isolated and its barrier is sealed.
+	resolver.mu.Lock()
+	resolver.fail["acme"] = tenant.ErrTenantSealed
+	resolver.mu.Unlock()
+
+	// EVERY operation must now fail closed, not serve the cached store.
+	if _, _, err := store.Create(ctx, "user-1", "acme", time.Hour); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Errorf("Create = %v; want ErrTenantSealed — a cached store must not outlive sealing", err)
+	}
+	if _, err := store.Lookup(ctx, "acme", "tok"); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Errorf("Lookup = %v; want ErrTenantSealed", err)
+	}
+	if _, err := store.Redeem(ctx, "acme", "tok"); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Errorf("Redeem = %v; want ErrTenantSealed", err)
+	}
+	if _, err := store.GC(ctx, "acme", time.Now()); !errors.Is(err, tenant.ErrTenantSealed) {
+		t.Errorf("GC = %v; want ErrTenantSealed", err)
+	}
+}
+
+// nonComparableKV is a valid kvstore.KVStore whose dynamic type is NOT
+// comparable — a named slice with value receivers. Nothing in the interface
+// forbids this, and StoreResolver returns the interface, so an exported type
+// that uses the resolved value as a map key must cope with it.
+type nonComparableKV []byte
+
+func (nonComparableKV) Put(context.Context, string, []byte) error { return nil }
+func (nonComparableKV) Get(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (nonComparableKV) Delete(context.Context, string) error { return nil }
+func (nonComparableKV) Scan(context.Context, string, func(string, []byte) error) error {
+	return nil
+}
+func (nonComparableKV) List(context.Context, string) ([]string, error) { return nil, nil }
+func (nonComparableKV) Exists(context.Context, string) (bool, error)   { return false, nil }
+func (nonComparableKV) RegisterEntityIndexes(string, []kvstore.EntityIndex) error {
+	return kvstore.ErrIndexUnsupported
+}
+func (nonComparableKV) QueryIndex(context.Context, string, []byte) ([][]byte, error) {
+	return nil, kvstore.ErrIndexUnsupported
+}
+func (nonComparableKV) ScanIndex(context.Context, string, []byte, []byte) (map[string][][]byte, error) {
+	return nil, kvstore.ErrIndexUnsupported
+}
+func (nonComparableKV) QueryCompoundIndex(context.Context, string, [][]byte) ([][]byte, error) {
+	return nil, kvstore.ErrIndexUnsupported
+}
+func (nonComparableKV) ScanCompoundIndex(context.Context, string, [][]byte, []byte, []byte) (map[string][][]byte, error) {
+	return nil, kvstore.ErrIndexUnsupported
+}
+
+// PutIfAbsent makes the fake an AtomicKVStore, which NewDAOStore requires —
+// invitations are single-use, so the store asserts the capability at boot.
+func (nonComparableKV) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (nonComparableKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
+// nonComparableResolver hands back a non-comparable store.
+type nonComparableResolver struct{}
+
+func (nonComparableResolver) Resolve(context.Context, string) (kvstore.KVStore, error) {
+	return nonComparableKV{}, nil
+}
+
+// TestTenantStoreToleratesANonComparableStore covers a review finding.
+//
+// Caching by resolved KVStore identity fixed a fail-open (see
+// TestTenantStoreFailsClosedAfterTenantBecomesSealed) but introduced a Go
+// hazard: kvstore.KVStore is an interface, nothing requires implementations to
+// be comparable, and a non-comparable dynamic type used as a sync.Map key
+// panics with "hash of unhashable type" on EVERY operation. The previous
+// tenant-id key accepted any conforming resolver, so this was a regression in
+// what the exported type accepts.
+//
+// The cache is an optimization; correctness must not depend on the caller's
+// choice of representation. A non-comparable store now skips the cache.
+func TestTenantStoreToleratesANonComparableStore(t *testing.T) {
+	store, err := NewTenantStore(nonComparableResolver{})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	ctx := context.Background()
+
+	// Every one of these would panic with "hash of unhashable type" if the
+	// resolved store were used as a sync.Map key.
+	if _, _, err := store.Create(ctx, "user-1", "acme", time.Hour); err != nil {
+		t.Errorf("Create: %v", err)
+	}
+	if _, err := store.Lookup(ctx, "acme", "tok"); err == nil {
+		t.Error("Lookup of an absent token should not succeed")
+	}
+	if _, err := store.Redeem(ctx, "acme", "tok"); err == nil {
+		t.Error("Redeem of an absent token should not succeed")
+	}
+	if _, err := store.GC(ctx, "acme", time.Now()); err != nil {
+		t.Errorf("GC: %v", err)
 	}
 }

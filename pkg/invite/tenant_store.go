@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -37,15 +38,38 @@ import (
 // caller cannot use cross-tenant probing to discover that a token exists
 // somewhere.
 //
+// That claim was FALSE for shared-prefix tenants until #41 (2026-08-19), and
+// the correction is worth recording because the guarantee is load-bearing.
+// StoreResolver returned the shared store itself for every prefix tenant, so
+// "a different store" was the SAME store: every prefix tenant's invitations
+// occupied one keyspace, and Redeem for tenant B resolved and consumed an
+// invitation issued for tenant A. Entity.TenantID was written and never
+// compared, so nothing else caught it either — the scoping was meant to come
+// from the store separation that did not exist.
+//
+// Exploiting it required knowing the token, so it was not a probing hole; the
+// failure was that an invitation's tenant scope was not enforced at all.
+// StoreResolver now confines each prefix tenant to its own tenant-only
+// "{tenant}/" identity keyspace, which is what makes the paragraph above true
+// rather than aspirational. Note that is deliberately NOT
+// tenant.ComposeNamespace, which is the data plane's "{tenant}/{database}/"
+// formula: an invitation is identity and belongs to the tenant, not to one of
+// its databases.
+//
 // TenantStore holds no invitation state of its own. It caches one DAOStore per
-// tenant because building a store registers entity indexes, which is wasteful
-// to repeat per request; the cached value is keyed by tenant and never shared
-// across them.
+// resolved KVStore because building a store registers entity indexes, which is
+// wasteful to repeat per request.
+//
+// Keyed by the RESOLVED store, not by tenant id, and the resolver runs on
+// EVERY operation before the cache is consulted. Caching by tenant id let a
+// lookup for an unknown tenant pin that tenant to the shared store forever:
+// if it was later created with barrier isolation, every invitation operation
+// kept using the cached unencrypted store and never saw ErrTenantSealed. The
+// user and role routers key their caches the same way for the same reason.
 type TenantStore struct {
 	resolver tenant.StoreResolver
 
-	mu     sync.RWMutex
-	stores map[string]*DAOStore
+	stores sync.Map // map[kvstore.KVStore]*DAOStore
 }
 
 // NewTenantStore constructs a TenantStore over the given resolver.
@@ -53,10 +77,7 @@ func NewTenantStore(resolver tenant.StoreResolver) (*TenantStore, error) {
 	if resolver == nil {
 		return nil, ErrNilStoreResolver
 	}
-	return &TenantStore{
-		resolver: resolver,
-		stores:   make(map[string]*DAOStore),
-	}, nil
+	return &TenantStore{resolver: resolver}, nil
 }
 
 // Create issues an invitation for a user in the named tenant and returns the
@@ -100,38 +121,45 @@ func (s *TenantStore) GC(ctx context.Context, tenantID string, now time.Time) (i
 	return store.GC(ctx, now)
 }
 
-// storeFor returns the invitation store backing the named tenant, building and
-// caching it on first use.
+// storeFor returns the invitation store backing the named tenant.
 //
-// A tenant whose barrier is sealed surfaces the resolver's error unchanged, so
-// the caller fails closed rather than treating a sealed tenant as one with no
-// invitations.
+// The resolver runs FIRST, on every call, before any cache is consulted. That
+// ordering is the fail-closed guarantee: a tenant whose barrier is sealed
+// surfaces tenant.ErrTenantSealed here, and a tenant whose isolation changed
+// since the last call gets its NEW store. Consulting a cache keyed by tenant
+// id first would pin an unknown tenant to the shared store and keep using it
+// after that tenant was created with barrier isolation — operating on
+// plaintext while the barrier sat sealed.
 func (s *TenantStore) storeFor(ctx context.Context, tenantID string) (*DAOStore, error) {
-	s.mu.RLock()
-	cached, ok := s.stores[tenantID]
-	s.mu.RUnlock()
-	if ok {
-		return cached, nil
-	}
-
 	kv, err := s.resolver.Resolve(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
+	return s.storeForKV(kv)
+}
 
+// storeForKV returns the cached DAOStore for a resolved KVStore, building one
+// on first use. Caching by store identity means each tenant's resolved store
+// maps to exactly one DAOStore and its entity indexes are registered once.
+//
+// A store whose dynamic type is NOT comparable skips the cache and gets a
+// fresh DAOStore. kvstore.KVStore is an interface and nothing requires its
+// implementations to be comparable — a named slice or map type with value
+// receivers satisfies it perfectly well — and using such a value as a
+// sync.Map key panics with "hash of unhashable type" on every operation.
+// The cache is an optimization; correctness must not depend on the caller's
+// choice of representation.
+func (s *TenantStore) storeForKV(kv kvstore.KVStore) (*DAOStore, error) {
+	if !kvstore.UsableAsMapKey(kv) {
+		return NewDAOStore(kv)
+	}
+	if cached, ok := s.stores.Load(kv); ok {
+		return cached.(*DAOStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
+	}
 	store, err := NewDAOStore(kv)
 	if err != nil {
 		return nil, err
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Another goroutine may have built one while this call was resolving. Keep
-	// the first, so every caller for a tenant shares one store and its indexes
-	// are registered once.
-	if existing, raced := s.stores[tenantID]; raced {
-		return existing, nil
-	}
-	s.stores[tenantID] = store
-	return store, nil
+	actual, _ := s.stores.LoadOrStore(kv, store)
+	return actual.(*DAOStore), nil //nolint:errcheck // type assertion on a value this container only ever holds
 }

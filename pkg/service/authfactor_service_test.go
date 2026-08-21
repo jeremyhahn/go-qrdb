@@ -15,6 +15,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -52,6 +53,20 @@ func (m *afMockKV) PutIfAbsent(_ context.Context, key string, val []byte) (bool,
 		return false, nil
 	}
 	m.store[key] = val
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *afMockKV) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	current, ok := m.store[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.store, key)
 	return true, nil
 }
 

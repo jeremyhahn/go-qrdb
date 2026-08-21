@@ -15,6 +15,7 @@
 package kvstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sort"
@@ -180,6 +181,34 @@ func (s *MemoryKVStore) PutIfAbsent(ctx context.Context, key string, value []byt
 	if err := s.putLocked(key, value); err != nil {
 		return false, err
 	}
+	return true, nil
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected. The mutex makes the compare-then-delete indivisible, which is
+// what a read followed by a delete is not: two releasers would both see the
+// same value and the second would remove whatever a third party had claimed
+// in between (#41).
+func (s *MemoryKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.data[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	// A guarded delete is a DELETE: it must retract the index entries the
+	// value had, exactly as Delete does. Removing only the primary leaves
+	// QueryIndex and ScanIndex returning a key that is gone, and leaves a
+	// stale UNIQUE entry rejecting a later legitimate insert of the same
+	// value — the guard changes WHEN the delete happens, never what a delete
+	// means.
+	if err := s.deindexLocked(key, current); err != nil {
+		return false, err
+	}
+	delete(s.data, key)
 	return true, nil
 }
 
@@ -445,7 +474,7 @@ func (s *MemoryKVStore) RegisterEntityIndexes(entityType string, indexes []Entit
 				existing.unique != ei.Unique ||
 				existing.sparse != ei.Sparse ||
 				existing.cfg.CaseSensitive != ei.CaseSensitive ||
-				existing.prefix != entityType+"/" {
+				existing.prefix != ei.ResolvedPrefix(entityType) {
 				return &IndexRegistrationError{
 					EntityType: entityType,
 					Err:        &ConflictingIndexError{IndexName: name},
@@ -468,7 +497,7 @@ func (s *MemoryKVStore) RegisterEntityIndexes(entityType string, indexes []Entit
 		mi := &memIndex{
 			idx:    idx,
 			field:  ei.JSONFieldName,
-			prefix: entityType + "/",
+			prefix: ei.ResolvedPrefix(entityType),
 			unique: ei.Unique,
 			sparse: ei.Sparse,
 			cfg:    cfg,

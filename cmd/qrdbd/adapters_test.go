@@ -103,12 +103,13 @@ func TestAdminCertWriteError_ErrorsAs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type mockKVServicer struct {
-	putFn         func(ctx context.Context, key string, value []byte) error
-	putIfAbsentFn func(ctx context.Context, key string, value []byte) (bool, error)
-	getFn         func(ctx context.Context, key string) ([]byte, error)
-	deleteFn      func(ctx context.Context, key string) error
-	scanFn        func(ctx context.Context, prefix string) (map[string][]byte, error)
-	listFn        func(ctx context.Context, prefix string) ([]string, error)
+	putFn              func(ctx context.Context, key string, value []byte) error
+	putIfAbsentFn      func(ctx context.Context, key string, value []byte) (bool, error)
+	compareAndDeleteFn func(ctx context.Context, key string, expected []byte) (bool, error)
+	getFn              func(ctx context.Context, key string) ([]byte, error)
+	deleteFn           func(ctx context.Context, key string) error
+	scanFn             func(ctx context.Context, prefix string) (map[string][]byte, error)
+	listFn             func(ctx context.Context, prefix string) ([]string, error)
 }
 
 func (m *mockKVServicer) Put(ctx context.Context, key string, value []byte) error {
@@ -123,6 +124,15 @@ func (m *mockKVServicer) PutIfAbsent(ctx context.Context, key string, value []by
 		return m.putIfAbsentFn(ctx, key, value)
 	}
 	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *mockKVServicer) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if m.compareAndDeleteFn != nil {
+		return m.compareAndDeleteFn(ctx, key, expected)
+	}
+	return false, nil
 }
 
 func (m *mockKVServicer) Get(ctx context.Context, key string) ([]byte, error) {

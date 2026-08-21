@@ -70,6 +70,13 @@ func (a *kvServiceAdapter) PutIfAbsent(ctx context.Context, key string, value []
 	return a.svc.PutIfAbsent(ctx, key, value)
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected. As with PutIfAbsent the condition is evaluated by the KV service
+// inside the state machine, never by a read and a delete in this adapter.
+func (a *kvServiceAdapter) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return a.svc.CompareAndDelete(ctx, key, expected)
+}
+
 // Get retrieves a value by key. Returns nil, nil when the key does not
 // exist, matching the kvstore.KVStore contract.
 func (a *kvServiceAdapter) Get(ctx context.Context, key string) ([]byte, error) {

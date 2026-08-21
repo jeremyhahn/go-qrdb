@@ -62,6 +62,12 @@ func (f *failingBackend) PutIfAbsent(ctx context.Context, key string, data []byt
 	}
 	return f.inner.PutIfAbsent(ctx, key, data)
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (f *failingBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (f *failingBackend) Delete(ctx context.Context, key string) error {
 	if f.failDel {
 		return errStoreFault

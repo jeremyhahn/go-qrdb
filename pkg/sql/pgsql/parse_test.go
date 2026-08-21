@@ -17,6 +17,7 @@
 package pgsql
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -382,6 +383,20 @@ func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte)
 		return false, nil
 	}
 	m.scanData[key] = value
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *mockKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	current, ok := m.scanData[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.scanData, key)
 	return true, nil
 }
 

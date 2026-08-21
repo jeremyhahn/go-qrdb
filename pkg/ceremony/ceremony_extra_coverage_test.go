@@ -465,6 +465,12 @@ func (b *errorableBackend) PutIfAbsent(ctx context.Context, key string, data []b
 	return b.inner.PutIfAbsent(ctx, key, data)
 }
 
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (b *errorableBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
 func (b *errorableBackend) Delete(ctx context.Context, key string) error {
 	if b.failDelete {
 		return errInjectedBackend

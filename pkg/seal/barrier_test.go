@@ -180,6 +180,12 @@ func (f *failingPutBackend) PutIfAbsent(ctx context.Context, key string, data []
 	return f.inner.PutIfAbsent(ctx, key, data)
 }
 
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (f *failingPutBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
 // fakeShamirStrategy is registered under StrategyShamir but is NOT a
 // *ShamirStrategy, which triggers the second type assertion failure
 // in Barrier.ShamirStrategy().
@@ -2143,6 +2149,12 @@ func (m *metaFailBackend) Put(ctx context.Context, key string, data []byte) erro
 }
 func (m *metaFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	return m.inner.PutIfAbsent(ctx, key, data)
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *metaFailBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
 }
 func (m *metaFailBackend) Delete(ctx context.Context, key string) error {
 	return m.inner.Delete(ctx, key)

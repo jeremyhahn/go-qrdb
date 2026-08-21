@@ -15,6 +15,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"testing"
@@ -65,6 +66,22 @@ func (m *trackingKVService) PutIfAbsent(_ context.Context, key string, value []b
 		return false, nil
 	}
 	m.store[key] = value
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *trackingKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.store, key)
 	return true, nil
 }
 

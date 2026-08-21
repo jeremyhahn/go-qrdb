@@ -103,9 +103,32 @@ func resolverStoreCases() []resolverStoreCase {
 			name:     "shared_store_system_tenant",
 			tenantID: tenant.SystemTenantID,
 			setup:    func(context.Context, *testing.T, *Node) {},
-			// Carries the node's IndexServicer, which reaches the same
-			// KVEngine that backs its writes, so indexes are real.
-			indexCapable: true,
+			// INVERTED by #41 (2026-08-19), deliberately and on a ruling.
+			//
+			// This was true: the shared store carries the node's
+			// IndexServicer, reaching the same KVEngine that backs its
+			// writes, so #32 made its indexes real.
+			//
+			// #41 confines every shared-prefix tenant — the system tenant
+			// included, as "system/system/" — to its own keyspace, because
+			// returning the bare shared store gave every prefix tenant one
+			// undifferentiated keyspace. KVEngine matches writes to indexes
+			// by the FIRST path segment of the key, so a namespaced key
+			// displaces the entity type and the engine can no longer maintain
+			// the index. Isolation was ruled the priority; the index is the
+			// cost.
+			//
+			// The system tenant is NOT special-cased back to an unnamespaced
+			// store to keep its indexes: tenant.ComposeNamespace's own
+			// documentation forbids exactly that, because an empty prefix
+			// "would give it the entire shared store root as its keyspace,
+			// leaking every other database's and every other tenant's keys
+			// into a scan".
+			//
+			// Results remain correct — pkg/dao plans a full scan, asserted by
+			// TestDAOIndexOverResolverStore_PlannedQueryIsNonEmpty. THIS FLAG
+			// FLIPS BACK when #40 teaches the engine about namespaced keys.
+			indexCapable: false,
 		},
 		{
 			name:     "tenant_shared_store_barrier_isolated_tenant",

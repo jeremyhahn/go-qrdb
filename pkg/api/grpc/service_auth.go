@@ -647,6 +647,13 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	}
 
+	// A caller-supplied role ID already in use — including by another tenant,
+	// which the identity-index claim refuses. The error does not say where.
+	var rie *role.RoleIDExistsError
+	if errors.As(err, &rie) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
 	var sri *role.SystemRoleImmutableError
 	if errors.As(err, &sri) {
 		return status.Error(codes.FailedPrecondition, err.Error())

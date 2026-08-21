@@ -57,6 +57,12 @@ func (m *mockKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool
 	return true, nil
 }
 
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *mockKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
 func (m *mockKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, key)

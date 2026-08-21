@@ -151,6 +151,12 @@ func (b *listOkGetFailBackend) Put(ctx context.Context, key string, data []byte)
 func (b *listOkGetFailBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	return b.inner.PutIfAbsent(ctx, key, data)
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (b *listOkGetFailBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
 func (b *listOkGetFailBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)
 }
@@ -184,6 +190,12 @@ func (b *disappearingBackend) Put(ctx context.Context, key string, data []byte) 
 }
 func (b *disappearingBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
 	return b.inner.PutIfAbsent(ctx, key, data)
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (b *disappearingBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
 }
 func (b *disappearingBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)

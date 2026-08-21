@@ -32,6 +32,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -239,22 +241,21 @@ func TestBuildServices_SealGatedServicesNonNil(t *testing.T) {
 	}
 }
 
-// TestBuildServices_WithBarrierRegistry_InstallsRoutingServices verifies the
-// tenant-store-routing wiring in BuildServices: when both a SealBarrier and a
-// BarrierRegistry are supplied, the node installs a StoreResolver and replaces
-// the plain User/Role services with the routing decorators. Because the
-// decorators are unexported (and the test lives in lifecycle_test), the
-// installation is asserted behaviorally: a barrier-isolated tenant's IAM data
-// must be routed to that tenant's own barrier-backed store and must NOT be
-// visible from the shared system store. A non-routing user service would write
-// every record to the single shared store, so the system-scoped lookup below
-// would (incorrectly) find the barrier tenant's user.
-func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T) {
+// buildRoutedIAMNode builds a node whose IAM is tenant-routed: a SealBarrier
+// plus a pool-backed BarrierRegistry, which is the combination BuildServices
+// requires before it installs the StoreResolver and the routing decorators.
+//
+// Its state machine is pkg/engine's KVEngine, which makes every test built on
+// it a check of that engine specifically — including its conditional-write
+// handler, which #41 added.
+func buildRoutedIAMNode(t *testing.T) (*lifecycle.Node, *seal.BarrierRegistry) {
+	t.Helper()
+
 	host := newLocalHost()
-	defer func() { _ = host.Close() }()
+	t.Cleanup(func() { _ = host.Close() })
 
 	hub := watch.NewHub()
-	defer hub.Close()
+	t.Cleanup(hub.Close)
 
 	barrier, _, credSvc := newTestBarrier(t)
 	// CreateTenant(IsolationBarrier) takes the pool-driven RegisterTenantPooled
@@ -272,7 +273,23 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 	if err != nil {
 		t.Fatalf("BuildServices: %v", err)
 	}
-	defer func() { _ = node.Stop(context.Background()) }()
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+
+	return node, registry
+}
+
+// TestBuildServices_WithBarrierRegistry_InstallsRoutingServices verifies the
+// tenant-store-routing wiring in BuildServices: when both a SealBarrier and a
+// BarrierRegistry are supplied, the node installs a StoreResolver and replaces
+// the plain User/Role services with the routing decorators. Because the
+// decorators are unexported (and the test lives in lifecycle_test), the
+// installation is asserted behaviorally: a barrier-isolated tenant's IAM data
+// must be routed to that tenant's own barrier-backed store and must NOT be
+// visible from the shared system store. A non-routing user service would write
+// every record to the single shared store, so the system-scoped lookup below
+// would (incorrectly) find the barrier tenant's user.
+func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T) {
+	node, registry := buildRoutedIAMNode(t)
 
 	// The routing branch must have installed a StoreResolver.
 	if node.StoreResolver == nil {
@@ -330,6 +347,74 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 		if !errors.As(err, &notFound) {
 			t.Fatalf("system-tenant lookup: want UserNotFoundError, got %v", err)
 		}
+	}
+}
+
+// The identity-index CLAIM, exercised end to end over the KVEngine-backed
+// state machine this node runs — the third implementation of
+// kv.OpPutIfAbsent, alongside PebbleStateMachine and MVCCEngine, and the one
+// that had no handler until #41 (a conditional write failed the whole
+// proposal with engine: unsupported operation: 0x04).
+//
+// Role IDs are caller-supplied: CreateRoleRequest.ID travels from the REST
+// and gRPC surfaces straight into the store. Without a claim, one tenant
+// could create a role carrying ANOTHER tenant's role id, take over that id's
+// entry in the system-plane index, and silently redirect every by-id
+// operation an administrator performs on it.
+func TestBuildServices_IdentityClaimRefusesACrossTenantCapture(t *testing.T) {
+	node, registry := buildRoutedIAMNode(t)
+	ctx := context.Background()
+
+	const victimTenant = "victim-tenant"
+	const captorTenant = "captor-tenant"
+	for _, id := range []string{victimTenant, captorTenant} {
+		if _, err := node.Tenant.CreateTenant(ctx, id, id, tenant.IsolationBarrier); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+		if err := registry.InitializeTenant(ctx, id, seal.Credentials{}); err != nil {
+			t.Fatalf("InitializeTenant(%s): %v", id, err)
+		}
+	}
+
+	victim, err := node.Role.CreateRole(ctx, &role.CreateRoleRequest{
+		Name:        "victim-admin",
+		TenantID:    victimTenant,
+		Permissions: []permission.Permission{permission.KVGet},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole(victim): %v", err)
+	}
+
+	// The capture attempt: the captor names the victim's id explicitly.
+	_, err = node.Role.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          victim.ID,
+		Name:        "impostor",
+		TenantID:    captorTenant,
+		Permissions: []permission.Permission{permission.KVPut},
+	})
+	var exists *role.RoleIDExistsError
+	if !errors.As(err, &exists) {
+		t.Fatalf("cross-tenant capture of a role id = %v, want *role.RoleIDExistsError", err)
+	}
+
+	// Nothing was written for the captor: the claim is settled BEFORE the
+	// record, so a refused capture leaves no orphan behind.
+	captorRoles, err := node.Role.ListRoles(ctx, &role.ListRolesRequest{TenantID: captorTenant})
+	if err != nil {
+		t.Fatalf("ListRoles(captor): %v", err)
+	}
+	if len(captorRoles.Roles) != 0 {
+		t.Fatalf("captor tenant holds %d roles after a refused capture: %+v",
+			len(captorRoles.Roles), captorRoles.Roles)
+	}
+
+	// And the id still routes to the victim's role, unchanged.
+	got, err := node.Role.GetRole(ctx, victim.ID)
+	if err != nil {
+		t.Fatalf("GetRole after the refused capture: %v", err)
+	}
+	if got.Name != "victim-admin" || got.TenantID != victimTenant {
+		t.Fatalf("GetRole = %+v; the id was redirected to the impostor", got)
 	}
 }
 
@@ -1010,5 +1095,74 @@ func TestBuildServices_BackupSink_NilKeepsInMemory(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("ListBackups on a fresh in-memory registry = %+v, want empty", got)
+	}
+}
+
+// THE SEAL-DISABLED NODE. BuildServices explicitly supports SealBarrier ==
+// nil, and in that branch it used to leave n.User and n.Role on the raw
+// unconfined store — so two prefix tenants on an embedded node with
+// encryption off shared ONE IAM keyspace. That is the exposure #41 closes
+// everywhere else, and keyspace isolation is not a property of encryption:
+// a node that has not turned on the seal subsystem still has tenants, and
+// they are still entitled to be separate.
+func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
+	host := newLocalHost()
+	t.Cleanup(func() { _ = host.Close() })
+
+	hub := watch.NewHub()
+	t.Cleanup(hub.Close)
+
+	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
+		Host:     host,
+		WatchHub: hub,
+		DataDir:  t.TempDir(),
+		// No SealBarrier and no BarrierRegistry: the seal-disabled branch.
+	})
+	if err != nil {
+		t.Fatalf("BuildServices: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+
+	if node.StoreResolver == nil {
+		t.Fatal("no StoreResolver on a seal-disabled node: IAM is unconfined, " +
+			"so every prefix tenant shares one keyspace")
+	}
+
+	ctx := context.Background()
+	acme, err := node.User.CreateUser(ctx, &user.CreateUserRequest{
+		Username: "alice", TenantID: "acme",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(acme): %v", err)
+	}
+
+	// globex must not see acme's user by name...
+	if _, gerr := node.User.GetUserByUsername(ctx, "globex", "alice"); gerr == nil {
+		t.Fatal("globex resolved acme's user by username — the two prefix " +
+			"tenants share one IAM keyspace")
+	} else {
+		var notFound *user.UserNotFoundError
+		if !errors.As(gerr, &notFound) {
+			t.Fatalf("cross-tenant lookup: want UserNotFoundError, got %v", gerr)
+		}
+	}
+
+	// ...nor by listing.
+	listed, err := node.User.ListUsers(ctx, &user.ListUsersRequest{TenantID: "globex"})
+	if err != nil {
+		t.Fatalf("ListUsers(globex): %v", err)
+	}
+	for _, u := range listed.Users {
+		if u.ID == acme.ID {
+			t.Fatalf("globex's user list contains acme's user %d", acme.ID)
+		}
+	}
+
+	// And acme still reaches its own record, by name and by id.
+	if got, gerr := node.User.GetUserByUsername(ctx, "acme", "alice"); gerr != nil || got.ID != acme.ID {
+		t.Fatalf("acme cannot read its own user: (%+v, %v)", got, gerr)
+	}
+	if got, gerr := node.User.GetUser(ctx, acme.ID); gerr != nil || got.TenantID != "acme" {
+		t.Fatalf("by-id routing on a seal-disabled node: (%+v, %v)", got, gerr)
 	}
 }

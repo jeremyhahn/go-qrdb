@@ -25,6 +25,7 @@
 package sqltest
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
@@ -104,6 +105,19 @@ func (s *MemStore) PutIfAbsent(_ context.Context, key string, value []byte) (boo
 	}
 	s.rev++
 	s.data[key] = &memRecord{value: cloneBytes(value), modRevision: s.rev, createRevision: s.rev, version: 1}
+	return true, nil
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected, under the same lock that makes PutIfAbsent indivisible.
+func (s *MemStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.data[key]
+	if !ok || !bytes.Equal(rec.value, expected) {
+		return false, nil
+	}
+	delete(s.data, key)
 	return true, nil
 }
 

@@ -66,11 +66,20 @@ var _ UserServicer = (*kvUserStore)(nil)
 //	__sys:users/tenant/{tenantID}/{be8(userID)}           -> be8(userID)
 //	__sys:user_idx/username/{tenantID}/{username}         -> be8(userID)
 //	__sys:user_idx/cert_spki/{thumbprint}                 -> be8(userID)
+//
+// One index does NOT live here: the system-plane identity index that maps a
+// user id to the tenant holding it. That entry is cross-tenant by nature and
+// belongs in the system tenant's identity namespace, so it is written
+// through an injected tenant.IdentityIndex (see WithIdentityIndex) rather
+// than into this store — a tenant's own store must not be able to write
+// outside its tenant. It is still maintained by the same functions that
+// maintain the keys above, which is what keeps it in step with them.
 type kvUserStore struct {
 	store        kvstore.KVStore
 	idgen        dao.IDGenerator
-	quotaChecker quota.Checker     // optional; nil skips quota enforcement
-	audit        audit.AuditLogger // optional; nil disables audit emission
+	quotaChecker quota.Checker        // optional; nil skips quota enforcement
+	audit        audit.AuditLogger    // optional; nil disables audit emission
+	identity     tenant.IdentityIndex // optional; nil skips identity-index maintenance
 }
 
 // NewStore creates a new KVStore-backed UserServicer. The provided kvstore
@@ -102,7 +111,7 @@ func (s *kvUserStore) WithQuotaChecker(checker quota.Checker) *kvUserStore {
 // CreateUser creates a new user with a store-assigned Snowflake ID. It
 // validates the request, checks username uniqueness within the tenant via the
 // secondary index, and atomically writes the primary record plus both indexes.
-func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error) {
+func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (created *User, retErr error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
 	}
@@ -146,6 +155,29 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		user.RoleIDs = []string{}
 	}
 
+	// CLAIM the id before anything is written. A conflict here means the
+	// Snowflake generator produced an id another tenant already holds — a
+	// node-seed collision — and refusing before the first write keeps a
+	// contested id from ever naming two records.
+	claimToken, cerr := s.recordIdentity(ctx, user.ID, tenantID)
+	if cerr != nil {
+		return nil, &StoreError{Op: "create", Detail: "claim identity", Err: cerr}
+	}
+
+	// EVERY failure after the claim releases it, as a deferred compensation
+	// on the named return so a write added later is covered by construction.
+	// A user id is generated rather than chosen, so a leaked claim costs less
+	// here than it does for a role — but a claim with no record still blocks
+	// that id forever, and the record does not exist for DeleteUser to reach.
+	// written records the keys this call actually put, in the order the
+	// rollback must undo them: secondary indexes first, the primary last.
+	var written []string
+	defer func() {
+		if retErr != nil {
+			s.rollbackFailedCreate(ctx, written, user.ID, tenantID, claimToken)
+		}
+	}()
+
 	data, err := json.Marshal(user)
 	if err != nil {
 		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
@@ -153,22 +185,26 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 
 	idBytes := encodeID(user.ID)
 
-	// Write primary record.
+	// Write primary record. Recorded LAST in `written` so the rollback removes
+	// it last, keeping the record findable while its indexes are cleaned up.
 	pk := primaryKey(user.ID)
 	if err := s.store.Put(ctx, pk, data); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put primary", Err: err}
 	}
+	written = append([]string{pk}, written...)
 
 	// Write tenant index.
 	tenantKey := tenantIndexKey(tenantID, user.ID)
 	if err := s.store.Put(ctx, tenantKey, idBytes); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put tenant index", Err: err}
 	}
+	written = append([]string{tenantKey}, written...)
 
 	// Write username index.
 	if err := s.store.Put(ctx, usernameKey, idBytes); err != nil {
 		return nil, &StoreError{Op: "create", Detail: "put username index", Err: err}
 	}
+	written = append([]string{usernameKey}, written...)
 
 	s.emitAudit(ctx, "create", user.ID, map[string]any{
 		"username": user.Username,
@@ -435,10 +471,13 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
 		return &SystemUserImmutableError{ID: id}
 	}
 
-	// Delete primary record.
-	if err := s.store.Delete(ctx, primaryKey(id)); err != nil {
-		return &StoreError{Op: "delete", Detail: "primary", Err: err}
-	}
+	// ORDER IS LOAD-BEARING — see the equivalent note in role.DeleteRole. The
+	// primary record is removed LAST of the store's writes and the identity
+	// claim after it, so an interrupted delete is recoverable by a plain
+	// retry: before the primary delete the record is still findable and the
+	// idempotent index deletes re-run; after it, ONLY the claim can remain,
+	// which is what lets tenant.ReconcileDeletedIdentity finish the job
+	// instead of reporting success over leaked index entries.
 
 	// Delete tenant index.
 	if err := s.store.Delete(ctx, tenantIndexKey(existing.TenantID, id)); err != nil {
@@ -458,6 +497,19 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
 		if err := s.store.Delete(ctx, legacyCertThumbprintIndexKey(b.Thumbprint)); err != nil {
 			return &StoreError{Op: "delete", Detail: "legacy cert index", Err: err}
 		}
+	}
+
+	// Delete the primary record LAST: it is what a retry keys on.
+	if err := s.store.Delete(ctx, primaryKey(id)); err != nil {
+		return &StoreError{Op: "delete", Detail: "primary", Err: err}
+	}
+
+	// Release the claim. A stale one would keep routing the id to a tenant
+	// that no longer holds it, and the id is never reissued, so nothing later
+	// would correct it. If this fails the retry path completes it
+	// (routingUserService.DeleteUser).
+	if err := s.forgetIdentity(ctx, id, existing.TenantID); err != nil {
+		return &StoreError{Op: "delete", Detail: "identity index", Err: err}
 	}
 
 	s.emitAudit(ctx, "delete", id, map[string]any{

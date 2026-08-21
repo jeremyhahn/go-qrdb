@@ -38,6 +38,42 @@ func newResolverFixture(t *testing.T) (*memKVStore, *TenantService, *seal.Barrie
 	return shared, svc, reg, resolver
 }
 
+// requireBackedByShared asserts that a resolved store writes THROUGH to the
+// shared store under the tenant's namespace, and that it is not the shared
+// store itself.
+//
+// These four tests used to assert `got == shared` — literal identity with the
+// raw shared store. That passed, and it is exactly what made every prefix
+// tenant share one undifferentiated keyspace (#41): a dao.GenericDAO keys
+// entities "{entityType}/{id}" and has no tenant concept, so one tenant read
+// another's rows and one tenant's index answered another's query. The
+// assertion has been inverted rather than deleted, because "resolves to the
+// shared store" is still the right routing — what changed is that it now
+// arrives CONFINED.
+func requireBackedByShared(t *testing.T, shared *memKVStore, got kvstore.KVStore, tenantID string) {
+	t.Helper()
+	if got == kvstore.KVStore(shared) {
+		t.Fatalf("%s resolved to the raw shared store; it must be confined to its own keyspace", tenantID)
+	}
+	ctx := context.Background()
+	if err := got.Put(ctx, "probe/1", []byte("v")); err != nil {
+		t.Fatalf("Put through the resolved store: %v", err)
+	}
+	want := tenantID + "/probe/1"
+	if _, ok := shared.data[want]; !ok {
+		t.Fatalf("write did not land at %q in the shared store; keys present: %v", want, sharedKeys(shared))
+	}
+}
+
+// sharedKeys lists the physical keys in the shared store, for failure output.
+func sharedKeys(shared *memKVStore) []string {
+	out := make([]string, 0, len(shared.data))
+	for k := range shared.data {
+		out = append(out, k)
+	}
+	return out
+}
+
 // (e) The system tenant resolves to the shared store (prefix) and works
 // while tenant barriers are sealed — the bootstrap-ordering guarantee.
 func TestStoreResolver_SystemTenantUsesSharedStore(t *testing.T) {
@@ -48,18 +84,15 @@ func TestStoreResolver_SystemTenantUsesSharedStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(system): %v", err)
 	}
-	if got != kvstore.KVStore(shared) {
-		t.Fatal("system tenant must resolve to the shared store")
-	}
+	requireBackedByShared(t, shared, got, SystemTenantID)
 
 	// Empty tenant ID also resolves to the shared store.
 	got, err = resolver.Resolve(ctx, "")
 	if err != nil {
 		t.Fatalf("Resolve(empty): %v", err)
 	}
-	if got != kvstore.KVStore(shared) {
-		t.Fatal("empty tenant must resolve to the shared store")
-	}
+	// An empty tenant ID resolves to the system tenant's namespace.
+	requireBackedByShared(t, shared, got, SystemTenantID)
 }
 
 // (b) A prefix tenant's data goes to the shared system store.
@@ -75,9 +108,7 @@ func TestStoreResolver_PrefixTenantUsesSharedStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(acme): %v", err)
 	}
-	if got != kvstore.KVStore(shared) {
-		t.Fatal("prefix tenant must resolve to the shared store")
-	}
+	requireBackedByShared(t, shared, got, "acme")
 }
 
 // (f) Migration: a tenant with empty/legacy IsolationType resolves to the
@@ -98,9 +129,7 @@ func TestStoreResolver_LegacyEmptyIsolationUsesSharedStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(legacy): %v", err)
 	}
-	if got != kvstore.KVStore(shared) {
-		t.Fatal("legacy/empty-isolation tenant must resolve to the shared store")
-	}
+	requireBackedByShared(t, shared, got, "legacy")
 }
 
 // An unknown tenant (no metadata) resolves to the shared store, preserving
@@ -111,9 +140,7 @@ func TestStoreResolver_UnknownTenantUsesSharedStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(ghost): %v", err)
 	}
-	if got != kvstore.KVStore(shared) {
-		t.Fatal("unknown tenant must resolve to the shared store")
-	}
+	requireBackedByShared(t, shared, got, "ghost")
 }
 
 // (a) A barrier tenant resolves to a per-tenant barrier-backed store that
@@ -355,8 +382,14 @@ func TestStoreResolver_NilArguments(t *testing.T) {
 	if _, err := NewStoreResolver(nil, reg, svc); !errors.Is(err, ErrNilStore) {
 		t.Errorf("nil shared: got %v, want ErrNilStore", err)
 	}
-	if _, err := NewStoreResolver(shared, nil, svc); !errors.Is(err, ErrNilRegistry) {
-		t.Errorf("nil registry: got %v, want ErrNilRegistry", err)
+	// The registry is OPTIONAL. It used to be required, and the consequence
+	// was that a node with the seal subsystem disabled got no resolver at all
+	// — its IAM stayed on the raw shared store and every prefix tenant shared
+	// one keyspace, the exact exposure #41 closes. Keyspace isolation is not
+	// a property of encryption.
+	if _, err := NewStoreResolver(shared, nil, svc); err != nil {
+		t.Errorf("nil registry: got %v, want a working resolver — isolation "+
+			"must not depend on the seal subsystem being enabled", err)
 	}
 	if _, err := NewStoreResolver(shared, reg, nil); !errors.Is(err, ErrNilTenantServicer) {
 		t.Errorf("nil servicer: got %v, want ErrNilTenantServicer", err)
@@ -372,4 +405,312 @@ func putTenantMeta(ctx context.Context, svc *TenantService, info *TenantInfo) er
 		return err
 	}
 	return svc.store.Put(ctx, metadataPrefix+info.ID, data)
+}
+
+// TestStoreResolver_RejectsANestingTenantID closes a path that bypasses tenant
+// creation.
+//
+// Resolve accepts an id it has never seen — an unknown tenant deliberately
+// falls through to the shared store — so the charset rule enforced at creation
+// does not protect it. An id containing '/' would build a prefix nested INSIDE
+// another tenant's namespace: "acme/system" resolves to "acme/system/system/",
+// which sits under tenant "acme"'s own "acme/system/", so a scan by acme would
+// list the crafted tenant's keys.
+func TestStoreResolver_RejectsANestingTenantID(t *testing.T) {
+	_, _, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"acme/system", "acme\\system", "acme\x01evil"} {
+		got, err := resolver.Resolve(ctx, id)
+		var charErr *InvalidTenantIDCharError
+		if !errors.As(err, &charErr) {
+			t.Fatalf("Resolve(%q) = (%v, %v); want *InvalidTenantIDCharError", id, got, err)
+		}
+		if got != nil {
+			t.Errorf("Resolve(%q) returned a store alongside a refusal", id)
+		}
+	}
+}
+
+// TestStoreResolver_AdjacentTenantIDsDoNotCollide guards the prefix boundary:
+// "acme" must not be able to see "acme2"'s records just because its namespace
+// is a string prefix of the other's. The trailing separator in
+// ComposeNamespace is what prevents it, so this asserts the property rather
+// than the formula.
+func TestStoreResolver_AdjacentTenantIDsDoNotCollide(t *testing.T) {
+	shared, svc, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+
+	for _, id := range []string{"acme", "acme2"} {
+		if _, err := svc.CreateTenant(ctx, id, id, IsolationPrefix); err != nil {
+			t.Fatalf("CreateTenant(%s): %v", id, err)
+		}
+	}
+
+	acme, err := resolver.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	acme2, err := resolver.Resolve(ctx, "acme2")
+	if err != nil {
+		t.Fatalf("Resolve(acme2): %v", err)
+	}
+
+	if err := acme2.Put(ctx, "probe/1", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	keys, err := acme.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Errorf("tenant acme listed %v; acme2's keys must not be visible to it", keys)
+	}
+	_ = shared
+}
+
+// TestStoreResolver_RejectsANestingDatabaseName covers the SECOND segment of
+// the keyspace prefix, which is as injectable as the first.
+//
+
+// TestStoreResolver_RejectsAReservedPrefixTenantID answers a review finding.
+//
+// With full namespacing a tenant id of "__sys:" can no longer ESCAPE — its
+// namespace "__sys:/system/" reaches nothing another tenant owns, which
+// TestNamespacedKVStore_ReservedPrefixTenantIDCannotEscape pins. What it would
+// still do is bury that tenant's own records under a prefix the reserved-key
+// discovery guard filters out of user-facing enumeration, so the tenant would
+// silently fail to list its own data. Refusing the id is cheaper than
+// explaining that.
+func TestStoreResolver_RejectsAReservedPrefixTenantID(t *testing.T) {
+	_, _, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+
+	got, err := resolver.Resolve(ctx, kvstore.ReservedPrefixSystem+"evil")
+	var idErr *InvalidTenantIDError
+	if !errors.As(err, &idErr) {
+		t.Fatalf("Resolve = (%v, %v); want *InvalidTenantIDError", got, err)
+	}
+	if got != nil {
+		t.Error("a refused tenant id must not return a store")
+	}
+}
+
+// TestStoreResolver_IdentityIsTenantWideNotPerDatabase pins the constraint
+// that decides the namespace shape, and it is a hard one rather than a
+// preference.
+//
+// This store serves a tenant's IDENTITY — users, roles, permission scopes,
+// invitations — and identity belongs to a tenant, not to one of its
+// databases. An earlier draft namespaced at ComposeNamespace's
+// "{tenant}/{db}/" and broke login outright: firstboot writes the admin user
+// with no database bound to its context, landing it under "{tenant}/system/",
+// while any request carrying a database resolved "{tenant}/{db}/" and found
+// nothing. Single-database unit tests could not see it; the integration
+// stack, which authenticates for real, failed every CLI suite.
+func TestStoreResolver_IdentityIsTenantWideNotPerDatabase(t *testing.T) {
+	_, svc, _, resolver := newResolverFixture(t)
+	base := context.Background()
+
+	if _, err := svc.CreateTenant(base, "acme", "Acme", IsolationPrefix); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+
+	// Written with NO database bound, as firstboot does.
+	bootStore, err := resolver.Resolve(base, "acme")
+	if err != nil {
+		t.Fatalf("Resolve(no database): %v", err)
+	}
+	if err := bootStore.Put(base, "__sys:users/id/admin", []byte("admin")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// Read through contexts naming different databases, as requests do.
+	for _, db := range []string{"default", "alpha", DefaultDatabase} {
+		ctx := WithDatabase(base, db)
+		store, err := resolver.Resolve(ctx, "acme")
+		if err != nil {
+			t.Fatalf("Resolve(database %q): %v", db, err)
+		}
+		got, err := store.Get(ctx, "__sys:users/id/admin")
+		if err != nil {
+			t.Fatalf("Get(database %q): %v", db, err)
+		}
+		if got == nil {
+			t.Errorf("the admin user is invisible to a request bound to database %q; "+
+				"identity is tenant-wide", db)
+		}
+	}
+}
+
+// TestStoreResolver_EmptyAndSystemTenantShareOneNamespace covers a review
+// finding, and it is the same split-brain class as per-database identity
+// reached through a different door.
+//
+// IsSystemTenant treats "" and SystemTenantID as the same tenant, so both
+// route through sharedFor. Building the prefix from the RAW input gave them
+// two namespaces — "/" and "system/" — and system IAM written through one
+// representation was invisible through the other. tenant.ComposeNamespace
+// performed this normalization; hand-rolling the prefix dropped it, which is
+// the hazard in re-deriving a formula that already exists.
+func TestStoreResolver_EmptyAndSystemTenantShareOneNamespace(t *testing.T) {
+	shared, _, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+
+	empty, err := resolver.Resolve(ctx, "")
+	if err != nil {
+		t.Fatalf("Resolve(empty): %v", err)
+	}
+	system, err := resolver.Resolve(ctx, SystemTenantID)
+	if err != nil {
+		t.Fatalf("Resolve(system): %v", err)
+	}
+
+	// Same store instance: they are one tenant, so they share one cache entry.
+	if empty != system {
+		t.Error("the empty id and the system id must resolve to the SAME store")
+	}
+
+	// Written through one representation, visible through the other.
+	if err := empty.Put(ctx, "__sys:users/id/admin", []byte("admin")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	got, err := system.Get(ctx, "__sys:users/id/admin")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got == nil {
+		t.Error("system IAM written through the empty tenant id is invisible through " +
+			"the canonical id: the two representations built different namespaces")
+	}
+
+	// And it lands under the canonical prefix, not "/".
+	if _, ok := shared.data[SystemTenantID+"/__sys:users/id/admin"]; !ok {
+		keys := make([]string, 0, len(shared.data))
+		for k := range shared.data {
+			keys = append(keys, k)
+		}
+		t.Errorf("write landed at %v; want it under %q", keys, SystemTenantID+"/")
+	}
+}
+
+// TestIdentityNamespace_ResolverAndDirectCallersAgree pins the invariant whose
+// violation de-authorized the admin.
+//
+// Two callers reach the same tenant's identity records by different routes:
+// firstboot seeds them through a store it builds ITSELF, before any
+// StoreResolver exists, while the RBAC authorizer reads them back through a
+// resolver-routed service afterwards. If those two compose the keyspace prefix
+// differently, the admin has no resolvable role bindings and EVERY
+// authorization check denies — while the data plane keeps working, because it
+// never looks a role up.
+//
+// That is exactly what the integration suite caught: 1,048 failures, all
+// "permission denied: admin cannot <verb> on admin", with kv put/del passing.
+//
+// tenant.IdentityNamespace is the single formula both sides call, and this
+// test is the proof they cannot drift apart again.
+func TestIdentityNamespace_ResolverAndDirectCallersAgree(t *testing.T) {
+	shared, _, _, resolver := newResolverFixture(t)
+	ctx := context.Background()
+
+	// The firstboot side: a store built directly, confined by the shared
+	// formula, with no resolver in existence yet.
+	direct, err := kvstore.NewNamespacedKVStore(shared, IdentityNamespace(SystemTenantID))
+	if err != nil {
+		t.Fatalf("NewNamespacedKVStore: %v", err)
+	}
+	const roleKey = "__sys:roles/id/admin"
+	if err := direct.Put(ctx, roleKey, []byte("admin-role")); err != nil {
+		t.Fatalf("seed through the direct store: %v", err)
+	}
+
+	// The authorizer side: the resolver-routed store for the same tenant.
+	for _, id := range []string{SystemTenantID, ""} {
+		routed, rerr := resolver.Resolve(ctx, id)
+		if rerr != nil {
+			t.Fatalf("Resolve(%q): %v", id, rerr)
+		}
+		got, gerr := routed.Get(ctx, roleKey)
+		if gerr != nil {
+			t.Fatalf("Get through the resolver (%q): %v", id, gerr)
+		}
+		if got == nil {
+			t.Fatalf("a role seeded before the resolver existed is INVISIBLE through "+
+				"Resolve(%q): the writer and the authorizer compose different "+
+				"namespaces, so the admin would have no role bindings and every "+
+				"authorization check would deny", id)
+		}
+	}
+
+	// And the reverse direction, since either side may write first.
+	routed, err := resolver.Resolve(ctx, SystemTenantID)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := routed.Put(ctx, "__sys:roles/id/second", []byte("x")); err != nil {
+		t.Fatalf("Put through the resolver: %v", err)
+	}
+	back, err := direct.Get(ctx, "__sys:roles/id/second")
+	if err != nil {
+		t.Fatalf("Get through the direct store: %v", err)
+	}
+	if back == nil {
+		t.Error("a record written through the resolver is invisible to the direct store")
+	}
+}
+
+// A resolver built WITHOUT a barrier registry still confines prefix tenants,
+// and still fails closed for tenants that asked for cryptographic isolation.
+//
+// This is the seal-disabled embedded node: pkg/server/lifecycle supports
+// SealBarrier == nil, and in that configuration IAM used to stay on the raw
+// shared store, so two prefix tenants shared one keyspace.
+func TestStoreResolver_WithoutRegistry(t *testing.T) {
+	svc, _ := newTestService(t)
+	shared := newMemKVStore()
+	ctx := context.Background()
+
+	resolver, err := NewStoreResolver(shared, nil, svc)
+	if err != nil {
+		t.Fatalf("NewStoreResolver without a registry: %v", err)
+	}
+
+	// Two prefix tenants are confined to their own keyspaces.
+	acme, err := resolver.Resolve(ctx, "acme")
+	if err != nil {
+		t.Fatalf("Resolve(acme): %v", err)
+	}
+	globex, err := resolver.Resolve(ctx, "globex")
+	if err != nil {
+		t.Fatalf("Resolve(globex): %v", err)
+	}
+	if err := acme.Put(ctx, "__sys:users/id/1", []byte("acme-user")); err != nil {
+		t.Fatalf("Put through acme: %v", err)
+	}
+	crossed, err := globex.Get(ctx, "__sys:users/id/1")
+	if err != nil {
+		t.Fatalf("Get through globex: %v", err)
+	}
+	if crossed != nil {
+		t.Fatalf("globex read acme's user (%q) — a seal-disabled node still "+
+			"shares one IAM keyspace across prefix tenants", crossed)
+	}
+	own, err := acme.Get(ctx, "__sys:users/id/1")
+	if err != nil || own == nil {
+		t.Fatalf("acme cannot read its own record: (%v, %v)", own, err)
+	}
+
+	// A dedicated-isolation tenant has no barrier to route through here, so
+	// it fails CLOSED rather than being served from the shared store.
+	if _, cerr := svc.CreateTenant(ctx, "vault", "Vault", IsolationBarrier); cerr != nil {
+		t.Fatalf("CreateTenant(barrier): %v", cerr)
+	}
+	if _, rerr := resolver.Resolve(ctx, "vault"); !errors.Is(rerr, ErrTenantSealed) {
+		t.Fatalf("Resolve(barrier tenant) without a registry = %v, want "+
+			"ErrTenantSealed — serving it from the shared store would hand a "+
+			"tenant that asked for cryptographic isolation an unencrypted "+
+			"keyspace", rerr)
+	}
 }

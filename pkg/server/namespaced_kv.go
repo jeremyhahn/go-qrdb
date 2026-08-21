@@ -70,6 +70,12 @@ func (s *namespacedKVService) PutIfAbsent(ctx context.Context, key string, value
 	return s.inner.PutIfAbsent(ctx, s.prefix+key, value)
 }
 
+// CompareAndDelete removes the namespaced key only when its stored value
+// still equals expected.
+func (s *namespacedKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return s.inner.CompareAndDelete(ctx, s.prefix+key, expected)
+}
+
 // Get retrieves a value by prefixed key.
 func (s *namespacedKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	return s.inner.Get(ctx, s.prefix+key)

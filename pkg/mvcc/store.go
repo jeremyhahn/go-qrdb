@@ -191,10 +191,22 @@ func (s *Store) GetInBatch(batch storage.Batch, key []byte) (*service.KeyValue, 
 }
 
 // getFrom retrieves the latest value for a key through r.
+//
+// It PROPAGATES the metadata read's error rather than reporting every failure
+// as KeyNotFoundError. getMetadataFrom already distinguishes the two — absence
+// is *KeyNotFoundError, a storage fault is *StoreError{Op: "get meta"} — and
+// collapsing them told an apply-path existence guard that a key it could not
+// read was absent. On the conditional-put path that meant overwriting the
+// holder and reporting ResultStored; in a replicated group, where the fault is
+// LOCAL, it meant replicas deciding the same entry differently and diverging
+// from an identical log.
+//
+// Callers testing for *KeyNotFoundError to mean "absent" are unaffected. A
+// caller that only tests err != nil behaves exactly as before.
 func (s *Store) getFrom(r storage.Reader, key []byte) (*service.KeyValue, error) {
 	meta, err := s.getMetadataFrom(r, key)
 	if err != nil {
-		return nil, &KeyNotFoundError{Key: string(key)}
+		return nil, err
 	}
 
 	value, err := s.getDataAtRevisionFrom(r, key, meta.ModRevision)

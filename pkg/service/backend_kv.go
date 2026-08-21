@@ -105,6 +105,22 @@ func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []
 	return stored, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, delegating to the backend's own guarded delete. A backend without
+// one refuses with database.ErrAtomicWriteUnsupported rather than degrading
+// to a read-then-delete, which is the window the operation exists to close.
+func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	atomicBackend, ok := s.backend.(database.AtomicBackend)
+	if !ok {
+		return false, database.ErrAtomicWriteUnsupported
+	}
+	deleted, err := atomicBackend.CompareAndDelete(ctx, []byte(key), expected)
+	if err != nil {
+		return false, s.translateSealed(err)
+	}
+	return deleted, nil
+}
+
 // Get retrieves a value by key. Returns KeyNotFoundError when the key
 // does not exist.
 func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) {

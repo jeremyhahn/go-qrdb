@@ -58,6 +58,28 @@ var ErrAtomicWriteUnsupported = errors.New("kvstore: store does not support atom
 // contract forbids.
 var ErrInvalidScanBound = errors.New("kvstore: scan bound cannot be encoded for this index")
 
+// NilInnerStoreError is returned by NewNamespacedKVStore when the store to
+// wrap is nil.
+type NilInnerStoreError struct{}
+
+// Error returns a human-readable description.
+func (e *NilInnerStoreError) Error() string {
+	return "kvstore: namespaced store requires a non-nil inner KVStore"
+}
+
+// EmptyNamespaceError is returned by NewNamespacedKVStore when the prefix is
+// empty.
+//
+// An empty prefix is refused rather than accepted as a pass-through wrapper
+// because it would hand the caller the entire store root — which is exactly
+// the unconfined access the type exists to prevent, delivered silently.
+type EmptyNamespaceError struct{}
+
+// Error returns a human-readable description.
+func (e *EmptyNamespaceError) Error() string {
+	return "kvstore: namespaced store requires a non-empty key prefix"
+}
+
 // UnindexableValueError is returned when a write lands under a key prefix
 // that a registered index covers, but the value cannot be decoded to extract
 // the indexed field.

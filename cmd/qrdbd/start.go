@@ -69,6 +69,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/discovery"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvccadapter"
@@ -2796,12 +2797,43 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	}
 
 	// Create bootstrap stores backed by StaleRead for initial setup.
-	bootStore := newKVServiceAdapter(bootKVSvc, nil, nil)
-	bootUserSvc, err := user.NewStore(bootStore, userIDGen, user.WithAuditLogger(auditLogger))
+	//
+	// CONFINED to the system tenant's identity namespace, exactly as
+	// StoreResolver confines what it hands out. Firstboot seeds the admin user
+	// and the built-in roles here, and the RBAC authorizer reads them back
+	// later through the RESOLVER-routed service — so if these two composed
+	// different prefixes the admin would have no resolvable role bindings and
+	// every authorization check would deny while the data plane kept working.
+	// That is not hypothetical: it is what the integration suite caught.
+	//
+	// tenant.IdentityNamespace is the single formula both sides call. Building
+	// the prefix by hand here is what the whole class of write-path/read-path
+	// divergences has come from.
+	bootStore, err := kvstore.NewNamespacedKVStore(
+		newKVServiceAdapter(bootKVSvc, nil, nil),
+		tenant.IdentityNamespace(tenant.SystemTenantID),
+	)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot store namespace", Err: err}
+	}
+	// The placement index lives in the system tenant's identity namespace,
+	// which is exactly what bootStore is confined to — so the bootstrap path
+	// writes its entries to the same physical keys the resolver-backed
+	// readers look them up under. Wiring it here means EVERY user and role
+	// this daemon writes is placed, including the ones firstboot seeds before
+	// a StoreResolver exists. A write path that skipped it would be the same
+	// divergence, one layer down.
+	bootIdentityIndex, err := tenant.NewIdentityIndex(bootStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "boot placement index", Err: err}
+	}
+	bootUserSvc, err := user.NewStore(bootStore, userIDGen,
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(bootIdentityIndex))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot user store", Err: err}
 	}
-	bootRoleSvc, err := role.NewStore(bootStore, role.WithAuditLogger(auditLogger))
+	bootRoleSvc, err := role.NewStore(bootStore,
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(bootIdentityIndex))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "boot role store", Err: err}
 	}
@@ -2816,13 +2848,34 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 
 	// Create runtime stores backed by linearizable SyncRead for management
 	// operations. This ensures CRUD handlers see the latest committed state.
+	//
+	// runtimeStore stays UNCONFINED: it is what StoreResolver wraps, and the
+	// resolver applies the per-tenant namespace itself. systemStore is the
+	// system tenant's confined view, used by the plain (non-routed) IAM
+	// services so they address the same keys the routed services do for the
+	// system tenant — the invariant the comment on mgmtBootstrapResult
+	// describes and that authorization depends on.
 	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
+	systemStore, err := kvstore.NewNamespacedKVStore(
+		runtimeStore, tenant.IdentityNamespace(tenant.SystemTenantID))
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "system store namespace", Err: err}
+	}
 
-	userSvc, err := user.NewStore(runtimeStore, userIDGen, user.WithAuditLogger(auditLogger))
+	// Same placement index, reached through the system tenant's confined
+	// runtime view: the plain services address the identical keys the boot
+	// services and the routed services do.
+	systemIdentityIndex, err := tenant.NewIdentityIndex(systemStore)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "system placement index", Err: err}
+	}
+	userSvc, err := user.NewStore(systemStore, userIDGen,
+		user.WithAuditLogger(auditLogger), user.WithIdentityIndex(systemIdentityIndex))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "user store", Err: err}
 	}
-	roleSvc, err := role.NewStore(runtimeStore, role.WithAuditLogger(auditLogger))
+	roleSvc, err := role.NewStore(systemStore,
+		role.WithAuditLogger(auditLogger), role.WithIdentityIndex(systemIdentityIndex))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "role store", Err: err}
 	}
@@ -2834,11 +2887,24 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// closed (tenant.ErrTenantSealed) instead of leaking through the shared
 	// store. The system tenant (structurally a prefix tenant) always resolves
 	// to runtimeStore, so system-tenant IAM served through the routed service
-	// is byte-for-byte the shared-store behaviour bootstrap seeded above. When
-	// no barrier registry exists, the served services alias the plain stores.
+	// is byte-for-byte the shared-store behaviour bootstrap seeded above.
+	//
+	// ROUTING DOES NOT DEPEND ON THE BARRIER REGISTRY. It used to: with
+	// sealing disabled the caller passes a nil registry, this branch was
+	// skipped, and servedUserSvc/servedRoleSvc stayed the plain stores
+	// confined only to "system/" — which select no tenant namespace and do
+	// not route by-id through OwningTenant. A tenant caller holding another
+	// tenant's user or role id reached the shared primary record instead of
+	// its own namespace. That is the same fail-open pkg/server/lifecycle had,
+	// in the daemon, and keyspace isolation is not a property of encryption.
+	//
+	// tenant.NewStoreResolver accepts a nil registry: prefix and system
+	// tenants get their confined "{tenant}/" view, and a dedicated-isolation
+	// tenant fails closed with ErrTenantSealed because there is no barrier to
+	// honour its ask. So the only precondition left is a tenant servicer.
 	servedUserSvc := userSvc
 	servedRoleSvc := roleSvc
-	if barriers != nil && tenantSvc != nil {
+	if tenantSvc != nil {
 		resolver, resErr := tenant.NewStoreResolver(runtimeStore, barriers, tenantSvc)
 		if resErr != nil {
 			return nil, &AuthBootstrapError{Step: "store resolver", Err: resErr}

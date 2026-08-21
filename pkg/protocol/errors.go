@@ -27,6 +27,32 @@ func (e *InvalidCommandError) Error() string {
 	return "protocol: invalid command: " + e.Reason
 }
 
+// MaxEncodableKeyLength is the largest key a two-byte length field can
+// describe. It matches go-quicraft's kv.MaxKeyLength, because both protocols
+// frame a key the same way.
+const MaxEncodableKeyLength = 65535
+
+// KeyTooLongError is returned when a key cannot be described by the length
+// field that frames it.
+//
+// The narrow cast this prevents is not a truncation the caller notices: a
+// 65,537-byte key writes a length of 1, so the DECODER reads a one-byte key
+// and folds the remaining 65,536 bytes into the next field. On a guarded
+// delete that means comparing and deleting a DIFFERENT, shorter key than the
+// caller named — silent wrong-record targeting inside a replicated state
+// machine, from input a caller can craft.
+type KeyTooLongError struct {
+	// Length is the offending key length in bytes.
+	Length int
+	// Max is the largest length the field can describe.
+	Max int
+}
+
+func (e *KeyTooLongError) Error() string {
+	return "protocol: key too long: " + strconv.Itoa(e.Length) +
+		" bytes exceeds the " + strconv.Itoa(e.Max) + "-byte encodable maximum"
+}
+
 // UnknownOpError is returned when a wire protocol message contains an
 // unrecognized operation code.
 type UnknownOpError struct {

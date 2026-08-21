@@ -17,6 +17,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -136,6 +137,20 @@ func (k *extraKVPassthrough) PutIfAbsent(_ context.Context, key string, value []
 	k.store[key] = value
 	return true, nil
 }
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (k *extraKVPassthrough) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	current, ok := k.store[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(k.store, key)
+	return true, nil
+}
 func (k *extraKVPassthrough) Get(_ context.Context, key string) ([]byte, error) {
 	k.lastKey = key
 	v, ok := k.store[key]
@@ -236,6 +251,12 @@ type extraFailingKV struct {
 func (f *extraFailingKV) Put(_ context.Context, _ string, _ []byte) error { return f.err }
 func (f *extraFailingKV) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
 	return false, f.err
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (f *extraFailingKV) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
 }
 func (f *extraFailingKV) Get(_ context.Context, _ string) ([]byte, error)    { return nil, f.err }
 func (f *extraFailingKV) Delete(_ context.Context, _ string) error           { return f.err }

@@ -79,6 +79,33 @@ func (b kvSealBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 	return resp.Succeeded, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, expressed as the transaction service's own compare-and-execute:
+// the comparison runs inside the state machine, which is the cross-node
+// guarantee a read followed by a delete cannot give.
+func (b kvSealBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if b.tx == nil {
+		return false, ErrNoTransactionService
+	}
+	resp, err := b.tx.Execute(ctx,
+		[]service.Compare{{
+			Key:    []byte(key),
+			Target: service.CompareValue,
+			Result: service.CompareEqual,
+			Value:  expected,
+		}},
+		[]service.Op{{
+			Type: service.OpDelete,
+			Key:  []byte(key),
+		}},
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
 // Get adapts the kvstore.KVStore missing-key convention (nil, nil) to the
 // seal.StorageBackend contract, which signals a missing key with
 // seal.ErrSecretNotFound. Services built on StorageBackend (custodian groups,
@@ -153,6 +180,12 @@ var _ kvstore.AtomicKVStore = (*kvStoreAdapter)(nil)
 // check-then-put cannot provide.
 func (a *kvStoreAdapter) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	return a.svc.PutIfAbsent(ctx, key, value)
+}
+
+// CompareAndDelete removes key only when its stored value still equals
+// expected, delegating to the KV service's own guarded delete.
+func (a *kvStoreAdapter) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return a.svc.CompareAndDelete(ctx, key, expected)
 }
 
 // Put stores a key-value pair through the KV service.

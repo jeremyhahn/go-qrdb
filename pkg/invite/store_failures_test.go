@@ -56,6 +56,12 @@ func (e *errKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool
 	return e.memKV.PutIfAbsent(ctx, key, value)
 }
 
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (e *errKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
 func (e *errKV) Delete(ctx context.Context, key string) error {
 	if e.failWrites {
 		return e.err

@@ -113,6 +113,18 @@ func (s *quotaKVService) PutIfAbsent(ctx context.Context, key string, value []by
 	return true, nil
 }
 
+// CompareAndDelete removes key only when its stored value still equals
+// expected, releasing the deleted value's quota when it does. A refused
+// delete changes nothing, so it releases nothing.
+func (s *quotaKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	deleted, err := s.inner.CompareAndDelete(ctx, key, expected)
+	if err != nil || !deleted {
+		return deleted, err
+	}
+	s.acct.Release(s.tenantID, int64(len(expected)))
+	return true, nil
+}
+
 // PutWithMode accounts len(value) bytes after admitting the write.
 func (s *quotaKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
 	n := len(value)

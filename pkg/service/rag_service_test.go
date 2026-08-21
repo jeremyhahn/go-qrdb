@@ -14,6 +14,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -170,6 +171,20 @@ func (m *ragMockKVSvc) PutIfAbsent(_ context.Context, key string, val []byte) (b
 		return false, nil
 	}
 	m.kvStore[key] = val
+	return true, nil
+}
+
+// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
+// it removes the key only when the stored value still equals expected.
+func (m *ragMockKVSvc) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	current, ok := m.kvStore[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.kvStore, key)
 	return true, nil
 }
 
