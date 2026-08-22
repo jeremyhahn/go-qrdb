@@ -70,9 +70,20 @@ func ParseIndexTags(structType reflect.Type) (map[string]*IndexMetadata, error) 
 			continue
 		}
 
-		// Check for index tag
-		tag := field.Tag.Get(IndexTagName)
-		if tag == "" {
+		// Distinguish an ABSENT index tag from an EMPTY one. StructTag.Get
+		// returns "" for both, so testing that string treated `index:""` as
+		// "this field is not indexed" — and the query planner's catalog, which
+		// reads the same tag the same way, agreed. The two halves agreeing is
+		// exactly why it was undetectable: no index was created, none was
+		// advertised, results stayed correct, and the only symptom was that an
+		// index the author wrote never existed. Twelve fields across five
+		// entities in one consumer were tagged this way, reviewed, and believed
+		// to be indexes; none were (go-qrdb#57).
+		//
+		// parseIndexTag already rejects an empty tag, and ParseIndexTags was
+		// skipping before it could — validation that existed and was bypassed.
+		tag, ok := field.Tag.Lookup(IndexTagName)
+		if !ok {
 			continue
 		}
 

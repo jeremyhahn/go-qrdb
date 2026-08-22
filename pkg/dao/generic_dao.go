@@ -122,12 +122,21 @@ func New[E Entity](
 		eType = eType.Elem()
 	}
 
-	indexMeta, parseErr := index.ParseIndexTags(eType)
+	// A malformed index tag fails construction. It used to be swallowed: the
+	// error was bound and then read only as a CONDITION, so a bad tag skipped
+	// registration and New returned a working DAO with none of the indexes the
+	// author wrote. That is the same fail-silent shape as `index:""` itself —
+	// the tag exists, nothing tells you it did nothing — so fixing one without
+	// the other would move the silence rather than remove it (go-qrdb#57).
+	indexMeta, err := index.ParseIndexTags(eType)
+	if err != nil {
+		return nil, err
+	}
 	hasCompoundIndexes := false
 	if cr, ok := any(entity).(index.CompoundIndexRegisterer); ok {
 		hasCompoundIndexes = len(cr.CompoundIndexes()) > 0
 	}
-	if (parseErr == nil && len(indexMeta) > 0) || hasCompoundIndexes {
+	if len(indexMeta) > 0 || hasCompoundIndexes {
 		// Convert IndexMetadata to EntityIndex definitions. IndexName is set
 		// to the name THIS DAO will look the index up by, which is
 		// database-qualified when WithDatabase is in play. Leaving the store
