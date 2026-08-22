@@ -666,3 +666,60 @@ func TestEmbeddedMVCC_AllMethods_ServiceError(t *testing.T) {
 		t.Fatal("PutWithLease/writemode: expected error")
 	}
 }
+
+// The transaction's MVCC revision must survive the hop through this transport,
+// on BOTH the plain and the write-mode path.
+//
+// It did not: neither response construction copied Revision, so every
+// transaction through the embedded transport reported 0 while the service
+// underneath had returned the real revision. The existing tests above did not
+// catch it because they assert only Succeeded — and the mock has been returning
+// Revision: 1 the whole time, which is what makes this a one-line assertion
+// nobody had written rather than a missing fixture.
+//
+// Found by review of go-qrdb#44, whose GuardedSwapResult.Revision is the first
+// caller to depend on it.
+func TestEmbeddedTx_PropagatesTheRevision(t *testing.T) {
+	const wantRevision int64 = 4242
+
+	svc := &mockTxService{
+		executeFn: func(context.Context, []service.Compare, []service.Op, []service.Op) (*service.TransactionResponse, error) {
+			return &service.TransactionResponse{
+				Succeeded: true,
+				Revision:  wantRevision,
+				Responses: []service.OpResponse{{Succeeded: true}},
+			}, nil
+		},
+		executeWithModeFn: func(context.Context, []service.Compare, []service.Op, []service.Op, writemode.Mode) (*service.TransactionResponse, error) {
+			return &service.TransactionResponse{
+				Succeeded: true,
+				Revision:  wantRevision,
+				Responses: []service.OpResponse{{Succeeded: true}},
+			}, nil
+		},
+	}
+	tr := newExtTransport(t, WithTransactionService(svc))
+	req := &transport.TransactionRequest{
+		SuccessOps: []transport.Op{{Key: []byte("k"), Value: []byte("v")}},
+	}
+
+	t.Run("plain path", func(t *testing.T) {
+		resp, err := tr.ExecuteTransaction(context.Background(), req)
+		if err != nil {
+			t.Fatalf("ExecuteTransaction: %v", err)
+		}
+		if resp.Revision != wantRevision {
+			t.Errorf("Revision = %d, want %d — the transport dropped it", resp.Revision, wantRevision)
+		}
+	})
+
+	t.Run("write-mode path", func(t *testing.T) {
+		resp, err := tr.ExecuteTransaction(context.Background(), req, transport.WithWriteMode(transport.WriteModeSync))
+		if err != nil {
+			t.Fatalf("ExecuteTransaction: %v", err)
+		}
+		if resp.Revision != wantRevision {
+			t.Errorf("Revision = %d, want %d — the write-mode path dropped it", resp.Revision, wantRevision)
+		}
+	})
+}

@@ -1027,6 +1027,7 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 		}
 		return &transport.TransactionResponse{
 			Succeeded: resp.Succeeded,
+			Revision:  resp.Revision,
 			Responses: toTransportOpResponses(resp.Responses),
 		}, nil
 	}
@@ -1040,8 +1041,12 @@ func (t *Transport) ExecuteTransaction(ctx context.Context, req *transport.Trans
 		return nil, translateError(err)
 	}
 
+	// Revision is copied on BOTH paths. It was dropped on both, so every
+	// transaction through this transport reported revision 0 — invisible until
+	// a caller depended on it (go-qrdb#44).
 	return &transport.TransactionResponse{
 		Succeeded: resp.Succeeded,
+		Revision:  resp.Revision,
 		Responses: toTransportOpResponses(resp.Responses),
 	}, nil
 }
