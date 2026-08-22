@@ -19,7 +19,6 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -360,43 +359,27 @@ func (s *quotaKVService) releaseIfProvenNotStored(err error, n int) {
 	}
 }
 
-// writeProvenNotStored reports whether err was raised BEFORE anything could be
-// written, so the reservation is certainly owed back.
+// writeProvenNotStored reports whether the service PROVED nothing was stored.
 //
-// Every case here is an error the service produces without reaching consensus,
-// or one a state machine returns having applied nothing:
+// The knowledge belongs to the layer that reached consensus, not to this
+// wrapper, so it is asked rather than re-derived: pkg/service marks the errors
+// it raises before anything can commit — a request it could not encode, an
+// entity it rejected on validation, a proposal refused because this node is
+// not the leader, a state machine that applied nothing, a capability it does
+// not have — with service.ErrNotStored.
 //
-//   - EncodeRequestError: the command could not be built, so it was never
-//     proposed.
-//   - the entity validation family: rejected on the request, before any
-//     proposal.
-//   - NotLeaderError: the proposal was refused rather than accepted. A leader
-//     elsewhere may later write something, but not THIS call's bytes.
-//   - SMNotConfiguredError: the entry applied, and the subsystem it needed was
-//     absent, so it stored nothing.
-//   - ErrAtomicWriteUnsupported: the capability was refused up front.
+// An error that carries no marker is UNKNOWN, and unknown retains. That is the
+// safe default and it is the default by construction: this wrapper also sees
+// errors forwarded verbatim from a storage engine, and a write that failed
+// mid-fsync may or may not be durable. Asking whether an error is marked
+// ambiguous instead would make every unclassifiable third-party error read as
+// "proven not stored" — the fail-open behaviour go-qrdb#90 removed.
 //
-// Anything else — a ProposeError wrapping a transport failure, a deadline, a
-// cancelled context — may have committed, and is treated as unknown.
+// The enumeration this replaced was a copy of the service layer's knowledge
+// kept in the wrapper, and it had already drifted: it tested
+// kvstore.ErrAtomicWriteUnsupported, while the KVServicer this wraps returns
+// the distinct database.ErrAtomicWriteUnsupported sentinel, so a refused
+// atomic write leaked its reservation on every call (go-qrdb#100).
 func writeProvenNotStored(err error) bool {
-	var (
-		encodeErr     *service.EncodeRequestError
-		emptyType     *service.EntityEmptyTypeError
-		emptyID       *service.EntityEmptyIDError
-		emptyData     *service.EntityEmptyDataError
-		notLeader     *service.NotLeaderError
-		notConfigured *service.SMNotConfiguredError
-	)
-	switch {
-	case errors.As(err, &encodeErr),
-		errors.As(err, &emptyType),
-		errors.As(err, &emptyID),
-		errors.As(err, &emptyData),
-		errors.As(err, &notLeader),
-		errors.As(err, &notConfigured),
-		errors.Is(err, kvstore.ErrAtomicWriteUnsupported):
-		return true
-	default:
-		return false
-	}
+	return errors.Is(err, service.ErrNotStored)
 }

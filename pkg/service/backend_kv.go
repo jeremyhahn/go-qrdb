@@ -96,7 +96,10 @@ func (s *BackendKVService) Put(ctx context.Context, key string, value []byte) er
 func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
-		return false, database.ErrAtomicWriteUnsupported
+		// Marked: the capability was refused up front, so the write is
+		// provably not stored. The wrapping keeps
+		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(database.ErrAtomicWriteUnsupported)
 	}
 	stored, err := atomicBackend.PutIfAbsent(ctx, []byte(key), value)
 	if err != nil {
@@ -112,7 +115,10 @@ func (s *BackendKVService) PutIfAbsent(ctx context.Context, key string, value []
 func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
-		return false, database.ErrAtomicWriteUnsupported
+		// Marked: the capability was refused up front, so the write is
+		// provably not stored. The wrapping keeps
+		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(database.ErrAtomicWriteUnsupported)
 	}
 	deleted, err := atomicBackend.CompareAndDelete(ctx, []byte(key), expected)
 	if err != nil {
@@ -128,7 +134,10 @@ func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, exp
 func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	atomicBackend, ok := s.backend.(database.AtomicBackend)
 	if !ok {
-		return false, database.ErrAtomicWriteUnsupported
+		// Marked: the capability was refused up front, so the write is
+		// provably not stored. The wrapping keeps
+		// errors.Is(err, database.ErrAtomicWriteUnsupported) true.
+		return false, markNotStored(database.ErrAtomicWriteUnsupported)
 	}
 	swapped, err := atomicBackend.CompareAndSwap(ctx, []byte(key), expected, next)
 	if err != nil {

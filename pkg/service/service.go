@@ -42,6 +42,15 @@ import (
 // Implementations exist for several engines — Raft consensus, MVCC, and a
 // direct storage backend — so the doc comments below describe the guarantee,
 // not the mechanism. Each implementation states how it achieves it.
+//
+// A failed write does not say by itself whether anything was stored, and a
+// caller that reconciles state asks rather than guessing:
+//
+//	errors.Is(err, ErrNotStored)      // proven not stored; safe to un-account
+//	errors.Is(err, ErrOutcomeUnknown) // may have committed
+//
+// An error carrying neither marker is UNKNOWN. See write_outcome.go for why
+// that is the default rather than the other way round.
 type KVServicer interface {
 	// Put stores a key-value pair.
 	Put(ctx context.Context, key string, value []byte) error

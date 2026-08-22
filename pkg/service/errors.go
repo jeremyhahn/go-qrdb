@@ -41,6 +41,16 @@ func (e *SMNotConfiguredError) Error() string {
 	return "service: " + e.Message
 }
 
+// Is reports the ErrNotStored marker.
+//
+// The entry committed, but the state machine encoded a refusal into its result
+// instead of applying the command — a subsystem it was not built with, an
+// invalid lease TTL, a unique-index violation. The command reached consensus
+// and changed nothing.
+func (e *SMNotConfiguredError) Is(target error) bool {
+	return target == ErrNotStored
+}
+
 // checkResultError inspects result.Data for a state-machine-encoded application
 // error (see protocol.EncodeAppError). The discriminated prefix is required so
 // ordinary result payloads — notably the one-byte transaction success flag —
@@ -90,6 +100,12 @@ func (e *EncodeRequestError) Unwrap() error {
 	return e.Err
 }
 
+// Is reports the ErrNotStored marker: a request that could not be encoded was
+// never proposed, so nothing was stored.
+func (e *EncodeRequestError) Is(target error) bool {
+	return target == ErrNotStored
+}
+
 // ProposeError is returned when a Raft proposal fails.
 type ProposeError struct {
 	Err error
@@ -103,6 +119,17 @@ func (e *ProposeError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *ProposeError) Unwrap() error {
 	return e.Err
+}
+
+// Is reports the ErrOutcomeUnknown marker.
+//
+// This is the one write failure that genuinely may have landed: SyncPropose
+// can commit the entry and then fail to deliver its response, so the value is
+// durable and the caller was told nothing. Every other error out of a
+// proposal is raised before the entry can commit and marks ErrNotStored
+// instead.
+func (e *ProposeError) Is(target error) bool {
+	return target == ErrOutcomeUnknown
 }
 
 // SubsystemNotConfiguredError is returned when a request reaches a state
@@ -159,6 +186,12 @@ func (e *NotLeaderError) Error() string {
 	return "service: not leader for shard " + strconv.FormatUint(e.ShardID, 10) +
 		", leader is replica " + strconv.FormatUint(e.LeaderID, 10) +
 		" at " + e.LeaderAddress
+}
+
+// Is reports the ErrNotStored marker: a node that is not the leader cannot
+// commit the entry, so the proposal was refused rather than applied.
+func (e *NotLeaderError) Is(target error) bool {
+	return target == ErrNotStored
 }
 
 // MembershipError is returned when a membership change operation fails.
@@ -478,6 +511,12 @@ func (e *EntityEmptyDataError) Error() string {
 	return "service: entity data must not be empty: " + string(e.EntityType) + "/" + e.ID
 }
 
+// Is reports the ErrNotStored marker: the request was rejected on validation,
+// before anything was proposed.
+func (e *EntityEmptyDataError) Is(target error) bool {
+	return target == ErrNotStored
+}
+
 // EntityEmptyIDError is returned when a request contains an empty entity ID.
 type EntityEmptyIDError struct {
 	EntityType EntityType
@@ -488,12 +527,24 @@ func (e *EntityEmptyIDError) Error() string {
 	return "service: entity ID must not be empty for type: " + string(e.EntityType)
 }
 
+// Is reports the ErrNotStored marker: the request was rejected on validation,
+// before anything was proposed.
+func (e *EntityEmptyIDError) Is(target error) bool {
+	return target == ErrNotStored
+}
+
 // EntityEmptyTypeError is returned when a request contains an empty entity type.
 type EntityEmptyTypeError struct{}
 
 // Error returns a human-readable description of the empty type error.
 func (e *EntityEmptyTypeError) Error() string {
 	return "service: entity type must not be empty"
+}
+
+// Is reports the ErrNotStored marker: the request was rejected on validation,
+// before anything was proposed.
+func (e *EntityEmptyTypeError) Is(target error) bool {
+	return target == ErrNotStored
 }
 
 // InvalidPageTokenError is returned when a page token cannot be parsed.

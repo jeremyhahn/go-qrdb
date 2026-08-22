@@ -19,7 +19,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -516,7 +516,13 @@ func TestQuotaKVService_DefinitivelyRejectedWriteReleasesReservation(t *testing.
 		"encode failure":         &service.EncodeRequestError{Err: errors.New("too long")},
 		"not leader":             &service.NotLeaderError{ShardID: 1, LeaderID: 2},
 		"subsystem absent":       &service.SMNotConfiguredError{Message: "mvcc"},
-		"atomic write refused":   kvstore.ErrAtomicWriteUnsupported,
+		// Taken FROM the service rather than written out here. The earlier
+		// version of this case injected kvstore.ErrAtomicWriteUnsupported,
+		// which is a different sentinel from the database-package one the
+		// KVServicer this wraps actually returns — so it proved the wrapper
+		// handled an error that never reaches it, while the real refusal
+		// leaked its reservation on every call (go-qrdb#100).
+		"atomic write refused": atomicWriteRefusal(t),
 	}
 
 	writes := map[string]func(context.Context, *quotaKVService) error{
@@ -584,4 +590,22 @@ func TestQuotaKVService_RepeatedRejectionsDoNotExhaustTheQuota(t *testing.T) {
 	if err := working.Put(ctx, "real", make([]byte, 90)); err != nil {
 		t.Fatalf("a legitimate write was refused after rejected ones leaked quota: %v", err)
 	}
+}
+
+// atomicWriteRefusal returns the error a real BackendKVService produces when
+// the backend cannot do conditional writes, so this test cannot drift from the
+// error the production path raises.
+func atomicWriteRefusal(t *testing.T) error {
+	t.Helper()
+	_, err := service.NewBackendKVService(&nonAtomicTestBackend{}).
+		PutIfAbsent(context.Background(), "k", []byte("v"))
+	if err == nil {
+		t.Fatal("a backend without atomic writes accepted a conditional write")
+	}
+	return err
+}
+
+// nonAtomicTestBackend is a Backend without the AtomicBackend capability.
+type nonAtomicTestBackend struct {
+	database.Backend
 }
