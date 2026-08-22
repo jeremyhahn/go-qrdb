@@ -110,6 +110,48 @@ sweep becoming an enumeration of the internal keyspace.
 - **`kv restore` and as-of reads require `raft.sm_type: mvcc`.** The default
   `pebble` state machine keeps no revision history and refuses them.
 
+### Wire-field bounds — the owning contract for every plane
+
+This section owns the length-field contract for the whole extended wire
+protocol (`pkg/protocol`). The transaction, time-series and vector engineering
+contracts point here rather than restating it, because it is one rule and it
+must not drift into four.
+
+- **Every field that IS length-framed is bounded by the field that frames it.**
+  Two-byte fields — MVCC and base-KV **keys**, index and metric names, tag keys
+  and values, tag and point counts, vector namespaces and ids — hold at most
+  65,535 bytes. Four-byte fields — transaction and batch elements, vector
+  dimensions and metadata — hold at most 4,294,967,295.
+- **An MVCC Put VALUE is not length-framed and is not bounded by 65,535.**
+  `EncodeMVCCPut` frames only the key; the value is the remainder of the
+  payload, so it needs no length field and has none. Its practical limit is the
+  Raft entry / proposal size, not a protocol field. Do not infer a 64 KiB value
+  cap from the key bound — that would reject valid writes.
+- **A longer value is refused, never truncated.** Narrowing it is not a
+  truncation of that field but a corruption of the NEXT one: a 65,537-byte key
+  written into a two-byte field stores a length of 1, so the decoder reads a
+  one-byte key and folds the remaining 65,536 bytes into whatever follows. On a
+  write that stores under the wrong key; on a delete it removes a different
+  record than the caller named — from input a caller can craft, inside a
+  replicated state machine.
+- **Every encoder returns `([]byte, error)`.** This is source-breaking for an
+  external consumer calling `pkg/protocol` directly; SDK consumers are
+  unaffected.
+- **Validation completes before allocation.** An encoder validates the whole
+  request, including every nested field of a batch, before sizing its buffer,
+  so an unencodable request costs no allocation proportional to itself.
+- **Refusals are typed.** `*protocol.FieldTooLongError` names the offending
+  field; `*protocol.EncodedSizeOverflowError` reports a total an `int` cannot
+  describe.
+- **A refusal is a CLIENT error.** No proposal is made, so the services return
+  `*service.EncodeRequestError`, which maps to gRPC `InvalidArgument` and HTTP
+  **400** — deliberately not `service.ProposeError`, which maps to
+  `Internal`/500 and would report a healthy cluster as broken while inviting a
+  retry of an input that can never succeed.
+
+Source: `pkg/protocol/lengths.go`, `pkg/service/errors.go`. Portfolio-level
+summary: [../01-architecture.md](../01-architecture.md).
+
 ## Error semantics
 
 Errors are typed values in `pkg/errors` and the per-transport error packages

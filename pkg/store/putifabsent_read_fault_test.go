@@ -134,7 +134,7 @@ func TestPebbleStateMachine_PutIfAbsent_AFailedExistenceReadDoesNotStore(t *test
 		{
 			name: "MVCC opcode",
 			entry: func(idx uint64, key, value []byte) sm.Entry {
-				return sm.Entry{Index: idx, Cmd: protocol.EncodeMVCCPutIfAbsent(key, value, 0)}
+				return sm.Entry{Index: idx, Cmd: mustEncode(protocol.EncodeMVCCPutIfAbsent(key, value, 0))}
 			},
 		},
 	} {

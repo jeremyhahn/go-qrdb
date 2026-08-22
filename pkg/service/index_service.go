@@ -48,7 +48,10 @@ func NewIndexService(host Host, shardID uint64) IndexServicer {
 // CreateIndex creates a new secondary index through Raft consensus.
 func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error {
 	numeric := config.ValueType == index.IndexValueTypeNumeric
-	cmd := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse, numeric)
+	cmd, err := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse, numeric)
+	if err != nil {
+		return &EncodeRequestError{Err: err}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -64,7 +67,10 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 
 // DropIndex removes a secondary index through Raft consensus.
 func (s *IndexService) DropIndex(ctx context.Context, name string) error {
-	cmd := protocol.EncodeIndexDrop(name)
+	cmd, err := protocol.EncodeIndexDrop(name)
+	if err != nil {
+		return &EncodeRequestError{Err: err}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)

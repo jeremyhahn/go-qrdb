@@ -379,11 +379,11 @@ func TestRegularStateMachine_Batch_MixedOps(t *testing.T) {
 
 	// Build batch: 2 puts + 1 delete.
 	ops := [][]byte{
-		protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0),
-		protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0),
-		protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 10, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -433,9 +433,9 @@ func TestRegularStateMachine_Batch_InvalidOpcodeInBatch(t *testing.T) {
 
 	// Build a batch with an unknown op type (0xFF).
 	ops := [][]byte{
-		protocol.EncodeOp(0xFF, []byte("key"), []byte("val"), nil, 0),
+		mustEncode(protocol.EncodeOp(0xFF, []byte("key"), []byte("val"), nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -885,10 +885,10 @@ func TestRegularStateMachine_WatchNotification_Batch(t *testing.T) {
 	regularApplyPut(t, rsm, "batch-watch", "to-delete")
 
 	ops := [][]byte{
-		protocol.EncodeOp(kv.OpPut, []byte("bw-a"), []byte("val-a"), nil, 0),
-		protocol.EncodeOp(kv.OpDelete, []byte("batch-watch"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("bw-a"), []byte("val-a"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpDelete, []byte("batch-watch"), nil, nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 10, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

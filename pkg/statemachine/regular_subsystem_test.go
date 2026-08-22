@@ -149,7 +149,7 @@ func TestRegularStateMachine_MVCCPut_Success(t *testing.T) {
 	ms := &mockMVCCStore{putResult: "ok"}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 42)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 42))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -171,7 +171,7 @@ func TestRegularStateMachine_MVCCPut_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{putErr: errors.New("disk full")}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -186,7 +186,7 @@ func TestRegularStateMachine_MVCCDelete_Success(t *testing.T) {
 	ms := &mockMVCCStore{deleteResult: "ok"}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -205,7 +205,7 @@ func TestRegularStateMachine_MVCCDelete_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{deleteErr: errors.New("io error")}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -220,7 +220,7 @@ func TestRegularStateMachine_MVCCRange_Success(t *testing.T) {
 	ms := &mockMVCCStore{rangeResult: "range-data", rangeRevision: 5}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -234,7 +234,7 @@ func TestRegularStateMachine_MVCCRange_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{rangeErr: errors.New("range fail")}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -245,7 +245,7 @@ func TestRegularStateMachine_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -259,7 +259,7 @@ func TestRegularStateMachine_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
 	rsm := newRegularWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -270,11 +270,10 @@ func TestRegularStateMachine_Transaction_Success(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: true, txnRevision: 7}
 	rsm := newRegularWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0)
-	failureOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc})
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0))
+	failureOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc}))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -291,11 +290,10 @@ func TestRegularStateMachine_Transaction_FailedBranch(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: false, txnRevision: 3}
 	rsm := newRegularWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0)
-	failureOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc})
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0))
+	failureOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc}))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -309,10 +307,9 @@ func TestRegularStateMachine_Transaction_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{txnErr: errors.New("txn fail")}
 	rsm := newRegularWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("k"), 1, 1, []byte("v"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v2"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil)
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("k"), 1, 1, []byte("v"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v2"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -323,10 +320,9 @@ func TestRegularStateMachine_Transaction_CompareFields(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: true, txnRevision: 1}
 	rsm := newRegularWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 2, 3, nil, 10, 20, 30)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("val"), []byte("end"), 55)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil)
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 2, 3, nil, 10, 20, 30))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("val"), []byte("end"), 55))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -478,8 +474,7 @@ func TestRegularStateMachine_LeaseGrant_Success(t *testing.T) {
 	}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseGrant(30)
-
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -497,8 +492,7 @@ func TestRegularStateMachine_LeaseGrant_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseGrant(30)
-
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -509,8 +503,7 @@ func TestRegularStateMachine_LeaseRevoke_Success(t *testing.T) {
 	lm := &mockLeaseManager{}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseRevoke(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(42))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -528,8 +521,7 @@ func TestRegularStateMachine_LeaseRevoke_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseRevoke(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(42))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -544,8 +536,7 @@ func TestRegularStateMachine_LeaseKeepAlive_Success(t *testing.T) {
 	}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseKeepAlive(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(42))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -563,8 +554,7 @@ func TestRegularStateMachine_LeaseKeepAlive_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithLease(lm)
 
-	cmd := protocol.EncodeLeaseKeepAlive(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(42))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -667,8 +657,7 @@ func TestRegularStateMachine_IndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	rsm := newRegularWithIndex(im)
 
-	cmd := protocol.EncodeIndexCreate("email_idx", "email", true, false, false)
-
+	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -684,8 +673,7 @@ func TestRegularStateMachine_IndexCreate_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithIndex(im)
 
-	cmd := protocol.EncodeIndexCreate("email_idx", "email", true, false, false)
-
+	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")
@@ -700,8 +688,7 @@ func TestRegularStateMachine_IndexDrop_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	rsm := newRegularWithIndex(im)
 
-	cmd := protocol.EncodeIndexDrop("email_idx")
-
+	cmd := mustEncode(protocol.EncodeIndexDrop("email_idx"))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -717,8 +704,7 @@ func TestRegularStateMachine_IndexDrop_ManagerError(t *testing.T) {
 	}
 	rsm := newRegularWithIndex(im)
 
-	cmd := protocol.EncodeIndexDrop("email_idx")
-
+	cmd := mustEncode(protocol.EncodeIndexDrop("email_idx"))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")
@@ -794,8 +780,7 @@ func TestRegularStateMachine_TSWrite_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("cpu", 1000, 42.5, map[string]string{"host": "a"})
-
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu", 1000, 42.5, map[string]string{"host": "a"}))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -809,8 +794,7 @@ func TestRegularStateMachine_TSWrite_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: errors.New("write fail")}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("cpu", 1000, 42.5, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu", 1000, 42.5, nil))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -825,8 +809,7 @@ func TestRegularStateMachine_TSWriteBatch_Success(t *testing.T) {
 		{Metric: "cpu", Timestamp: 1000, Value: 42.5},
 		{Metric: "mem", Timestamp: 2000, Value: 80.0},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
-
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -843,8 +826,7 @@ func TestRegularStateMachine_TSWriteBatch_StoreError(t *testing.T) {
 	points := []protocol.TSWriteParams{
 		{Metric: "cpu", Timestamp: 1000, Value: 42.5},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
-
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -855,8 +837,7 @@ func TestRegularStateMachine_TSWritePoint_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -870,8 +851,7 @@ func TestRegularStateMachine_TSWritePoint_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: errors.New("point fail")}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -882,8 +862,7 @@ func TestRegularStateMachine_TSDeleteSeries_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil)
-
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -897,8 +876,7 @@ func TestRegularStateMachine_TSDeleteSeries_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{deleteSeriesErr: errors.New("delete fail")}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil)
-
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -909,8 +887,7 @@ func TestRegularStateMachine_TSSetRetention_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1)
-
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1))
 	result, err := regularApplyCmd(t, rsm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -924,8 +901,7 @@ func TestRegularStateMachine_TSSetRetention_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{setRetentionErr: errors.New("retention fail")}
 	rsm := newRegularWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1)
-
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1))
 	_, err := regularApplyCmd(t, rsm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")

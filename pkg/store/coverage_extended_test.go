@@ -200,7 +200,7 @@ func TestMVCCHandleBaseKVDelete_WithLessorDetach(t *testing.T) {
 	})
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -326,7 +326,7 @@ func TestMVCCUpdateIndexesForPut_WithIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Create a secondary index on "name" field.
-	createCmd := protocol.EncodeIndexCreate("name_idx", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{indexCreateEntry(1, "name_idx", "name", false, false)})
 	_ = createCmd
 
@@ -349,7 +349,7 @@ func TestMVCCUpdateIndexesForPut_WithIndex(t *testing.T) {
 func TestMVCCUpdateIndexesForPut_OverwriteUpdatesIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("name_idx2", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx2", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Initial put.
@@ -386,7 +386,7 @@ func TestMVCCUpdateIndexesForPut_OverwriteUpdatesIndex(t *testing.T) {
 func TestMVCCUpdateIndexesForPut_NonJSONValueSkipped(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("name_idx3", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx3", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a non-JSON value -- should silently skip index update.
@@ -431,7 +431,7 @@ func TestMVCCUpdateIndexesForPut_NoIndexes(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_WithIndex(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("name_idx_del", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_del", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a key with indexed JSON value.
@@ -466,7 +466,7 @@ func TestMVCCRemoveIndexesForDelete_WithIndex(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_NonJSONPrevValue(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("name_idx_nonjson", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_nonjson", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put a non-JSON value.
@@ -488,7 +488,7 @@ func TestMVCCRemoveIndexesForDelete_NonJSONPrevValue(t *testing.T) {
 func TestMVCCRemoveIndexesForDelete_NilPrevKv(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("name_idx_nil", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("name_idx_nil", "name", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Delete a key that never existed -- prevKv will be nil, exercising
@@ -504,7 +504,7 @@ func TestMVCCRemoveIndexesForDelete_NilPrevKv(t *testing.T) {
 func TestMVCCHandleBaseKVPut_WithIndexUpdates(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("base_idx", "status", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("base_idx", "status", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put via base KV with JSON value.
@@ -535,7 +535,7 @@ func TestMVCCHandleBaseKVPut_WithIndexUpdates(t *testing.T) {
 func TestMVCCHandleBaseKVDelete_WithIndexRemoval(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	createCmd := protocol.EncodeIndexCreate("del_idx", "color", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("del_idx", "color", false, false, false))
 	applyMVCCEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	// Put via MVCC put.
@@ -909,7 +909,7 @@ func TestMVCCStateMachine_GetHashNotOpened(t *testing.T) {
 func TestMVCCStateMachine_UpdateNotOpened(t *testing.T) {
 	s := NewMVCCStateMachine(nil)
 
-	entries := []sm.Entry{{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0)}}
+	entries := []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
 	if err == nil {
@@ -1011,15 +1011,15 @@ func TestMVCCHandleTransaction_FailureOpsExecuted(t *testing.T) {
 	applyMVCCEntries(t, s, []sm.Entry{putE})
 
 	// Compare value == "wrong" (will fail) -> failure ops should execute.
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("txn-fail-key"),
 		3, // CompareValue
 		0, // Equal
 		[]byte("wrong"),
 		0, 0, 0,
-	)
-	failOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("fail-result"), []byte("failed"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, nil, [][]byte{failOp})
+	))
+	failOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("fail-result"), []byte("failed"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, nil, [][]byte{failOp}))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: cmd}}, results); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -1064,8 +1064,8 @@ func TestMVCCHandleBatch_InvalidPayload(t *testing.T) {
 func TestMVCCHandleBatch_UnknownOpType(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	unknownOp := protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{unknownOp})
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -1089,15 +1089,15 @@ func TestMVCCHandleTransaction_UnknownOpInSuccessOps(t *testing.T) {
 	applyMVCCEntries(t, s, []sm.Entry{putE})
 
 	// Compare value == "val" (succeeds), but success op has unknown type.
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("txn-unk-key"),
 		3, // CompareValue
 		0, // Equal
 		[]byte("val"),
 		0, 0, 0,
-	)
-	unknownOp := protocol.EncodeOp(0x99, []byte("k"), nil, nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{unknownOp}, nil)
+	))
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), nil, nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{unknownOp}, nil))
 	entries := []sm.Entry{{Index: 2, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)

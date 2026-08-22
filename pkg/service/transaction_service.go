@@ -73,7 +73,7 @@ func NewTransactionService(host Host, shardID uint64) TransactionServicer {
 func (s *TransactionService) Execute(ctx context.Context, compares []Compare, successOps, failureOps []Op) (*TransactionResponse, error) {
 	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
 	if err != nil {
-		return nil, err
+		return nil, &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -96,7 +96,7 @@ func (s *TransactionService) Execute(ctx context.Context, compares []Compare, su
 func (s *TransactionService) ExecuteWithMode(ctx context.Context, compares []Compare, successOps, failureOps []Op, mode writemode.Mode) (*TransactionResponse, error) {
 	cmd, err := s.encodeTransactionCommand(compares, successOps, failureOps)
 	if err != nil {
-		return nil, err
+		return nil, &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
@@ -117,7 +117,7 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 	// Encode compares.
 	encodedCompares := make([][]byte, len(compares))
 	for i, c := range compares {
-		encodedCompares[i] = protocol.EncodeCompare(
+		encoded, err := protocol.EncodeCompare(
 			c.Key,
 			byte(c.Target),
 			byte(c.Result),
@@ -126,6 +126,10 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 			c.CreateRevision,
 			c.ModRevision,
 		)
+		if err != nil {
+			return nil, err
+		}
+		encodedCompares[i] = encoded
 	}
 
 	// Encode success operations.
@@ -148,7 +152,7 @@ func (s *TransactionService) encodeTransactionCommand(compares []Compare, succes
 		encodedFailure[i] = encoded
 	}
 
-	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure), nil
+	return protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
 }
 
 // buildTransactionResponse constructs a TransactionResponse from the Raft
@@ -196,7 +200,7 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 			return nil, &EntityEmptyIDError{EntityType: c.EntityType}
 		}
 		key := []byte(entityKey(c.EntityType, c.ID))
-		encodedCompares[i] = protocol.EncodeCompare(
+		encodedCompare, err := protocol.EncodeCompare(
 			key,
 			byte(c.Target),
 			byte(c.Result),
@@ -205,21 +209,28 @@ func (s *TransactionService) ExecuteEntity(ctx context.Context, req *Transaction
 			0, // createRevision
 			0, // modRevision
 		)
+		if err != nil {
+			return nil, &EncodeRequestError{Err: err}
+		}
+		encodedCompares[i] = encodedCompare
 	}
 
 	// Encode entity success operations.
 	encodedSuccess, err := encodeEntityOps(req.Success)
 	if err != nil {
-		return nil, err
+		return nil, &EncodeRequestError{Err: err}
 	}
 
 	// Encode entity failure operations.
 	encodedFailure, err := encodeEntityOps(req.Failure)
 	if err != nil {
-		return nil, err
+		return nil, &EncodeRequestError{Err: err}
 	}
 
-	cmd := protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+	cmd, err := protocol.EncodeTransaction(encodedCompares, encodedSuccess, encodedFailure)
+	if err != nil {
+		return nil, &EncodeRequestError{Err: err}
+	}
 
 	shardID := s.shardID
 	if req.ShardID != 0 {
@@ -274,7 +285,11 @@ func encodeEntityOps(ops []TransactionEntityOp) ([][]byte, error) {
 		}
 
 		key := []byte(entityKey(op.EntityType, op.ID))
-		encoded[i] = protocol.EncodeOp(protocolOp, key, op.Data, nil, 0)
+		encodedOp, err := protocol.EncodeOp(protocolOp, key, op.Data, nil, 0)
+		if err != nil {
+			return nil, err
+		}
+		encoded[i] = encodedOp
 	}
 	return encoded, nil
 }
@@ -317,5 +332,5 @@ func encodeServiceOp(op Op) ([]byte, error) {
 	if !ok {
 		return nil, &UnsupportedTransactionOpError{OpType: op.Type}
 	}
-	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID), nil
+	return protocol.EncodeOp(protocolOp, op.Key, op.Value, op.RangeEnd, op.LeaseID)
 }

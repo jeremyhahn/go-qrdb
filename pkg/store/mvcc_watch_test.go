@@ -345,10 +345,9 @@ func TestMVCCWatch_Update_Transaction_NotifiesAllOps(t *testing.T) {
 	}
 
 	// Build a transaction with empty compares (always succeeds) and 2 put ops.
-	op1 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txk1"), []byte("v1"), nil, 0)
-	op2 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txk2"), []byte("v2"), nil, 0)
-	txnCmd := protocol.EncodeTransaction(nil, [][]byte{op1, op2}, nil)
-
+	op1 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txk1"), []byte("v1"), nil, 0))
+	op2 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txk2"), []byte("v2"), nil, 0))
+	txnCmd := mustEncode(protocol.EncodeTransaction(nil, [][]byte{op1, op2}, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -403,10 +402,9 @@ func TestMVCCWatch_Update_Batch_NotifiesAllOps(t *testing.T) {
 	}
 
 	// Build a batch with 2 put operations.
-	op1 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)
-	op2 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{op1, op2})
-
+	op1 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0))
+	op2 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{op1, op2}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {

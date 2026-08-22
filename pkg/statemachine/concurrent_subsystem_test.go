@@ -75,7 +75,7 @@ func TestConcurrentStateMachine_MVCCPut_Success(t *testing.T) {
 	ms := &mockMVCCStore{putResult: "ok"}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 42)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 42))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -94,7 +94,7 @@ func TestConcurrentStateMachine_MVCCPut_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{putErr: errors.New("disk full")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -109,7 +109,7 @@ func TestConcurrentStateMachine_MVCCDelete_Success(t *testing.T) {
 	ms := &mockMVCCStore{deleteResult: "ok"}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -123,7 +123,7 @@ func TestConcurrentStateMachine_MVCCDelete_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{deleteErr: errors.New("io error")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -134,7 +134,7 @@ func TestConcurrentStateMachine_MVCCRange_Success(t *testing.T) {
 	ms := &mockMVCCStore{rangeResult: "range-data", rangeRevision: 5}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -148,7 +148,7 @@ func TestConcurrentStateMachine_MVCCRange_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{rangeErr: errors.New("range fail")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 100, false, false))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -159,7 +159,7 @@ func TestConcurrentStateMachine_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -173,7 +173,7 @@ func TestConcurrentStateMachine_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: errors.New("compact fail")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -184,11 +184,10 @@ func TestConcurrentStateMachine_Transaction_Success(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: true, txnRevision: 7}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0)
-	failureOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc})
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0))
+	failureOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc}))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -205,11 +204,10 @@ func TestConcurrentStateMachine_Transaction_FailedBranch(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: false, txnRevision: 3}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0)
-	failureOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc})
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 1, 1, []byte("val"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("new"), nil, 0))
+	failureOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("old"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, [][]byte{failureOpEnc}))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -223,10 +221,9 @@ func TestConcurrentStateMachine_Transaction_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{txnErr: errors.New("txn fail")}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("k"), 1, 1, []byte("v"), 0, 0, 0)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v2"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil)
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("k"), 1, 1, []byte("v"), 0, 0, 0))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v2"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from store")
@@ -237,10 +234,9 @@ func TestConcurrentStateMachine_Transaction_CompareFields(t *testing.T) {
 	ms := &mockMVCCStore{txnSucceeded: true, txnRevision: 1}
 	csm, _ := newConcurrentWithMVCC(ms)
 
-	compareEnc := protocol.EncodeCompare([]byte("key"), 2, 3, nil, 10, 20, 30)
-	successOpEnc := protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("val"), []byte("end"), 55)
-	cmd := protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil)
-
+	compareEnc := mustEncode(protocol.EncodeCompare([]byte("key"), 2, 3, nil, 10, 20, 30))
+	successOpEnc := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("key"), []byte("val"), []byte("end"), 55))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compareEnc}, [][]byte{successOpEnc}, nil))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -389,8 +385,7 @@ func TestConcurrentStateMachine_LeaseGrant_Success(t *testing.T) {
 	}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseGrant(30)
-
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -408,8 +403,7 @@ func TestConcurrentStateMachine_LeaseGrant_ManagerError(t *testing.T) {
 	}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseGrant(30)
-
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -420,8 +414,7 @@ func TestConcurrentStateMachine_LeaseRevoke_Success(t *testing.T) {
 	lm := &mockLeaseManager{}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseRevoke(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(42))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -439,8 +432,7 @@ func TestConcurrentStateMachine_LeaseRevoke_ManagerError(t *testing.T) {
 	}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseRevoke(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(42))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -455,8 +447,7 @@ func TestConcurrentStateMachine_LeaseKeepAlive_Success(t *testing.T) {
 	}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseKeepAlive(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(42))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -474,8 +465,7 @@ func TestConcurrentStateMachine_LeaseKeepAlive_ManagerError(t *testing.T) {
 	}
 	csm, _ := newConcurrentWithLease(lm)
 
-	cmd := protocol.EncodeLeaseKeepAlive(42)
-
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(42))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from lease manager")
@@ -578,8 +568,7 @@ func TestConcurrentStateMachine_IndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := protocol.EncodeIndexCreate("email_idx", "email", true, false, false)
-
+	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -593,8 +582,7 @@ func TestConcurrentStateMachine_IndexCreate_ManagerError(t *testing.T) {
 	im := &mockIndexManager{createErr: errors.New("create fail")}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := protocol.EncodeIndexCreate("email_idx", "email", true, false, false)
-
+	cmd := mustEncode(protocol.EncodeIndexCreate("email_idx", "email", true, false, false))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")
@@ -609,8 +597,7 @@ func TestConcurrentStateMachine_IndexDrop_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := protocol.EncodeIndexDrop("email_idx")
-
+	cmd := mustEncode(protocol.EncodeIndexDrop("email_idx"))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -624,8 +611,7 @@ func TestConcurrentStateMachine_IndexDrop_ManagerError(t *testing.T) {
 	im := &mockIndexManager{dropErr: errors.New("drop fail")}
 	csm, _ := newConcurrentWithIndex(im)
 
-	cmd := protocol.EncodeIndexDrop("email_idx")
-
+	cmd := mustEncode(protocol.EncodeIndexDrop("email_idx"))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from index manager")
@@ -695,8 +681,7 @@ func TestConcurrentStateMachine_TSWrite_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("cpu", 1000, 42.5, map[string]string{"host": "a"})
-
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu", 1000, 42.5, map[string]string{"host": "a"}))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -710,8 +695,7 @@ func TestConcurrentStateMachine_TSWrite_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: errors.New("write fail")}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("cpu", 1000, 42.5, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu", 1000, 42.5, nil))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -726,8 +710,7 @@ func TestConcurrentStateMachine_TSWriteBatch_Success(t *testing.T) {
 		{Metric: "cpu", Timestamp: 1000, Value: 42.5},
 		{Metric: "mem", Timestamp: 2000, Value: 80.0},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
-
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -744,8 +727,7 @@ func TestConcurrentStateMachine_TSWriteBatch_StoreError(t *testing.T) {
 	points := []protocol.TSWriteParams{
 		{Metric: "cpu", Timestamp: 1000, Value: 42.5},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
-
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -756,8 +738,7 @@ func TestConcurrentStateMachine_TSWritePoint_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -771,8 +752,7 @@ func TestConcurrentStateMachine_TSWritePoint_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: errors.New("point fail")}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil)
-
+	cmd := mustEncode(protocol.EncodeTSWritePoint("mem", 3000, 64.0, nil))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -783,8 +763,7 @@ func TestConcurrentStateMachine_TSDeleteSeries_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil)
-
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -798,8 +777,7 @@ func TestConcurrentStateMachine_TSDeleteSeries_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{deleteSeriesErr: errors.New("delete fail")}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil)
-
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 9999, nil))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -810,8 +788,7 @@ func TestConcurrentStateMachine_TSSetRetention_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1)
-
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1))
 	result, err := concurrentApplyCmd(t, csm, cmd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -825,8 +802,7 @@ func TestConcurrentStateMachine_TSSetRetention_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{setRetentionErr: errors.New("retention fail")}
 	csm, _ := newConcurrentWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1)
-
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1))
 	_, err := concurrentApplyCmd(t, csm, cmd)
 	if err == nil {
 		t.Fatal("expected error from ts store")
@@ -1058,4 +1034,15 @@ type errorDeleteStorage struct {
 
 func (s *errorDeleteStorage) Delete(key []byte) error {
 	return errors.New("delete error")
+}
+
+// mustEncode unwraps an encoder's (command, error) pair for tests whose
+// inputs are small and fixed. An error here is a TEST bug -- the encoders
+// refuse only values their length fields cannot describe -- so it fails
+// loudly rather than being threaded through every call site.
+func mustEncode(cmd []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return cmd
 }

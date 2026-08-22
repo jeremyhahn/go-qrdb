@@ -48,10 +48,10 @@ func TestKVDispatch_TSWriteBatch_Success(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
+	cmd := mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
 		{Metric: "cpu.usage", Timestamp: 1000, Value: 42.5, Tags: map[string]string{"host": "a"}},
 		{Metric: "mem.used", Timestamp: 2000, Value: 75.0, Tags: nil},
-	})
+	}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -69,9 +69,9 @@ func TestKVDispatch_TSWriteBatch_Success(t *testing.T) {
 func TestKVDispatch_TSWriteBatch_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
+	cmd := mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
 		{Metric: "cpu", Timestamp: 1000, Value: 1.0, Tags: nil},
-	})
+	}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -91,7 +91,7 @@ func TestKVDispatch_TSWriteBatch_Empty(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{})
+	cmd := mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -146,7 +146,7 @@ func TestKVDispatch_MVCCPut_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{putErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -168,7 +168,7 @@ func TestKVDispatch_MVCCDelete_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{deleteErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -187,7 +187,7 @@ func TestKVDispatch_MVCCRange_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{rangeErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -206,7 +206,7 @@ func TestKVDispatch_MVCCCompact_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{compactErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCCompact(5)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(5))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -225,7 +225,7 @@ func TestKVDispatch_Transaction_StorageError(t *testing.T) {
 	mvcc := &errMVCCStore{txnErr: storageErr}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeTransaction(nil, nil, nil)
+	cmd := mustEncode(protocol.EncodeTransaction(nil, nil, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -243,7 +243,7 @@ func TestKVDispatch_Transaction_Failure_Result(t *testing.T) {
 	// Transaction that returns succeeded=false uses a dedicated mock.
 	failMVCC := &failedTransactionMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(failMVCC))
-	cmd := protocol.EncodeTransaction(nil, nil, nil)
+	cmd := mustEncode(protocol.EncodeTransaction(nil, nil, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := k.Update(entries, results); err != nil {
@@ -285,7 +285,7 @@ func (m *failedTransactionMVCCStore) Transaction(compares []MVCCCompare, success
 func TestKVDispatch_IndexDrop_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeIndexDrop("my-index")
+	cmd := mustEncode(protocol.EncodeIndexDrop("my-index"))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -304,7 +304,7 @@ func TestKVDispatch_IndexDrop_NotConfigured(t *testing.T) {
 
 func TestKVDispatch_LeaseRevoke_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
-	payload := protocol.EncodeLeaseRevoke(100)
+	payload := mustEncode(protocol.EncodeLeaseRevoke(100))
 	cmd := append([]byte{protocol.OpLeaseRevoke}, payload...)
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
@@ -320,7 +320,7 @@ func TestKVDispatch_LeaseRevoke_NotConfigured(t *testing.T) {
 
 func TestKVDispatch_LeaseKeepAlive_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
-	payload := protocol.EncodeLeaseKeepAlive(100)
+	payload := mustEncode(protocol.EncodeLeaseKeepAlive(100))
 	cmd := append([]byte{protocol.OpLeaseKeepAlive}, payload...)
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
@@ -340,7 +340,7 @@ func TestKVDispatch_LeaseKeepAlive_NotConfigured(t *testing.T) {
 
 func TestKVDispatch_TSWritePoint_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
-	cmd := protocol.EncodeTSWritePoint("cpu", 1000, 42.0, nil)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("cpu", 1000, 42.0, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -355,7 +355,7 @@ func TestKVDispatch_TSWritePoint_NotConfigured(t *testing.T) {
 
 func TestKVDispatch_TSDeleteSeries_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
-	cmd := protocol.EncodeTSDeleteSeries("cpu", 0, 1000, nil)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 1000, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -370,7 +370,7 @@ func TestKVDispatch_TSDeleteSeries_NotConfigured(t *testing.T) {
 
 func TestKVDispatch_TSSetRetention_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
-	cmd := protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1)
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 86400000000000, 60000000000, 1))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

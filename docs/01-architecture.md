@@ -472,6 +472,36 @@ and `node.EnableEncryption()`.
 
   Source: `pkg/protocol/protocol.go` -- op code constants and encoders
 
+- **Every wire field that IS length-framed is bounded by the field that frames
+  it, and the encoders refuse what they cannot describe.** A field framed by two
+  bytes holds at most 65,535 bytes; one framed by four bytes at most
+  4,294,967,295. A field that is NOT framed carries no such bound — an MVCC Put
+  value is the remainder of the payload after its key, so it has no length field
+  and is limited by the Raft entry size instead.
+  A longer value is not encodable, and writing it with a narrowed cast is not
+  a truncation of that field but a corruption of the NEXT one: a 65,537-byte
+  key written into a two-byte field stores a length of 1, so the decoder reads
+  a one-byte key and folds the remaining 65,536 bytes into whatever follows.
+  On a write that stores under the wrong key; on a delete it removes a
+  different record than the caller named — from input a caller can craft,
+  inside a replicated state machine.
+
+  Consequently **every encoder returns `([]byte, error)`**, and every encoder
+  validates the whole request, including nested fields of a batch, BEFORE it
+  allocates the output buffer, so an unencodable request costs no allocation
+  proportional to itself. Refusals are typed:
+  `*protocol.FieldTooLongError` names the offending field, and
+  `*protocol.EncodedSizeOverflowError` reports a total size an `int` cannot
+  describe.
+
+  A refusal is a **client** error: no proposal is made, so the services return
+  `*service.EncodeRequestError`, which maps to gRPC `InvalidArgument` and HTTP
+  **400**. It is deliberately not `service.ProposeError` — that maps to
+  `Internal`/500, which would report a healthy cluster as broken and invite a
+  retry of an input that can never succeed.
+
+  Source: `pkg/protocol/lengths.go`, `pkg/service/errors.go`
+
 - **Watch events generated inside state machine `Update()`.** Events are
   emitted synchronously during `Update` processing, guaranteeing they
   reflect the exact committed state at the revision they describe. This

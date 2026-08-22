@@ -39,7 +39,7 @@ import (
 func indexCreateEntry(index uint64, name, fieldName string, unique, sparse bool) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeIndexCreate(name, fieldName, unique, sparse, false),
+		Cmd:   mustEncode(protocol.EncodeIndexCreate(name, fieldName, unique, sparse, false)),
 	}
 }
 
@@ -47,7 +47,7 @@ func indexCreateEntry(index uint64, name, fieldName string, unique, sparse bool)
 func indexDropEntry(index uint64, name string) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeIndexDrop(name),
+		Cmd:   mustEncode(protocol.EncodeIndexDrop(name)),
 	}
 }
 
@@ -55,7 +55,7 @@ func indexDropEntry(index uint64, name string) sm.Entry {
 func tsWriteEntry(index uint64, metric string, ts int64, value float64, tags map[string]string) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTSWrite(metric, ts, value, tags),
+		Cmd:   mustEncode(protocol.EncodeTSWrite(metric, ts, value, tags)),
 	}
 }
 
@@ -63,7 +63,7 @@ func tsWriteEntry(index uint64, metric string, ts int64, value float64, tags map
 func tsWriteBatchEntry(index uint64, params []protocol.TSWriteParams) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTSWriteBatch(params),
+		Cmd:   mustEncode(protocol.EncodeTSWriteBatch(params)),
 	}
 }
 
@@ -916,7 +916,7 @@ func TestMVCCStateMachine_IndexList_EmptyAfterCleanup(t *testing.T) {
 func tsWritePointEntry(index uint64, metric string, ts int64, value float64, tags map[string]string) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTSWritePoint(metric, ts, value, tags),
+		Cmd:   mustEncode(protocol.EncodeTSWritePoint(metric, ts, value, tags)),
 	}
 }
 
@@ -924,7 +924,7 @@ func tsWritePointEntry(index uint64, metric string, ts int64, value float64, tag
 func tsDeleteSeriesEntry(index uint64, metric string, startNs, endNs int64, tags map[string]string) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTSDeleteSeries(metric, startNs, endNs, tags),
+		Cmd:   mustEncode(protocol.EncodeTSDeleteSeries(metric, startNs, endNs, tags)),
 	}
 }
 
@@ -932,7 +932,7 @@ func tsDeleteSeriesEntry(index uint64, metric string, startNs, endNs int64, tags
 func tsSetRetentionEntry(index uint64, metric string, durationNs, resolutionNs int64, aggregation byte) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTSSetRetention(metric, durationNs, resolutionNs, aggregation),
+		Cmd:   mustEncode(protocol.EncodeTSSetRetention(metric, durationNs, resolutionNs, aggregation)),
 	}
 }
 

@@ -66,7 +66,7 @@ func TestMVCCKVService_PutEntity_Success(t *testing.T) {
 	}
 
 	// Verify the key was encoded as "user/u42".
-	expected := protocol.EncodeMVCCPut([]byte("user/u42"), []byte(`{"name":"alice"}`), 0)
+	expected := mustEncode(protocol.EncodeMVCCPut([]byte("user/u42"), []byte(`{"name":"alice"}`), 0))
 	if len(capturedCmd) != len(expected) {
 		t.Fatalf("expected cmd length %d, got %d", len(expected), len(capturedCmd))
 	}
@@ -305,7 +305,7 @@ func TestMVCCKVService_DeleteEntity_Success(t *testing.T) {
 	}
 
 	// Verify the key was encoded as "session/s1".
-	expected := protocol.EncodeMVCCDelete([]byte("session/s1"))
+	expected := mustEncode(protocol.EncodeMVCCDelete([]byte("session/s1")))
 	if len(capturedCmd) != len(expected) {
 		t.Fatalf("expected cmd length %d, got %d", len(expected), len(capturedCmd))
 	}
@@ -653,4 +653,15 @@ func TestMVCCKVService_ListEntities_EmptyResult(t *testing.T) {
 	if resp.NextPageToken != "" {
 		t.Fatalf("expected empty NextPageToken, got %q", resp.NextPageToken)
 	}
+}
+
+// mustEncode unwraps an encoder's (command, error) pair for tests whose
+// inputs are small and fixed. An error here is a TEST bug -- the encoders
+// refuse only values their length fields cannot describe -- so it fails
+// loudly rather than being threaded through every call site.
+func mustEncode(cmd []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return cmd
 }

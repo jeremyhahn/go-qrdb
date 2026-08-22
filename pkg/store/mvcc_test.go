@@ -56,7 +56,7 @@ func newTestMVCCStateMachine(t *testing.T) *MVCCStateMachine {
 func mvccPutEntry(index uint64, key, value []byte, leaseID int64) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeMVCCPut(key, value, leaseID),
+		Cmd:   mustEncode(protocol.EncodeMVCCPut(key, value, leaseID)),
 	}
 }
 
@@ -64,7 +64,7 @@ func mvccPutEntry(index uint64, key, value []byte, leaseID int64) sm.Entry {
 func mvccDeleteEntry(index uint64, key []byte) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeMVCCDelete(key),
+		Cmd:   mustEncode(protocol.EncodeMVCCDelete(key)),
 	}
 }
 
@@ -72,7 +72,7 @@ func mvccDeleteEntry(index uint64, key []byte) sm.Entry {
 func mvccCompactEntry(index uint64, revision int64) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeMVCCCompact(revision),
+		Cmd:   mustEncode(protocol.EncodeMVCCCompact(revision)),
 	}
 }
 
@@ -450,7 +450,7 @@ func TestMVCCStateMachine_MVCCPutIfAbsent(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	results := make([]sm.Result, 1)
-	cmd := protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("one"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("one"), 0))
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: cmd}}, results); err != nil {
 		t.Fatalf("first Update: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestMVCCStateMachine_MVCCPutIfAbsent(t *testing.T) {
 	}
 
 	results = make([]sm.Result, 1)
-	cmd = protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("two"), 0)
+	cmd = mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("mcond"), []byte("two"), 0))
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: cmd}}, results); err != nil {
 		t.Fatalf("second Update must not error on a declined conditional write: %v", err)
 	}
@@ -489,23 +489,22 @@ func TestMVCCStateMachine_TransactionCompareSucceeds(t *testing.T) {
 	})
 
 	// Build transaction: compare value == "txval" -> success puts "txkey2"
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("txkey"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("txval"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(
+	))
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("txkey2"), []byte("txval2"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -541,23 +540,22 @@ func TestMVCCStateMachine_TransactionCompareFails(t *testing.T) {
 	})
 
 	// Build transaction: compare value == "wrong" -> fail, failure puts "failkey"
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("txkey"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("wrong"),
 		0, 0, 0,
-	)
-	failureOp := protocol.EncodeOp(
+	))
+	failureOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("failkey"), []byte("failval"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		nil,
 		[][]byte{failureOp},
-	)
-
+	))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -592,30 +590,29 @@ func TestMVCCStateMachine_TransactionMultipleComparesFirstFails(t *testing.T) {
 	})
 
 	// First compare fails (k1 value != "wrong"), second would succeed.
-	cmp1 := protocol.EncodeCompare(
+	cmp1 := mustEncode(protocol.EncodeCompare(
 		[]byte("k1"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("wrong"),
 		0, 0, 0,
-	)
-	cmp2 := protocol.EncodeCompare(
+	))
+	cmp2 := mustEncode(protocol.EncodeCompare(
 		[]byte("k2"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("v2"),
 		0, 0, 0,
-	)
-	failureOp := protocol.EncodeOp(
+	))
+	failureOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("multi-fail"), []byte("yes"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp1, cmp2},
 		nil,
 		[][]byte{failureOp},
-	)
-
+	))
 	entries := []sm.Entry{{Index: 3, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -640,16 +637,15 @@ func TestMVCCStateMachine_TransactionMultipleComparesFirstFails(t *testing.T) {
 func TestMVCCStateMachine_TransactionEmptyCompareAlwaysSucceeds(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	successOp := protocol.EncodeOp(
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("auto"), []byte("win"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		nil, // empty compares
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -674,8 +670,7 @@ func TestMVCCStateMachine_TransactionNoOpsInChosenBranch(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Empty compare list -> succeeds, but no success ops defined.
-	txnCmd := protocol.EncodeTransaction(nil, nil, nil)
-
+	txnCmd := mustEncode(protocol.EncodeTransaction(nil, nil, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -695,10 +690,9 @@ func TestMVCCStateMachine_TransactionNoOpsInChosenBranch(t *testing.T) {
 func TestMVCCStateMachine_BatchMultiplePuts(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	op1 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("b1"), []byte("v1"), nil, 0)
-	op2 := protocol.EncodeOp(protocol.OpMVCCPut, []byte("b2"), []byte("v2"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{op1, op2})
-
+	op1 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("b1"), []byte("v1"), nil, 0))
+	op2 := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("b2"), []byte("v2"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{op1, op2}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -736,10 +730,9 @@ func TestMVCCStateMachine_BatchMixedPutDelete(t *testing.T) {
 		mvccPutEntry(1, []byte("todelete"), []byte("val"), 0),
 	})
 
-	putOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("new"), []byte("nval"), nil, 0)
-	delOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("todelete"), nil, nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{putOp, delOp})
-
+	putOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("new"), []byte("nval"), nil, 0))
+	delOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("todelete"), nil, nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{putOp, delOp}))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -771,8 +764,7 @@ func TestMVCCStateMachine_BatchMixedPutDelete(t *testing.T) {
 func TestMVCCStateMachine_BatchEmpty(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	batchCmd := protocol.EncodeBatch(nil)
-
+	batchCmd := mustEncode(protocol.EncodeBatch(nil))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1607,22 +1599,21 @@ func TestMVCCStateMachine_TransactionWithDeleteOps(t *testing.T) {
 	})
 
 	// Compare succeeds (version == 1), success op deletes "exist".
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("exist"),
 		byte(service.CompareVersion),
 		byte(service.CompareEqual),
 		nil, 1, 0, 0,
-	)
-	successOp := protocol.EncodeOp(
+	))
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCDelete,
 		[]byte("exist"), nil, nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1649,22 +1640,21 @@ func TestMVCCStateMachine_TransactionCompareNonExistentKey(t *testing.T) {
 
 	// Compare version == 0 for a non-existent key should succeed
 	// (non-existent key has version 0).
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("nokey"),
 		byte(service.CompareVersion),
 		byte(service.CompareEqual),
 		nil, 0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(
+	))
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("created"), []byte("yes"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1813,9 +1803,8 @@ func TestMVCCStateMachine_BatchUnknownOpTypeReturnsError(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Encode an op with an unknown op type (0x99).
-	unknownOp := protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{unknownOp})
-
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -1832,9 +1821,8 @@ func TestMVCCStateMachine_TransactionUnknownOpTypeReturnsError(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Transaction with empty compares (always succeeds) and unknown op in success.
-	unknownOp := protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0)
-	txnCmd := protocol.EncodeTransaction(nil, [][]byte{unknownOp}, nil)
-
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0))
+	txnCmd := mustEncode(protocol.EncodeTransaction(nil, [][]byte{unknownOp}, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -2079,22 +2067,21 @@ func TestMVCCStateMachine_TransactionCompareModRevision(t *testing.T) {
 	})
 
 	// Compare modRevision == 1 (should succeed).
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("mrkey"),
 		byte(service.CompareModRevision),
 		byte(service.CompareEqual),
 		nil, 0, 0, 1,
-	)
-	successOp := protocol.EncodeOp(
+	))
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("mrresult"), []byte("ok"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -2113,22 +2100,21 @@ func TestMVCCStateMachine_TransactionCompareCreateRevision(t *testing.T) {
 	})
 
 	// Compare createRevision == 1 (should succeed).
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("crkey"),
 		byte(service.CompareCreateRevision),
 		byte(service.CompareEqual),
 		nil, 0, 1, 0,
-	)
-	successOp := protocol.EncodeOp(
+	))
+	successOp := mustEncode(protocol.EncodeOp(
 		protocol.OpMVCCPut,
 		[]byte("crresult"), []byte("ok"), nil, 0,
-	)
-	txnCmd := protocol.EncodeTransaction(
+	))
+	txnCmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{cmp},
 		[][]byte{successOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -2178,9 +2164,8 @@ func TestMVCCStateMachine_BatchSingleDelete(t *testing.T) {
 		mvccPutEntry(1, []byte("del"), []byte("val"), 0),
 	})
 
-	delOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("del"), nil, nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{delOp})
-
+	delOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("del"), nil, nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{delOp}))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {

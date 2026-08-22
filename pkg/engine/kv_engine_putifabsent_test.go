@@ -123,7 +123,7 @@ func TestKVEngine_PutIfAbsent_MaintainsSecondaryIndexes(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("Update (index create): %v", err)
@@ -427,7 +427,7 @@ func TestKVEngine_CompareAndDelete_Contract(t *testing.T) {
 		defer func() { _ = stg.Close() }()
 		eng := NewKVEngine(stg)
 
-		idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+		idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 		if err := eng.Update(context.Background(),
 			[]sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 			t.Fatalf("Update (index create): %v", err)

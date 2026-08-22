@@ -101,7 +101,7 @@ func TestEncodeDecodeVectorUpsert(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeVectorUpsert(tt.namespace, tt.id, tt.vector, tt.metadata)
+			encoded := mustEncode(EncodeVectorUpsert(tt.namespace, tt.id, tt.vector, tt.metadata))
 
 			if encoded[0] != OpVectorUpsert {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpVectorUpsert)
@@ -142,7 +142,7 @@ func TestEncodeDecodeVectorUpsert(t *testing.T) {
 }
 
 func TestEncodeDecodeVectorUpsert_EmptyMetadata(t *testing.T) {
-	encoded := EncodeVectorUpsert("ns", "id", []float32{1.0, 2.0}, nil)
+	encoded := mustEncode(EncodeVectorUpsert("ns", "id", []float32{1.0, 2.0}, nil))
 
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
@@ -326,7 +326,7 @@ func TestEncodeDecodeVectorDelete(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeVectorDelete(tt.namespace, tt.id)
+			encoded := mustEncode(EncodeVectorDelete(tt.namespace, tt.id))
 
 			if encoded[0] != OpVectorDelete {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpVectorDelete)
@@ -445,7 +445,7 @@ func TestEncodeDecodeNamespaceCreate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeNamespaceCreate(tt.namespace, tt.dimension, tt.distMetric, tt.indexType)
+			encoded := mustEncode(EncodeNamespaceCreate(tt.namespace, tt.dimension, tt.distMetric, tt.indexType))
 
 			if encoded[0] != OpNamespaceCreate {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpNamespaceCreate)
@@ -551,7 +551,7 @@ func TestEncodeDecodeNamespaceDelete(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeNamespaceDelete(tt.namespace)
+			encoded := mustEncode(EncodeNamespaceDelete(tt.namespace))
 
 			if encoded[0] != OpNamespaceDelete {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpNamespaceDelete)
@@ -668,7 +668,7 @@ func TestEncodeDecodeVectorBatchUpsert(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeVectorBatchUpsert(tt.namespace, tt.vectors)
+			encoded := mustEncode(EncodeVectorBatchUpsert(tt.namespace, tt.vectors))
 
 			if encoded[0] != OpVectorBatchUpsert {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpVectorBatchUpsert)
@@ -720,7 +720,7 @@ func TestEncodeDecodeVectorBatchUpsert(t *testing.T) {
 }
 
 func TestDecodeVectorBatchUpsert_Empty(t *testing.T) {
-	encoded := EncodeVectorBatchUpsert("ns", nil)
+	encoded := mustEncode(EncodeVectorBatchUpsert("ns", nil))
 
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {

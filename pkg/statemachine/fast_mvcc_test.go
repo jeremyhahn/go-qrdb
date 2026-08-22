@@ -159,7 +159,7 @@ func TestFSM_MVCCPut_Success(t *testing.T) {
 	ms := &mockMVCCStore{putResult: "ok"}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("mykey"), []byte("myval"), 42)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("mykey"), []byte("myval"), 42))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -197,7 +197,7 @@ func TestFSM_MVCCPut_Success(t *testing.T) {
 func TestFSM_MVCCPut_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -218,7 +218,7 @@ func TestFSM_MVCCPut_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{putErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -247,7 +247,7 @@ func TestFSM_MVCCDelete_Success(t *testing.T) {
 	ms := &mockMVCCStore{deleteResult: "deleted"}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("delkey"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("delkey")))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -279,7 +279,7 @@ func TestFSM_MVCCDelete_Success(t *testing.T) {
 func TestFSM_MVCCDelete_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -300,7 +300,7 @@ func TestFSM_MVCCDelete_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{deleteErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCDelete([]byte("key"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("key")))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -332,7 +332,7 @@ func TestFSM_MVCCRange_Success(t *testing.T) {
 	}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("start"), []byte("end"), 5, 100, false, true)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("start"), []byte("end"), 5, 100, false, true))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -376,7 +376,7 @@ func TestFSM_MVCCRange_Success(t *testing.T) {
 func TestFSM_MVCCRange_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -397,7 +397,7 @@ func TestFSM_MVCCRange_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{rangeErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("a"), []byte("z"), 0, 10, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -423,7 +423,7 @@ func TestFSM_MVCCCompact_Success(t *testing.T) {
 	ms := &mockMVCCStore{}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(42)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(42))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -450,7 +450,7 @@ func TestFSM_MVCCCompact_Success(t *testing.T) {
 func TestFSM_MVCCCompact_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -471,7 +471,7 @@ func TestFSM_MVCCCompact_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{compactErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(5)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(5))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -502,7 +502,7 @@ func TestFSM_Transaction_Success(t *testing.T) {
 	fsm, _ := newTestFSMWithMVCC(ms)
 
 	// Build compare: key "k1", target=0, result=0, value=[]byte("v1")
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("k1"), // key
 		0,            // target
 		0,            // result
@@ -510,18 +510,16 @@ func TestFSM_Transaction_Success(t *testing.T) {
 		0,            // version
 		0,            // createRevision
 		0,            // modRevision
-	)
-
+	))
 	// Build success ops: put k1=new-v1, delete k2
-	putOp := protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0) // put
-	deleteOp := protocol.EncodeOp(3, []byte("k2"), nil, nil, 0)           // delete
+	putOp := mustEncode(protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0)) // put
+	deleteOp := mustEncode(protocol.EncodeOp(3, []byte("k2"), nil, nil, 0))           // delete
 
-	cmd := protocol.EncodeTransaction(
+	cmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{compare},
 		[][]byte{putOp, deleteOp},
 		nil, // no failure ops
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -604,15 +602,13 @@ func TestFSM_Transaction_FailedBranch(t *testing.T) {
 	}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	compare := protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0)
-	putOp := protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0)
-
-	cmd := protocol.EncodeTransaction(
+	compare := mustEncode(protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0))
+	putOp := mustEncode(protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{compare},
 		[][]byte{putOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -633,9 +629,8 @@ func TestFSM_Transaction_FailedBranch(t *testing.T) {
 func TestFSM_Transaction_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	compare := protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, nil, nil)
-
+	compare := mustEncode(protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, nil, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -656,15 +651,13 @@ func TestFSM_Transaction_StoreError(t *testing.T) {
 	ms := &mockMVCCStore{txnErr: storeErr}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	compare := protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0)
-	putOp := protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0)
-
-	cmd := protocol.EncodeTransaction(
+	compare := mustEncode(protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0))
+	putOp := mustEncode(protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{compare},
 		[][]byte{putOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -693,7 +686,7 @@ func TestFSM_Transaction_CompareRevisionFields(t *testing.T) {
 	fsm, _ := newTestFSMWithMVCC(ms)
 
 	// Build a compare with all revision fields populated.
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("k1"),
 		1, // target
 		2, // result
@@ -701,9 +694,8 @@ func TestFSM_Transaction_CompareRevisionFields(t *testing.T) {
 		10, // version
 		20, // createRevision
 		30, // modRevision
-	)
-
-	cmd := protocol.EncodeTransaction([][]byte{compare}, nil, nil)
+	))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, nil, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -740,16 +732,14 @@ func TestFSM_Transaction_WithFailureOps(t *testing.T) {
 	}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	compare := protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0)
-	successOp := protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0)
-	failureOp := protocol.EncodeOp(1, []byte("k1"), []byte("fallback"), nil, 99)
-
-	cmd := protocol.EncodeTransaction(
+	compare := mustEncode(protocol.EncodeCompare([]byte("k1"), 0, 0, []byte("v1"), 0, 0, 0))
+	successOp := mustEncode(protocol.EncodeOp(1, []byte("k1"), []byte("new-v1"), nil, 0))
+	failureOp := mustEncode(protocol.EncodeOp(1, []byte("k1"), []byte("fallback"), nil, 99))
+	cmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{compare},
 		[][]byte{successOp},
 		[][]byte{failureOp},
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -788,15 +778,14 @@ func TestFSM_Transaction_OpRangeEnd(t *testing.T) {
 	}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	compare := protocol.EncodeCompare([]byte("k1"), 0, 0, nil, 0, 0, 0)
-	rangeOp := protocol.EncodeOp(2, []byte("a"), nil, []byte("z"), 0) // type 2 = get/range
+	compare := mustEncode(protocol.EncodeCompare([]byte("k1"), 0, 0, nil, 0, 0, 0))
+	rangeOp := mustEncode(protocol.EncodeOp(2, []byte("a"), nil, []byte("z"), 0)) // type 2 = get/range
 
-	cmd := protocol.EncodeTransaction(
+	cmd := mustEncode(protocol.EncodeTransaction(
 		[][]byte{compare},
 		[][]byte{rangeOp},
 		nil,
-	)
-
+	))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1207,7 +1196,7 @@ func TestFSM_MVCCPut_EmptyValue(t *testing.T) {
 	ms := &mockMVCCStore{putResult: "ok"}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCPut([]byte("key"), nil, 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), nil, 0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1230,7 +1219,7 @@ func TestFSM_MVCCPut_LargeLeaseID(t *testing.T) {
 	fsm, _ := newTestFSMWithMVCC(ms)
 
 	var largeLeaseID int64 = 9223372036854775807 // max int64
-	cmd := protocol.EncodeMVCCPut([]byte("key"), []byte("val"), largeLeaseID)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), largeLeaseID))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1256,9 +1245,9 @@ func TestFSM_MVCCMultipleEntries(t *testing.T) {
 	fsm, _ := newTestFSMWithMVCC(ms)
 
 	entries := []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("k1"), []byte("v1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("k2"), []byte("v2"), 10)},
-		{Index: 3, Cmd: protocol.EncodeMVCCDelete([]byte("k1"))},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k1"), []byte("v1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k2"), []byte("v2"), 10))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCDelete([]byte("k1")))},
 	}
 	results := make([]sm.Result, 3)
 
@@ -1294,7 +1283,7 @@ func TestFSM_MVCCCompact_NegativeRevision(t *testing.T) {
 	ms := &mockMVCCStore{}
 	fsm, _ := newTestFSMWithMVCC(ms)
 
-	cmd := protocol.EncodeMVCCCompact(-1)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(-1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

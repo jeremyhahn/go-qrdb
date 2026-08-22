@@ -77,78 +77,129 @@ type VectorUpsertParams struct {
 
 // EncodeVectorUpsert creates a binary Vector Upsert command.
 // Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata].
-func EncodeVectorUpsert(namespace, id string, vector []float32, metadata []byte) []byte {
+func EncodeVectorUpsert(namespace, id string, vector []float32, metadata []byte) ([]byte, error) {
 	nsBytes := []byte(namespace)
 	idBytes := []byte(id)
 	dim := len(vector)
 
-	size := headerSize + 2 + len(nsBytes) + 2 + len(idBytes) + 4 + dim*4 + 4 + len(metadata)
+	// Validate every field, then accumulate through checked arithmetic. dim*4 is
+	// the one that needs a checked MULTIPLY rather than a checked sum: a vector's
+	// byte length is its element count times four, and where int is 32 bits an
+	// element count that passes checkUint32Len still multiplies past the maximum
+	// (go-qrdb#52).
+	if err := checkUint16Len(len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(idBytes), "vector id"); err != nil {
+		return nil, err
+	}
+	if err := checkUint32Len(dim, "vector dimension"); err != nil {
+		return nil, err
+	}
+	if err := checkUint32Len(len(metadata), "metadata"); err != nil {
+		return nil, err
+	}
+
+	vectorBytes, err := mulSize(dim, 4)
+	if err != nil {
+		return nil, err
+	}
+	size := headerSize + 2 + 2 + 4 + 4
+	for _, n := range []int{len(nsBytes), len(idBytes), vectorBytes, len(metadata)} {
+		if size, err = addSize(size, n); err != nil {
+			return nil, err
+		}
+	}
+
 	buf := make([]byte, size)
 	off := 0
 
 	buf[off] = OpVectorUpsert
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(nsBytes)))
+	if err := putUint16Len(buf[off:], len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], nsBytes)
 	off += len(nsBytes)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(idBytes)))
+	if err := putUint16Len(buf[off:], len(idBytes), "vector id"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], idBytes)
 	off += len(idBytes)
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(dim))
+	if err := putUint32Len(buf[off:], dim, "vector dimension"); err != nil {
+		return nil, err
+	}
 	off += 4
 	for _, f := range vector {
 		binary.LittleEndian.PutUint32(buf[off:], math.Float32bits(f))
 		off += 4
 	}
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(metadata)))
+	if err := putUint32Len(buf[off:], len(metadata), "metadata"); err != nil {
+		return nil, err
+	}
 	off += 4
 	copy(buf[off:], metadata)
 
-	return buf
+	return buf, nil
 }
 
 // EncodeVectorDelete creates a binary Vector Delete command.
 // Format: [op:1][nsLen:2 LE][namespace][idLen:2 LE][id].
-func EncodeVectorDelete(namespace, id string) []byte {
+func EncodeVectorDelete(namespace, id string) ([]byte, error) {
 	nsBytes := []byte(namespace)
 	idBytes := []byte(id)
 
+	if err := checkUint16Len(len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(idBytes), "vector id"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(nsBytes)+2+len(idBytes))
 	off := 0
 
 	buf[off] = OpVectorDelete
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(nsBytes)))
+	if err := putUint16Len(buf[off:], len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], nsBytes)
 	off += len(nsBytes)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(idBytes)))
+	if err := putUint16Len(buf[off:], len(idBytes), "vector id"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], idBytes)
 
-	return buf
+	return buf, nil
 }
 
 // EncodeNamespaceCreate creates a binary Namespace Create command.
 // Format: [op:1][nsLen:2 LE][namespace][dimension:4 LE][distMetric:1][indexType:1].
-func EncodeNamespaceCreate(namespace string, dimension uint32, distMetric, indexType byte) []byte {
+func EncodeNamespaceCreate(namespace string, dimension uint32, distMetric, indexType byte) ([]byte, error) {
 	nsBytes := []byte(namespace)
 
+	if err := checkUint16Len(len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(nsBytes)+4+1+1)
 	off := 0
 
 	buf[off] = OpNamespaceCreate
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(nsBytes)))
+	if err := putUint16Len(buf[off:], len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], nsBytes)
 	off += len(nsBytes)
@@ -161,33 +212,64 @@ func EncodeNamespaceCreate(namespace string, dimension uint32, distMetric, index
 
 	buf[off] = indexType
 
-	return buf
+	return buf, nil
 }
 
 // EncodeNamespaceDelete creates a binary Namespace Delete command.
 // Format: [op:1][nsLen:2 LE][namespace].
-func EncodeNamespaceDelete(namespace string) []byte {
+func EncodeNamespaceDelete(namespace string) ([]byte, error) {
 	nsBytes := []byte(namespace)
 
+	if err := checkUint16Len(len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(nsBytes))
 	buf[0] = OpNamespaceDelete
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(nsBytes)))
+	if err := putUint16Len(buf[1:3], len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], nsBytes)
 
-	return buf
+	return buf, nil
 }
 
 // EncodeVectorBatchUpsert creates a binary Vector Batch Upsert command.
 // Format: [op:1][nsLen:2 LE][namespace][count:2 LE][vectors...]
 // Each vector: [idLen:2 LE][id][dim:4 LE][vector:dim*4 float32 LE][metaLen:4 LE][metadata].
-func EncodeVectorBatchUpsert(namespace string, vectors []VectorUpsertParams) []byte {
+func EncodeVectorBatchUpsert(namespace string, vectors []VectorUpsertParams) ([]byte, error) {
 	nsBytes := []byte(namespace)
 
-	// Calculate total size.
+	// One measuring pass, before anything proportional to the request is
+	// allocated: every nested field is validated as its contribution to the
+	// size is added, so an unencodable vector anywhere in the batch costs no
+	// allocation at all. Sizing first and validating inside the writing loop,
+	// as this did, made a single malformed vector cost the whole batch.
+	if err := checkUint16Len(len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(vectors), "vector count"); err != nil {
+		return nil, err
+	}
+
 	size := headerSize + 2 + len(nsBytes) + 2
 	for _, v := range vectors {
-		idBytes := []byte(v.ID)
-		size += 2 + len(idBytes) + 4 + len(v.Vector)*4 + 4 + len(v.Metadata)
+		if err := checkUint16Len(len(v.ID), "vector id"); err != nil {
+			return nil, err
+		}
+		if err := checkUint32Len(len(v.Vector), "vector"); err != nil {
+			return nil, err
+		}
+		if err := checkUint32Len(len(v.Metadata), "metadata"); err != nil {
+			return nil, err
+		}
+		var err error
+		vectorBytes, mErr := mulSize(len(v.Vector), 4)
+		if mErr != nil {
+			return nil, mErr
+		}
+		if size, err = addSizes(size, 2, len(v.ID), 4, vectorBytes, 4, len(v.Metadata)); err != nil {
+			return nil, err
+		}
 	}
 
 	buf := make([]byte, size)
@@ -196,36 +278,46 @@ func EncodeVectorBatchUpsert(namespace string, vectors []VectorUpsertParams) []b
 	buf[off] = OpVectorBatchUpsert
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(nsBytes)))
+	if err := putUint16Len(buf[off:], len(nsBytes), "namespace"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], nsBytes)
 	off += len(nsBytes)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(vectors)))
+	if err := putUint16Len(buf[off:], len(vectors), "vector count"); err != nil {
+		return nil, err
+	}
 	off += 2
 
 	for _, v := range vectors {
 		idBytes := []byte(v.ID)
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(idBytes)))
+		if err := putUint16Len(buf[off:], len(idBytes), "vector id"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], idBytes)
 		off += len(idBytes)
 
-		binary.LittleEndian.PutUint32(buf[off:], uint32(len(v.Vector)))
+		if err := putUint32Len(buf[off:], len(v.Vector), "vector"); err != nil {
+			return nil, err
+		}
 		off += 4
 		for _, f := range v.Vector {
 			binary.LittleEndian.PutUint32(buf[off:], math.Float32bits(f))
 			off += 4
 		}
 
-		binary.LittleEndian.PutUint32(buf[off:], uint32(len(v.Metadata)))
+		if err := putUint32Len(buf[off:], len(v.Metadata), "metadata"); err != nil {
+			return nil, err
+		}
 		off += 4
 		copy(buf[off:], v.Metadata)
 		off += len(v.Metadata)
 	}
 
-	return buf
+	return buf, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -119,7 +119,7 @@ func (m *mockIndexManager) getDropCalls() []string {
 func TestIndexCreate_NilIndexManager(t *testing.T) {
 	fsm, _ := newTestFSM() // no IndexManager configured
 
-	cmd := protocol.EncodeIndexCreate("user_email", "email", true, false, false)
+	cmd := mustEncode(protocol.EncodeIndexCreate("user_email", "email", true, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -139,7 +139,7 @@ func TestIndexCreate_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := protocol.EncodeIndexCreate("user_email", "email", true, false, false)
+	cmd := mustEncode(protocol.EncodeIndexCreate("user_email", "email", true, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -173,7 +173,7 @@ func TestIndexCreate_WithSparse(t *testing.T) {
 	im := &mockIndexManager{}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := protocol.EncodeIndexCreate("user_phone", "phone", false, true, false)
+	cmd := mustEncode(protocol.EncodeIndexCreate("user_phone", "phone", false, true, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -198,7 +198,7 @@ func TestIndexCreate_ManagerError(t *testing.T) {
 	im := &mockIndexManager{createErr: managerErr}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := protocol.EncodeIndexCreate("dup_idx", "field", false, false, false)
+	cmd := mustEncode(protocol.EncodeIndexCreate("dup_idx", "field", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -243,7 +243,7 @@ func TestIndexCreate_InvalidPayload(t *testing.T) {
 func TestIndexDrop_NilIndexManager(t *testing.T) {
 	fsm, _ := newTestFSM() // no IndexManager configured
 
-	cmd := protocol.EncodeIndexDrop("user_email")
+	cmd := mustEncode(protocol.EncodeIndexDrop("user_email"))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -263,7 +263,7 @@ func TestIndexDrop_Success(t *testing.T) {
 	im := &mockIndexManager{}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := protocol.EncodeIndexDrop("user_email")
+	cmd := mustEncode(protocol.EncodeIndexDrop("user_email"))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -289,7 +289,7 @@ func TestIndexDrop_ManagerError(t *testing.T) {
 	im := &mockIndexManager{dropErr: managerErr}
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
-	cmd := protocol.EncodeIndexDrop("nonexistent")
+	cmd := mustEncode(protocol.EncodeIndexDrop("nonexistent"))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -534,7 +534,7 @@ func TestIndexCreateDrop_RoundTrip(t *testing.T) {
 	fsm, _ := newTestFSM(WithIndexManager(im))
 
 	// Create an index.
-	createCmd := protocol.EncodeIndexCreate("product_sku", "sku", true, true, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("product_sku", "sku", true, true, false))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 
@@ -544,7 +544,7 @@ func TestIndexCreateDrop_RoundTrip(t *testing.T) {
 	createRevision := results[0].Value
 
 	// Drop the same index.
-	dropCmd := protocol.EncodeIndexDrop("product_sku")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("product_sku"))
 	entries = []sm.Entry{{Index: 2, Cmd: dropCmd}}
 	results = make([]sm.Result, 1)
 

@@ -47,6 +47,15 @@ func mapServiceError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	}
 
+	// Must precede ProposeError: a request the protocol cannot encode was never
+	// proposed, so it is the caller's input that is wrong and not the cluster.
+	// Reported as Internal it fires an operational alert and invites a retry of
+	// an input that can never succeed (go-qrdb#52).
+	var ere *service.EncodeRequestError
+	if errors.As(err, &ere) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	var pe *service.ProposeError
 	if errors.As(err, &pe) {
 		return status.Error(codes.Internal, err.Error())

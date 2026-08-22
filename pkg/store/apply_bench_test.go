@@ -145,13 +145,13 @@ func BenchmarkMVCCApply_Transaction(b *testing.B) {
 			runApplyBenchmark(b, size,
 				func(index uint64) sm.Entry {
 					key := []byte(fmt.Sprintf("txn-%08d", index))
-					compare := protocol.EncodeCompare(key,
+					compare := mustEncode(protocol.EncodeCompare(key,
 						byte(service.CompareModRevision), byte(service.CompareEqual),
-						nil, 0, 0, 0)
-					op := protocol.EncodeOp(protocol.OpMVCCPut, key, value, nil, 0)
+						nil, 0, 0, 0))
+					op := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, key, value, nil, 0))
 					return sm.Entry{
 						Index: index,
-						Cmd:   protocol.EncodeTransaction([][]byte{compare}, [][]byte{op}, nil),
+						Cmd:   mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{op}, nil)),
 					}
 				},
 				func(entries []sm.Entry, results []sm.Result) error {
@@ -195,4 +195,15 @@ func BenchmarkPebbleApply_PutIfAbsent(b *testing.B) {
 				})
 		})
 	}
+}
+
+// mustEncode unwraps an encoder's (command, error) pair for tests whose
+// inputs are small and fixed. An error here is a TEST bug -- the encoders
+// refuse only values their length fields cannot describe -- so it fails
+// loudly rather than being threaded through every call site.
+func mustEncode(cmd []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return cmd
 }

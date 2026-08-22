@@ -421,7 +421,7 @@ func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string)
 		if s.tryForwardWrite(w, r, body, putErr) {
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: putErr})
+		writeProposeFailure(w, putErr)
 		return
 	}
 
@@ -578,7 +578,7 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 		if s.tryForwardWrite(w, r, nil, err) {
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
+		writeProposeFailure(w, err)
 		return
 	}
 
@@ -1016,6 +1016,29 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// writeProposeFailure reports a write that did not reach the cluster.
+//
+// It exists for one case. Since the encoders began refusing a field longer than
+// its length field can describe (go-qrdb#52), an oversized key fails on this
+// path without a proposal ever being made — the caller's input is wrong, not
+// the cluster. A 500 for that tells the caller the cluster is broken, alerts an
+// operator, and invites a retry of an input that can never succeed.
+//
+// Deliberately NOT `mapHTTPError(err)`: that would also reclassify the other
+// errors reaching this path, and this is not the change to do it in. A
+// non-forwardable NotLeaderError, for instance, would become 503 — arguably
+// better, but a behaviour change nobody asked for, and it is pinned at 500 by
+// existing tests. Everything except the encoding refusal keeps exactly the
+// status and the ProposeError wrapper it had.
+func writeProposeFailure(w http.ResponseWriter, err error) {
+	var encodeErr *service.EncodeRequestError
+	if errors.As(err, &encodeErr) {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
+	writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
+}
+
 // writeErrorJSON writes a JSON error response with the given HTTP status
 // code.
 func writeErrorJSON(w http.ResponseWriter, code int, err error) {
@@ -1119,10 +1142,17 @@ func mapHTTPError(err error) int {
 	var rae *service.RestoreApplyError
 
 	var sni *ServiceNotImplementedError
+	var ere *service.EncodeRequestError
 
 	switch {
 	case errors.As(err, &sni):
 		return http.StatusNotImplemented
+	// A request the protocol cannot encode was never proposed, so it is a
+	// client error and not an infrastructure one. Reported as 500 it fires
+	// an operational alert and invites a retry of an input that can never
+	// succeed (go-qrdb#52).
+	case errors.As(err, &ere):
+		return http.StatusBadRequest
 	case errors.As(err, &knf):
 		return http.StatusNotFound
 	case errors.As(err, &rce):

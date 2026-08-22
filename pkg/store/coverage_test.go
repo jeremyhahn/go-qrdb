@@ -167,7 +167,7 @@ func TestEvaluateCompareInt_InvalidResult(t *testing.T) {
 func TestPebbleEvaluateCompare_RevisionTargetsFailClosed(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("cr-key"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("cr-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	for _, tc := range []struct {
@@ -199,7 +199,7 @@ func TestPebbleEvaluateCompare_RevisionTargetsFailClosed(t *testing.T) {
 func TestPebbleEvaluateCompare_ValueAndVersionStillWork(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("vv-key"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("vv-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Version: 1 when the key exists, 0 when it does not.
@@ -234,7 +234,7 @@ func TestPebbleEvaluateCompare_ValueAndVersionStillWork(t *testing.T) {
 func TestPebbleEvaluateCompare_DefaultTarget(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("dt-key"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("dt-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Unknown target byte.
@@ -251,7 +251,7 @@ func TestPebbleEvaluateCompare_DefaultTarget(t *testing.T) {
 func TestPebbleEvaluateCompare_ValueGreater(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("vg-key"), []byte("bbb"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("vg-key"), []byte("bbb"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Value compare: actual "bbb" > expected "aaa" => true.
@@ -269,7 +269,7 @@ func TestPebbleEvaluateCompare_ValueGreater(t *testing.T) {
 func TestPebbleEvaluateCompare_ValueLess(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("vl-key"), []byte("aaa"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("vl-key"), []byte("aaa"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Value compare: actual "aaa" < expected "bbb" => true.
@@ -287,7 +287,7 @@ func TestPebbleEvaluateCompare_ValueLess(t *testing.T) {
 func TestPebbleEvaluateCompare_ValueNotEqual(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("vne-key"), []byte("hello"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("vne-key"), []byte("hello"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	dc := protocol.DecodedCompare{
@@ -319,7 +319,7 @@ func TestPebbleEvaluateCompare_NonexistentKeyValueNotEmpty(t *testing.T) {
 func TestPebbleEvaluateCompare_VersionGreater(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("vgk"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("vgk"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Key exists => version=1, compare 1 > 0.
@@ -357,7 +357,7 @@ func TestPebbleExecuteOp_DeleteWithHub(t *testing.T) {
 	s, hub := openStoreWithHub(t)
 
 	// Put a key first.
-	putCmd := protocol.EncodeMVCCPut([]byte("exec-del"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("exec-del"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Set up a watcher.
@@ -370,8 +370,8 @@ func TestPebbleExecuteOp_DeleteWithHub(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Execute batch delete via the extended protocol path.
-	delOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("exec-del"), nil, nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{delOp})
+	delOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("exec-del"), nil, nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{delOp}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: batchCmd}})
 
 	// Verify delete event.
@@ -406,7 +406,7 @@ func TestPebbleExecuteOp_PutWithHubAndLessor(t *testing.T) {
 	})
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: grantCmd}})
 	leaseID := int64(grantResults[0].Value)
 
@@ -420,8 +420,8 @@ func TestPebbleExecuteOp_PutWithHubAndLessor(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Batch put with leaseID via the batch/executeOp path.
-	putOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-leased"), []byte("val"), nil, leaseID)
-	batchCmd := protocol.EncodeBatch([][]byte{putOp})
+	putOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-leased"), []byte("val"), nil, leaseID))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{putOp}))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: batchCmd}})
 
 	// Verify watch event.
@@ -447,9 +447,8 @@ func TestPebbleExecuteOp_PutWithHubAndLessor(t *testing.T) {
 func TestPebbleExecuteOp_UnknownOpType(t *testing.T) {
 	s := openExtendedStore(t)
 
-	unknownOp := protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{unknownOp})
-
+	unknownOp := mustEncode(protocol.EncodeOp(0x99, []byte("k"), []byte("v"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -470,7 +469,7 @@ func TestPebbleHandleMVCCDelete_WithHub(t *testing.T) {
 	s, hub := openStoreWithHub(t)
 
 	// Put then delete via MVCC protocol.
-	putCmd := protocol.EncodeMVCCPut([]byte("mvcc-del-hub"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-del-hub"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -481,7 +480,7 @@ func TestPebbleHandleMVCCDelete_WithHub(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	delCmd := protocol.EncodeMVCCDelete([]byte("mvcc-del-hub"))
+	delCmd := mustEncode(protocol.EncodeMVCCDelete([]byte("mvcc-del-hub")))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
 
 	select {
@@ -501,7 +500,7 @@ func TestPebbleHandleMVCCDelete_NonexistentKey(t *testing.T) {
 	s := openExtendedStore(t)
 
 	// Delete a key that never existed - should not error.
-	delCmd := protocol.EncodeMVCCDelete([]byte("never-existed"))
+	delCmd := mustEncode(protocol.EncodeMVCCDelete([]byte("never-existed")))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: delCmd}})
 	if results[0].Value != 1 {
 		t.Fatalf("expected 1, got %d", results[0].Value)
@@ -530,11 +529,11 @@ func TestPebbleHandleLeaseRevoke_WithHub(t *testing.T) {
 	})
 
 	// Grant a lease and attach a key.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: grantCmd}})
 	leaseID := int64(grantResults[0].Value)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("lr-key"), []byte("lr-val"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("lr-key"), []byte("lr-val"), leaseID))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: putCmd}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -546,7 +545,7 @@ func TestPebbleHandleLeaseRevoke_WithHub(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Revoke the lease - should emit delete notification for attached key.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeResults := applyExtEntries(t, s, []sm.Entry{{Index: 3, Cmd: revokeCmd}})
 	if revokeResults[0].Value != 1 {
 		t.Fatalf("expected 1 revoked key, got %d", revokeResults[0].Value)
@@ -585,7 +584,7 @@ func TestPebbleHandleLeaseGrant_InvalidPayload(t *testing.T) {
 func TestPebbleHandleLeaseGrant_ValidPayload(t *testing.T) {
 	s, lr := openStoreWithLessor(t)
 
-	cmd := protocol.EncodeLeaseGrant(30)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
 	leaseID := int64(results[0].Value)
 	if leaseID <= 0 {
@@ -616,7 +615,7 @@ func TestPebbleHandleLeaseKeepAlive_InvalidPayload(t *testing.T) {
 func TestPebbleHandleLeaseKeepAlive_NonexistentLease(t *testing.T) {
 	s, _ := openStoreWithLessor(t)
 
-	cmd := protocol.EncodeLeaseKeepAlive(99999)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	// Keep-alive on a nonexistent lease is an idempotent no-op success: a
@@ -651,7 +650,7 @@ func TestPebbleHandleLeaseRevoke_InvalidPayload(t *testing.T) {
 func TestPebbleHandleLeaseRevoke_NonexistentLease(t *testing.T) {
 	s, _ := openStoreWithLessor(t)
 
-	cmd := protocol.EncodeLeaseRevoke(99999)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	// Revoke of a nonexistent lease is an idempotent no-op success: a non-nil
@@ -675,7 +674,7 @@ func TestPebbleHandleMVCCPut_WithHubPrevValue(t *testing.T) {
 	s, hub := openStoreWithHub(t)
 
 	// Put initial value.
-	putCmd := protocol.EncodeMVCCPut([]byte("mvcc-put-hub"), []byte("v1"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-put-hub"), []byte("v1"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -687,7 +686,7 @@ func TestPebbleHandleMVCCPut_WithHubPrevValue(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Overwrite - prevKv should be captured.
-	putCmd2 := protocol.EncodeMVCCPut([]byte("mvcc-put-hub"), []byte("v2"), 0)
+	putCmd2 := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-put-hub"), []byte("v2"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: putCmd2}})
 
 	select {
@@ -879,11 +878,11 @@ func TestPebbleHandleTSDeleteSeries_NoTimeBounds(t *testing.T) {
 	s := openStoreWithTS(t)
 
 	now := time.Now().UnixNano()
-	writeCmd := protocol.EncodeTSWrite("ts-del-no-bounds", now, 1.0, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("ts-del-no-bounds", now, 1.0, nil))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
 
 	// Delete with zero start/end (no time bounds).
-	delCmd := protocol.EncodeTSDeleteSeries("ts-del-no-bounds", 0, 0, nil)
+	delCmd := mustEncode(protocol.EncodeTSDeleteSeries("ts-del-no-bounds", 0, 0, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
 	if results[0].Value != 1 {
 		t.Fatalf("expected 1, got %d", results[0].Value)
@@ -898,7 +897,7 @@ func TestPebbleStateMachine_Lookup_TSGetRetention(t *testing.T) {
 	s := openStoreWithTS(t)
 
 	// Set retention policy first.
-	setCmd := protocol.EncodeTSSetRetention("ret-metric", int64(24*time.Hour), int64(time.Minute), 1)
+	setCmd := mustEncode(protocol.EncodeTSSetRetention("ret-metric", int64(24*time.Hour), int64(time.Minute), 1))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: setCmd}})
 
 	// Now query it.
@@ -916,7 +915,7 @@ func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
 	s := openStoreWithTS(t)
 
 	now := time.Now()
-	writeCmd := protocol.EncodeTSWrite("agg-metric", now.UnixNano(), 42.0, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("agg-metric", now.UnixNano(), 42.0, nil))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: writeCmd}})
 
 	result, err := s.Lookup(context.Background(), timeseries.TSAggregateRequest{
@@ -941,7 +940,7 @@ func TestPebbleStateMachine_Lookup_TSAggregate(t *testing.T) {
 func TestPebbleStateMachine_Lookup_IndexScan(t *testing.T) {
 	s := openExtendedStore(t)
 
-	createCmd := protocol.EncodeIndexCreate("scan_idx", "field", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("scan_idx", "field", false, false, false))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
 
 	idx := s.indexes["scan_idx"]
@@ -990,18 +989,18 @@ func TestPebbleStateMachine_Lookup_IndexListEmpty(t *testing.T) {
 func TestPebbleStateMachine_Transaction_CompareGreater(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("gt-key"), []byte("bbb"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("gt-key"), []byte("bbb"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("gt-key"),
 		3, // CompareValue
 		1, // Greater
 		[]byte("aaa"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("gt-result"), []byte("yes"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("gt-result"), []byte("yes"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
@@ -1012,18 +1011,18 @@ func TestPebbleStateMachine_Transaction_CompareGreater(t *testing.T) {
 func TestPebbleStateMachine_Transaction_CompareLess(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("lt-key"), []byte("aaa"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("lt-key"), []byte("aaa"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("lt-key"),
 		3, // CompareValue
 		2, // Less
 		[]byte("bbb"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("lt-result"), []byte("yes"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("lt-result"), []byte("yes"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
@@ -1034,18 +1033,18 @@ func TestPebbleStateMachine_Transaction_CompareLess(t *testing.T) {
 func TestPebbleStateMachine_Transaction_CompareNotEqual(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("ne-key"), []byte("hello"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("ne-key"), []byte("hello"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("ne-key"),
 		3, // CompareValue
 		3, // NotEqual
 		[]byte("world"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("ne-result"), []byte("yes"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("ne-result"), []byte("yes"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
@@ -1081,13 +1080,13 @@ func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openExtendedStore(t)
 
-			putCmd := protocol.EncodeMVCCPut([]byte(tc.key), []byte("val"), 0)
+			putCmd := mustEncode(protocol.EncodeMVCCPut([]byte(tc.key), []byte("val"), 0))
 			applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 			// Compare against revision 0 — the exact shape that used to pass.
-			compare := protocol.EncodeCompare([]byte(tc.key), tc.target, 0 /* Equal */, nil, 0, 0, 0)
-			successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte(tc.resultKey), []byte("ok"), nil, 0)
-			cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+			compare := mustEncode(protocol.EncodeCompare([]byte(tc.key), tc.target, 0 /* Equal */, nil, 0, 0, 0))
+			successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte(tc.resultKey), []byte("ok"), nil, 0))
+			cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 			results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 			msg, ok := protocol.DecodeAppError(results[0].Data)
@@ -1112,12 +1111,12 @@ func TestPebbleStateMachine_Transaction_RevisionCompareRejected(t *testing.T) {
 func TestPebbleStateMachine_Transaction_ValueCompareStillCommits(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("val-txn-key"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("val-txn-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
-	compare := protocol.EncodeCompare([]byte("val-txn-key"), compareTargetValue, 0 /* Equal */, []byte("val"), 0, 0, 0)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("val-result"), []byte("ok"), nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+	compare := mustEncode(protocol.EncodeCompare([]byte("val-txn-key"), compareTargetValue, 0 /* Equal */, []byte("val"), 0, 0, 0))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("val-result"), []byte("ok"), nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if _, isAppErr := protocol.DecodeAppError(results[0].Data); isAppErr {
@@ -1138,19 +1137,19 @@ func TestPebbleStateMachine_Transaction_ValueCompareStillCommits(t *testing.T) {
 func TestPebbleStateMachine_Transaction_WithDeleteOps(t *testing.T) {
 	s := openExtendedStore(t)
 
-	putCmd := protocol.EncodeMVCCPut([]byte("txn-del-key"), []byte("val"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("txn-del-key"), []byte("val"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	// Compare value == "val" -> success deletes the key.
-	compare := protocol.EncodeCompare(
+	compare := mustEncode(protocol.EncodeCompare(
 		[]byte("txn-del-key"),
 		3, // CompareValue
 		0, // Equal
 		[]byte("val"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("txn-del-key"), nil, nil, 0)
-	cmd := protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil)
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("txn-del-key"), nil, nil, 0))
+	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, nil))
 	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
 
 	if len(results[0].Data) == 0 || results[0].Data[0] != 1 {
@@ -1172,12 +1171,12 @@ func TestPebbleHandleMVCCPut_WithLessorAttachment(t *testing.T) {
 	s, lr := openStoreWithLessor(t)
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: grantCmd}})
 	leaseID := int64(grantResults[0].Value)
 
 	// Put with leaseID.
-	putCmd := protocol.EncodeMVCCPut([]byte("leased-key"), []byte("val"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("leased-key"), []byte("val"), leaseID))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: putCmd}})
 
 	// Verify key is stored.
@@ -1190,7 +1189,7 @@ func TestPebbleHandleMVCCPut_WithLessorAttachment(t *testing.T) {
 	}
 
 	// Revoke should delete the key.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeResults := applyExtEntries(t, s, []sm.Entry{{Index: 3, Cmd: revokeCmd}})
 	if revokeResults[0].Value != 1 {
 		t.Fatalf("expected 1 revoked key, got %d", revokeResults[0].Value)
@@ -1366,7 +1365,7 @@ func TestMVCCHandleMVCCDelete_WithLessorDetach(t *testing.T) {
 	})
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := make([]sm.Result, 1)
 	entries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1436,7 +1435,7 @@ func TestMVCCHandleMVCCPut_WithLessorAttach(t *testing.T) {
 	})
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -1448,7 +1447,7 @@ func TestMVCCHandleMVCCPut_WithLessorAttach(t *testing.T) {
 	applyMVCCEntries(t, s, []sm.Entry{putE})
 
 	// Verify the key is attached to the lease by revoking.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	rResults := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: revokeCmd}}, rResults); err != nil {
 		t.Fatalf("Revoke: %v", err)
@@ -1476,7 +1475,7 @@ func TestMVCCLookup_LeaseTimeToLiveFound(t *testing.T) {
 		_ = s.Close(context.Background())
 	})
 
-	grantCmd := protocol.EncodeLeaseGrant(30)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -1545,7 +1544,7 @@ func TestMVCCLookup_LeasesWithLessor(t *testing.T) {
 		_ = s.Close(context.Background())
 	})
 
-	grantCmd := protocol.EncodeLeaseGrant(10)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(10))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -1720,7 +1719,7 @@ func TestMVCCExecuteDecodedOpWithNotify_PutWithLessor(t *testing.T) {
 	})
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -1728,8 +1727,8 @@ func TestMVCCExecuteDecodedOpWithNotify_PutWithLessor(t *testing.T) {
 	leaseID := int64(results[0].Value)
 
 	// Batch put with lease -> exercises executeDecodedOpWithNotify Put path with lessor.
-	putOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-lease"), []byte("val"), nil, leaseID)
-	batchCmd := protocol.EncodeBatch([][]byte{putOp})
+	putOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-lease"), []byte("val"), nil, leaseID))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{putOp}))
 	batchResults := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batchCmd}}, batchResults); err != nil {
 		t.Fatalf("Update batch: %v", err)
@@ -1765,7 +1764,7 @@ func TestMVCCExecuteDecodedOpWithNotify_DeleteWithLessor(t *testing.T) {
 	})
 
 	// Grant and put with lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: grantCmd}}, results); err != nil {
 		t.Fatalf("Grant: %v", err)
@@ -1776,8 +1775,8 @@ func TestMVCCExecuteDecodedOpWithNotify_DeleteWithLessor(t *testing.T) {
 	applyMVCCEntries(t, s, []sm.Entry{putE})
 
 	// Batch delete -> exercises executeDecodedOpWithNotify Delete path with lessor.
-	delOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batch-del-lease"), nil, nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{delOp})
+	delOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batch-del-lease"), nil, nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{delOp}))
 	batchResults := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batchCmd}}, batchResults); err != nil {
 		t.Fatalf("Update batch delete: %v", err)
@@ -1798,7 +1797,7 @@ func TestMVCCHandleMVCCCompact_RevisionZero(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
 	// Compact at revision 0 - this should be handled by the MVCC store.
-	compactCmd := protocol.EncodeMVCCCompact(0)
+	compactCmd := mustEncode(protocol.EncodeMVCCCompact(0))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -1815,7 +1814,7 @@ func TestMVCCHandleMVCCCompact_RevisionZero(t *testing.T) {
 func TestMVCCHandleLeaseGrant_NoLessor(t *testing.T) {
 	s := newTestMVCCStateMachine(t) // no lessor
 
-	cmd := protocol.EncodeLeaseGrant(10)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(10))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1829,7 +1828,7 @@ func TestMVCCHandleLeaseGrant_NoLessor(t *testing.T) {
 func TestMVCCHandleLeaseRevoke_NoLessor(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	cmd := protocol.EncodeLeaseRevoke(1)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -1843,7 +1842,7 @@ func TestMVCCHandleLeaseRevoke_NoLessor(t *testing.T) {
 func TestMVCCHandleLeaseKeepAlive_NoLessor(t *testing.T) {
 	s := newTestMVCCStateMachine(t)
 
-	cmd := protocol.EncodeLeaseKeepAlive(1)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {

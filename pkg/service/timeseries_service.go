@@ -49,7 +49,10 @@ func NewTimeSeriesService(host Host, shardID uint64) TimeSeriesServicer {
 
 // Write stores a single time-series data point through Raft consensus.
 func (s *TimeSeriesService) Write(ctx context.Context, metric string, value float64, timestamp time.Time, tags map[string]string) error {
-	cmd := protocol.EncodeTSWrite(metric, timestamp.UnixNano(), value, tags)
+	cmd, encErr := protocol.EncodeTSWrite(metric, timestamp.UnixNano(), value, tags)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -75,7 +78,10 @@ func (s *TimeSeriesService) WriteBatch(ctx context.Context, points []DataPoint) 
 			Tags:      p.Tags,
 		}
 	}
-	cmd := protocol.EncodeTSWriteBatch(params)
+	cmd, encErr := protocol.EncodeTSWriteBatch(params)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -172,7 +178,10 @@ func (s *TimeSeriesService) AggregateWithConsistency(ctx context.Context, metric
 
 // WritePoint stores a single validated data point through Raft consensus.
 func (s *TimeSeriesService) WritePoint(ctx context.Context, point *DataPoint) error {
-	cmd := protocol.EncodeTSWritePoint(point.Metric, point.Timestamp.UnixNano(), point.Value, point.Tags)
+	cmd, encErr := protocol.EncodeTSWritePoint(point.Metric, point.Timestamp.UnixNano(), point.Value, point.Tags)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -230,7 +239,10 @@ func (s *TimeSeriesService) DeleteSeries(ctx context.Context, req *DeleteRequest
 	if !req.EndTime.IsZero() {
 		endNs = req.EndTime.UnixNano()
 	}
-	cmd := protocol.EncodeTSDeleteSeries(req.Metric, startNs, endNs, req.Tags)
+	cmd, encErr := protocol.EncodeTSDeleteSeries(req.Metric, startNs, endNs, req.Tags)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -264,12 +276,15 @@ func (s *TimeSeriesService) GetRetentionPolicy(metric string) (*RetentionPolicy,
 // SetRetentionPolicy sets the retention policy for a metric through
 // Raft consensus.
 func (s *TimeSeriesService) SetRetentionPolicy(metric string, policy *RetentionPolicy) error {
-	cmd := protocol.EncodeTSSetRetention(
+	cmd, encErr := protocol.EncodeTSSetRetention(
 		metric,
 		int64(policy.Duration),
 		int64(policy.Resolution),
 		byte(policy.Aggregation),
 	)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(context.Background(), s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)

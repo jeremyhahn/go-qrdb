@@ -237,11 +237,11 @@ func TestConcurrentStateMachine_Batch_MixedOps(t *testing.T) {
 	concurrentApplyPut(t, csm, "batch-del", "to-be-removed")
 
 	ops := [][]byte{
-		protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0),
-		protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0),
-		protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 10, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -268,9 +268,9 @@ func TestConcurrentStateMachine_Batch_UnknownOp(t *testing.T) {
 	csm, _ := newTestConcurrentSM()
 
 	ops := [][]byte{
-		protocol.EncodeOp(0xFE, []byte("bad"), []byte("val"), nil, 0),
+		mustEncode(protocol.EncodeOp(0xFE, []byte("bad"), []byte("val"), nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -793,10 +793,10 @@ func TestConcurrentStateMachine_WatchNotification_Batch(t *testing.T) {
 	csm, _ := newTestConcurrentSM(WithConcurrentWatchManager(wm))
 
 	ops := [][]byte{
-		protocol.EncodeOp(kv.OpPut, []byte("bw/a"), []byte("va"), nil, 0),
-		protocol.EncodeOp(kv.OpDelete, []byte("bw/b"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("bw/a"), []byte("va"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpDelete, []byte("bw/b"), nil, nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

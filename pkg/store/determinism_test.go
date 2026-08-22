@@ -217,14 +217,14 @@ func diffDumps(nameA, a, nameB, b string) string {
 // on key: on success it writes successValue to key, on failure it writes a
 // marker so the outcome is observable in the dumped state either way.
 func txnEntry(index uint64, key []byte, wantModRev int64, successValue, failureKey []byte) sm.Entry {
-	compare := protocol.EncodeCompare(key,
+	compare := mustEncode(protocol.EncodeCompare(key,
 		byte(service.CompareModRevision), byte(service.CompareEqual),
-		nil, 0, 0, wantModRev)
-	success := protocol.EncodeOp(protocol.OpMVCCPut, key, successValue, nil, 0)
-	failure := protocol.EncodeOp(protocol.OpMVCCPut, failureKey, []byte("lost"), nil, 0)
+		nil, 0, 0, wantModRev))
+	success := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, key, successValue, nil, 0))
+	failure := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, failureKey, []byte("lost"), nil, 0))
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, [][]byte{failure}),
+		Cmd:   mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, [][]byte{failure})),
 	}
 }
 
@@ -232,7 +232,7 @@ func txnEntry(index uint64, key []byte, wantModRev int64, successValue, failureK
 func mvccPutIfAbsentEntry(index uint64, key, value []byte) sm.Entry {
 	return sm.Entry{
 		Index: index,
-		Cmd:   protocol.EncodeMVCCPutIfAbsent(key, value, 0),
+		Cmd:   mustEncode(protocol.EncodeMVCCPutIfAbsent(key, value, 0)),
 	}
 }
 
@@ -382,7 +382,7 @@ func TestMVCCStateMachine_BaseKVPutIfAbsentHasExactlyOneStore(t *testing.T) {
 // at a time.
 func TestMVCCStateMachine_UniqueIndexAcrossApplyBatchEntries(t *testing.T) {
 	entries := []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeIndexCreate("uniq_email", "email", true, false, false)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeIndexCreate("uniq_email", "email", true, false, false))},
 		mvccPutEntry(2, []byte("user/a"), []byte(`{"email":"dup@example.com"}`), 0),
 		mvccPutEntry(3, []byte("user/b"), []byte(`{"email":"dup@example.com"}`), 0),
 		mvccPutEntry(4, []byte("user/c"), []byte(`{"email":"other@example.com"}`), 0),
@@ -410,7 +410,7 @@ func TestMVCCStateMachine_IndexBackfillSeesSameBatchWrites(t *testing.T) {
 	entries := []sm.Entry{
 		mvccPutEntry(1, []byte("user/a"), []byte(`{"email":"a@example.com"}`), 0),
 		mvccPutEntry(2, []byte("user/b"), []byte(`{"email":"b@example.com"}`), 0),
-		{Index: 3, Cmd: protocol.EncodeIndexCreate("email_idx", "email", false, false, false)},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeIndexCreate("email_idx", "email", false, false, false))},
 		mvccPutEntry(4, []byte("user/c"), []byte(`{"email":"c@example.com"}`), 0),
 	}
 
@@ -467,13 +467,13 @@ func TestMVCCStateMachine_TransactionValueCompareSeesSameBatchWrites(t *testing.
 	key := []byte("flag")
 
 	valueCompare := func(index uint64, want []byte) sm.Entry {
-		compare := protocol.EncodeCompare(key,
+		compare := mustEncode(protocol.EncodeCompare(key,
 			byte(service.CompareValue), byte(service.CompareEqual),
-			want, 0, 0, 0)
-		success := protocol.EncodeOp(protocol.OpMVCCPut, []byte("saw-"+string(want)), []byte("1"), nil, 0)
+			want, 0, 0, 0))
+		success := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("saw-"+string(want)), []byte("1"), nil, 0))
 		return sm.Entry{
 			Index: index,
-			Cmd:   protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, nil),
+			Cmd:   mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, nil)),
 		}
 	}
 
@@ -543,13 +543,13 @@ func TestPebbleStateMachine_ApplyBatchGroupingIsDeterministic(t *testing.T) {
 	key := []byte("flag")
 
 	valueCompare := func(index uint64, want, then []byte) sm.Entry {
-		compare := protocol.EncodeCompare(key,
+		compare := mustEncode(protocol.EncodeCompare(key,
 			byte(service.CompareValue), byte(service.CompareEqual),
-			want, 0, 0, 0)
-		success := protocol.EncodeOp(protocol.OpMVCCPut, then, []byte("1"), nil, 0)
+			want, 0, 0, 0))
+		success := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, then, []byte("1"), nil, 0))
 		return sm.Entry{
 			Index: index,
-			Cmd:   protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, nil),
+			Cmd:   mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{success}, nil)),
 		}
 	}
 

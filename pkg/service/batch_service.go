@@ -263,14 +263,17 @@ func (s *BatchService) Execute(ctx context.Context, ops []Op) ([]OpResponse, err
 		if op.Type == OpPut || op.Type == OpDelete {
 			encoded, err := encodeServiceOp(op)
 			if err != nil {
-				return nil, err
+				return nil, &EncodeRequestError{Err: err}
 			}
 			writeOps = append(writeOps, encoded)
 		}
 	}
 
 	if len(writeOps) > 0 {
-		cmd := protocol.EncodeBatch(writeOps)
+		cmd, encErr := protocol.EncodeBatch(writeOps)
+		if encErr != nil {
+			return nil, &EncodeRequestError{Err: encErr}
+		}
 		result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 		if err != nil {
 			return nil, s.translateProposeError(err)
@@ -327,14 +330,17 @@ func (s *BatchService) ExecuteWithMode(ctx context.Context, ops []Op, mode write
 		if op.Type == OpPut || op.Type == OpDelete {
 			encoded, err := encodeServiceOp(op)
 			if err != nil {
-				return nil, err
+				return nil, &EncodeRequestError{Err: err}
 			}
 			writeOps = append(writeOps, encoded)
 		}
 	}
 
 	if len(writeOps) > 0 {
-		cmd := protocol.EncodeBatch(writeOps)
+		cmd, encErr := protocol.EncodeBatch(writeOps)
+		if encErr != nil {
+			return nil, &EncodeRequestError{Err: encErr}
+		}
 		result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 		if err != nil {
 			return nil, s.translateProposeError(err)
@@ -446,10 +452,17 @@ func (s *BatchService) ExecuteEntity(ctx context.Context, req *BatchEntityReques
 		}
 
 		key := []byte(entityKey(op.EntityType, op.ID))
-		encodedOps[i] = protocol.EncodeOp(protocolOp, key, op.Data, nil, 0)
+		encoded, encErr := protocol.EncodeOp(protocolOp, key, op.Data, nil, 0)
+		if encErr != nil {
+			return nil, &EncodeRequestError{Err: encErr}
+		}
+		encodedOps[i] = encoded
 	}
 
-	cmd := protocol.EncodeBatch(encodedOps)
+	cmd, encErr := protocol.EncodeBatch(encodedOps)
+	if encErr != nil {
+		return nil, &EncodeRequestError{Err: encErr}
+	}
 
 	shardID := s.shardID
 	if req.ShardID != 0 {
@@ -1056,7 +1069,25 @@ func (s *BatchService) importRecords(ctx context.Context, records []map[string]s
 			continue
 		}
 
-		encodedOps = append(encodedOps, protocol.EncodeOp(protocol.OpMVCCPut, []byte(storedKey), value, nil, 0))
+		// Mirrors the two size checks above exactly: a row that cannot be
+		// encoded aborts a transactional import and is counted as failed in a
+		// non-transactional one. Recording the error without incrementing
+		// Failed would under-report, and continuing past it in transactional
+		// mode would break all-or-nothing.
+		//
+		// Unreachable today — the import key and value caps are below the
+		// protocol's four-byte field bound — but the branch has to be right
+		// for the same reason the caps are checked at all.
+		encoded, encErr := protocol.EncodeOp(protocol.OpMVCCPut, []byte(storedKey), value, nil, 0)
+		if encErr != nil {
+			if opts.Transactional {
+				return nil, &ImportTransactionAbortedError{Row: rowNum, Key: key, Message: encErr.Error()}
+			}
+			result.Failed++
+			result.Errors = append(result.Errors, ImportError{Row: rowNum, Key: key, Message: encErr.Error()})
+			continue
+		}
+		encodedOps = append(encodedOps, encoded)
 		keys = append(keys, key)
 		rowNums = append(rowNums, rowNum)
 	}
@@ -1128,7 +1159,10 @@ func (s *BatchService) proposeImportOps(ctx context.Context, result *ImportResul
 	}
 
 	for _, chunk := range buildImportProposalChunks(ops, keys, rowNums) {
-		cmd := protocol.EncodeBatch(chunk.ops)
+		cmd, encErr := protocol.EncodeBatch(chunk.ops)
+		if encErr != nil {
+			return nil, &EncodeRequestError{Err: encErr}
+		}
 		proposed, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 		if err == nil {
 			// A not-configured subsystem arrives in the RESULT, not as a Raft

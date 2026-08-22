@@ -80,7 +80,7 @@ func (m *mockLeaseManager) Leases() (interface{}, error) {
 func TestLeaseGrant_NilLeaseManager(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -106,7 +106,7 @@ func TestLeaseGrant_Success(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseGrant(300)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(300))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -150,7 +150,7 @@ func TestLeaseGrant_ManagerError(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseGrant(-1)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(-1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -168,7 +168,7 @@ func TestLeaseGrant_ManagerError(t *testing.T) {
 func TestLeaseRevoke_NilLeaseManager(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeLeaseRevoke(1)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -194,7 +194,7 @@ func TestLeaseRevoke_Success(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseRevoke(99)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(99))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -238,7 +238,7 @@ func TestLeaseRevoke_ManagerError(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseRevoke(999)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -256,7 +256,7 @@ func TestLeaseRevoke_ManagerError(t *testing.T) {
 func TestLeaseKeepAlive_NilLeaseManager(t *testing.T) {
 	fsm, _ := newTestFSM()
 
-	cmd := protocol.EncodeLeaseKeepAlive(1)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -282,7 +282,7 @@ func TestLeaseKeepAlive_Success(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseKeepAlive(7)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(7))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -325,7 +325,7 @@ func TestLeaseKeepAlive_ManagerError(t *testing.T) {
 	}
 	fsm, _ := newTestFSM(WithLeaseManager(lm))
 
-	cmd := protocol.EncodeLeaseKeepAlive(404)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(404))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

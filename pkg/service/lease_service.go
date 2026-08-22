@@ -48,7 +48,10 @@ func NewLeaseService(host Host, shardID uint64) LeaseServicer {
 // server assigns a unique lease ID. Returns the lease including the
 // assigned ID, granted TTL, and remaining TTL.
 func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
-	cmd := protocol.EncodeLeaseGrant(ttl)
+	cmd, err := protocol.EncodeLeaseGrant(ttl)
+	if err != nil {
+		return nil, &EncodeRequestError{Err: err}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)
@@ -72,7 +75,10 @@ func (s *LeaseService) Grant(ctx context.Context, ttl int64) (*Lease, error) {
 
 // Revoke immediately expires a lease and deletes all attached keys.
 func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
-	cmd := protocol.EncodeLeaseRevoke(leaseID)
+	cmd, err := protocol.EncodeLeaseRevoke(leaseID)
+	if err != nil {
+		return &EncodeRequestError{Err: err}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -86,7 +92,10 @@ func (s *LeaseService) Revoke(ctx context.Context, leaseID int64) error {
 // KeepAlive resets the TTL on an existing lease, preventing it from
 // expiring. Returns the refreshed lease with updated TTL.
 func (s *LeaseService) KeepAlive(ctx context.Context, leaseID int64) (*Lease, error) {
-	cmd := protocol.EncodeLeaseKeepAlive(leaseID)
+	cmd, err := protocol.EncodeLeaseKeepAlive(leaseID)
+	if err != nil {
+		return nil, &EncodeRequestError{Err: err}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)

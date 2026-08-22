@@ -149,3 +149,15 @@ and space operations.
   and structure health per namespace.
 - Rebuild and compaction progress are the only way to observe a long-running
   maintenance operation; there is no log-only path.
+
+## Wire-field bounds
+
+The length-field contract for this plane — what each field can describe, that a
+longer value is refused rather than truncated, that encoders return
+`([]byte, error)` and validate before allocating, and that a refusal is a client
+error mapping to `InvalidArgument`/400 — is one rule for the whole extended wire
+protocol and is stated once, in
+[../key-value/engineering.md](../key-value/engineering.md#wire-field-bounds--the-owning-contract-for-every-plane).
+
+It is not restated here on purpose: four copies of a bound is how the four drift
+apart.

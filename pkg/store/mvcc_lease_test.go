@@ -112,7 +112,7 @@ func TestMVCCLease_SetLessor_Nil(t *testing.T) {
 func TestMVCCLease_LeaseGrant_CreatesLease(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	results := applyLeaseEntries(t, s, 1, cmd)
 
 	leaseID := int64(results[0].Value)
@@ -138,7 +138,7 @@ func TestMVCCLease_LeaseGrant_InvalidTTL(t *testing.T) {
 
 	// TTL of 0 should cause the lessor to reject the grant as a non-fatal
 	// app-error (a Go error from Update() would stall the Raft group).
-	cmd := protocol.EncodeLeaseGrant(0)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -173,7 +173,7 @@ func TestMVCCLease_LeaseGrant_NoLessor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close(ctx) })
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err = s.Update(context.Background(), entries, results); err != nil {
@@ -198,7 +198,7 @@ func TestMVCCLease_LeaseRevoke_NoLessor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close(ctx) })
 
-	cmd := protocol.EncodeLeaseRevoke(1)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err = s.Update(context.Background(), entries, results); err != nil {
@@ -228,7 +228,7 @@ func TestMVCCLease_LeaseRevoke_NonExistentLease(t *testing.T) {
 	// Revoking a non-existent lease is a no-op success (idempotent). A
 	// non-nil error from a Raft Update() handler permanently stalls the
 	// cluster, so revoke-not-found must succeed without error.
-	cmd := protocol.EncodeLeaseRevoke(99999)
+	cmd := mustEncode(protocol.EncodeLeaseRevoke(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -244,12 +244,12 @@ func TestMVCCLease_LeaseRevoke_NoAttachedKeys(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
 	// Grant a lease but attach no keys.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
 	// Revoke should succeed with 0 detached keys.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeResults := applyLeaseEntries(t, s, 2, revokeCmd)
 
 	if revokeResults[0].Value != 0 {
@@ -266,12 +266,12 @@ func TestMVCCLease_LeaseRevoke_DeletesAttachedKeys(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
 	// 1. Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(300)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(300))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
 	// 2. Put a key with the lease.
-	putCmd := protocol.EncodeMVCCPut([]byte("session/abc"), []byte("alive"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("session/abc"), []byte("alive"), leaseID))
 	applyLeaseEntries(t, s, 2, putCmd)
 
 	// Verify key exists.
@@ -294,7 +294,7 @@ func TestMVCCLease_LeaseRevoke_DeletesAttachedKeys(t *testing.T) {
 	}
 
 	// 3. Revoke the lease.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeResults := applyLeaseEntries(t, s, 3, revokeCmd)
 
 	// Result.Value should contain the count of detached keys.
@@ -322,7 +322,7 @@ func TestMVCCLease_LeaseKeepAlive_ResetsExpiry(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
 	// Grant a lease with a short TTL.
-	grantCmd := protocol.EncodeLeaseGrant(10)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(10))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
@@ -332,7 +332,7 @@ func TestMVCCLease_LeaseKeepAlive_ResetsExpiry(t *testing.T) {
 	}
 
 	// Keep alive.
-	keepAliveCmd := protocol.EncodeLeaseKeepAlive(leaseID)
+	keepAliveCmd := mustEncode(protocol.EncodeLeaseKeepAlive(leaseID))
 	keepAliveResults := applyLeaseEntries(t, s, 2, keepAliveCmd)
 
 	if int64(keepAliveResults[0].Value) != leaseID {
@@ -356,7 +356,7 @@ func TestMVCCLease_LeaseKeepAlive_NonExistentLease(t *testing.T) {
 	// KeepAlive on a non-existent lease is a no-op success (idempotent). A
 	// non-nil error from a Raft Update() handler permanently stalls the
 	// cluster, so keepalive-not-found must succeed without error.
-	cmd := protocol.EncodeLeaseKeepAlive(99999)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -391,7 +391,7 @@ func TestMVCCLease_LeaseKeepAlive_NoLessor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close(ctx) })
 
-	cmd := protocol.EncodeLeaseKeepAlive(999)
+	cmd := mustEncode(protocol.EncodeLeaseKeepAlive(999))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err = s.Update(context.Background(), entries, results); err != nil {
@@ -410,7 +410,7 @@ func TestMVCCLease_Lookup_LeaseTimeToLive(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(120)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(120))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
@@ -442,12 +442,12 @@ func TestMVCCLease_Lookup_LeaseTimeToLive_WithKeys(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
 	// Grant a lease and attach keys.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
-	putCmd1 := protocol.EncodeMVCCPut([]byte("key1"), []byte("val1"), leaseID)
-	putCmd2 := protocol.EncodeMVCCPut([]byte("key2"), []byte("val2"), leaseID)
+	putCmd1 := mustEncode(protocol.EncodeMVCCPut([]byte("key1"), []byte("val1"), leaseID))
+	putCmd2 := mustEncode(protocol.EncodeMVCCPut([]byte("key2"), []byte("val2"), leaseID))
 	applyLeaseEntries(t, s, 2, putCmd1, putCmd2)
 
 	// Lookup should include keys.
@@ -482,9 +482,9 @@ func TestMVCCLease_Lookup_LeasesQuery(t *testing.T) {
 	s, _ := newTestMVCCWithLessor(t)
 
 	// Grant multiple leases.
-	grantCmd1 := protocol.EncodeLeaseGrant(30)
-	grantCmd2 := protocol.EncodeLeaseGrant(60)
-	grantCmd3 := protocol.EncodeLeaseGrant(90)
+	grantCmd1 := mustEncode(protocol.EncodeLeaseGrant(30))
+	grantCmd2 := mustEncode(protocol.EncodeLeaseGrant(60))
+	grantCmd3 := mustEncode(protocol.EncodeLeaseGrant(90))
 	results := applyLeaseEntries(t, s, 1, grantCmd1, grantCmd2, grantCmd3)
 
 	leaseIDs := make(map[int64]struct{})
@@ -604,12 +604,12 @@ func TestMVCCLease_Put_AttachesKeyToLease(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
 	// Put a key with the lease.
-	putCmd := protocol.EncodeMVCCPut([]byte("mykey"), []byte("myval"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("mykey"), []byte("myval"), leaseID))
 	applyLeaseEntries(t, s, 2, putCmd)
 
 	// Verify the key is attached to the lease.
@@ -642,14 +642,14 @@ func TestMVCCLease_Put_AttachesMultipleKeysToLease(t *testing.T) {
 	s, lr := newTestMVCCWithLessor(t)
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(120)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(120))
 	grantResults := applyLeaseEntries(t, s, 1, grantCmd)
 	leaseID := int64(grantResults[0].Value)
 
 	// Put multiple keys with the same lease.
-	putCmd1 := protocol.EncodeMVCCPut([]byte("a"), []byte("1"), leaseID)
-	putCmd2 := protocol.EncodeMVCCPut([]byte("b"), []byte("2"), leaseID)
-	putCmd3 := protocol.EncodeMVCCPut([]byte("c"), []byte("3"), leaseID)
+	putCmd1 := mustEncode(protocol.EncodeMVCCPut([]byte("a"), []byte("1"), leaseID))
+	putCmd2 := mustEncode(protocol.EncodeMVCCPut([]byte("b"), []byte("2"), leaseID))
+	putCmd3 := mustEncode(protocol.EncodeMVCCPut([]byte("c"), []byte("3"), leaseID))
 	applyLeaseEntries(t, s, 2, putCmd1, putCmd2, putCmd3)
 
 	info := lr.Lookup(leaseID)

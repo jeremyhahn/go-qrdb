@@ -63,6 +63,33 @@ func (e *KeyNotFoundError) Error() string {
 	return "service: key not found: " + e.Key
 }
 
+// EncodeRequestError is returned when a request cannot be encoded into a
+// command, so no proposal was ever made.
+//
+// It exists because the alternative was a lie with consequences. Encoding used
+// to be infallible; now that the encoders refuse a field longer than its length
+// field can describe (go-qrdb#52), every one of those call sites had a new
+// failure to report and reported it as ProposeError — "the Raft proposal
+// failed" — for a proposal that had not been attempted. The transports map
+// ProposeError to gRPC Internal and HTTP 500, so a caller sending an oversized
+// key was told the cluster was broken: an alert fires, and a client that retries
+// on 5xx retries an input that cannot ever succeed.
+//
+// This is a CLIENT error. The transports map it to InvalidArgument and 400.
+type EncodeRequestError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the encoding failure.
+func (e *EncodeRequestError) Error() string {
+	return "service: cannot encode request: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error for use with errors.Is and errors.As.
+func (e *EncodeRequestError) Unwrap() error {
+	return e.Err
+}
+
 // ProposeError is returned when a Raft proposal fails.
 type ProposeError struct {
 	Err error

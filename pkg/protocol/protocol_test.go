@@ -302,7 +302,7 @@ func TestMVCCPutRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeMVCCPut(tt.key, tt.value, tt.leaseID)
+			encoded := mustEncode(EncodeMVCCPut(tt.key, tt.value, tt.leaseID))
 			if encoded[0] != OpMVCCPut {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCPut)
 			}
@@ -400,7 +400,7 @@ func TestMVCCDeleteRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeMVCCDelete(tt.key)
+			encoded := mustEncode(EncodeMVCCDelete(tt.key))
 			if encoded[0] != OpMVCCDelete {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCDelete)
 			}
@@ -531,7 +531,7 @@ func TestMVCCRangeRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeMVCCRange(tt.start, tt.end, tt.revision, tt.limit, tt.countOnly, tt.keysOnly)
+			encoded := mustEncode(EncodeMVCCRange(tt.start, tt.end, tt.revision, tt.limit, tt.countOnly, tt.keysOnly))
 			if encoded[0] != OpMVCCRange {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCRange)
 			}
@@ -638,7 +638,7 @@ func TestMVCCCompactRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeMVCCCompact(tt.revision)
+			encoded := mustEncode(EncodeMVCCCompact(tt.revision))
 			if encoded[0] != OpMVCCCompact {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpMVCCCompact)
 			}
@@ -709,7 +709,7 @@ func TestLeaseGrantRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeLeaseGrant(tt.ttl)
+			encoded := mustEncode(EncodeLeaseGrant(tt.ttl))
 			if encoded[0] != OpLeaseGrant {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpLeaseGrant)
 			}
@@ -779,7 +779,7 @@ func TestLeaseRevokeRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeLeaseRevoke(tt.leaseID)
+			encoded := mustEncode(EncodeLeaseRevoke(tt.leaseID))
 			if encoded[0] != OpLeaseRevoke {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpLeaseRevoke)
 			}
@@ -849,7 +849,7 @@ func TestLeaseKeepAliveRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeLeaseKeepAlive(tt.leaseID)
+			encoded := mustEncode(EncodeLeaseKeepAlive(tt.leaseID))
 			if encoded[0] != OpLeaseKeepAlive {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpLeaseKeepAlive)
 			}
@@ -976,7 +976,7 @@ func TestIndexCreateRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeIndexCreate(tt.indexName, tt.fieldName, tt.unique, tt.sparse, tt.numeric)
+			encoded := mustEncode(EncodeIndexCreate(tt.indexName, tt.fieldName, tt.unique, tt.sparse, tt.numeric))
 			if encoded[0] != OpIndexCreate {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpIndexCreate)
 			}
@@ -1078,7 +1078,7 @@ func TestIndexDropRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeIndexDrop(tt.indexName)
+			encoded := mustEncode(EncodeIndexDrop(tt.indexName))
 			if encoded[0] != OpIndexDrop {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpIndexDrop)
 			}
@@ -1204,7 +1204,7 @@ func TestTSWriteRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeTSWrite(tt.metric, tt.timestamp, tt.value, tt.tags)
+			encoded := mustEncode(EncodeTSWrite(tt.metric, tt.timestamp, tt.value, tt.tags))
 			if encoded[0] != OpTSWrite {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpTSWrite)
 			}
@@ -1401,7 +1401,7 @@ func TestOpRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeOp(tt.opType, tt.key, tt.value, tt.rangeEnd, tt.leaseID)
+			encoded := mustEncode(EncodeOp(tt.opType, tt.key, tt.value, tt.rangeEnd, tt.leaseID))
 
 			op, n, err := DecodeOp(encoded)
 			if err != nil {
@@ -1551,7 +1551,7 @@ func TestCompareRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeCompare(tt.key, tt.target, tt.result, tt.value, tt.version, tt.createRevision, tt.modRevision)
+			encoded := mustEncode(EncodeCompare(tt.key, tt.target, tt.result, tt.value, tt.version, tt.createRevision, tt.modRevision))
 
 			cmp, n, err := DecodeCompare(encoded)
 			if err != nil {
@@ -1658,13 +1658,13 @@ func TestTransactionRoundtrip(t *testing.T) {
 		{
 			name: "full transaction",
 			compares: [][]byte{
-				EncodeCompare([]byte("key1"), 1, 0, []byte("val1"), 10, 5, 8),
+				mustEncode(EncodeCompare([]byte("key1"), 1, 0, []byte("val1"), 10, 5, 8)),
 			},
 			successOps: [][]byte{
-				EncodeOp(OpMVCCPut, []byte("key1"), []byte("new-val"), nil, 0),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("key1"), []byte("new-val"), nil, 0)),
 			},
 			failureOps: [][]byte{
-				EncodeOp(OpMVCCDelete, []byte("key1"), nil, nil, 0),
+				mustEncode(EncodeOp(OpMVCCDelete, []byte("key1"), nil, nil, 0)),
 			},
 		},
 		{
@@ -1682,31 +1682,31 @@ func TestTransactionRoundtrip(t *testing.T) {
 		{
 			name: "multiple compares and ops",
 			compares: [][]byte{
-				EncodeCompare([]byte("k1"), 1, 0, []byte("v1"), 1, 1, 1),
-				EncodeCompare([]byte("k2"), 2, 1, []byte("v2"), 2, 2, 2),
+				mustEncode(EncodeCompare([]byte("k1"), 1, 0, []byte("v1"), 1, 1, 1)),
+				mustEncode(EncodeCompare([]byte("k2"), 2, 1, []byte("v2"), 2, 2, 2)),
 			},
 			successOps: [][]byte{
-				EncodeOp(OpMVCCPut, []byte("k1"), []byte("new1"), nil, 100),
-				EncodeOp(OpMVCCPut, []byte("k2"), []byte("new2"), nil, 200),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k1"), []byte("new1"), nil, 100)),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k2"), []byte("new2"), nil, 200)),
 			},
 			failureOps: [][]byte{
-				EncodeOp(OpMVCCDelete, []byte("k1"), nil, nil, 0),
+				mustEncode(EncodeOp(OpMVCCDelete, []byte("k1"), nil, nil, 0)),
 			},
 		},
 		{
 			name: "success only",
 			compares: [][]byte{
-				EncodeCompare([]byte("k"), 0, 0, nil, 0, 0, 0),
+				mustEncode(EncodeCompare([]byte("k"), 0, 0, nil, 0, 0, 0)),
 			},
 			successOps: [][]byte{
-				EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), nil, 0),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), nil, 0)),
 			},
 			failureOps: nil,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeTransaction(tt.compares, tt.successOps, tt.failureOps)
+			encoded := mustEncode(EncodeTransaction(tt.compares, tt.successOps, tt.failureOps))
 			if encoded[0] != OpTransaction {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpTransaction)
 			}
@@ -1781,7 +1781,31 @@ func TestTransactionRoundtrip(t *testing.T) {
 	}
 }
 
+// validCompare and validOp are well-formed encoded elements, used to build
+// fixtures that get PAST the count bound so a later element's truncated length
+// prefix is what fails. A count with nothing after it is refused by the count
+// check itself, which is a different branch and is covered separately.
+func validCompare(t *testing.T) []byte {
+	t.Helper()
+	b, err := EncodeCompare([]byte("k"), 0, 0, []byte("v"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("EncodeCompare: %v", err)
+	}
+	return b
+}
+
+func validOp(t *testing.T) []byte {
+	t.Helper()
+	b, err := EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), nil, 0)
+	if err != nil {
+		t.Fatalf("EncodeOp: %v", err)
+	}
+	return b
+}
+
 func TestDecodeTransaction_Errors(t *testing.T) {
+	validCompare := validCompare(t)
+	validOp := validOp(t)
 	tests := []struct {
 		name    string
 		payload []byte
@@ -1798,9 +1822,19 @@ func TestDecodeTransaction_Errors(t *testing.T) {
 			wantMsg: "missing compare count",
 		},
 		{
+			// A count of 1 with NO data at all is now refused by the count
+			// bound before any element is walked (an element needs at least its
+			// own length prefix), so reaching the truncation branch takes a
+			// count whose FIRST element is well formed and whose second prefix
+			// is short.
 			name:    "truncated compare length",
-			payload: frame(1), // compareCount=1 but no compare data
+			payload: payloadOf(frame(2), frame(uint32(len(validCompare))), validCompare, []byte{0x01, 0x02}),
 			wantMsg: "truncated compare length",
+		},
+		{
+			name:    "compare count larger than the payload can frame",
+			payload: frame(1), // compareCount=1, nothing follows
+			wantMsg: "count exceeds payload",
 		},
 		{
 			name:    "compare exceeds payload",
@@ -1815,9 +1849,15 @@ func TestDecodeTransaction_Errors(t *testing.T) {
 		},
 		{
 			name: "truncated success op length",
-			// compareCount=0, successCount=1, then nothing
-			payload: payloadOf(frame(0), frame(1)),
+			// compareCount=0, successCount=2, first op well formed, second
+			// prefix short — see "truncated compare length".
+			payload: payloadOf(frame(0), frame(2), frame(uint32(len(validOp))), validOp, []byte{0x01, 0x02}),
 			wantMsg: "truncated success op length",
+		},
+		{
+			name:    "success count larger than the payload can frame",
+			payload: payloadOf(frame(0), frame(1)),
+			wantMsg: "count exceeds payload",
 		},
 		{
 			name: "success op exceeds payload",
@@ -1833,9 +1873,14 @@ func TestDecodeTransaction_Errors(t *testing.T) {
 		},
 		{
 			name: "truncated failure op length",
-			// compareCount=0, successCount=0, failureCount=1, then nothing
-			payload: payloadOf(frame(0), frame(0), frame(1)),
+			payload: payloadOf(frame(0), frame(0), frame(2),
+				frame(uint32(len(validOp))), validOp, []byte{0x01, 0x02}),
 			wantMsg: "truncated failure op length",
+		},
+		{
+			name:    "failure count larger than the payload can frame",
+			payload: payloadOf(frame(0), frame(0), frame(1)),
+			wantMsg: "count exceeds payload",
 		},
 		{
 			name: "failure op exceeds payload",
@@ -1913,15 +1958,15 @@ func TestBatchRoundtrip(t *testing.T) {
 		{
 			name: "single op",
 			ops: [][]byte{
-				EncodeOp(OpMVCCPut, []byte("k1"), []byte("v1"), nil, 100),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k1"), []byte("v1"), nil, 100)),
 			},
 		},
 		{
 			name: "multiple ops",
 			ops: [][]byte{
-				EncodeOp(OpMVCCPut, []byte("k1"), []byte("v1"), nil, 0),
-				EncodeOp(OpMVCCDelete, []byte("k2"), nil, nil, 0),
-				EncodeOp(OpMVCCPut, []byte("k3"), []byte("v3"), []byte("end3"), 42),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k1"), []byte("v1"), nil, 0)),
+				mustEncode(EncodeOp(OpMVCCDelete, []byte("k2"), nil, nil, 0)),
+				mustEncode(EncodeOp(OpMVCCPut, []byte("k3"), []byte("v3"), []byte("end3"), 42)),
 			},
 		},
 		{
@@ -1935,7 +1980,7 @@ func TestBatchRoundtrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeBatch(tt.ops)
+			encoded := mustEncode(EncodeBatch(tt.ops))
 			if encoded[0] != OpBatch {
 				t.Fatalf("op byte = %d, want %d", encoded[0], OpBatch)
 			}
@@ -1985,6 +2030,7 @@ func TestBatchRoundtrip(t *testing.T) {
 }
 
 func TestDecodeBatch_Errors(t *testing.T) {
+	validOp := validOp(t)
 	tests := []struct {
 		name    string
 		payload []byte
@@ -2001,9 +2047,17 @@ func TestDecodeBatch_Errors(t *testing.T) {
 			wantMsg: "payload too short",
 		},
 		{
+			// A count of 1 with no data is now refused by the count bound before
+			// any element is walked, so reaching the truncation branch takes a
+			// well-formed first op and a short second prefix.
 			name:    "truncated op length",
-			payload: frame(1), // opCount=1, no op data
+			payload: payloadOf(frame(2), frame(uint32(len(validOp))), validOp, []byte{0x01, 0x02}),
 			wantMsg: "truncated op length",
+		},
+		{
+			name:    "op count larger than the payload can frame",
+			payload: frame(1), // opCount=1, nothing follows
+			wantMsg: "count exceeds payload",
 		},
 		{
 			name:    "op exceeds payload",
@@ -2059,67 +2113,67 @@ func TestEncodedOpCodes(t *testing.T) {
 	}{
 		{
 			name:   "EncodeMVCCPut",
-			encode: func() []byte { return EncodeMVCCPut([]byte("k"), []byte("v"), 0) },
+			encode: func() []byte { return mustEncode(EncodeMVCCPut([]byte("k"), []byte("v"), 0)) },
 			wantOp: OpMVCCPut,
 		},
 		{
 			name:   "EncodeMVCCDelete",
-			encode: func() []byte { return EncodeMVCCDelete([]byte("k")) },
+			encode: func() []byte { return mustEncode(EncodeMVCCDelete([]byte("k"))) },
 			wantOp: OpMVCCDelete,
 		},
 		{
 			name:   "EncodeMVCCRange",
-			encode: func() []byte { return EncodeMVCCRange([]byte("a"), []byte("z"), 0, 0, false, false) },
+			encode: func() []byte { return mustEncode(EncodeMVCCRange([]byte("a"), []byte("z"), 0, 0, false, false)) },
 			wantOp: OpMVCCRange,
 		},
 		{
 			name:   "EncodeMVCCCompact",
-			encode: func() []byte { return EncodeMVCCCompact(1) },
+			encode: func() []byte { return mustEncode(EncodeMVCCCompact(1)) },
 			wantOp: OpMVCCCompact,
 		},
 		{
 			name:   "EncodeLeaseGrant",
-			encode: func() []byte { return EncodeLeaseGrant(60) },
+			encode: func() []byte { return mustEncode(EncodeLeaseGrant(60)) },
 			wantOp: OpLeaseGrant,
 		},
 		{
 			name:   "EncodeLeaseRevoke",
-			encode: func() []byte { return EncodeLeaseRevoke(1) },
+			encode: func() []byte { return mustEncode(EncodeLeaseRevoke(1)) },
 			wantOp: OpLeaseRevoke,
 		},
 		{
 			name:   "EncodeLeaseKeepAlive",
-			encode: func() []byte { return EncodeLeaseKeepAlive(1) },
+			encode: func() []byte { return mustEncode(EncodeLeaseKeepAlive(1)) },
 			wantOp: OpLeaseKeepAlive,
 		},
 		{
 			name:   "EncodeIndexCreate",
-			encode: func() []byte { return EncodeIndexCreate("idx", "field", true, false, false) },
+			encode: func() []byte { return mustEncode(EncodeIndexCreate("idx", "field", true, false, false)) },
 			wantOp: OpIndexCreate,
 		},
 		{
 			name:   "EncodeIndexDrop",
-			encode: func() []byte { return EncodeIndexDrop("idx") },
+			encode: func() []byte { return mustEncode(EncodeIndexDrop("idx")) },
 			wantOp: OpIndexDrop,
 		},
 		{
 			name: "EncodeTSWrite",
 			encode: func() []byte {
-				return EncodeTSWrite("metric", 0, 0, nil)
+				return mustEncode(EncodeTSWrite("metric", 0, 0, nil))
 			},
 			wantOp: OpTSWrite,
 		},
 		{
 			name: "EncodeTransaction",
 			encode: func() []byte {
-				return EncodeTransaction(nil, nil, nil)
+				return mustEncode(EncodeTransaction(nil, nil, nil))
 			},
 			wantOp: OpTransaction,
 		},
 		{
 			name: "EncodeBatch",
 			encode: func() []byte {
-				return EncodeBatch(nil)
+				return mustEncode(EncodeBatch(nil))
 			},
 			wantOp: OpBatch,
 		},
@@ -2149,7 +2203,7 @@ func TestMVCCPut_LargeKeyLength(t *testing.T) {
 	value := []byte("val")
 	var leaseID int64 = 7
 
-	encoded := EncodeMVCCPut(key, value, leaseID)
+	encoded := mustEncode(EncodeMVCCPut(key, value, leaseID))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2173,7 +2227,7 @@ func TestMVCCPut_LargeKeyLength(t *testing.T) {
 func TestMVCCDelete_LargeKeyLength(t *testing.T) {
 	const keySize = 32000
 	key := bytes.Repeat([]byte("B"), keySize)
-	encoded := EncodeMVCCDelete(key)
+	encoded := mustEncode(EncodeMVCCDelete(key))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2193,7 +2247,7 @@ func TestMVCCDelete_LargeKeyLength(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEncodeOp_NilSlices(t *testing.T) {
-	encoded := EncodeOp(OpMVCCPut, nil, nil, nil, 0)
+	encoded := mustEncode(EncodeOp(OpMVCCPut, nil, nil, nil, 0))
 	op, n, err := DecodeOp(encoded)
 	if err != nil {
 		t.Fatalf("DecodeOp: %v", err)
@@ -2220,7 +2274,7 @@ func TestEncodeOp_NilSlices(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEncodeCompare_NilSlices(t *testing.T) {
-	encoded := EncodeCompare(nil, 0, 0, nil, 0, 0, 0)
+	encoded := mustEncode(EncodeCompare(nil, 0, 0, nil, 0, 0, 0))
 	cmp, n, err := DecodeCompare(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCompare: %v", err)
@@ -2258,13 +2312,13 @@ func TestDecodeCommand_SingleByteValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTransactionRoundtrip_DeepVerification(t *testing.T) {
-	cmp1 := EncodeCompare([]byte("ckey1"), 1, 2, []byte("cval1"), 10, 20, 30)
-	cmp2 := EncodeCompare([]byte("ckey2"), 3, 4, []byte("cval2"), 40, 50, 60)
-	sOp1 := EncodeOp(OpMVCCPut, []byte("sk1"), []byte("sv1"), []byte("sr1"), 100)
-	sOp2 := EncodeOp(OpMVCCDelete, []byte("sk2"), nil, nil, 0)
-	fOp1 := EncodeOp(OpMVCCPut, []byte("fk1"), []byte("fv1"), nil, 200)
+	cmp1 := mustEncode(EncodeCompare([]byte("ckey1"), 1, 2, []byte("cval1"), 10, 20, 30))
+	cmp2 := mustEncode(EncodeCompare([]byte("ckey2"), 3, 4, []byte("cval2"), 40, 50, 60))
+	sOp1 := mustEncode(EncodeOp(OpMVCCPut, []byte("sk1"), []byte("sv1"), []byte("sr1"), 100))
+	sOp2 := mustEncode(EncodeOp(OpMVCCDelete, []byte("sk2"), nil, nil, 0))
+	fOp1 := mustEncode(EncodeOp(OpMVCCPut, []byte("fk1"), []byte("fv1"), nil, 200))
 
-	encoded := EncodeTransaction([][]byte{cmp1, cmp2}, [][]byte{sOp1, sOp2}, [][]byte{fOp1})
+	encoded := mustEncode(EncodeTransaction([][]byte{cmp1, cmp2}, [][]byte{sOp1, sOp2}, [][]byte{fOp1}))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2344,10 +2398,10 @@ func TestTransactionRoundtrip_DeepVerification(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBatchRoundtrip_DeepVerification(t *testing.T) {
-	op1 := EncodeOp(OpMVCCPut, []byte("bk1"), []byte("bv1"), []byte("br1"), 11)
-	op2 := EncodeOp(OpMVCCDelete, []byte("bk2"), nil, nil, 0)
+	op1 := mustEncode(EncodeOp(OpMVCCPut, []byte("bk1"), []byte("bv1"), []byte("br1"), 11))
+	op2 := mustEncode(EncodeOp(OpMVCCDelete, []byte("bk2"), nil, nil, 0))
 
-	encoded := EncodeBatch([][]byte{op1, op2})
+	encoded := mustEncode(EncodeBatch([][]byte{op1, op2}))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2395,7 +2449,7 @@ func TestBatchRoundtrip_DeepVerification(t *testing.T) {
 
 func TestTSWriteRoundtrip_SingleTag(t *testing.T) {
 	tags := map[string]string{"host": "server-42"}
-	encoded := EncodeTSWrite("latency.p99", 1700000000, 2.718, tags)
+	encoded := mustEncode(EncodeTSWrite("latency.p99", 1700000000, 2.718, tags))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2431,7 +2485,7 @@ func TestEncodeMVCCPut_BufferSize(t *testing.T) {
 	key := []byte("key")
 	value := []byte("value")
 	var leaseID int64 = 1
-	encoded := EncodeMVCCPut(key, value, leaseID)
+	encoded := mustEncode(EncodeMVCCPut(key, value, leaseID))
 	// Expected: 1 (op) + 2 (keyLen) + 3 (key) + 8 (leaseID) + 5 (value) = 19
 	if len(encoded) != 19 {
 		t.Errorf("encoded length = %d, want 19", len(encoded))
@@ -2440,7 +2494,7 @@ func TestEncodeMVCCPut_BufferSize(t *testing.T) {
 
 func TestEncodeMVCCDelete_BufferSize(t *testing.T) {
 	key := []byte("key")
-	encoded := EncodeMVCCDelete(key)
+	encoded := mustEncode(EncodeMVCCDelete(key))
 	// Expected: 1 (op) + 2 (keyLen) + 3 (key) = 6
 	if len(encoded) != 6 {
 		t.Errorf("encoded length = %d, want 6", len(encoded))
@@ -2450,7 +2504,7 @@ func TestEncodeMVCCDelete_BufferSize(t *testing.T) {
 func TestEncodeMVCCRange_BufferSize(t *testing.T) {
 	start := []byte("ab")
 	end := []byte("cd")
-	encoded := EncodeMVCCRange(start, end, 0, 0, false, false)
+	encoded := mustEncode(EncodeMVCCRange(start, end, 0, 0, false, false))
 	// Expected: 1 (op) + 2 (startLen) + 2 (start) + 2 (endLen) + 2 (end) + 8 (rev) + 8 (limit) + 1 (flags) = 26
 	if len(encoded) != 26 {
 		t.Errorf("encoded length = %d, want 26", len(encoded))
@@ -2458,7 +2512,7 @@ func TestEncodeMVCCRange_BufferSize(t *testing.T) {
 }
 
 func TestEncodeMVCCCompact_BufferSize(t *testing.T) {
-	encoded := EncodeMVCCCompact(0)
+	encoded := mustEncode(EncodeMVCCCompact(0))
 	// Expected: 1 (op) + 8 (revision) = 9
 	if len(encoded) != 9 {
 		t.Errorf("encoded length = %d, want 9", len(encoded))
@@ -2466,28 +2520,28 @@ func TestEncodeMVCCCompact_BufferSize(t *testing.T) {
 }
 
 func TestEncodeLeaseGrant_BufferSize(t *testing.T) {
-	encoded := EncodeLeaseGrant(0)
+	encoded := mustEncode(EncodeLeaseGrant(0))
 	if len(encoded) != 9 {
 		t.Errorf("encoded length = %d, want 9", len(encoded))
 	}
 }
 
 func TestEncodeLeaseRevoke_BufferSize(t *testing.T) {
-	encoded := EncodeLeaseRevoke(0)
+	encoded := mustEncode(EncodeLeaseRevoke(0))
 	if len(encoded) != 9 {
 		t.Errorf("encoded length = %d, want 9", len(encoded))
 	}
 }
 
 func TestEncodeLeaseKeepAlive_BufferSize(t *testing.T) {
-	encoded := EncodeLeaseKeepAlive(0)
+	encoded := mustEncode(EncodeLeaseKeepAlive(0))
 	if len(encoded) != 9 {
 		t.Errorf("encoded length = %d, want 9", len(encoded))
 	}
 }
 
 func TestEncodeIndexCreate_BufferSize(t *testing.T) {
-	encoded := EncodeIndexCreate("idx", "fld", false, false, false)
+	encoded := mustEncode(EncodeIndexCreate("idx", "fld", false, false, false))
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) + 2 (fieldLen) + 3 (field) + 1 (flags) = 12
 	if len(encoded) != 12 {
 		t.Errorf("encoded length = %d, want 12", len(encoded))
@@ -2495,7 +2549,7 @@ func TestEncodeIndexCreate_BufferSize(t *testing.T) {
 }
 
 func TestEncodeIndexDrop_BufferSize(t *testing.T) {
-	encoded := EncodeIndexDrop("idx")
+	encoded := mustEncode(EncodeIndexDrop("idx"))
 	// Expected: 1 (op) + 2 (nameLen) + 3 (name) = 6
 	if len(encoded) != 6 {
 		t.Errorf("encoded length = %d, want 6", len(encoded))
@@ -2503,7 +2557,7 @@ func TestEncodeIndexDrop_BufferSize(t *testing.T) {
 }
 
 func TestEncodeTSWrite_BufferSize(t *testing.T) {
-	encoded := EncodeTSWrite("cpu", 0, 0.0, nil)
+	encoded := mustEncode(EncodeTSWrite("cpu", 0, 0.0, nil))
 	// Expected: 1 (op) + 2 (metricLen) + 3 (metric) + 8 (ts) + 8 (val) + 2 (tagCount) = 24
 	if len(encoded) != 24 {
 		t.Errorf("encoded length = %d, want 24", len(encoded))
@@ -2511,7 +2565,7 @@ func TestEncodeTSWrite_BufferSize(t *testing.T) {
 }
 
 func TestEncodeOp_BufferSize(t *testing.T) {
-	encoded := EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), []byte("e"), 0)
+	encoded := mustEncode(EncodeOp(OpMVCCPut, []byte("k"), []byte("v"), []byte("e"), 0))
 	// 1 (type) + frameSize (keyLen) + 1 (key) + frameSize (valLen) + 1 (val)
 	// + frameSize (reLen) + 1 (re) + 8 (leaseID)
 	want := 1 + frameSize + 1 + frameSize + 1 + frameSize + 1 + 8
@@ -2521,7 +2575,7 @@ func TestEncodeOp_BufferSize(t *testing.T) {
 }
 
 func TestEncodeCompare_BufferSize(t *testing.T) {
-	encoded := EncodeCompare([]byte("k"), 0, 0, []byte("v"), 0, 0, 0)
+	encoded := mustEncode(EncodeCompare([]byte("k"), 0, 0, []byte("v"), 0, 0, 0))
 	// frameSize (keyLen) + 1 (key) + 1 (target) + 1 (result) + frameSize (valLen)
 	// + 1 (val) + 8 (version) + 8 (createRev) + 8 (modRev)
 	want := frameSize + 1 + 1 + 1 + frameSize + 1 + 8 + 8 + 8
@@ -2548,7 +2602,7 @@ func TestMVCCRange_FlagEncoding(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeMVCCRange([]byte("a"), []byte("z"), 0, 0, tt.countOnly, tt.keysOnly)
+			encoded := mustEncode(EncodeMVCCRange([]byte("a"), []byte("z"), 0, 0, tt.countOnly, tt.keysOnly))
 			// Flags byte is the last byte.
 			gotFlag := encoded[len(encoded)-1]
 			if gotFlag != tt.wantFlag {
@@ -2579,7 +2633,7 @@ func TestIndexCreate_FlagEncoding(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			encoded := EncodeIndexCreate("n", "f", tt.unique, tt.sparse, tt.numeric)
+			encoded := mustEncode(EncodeIndexCreate("n", "f", tt.unique, tt.sparse, tt.numeric))
 			// Flags byte is the last byte.
 			gotFlag := encoded[len(encoded)-1]
 			if gotFlag != tt.wantFlag {
@@ -2595,7 +2649,7 @@ func TestIndexCreate_FlagEncoding(t *testing.T) {
 
 func TestTSWrite_SmallestPositiveFloat(t *testing.T) {
 	val := math.SmallestNonzeroFloat64
-	encoded := EncodeTSWrite("tiny", 0, val, nil)
+	encoded := mustEncode(EncodeTSWrite("tiny", 0, val, nil))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2611,7 +2665,7 @@ func TestTSWrite_SmallestPositiveFloat(t *testing.T) {
 
 func TestTSWrite_MaxFloat64(t *testing.T) {
 	val := math.MaxFloat64
-	encoded := EncodeTSWrite("huge", 0, val, nil)
+	encoded := mustEncode(EncodeTSWrite("huge", 0, val, nil))
 	cmd, err := DecodeCommand(encoded)
 	if err != nil {
 		t.Fatalf("DecodeCommand: %v", err)
@@ -2630,7 +2684,7 @@ func TestTSWrite_MaxFloat64(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDecodeOp_ConsumedBytes(t *testing.T) {
-	encoded := EncodeOp(OpMVCCPut, []byte("key"), []byte("value"), []byte("end"), 42)
+	encoded := mustEncode(EncodeOp(OpMVCCPut, []byte("key"), []byte("value"), []byte("end"), 42))
 	// Append extra garbage bytes to simulate reading from a larger buffer.
 	withTrailing := append(encoded, 0xDE, 0xAD, 0xBE, 0xEF)
 
@@ -2647,7 +2701,7 @@ func TestDecodeOp_ConsumedBytes(t *testing.T) {
 }
 
 func TestDecodeCompare_ConsumedBytes(t *testing.T) {
-	encoded := EncodeCompare([]byte("ckey"), 5, 6, []byte("cval"), 100, 200, 300)
+	encoded := mustEncode(EncodeCompare([]byte("ckey"), 5, 6, []byte("cval"), 100, 200, 300))
 	withTrailing := append(encoded, 0xCA, 0xFE)
 
 	cmp, n, err := DecodeCompare(withTrailing)
@@ -2672,7 +2726,7 @@ func TestEncodeTSWriteBatch_RoundTrip(t *testing.T) {
 		{Metric: "mem.free", Timestamp: 2000000, Value: 1024.0, Tags: nil},
 	}
 
-	encoded := EncodeTSWriteBatch(points)
+	encoded := mustEncode(EncodeTSWriteBatch(points))
 	if encoded[0] != OpTSWriteBatch {
 		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSWriteBatch)
 	}
@@ -2707,7 +2761,7 @@ func TestEncodeTSWriteBatch_RoundTrip(t *testing.T) {
 }
 
 func TestEncodeTSWriteBatch_EmptyPoints(t *testing.T) {
-	encoded := EncodeTSWriteBatch(nil)
+	encoded := mustEncode(EncodeTSWriteBatch(nil))
 	decoded, err := DecodeTSWriteBatch(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWriteBatch: %v", err)
@@ -2733,7 +2787,7 @@ func TestDecodeTSWriteBatch_TruncatedPointLength(t *testing.T) {
 	points := []TSWriteParams{
 		{Metric: "cpu", Timestamp: 1000, Value: 1.0, Tags: nil},
 	}
-	encoded := EncodeTSWriteBatch(points)
+	encoded := mustEncode(EncodeTSWriteBatch(points))
 	// Overwrite point count to 2 but don't add second point
 	encoded[1] = 2
 	encoded[2] = 0
@@ -2748,7 +2802,7 @@ func TestDecodeTSWriteBatch_TruncatedPointLength(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEncodeTSWritePoint_RoundTrip(t *testing.T) {
-	encoded := EncodeTSWritePoint("disk.io", 5000000, 99.9, map[string]string{"dev": "sda1"})
+	encoded := mustEncode(EncodeTSWritePoint("disk.io", 5000000, 99.9, map[string]string{"dev": "sda1"}))
 	if encoded[0] != OpTSWritePoint {
 		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSWritePoint)
 	}
@@ -2773,7 +2827,7 @@ func TestEncodeTSWritePoint_RoundTrip(t *testing.T) {
 }
 
 func TestEncodeTSWritePoint_NoTags(t *testing.T) {
-	encoded := EncodeTSWritePoint("net.rx", 1234, 100.0, nil)
+	encoded := mustEncode(EncodeTSWritePoint("net.rx", 1234, 100.0, nil))
 	decoded, err := DecodeTSWrite(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWrite: %v", err)
@@ -2792,7 +2846,7 @@ func TestEncodeTSWritePoint_NoTags(t *testing.T) {
 
 func TestEncodeTSDeleteSeries_RoundTrip(t *testing.T) {
 	tags := map[string]string{"region": "us-east", "env": "prod"}
-	encoded := EncodeTSDeleteSeries("cpu.usage", 1000, 2000, tags)
+	encoded := mustEncode(EncodeTSDeleteSeries("cpu.usage", 1000, 2000, tags))
 
 	if encoded[0] != OpTSDeleteSeries {
 		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSDeleteSeries)
@@ -2823,7 +2877,7 @@ func TestEncodeTSDeleteSeries_RoundTrip(t *testing.T) {
 }
 
 func TestEncodeTSDeleteSeries_NoTags(t *testing.T) {
-	encoded := EncodeTSDeleteSeries("mem.free", 0, 9999, nil)
+	encoded := mustEncode(EncodeTSDeleteSeries("mem.free", 0, 9999, nil))
 	decoded, err := DecodeTSDeleteSeries(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSDeleteSeries: %v", err)
@@ -2872,7 +2926,7 @@ func TestDecodeTSDeleteSeries_MissingTimestamps(t *testing.T) {
 
 func TestDecodeTSDeleteSeries_TruncatedTagKey(t *testing.T) {
 	// Build a valid payload up to tags, then claim 1 tag but truncate
-	encoded := EncodeTSDeleteSeries("m", 0, 0, map[string]string{"k": "v"})
+	encoded := mustEncode(EncodeTSDeleteSeries("m", 0, 0, map[string]string{"k": "v"}))
 	// Truncate payload to cut into tag section
 	truncated := encoded[1 : len(encoded)-3]
 	_, err := DecodeTSDeleteSeries(truncated)
@@ -2886,7 +2940,7 @@ func TestDecodeTSDeleteSeries_TruncatedTagKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEncodeTSSetRetention_RoundTrip(t *testing.T) {
-	encoded := EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, 1)
+	encoded := mustEncode(EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, 1))
 
 	if encoded[0] != OpTSSetRetention {
 		t.Fatalf("opcode = 0x%02x, want 0x%02x", encoded[0], OpTSSetRetention)
@@ -2948,7 +3002,7 @@ func TestEncodeTSWriteBatch_MultipleTags(t *testing.T) {
 	points := []TSWriteParams{
 		{Metric: "m1", Timestamp: 100, Value: math.Pi, Tags: tags},
 	}
-	encoded := EncodeTSWriteBatch(points)
+	encoded := mustEncode(EncodeTSWriteBatch(points))
 	decoded, err := DecodeTSWriteBatch(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSWriteBatch: %v", err)
@@ -2965,7 +3019,7 @@ func TestEncodeTSWriteBatch_MultipleTags(t *testing.T) {
 }
 
 func TestEncodeTSSetRetention_EmptyMetric(t *testing.T) {
-	encoded := EncodeTSSetRetention("", 1000, 100, 0)
+	encoded := mustEncode(EncodeTSSetRetention("", 1000, 100, 0))
 	decoded, err := DecodeTSSetRetention(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSSetRetention: %v", err)
@@ -2976,7 +3030,7 @@ func TestEncodeTSSetRetention_EmptyMetric(t *testing.T) {
 }
 
 func TestEncodeTSDeleteSeries_LargeTimestamps(t *testing.T) {
-	encoded := EncodeTSDeleteSeries("metric", math.MinInt64, math.MaxInt64, nil)
+	encoded := mustEncode(EncodeTSDeleteSeries("metric", math.MinInt64, math.MaxInt64, nil))
 	decoded, err := DecodeTSDeleteSeries(encoded[1:])
 	if err != nil {
 		t.Fatalf("DecodeTSDeleteSeries: %v", err)
@@ -3004,7 +3058,7 @@ func TestEncodeOp_ValueBeyondUint16(t *testing.T) {
 	value := bytes.Repeat([]byte("v"), 1<<20) // 1 MiB
 	key := []byte("some/row/key")
 
-	encoded := EncodeOp(OpMVCCPut, key, value, nil, 0)
+	encoded := mustEncode(EncodeOp(OpMVCCPut, key, value, nil, 0))
 	decoded, n, err := DecodeOp(encoded)
 	if err != nil {
 		t.Fatalf("DecodeOp: %v", err)
@@ -3026,7 +3080,7 @@ func TestEncodeOp_KeyAndRangeEndBeyondUint16(t *testing.T) {
 	key := bytes.Repeat([]byte("k"), 70000)
 	rangeEnd := bytes.Repeat([]byte("r"), 70000)
 
-	decoded, _, err := DecodeOp(EncodeOp(OpMVCCRange, key, nil, rangeEnd, 0))
+	decoded, _, err := DecodeOp(mustEncode(EncodeOp(OpMVCCRange, key, nil, rangeEnd, 0)))
 	if err != nil {
 		t.Fatalf("DecodeOp: %v", err)
 	}
@@ -3043,7 +3097,7 @@ func TestEncodeOp_KeyAndRangeEndBeyondUint16(t *testing.T) {
 func TestEncodeCompare_ValueBeyondUint16(t *testing.T) {
 	value := bytes.Repeat([]byte("c"), 1<<20)
 
-	decoded, _, err := DecodeCompare(EncodeCompare([]byte("k"), 1, 2, value, 3, 4, 5))
+	decoded, _, err := DecodeCompare(mustEncode(EncodeCompare([]byte("k"), 1, 2, value, 3, 4, 5)))
 	if err != nil {
 		t.Fatalf("DecodeCompare: %v", err)
 	}
@@ -3062,10 +3116,10 @@ func TestEncodeTransaction_OpCountBeyondUint16(t *testing.T) {
 
 	ops := make([][]byte, count)
 	for i := range ops {
-		ops[i] = EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0)
+		ops[i] = mustEncode(EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0))
 	}
 
-	decoded, err := DecodeTransaction(EncodeTransaction(nil, ops, nil)[1:])
+	decoded, err := DecodeTransaction(mustEncode(EncodeTransaction(nil, ops, nil))[1:])
 	if err != nil {
 		t.Fatalf("DecodeTransaction: %v", err)
 	}
@@ -3083,15 +3137,32 @@ func TestEncodeBatch_OpCountBeyondUint16(t *testing.T) {
 
 	ops := make([][]byte, count)
 	for i := range ops {
-		ops[i] = EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0)
+		ops[i] = mustEncode(EncodeOp(OpMVCCPut, []byte(strconv.Itoa(i)), []byte("v"), nil, 0))
 	}
 
-	decoded, err := DecodeBatch(EncodeBatch(ops)[1:])
+	decoded, err := DecodeBatch(mustEncode(EncodeBatch(ops))[1:])
 	if err != nil {
 		t.Fatalf("DecodeBatch: %v", err)
 	}
 	if len(decoded) != count {
 		t.Fatalf("ops = %d, want %d", len(decoded), count)
+	}
+}
+
+// wantCountRefusedUpFront asserts a decoder refused an impossible element
+// count before walking it, in either of the two ways countRefusedUpFront
+// describes (go-qrdb#52).
+func wantCountRefusedUpFront(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ice *InvalidCommandError
+	if !errors.As(err, &ice) {
+		t.Fatalf("expected *InvalidCommandError, got %T", err)
+	}
+	if !countRefusedUpFront(ice.Reason) {
+		t.Errorf("reason = %q, want the count refused up front, not walked", ice.Reason)
 	}
 }
 
@@ -3103,29 +3174,26 @@ func TestDecodeTransaction_HugeCountFailsCleanly(t *testing.T) {
 	// compareCount claims 4 billion elements; no element data follows.
 	payload := frame(math.MaxUint32)
 
+	// Was "truncated compare length" — i.e. the decoder WALKED the impossible
+	// count and tripped on the first missing element. That is benign only where
+	// int is 64 bits; where it is 32, MaxUint32 converts to -1, the loop is
+	// skipped entirely, and the frame decodes as an EMPTY transaction with a
+	// nil error. The count is now refused up front, so the outcome is the same
+	// on every architecture (go-qrdb#52, #73).
 	_, err := DecodeTransaction(payload)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var ice *InvalidCommandError
-	if !errors.As(err, &ice) {
-		t.Fatalf("expected *InvalidCommandError, got %T", err)
-	}
-	if !strings.Contains(ice.Reason, "truncated compare length") {
-		t.Errorf("reason = %q, want substring %q", ice.Reason, "truncated compare length")
-	}
+	wantCountRefusedUpFront(t, err)
 }
 
 // TestDecodeBatch_HugeCountFailsCleanly is the batch counterpart.
+//
+// "Cleanly" used to mean the decoder walked the impossible count and tripped on
+// the first missing element. That is clean only where int is 64 bits; where it
+// is 32, MaxUint32 converts to -1, the loop never runs, and the frame decodes
+// as an EMPTY batch with a nil error. The count is refused up front now, so the
+// assertion names that rather than accepting any error (go-qrdb#52, #73).
 func TestDecodeBatch_HugeCountFailsCleanly(t *testing.T) {
 	_, err := DecodeBatch(frame(math.MaxUint32))
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	var ice *InvalidCommandError
-	if !errors.As(err, &ice) {
-		t.Fatalf("expected *InvalidCommandError, got %T", err)
-	}
+	wantCountRefusedUpFront(t, err)
 }
 
 // A key the length field cannot describe must be REFUSED at encode time, not
@@ -3138,7 +3206,7 @@ func TestDecodeBatch_HugeCountFailsCleanly(t *testing.T) {
 // shorter key than the caller named. Silent wrong-record targeting inside a
 // replicated state machine, from input a caller can craft.
 func TestEncodeCompareAndDelete_RefusesAnUnencodableKey(t *testing.T) {
-	oversized := make([]byte, MaxEncodableKeyLength+2)
+	oversized := make([]byte, MaxUint16Field+2)
 	for i := range oversized {
 		oversized[i] = 'k'
 	}
@@ -3147,27 +3215,27 @@ func TestEncodeCompareAndDelete_RefusesAnUnencodableKey(t *testing.T) {
 	if err == nil {
 		t.Fatalf("encoding a %d-byte key succeeded; it would decode as a %d-byte "+
 			"key and delete the wrong record",
-			len(oversized), len(oversized)%(MaxEncodableKeyLength+1))
+			len(oversized), len(oversized)%(MaxUint16Field+1))
 	}
 	if cmd != nil {
 		t.Fatalf("a refused encode returned %d bytes; it must return nil", len(cmd))
 	}
 
 	// The REASON, not merely that an error happened.
-	var tooLong *KeyTooLongError
+	var tooLong *FieldTooLongError
 	if !errors.As(err, &tooLong) {
-		t.Fatalf("error = %T (%v), want *KeyTooLongError", err, err)
+		t.Fatalf("error = %T (%v), want *FieldTooLongError", err, err)
 	}
-	if tooLong.Length != len(oversized) || tooLong.Max != MaxEncodableKeyLength {
-		t.Fatalf("error = %+v, want Length=%d Max=%d",
-			tooLong, len(oversized), MaxEncodableKeyLength)
+	if tooLong.Length != len(oversized) || tooLong.Max != MaxUint16Field || tooLong.Field != "key" {
+		t.Fatalf("error = %+v, want Field=key Length=%d Max=%d",
+			tooLong, len(oversized), MaxUint16Field)
 	}
 }
 
 // The boundary itself encodes, so the guard rejects only what genuinely
 // cannot be described.
 func TestEncodeCompareAndDelete_AcceptsTheLargestEncodableKey(t *testing.T) {
-	key := make([]byte, MaxEncodableKeyLength)
+	key := make([]byte, MaxUint16Field)
 	cmd, err := EncodeCompareAndDelete(key, []byte("acme"))
 	if err != nil {
 		t.Fatalf("the largest encodable key was refused: %v", err)
@@ -3182,4 +3250,14 @@ func TestEncodeCompareAndDelete_AcceptsTheLargestEncodableKey(t *testing.T) {
 	if string(gotExpected) != "acme" {
 		t.Fatalf("round-tripped expected = %q, want %q", gotExpected, "acme")
 	}
+}
+
+// mustEncode unwraps an encoder's (command, error) pair for tests whose
+// inputs are small and fixed. An error here is a TEST bug -- the encoders
+// refuse only values their length fields cannot describe.
+func mustEncode(cmd []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return cmd
 }

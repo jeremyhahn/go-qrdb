@@ -171,7 +171,10 @@ func NewMVCCKVService(host Host, shardID uint64) MVCCKVServicer {
 // Put stores a key-value pair through Raft consensus with MVCC revision
 // tracking. The value is stored with a zero lease ID.
 func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error {
-	cmd := protocol.EncodeMVCCPut([]byte(key), value, 0)
+	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, 0)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -194,7 +197,10 @@ func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error
 // A declined write is a successful application reporting kv.ResultNotStored, so
 // losing the race never stalls consensus.
 func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
-	cmd := protocol.EncodeMVCCPutIfAbsent([]byte(key), value, 0)
+	cmd, encErr := protocol.EncodeMVCCPutIfAbsent([]byte(key), value, 0)
+	if encErr != nil {
+		return false, &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return false, s.translateProposeError(err)
@@ -210,7 +216,7 @@ func (s *MVCCKVService) PutIfAbsent(ctx context.Context, key string, value []byt
 func (s *MVCCKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	cmd, err := protocol.EncodeCompareAndDelete([]byte(key), expected)
 	if err != nil {
-		return false, &ProposeError{Err: err}
+		return false, &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -240,7 +246,10 @@ func (s *MVCCKVService) Get(ctx context.Context, key string) ([]byte, error) {
 
 // Delete removes a key through Raft consensus with MVCC tombstone tracking.
 func (s *MVCCKVService) Delete(ctx context.Context, key string) error {
-	cmd := protocol.EncodeMVCCDelete([]byte(key))
+	cmd, encErr := protocol.EncodeMVCCDelete([]byte(key))
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -390,7 +399,10 @@ func (s *MVCCKVService) ScanStale(ctx context.Context, prefix string) (map[strin
 // through Raft consensus with MVCC revision tracking. The value is stored
 // with a zero lease ID.
 func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
-	cmd := protocol.EncodeMVCCPut([]byte(key), value, 0)
+	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, 0)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -404,7 +416,10 @@ func (s *MVCCKVService) PutWithMode(ctx context.Context, key string, value []byt
 // DeleteWithMode removes a key with the specified write durability through
 // Raft consensus with MVCC tombstone tracking.
 func (s *MVCCKVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
-	cmd := protocol.EncodeMVCCDelete([]byte(key))
+	cmd, encErr := protocol.EncodeMVCCDelete([]byte(key))
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return s.translateProposeError(err)
@@ -514,7 +529,10 @@ func (s *MVCCKVService) ExistsWithConsistency(ctx context.Context, key string, o
 // PutWithLease stores a key-value pair with an attached lease through Raft
 // consensus. Returns the resulting KeyValue with full revision metadata.
 func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (*KeyValue, error) {
-	cmd := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
+	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
+	if encErr != nil {
+		return nil, &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return nil, s.translateProposeError(err)
@@ -547,7 +565,10 @@ func (s *MVCCKVService) PutWithLease(ctx context.Context, key string, value []by
 // the specified write durability through Raft consensus. Returns the
 // resulting KeyValue with full revision metadata.
 func (s *MVCCKVService) PutWithLeaseAndMode(ctx context.Context, key string, value []byte, leaseID int64, mode writemode.Mode) (*KeyValue, error) {
-	cmd := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
+	cmd, encErr := protocol.EncodeMVCCPut([]byte(key), value, leaseID)
+	if encErr != nil {
+		return nil, &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
 		return nil, s.translateProposeError(err)
@@ -712,7 +733,10 @@ func (s *MVCCKVService) RangeWithConsistency(ctx context.Context, start, end []b
 // Compact discards all MVCC revisions older than the specified revision
 // through Raft consensus.
 func (s *MVCCKVService) Compact(ctx context.Context, revision int64) error {
-	cmd := protocol.EncodeMVCCCompact(revision)
+	cmd, encErr := protocol.EncodeMVCCCompact(revision)
+	if encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
 		return s.translateProposeError(err)

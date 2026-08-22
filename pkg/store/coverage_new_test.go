@@ -69,8 +69,8 @@ func TestMVCCStateMachine_ReadLastApplied_WithPersistedValue(t *testing.T) {
 	}
 
 	entries := []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("key2"), []byte("val2"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("key"), []byte("val"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("key2"), []byte("val2"), 0))},
 	}
 	results := make([]sm.Result, len(entries))
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -100,7 +100,7 @@ func TestMVCCStateMachine_ReadLastApplied_WithPersistedValue(t *testing.T) {
 
 func TestMVCCStateMachine_Update_NotOpen(t *testing.T) {
 	s := NewMVCCStateMachine(nil)
-	entries := []sm.Entry{{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0)}}
+	entries := []sm.Entry{{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
 	if err == nil {
@@ -205,8 +205,8 @@ func TestPebbleStateMachine_ListKeys_SysPrefixSkipsFilter(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("__sys:role:admin"), []byte("data"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("user:key"), []byte("val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("__sys:role:admin"), []byte("data"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user:key"), []byte("val"), 0))},
 	})
 
 	keys, err := s.listKeys("__sys:role:")
@@ -234,8 +234,8 @@ func TestPebbleStateMachine_MVCCPutWithHub_UpdateExistingKey(t *testing.T) {
 	_ = hub
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("hub-key"), []byte("v1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("hub-key"), []byte("v2"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hub-key"), []byte("v1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hub-key"), []byte("v2"), 0))},
 	})
 
 	val, err := s.Lookup(context.Background(), []byte("hub-key"))
@@ -260,8 +260,8 @@ func TestPebbleStateMachine_MVCCDeleteWithLessor_DetachKey(t *testing.T) {
 	}
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("lease-key"), []byte("val"), info.ID)},
-		{Index: 2, Cmd: protocol.EncodeMVCCDelete([]byte("lease-key"))},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-key"), []byte("val"), info.ID))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCDelete([]byte("lease-key")))},
 	})
 
 	_, err = s.Lookup(context.Background(), []byte("lease-key"))
@@ -278,7 +278,7 @@ func TestPebbleStateMachine_TSWrite_NoTS(t *testing.T) {
 	s := openExtendedStore(t)
 
 	now := time.Now().UnixNano()
-	cmd := protocol.EncodeTSWrite("metric", now, 1.0, nil)
+	cmd := mustEncode(protocol.EncodeTSWrite("metric", now, 1.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -296,7 +296,7 @@ func TestPebbleStateMachine_TSWriteBatch_NoTS(t *testing.T) {
 	points := []protocol.TSWriteParams{
 		{Metric: "m1", Timestamp: now, Value: 1.0},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -311,7 +311,7 @@ func TestPebbleStateMachine_TSWritePoint_NoTS(t *testing.T) {
 	s := openExtendedStore(t)
 
 	now := time.Now().UnixNano()
-	cmd := protocol.EncodeTSWritePoint("m1", now, 2.0, nil)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("m1", now, 2.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -326,7 +326,7 @@ func TestPebbleStateMachine_TSDeleteSeries_NoTS(t *testing.T) {
 	s := openExtendedStore(t)
 
 	now := time.Now().UnixNano()
-	cmd := protocol.EncodeTSDeleteSeries("metric", now-1000, now+1000, nil)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("metric", now-1000, now+1000, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -340,7 +340,7 @@ func TestPebbleStateMachine_TSDeleteSeries_NoTS(t *testing.T) {
 func TestPebbleStateMachine_TSSetRetention_NoTS(t *testing.T) {
 	s := openExtendedStore(t)
 
-	cmd := protocol.EncodeTSSetRetention("metric", int64(24*time.Hour), int64(time.Minute), 1)
+	cmd := mustEncode(protocol.EncodeTSSetRetention("metric", int64(24*time.Hour), int64(time.Minute), 1))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -414,21 +414,20 @@ func TestPebbleStateMachine_Transaction_ExecutesFailureOps(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("txn-key"), []byte("actual"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("txn-key"), []byte("actual"), 0))},
 	})
 
 	// Compare txn-key value == "expected" will fail (actual != expected).
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("txn-key"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("expected"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("success"), nil, 0)
-	failureOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("fallback"), nil, 0)
-	txnCmd := protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, [][]byte{failureOp})
-
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("success"), nil, 0))
+	failureOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("fallback"), nil, 0))
+	txnCmd := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, [][]byte{failureOp}))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -452,19 +451,18 @@ func TestPebbleStateMachine_Transaction_SuccessDeletesKey(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("del-txn-key"), []byte("val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("del-txn-key"), []byte("val"), 0))},
 	})
 
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("del-txn-key"),
 		byte(service.CompareValue),
 		byte(service.CompareEqual),
 		[]byte("val"),
 		0, 0, 0,
-	)
-	successOp := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("del-txn-key"), nil, nil, 0)
-	txnCmd := protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, nil)
-
+	))
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("del-txn-key"), nil, nil, 0))
+	txnCmd := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, [][]byte{successOp}, nil))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -486,7 +484,7 @@ func TestPebbleStateMachine_Snapshot_WithData(t *testing.T) {
 	dst := openExtendedStore(t)
 
 	applyExtEntries(t, src, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0))},
 	})
 
 	snapCtx, err := src.PrepareSnapshot()
@@ -500,7 +498,7 @@ func TestPebbleStateMachine_Snapshot_WithData(t *testing.T) {
 
 	// Put data in dst so clearAll is exercised.
 	applyExtEntries(t, dst, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("old-key"), []byte("old-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("old-key"), []byte("old-val"), 0))},
 	})
 
 	if err := dst.RecoverFromSnapshot(context.Background(), &buf, nil); err != nil {
@@ -550,7 +548,7 @@ func TestPebbleStateMachine_MVCCPut_WithLessorAttachKey(t *testing.T) {
 	}
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("lease-attach-key"), []byte("val"), info.ID)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lease-attach-key"), []byte("val"), info.ID))},
 	})
 
 	val, err := s.Lookup(context.Background(), []byte("lease-attach-key"))
@@ -597,9 +595,8 @@ func TestPebbleStateMachine_Batch_UnknownOpType(t *testing.T) {
 	s := openExtendedStore(t)
 
 	// Craft a batch with an unknown op type byte (0xFF).
-	unknownOp := protocol.EncodeOp(0xFF, []byte("key"), []byte("val"), nil, 0)
-	batchCmd := protocol.EncodeBatch([][]byte{unknownOp})
-
+	unknownOp := mustEncode(protocol.EncodeOp(0xFF, []byte("key"), []byte("val"), nil, 0))
+	batchCmd := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := s.Update(context.Background(), entries, results)
@@ -622,13 +619,12 @@ func TestPebbleStateMachine_Transaction_MVCCPutWithHub_PrevValue(t *testing.T) {
 
 	// Write initial value via MVCCPut direct command.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("txn-hub-key"), []byte("v1"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("txn-hub-key"), []byte("v1"), 0))},
 	})
 
 	// Now update via a transaction success op — this goes through pebbleExecuteOp.
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-hub-key"), []byte("v2"), nil, 0)
-	txnCmd := protocol.EncodeTransaction(nil, [][]byte{successOp}, nil)
-
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-hub-key"), []byte("v2"), nil, 0))
+	txnCmd := mustEncode(protocol.EncodeTransaction(nil, [][]byte{successOp}, nil))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := s.Update(context.Background(), entries, results); err != nil {
@@ -645,7 +641,7 @@ func TestMVCCStateMachine_SnapshotWithData(t *testing.T) {
 	dst := newTestMVCCStateMachine(t)
 
 	entries := []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0))},
 	}
 	results := make([]sm.Result, 1)
 	if err := src.Update(context.Background(), entries, results); err != nil {
@@ -663,7 +659,7 @@ func TestMVCCStateMachine_SnapshotWithData(t *testing.T) {
 
 	// Apply data to dst so clearAll is exercised during recovery.
 	dstEntries := []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("dst-key"), []byte("dst-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("dst-key"), []byte("dst-val"), 0))},
 	}
 	dstResults := make([]sm.Result, 1)
 	if err := dst.Update(context.Background(), dstEntries, dstResults); err != nil {

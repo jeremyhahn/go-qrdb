@@ -182,7 +182,7 @@ func TestKVDispatch_MVCCPut(t *testing.T) {
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
 	// EncodeMVCCPut includes the op byte; use as full command.
-	cmd := protocol.EncodeMVCCPut([]byte("mvcc-key"), []byte("mvcc-val"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-key"), []byte("mvcc-val"), 0))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -197,7 +197,7 @@ func TestKVDispatch_MVCCPut(t *testing.T) {
 func TestKVDispatch_MVCCPut_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -216,7 +216,7 @@ func TestKVDispatch_MVCCDelete(t *testing.T) {
 	mvcc := &kvMockMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCDelete([]byte("mvcc-del"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("mvcc-del")))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -231,7 +231,7 @@ func TestKVDispatch_MVCCDelete(t *testing.T) {
 func TestKVDispatch_MVCCDelete_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeMVCCDelete([]byte("k"))
+	cmd := mustEncode(protocol.EncodeMVCCDelete([]byte("k")))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -248,7 +248,7 @@ func TestKVDispatch_MVCCRange(t *testing.T) {
 	mvcc := &kvMockMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCRange([]byte("start"), []byte("end"), 0, 100, false, false)
+	cmd := mustEncode(protocol.EncodeMVCCRange([]byte("start"), []byte("end"), 0, 100, false, false))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -264,7 +264,7 @@ func TestKVDispatch_MVCCCompact(t *testing.T) {
 	mvcc := &kvMockMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeMVCCCompact(10)
+	cmd := mustEncode(protocol.EncodeMVCCCompact(10))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -280,7 +280,7 @@ func TestKVDispatch_Transaction(t *testing.T) {
 	mvcc := &kvMockMVCCStore{}
 	k := newTestKVSM(WithKVMVCCStore(mvcc))
 
-	cmd := protocol.EncodeTransaction(nil, nil, nil)
+	cmd := mustEncode(protocol.EncodeTransaction(nil, nil, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -299,7 +299,7 @@ func TestKVDispatch_Transaction(t *testing.T) {
 func TestKVDispatch_Transaction_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeTransaction(nil, nil, nil)
+	cmd := mustEncode(protocol.EncodeTransaction(nil, nil, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -320,7 +320,7 @@ func TestKVDispatch_IndexCreate(t *testing.T) {
 	idx := &kvMockIndexManager{}
 	k := newTestKVSM(WithKVIndexManager(idx))
 
-	cmd := protocol.EncodeIndexCreate("test-idx", "field1", true, false, false)
+	cmd := mustEncode(protocol.EncodeIndexCreate("test-idx", "field1", true, false, false))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -336,7 +336,7 @@ func TestKVDispatch_IndexDrop(t *testing.T) {
 	idx := &kvMockIndexManager{}
 	k := newTestKVSM(WithKVIndexManager(idx))
 
-	cmd := protocol.EncodeIndexDrop("test-idx")
+	cmd := mustEncode(protocol.EncodeIndexDrop("test-idx"))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -356,7 +356,7 @@ func TestKVDispatch_LeaseGrant(t *testing.T) {
 	lm := &kvMockLeaseManager{}
 	k := newTestKVSM(WithKVLeaseManager(lm))
 
-	payload := protocol.EncodeLeaseGrant(30)
+	payload := mustEncode(protocol.EncodeLeaseGrant(30))
 	cmd := append([]byte{protocol.OpLeaseGrant}, payload...)
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
@@ -376,7 +376,7 @@ func TestKVDispatch_LeaseRevoke(t *testing.T) {
 	lm := &kvMockLeaseManager{}
 	k := newTestKVSM(WithKVLeaseManager(lm))
 
-	payload := protocol.EncodeLeaseRevoke(100)
+	payload := mustEncode(protocol.EncodeLeaseRevoke(100))
 	cmd := append([]byte{protocol.OpLeaseRevoke}, payload...)
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
@@ -393,7 +393,7 @@ func TestKVDispatch_LeaseKeepAlive(t *testing.T) {
 	lm := &kvMockLeaseManager{}
 	k := newTestKVSM(WithKVLeaseManager(lm))
 
-	payload := protocol.EncodeLeaseKeepAlive(100)
+	payload := mustEncode(protocol.EncodeLeaseKeepAlive(100))
 	cmd := append([]byte{protocol.OpLeaseKeepAlive}, payload...)
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
@@ -414,7 +414,7 @@ func TestKVDispatch_TSWrite(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000, 42.5, map[string]string{"host": "a"})
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000, 42.5, map[string]string{"host": "a"}))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -430,7 +430,7 @@ func TestKVDispatch_TSWritePoint(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSWritePoint("cpu.usage", 1000, 42.5, nil)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("cpu.usage", 1000, 42.5, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -446,7 +446,7 @@ func TestKVDispatch_TSDeleteSeries(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu.usage", 0, 1000, nil)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", 0, 1000, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -462,7 +462,7 @@ func TestKVDispatch_TSSetRetention(t *testing.T) {
 	ts := &kvMockTimeSeriesStore{}
 	k := newTestKVSM(WithKVTimeSeriesStore(ts))
 
-	cmd := protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, 1)
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, 1))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -477,7 +477,7 @@ func TestKVDispatch_TSSetRetention(t *testing.T) {
 func TestKVDispatch_TSWrite_NotConfigured(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000, 42.5, nil)
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000, 42.5, nil))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -498,9 +498,9 @@ func TestKVDispatch_Batch_InvalidOpcode(t *testing.T) {
 	k := newTestKVSM()
 
 	ops := [][]byte{
-		protocol.EncodeOp(0xFE, []byte("k"), []byte("v"), nil, 0),
+		mustEncode(protocol.EncodeOp(0xFE, []byte("k"), []byte("v"), nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 

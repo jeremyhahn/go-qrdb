@@ -211,7 +211,7 @@ func TestFSM_TSWrite_Success(t *testing.T) {
 	fsm, _ := newTestFSMWithTS(ts)
 
 	tags := map[string]string{"host": "web1"}
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, tags)
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, tags))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -245,7 +245,7 @@ func TestFSM_TSWrite_Success(t *testing.T) {
 func TestFSM_TSWrite_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM() // no TimeSeriesStore
 
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, nil)
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -266,7 +266,7 @@ func TestFSM_TSWrite_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: storeErr}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, nil)
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -291,7 +291,7 @@ func TestFSM_TSWrite_NoTags(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSWrite("mem.free", 2000000, 1024.0, nil)
+	cmd := mustEncode(protocol.EncodeTSWrite("mem.free", 2000000, 1024.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -325,7 +325,7 @@ func TestFSM_TSWriteBatch_Success(t *testing.T) {
 		{Metric: "cpu.usage", Timestamp: 200, Value: 20.0, Tags: map[string]string{"host": "b"}},
 		{Metric: "mem.free", Timestamp: 300, Value: 30.0, Tags: nil},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -366,7 +366,7 @@ func TestFSM_TSWriteBatch_NotConfigured(t *testing.T) {
 	points := []protocol.TSWriteParams{
 		{Metric: "cpu.usage", Timestamp: 100, Value: 10.0, Tags: nil},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -390,7 +390,7 @@ func TestFSM_TSWriteBatch_StoreError(t *testing.T) {
 	points := []protocol.TSWriteParams{
 		{Metric: "cpu.usage", Timestamp: 100, Value: 10.0, Tags: nil},
 	}
-	cmd := protocol.EncodeTSWriteBatch(points)
+	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -420,7 +420,7 @@ func TestFSM_TSWritePoint_Success(t *testing.T) {
 	fsm, _ := newTestFSMWithTS(ts)
 
 	tags := map[string]string{"region": "us-east-1"}
-	cmd := protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, tags)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, tags))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -454,7 +454,7 @@ func TestFSM_TSWritePoint_Success(t *testing.T) {
 func TestFSM_TSWritePoint_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM() // no TimeSeriesStore
 
-	cmd := protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, nil)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -475,7 +475,7 @@ func TestFSM_TSWritePoint_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{writePointErr: wpErr}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, nil)
+	cmd := mustEncode(protocol.EncodeTSWritePoint("disk.iops", 5000000, 99.9, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -502,7 +502,7 @@ func TestFSM_TSDeleteSeries_Success(t *testing.T) {
 	fsm, _ := newTestFSMWithTS(ts)
 
 	tags := map[string]string{"env": "prod"}
-	cmd := protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, tags)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, tags))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -536,7 +536,7 @@ func TestFSM_TSDeleteSeries_Success(t *testing.T) {
 func TestFSM_TSDeleteSeries_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM() // no TimeSeriesStore
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, nil)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -557,7 +557,7 @@ func TestFSM_TSDeleteSeries_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{deleteSeriesErr: delErr}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, nil)
+	cmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", 1000, 9000, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -586,7 +586,7 @@ func TestFSM_TSSetRetention_Success(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg))
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg)))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -620,7 +620,7 @@ func TestFSM_TSSetRetention_Success(t *testing.T) {
 func TestFSM_TSSetRetention_NotConfigured(t *testing.T) {
 	fsm, _ := newTestFSM() // no TimeSeriesStore
 
-	cmd := protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg))
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg)))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -641,7 +641,7 @@ func TestFSM_TSSetRetention_StoreError(t *testing.T) {
 	ts := &mockTimeSeriesStore{setRetentionErr: retErr}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd := protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg))
+	cmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", 86400000000000, 60000000000, byte(timeseries.AggAvg)))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1200,7 +1200,7 @@ func TestFSM_TSWrite_MultipleTags(t *testing.T) {
 		"region": "us-east-1",
 		"env":    "production",
 	}
-	cmd := protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, tags)
+	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", 1000000, 42.5, tags))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -1235,8 +1235,8 @@ func TestFSM_TSWrite_MultipleEntries(t *testing.T) {
 	ts := &mockTimeSeriesStore{}
 	fsm, _ := newTestFSMWithTS(ts)
 
-	cmd1 := protocol.EncodeTSWrite("cpu.usage", 100, 10.0, nil)
-	cmd2 := protocol.EncodeTSWrite("mem.free", 200, 20.0, nil)
+	cmd1 := mustEncode(protocol.EncodeTSWrite("cpu.usage", 100, 10.0, nil))
+	cmd2 := mustEncode(protocol.EncodeTSWrite("mem.free", 200, 20.0, nil))
 	entries := []sm.Entry{
 		{Index: 1, Cmd: cmd1},
 		{Index: 2, Cmd: cmd2},

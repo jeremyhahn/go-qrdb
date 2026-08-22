@@ -102,7 +102,7 @@ func TestMVCCEngine_MVCCPutIfAbsent_StoresWhenAbsent(t *testing.T) {
 		t.Fatalf("Grant: %v", err)
 	}
 
-	cmd := protocol.EncodeMVCCPutIfAbsent([]byte("mk"), []byte("mv"), leaseID.ID)
+	cmd := mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("mk"), []byte("mv"), leaseID.ID))
 	results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 1, Cmd: cmd}})
 	if results[0].Value != kv.ResultStored {
 		t.Fatalf("result = %d, want ResultStored (%d)", results[0].Value, kv.ResultStored)
@@ -138,7 +138,7 @@ func TestMVCCEngine_MVCCPutIfAbsent_DeclinesWhenPresent(t *testing.T) {
 
 	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(1, []byte("mk"), []byte("first"), 0)})
 
-	cmd := protocol.EncodeMVCCPutIfAbsent([]byte("mk"), []byte("second"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPutIfAbsent([]byte("mk"), []byte("second"), 0))
 	results := applyMVCCEntries(t, eng, []sm.Entry{{Index: 2, Cmd: cmd}})
 	if results[0].Value != kv.ResultNotStored {
 		t.Fatalf("result = %d, want ResultNotStored (%d)", results[0].Value, kv.ResultNotStored)

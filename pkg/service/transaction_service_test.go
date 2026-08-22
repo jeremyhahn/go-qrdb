@@ -764,8 +764,7 @@ func TestEncodeServiceOp_OpPut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("mykey"), []byte("myval"), nil, 0)
-
+	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("mykey"), []byte("myval"), nil, 0))
 	if !bytes.Equal(encoded, expected) {
 		t.Fatalf("OpPut encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
 	}
@@ -781,8 +780,7 @@ func TestEncodeServiceOp_OpDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("delkey"), nil, nil, 0)
-
+	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("delkey"), nil, nil, 0))
 	if !bytes.Equal(encoded, expected) {
 		t.Fatalf("OpDelete encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
 	}
@@ -862,8 +860,7 @@ func TestEncodeServiceOp_WithLeaseAndRangeEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v"), []byte("z"), 999)
-
+	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("k"), []byte("v"), []byte("z"), 999))
 	if !bytes.Equal(encoded, expected) {
 		t.Fatalf("OpPut with lease/rangeEnd encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
 	}
@@ -878,8 +875,7 @@ func TestEncodeServiceOp_EmptyKeyAndValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expected := protocol.EncodeOp(protocol.OpMVCCPut, nil, nil, nil, 0)
-
+	expected := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, nil, nil, nil, 0))
 	if !bytes.Equal(encoded, expected) {
 		t.Fatalf("empty key/value encoding mismatch:\n  got:  %v\n  want: %v", encoded, expected)
 	}

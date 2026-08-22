@@ -210,27 +210,49 @@ const frameSize = FrameSize
 
 // EncodeMVCCPut creates a binary MVCC Put command.
 // Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value].
-func EncodeMVCCPut(key, value []byte, leaseID int64) []byte {
-	buf := make([]byte, headerSize+2+len(key)+8+len(value))
+func EncodeMVCCPut(key, value []byte, leaseID int64) ([]byte, error) {
+	if err := checkUint16Len(len(key), "key"); err != nil {
+		return nil, err
+	}
+	// The VALUE is the unframed remainder of the payload, so nothing bounds it
+	// and the sum can wrap where int is 32 bits. Checked accumulation before
+	// make (go-qrdb#52).
+	size, err := addSizes(headerSize, 2, len(key), 8, len(value))
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, size)
 	buf[0] = OpMVCCPut
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	if err := putUint16Len(buf[1:3], len(key), "key"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], key)
 	binary.LittleEndian.PutUint64(buf[3+len(key):], uint64(leaseID))
 	copy(buf[3+len(key)+8:], value)
-	return buf
+	return buf, nil
 }
 
 // EncodeMVCCPutIfAbsent creates a binary MVCC conditional-put command.
 // Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value] — identical to
 // EncodeMVCCPut apart from the opcode, so the decoder needs no new path.
-func EncodeMVCCPutIfAbsent(key, value []byte, leaseID int64) []byte {
-	buf := make([]byte, headerSize+2+len(key)+8+len(value))
+func EncodeMVCCPutIfAbsent(key, value []byte, leaseID int64) ([]byte, error) {
+	if err := checkUint16Len(len(key), "key"); err != nil {
+		return nil, err
+	}
+	// Unframed value, as EncodeMVCCPut.
+	size, err := addSizes(headerSize, 2, len(key), 8, len(value))
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, size)
 	buf[0] = OpMVCCPutIfAbsent
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	if err := putUint16Len(buf[1:3], len(key), "key"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], key)
 	binary.LittleEndian.PutUint64(buf[3+len(key):], uint64(leaseID))
 	copy(buf[3+len(key)+8:], value)
-	return buf
+	return buf, nil
 }
 
 // Result values reported by OpCompareAndDelete, mirroring kv.ResultStored /
@@ -258,12 +280,19 @@ const (
 // shorter key than the caller named. The expected value needs no equivalent
 // check: it is the payload remainder and has no length field of its own.
 func EncodeCompareAndDelete(key, expected []byte) ([]byte, error) {
-	if len(key) > MaxEncodableKeyLength {
-		return nil, &KeyTooLongError{Length: len(key), Max: MaxEncodableKeyLength}
+	if err := checkUint16Len(len(key), "key"); err != nil {
+		return nil, err
 	}
-	buf := make([]byte, headerSize+2+len(key)+len(expected))
+	// `expected` is the unframed remainder, as the value is elsewhere.
+	size, err := addSizes(headerSize, 2, len(key), len(expected))
+	if err != nil {
+		return nil, err
+	}
+	buf := make([]byte, size)
 	buf[0] = OpCompareAndDelete
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	if err := putUint16Len(buf[1:3], len(key), "key"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], key)
 	copy(buf[3+len(key):], expected)
 	return buf, nil
@@ -284,28 +313,43 @@ func DecodeCompareAndDelete(payload []byte) (key, expected []byte, err error) {
 
 // EncodeMVCCDelete creates a binary MVCC Delete command.
 // Format: [op:1][keyLen:2 LE][key].
-func EncodeMVCCDelete(key []byte) []byte {
+func EncodeMVCCDelete(key []byte) ([]byte, error) {
+	if err := checkUint16Len(len(key), "key"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(key))
 	buf[0] = OpMVCCDelete
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(key)))
+	if err := putUint16Len(buf[1:3], len(key), "key"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], key)
-	return buf
+	return buf, nil
 }
 
 // EncodeMVCCRange creates a binary MVCC Range command.
 // Format: [op:1][startLen:2 LE][start][endLen:2 LE][end][revision:8 LE][limit:8 LE][flags:1].
-func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOnly bool) []byte {
+func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOnly bool) ([]byte, error) {
+	if err := checkUint16Len(len(start), "range start"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(end), "range end"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(start)+2+len(end)+8+8+1)
 	off := 0
 	buf[off] = OpMVCCRange
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(start)))
+	if err := putUint16Len(buf[off:], len(start), "range start"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], start)
 	off += len(start)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(end)))
+	if err := putUint16Len(buf[off:], len(end), "range end"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], end)
 	off += len(end)
@@ -324,16 +368,16 @@ func EncodeMVCCRange(start, end []byte, revision, limit int64, countOnly, keysOn
 	}
 	buf[off] = flags
 
-	return buf
+	return buf, nil
 }
 
 // EncodeMVCCCompact creates a binary MVCC Compact command.
 // Format: [op:1][revision:8 LE].
-func EncodeMVCCCompact(revision int64) []byte {
+func EncodeMVCCCompact(revision int64) ([]byte, error) {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpMVCCCompact
 	binary.LittleEndian.PutUint64(buf[1:], uint64(revision))
-	return buf
+	return buf, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -342,29 +386,29 @@ func EncodeMVCCCompact(revision int64) []byte {
 
 // EncodeLeaseGrant creates a binary Lease Grant command.
 // Format: [op:1][ttl:8 LE].
-func EncodeLeaseGrant(ttl int64) []byte {
+func EncodeLeaseGrant(ttl int64) ([]byte, error) {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseGrant
 	binary.LittleEndian.PutUint64(buf[1:], uint64(ttl))
-	return buf
+	return buf, nil
 }
 
 // EncodeLeaseRevoke creates a binary Lease Revoke command.
 // Format: [op:1][leaseID:8 LE].
-func EncodeLeaseRevoke(leaseID int64) []byte {
+func EncodeLeaseRevoke(leaseID int64) ([]byte, error) {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseRevoke
 	binary.LittleEndian.PutUint64(buf[1:], uint64(leaseID))
-	return buf
+	return buf, nil
 }
 
 // EncodeLeaseKeepAlive creates a binary Lease KeepAlive command.
 // Format: [op:1][leaseID:8 LE].
-func EncodeLeaseKeepAlive(leaseID int64) []byte {
+func EncodeLeaseKeepAlive(leaseID int64) ([]byte, error) {
 	buf := make([]byte, headerSize+8)
 	buf[0] = OpLeaseKeepAlive
 	binary.LittleEndian.PutUint64(buf[1:], uint64(leaseID))
-	return buf
+	return buf, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -373,21 +417,31 @@ func EncodeLeaseKeepAlive(leaseID int64) []byte {
 
 // EncodeIndexCreate creates a binary Index Create command.
 // Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
-func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) []byte {
+func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]byte, error) {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
+	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
+	if err := checkUint16Len(len(fieldBytes), "index field"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1)
 	off := 0
 
 	buf[off] = OpIndexCreate
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(nameBytes)))
+	if err := putUint16Len(buf[off:], len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], nameBytes)
 	off += len(nameBytes)
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(fieldBytes)))
+	if err := putUint16Len(buf[off:], len(fieldBytes), "index field"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], fieldBytes)
 	off += len(fieldBytes)
@@ -404,18 +458,23 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) []b
 	}
 	buf[off] = flags
 
-	return buf
+	return buf, nil
 }
 
 // EncodeIndexDrop creates a binary Index Drop command.
 // Format: [op:1][nameLen:2 LE][name].
-func EncodeIndexDrop(name string) []byte {
+func EncodeIndexDrop(name string) ([]byte, error) {
 	nameBytes := []byte(name)
+	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, headerSize+2+len(nameBytes))
 	buf[0] = OpIndexDrop
-	binary.LittleEndian.PutUint16(buf[1:3], uint16(len(nameBytes)))
+	if err := putUint16Len(buf[1:3], len(nameBytes), "index name"); err != nil {
+		return nil, err
+	}
 	copy(buf[3:], nameBytes)
-	return buf
+	return buf, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -425,13 +484,21 @@ func EncodeIndexDrop(name string) []byte {
 // EncodeTSWrite creates a binary Time-Series Write command.
 // Format: [op:1][metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...]
 // Each tag: [keyLen:2 LE][key][valLen:2 LE][val].
-func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[string]string) []byte {
+func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[string]string) ([]byte, error) {
 	metricBytes := []byte(metric)
 
-	// Calculate total size.
-	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 2
-	for k, v := range tags {
-		size += 2 + len(k) + 2 + len(v)
+	// Measure and validate together, before anything is allocated.
+	if err := checkUint16Len(len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
+	tagsSize, err := tagBlockSize(tags)
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := tsMetricFrameSize(len(metricBytes), tagsSize)
+	if err != nil {
+		return nil, err
 	}
 
 	buf := make([]byte, size)
@@ -440,7 +507,9 @@ func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[strin
 	buf[off] = OpTSWrite
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+	if err := putUint16Len(buf[off:], len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], metricBytes)
 	off += len(metricBytes)
@@ -451,37 +520,65 @@ func EncodeTSWrite(metric string, timestamp int64, value float64, tags map[strin
 	binary.LittleEndian.PutUint64(buf[off:], math.Float64bits(value))
 	off += 8
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(tags)))
+	if err := putUint16Len(buf[off:], len(tags), "tag count"); err != nil {
+		return nil, err
+	}
 	off += 2
 
 	for k, v := range tags {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
+		if err := putUint16Len(buf[off:], len(k), "tag key"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], k)
 		off += len(k)
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
+		if err := putUint16Len(buf[off:], len(v), "tag value"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], v)
 		off += len(v)
 	}
 
-	return buf
+	return buf, nil
 }
 
 // EncodeTSWriteBatch creates a binary Time-Series WriteBatch command.
 // Format: [op:1][pointCount:2 LE][points...]
 // Each point is encoded as: [metricLen:2 LE][metric][timestamp:8 LE][value:8 LE float64][tagCount:2 LE][tags...].
-func EncodeTSWriteBatch(points []TSWriteParams) []byte {
-	// Calculate total size.
+func EncodeTSWriteBatch(points []TSWriteParams) ([]byte, error) {
+	// One measuring pass, before anything proportional to the request is
+	// allocated. Every nested field is validated here, so an unencodable point
+	// anywhere in the batch is refused at the cost of pointSizes — bounded by
+	// the point count, which is the first thing checked — rather than at the
+	// cost of the whole encoded batch. Sizing first and validating inside the
+	// writing loop, as this did, turns any malformed point into an allocation
+	// the size of the entire request.
+	if err := checkUint16Len(len(points), "point count"); err != nil {
+		return nil, err
+	}
+
+	pointSizes := make([]int, len(points))
 	size := headerSize + 2
-	for _, p := range points {
-		metricBytes := []byte(p.Metric)
-		pointSize := 2 + len(metricBytes) + 8 + 8 + 2
-		for k, v := range p.Tags {
-			pointSize += 2 + len(k) + 2 + len(v)
+	for i, p := range points {
+		metricLen := len(p.Metric)
+		if err := checkUint16Len(metricLen, "metric"); err != nil {
+			return nil, err
 		}
-		size += 2 + pointSize // 2 for point length prefix
+		tagsSize, err := tagBlockSize(p.Tags)
+		if err != nil {
+			return nil, err
+		}
+
+		pointSize := 2 + metricLen + 8 + 8 + 2 + tagsSize
+		if err := checkUint16Len(pointSize, "point length"); err != nil {
+			return nil, err
+		}
+		pointSizes[i] = pointSize
+		if size, err = addSizes(size, 2, pointSize); err != nil { // 2 for the point length prefix
+			return nil, err
+		}
 	}
 
 	buf := make([]byte, size)
@@ -490,20 +587,22 @@ func EncodeTSWriteBatch(points []TSWriteParams) []byte {
 	buf[off] = OpTSWriteBatch
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(points)))
+	if err := putUint16Len(buf[off:], len(points), "point count"); err != nil {
+		return nil, err
+	}
 	off += 2
 
-	for _, p := range points {
+	for i, p := range points {
 		metricBytes := []byte(p.Metric)
-		pointSize := 2 + len(metricBytes) + 8 + 8 + 2
-		for k, v := range p.Tags {
-			pointSize += 2 + len(k) + 2 + len(v)
-		}
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(pointSize))
+		if err := putUint16Len(buf[off:], pointSizes[i], "point length"); err != nil {
+			return nil, err
+		}
 		off += 2
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+		if err := putUint16Len(buf[off:], len(metricBytes), "metric"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], metricBytes)
 		off += len(metricBytes)
@@ -514,23 +613,29 @@ func EncodeTSWriteBatch(points []TSWriteParams) []byte {
 		binary.LittleEndian.PutUint64(buf[off:], math.Float64bits(p.Value))
 		off += 8
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(p.Tags)))
+		if err := putUint16Len(buf[off:], len(p.Tags), "tag count"); err != nil {
+			return nil, err
+		}
 		off += 2
 
 		for k, v := range p.Tags {
-			binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
+			if err := putUint16Len(buf[off:], len(k), "tag key"); err != nil {
+				return nil, err
+			}
 			off += 2
 			copy(buf[off:], k)
 			off += len(k)
 
-			binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
+			if err := putUint16Len(buf[off:], len(v), "tag value"); err != nil {
+				return nil, err
+			}
 			off += 2
 			copy(buf[off:], v)
 			off += len(v)
 		}
 	}
 
-	return buf
+	return buf, nil
 }
 
 // DecodeTSWriteBatch decodes a Time-Series WriteBatch payload into individual
@@ -571,42 +676,83 @@ func DecodeTSWriteBatch(payload []byte) ([]TSWriteParams, error) {
 
 // EncodeOp encodes a single operation for use in transaction and batch payloads.
 // Format: [opType:1][keyLen:4 LE][key][valLen:4 LE][value][rangeEndLen:4 LE][rangeEnd][leaseID:8 LE].
-func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) []byte {
-	size := 1 + frameSize + len(key) + frameSize + len(value) + frameSize + len(rangeEnd) + 8
+func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) ([]byte, error) {
+	// Validate each field, then accumulate through addSize. Summing first and
+	// checking after is not equivalent: nothing stops a caller passing the SAME
+	// large slice as key, value and rangeEnd, and where int is 32 bits three
+	// individually-legal lengths sum past its maximum. The wrapped total then
+	// reaches make, which panics or — worse — allocates an undersized buffer
+	// that the writes below run off the end of (go-qrdb#52).
+	size := 1 + 8
+	for _, f := range []struct {
+		bytes []byte
+		name  string
+	}{{key, "key"}, {value, "value"}, {rangeEnd, "range end"}} {
+		if err := checkUint32Len(len(f.bytes), f.name); err != nil {
+			return nil, err
+		}
+		var err error
+		if size, err = addSizes(size, frameSize, len(f.bytes)); err != nil {
+			return nil, err
+		}
+	}
 	buf := make([]byte, size)
 	off := 0
 
 	buf[off] = opType
 	off++
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(key)))
+	if err := putUint32Len(buf[off:], len(key), "key"); err != nil {
+		return nil, err
+	}
 	off += frameSize
 	copy(buf[off:], key)
 	off += len(key)
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(value)))
+	if err := putUint32Len(buf[off:], len(value), "value"); err != nil {
+		return nil, err
+	}
 	off += frameSize
 	copy(buf[off:], value)
 	off += len(value)
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(rangeEnd)))
+	if err := putUint32Len(buf[off:], len(rangeEnd), "range end"); err != nil {
+		return nil, err
+	}
 	off += frameSize
 	copy(buf[off:], rangeEnd)
 	off += len(rangeEnd)
 
 	binary.LittleEndian.PutUint64(buf[off:], uint64(leaseID))
 
-	return buf
+	return buf, nil
 }
 
 // EncodeCompare encodes a single compare for transaction payloads.
 // Format: [keyLen:4 LE][key][target:1][result:1][valLen:4 LE][value][version:8 LE][createRev:8 LE][modRev:8 LE].
-func EncodeCompare(key []byte, target, result byte, value []byte, version, createRevision, modRevision int64) []byte {
-	size := frameSize + len(key) + 1 + 1 + frameSize + len(value) + 8 + 8 + 8
+func EncodeCompare(key []byte, target, result byte, value []byte, version, createRevision, modRevision int64) ([]byte, error) {
+	// Validate then accumulate, for the reason given in EncodeOp: key and value
+	// may share one backing slice, and a checked sum is what makes the total
+	// honest rather than the individual lengths.
+	size := 1 + 1 + 8 + 8 + 8
+	for _, f := range []struct {
+		bytes []byte
+		name  string
+	}{{key, "key"}, {value, "value"}} {
+		if err := checkUint32Len(len(f.bytes), f.name); err != nil {
+			return nil, err
+		}
+		var err error
+		if size, err = addSizes(size, frameSize, len(f.bytes)); err != nil {
+			return nil, err
+		}
+	}
 	buf := make([]byte, size)
 	off := 0
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(key)))
+	if err := putUint32Len(buf[off:], len(key), "key"); err != nil {
+		return nil, err
+	}
 	off += frameSize
 	copy(buf[off:], key)
 	off += len(key)
@@ -616,7 +762,9 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 	buf[off] = result
 	off++
 
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(value)))
+	if err := putUint32Len(buf[off:], len(value), "value"); err != nil {
+		return nil, err
+	}
 	off += frameSize
 	copy(buf[off:], value)
 	off += len(value)
@@ -627,21 +775,25 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 	off += 8
 	binary.LittleEndian.PutUint64(buf[off:], uint64(modRevision))
 
-	return buf
+	return buf, nil
 }
 
 // EncodeTransaction creates a binary Transaction command.
 // Format: [op:1][compareCount:4 LE][compares...][successCount:4 LE][successOps...][failureCount:4 LE][failureOps...].
-func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
-	size := headerSize + frameSize + frameSize + frameSize
-	for _, c := range compares {
-		size += frameSize + len(c)
-	}
-	for _, op := range successOps {
-		size += frameSize + len(op)
-	}
-	for _, op := range failureOps {
-		size += frameSize + len(op)
+func EncodeTransaction(compares, successOps, failureOps [][]byte) ([]byte, error) {
+	// Measure and validate all three collections before allocating any of them,
+	// so a malformed element in the third does not cost a buffer sized for the
+	// whole transaction. framedSlicesSize is the measuring half of the
+	// encodeFramedSlices calls below.
+	size := headerSize
+	for _, items := range [][][]byte{compares, successOps, failureOps} {
+		n, err := framedSlicesSize(items)
+		if err != nil {
+			return nil, err
+		}
+		if size, err = addSize(size, n); err != nil {
+			return nil, err
+		}
 	}
 
 	buf := make([]byte, size)
@@ -650,19 +802,34 @@ func EncodeTransaction(compares, successOps, failureOps [][]byte) []byte {
 	buf[off] = OpTransaction
 	off++
 
-	off += encodeFramedSlices(buf[off:], compares)
-	off += encodeFramedSlices(buf[off:], successOps)
-	encodeFramedSlices(buf[off:], failureOps)
+	n, err := encodeFramedSlices(buf[off:], compares)
+	if err != nil {
+		return nil, err
+	}
+	off += n
+	n, err = encodeFramedSlices(buf[off:], successOps)
+	if err != nil {
+		return nil, err
+	}
+	off += n
+	if _, err := encodeFramedSlices(buf[off:], failureOps); err != nil {
+		return nil, err
+	}
 
-	return buf
+	return buf, nil
 }
 
 // EncodeBatch creates a binary Batch command.
 // Format: [op:1][opCount:4 LE][ops...].
-func EncodeBatch(ops [][]byte) []byte {
-	size := headerSize + frameSize
-	for _, op := range ops {
-		size += frameSize + len(op)
+func EncodeBatch(ops [][]byte) ([]byte, error) {
+	// Measure and validate before allocating, as EncodeTransaction does.
+	n, err := framedSlicesSize(ops)
+	if err != nil {
+		return nil, err
+	}
+	size, err := addSize(headerSize, n)
+	if err != nil {
+		return nil, err
 	}
 
 	buf := make([]byte, size)
@@ -671,26 +838,33 @@ func EncodeBatch(ops [][]byte) []byte {
 	buf[off] = OpBatch
 	off++
 
-	encodeFramedSlices(buf[off:], ops)
+	if _, err := encodeFramedSlices(buf[off:], ops); err != nil {
+		return nil, err
+	}
 
-	return buf
+	return buf, nil
 }
 
 // encodeFramedSlices writes a count-prefixed run of length-prefixed byte
-// slices into buf and returns the number of bytes written. Both the count and
+// slices into buf and returns the number of bytes written, or an error when a
+// count or an element cannot be described by its length field. Both the count and
 // each element length are frameSize-byte little-endian values. buf must be
 // large enough to hold the whole run.
-func encodeFramedSlices(buf []byte, items [][]byte) int {
+func encodeFramedSlices(buf []byte, items [][]byte) (int, error) {
 	off := 0
-	binary.LittleEndian.PutUint32(buf[off:], uint32(len(items)))
+	if err := putUint32Len(buf[off:], len(items), "item count"); err != nil {
+		return 0, err
+	}
 	off += frameSize
 	for _, item := range items {
-		binary.LittleEndian.PutUint32(buf[off:], uint32(len(item)))
+		if err := putUint32Len(buf[off:], len(item), "item"); err != nil {
+			return 0, err
+		}
 		off += frameSize
 		copy(buf[off:], item)
 		off += len(item)
 	}
-	return off
+	return off, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -970,10 +1144,11 @@ func DecodeOp(data []byte) (DecodedOp, int, error) {
 	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing key length"}
 	}
-	keyLen := int(binary.LittleEndian.Uint32(data[off:]))
+	rawKeyLen := binary.LittleEndian.Uint32(data[off:])
 	off += frameSize
-	if keyLen < 0 || off+keyLen > len(data) {
-		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: key exceeds data"}
+	keyLen, err := decodeLen(rawKeyLen, len(data)-off, "op: key exceeds data")
+	if err != nil {
+		return DecodedOp{}, 0, err
 	}
 	key := data[off : off+keyLen]
 	off += keyLen
@@ -981,10 +1156,11 @@ func DecodeOp(data []byte) (DecodedOp, int, error) {
 	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing value length"}
 	}
-	valLen := int(binary.LittleEndian.Uint32(data[off:]))
+	rawValLen := binary.LittleEndian.Uint32(data[off:])
 	off += frameSize
-	if valLen < 0 || off+valLen > len(data) {
-		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: value exceeds data"}
+	valLen, err := decodeLen(rawValLen, len(data)-off, "op: value exceeds data")
+	if err != nil {
+		return DecodedOp{}, 0, err
 	}
 	value := data[off : off+valLen]
 	off += valLen
@@ -992,10 +1168,11 @@ func DecodeOp(data []byte) (DecodedOp, int, error) {
 	if off+frameSize > len(data) {
 		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: missing range end length"}
 	}
-	reLen := int(binary.LittleEndian.Uint32(data[off:]))
+	rawRangeEndLen := binary.LittleEndian.Uint32(data[off:])
 	off += frameSize
-	if reLen < 0 || off+reLen > len(data) {
-		return DecodedOp{}, 0, &InvalidCommandError{Reason: "op: range end exceeds data"}
+	reLen, err := decodeLen(rawRangeEndLen, len(data)-off, "op: range end exceeds data")
+	if err != nil {
+		return DecodedOp{}, 0, err
 	}
 	rangeEnd := data[off : off+reLen]
 	off += reLen
@@ -1033,10 +1210,11 @@ func DecodeCompare(data []byte) (DecodedCompare, int, error) {
 	}
 
 	off := 0
-	keyLen := int(binary.LittleEndian.Uint32(data[off:]))
+	rawKeyLen := binary.LittleEndian.Uint32(data[off:])
 	off += frameSize
-	if keyLen < 0 || off+keyLen > len(data) {
-		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: key exceeds data"}
+	keyLen, err := decodeLen(rawKeyLen, len(data)-off, "compare: key exceeds data")
+	if err != nil {
+		return DecodedCompare{}, 0, err
 	}
 	key := data[off : off+keyLen]
 	off += keyLen
@@ -1052,10 +1230,11 @@ func DecodeCompare(data []byte) (DecodedCompare, int, error) {
 	if off+frameSize > len(data) {
 		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: missing value length"}
 	}
-	valLen := int(binary.LittleEndian.Uint32(data[off:]))
+	rawValLen := binary.LittleEndian.Uint32(data[off:])
 	off += frameSize
-	if valLen < 0 || off+valLen > len(data) {
-		return DecodedCompare{}, 0, &InvalidCommandError{Reason: "compare: value exceeds data"}
+	valLen, err := decodeLen(rawValLen, len(data)-off, "compare: value exceeds data")
+	if err != nil {
+		return DecodedCompare{}, 0, err
 	}
 	value := data[off : off+valLen]
 	off += valLen
@@ -1098,6 +1277,47 @@ type DecodedTransaction struct {
 const maxPrealloc = 1024
 
 // preallocSize returns the capacity to reserve for a decoded element count.
+// decodeCount reads a frameSize-byte element count and refuses one the payload
+// cannot possibly hold.
+//
+// The conversion is the point. `int(uint32)` is lossless only where int is 64
+// bits; where it is 32, a count past MaxInt32 converts NEGATIVE, every
+// `for i := 0; i < count` below is skipped, and a hostile frame like
+// `ff ff ff ff` decodes as an EMPTY command with a nil error. That is
+// fail-open deserialization on the apply path, and it decodes differently on
+// different architectures from the same bytes — which a replicated state
+// machine cannot tolerate (go-qrdb#52, #73).
+//
+// The payload bound is the stronger half and is not about width at all: every
+// element carries at least its own frameSize length prefix, so a count larger
+// than the remaining bytes can frame is a lie whatever the platform. It
+// rejects 0x7fffffff on a 64-bit build too, where the conversion is harmless
+// and the count is still impossible.
+func decodeCount(raw uint32, remaining int, what string) (int, error) {
+	if uint64(raw) > uint64(math.MaxInt) {
+		return 0, &InvalidCommandError{Reason: what + ": count is not representable"}
+	}
+	n := int(raw)
+	if remaining < 0 || n > remaining/frameSize {
+		return 0, &InvalidCommandError{Reason: what + ": count exceeds payload"}
+	}
+	return n, nil
+}
+
+// decodeLen reads a frameSize-byte element length and refuses one the
+// remaining bytes cannot hold. The bound is compared in uint64 rather than as
+// off+n, which is what makes it correct on 32-bit builds: there int(raw) is
+// large enough that the caller's offset arithmetic overflows — a length of
+// 0x7fffffff makes off+n negative, so a naive bounds check passes and the
+// slice expression panics. remaining is the count of bytes after the length
+// field, so a returned n is always a valid slice bound.
+func decodeLen(raw uint32, remaining int, reason string) (int, error) {
+	if remaining < 0 || uint64(raw) > uint64(remaining) {
+		return 0, &InvalidCommandError{Reason: reason}
+	}
+	return int(raw), nil
+}
+
 func preallocSize(count int) int {
 	if count < 0 || count > maxPrealloc {
 		return maxPrealloc
@@ -1112,7 +1332,11 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 	if off+frameSize > len(payload) {
 		return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: missing compare count"}
 	}
-	compareCount := int(binary.LittleEndian.Uint32(payload[off:]))
+	compareCount, err := decodeCount(binary.LittleEndian.Uint32(payload[off:]),
+		len(payload)-off-frameSize, "txn: compare")
+	if err != nil {
+		return DecodedTransaction{}, err
+	}
 	off += frameSize
 
 	compares := make([]DecodedCompare, 0, preallocSize(compareCount))
@@ -1120,10 +1344,11 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 		if off+frameSize > len(payload) {
 			return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: truncated compare length"}
 		}
-		cLen := int(binary.LittleEndian.Uint32(payload[off:]))
+		rawLen := binary.LittleEndian.Uint32(payload[off:])
 		off += frameSize
-		if cLen < 0 || off+cLen > len(payload) {
-			return DecodedTransaction{}, &InvalidCommandError{Reason: "txn: compare exceeds payload"}
+		cLen, lerr := decodeLen(rawLen, len(payload)-off, "txn: compare exceeds payload")
+		if lerr != nil {
+			return DecodedTransaction{}, lerr
 		}
 		c, _, err := DecodeCompare(payload[off : off+cLen])
 		if err != nil {
@@ -1137,17 +1362,22 @@ func DecodeTransaction(payload []byte) (DecodedTransaction, error) {
 		if off+frameSize > len(payload) {
 			return nil, &InvalidCommandError{Reason: "txn: missing " + label + " count"}
 		}
-		count := int(binary.LittleEndian.Uint32(payload[off:]))
+		count, cerr := decodeCount(binary.LittleEndian.Uint32(payload[off:]),
+			len(payload)-off-frameSize, "txn: "+label)
+		if cerr != nil {
+			return nil, cerr
+		}
 		off += frameSize
 		ops := make([]DecodedOp, 0, preallocSize(count))
 		for i := 0; i < count; i++ {
 			if off+frameSize > len(payload) {
 				return nil, &InvalidCommandError{Reason: "txn: truncated " + label + " op length"}
 			}
-			oLen := int(binary.LittleEndian.Uint32(payload[off:]))
+			rawLen := binary.LittleEndian.Uint32(payload[off:])
 			off += frameSize
-			if oLen < 0 || off+oLen > len(payload) {
-				return nil, &InvalidCommandError{Reason: "txn: " + label + " op exceeds payload"}
+			oLen, lerr := decodeLen(rawLen, len(payload)-off, "txn: "+label+" op exceeds payload")
+			if lerr != nil {
+				return nil, lerr
 			}
 			op, _, err := DecodeOp(payload[off : off+oLen])
 			if err != nil {
@@ -1183,7 +1413,11 @@ func DecodeBatch(payload []byte) ([]DecodedOp, error) {
 	}
 
 	off := 0
-	opCount := int(binary.LittleEndian.Uint32(payload[off:]))
+	opCount, err := decodeCount(binary.LittleEndian.Uint32(payload[off:]),
+		len(payload)-off-frameSize, "batch: op")
+	if err != nil {
+		return nil, err
+	}
 	off += frameSize
 
 	ops := make([]DecodedOp, 0, preallocSize(opCount))
@@ -1191,10 +1425,11 @@ func DecodeBatch(payload []byte) ([]DecodedOp, error) {
 		if off+frameSize > len(payload) {
 			return nil, &InvalidCommandError{Reason: "batch: truncated op length"}
 		}
-		oLen := int(binary.LittleEndian.Uint32(payload[off:]))
+		rawLen := binary.LittleEndian.Uint32(payload[off:])
 		off += frameSize
-		if oLen < 0 || off+oLen > len(payload) {
-			return nil, &InvalidCommandError{Reason: "batch: op exceeds payload"}
+		oLen, lerr := decodeLen(rawLen, len(payload)-off, "batch: op exceeds payload")
+		if lerr != nil {
+			return nil, lerr
 		}
 		op, _, err := DecodeOp(payload[off : off+oLen])
 		if err != nil {
@@ -1214,10 +1449,13 @@ func DecodeBatch(payload []byte) ([]DecodedOp, error) {
 // EncodeTSWritePoint creates a binary Time-Series WritePoint command.
 // The on-wire format is identical to EncodeTSWrite but uses a distinct
 // opcode so the state machine can validate before persisting.
-func EncodeTSWritePoint(metric string, timestamp int64, value float64, tags map[string]string) []byte {
-	buf := EncodeTSWrite(metric, timestamp, value, tags)
+func EncodeTSWritePoint(metric string, timestamp int64, value float64, tags map[string]string) ([]byte, error) {
+	buf, err := EncodeTSWrite(metric, timestamp, value, tags)
+	if err != nil {
+		return nil, err
+	}
 	buf[0] = OpTSWritePoint
-	return buf
+	return buf, nil
 }
 
 // TSDeleteParams holds decoded parameters for a time-series delete.
@@ -1230,12 +1468,21 @@ type TSDeleteParams struct {
 
 // EncodeTSDeleteSeries creates a binary Time-Series DeleteSeries command.
 // Format: [op:1][metricLen:2 LE][metric][startNs:8 LE][endNs:8 LE][tagCount:2 LE][tags...].
-func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]string) []byte {
+func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]string) ([]byte, error) {
 	metricBytes := []byte(metric)
 
-	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 2
-	for k, v := range tags {
-		size += 2 + len(k) + 2 + len(v)
+	// Measure and validate together, before anything is allocated.
+	if err := checkUint16Len(len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
+	tagsSize, err := tagBlockSize(tags)
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := tsMetricFrameSize(len(metricBytes), tagsSize)
+	if err != nil {
+		return nil, err
 	}
 
 	buf := make([]byte, size)
@@ -1244,7 +1491,9 @@ func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]s
 	buf[off] = OpTSDeleteSeries
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+	if err := putUint16Len(buf[off:], len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], metricBytes)
 	off += len(metricBytes)
@@ -1255,22 +1504,28 @@ func EncodeTSDeleteSeries(metric string, startNs, endNs int64, tags map[string]s
 	binary.LittleEndian.PutUint64(buf[off:], uint64(endNs))
 	off += 8
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(tags)))
+	if err := putUint16Len(buf[off:], len(tags), "tag count"); err != nil {
+		return nil, err
+	}
 	off += 2
 
 	for k, v := range tags {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
+		if err := putUint16Len(buf[off:], len(k), "tag key"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], k)
 		off += len(k)
 
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
+		if err := putUint16Len(buf[off:], len(v), "tag value"); err != nil {
+			return nil, err
+		}
 		off += 2
 		copy(buf[off:], v)
 		off += len(v)
 	}
 
-	return buf
+	return buf, nil
 }
 
 // DecodeTSDeleteSeries decodes a Time-Series DeleteSeries payload.
@@ -1346,17 +1601,22 @@ type TSRetentionParams struct {
 
 // EncodeTSSetRetention creates a binary Time-Series SetRetention command.
 // Format: [op:1][metricLen:2 LE][metric][durationNs:8 LE][resolutionNs:8 LE][aggregation:1].
-func EncodeTSSetRetention(metric string, durationNs, resolutionNs int64, aggregation byte) []byte {
+func EncodeTSSetRetention(metric string, durationNs, resolutionNs int64, aggregation byte) ([]byte, error) {
 	metricBytes := []byte(metric)
 	size := headerSize + 2 + len(metricBytes) + 8 + 8 + 1
 
+	if err := checkUint16Len(len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
 	buf := make([]byte, size)
 	off := 0
 
 	buf[off] = OpTSSetRetention
 	off++
 
-	binary.LittleEndian.PutUint16(buf[off:], uint16(len(metricBytes)))
+	if err := putUint16Len(buf[off:], len(metricBytes), "metric"); err != nil {
+		return nil, err
+	}
 	off += 2
 	copy(buf[off:], metricBytes)
 	off += len(metricBytes)
@@ -1369,7 +1629,7 @@ func EncodeTSSetRetention(metric string, durationNs, resolutionNs int64, aggrega
 
 	buf[off] = aggregation
 
-	return buf
+	return buf, nil
 }
 
 // DecodeTSSetRetention decodes a Time-Series SetRetention payload.

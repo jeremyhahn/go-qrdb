@@ -383,7 +383,7 @@ func NewKVService(host Host, shardID uint64, opts ...KVServiceOption) KVServicer
 func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	cmd, err := kv.EncodePut([]byte(key), value)
 	if err != nil {
-		return &ProposeError{Err: err}
+		return &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -412,7 +412,7 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	cmd, err := kv.EncodePutIfAbsent([]byte(key), value)
 	if err != nil {
-		return false, &ProposeError{Err: err}
+		return false, &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -440,7 +440,7 @@ func (s *KVService) PutIfAbsent(ctx context.Context, key string, value []byte) (
 func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	cmd, err := protocol.EncodeCompareAndDelete([]byte(key), expected)
 	if err != nil {
-		return false, &ProposeError{Err: err}
+		return false, &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -477,7 +477,7 @@ func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 func (s *KVService) Delete(ctx context.Context, key string) error {
 	cmd, err := kv.EncodeDelete([]byte(key))
 	if err != nil {
-		return &ProposeError{Err: err}
+		return &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
 	if err != nil {
@@ -609,7 +609,7 @@ func (s *KVService) ScanStale(ctx context.Context, prefix string) (map[string][]
 func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
 	cmd, err := kv.EncodePut([]byte(key), value)
 	if err != nil {
-		return &ProposeError{Err: err}
+		return &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {
@@ -630,7 +630,7 @@ func (s *KVService) PutWithMode(ctx context.Context, key string, value []byte, m
 func (s *KVService) DeleteWithMode(ctx context.Context, key string, mode writemode.Mode) error {
 	cmd, err := kv.EncodeDelete([]byte(key))
 	if err != nil {
-		return &ProposeError{Err: err}
+		return &EncodeRequestError{Err: err}
 	}
 	result, err := s.host.ProposeWithMode(ctx, s.shardID, cmd, mode)
 	if err != nil {

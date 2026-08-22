@@ -45,9 +45,9 @@ func TestPebbleStateMachine_ScanPrefixBasic(t *testing.T) {
 
 	// Insert some keys.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("pfx:a"), []byte("1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("pfx:b"), []byte("2"), 0)},
-		{Index: 3, Cmd: protocol.EncodeMVCCPut([]byte("other:c"), []byte("3"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("pfx:a"), []byte("1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("pfx:b"), []byte("2"), 0))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("other:c"), []byte("3"), 0))},
 	})
 
 	result, err := s.Lookup(context.Background(), &statemachine.PrefixQuery{
@@ -72,9 +72,9 @@ func TestPebbleStateMachine_ScanPrefixWithLimit(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("lim:a"), []byte("1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("lim:b"), []byte("2"), 0)},
-		{Index: 3, Cmd: protocol.EncodeMVCCPut([]byte("lim:c"), []byte("3"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lim:a"), []byte("1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lim:b"), []byte("2"), 0))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("lim:c"), []byte("3"), 0))},
 	})
 
 	result, err := s.Lookup(context.Background(), &statemachine.PrefixQuery{
@@ -97,8 +97,8 @@ func TestPebbleStateMachine_ScanPrefixEmptyPrefix(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("k1"), []byte("v1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("k2"), []byte("v2"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k1"), []byte("v1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("k2"), []byte("v2"), 0))},
 	})
 
 	result, err := s.Lookup(context.Background(), &statemachine.PrefixQuery{
@@ -117,9 +117,9 @@ func TestPebbleStateMachine_ScanPrefixSysKeys(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("__sys:role:admin"), []byte("admin-data"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("__sys:role:viewer"), []byte("viewer-data"), 0)},
-		{Index: 3, Cmd: protocol.EncodeMVCCPut([]byte("user:key1"), []byte("val1"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("__sys:role:admin"), []byte("admin-data"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("__sys:role:viewer"), []byte("viewer-data"), 0))},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user:key1"), []byte("val1"), 0))},
 	})
 
 	// Querying with __sys: prefix bypasses the internal-key filter.
@@ -142,7 +142,7 @@ func TestPebbleStateMachine_ScanPrefixNoMatch(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("a:key"), []byte("val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("a:key"), []byte("val"), 0))},
 	})
 
 	result, err := s.Lookup(context.Background(), &statemachine.PrefixQuery{
@@ -212,7 +212,7 @@ func TestPebbleStateMachine_ClearAll_EmptyDB(t *testing.T) {
 
 	// Apply some data.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("pre-snap"), []byte("val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("pre-snap"), []byte("val"), 0))},
 	})
 
 	// Recover from the empty snapshot -- clearAll on a non-empty DB.
@@ -243,7 +243,7 @@ func TestPebbleStateMachine_ClearAll_ViaSnapshotRecovery(t *testing.T) {
 
 	// Put one key in src.
 	applyExtEntries(t, src, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("snap-key"), []byte("snap-val"), 0))},
 	})
 	if err := src.Sync(); err != nil {
 		t.Fatalf("Sync: %v", err)
@@ -251,7 +251,7 @@ func TestPebbleStateMachine_ClearAll_ViaSnapshotRecovery(t *testing.T) {
 
 	// Put a different key in dst (to exercise clearAll on non-empty).
 	applyExtEntries(t, dst, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("old-key"), []byte("old-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("old-key"), []byte("old-val"), 0))},
 	})
 
 	// Take snapshot of src and apply to dst.
@@ -376,16 +376,16 @@ func TestPebbleStateMachine_MVCCPutWithLease_AttachesKey(t *testing.T) {
 	s, lr := openStoreWithLessor(t)
 
 	// Grant a lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantResults := applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: grantCmd}})
 	leaseID := int64(grantResults[0].Value)
 
 	// Put a key with the lease attached.
-	putCmd := protocol.EncodeMVCCPut([]byte("leased-key"), []byte("leased-val"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("leased-key"), []byte("leased-val"), leaseID))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: putCmd}})
 
 	// Revoke -- should delete the leased key.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeResults := applyExtEntries(t, s, []sm.Entry{{Index: 3, Cmd: revokeCmd}})
 	if revokeResults[0].Value != 1 {
 		t.Fatalf("expected 1 revoked key, got %d", revokeResults[0].Value)
@@ -408,7 +408,7 @@ func TestPebbleStateMachine_MVCCDeleteWithHub_PrevValue(t *testing.T) {
 	s, hub := openStoreWithHub(t)
 
 	// Put a value.
-	putCmd := protocol.EncodeMVCCPut([]byte("mvcc-del-watch"), []byte("original"), 0)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-del-watch"), []byte("original"), 0))
 	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -420,7 +420,7 @@ func TestPebbleStateMachine_MVCCDeleteWithHub_PrevValue(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Delete via MVCC delete.
-	delCmd := protocol.EncodeMVCCDelete([]byte("mvcc-del-watch"))
+	delCmd := mustEncode(protocol.EncodeMVCCDelete([]byte("mvcc-del-watch")))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: delCmd}})
 
 	select {
@@ -458,15 +458,15 @@ func TestPebbleStateMachine_BatchWithLessorAndHub(t *testing.T) {
 
 	// Grant a lease.
 	grantResults := applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeLeaseGrant(60)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(60))},
 	})
 	leaseID := int64(grantResults[0].Value)
 
 	// Batch with an MVCC put (with lease) and delete.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-lease-key"), []byte("val"), nil, leaseID),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("batch-lease-key"), []byte("val"), nil, leaseID)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: batchCmd}})
 
 	// Verify key was stored.
@@ -480,9 +480,9 @@ func TestPebbleStateMachine_BatchWithLessorAndHub(t *testing.T) {
 
 	// Batch delete to exercise OpMVCCDelete path in pebbleExecuteOp with hub.
 	ops2 := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batch-lease-key"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batch-lease-key"), nil, nil, 0)),
 	}
-	batchCmd2 := protocol.EncodeBatch(ops2)
+	batchCmd2 := mustEncode(protocol.EncodeBatch(ops2))
 	applyExtEntries(t, s, []sm.Entry{{Index: 3, Cmd: batchCmd2}})
 
 	_, err = s.Lookup(context.Background(), []byte("batch-lease-key"))
@@ -545,12 +545,12 @@ func TestPebbleStateMachine_LeaseRevokeWithHub_Notifications(t *testing.T) {
 
 	// Grant a lease.
 	grantResults := applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeLeaseGrant(60)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeLeaseGrant(60))},
 	})
 	leaseID := int64(grantResults[0].Value)
 
 	// Put a key with the lease.
-	putCmd := protocol.EncodeMVCCPut([]byte("watch-lease-key"), []byte("val"), leaseID)
+	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("watch-lease-key"), []byte("val"), leaseID))
 	applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: putCmd}})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -562,7 +562,7 @@ func TestPebbleStateMachine_LeaseRevokeWithHub_Notifications(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	// Revoke the lease -- should delete the key and emit watch event.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	applyExtEntries(t, s, []sm.Entry{{Index: 3, Cmd: revokeCmd}})
 
 	select {
@@ -650,8 +650,8 @@ func TestPebbleStateMachine_GetHash_WithData(t *testing.T) {
 	s := openExtendedStore(t)
 
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("hash-k1"), []byte("v1"), 0)},
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("hash-k2"), []byte("v2"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k1"), []byte("v1"), 0))},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k2"), []byte("v2"), 0))},
 	})
 
 	h1, err := s.GetHash()
@@ -664,7 +664,7 @@ func TestPebbleStateMachine_GetHash_WithData(t *testing.T) {
 
 	// Hash should change after another put.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 3, Cmd: protocol.EncodeMVCCPut([]byte("hash-k3"), []byte("v3"), 0)},
+		{Index: 3, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("hash-k3"), []byte("v3"), 0))},
 	})
 
 	h2, err := s.GetHash()
@@ -692,7 +692,7 @@ func TestPebbleStateMachine_GetHash_SkipsMetadataKeys(t *testing.T) {
 
 	// Write a user key and verify hash includes it.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 1, Cmd: protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0)},
+		{Index: 1, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0))},
 	})
 
 	h1, err := s.GetHash()
@@ -703,7 +703,7 @@ func TestPebbleStateMachine_GetHash_SkipsMetadataKeys(t *testing.T) {
 	// Apply another entry that advances the lastApplied metadata key (\x00...).
 	// The hash should not change due to metadata writes alone.
 	applyExtEntries(t, s, []sm.Entry{
-		{Index: 2, Cmd: protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0)},
+		{Index: 2, Cmd: mustEncode(protocol.EncodeMVCCPut([]byte("user-key"), []byte("user-val"), 0))},
 	})
 
 	h2, err := s.GetHash()

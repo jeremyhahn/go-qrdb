@@ -32,21 +32,21 @@ import (
 // from the store afterwards.
 func guardedTxnEntry(idx uint64, guardKey, guardValue, successKey, failureKey string) sm.Entry {
 	compares := [][]byte{
-		protocol.EncodeCompare(
+		mustEncode(protocol.EncodeCompare(
 			[]byte(guardKey),
 			byte(service.CompareValue),
 			byte(service.CompareEqual),
 			[]byte(guardValue),
 			0, 0, 0,
-		),
+		)),
 	}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte(successKey), []byte("ran"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte(successKey), []byte("ran"), nil, 0)),
 	}
 	failureOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte(failureKey), []byte("ran"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte(failureKey), []byte("ran"), nil, 0)),
 	}
-	return sm.Entry{Index: idx, Cmd: protocol.EncodeTransaction(compares, successOps, failureOps)}
+	return sm.Entry{Index: idx, Cmd: mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps))}
 }
 
 // A transaction whose COMPARE READ fails must not pick a branch.
@@ -130,16 +130,16 @@ func TestMVCCEngine_Transaction_AFailedLaterCompareReadPicksNoBranch(t *testing.
 	})
 
 	compares := [][]byte{
-		protocol.EncodeCompare([]byte("first"),
-			byte(service.CompareValue), byte(service.CompareEqual), []byte("ok"), 0, 0, 0),
-		protocol.EncodeCompare([]byte("second"),
-			byte(service.CompareValue), byte(service.CompareEqual), []byte("ok"), 0, 0, 0),
+		mustEncode(protocol.EncodeCompare([]byte("first"),
+			byte(service.CompareValue), byte(service.CompareEqual), []byte("ok"), 0, 0, 0)),
+		mustEncode(protocol.EncodeCompare([]byte("second"),
+			byte(service.CompareValue), byte(service.CompareEqual), []byte("ok"), 0, 0, 0)),
 	}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("success-ran"), []byte("ran"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("success-ran"), []byte("ran"), nil, 0)),
 	}
 	failureOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("failure-ran"), []byte("ran"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("failure-ran"), []byte("ran"), nil, 0)),
 	}
 
 	stg.failPrefix = mvcc.EncodeMetaKey([]byte("second"))
@@ -147,7 +147,7 @@ func TestMVCCEngine_Transaction_AFailedLaterCompareReadPicksNoBranch(t *testing.
 	results := make([]sm.Result, 1)
 	updateErr := eng.Update(context.Background(), []sm.Entry{{
 		Index: 3,
-		Cmd:   protocol.EncodeTransaction(compares, successOps, failureOps),
+		Cmd:   mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps)),
 	}}, results)
 
 	if !errors.Is(updateErr, errReadFault) {

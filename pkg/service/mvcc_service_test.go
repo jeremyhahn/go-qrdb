@@ -101,7 +101,7 @@ func TestMVCCKVService_Put_Success(t *testing.T) {
 		t.Fatalf("expected shardID 42, got %d", capturedShardID)
 	}
 
-	expected := protocol.EncodeMVCCPut([]byte("hello"), []byte("world"), 0)
+	expected := mustEncode(protocol.EncodeMVCCPut([]byte("hello"), []byte("world"), 0))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
@@ -300,7 +300,7 @@ func TestMVCCKVService_Delete_Success(t *testing.T) {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	expected := protocol.EncodeMVCCDelete([]byte("delkey"))
+	expected := mustEncode(protocol.EncodeMVCCDelete([]byte("delkey")))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
@@ -565,7 +565,7 @@ func TestMVCCKVService_PutWithLease_Success(t *testing.T) {
 	}
 
 	// Verify protocol encoding includes leaseID.
-	expected := protocol.EncodeMVCCPut([]byte("leasekey"), []byte("leaseval"), 100)
+	expected := mustEncode(protocol.EncodeMVCCPut([]byte("leasekey"), []byte("leaseval"), 100))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
@@ -1193,7 +1193,7 @@ func TestMVCCKVService_Compact_Success(t *testing.T) {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	expected := protocol.EncodeMVCCCompact(100)
+	expected := mustEncode(protocol.EncodeMVCCCompact(100))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
@@ -1680,7 +1680,7 @@ func TestMVCCKVService_GetAtRevision_NotLeaderError(t *testing.T) {
 func TestMVCCKVService_Put_EmptyKeyAndValue(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			expected := protocol.EncodeMVCCPut([]byte(""), []byte(""), 0)
+			expected := mustEncode(protocol.EncodeMVCCPut([]byte(""), []byte(""), 0))
 			if !bytes.Equal(cmd, expected) {
 				t.Fatalf("command mismatch for empty key/value")
 			}
@@ -1698,7 +1698,7 @@ func TestMVCCKVService_Put_EmptyKeyAndValue(t *testing.T) {
 func TestMVCCKVService_Delete_EmptyKey(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			expected := protocol.EncodeMVCCDelete([]byte(""))
+			expected := mustEncode(protocol.EncodeMVCCDelete([]byte("")))
 			if !bytes.Equal(cmd, expected) {
 				t.Fatalf("command mismatch for empty key delete")
 			}
@@ -1730,7 +1730,7 @@ func TestMVCCKVService_Compact_ZeroRevision(t *testing.T) {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
-	expected := protocol.EncodeMVCCCompact(0)
+	expected := mustEncode(protocol.EncodeMVCCCompact(0))
 	if !bytes.Equal(capturedCmd, expected) {
 		t.Fatalf("command mismatch: expected %v, got %v", expected, capturedCmd)
 	}
@@ -1783,7 +1783,7 @@ func TestMVCCKVService_Put_LargeValue(t *testing.T) {
 
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {
-			expected := protocol.EncodeMVCCPut([]byte("bigkey"), largeVal, 0)
+			expected := mustEncode(protocol.EncodeMVCCPut([]byte("bigkey"), largeVal, 0))
 			if !bytes.Equal(cmd, expected) {
 				t.Fatalf("command mismatch for large value")
 			}

@@ -147,11 +147,11 @@ func TestKVStateMachine_Batch_MixedOps(t *testing.T) {
 	kvApplyPut(t, k, "batch-del", "to-be-removed")
 
 	ops := [][]byte{
-		protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0),
-		protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0),
-		protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-a"), []byte("val-a"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpPut, []byte("batch-b"), []byte("val-b"), nil, 0)),
+		mustEncode(protocol.EncodeOp(kv.OpDelete, []byte("batch-del"), nil, nil, 0)),
 	}
-	cmd := protocol.EncodeBatch(ops)
+	cmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 10, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -479,7 +479,7 @@ func TestKVStateMachine_Update_LeaseNotConfigured_DoesNotReturnError(t *testing.
 	// SM with no leaseManager — leaseManager is intentionally nil.
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -502,7 +502,7 @@ func TestKVStateMachine_Update_LeaseNotConfigured_DoesNotReturnError(t *testing.
 func TestKVStateMachine_Update_LeaseNotConfigured_EncodesErrorInData(t *testing.T) {
 	k := newTestKVSM()
 
-	cmd := protocol.EncodeLeaseGrant(30)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
@@ -527,7 +527,7 @@ func TestKVStateMachine_Update_LeaseNotConfigured_SubsequentPutSucceeds(t *testi
 	k := newTestKVSM()
 
 	// First: attempt a lease grant that will encode as an error in result.Data.
-	leaseCmd := protocol.EncodeLeaseGrant(60)
+	leaseCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries1 := []sm.Entry{{Index: 1, Cmd: leaseCmd}}
 	results1 := make([]sm.Result, 1)
 	if err := k.Update(entries1, results1); err != nil {

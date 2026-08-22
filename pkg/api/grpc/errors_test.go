@@ -15,12 +15,15 @@
 package grpc
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -92,5 +95,30 @@ func TestGRPCServiceNotConfiguredErrorHint(t *testing.T) {
 	bare := &ServiceNotConfiguredError{Service: "watch"}
 	if strings.Contains(bare.Error(), ":  ") || strings.HasSuffix(bare.Error(), ": ") {
 		t.Fatalf("Error() without hint = %q, must not carry a dangling separator", bare.Error())
+	}
+}
+
+// An unencodable request is the caller's fault, so it must map to
+// InvalidArgument and not to Internal.
+//
+// The rule has to sit ABOVE the ProposeError rule: service.EncodeRequestError
+// is not a ProposeError, but if the ordering were ever reversed by a wrapper
+// the oversized request would be reported as a broken cluster — an operational
+// alert, and a retry of an input that can never succeed (go-qrdb#52).
+func TestMapServiceError_EncodeRequestErrorIsInvalidArgument(t *testing.T) {
+	err := mapServiceError(&service.EncodeRequestError{
+		Err: &protocol.FieldTooLongError{Field: "key", Length: 70000, Max: protocol.MaxUint16Field},
+	})
+	if got := status.Code(err); got != codes.InvalidArgument {
+		t.Fatalf("code = %v, want %v", got, codes.InvalidArgument)
+	}
+}
+
+// A genuine proposal failure is still Internal, so the new rule did not
+// reclassify the case it sits in front of.
+func TestMapServiceError_ProposeErrorIsStillInternal(t *testing.T) {
+	err := mapServiceError(&service.ProposeError{Err: errors.New("raft is down")})
+	if got := status.Code(err); got != codes.Internal {
+		t.Fatalf("code = %v, want %v", got, codes.Internal)
 	}
 }

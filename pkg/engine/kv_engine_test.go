@@ -449,7 +449,7 @@ func TestKVEngine_CloseWithIndexes(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create an index via extended protocol.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -543,7 +543,7 @@ func TestKVEngine_IndexCreate(t *testing.T) {
 	})
 
 	// Create index -- backfill should find existing data.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -570,7 +570,7 @@ func TestKVEngine_IndexCreateDuplicate(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -596,7 +596,7 @@ func TestKVEngine_IndexDrop(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index.
-	createCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -604,7 +604,7 @@ func TestKVEngine_IndexDrop(t *testing.T) {
 	}
 
 	// Drop index.
-	dropCmd := protocol.EncodeIndexDrop("by_name")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("by_name"))
 	entries2 := []sm.Entry{{Index: 2, Cmd: dropCmd}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -627,7 +627,7 @@ func TestKVEngine_IndexDropNonExistent(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	dropCmd := protocol.EncodeIndexDrop("nonexistent")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("nonexistent"))
 	entries := []sm.Entry{{Index: 1, Cmd: dropCmd}}
 	results := make([]sm.Result, 1)
 	// Should not error.
@@ -647,8 +647,8 @@ func TestKVEngine_IndexList(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create two indexes.
-	cmd1 := protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false)
-	cmd2 := protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false)
+	cmd1 := mustEncode(protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false))
+	cmd2 := mustEncode(protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd1}, {Index: 2, Cmd: cmd2}}
 	results := make([]sm.Result, 2)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -703,7 +703,7 @@ func TestKVEngine_IndexScan(t *testing.T) {
 	})
 
 	// Create index.
-	createCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 4, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -752,10 +752,10 @@ func TestKVEngine_Batch(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("bk2"), []byte("bv2"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk2"), []byte("bv2"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -787,9 +787,9 @@ func TestKVEngine_BatchDelete(t *testing.T) {
 	applyKVEntries(t, eng, []sm.Entry{kvPutEntry(1, "dk1", "dv1")})
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("dk1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("dk1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -827,9 +827,9 @@ func TestKVEngine_BatchWithWatchNotifications(t *testing.T) {
 	}
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -867,9 +867,9 @@ func TestKVEngine_BatchDeleteWithWatch(t *testing.T) {
 	}
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("bdk"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("bdk"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -893,7 +893,7 @@ func TestKVEngine_BatchWithIndexes(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index first.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -902,10 +902,10 @@ func TestKVEngine_BatchWithIndexes(t *testing.T) {
 
 	// Batch put with JSON values.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("u:1"), []byte(`{"name":"alice"}`), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("u:2"), []byte(`{"name":"bob"}`), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("u:1"), []byte(`{"name":"alice"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("u:2"), []byte(`{"name":"bob"}`), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries2 := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -934,9 +934,9 @@ func TestKVEngine_BatchUnsupportedOp(t *testing.T) {
 
 	// Use an unsupported op type in the batch.
 	ops := [][]byte{
-		protocol.EncodeOp(0xEE, []byte("k"), []byte("v"), nil, 0),
+		mustEncode(protocol.EncodeOp(0xEE, []byte("k"), []byte("v"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -963,7 +963,7 @@ func TestKVEngine_PutWithIndexAndWatch(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVWatchHub(hub))
 
 	// Create index.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1014,7 +1014,7 @@ func TestKVEngine_DeleteWithIndexAndWatch(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVWatchHub(hub))
 
 	// Create index.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1089,7 +1089,7 @@ func TestKVEngine_Update_UnsupportedExtendedOp(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// An MVCC op should not be supported in KV engine.
-	cmd := protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0)
+	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("k"), []byte("v"), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -1169,7 +1169,7 @@ func TestKVEngine_BatchDeleteWithIndex(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Create index and put data.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1181,9 +1181,9 @@ func TestKVEngine_BatchDeleteWithIndex(t *testing.T) {
 	// Batch delete -- note: handleBatch passes nil prevKv, so RemoveIndexes
 	// is a no-op for the index. This verifies the code path executes without error.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("u:1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("u:1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries2 := []sm.Entry{{Index: 3, Cmd: batchCmd}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -1262,11 +1262,11 @@ func TestKVEngine_BatchWithMixedOps(t *testing.T) {
 
 	// Put then delete in same batch.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("mk1"), []byte("mv1"), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("mk2"), []byte("mv2"), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("mk1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("mk1"), []byte("mv1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("mk2"), []byte("mv2"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("mk1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1306,7 +1306,7 @@ func TestKVEngine_WithPebbleDB(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVPebbleDB(db))
 
 	// Create index -- should use PebbleIndex.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1336,7 +1336,7 @@ func TestKVEngine_WithPebbleDB_IndexQuery(t *testing.T) {
 		kvPutEntry(1, "u:1", `{"name":"alice"}`),
 	})
 
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1609,11 +1609,11 @@ func TestKVEngine_HandleBatch_WithIndexes(t *testing.T) {
 
 	// Batch put multiple entries.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("users/1"), []byte(`{"name":"alice"}`), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("users/2"), []byte(`{"name":"bob"}`), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("users/3"), []byte(`{"name":"carol"}`), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("users/1"), []byte(`{"name":"alice"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("users/2"), []byte(`{"name":"bob"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("users/3"), []byte(`{"name":"carol"}`), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1758,10 +1758,10 @@ func TestKVEngine_PutBatch_NoIndexes(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("k2"), []byte("v2"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("k2"), []byte("v2"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1801,10 +1801,10 @@ func TestKVEngine_DeleteBatch_NoIndexes(t *testing.T) {
 
 	// Batch delete.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("k1"), nil, nil, 0),
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("k2"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("k1"), nil, nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("k2"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 3, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1852,10 +1852,10 @@ func TestKVEngine_HandleBatch_MixedOps_WithIndexes(t *testing.T) {
 
 	// Batch: put users/2, delete users/1.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("users/2"), []byte(`{"name":"bob"}`), nil, 0),
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("users/1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("users/2"), []byte(`{"name":"bob"}`), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("users/1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1926,7 +1926,7 @@ func TestKVEngine_HandleIndexCreate_WithLogger(t *testing.T) {
 	})
 
 	// Create index via extended protocol -- engine uses the injected logger.
-	idxCmd := protocol.EncodeIndexCreate("by_color", "color", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_color", "color", false, false, false))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1957,8 +1957,7 @@ func TestKVEngine_HandleIndexCreate_AlreadyExists(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
-
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	// First create.
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
@@ -2002,7 +2001,7 @@ func TestKVEngine_HandleIndexDrop_Nonexistent(t *testing.T) {
 
 	eng := NewKVEngine(stg)
 
-	dropCmd := protocol.EncodeIndexDrop("does_not_exist")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("does_not_exist"))
 	entries := []sm.Entry{{Index: 1, Cmd: dropCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2063,7 +2062,7 @@ func TestKVEngine_Close_ClosesIndexes(t *testing.T) {
 	}
 
 	// Also create a protocol-level index.
-	idxCmd := protocol.EncodeIndexCreate("by_age", "age", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_age", "age", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2379,9 +2378,9 @@ func TestHandleBatch_BatchSetError(t *testing.T) {
 	eng := newEngineWithFailingStorage(t, fs)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -2410,9 +2409,9 @@ func TestHandleBatch_BatchDeleteError(t *testing.T) {
 	}
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("k1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("k1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -2436,9 +2435,9 @@ func TestHandleBatch_BatchCommitError(t *testing.T) {
 	eng := newEngineWithFailingStorage(t, fs)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("k1"), []byte("v1"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -2471,9 +2470,9 @@ func TestHandleBatch_IndexUpdateError(t *testing.T) {
 	injectFailingIndex(eng, "users.Name", "name", true, false)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMPut, []byte("users/1"), []byte(`{"name":"alice"}`), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("users/1"), []byte(`{"name":"alice"}`), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err = eng.Update(context.Background(), entries, results)
@@ -2512,9 +2511,9 @@ func TestHandleBatch_IndexRemoveError(t *testing.T) {
 	injectFailingIndex(eng, "users.Name", "name", false, true)
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpFSMDelete, []byte("users/1"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("users/1"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err = eng.Update(context.Background(), entries, results)

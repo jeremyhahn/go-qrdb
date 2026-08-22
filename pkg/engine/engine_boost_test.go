@@ -223,10 +223,10 @@ func TestMVCCEngine_Update_Batch(t *testing.T) {
 
 	// Use protocol.EncodeOp to produce properly-encoded MVCC ops for a batch.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0),
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0)),
 	}
-	batchPayload := protocol.EncodeBatch(ops)
+	batchPayload := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchPayload}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -247,7 +247,7 @@ func TestMVCCEngine_HandleBatch_EmptyOps(t *testing.T) {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 
-	batchPayload := protocol.EncodeBatch(nil)
+	batchPayload := mustEncode(protocol.EncodeBatch(nil))
 	entries := []sm.Entry{{Index: 1, Cmd: batchPayload}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -270,15 +270,14 @@ func TestMVCCEngine_Transaction_FailureBranch(t *testing.T) {
 
 	// Compare on a key that doesn't exist → condition fails → failure ops execute.
 	// CompareVersion=0, target=version(0x01), result=equal(0x00).
-	cmp := protocol.EncodeCompare(
+	cmp := mustEncode(protocol.EncodeCompare(
 		[]byte("nonexistent"),
 		0x01,          // target = version
 		0x00,          // result = equal
 		nil, 10, 0, 0, // version=10 → will not equal actual version 0
-	)
-	failureOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("failure"), []byte("no"), nil, 0)
-
-	txnPayload := protocol.EncodeTransaction([][]byte{cmp}, nil, [][]byte{failureOp})
+	))
+	failureOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("failure"), []byte("no"), nil, 0))
+	txnPayload := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, nil, [][]byte{failureOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: txnPayload}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -295,11 +294,10 @@ func TestKVEngine_HandleBatch_PutAndDelete(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	eng := NewKVEngine(stg)
 
-	put1 := protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0)
-	put2 := protocol.EncodeOp(protocol.OpFSMPut, []byte("bk2"), []byte("bv2"), nil, 0)
-	del1 := protocol.EncodeOp(protocol.OpFSMDelete, []byte("bk1"), nil, nil, 0)
-	batchPayload := protocol.EncodeBatch([][]byte{put1, put2, del1})
-
+	put1 := mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0))
+	put2 := mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk2"), []byte("bv2"), nil, 0))
+	del1 := mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("bk1"), nil, nil, 0))
+	batchPayload := mustEncode(protocol.EncodeBatch([][]byte{put1, put2, del1}))
 	entries := []sm.Entry{{Index: 1, Cmd: batchPayload}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -490,25 +488,25 @@ func TestMVCCEngine_HandleBatch_UniqueViolation(t *testing.T) {
 	}
 
 	// Create a unique index.
-	idxCreateCmd := protocol.EncodeIndexCreate("by_email", "email", true, false, false)
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
 
 	// First batch: put a user.
 	val1 := []byte(`{"name":"alice","email":"x@test.com"}`)
 	ops1 := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:1"), val1, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:1"), val1, nil, 0)),
 	}
-	batch1 := protocol.EncodeBatch(ops1)
+	batch1 := mustEncode(protocol.EncodeBatch(ops1))
 	r1 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batch1}}, r1)
 
 	// Second batch: try to put a conflicting user.
 	val2 := []byte(`{"name":"bob","email":"x@test.com"}`)
 	ops2 := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:2"), val2, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:2"), val2, nil, 0)),
 	}
-	batch2 := protocol.EncodeBatch(ops2)
+	batch2 := mustEncode(protocol.EncodeBatch(ops2))
 	r2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batch2}}, r2); err != nil {
 		t.Fatalf("batch unique violation: %v", err)
@@ -601,7 +599,7 @@ func TestMVCCEngine_ExecuteDecodedOp_DeleteWithIndex(t *testing.T) {
 	}
 
 	// Create an index and insert a value.
-	idxCreateCmd := protocol.EncodeIndexCreate("by_tag", "tag", false, false, false)
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_tag", "tag", false, false, false))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, r0)
 
@@ -611,8 +609,8 @@ func TestMVCCEngine_ExecuteDecodedOp_DeleteWithIndex(t *testing.T) {
 	_ = eng.Update(context.Background(), []sm.Entry{put}, r1)
 
 	// Batch delete — exercises executeDecodedOpWithNotify delete branch with RemoveIndexes.
-	del := protocol.EncodeOp(protocol.OpMVCCDelete, []byte("item:1"), nil, nil, 0)
-	batch := protocol.EncodeBatch([][]byte{del})
+	del := mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("item:1"), nil, nil, 0))
+	batch := mustEncode(protocol.EncodeBatch([][]byte{del}))
 	r2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batch}}, r2); err != nil {
 		t.Fatalf("batch delete: %v", err)
@@ -655,8 +653,8 @@ func TestKVEngine_HandleBatch_UnknownOpType(t *testing.T) {
 	eng := NewKVEngine(stg)
 
 	// Encode an op with an unknown type (0xFF).
-	unknownOp := protocol.EncodeOp(0xFF, []byte("k"), []byte("v"), nil, 0)
-	batch := protocol.EncodeBatch([][]byte{unknownOp})
+	unknownOp := mustEncode(protocol.EncodeOp(0xFF, []byte("k"), []byte("v"), nil, 0))
+	batch := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
 	entries := []sm.Entry{{Index: 1, Cmd: batch}}
 	results := make([]sm.Result, 1)
 	// Unknown op is ignored/skipped in the switch default case.
@@ -679,7 +677,7 @@ func TestMVCCEngine_HandleMVCCDelete_WithIndex(t *testing.T) {
 	}
 
 	// Register unique index.
-	idxCmd := protocol.EncodeIndexCreate("by_code", "code", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_code", "code", false, false, false))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
 
@@ -763,8 +761,8 @@ func TestKVEngine_HandleBatch_WithCompoundIndex(t *testing.T) {
 	}
 
 	// A batch with compound-indexed entries.
-	put := protocol.EncodeOp(protocol.OpFSMPut, []byte("thing/1"), []byte(`{"status":"ok","type":"A"}`), nil, 0)
-	batch := protocol.EncodeBatch([][]byte{put})
+	put := mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("thing/1"), []byte(`{"status":"ok","type":"A"}`), nil, 0))
+	batch := mustEncode(protocol.EncodeBatch([][]byte{put}))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: batch}}, results); err != nil {
 		t.Fatalf("batch with compound index: %v", err)
@@ -859,14 +857,14 @@ func TestMVCCEngine_HandleIndexCreate_ThenDrop(t *testing.T) {
 	}
 
 	// Create a unique index on the MVCC engine.
-	createCmd := protocol.EncodeIndexCreate("mvcc_idx", "code", true, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("mvcc_idx", "code", true, false, false))
 	r1 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, r1); err != nil {
 		t.Fatalf("index create: %v", err)
 	}
 
 	// Drop it.
-	dropCmd := protocol.EncodeIndexDrop("mvcc_idx")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("mvcc_idx"))
 	r2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: dropCmd}}, r2); err != nil {
 		t.Fatalf("index drop: %v", err)
@@ -886,7 +884,7 @@ func TestMVCCEngine_HandleIndexCreate_Idempotent(t *testing.T) {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 
-	createCmd := protocol.EncodeIndexCreate("idem_idx", "f", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("idem_idx", "f", false, false, false))
 	for i := 0; i < 2; i++ {
 		r := make([]sm.Result, 1)
 		if err := eng.Update(context.Background(), []sm.Entry{{Index: uint64(i + 1), Cmd: createCmd}}, r); err != nil {
@@ -941,7 +939,7 @@ func TestMVCCEngine_HandleBaseKVPut_UniqueViolation(t *testing.T) {
 	}
 
 	// Create a unique index.
-	idxCmd := protocol.EncodeIndexCreate("by_sku", "sku", true, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_sku", "sku", true, false, false))
 	r0 := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
 
@@ -1020,8 +1018,8 @@ func TestMVCCEngine_Transaction_SuccessBranch(t *testing.T) {
 	// Compare: version > 0 → means "key exists". Use CompareEqual with version=0 to check
 	// the non-existence branch, or use a successful compare (no compare = always succeeds).
 	// Use no compares → always succeeds.
-	successOp := protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn:success"), []byte("yes"), nil, 0)
-	txnPayload := protocol.EncodeTransaction(nil, [][]byte{successOp}, nil)
+	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn:success"), []byte("yes"), nil, 0))
+	txnPayload := mustEncode(protocol.EncodeTransaction(nil, [][]byte{successOp}, nil))
 	r1 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: txnPayload}}, r1); err != nil {
 		t.Fatalf("transaction success: %v", err)
@@ -1098,7 +1096,7 @@ func TestKVEngine_HandleIndexCreate_Numeric(t *testing.T) {
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
 	// numeric=true branch in handleIndexCreate.
-	createCmd := protocol.EncodeIndexCreate("by_score", "score", false, false, true)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("by_score", "score", false, false, true))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results); err != nil {
 		t.Fatalf("numeric index create: %v", err)
@@ -1126,7 +1124,7 @@ func TestMVCCEngine_HandleMVCCCompact_WithRevision(t *testing.T) {
 	}
 
 	// Compact to revision 2.
-	compact := protocol.EncodeMVCCCompact(2)
+	compact := mustEncode(protocol.EncodeMVCCCompact(2))
 	r := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 10, Cmd: compact}}, r); err != nil {
 		t.Fatalf("compact: %v", err)
@@ -1147,7 +1145,7 @@ func TestMVCCEngine_HandleLeaseRevoke_NoLessor(t *testing.T) {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 
-	revokeCmd := protocol.EncodeLeaseRevoke(12345)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(12345))
 	r := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: revokeCmd}}, r); err != nil {
 		t.Fatalf("lease revoke (no lessor): %v", err)
@@ -1171,7 +1169,7 @@ func TestMVCCEngine_HandleLeaseKeepAlive_NoLessor(t *testing.T) {
 		t.Fatalf("NewMVCCEngine: %v", err)
 	}
 
-	kaCmd := protocol.EncodeLeaseKeepAlive(12345)
+	kaCmd := mustEncode(protocol.EncodeLeaseKeepAlive(12345))
 	r := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: kaCmd}}, r); err != nil {
 		t.Fatalf("lease keepalive (no lessor): %v", err)
@@ -1193,7 +1191,7 @@ func TestMVCCEngine_HandleLeaseRevoke_NotFound(t *testing.T) {
 	}
 
 	// Revoke a lease that was never granted → NotFoundError → idempotent success.
-	revokeCmd := protocol.EncodeLeaseRevoke(99999)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(99999))
 	r := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: revokeCmd}}, r); err != nil {
 		t.Fatalf("lease revoke not found: %v", err)
@@ -1331,10 +1329,10 @@ func TestMVCCEngine_HandleBatch_WithDelete(t *testing.T) {
 
 	// Now batch: put k1, delete batchdel.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0),
-		protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batchdel"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batchdel"), nil, nil, 0)),
 	}
-	batchPayload := protocol.EncodeBatch(ops)
+	batchPayload := mustEncode(protocol.EncodeBatch(ops))
 	entries2 := []sm.Entry{{Index: 2, Cmd: batchPayload}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -1383,7 +1381,7 @@ func TestMVCCEngine_MVCCPut_UniqueIndexViolation(t *testing.T) {
 	}
 
 	// Register a unique index via handleIndexCreate.
-	idxCreateCmd := protocol.EncodeIndexCreate("by_email", "email", true, false, false)
+	idxCreateCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
 
@@ -1416,7 +1414,7 @@ func TestKVEngine_HandleIndexCreate_AlreadyExistsBoost(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 
@@ -1437,11 +1435,11 @@ func TestKVEngine_HandleIndexDrop_Existing(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := protocol.EncodeIndexCreate("drop_idx", "field", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("drop_idx", "field", false, false, false))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 
-	dropCmd := protocol.EncodeIndexDrop("drop_idx")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("drop_idx"))
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: dropCmd}}, results2); err != nil {
 		t.Fatalf("index drop: %v", err)
@@ -1458,7 +1456,7 @@ func TestKVEngine_LookupIndexList(t *testing.T) {
 	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
 	eng := NewKVEngine(stg, WithKVLogger(log))
 
-	createCmd := protocol.EncodeIndexCreate("list_idx", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("list_idx", "name", false, false, false))
 	results := make([]sm.Result, 1)
 	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
 
@@ -1473,4 +1471,15 @@ func TestKVEngine_LookupIndexList(t *testing.T) {
 	if len(names) == 0 {
 		t.Error("expected at least one index name in list")
 	}
+}
+
+// mustEncode unwraps an encoder's (command, error) pair for tests whose
+// inputs are small and fixed. An error here is a TEST bug -- the encoders
+// refuse only values their length fields cannot describe -- so it fails
+// loudly rather than being threaded through every call site.
+func mustEncode(cmd []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return cmd
 }

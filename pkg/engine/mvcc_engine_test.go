@@ -49,12 +49,12 @@ func newMVCCEngine(t *testing.T, opts ...MVCCOption) (*MVCCEngine, *memory.Memor
 }
 
 func mvccPutEntry(idx uint64, key, value []byte, leaseID int64) sm.Entry {
-	cmd := protocol.EncodeMVCCPut(key, value, leaseID)
+	cmd := mustEncode(protocol.EncodeMVCCPut(key, value, leaseID))
 	return sm.Entry{Index: idx, Cmd: cmd}
 }
 
 func mvccDeleteEntry(idx uint64, key []byte) sm.Entry {
-	cmd := protocol.EncodeMVCCDelete(key)
+	cmd := mustEncode(protocol.EncodeMVCCDelete(key))
 	return sm.Entry{Index: idx, Cmd: cmd}
 }
 
@@ -249,7 +249,7 @@ func TestMVCCEngine_Update_MVCCPutWithLease(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant a lease first.
-	leaseCmd := protocol.EncodeLeaseGrant(60)
+	leaseCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	leaseEntries := []sm.Entry{{Index: 1, Cmd: leaseCmd}}
 	leaseResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), leaseEntries, leaseResults); err != nil {
@@ -661,7 +661,7 @@ func TestMVCCEngine_CloseWithIndexes(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 
 	// Create an index.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -767,7 +767,7 @@ func TestMVCCEngine_IndexCreate(t *testing.T) {
 	})
 
 	// Create index.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -796,7 +796,7 @@ func TestMVCCEngine_IndexCreateDuplicate(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -879,7 +879,7 @@ func TestMVCCEngine_IndexCreate_NotVisibleUntilBackfilled(t *testing.T) {
 		}
 	}()
 
-	idxCmd := protocol.EncodeIndexCreate("by_city", "city", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_city", "city", false, false, false))
 	entries := []sm.Entry{{Index: total + 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -903,7 +903,7 @@ func TestMVCCEngine_IndexDrop(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index.
-	createCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	createCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: createCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -911,7 +911,7 @@ func TestMVCCEngine_IndexDrop(t *testing.T) {
 	}
 
 	// Drop index.
-	dropCmd := protocol.EncodeIndexDrop("by_name")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("by_name"))
 	entries2 := []sm.Entry{{Index: 2, Cmd: dropCmd}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -939,7 +939,7 @@ func TestMVCCEngine_IndexDropNonExistent(t *testing.T) {
 	// Dropping a non-existent index is a no-op success (idempotent). A
 	// non-nil error from a Raft Update() handler permanently stalls the
 	// cluster, so drop-not-found must succeed without error.
-	dropCmd := protocol.EncodeIndexDrop("nonexistent")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("nonexistent"))
 	entries := []sm.Entry{{Index: 1, Cmd: dropCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -960,8 +960,8 @@ func TestMVCCEngine_IndexList(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create indexes.
-	cmd1 := protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false)
-	cmd2 := protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false)
+	cmd1 := mustEncode(protocol.EncodeIndexCreate("idx_a", "field_a", false, false, false))
+	cmd2 := mustEncode(protocol.EncodeIndexCreate("idx_b", "field_b", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd1}, {Index: 2, Cmd: cmd2}}
 	results := make([]sm.Result, 2)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -993,7 +993,7 @@ func TestMVCCEngine_LeaseGrant(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1011,7 +1011,7 @@ func TestMVCCEngine_LeaseGrantNoLessor(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	cmd := protocol.EncodeLeaseGrant(60)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1034,7 +1034,7 @@ func TestMVCCEngine_LeaseRevoke(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -1048,7 +1048,7 @@ func TestMVCCEngine_LeaseRevoke(t *testing.T) {
 	})
 
 	// Revoke.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeEntries := []sm.Entry{{Index: 3, Cmd: revokeCmd}}
 	revokeResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), revokeEntries, revokeResults); err != nil {
@@ -1077,7 +1077,7 @@ func TestMVCCEngine_LeaseKeepAlive(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -1086,7 +1086,7 @@ func TestMVCCEngine_LeaseKeepAlive(t *testing.T) {
 	leaseID := int64(grantResults[0].Value)
 
 	// KeepAlive.
-	kaCmd := protocol.EncodeLeaseKeepAlive(leaseID)
+	kaCmd := mustEncode(protocol.EncodeLeaseKeepAlive(leaseID))
 	kaEntries := []sm.Entry{{Index: 2, Cmd: kaCmd}}
 	kaResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), kaEntries, kaResults); err != nil {
@@ -1102,7 +1102,7 @@ func TestMVCCEngine_LeaseKeepAliveNoLessor(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	kaCmd := protocol.EncodeLeaseKeepAlive(1)
+	kaCmd := mustEncode(protocol.EncodeLeaseKeepAlive(1))
 	entries := []sm.Entry{{Index: 1, Cmd: kaCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1129,7 +1129,7 @@ func TestMVCCEngine_Lookup_LeaseTimeToLive(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	entries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1171,7 +1171,7 @@ func TestMVCCEngine_Lookup_LeasesQuery(t *testing.T) {
 
 	// Grant 2 leases.
 	for i := 0; i < 2; i++ {
-		grantCmd := protocol.EncodeLeaseGrant(60)
+		grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 		entries := []sm.Entry{{Index: uint64(i + 1), Cmd: grantCmd}}
 		results := make([]sm.Result, 1)
 		if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1220,20 +1220,20 @@ func TestMVCCEngine_Transaction_Success(t *testing.T) {
 
 	// Transaction: compare value == "old", then put "new".
 	compares := [][]byte{
-		protocol.EncodeCompare(
+		mustEncode(protocol.EncodeCompare(
 			[]byte("txkey"),
 			byte(service.CompareValue),
 			byte(service.CompareEqual),
 			[]byte("old"),
 			0, 0, kvResult.ModRevision,
-		),
+		)),
 	}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("new"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("new"), nil, 0)),
 	}
 	failureOps := [][]byte{}
 
-	txnCmd := protocol.EncodeTransaction(compares, successOps, failureOps)
+	txnCmd := mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1267,22 +1267,22 @@ func TestMVCCEngine_Transaction_Failure(t *testing.T) {
 
 	// Transaction: compare value == "wrong" (will fail), failureOps put "failed".
 	compares := [][]byte{
-		protocol.EncodeCompare(
+		mustEncode(protocol.EncodeCompare(
 			[]byte("txkey"),
 			byte(service.CompareValue),
 			byte(service.CompareEqual),
 			[]byte("wrong"),
 			0, 0, 0,
-		),
+		)),
 	}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("new"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("new"), nil, 0)),
 	}
 	failureOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("failed"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txkey"), []byte("failed"), nil, 0)),
 	}
 
-	txnCmd := protocol.EncodeTransaction(compares, successOps, failureOps)
+	txnCmd := mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1314,10 +1314,10 @@ func TestMVCCEngine_Batch(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0),
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1347,9 +1347,9 @@ func TestMVCCEngine_BatchWithDelete(t *testing.T) {
 	})
 
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCDelete, []byte("dk"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("dk"), nil, nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1381,7 +1381,7 @@ func TestMVCCEngine_Compact(t *testing.T) {
 	})
 
 	// Compact to revision 1.
-	compactCmd := protocol.EncodeMVCCCompact(1)
+	compactCmd := mustEncode(protocol.EncodeMVCCCompact(1))
 	entries := []sm.Entry{{Index: 3, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1397,7 +1397,7 @@ func TestMVCCEngine_CompactEmpty(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	compactCmd := protocol.EncodeMVCCCompact(0)
+	compactCmd := mustEncode(protocol.EncodeMVCCCompact(0))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1493,7 +1493,7 @@ func TestMVCCEngine_Lookup_IndexScan(t *testing.T) {
 		mvccPutEntry(2, []byte("u:2"), []byte(`{"age":"30"}`), 0),
 	})
 
-	idxCmd := protocol.EncodeIndexCreate("by_age", "age", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_age", "age", false, false, false))
 	entries := []sm.Entry{{Index: 3, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1731,7 +1731,7 @@ func TestMVCCEngine_IndexUpdateViaPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index first.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1763,7 +1763,7 @@ func TestMVCCEngine_IndexRemoveViaDelete(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1924,7 +1924,7 @@ func TestMVCCEngine_Update_TSWriteNoTS(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSWrite("cpu", time.Now().UnixNano(), 42.0, nil)
+	tsCmd := mustEncode(protocol.EncodeTSWrite("cpu", time.Now().UnixNano(), 42.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1940,7 +1940,7 @@ func TestMVCCEngine_Update_TSWritePointNoTS(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSWritePoint("cpu", time.Now().UnixNano(), 42.0, nil)
+	tsCmd := mustEncode(protocol.EncodeTSWritePoint("cpu", time.Now().UnixNano(), 42.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1956,7 +1956,7 @@ func TestMVCCEngine_Update_TSDeleteSeriesNoTS(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSDeleteSeries("cpu", 0, 0, nil)
+	tsCmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu", 0, 0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1972,7 +1972,7 @@ func TestMVCCEngine_Update_TSSetRetentionNoTS(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSSetRetention("cpu", 3600_000_000_000, 60_000_000_000, 0)
+	tsCmd := mustEncode(protocol.EncodeTSSetRetention("cpu", 3600_000_000_000, 60_000_000_000, 0))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -1988,9 +1988,9 @@ func TestMVCCEngine_Update_TSWriteBatchNoTS(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
+	tsCmd := mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
 		{Metric: "cpu", Timestamp: time.Now().UnixNano(), Value: 42.0},
-	})
+	}))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2010,7 +2010,7 @@ func TestMVCCEngine_LeaseRevokeNoLessor(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	revokeCmd := protocol.EncodeLeaseRevoke(1)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(1))
 	entries := []sm.Entry{{Index: 1, Cmd: revokeCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2061,7 +2061,7 @@ func TestMVCCEngine_BaseKVDeleteWithLessor(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2105,7 +2105,7 @@ func TestMVCCEngine_MVCCDeleteWithLessorDetach(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2150,11 +2150,11 @@ func TestMVCCEngine_Transaction_DeleteOp(t *testing.T) {
 	// Transaction: no compares (always succeed), success ops = delete.
 	compares := [][]byte{}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCDelete, []byte("txdel"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("txdel"), nil, nil, 0)),
 	}
 	failureOps := [][]byte{}
 
-	txnCmd := protocol.EncodeTransaction(compares, successOps, failureOps)
+	txnCmd := mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2187,7 +2187,7 @@ func TestMVCCEngine_Transaction_PutWithLease(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2198,11 +2198,11 @@ func TestMVCCEngine_Transaction_PutWithLease(t *testing.T) {
 	// Transaction with put + leaseID.
 	compares := [][]byte{}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("txlk"), []byte("txlv"), nil, leaseID),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txlk"), []byte("txlv"), nil, leaseID)),
 	}
 	failureOps := [][]byte{}
 
-	txnCmd := protocol.EncodeTransaction(compares, successOps, failureOps)
+	txnCmd := mustEncode(protocol.EncodeTransaction(compares, successOps, failureOps))
 	entries := []sm.Entry{{Index: 2, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2235,7 +2235,7 @@ func TestMVCCEngine_Transaction_DeleteWithLeaseDetach(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2251,9 +2251,9 @@ func TestMVCCEngine_Transaction_DeleteWithLeaseDetach(t *testing.T) {
 	// Transaction: delete with lease detach.
 	compares := [][]byte{}
 	successOps := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCDelete, []byte("tdlk"), nil, nil, 0),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("tdlk"), nil, nil, 0)),
 	}
-	txnCmd := protocol.EncodeTransaction(compares, successOps, nil)
+	txnCmd := mustEncode(protocol.EncodeTransaction(compares, successOps, nil))
 	entries := []sm.Entry{{Index: 3, Cmd: txnCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2277,7 +2277,7 @@ func TestMVCCEngine_BatchWithLeaseOps(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2287,9 +2287,9 @@ func TestMVCCEngine_BatchWithLeaseOps(t *testing.T) {
 
 	// Batch: put with lease, then delete.
 	ops := [][]byte{
-		protocol.EncodeOp(protocol.OpMVCCPut, []byte("blk"), []byte("blv"), nil, leaseID),
+		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("blk"), []byte("blv"), nil, leaseID)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 2, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2324,7 +2324,7 @@ func TestMVCCEngine_LeaseRevokeWithWatch(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2346,7 +2346,7 @@ func TestMVCCEngine_LeaseRevokeWithWatch(t *testing.T) {
 	}
 
 	// Revoke.
-	revokeCmd := protocol.EncodeLeaseRevoke(leaseID)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(leaseID))
 	revokeEntries := []sm.Entry{{Index: 3, Cmd: revokeCmd}}
 	revokeResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), revokeEntries, revokeResults); err != nil {
@@ -2413,7 +2413,7 @@ func TestMVCCEngine_MVCCPut_LeaseAttach(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Grant lease.
-	grantCmd := protocol.EncodeLeaseGrant(60)
+	grantCmd := mustEncode(protocol.EncodeLeaseGrant(60))
 	grantEntries := []sm.Entry{{Index: 1, Cmd: grantCmd}}
 	grantResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), grantEntries, grantResults); err != nil {
@@ -2462,9 +2462,9 @@ func TestMVCCEngine_BatchUnsupportedOp(t *testing.T) {
 
 	// Use an unsupported op type in the batch.
 	ops := [][]byte{
-		protocol.EncodeOp(0xEE, []byte("k"), []byte("v"), nil, 0),
+		mustEncode(protocol.EncodeOp(0xEE, []byte("k"), []byte("v"), nil, 0)),
 	}
-	batchCmd := protocol.EncodeBatch(ops)
+	batchCmd := mustEncode(protocol.EncodeBatch(ops))
 	entries := []sm.Entry{{Index: 1, Cmd: batchCmd}}
 	results := make([]sm.Result, 1)
 	err := eng.Update(context.Background(), entries, results)
@@ -2701,7 +2701,7 @@ func TestMVCCEngine_TSWrite(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	now := time.Now().UnixNano()
-	tsCmd := protocol.EncodeTSWrite("cpu.usage", now, 42.5, map[string]string{"host": "a"})
+	tsCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now, 42.5, map[string]string{"host": "a"}))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2726,7 +2726,7 @@ func TestMVCCEngine_TSWritePoint(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	now := time.Now().UnixNano()
-	tsCmd := protocol.EncodeTSWritePoint("cpu.usage", now, 55.0, nil)
+	tsCmd := mustEncode(protocol.EncodeTSWritePoint("cpu.usage", now, 55.0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2751,10 +2751,10 @@ func TestMVCCEngine_TSWriteBatch(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	now := time.Now().UnixNano()
-	tsCmd := protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
+	tsCmd := mustEncode(protocol.EncodeTSWriteBatch([]protocol.TSWriteParams{
 		{Metric: "cpu", Timestamp: now, Value: 42.0, Tags: map[string]string{"host": "a"}},
 		{Metric: "mem", Timestamp: now, Value: 80.0, Tags: map[string]string{"host": "a"}},
-	})
+	}))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2781,7 +2781,7 @@ func TestMVCCEngine_TSDeleteSeries(t *testing.T) {
 	now := time.Now().UnixNano()
 
 	// Write a data point first.
-	writeCmd := protocol.EncodeTSWrite("cpu.usage", now, 42.5, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now, 42.5, nil))
 	wEntries := []sm.Entry{{Index: 1, Cmd: writeCmd}}
 	wResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
@@ -2789,7 +2789,7 @@ func TestMVCCEngine_TSDeleteSeries(t *testing.T) {
 	}
 
 	// Delete series.
-	delCmd := protocol.EncodeTSDeleteSeries("cpu.usage", now-1000, now+1000, nil)
+	delCmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", now-1000, now+1000, nil))
 	entries := []sm.Entry{{Index: 2, Cmd: delCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2813,7 +2813,7 @@ func TestMVCCEngine_TSSetRetention(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	tsCmd := protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 0)
+	tsCmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2840,7 +2840,7 @@ func TestMVCCEngine_TSQuery(t *testing.T) {
 	now := time.Now()
 
 	// Write a data point.
-	writeCmd := protocol.EncodeTSWrite("cpu.usage", now.UnixNano(), 42.5, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now.UnixNano(), 42.5, nil))
 	wEntries := []sm.Entry{{Index: 1, Cmd: writeCmd}}
 	wResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
@@ -2878,7 +2878,7 @@ func TestMVCCEngine_TSAggregate(t *testing.T) {
 
 	// Write data points.
 	for i := 0; i < 3; i++ {
-		writeCmd := protocol.EncodeTSWrite("cpu.usage", now.Add(time.Duration(i)*time.Second).UnixNano(), float64(40+i), nil)
+		writeCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now.Add(time.Duration(i)*time.Second).UnixNano(), float64(40+i), nil))
 		wEntries := []sm.Entry{{Index: uint64(i + 1), Cmd: writeCmd}}
 		wResults := make([]sm.Result, 1)
 		if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
@@ -2916,7 +2916,7 @@ func TestMVCCEngine_TSGetRetention(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Set retention first.
-	tsCmd := protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 0)
+	tsCmd := mustEncode(protocol.EncodeTSSetRetention("cpu.usage", int64(24*time.Hour), int64(time.Minute), 0))
 	entries := []sm.Entry{{Index: 1, Cmd: tsCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -2948,7 +2948,7 @@ func TestMVCCEngine_TSListMetrics(t *testing.T) {
 
 	// Write data points for different metrics.
 	now := time.Now().UnixNano()
-	writeCmd := protocol.EncodeTSWrite("cpu.usage", now, 42.5, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now, 42.5, nil))
 	wEntries := []sm.Entry{{Index: 1, Cmd: writeCmd}}
 	wResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
@@ -2989,7 +2989,7 @@ func TestMVCCEngine_WithMVCCPebbleDB(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index -- should use PebbleIndex.
-	idxCmd := protocol.EncodeIndexCreate("by_name", "name", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_name", "name", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3033,7 +3033,7 @@ func TestMVCCEngine_TSDeleteSeries_ZeroTimestamps(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Delete with zero timestamps (deletes all).
-	delCmd := protocol.EncodeTSDeleteSeries("cpu.usage", 0, 0, nil)
+	delCmd := mustEncode(protocol.EncodeTSDeleteSeries("cpu.usage", 0, 0, nil))
 	entries := []sm.Entry{{Index: 1, Cmd: delCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3061,7 +3061,7 @@ func TestMVCCEngine_TSRichQuery(t *testing.T) {
 	now := time.Now()
 
 	// Write a point.
-	writeCmd := protocol.EncodeTSWrite("cpu.usage", now.UnixNano(), 42.5, nil)
+	writeCmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", now.UnixNano(), 42.5, nil))
 	wEntries := []sm.Entry{{Index: 1, Cmd: writeCmd}}
 	wResults := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), wEntries, wResults); err != nil {
@@ -3100,7 +3100,7 @@ func TestMVCCEngine_LeaseGrant_Success(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	cmd := protocol.EncodeLeaseGrant(30)
+	cmd := mustEncode(protocol.EncodeLeaseGrant(30))
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3133,7 +3133,7 @@ func TestMVCCEngine_LeaseGrant_InvalidTTL(t *testing.T) {
 	}
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	cmd := protocol.EncodeLeaseGrant(0) // invalid TTL
+	cmd := mustEncode(protocol.EncodeLeaseGrant(0)) // invalid TTL
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 	if err = eng.Update(context.Background(), entries, results); err != nil {
@@ -3162,7 +3162,7 @@ func TestMVCCEngine_LeaseKeepAlive_NonExistent(t *testing.T) {
 	// KeepAlive on a non-existent lease is a no-op success (idempotent). A
 	// non-nil error from a Raft Update() handler permanently stalls the
 	// cluster, so keepalive-not-found must succeed without error.
-	kaCmd := protocol.EncodeLeaseKeepAlive(99999)
+	kaCmd := mustEncode(protocol.EncodeLeaseKeepAlive(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: kaCmd}}
 	results := make([]sm.Result, 1)
 	if err = eng.Update(context.Background(), entries, results); err != nil {
@@ -3192,7 +3192,7 @@ func TestMVCCEngine_LeaseRevoke_NonExistent(t *testing.T) {
 	// Revoking a non-existent lease is a no-op success (idempotent). A
 	// non-nil error from a Raft Update() handler permanently stalls the
 	// cluster, so revoke-not-found must succeed without error.
-	revokeCmd := protocol.EncodeLeaseRevoke(99999)
+	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(99999))
 	entries := []sm.Entry{{Index: 1, Cmd: revokeCmd}}
 	results := make([]sm.Result, 1)
 	if err = eng.Update(context.Background(), entries, results); err != nil {
@@ -3214,7 +3214,7 @@ func TestMVCCEngine_IndexDrop_ClearAndClose(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create index, put data, then drop.
-	idxCmd := protocol.EncodeIndexCreate("by_x", "x", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_x", "x", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3225,7 +3225,7 @@ func TestMVCCEngine_IndexDrop_ClearAndClose(t *testing.T) {
 		mvccPutEntry(2, []byte("d:1"), []byte(`{"x":"val"}`), 0),
 	})
 
-	dropCmd := protocol.EncodeIndexDrop("by_x")
+	dropCmd := mustEncode(protocol.EncodeIndexDrop("by_x"))
 	entries2 := []sm.Entry{{Index: 3, Cmd: dropCmd}}
 	results2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries2, results2); err != nil {
@@ -3290,7 +3290,7 @@ func TestMVCCEngine_Compact_HighRevision(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Compact at a revision higher than any data -- should not error.
-	compactCmd := protocol.EncodeMVCCCompact(999)
+	compactCmd := mustEncode(protocol.EncodeMVCCCompact(999))
 	entries := []sm.Entry{{Index: 1, Cmd: compactCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3511,7 +3511,7 @@ func TestMVCCEngine_BaseKVPut_ThenIndexCreate_ThenQuery(t *testing.T) {
 	})
 
 	// Step 2: Create index on field "f2" (same as GUI "Create Index").
-	idxCmd := protocol.EncodeIndexCreate("f2", "f2", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2", "f2", false, false, false))
 	entries := []sm.Entry{{Index: 2, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3538,7 +3538,7 @@ func TestMVCCEngine_BaseKVPut_AfterIndexCreate_ThenQuery(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Step 1: Create index on field "f2" FIRST.
-	idxCmd := protocol.EncodeIndexCreate("f2", "f2", false, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2", "f2", false, false, false))
 	entries := []sm.Entry{{Index: 1, Cmd: idxCmd}}
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
@@ -3577,7 +3577,7 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsMVCCPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create a unique index on field "email".
-	idxCmd := protocol.EncodeIndexCreate("by_email", "email", true, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3617,7 +3617,7 @@ func TestMVCCEngine_UniqueIndex_ViolationAbortsBaseKVPut(t *testing.T) {
 	defer func() { _ = eng.Close(context.Background()) }()
 
 	// Create a unique index on field "uid".
-	idxCmd := protocol.EncodeIndexCreate("by_uid", "uid", true, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_uid", "uid", true, false, false))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3655,7 +3655,7 @@ func TestMVCCEngine_UniqueIndex_UpdateSameKeyAllowed(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	idxCmd := protocol.EncodeIndexCreate("by_email", "email", true, false, false)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("by_email", "email", true, false, false))
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, results); err != nil {
 		t.Fatalf("index create: %v", err)
@@ -3729,7 +3729,7 @@ func TestMVCCEngine_NumericIndex_ScanRange(t *testing.T) {
 	defer cleanup()
 
 	// Create a numeric index on field "f2".
-	idxCmd := protocol.EncodeIndexCreate("f2num", "f2", false, false, true)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("f2num", "f2", false, false, true))
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 		t.Fatalf("index create: %v", err)
 	}
@@ -3809,7 +3809,7 @@ func TestMVCCEngine_NumericIndex_NonNumericSkipped(t *testing.T) {
 	eng, cleanup := newMVCCEngineWithPebble(t)
 	defer cleanup()
 
-	idxCmd := protocol.EncodeIndexCreate("numskip", "score", false, false, true)
+	idxCmd := mustEncode(protocol.EncodeIndexCreate("numskip", "score", false, false, true))
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, make([]sm.Result, 1)); err != nil {
 		t.Fatalf("index create: %v", err)
 	}
