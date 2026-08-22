@@ -2053,16 +2053,34 @@ func TestNewPeersCmd_Execute_ServerError(t *testing.T) {
 // newStartCmd RunE error paths
 // ---------------------------------------------------------------------------
 
+// An unreadable --config aborts the command, and it is the config load that
+// aborts it.
+//
+// The error type is asserted, not just its presence, because this is the only
+// test that holds newStartCmd's RunE to resolving the configuration at all.
+// Merely requiring a non-nil error does not: a RunE that ignored --config
+// entirely and fell through to startup would fail for its own reasons and
+// still pass. Removing the resolveStartFlags call was measured to leave the
+// weaker form green.
 func TestNewStartCmd_InvalidConfig(t *testing.T) {
+	const path = "/nonexistent/path/config.yaml"
+
 	cmd := newStartCmd()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"--config", "/nonexistent/path/config.yaml"})
+	cmd.SetArgs([]string{"--config", path})
 
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("Execute() error = nil, want non-nil for invalid config path")
+	}
+	var loadErr *qrdbconfig.LoadError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("error type = %T, want *config.LoadError; err = %v", err, err)
+	}
+	if loadErr.Path != path {
+		t.Errorf("LoadError.Path = %q, want %q", loadErr.Path, path)
 	}
 }
 
@@ -2646,10 +2664,14 @@ func TestNewStartCmd_MemorySM_SingleNodeStatic_WithPeer(t *testing.T) {
 	}
 }
 
+// A file-supplied configuration is overridden by the CLI flag for the same
+// setting.
+//
+// What this exercises is config loading + applyConfigToFlags, so it asserts on
+// those and not on the startup error that used to stand in for them: reaching
+// UnknownSMError meant running most of runStart first, and any of that work
+// can fail earlier under load (go-qrdb#84).
 func TestNewStartCmd_ValidConfig_SMUnknown(t *testing.T) {
-	// Create a temporary valid YAML config file with an unknown SM type.
-	// The command should fail with UnknownSMError during initializeNode
-	// which exercises the config loading + applyConfigToFlags path.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
 
@@ -2683,21 +2705,33 @@ discovery:
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	cmd := newStartCmd()
-	buf := &bytes.Buffer{}
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	// The YAML has no sm_type, so the default "pebble" applies.
-	// Override via CLI to "unknown-sm" to trigger an error early.
-	cmd.SetArgs([]string{"--config", cfgPath, "--sm", "unknown-sm"})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() should fail with UnknownSMError")
+	cmd, f := newStartCmdWithFlags()
+	// The YAML has no sm_type, so without the flag the default "pebble"
+	// would apply.
+	if err := cmd.ParseFlags([]string{"--config", cfgPath, "--sm", "unknown-sm"}); err != nil {
+		t.Fatalf("ParseFlags() error = %v", err)
 	}
-	var smErr *UnknownSMError
-	if !errors.As(err, &smErr) {
-		t.Fatalf("error type = %T, want *UnknownSMError; err = %v", err, err)
+	if err := resolveStartFlags(cmd, f); err != nil {
+		t.Fatalf("resolveStartFlags() error = %v", err)
+	}
+
+	if f.smType != "unknown-sm" {
+		t.Errorf("smType = %q, want %q: the CLI flag did not override the file", f.smType, "unknown-sm")
+	}
+	if f.adminPort != 19443 {
+		t.Errorf("adminPort = %d, want 19443", f.adminPort)
+	}
+	if f.grpcPort != 19444 {
+		t.Errorf("grpcPort = %d, want 19444", f.grpcPort)
+	}
+	if f.raftAddress != "127.0.0.1:19001" {
+		t.Errorf("raftAddress = %q, want %q", f.raftAddress, "127.0.0.1:19001")
+	}
+	if f.dataDir != filepath.Join(dir, "data") {
+		t.Errorf("dataDir = %q, want %q", f.dataDir, filepath.Join(dir, "data"))
+	}
+	if !f.enableREST || f.enableGRPC {
+		t.Errorf("protocols = rest:%v grpc:%v, want rest:true grpc:false", f.enableREST, f.enableGRPC)
 	}
 }
 

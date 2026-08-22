@@ -1781,14 +1781,26 @@ bootstrap:
 `
 	require.NoError(t, os.WriteFile(cfgFile, []byte(yaml), 0o600))
 
-	// Use --sm nonexistent via CLI to force an UnknownSMError after the
-	// config (including bootstrap fields) has been loaded and applied.
-	cmd := newStartCmd()
-	cmd.SetArgs([]string{"--config", cfgFile, "--sm", "nonexistent"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr))
+	// Read the resolved flags rather than forcing a startup failure and
+	// asserting on its error type -- the same load sensitivity as
+	// TestNewStartCmd_ValidConfigFileApplied, which is go-qrdb#84. Reaching
+	// the unknown SM meant first binding the bootstrap Noise port that this
+	// very config configures.
+	cmd, f := newStartCmdWithFlags()
+	require.NoError(t, cmd.ParseFlags([]string{"--config", cfgFile, "--sm", "nonexistent"}))
+	require.NoError(t, resolveStartFlags(cmd, f))
+
+	assert.Equal(t, "aabbccdd", f.bootstrapNoiseKey)
+	assert.Equal(t, "10.0.0.1:63006", f.bootstrapNoiseAddr)
+	assert.Equal(t, 63007, f.bootstrapNoisePort)
+	assert.Equal(t, "sha256pin", f.bootstrapSPKIPin)
+	assert.Equal(t, "8.8.8.8:53", f.bootstrapDANEDNS)
+	assert.True(t, f.bootstrapDANEDoT)
+	assert.Equal(t, "https://bootstrap.example.com", f.bootstrapDirectURL)
+	assert.Equal(t, "10.0.0.1:8443", f.bootstrapAddr)
+
+	// The CLI flag still overrides the file.
+	assert.Equal(t, "nonexistent", f.smType)
 }
 
 // ---------------------------------------------------------------------------

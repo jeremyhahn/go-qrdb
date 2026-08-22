@@ -773,13 +773,30 @@ func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
 	_ = err
 }
 
+// The YAML file named by --config is applied, and an explicit CLI flag
+// overrides it.
+//
+// The assertion is on the RESOLVED FLAGS, not on which error a failed startup
+// happened to reach first. The earlier form set --sm to an unknown value, ran
+// the whole command, and required the resulting error to be *UnknownSMError,
+// reasoning that this proved the config had been read "without actually
+// starting a node". It started one: --sm is not validated until
+// resolveCreateFunc, deep inside runStart, so the command first resolved TLS,
+// created the data directory and bound the bootstrap Noise port -- all of
+// which can fail on their own. Under three concurrent copies of this package
+// it failed two runs in three, on
+//
+//	*clusterenroll.ServerError: bootstrap server (noise) failed to start:
+//	listen tcp 0.0.0.0:63006: bind: address already in use
+//
+// because 63006 is a fixed default port that every concurrent copy wants. The
+// test then read as a config-loading bug (go-qrdb#84). Resolving the flags and
+// reading them binds nothing and cannot lose a race; the unknown-SM error is
+// asserted directly, and deterministically, by
+// TestResolveCreateFunc_UnknownType_NoBackend_IncludesType.
 func TestNewStartCmd_ValidConfigFileApplied(t *testing.T) {
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "config.yaml")
-	// data_dir must be test-private: a shared path (the old /tmp/qrdb-test)
-	// collides with any concurrently running test holding the Pebble lock,
-	// and the resulting storage error preempts the UnknownSMError this test
-	// asserts on.
 	yaml := `
 server:
   host: "0.0.0.0"
@@ -808,16 +825,32 @@ tls:
 `
 	require.NoError(t, os.WriteFile(cfgFile, []byte(yaml), 0o600))
 
-	cmd := newStartCmd()
-	// Use the config flag but also force an error by using an unknown SM
-	// type -- this lets us verify the config was loaded without actually
-	// starting a node.
-	cmd.SetArgs([]string{"--config", cfgFile, "--sm", "nonexistent"})
-	err := cmd.Execute()
-	require.Error(t, err)
-	// The error should be UnknownSMError because SM was overridden by CLI.
-	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr))
+	cmd, f := newStartCmdWithFlags()
+	require.NoError(t, cmd.ParseFlags([]string{"--config", cfgFile, "--sm", "nonexistent"}))
+	require.NoError(t, resolveStartFlags(cmd, f))
+
+	// Every section of the file reached the flags it feeds.
+	assert.Equal(t, filepath.Join(dir, "data"), f.dataDir)
+	assert.Equal(t, "10.0.0.99:63001", f.raftAddress)
+	// listen has no dedicated YAML key here, so it follows raft_address --
+	// the Raft transport bind, never the admin port.
+	assert.Equal(t, "10.0.0.99:63001", f.listen)
+	assert.Equal(t, uint64(5), f.deploymentID)
+	assert.Equal(t, uint64(3), f.shardID)
+	assert.Equal(t, uint64(7), f.replicaID)
+	assert.Equal(t, []string{"1=10.0.0.1:63001", "2=10.0.0.2:63001"}, f.peers)
+	assert.Equal(t, "static", f.discoveryMethod)
+	assert.Equal(t, 9100, f.adminPort)
+	assert.Equal(t, 9200, f.grpcPort)
+	assert.Equal(t, 9300, f.quicPort)
+	assert.True(t, f.enableREST)
+	assert.False(t, f.enableGRPC)
+	assert.True(t, f.enableQUIC)
+	assert.Equal(t, "json", f.logFormat)
+	assert.Equal(t, "debug", f.logLevel)
+
+	// The flag the operator set wins over the file's sm_type: "memory".
+	assert.Equal(t, "nonexistent", f.smType)
 }
 
 // ---------------------------------------------------------------------------

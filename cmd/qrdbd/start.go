@@ -374,7 +374,52 @@ func (f *startFlags) clusterOptions() cluster.Options {
 	}
 }
 
+// newStartCmd builds the start command. Callers that need to read the
+// configuration it resolves use newStartCmdWithFlags instead.
 func newStartCmd() *cobra.Command {
+	cmd, _ := newStartCmdWithFlags()
+	return cmd
+}
+
+// resolveStartFlags performs the configuration half of the start command:
+// the YAML file named by --config is loaded and merged BENEATH the flags, so
+// an explicitly set flag always wins.
+//
+// Split out of RunE so a caller can resolve a configuration and read the
+// result without starting a node. The tests that prove --config is honoured
+// had no other way to see the merged values, so they ran the command to
+// failure and asserted on WHICH error emerged first -- true only while
+// nothing else in the process could fail earlier, which under three
+// concurrent copies of the package it could (go-qrdb#84).
+func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
+	// Track whether the operator explicitly chose a TLS
+	// client-auth mode. Only an explicit selection (flag or
+	// YAML) overrides the auth-derived listener default; the
+	// flag's literal default is never force-applied because
+	// the listener must keep serving certificate-less public
+	// endpoints such as /health.
+	f.tlsClientAuthSet = cmd.Flags().Changed("tls-client-auth")
+
+	// Load YAML config if --config is provided, then let CLI
+	// flags override any YAML values that were explicitly set.
+	if f.configFile == "" {
+		return nil
+	}
+	cfg, err := qrdbconfig.Load(f.configFile)
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateCapabilities(); err != nil {
+		return err
+	}
+	applyConfigToFlags(cmd, f, cfg)
+	return nil
+}
+
+// newStartCmdWithFlags builds the start command together with the startFlags
+// its flags are bound to. newStartCmd is the ordinary entry point; this form
+// exists for callers that need to inspect the resolved configuration.
+func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	f := &startFlags{}
 
 	cmd := &cobra.Command{
@@ -385,25 +430,8 @@ func newStartCmd() *cobra.Command {
 			"  2. CLI flags (backward compatible)\n" +
 			"CLI flags override YAML values when both are provided.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Track whether the operator explicitly chose a TLS
-			// client-auth mode. Only an explicit selection (flag or
-			// YAML) overrides the auth-derived listener default; the
-			// flag's literal default is never force-applied because
-			// the listener must keep serving certificate-less public
-			// endpoints such as /health.
-			f.tlsClientAuthSet = cmd.Flags().Changed("tls-client-auth")
-
-			// Load YAML config if --config is provided, then let CLI
-			// flags override any YAML values that were explicitly set.
-			if f.configFile != "" {
-				cfg, err := qrdbconfig.Load(f.configFile)
-				if err != nil {
-					return err
-				}
-				if err := cfg.ValidateCapabilities(); err != nil {
-					return err
-				}
-				applyConfigToFlags(cmd, f, cfg)
+			if err := resolveStartFlags(cmd, f); err != nil {
+				return err
 			}
 
 			// Configure the global logger early so all pre-host log
@@ -507,7 +535,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.restoreBackupID, "restore-backup-id", "",
 		"Perform a one-shot OFFLINE restore of this backup ID into the system shard before serving traffic (requires --backup-dir)")
 
-	return cmd
+	return cmd, f
 }
 
 // applyConfigToFlags applies YAML configuration values to startFlags for
