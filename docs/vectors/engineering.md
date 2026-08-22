@@ -121,6 +121,27 @@ Namespace geometry is per namespace, not global. Build flags:
 tag and the GPU index paths (`pkg/vector/gpu`, with a remote index service
 defined by `pkg/vector/gpu/remote/proto/vector_index.proto`).
 
+### IVF clustering is randomly initialised, and `Config.Seed` makes it reproducible
+
+`ivf.Config.Seed` fixes the randomness k-means uses to choose its initial
+centroids, for both `kmeans++` and `random` initialisation.
+
+- **Zero — the default — seeds from the clock**, and that is the production
+  setting. A fixed seed across a fleet would have every node make the same
+  unlucky choice on the same data; the randomness is doing real work.
+- **A nonzero value makes clustering reproducible** for the same input. Use it
+  when a result must be repeatable — a benchmark, or a test measuring recall
+  against a threshold.
+
+The reproducibility is over the **initialisation**, not over everything: the
+same seed and the same vectors give the same centroids, but a different vector
+set will not.
+
+It matters more than it looks. `Train` clusters **once**, and every subsequent
+query searches that one centroid set — so recall is a property of the
+clustering, and a measurement taken without fixing the seed is one draw from a
+distribution however many queries it averages (go-qrdb#92).
+
 ## Persistence
 
 Vectors, their metadata and the namespace index are stored through

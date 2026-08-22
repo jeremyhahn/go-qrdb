@@ -47,6 +47,20 @@ type Config struct {
 
 	// Distance metric
 	DistanceMetric DistanceMetric
+
+	// Seed fixes the randomness used to INITIALISE the clusters. Zero means
+	// seed from the clock, which is the production default.
+	//
+	// Set it only when clustering must be reproducible. Recall is a property
+	// of the centroid set, and Cluster produces one set shared by every
+	// subsequent query, so a test measuring recall against a threshold is
+	// measuring one draw from a distribution unless this is fixed. Averaging
+	// over queries does not help: an unlucky initialisation moves every
+	// query's result together (go-qrdb#92).
+	//
+	// A fixed seed is wrong for production. Every node in a fleet clustering
+	// the same data would make the same unlucky choice at the same time.
+	Seed int64
 }
 
 // DistanceMetric represents the distance function type.

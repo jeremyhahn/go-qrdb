@@ -18,6 +18,7 @@ package ivf
 import (
 	"math"
 	"math/rand"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api"
 )
@@ -26,13 +27,33 @@ import (
 type KMeans struct {
 	config       *Config
 	distanceFunc DistanceFunc
+
+	// rng supplies the randomness for centroid initialisation.
+	//
+	// A field rather than the package-global source so a caller can make
+	// clustering REPRODUCIBLE. Production leaves Config.Seed at zero and gets
+	// a source seeded from the clock, which is the right default: fixed
+	// initialisation across every index in a fleet would give every node the
+	// same unlucky clustering on the same data.
+	//
+	// A test that measures clustering QUALITY needs the opposite. Recall is a
+	// property of the centroid set, and Train produces ONE set shared by every
+	// query — so an unlucky initialisation moves every query's result
+	// together, and averaging over queries does not reduce that variance at
+	// all. Only fixing the initialisation does (go-qrdb#92).
+	rng *rand.Rand
 }
 
 // NewKMeans creates a new k-means clusterer.
 func NewKMeans(config *Config) *KMeans {
+	seed := config.Seed
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
 	return &KMeans{
 		config:       config,
 		distanceFunc: GetDistanceFunc(config.DistanceMetric),
+		rng:          rand.New(rand.NewSource(seed)), //nolint:gosec // G404: k-means initialisation is not cryptographic
 	}
 }
 
@@ -113,7 +134,7 @@ func (km *KMeans) initializeKMeansPlusPlus(vectors [][]float32) ([][]float32, er
 	centroids := make([][]float32, 0, km.config.NumCentroids)
 
 	// Choose first centroid randomly
-	firstIdx := rand.Intn(len(vectors)) //nolint:gosec // G404: Using math/rand for non-cryptographic k-means initialization
+	firstIdx := km.rng.Intn(len(vectors))
 	centroids = append(centroids, copyVector(vectors[firstIdx]))
 
 	// Choose remaining centroids with probability proportional to D(x)^2
@@ -153,7 +174,7 @@ func (km *KMeans) initializeKMeansPlusPlus(vectors [][]float32) ([][]float32, er
 			continue
 		}
 
-		target := rand.Float32() * totalWeight //nolint:gosec // G404: Using math/rand for non-cryptographic k-means selection
+		target := km.rng.Float32() * totalWeight
 		cumulative := float32(0)
 		for i, weight := range distances {
 			cumulative += weight
@@ -170,7 +191,7 @@ func (km *KMeans) initializeKMeansPlusPlus(vectors [][]float32) ([][]float32, er
 // initializeRandom randomly selects initial centroids from the dataset.
 func (km *KMeans) initializeRandom(vectors [][]float32) ([][]float32, error) {
 	centroids := make([][]float32, km.config.NumCentroids)
-	indices := rand.Perm(len(vectors))
+	indices := km.rng.Perm(len(vectors))
 
 	for i := 0; i < km.config.NumCentroids; i++ {
 		centroids[i] = copyVector(vectors[indices[i]])

@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -502,81 +503,122 @@ func TestIndex_ConcurrentOperations(t *testing.T) {
 	assert.Equal(t, 10, idx.Size())
 }
 
+// IVF recall stays at or above the 70% floor the index promises.
+//
+// The floor is the product requirement and is unchanged. What changed is the
+// measurement, twice, and the second correction matters more than the first.
+//
+// It began reading recall@10 off a SINGLE query against a randomly generated
+// dataset. Recall@10 for one query is a ten-sample proportion, so the 0.7
+// floor sat inside the sampling noise: it failed a CI run at 0.6 and passed
+// 6/6 in isolation.
+//
+// Averaging over many queries fixes that sampling noise and nothing else. The
+// dominant variance is UPSTREAM of the queries: Train runs k-means once and
+// produces a single centroid set that every query then searches, so an unlucky
+// initialisation moves all of them together. Averaging 50 queries over one
+// clustering is still one draw (go-qrdb#92).
+//
+// So both sources are fixed. The dataset comes from a seeded local source, and
+// Config.Seed fixes the clustering. Several seeds are then run rather than one:
+// a single seed would be deterministic but would say nothing about
+// initialisation quality in general, and the floor is a claim about the index,
+// not about one lucky arrangement of centroids.
 func TestIndex_SearchAccuracy(t *testing.T) {
-	// Test recall: ensure IVF finds most of the true nearest neighbors
-	config := &Config{
-		NumCentroids:   16,
-		Dimensions:     128,
-		MaxIterations:  25,
-		Convergence:    0.0001,
-		InitMethod:     "kmeans++",
-		DefaultNProbe:  8, // Search half the clusters
-		DistanceMetric: L2Distance,
+	const (
+		numVectors  = 1000
+		dims        = 128
+		topK        = 10
+		numQueries  = 50
+		recallFloor = 0.7
+	)
+
+	// Fixed dataset: identical on every run and every machine.
+	vectors := seededVectors(numVectors, dims, 92)
+
+	// Several fixed clusterings. Deterministic, and broad enough that the
+	// floor is a statement about the index rather than about one seed.
+	for _, seed := range []int64{1, 2, 3, 5, 8} {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			idx, err := NewIndex(&Config{
+				NumCentroids:   16,
+				Dimensions:     dims,
+				MaxIterations:  25,
+				Convergence:    0.0001,
+				InitMethod:     "kmeans++",
+				DefaultNProbe:  8,
+				DistanceMetric: L2Distance,
+				Seed:           seed,
+			})
+			require.NoError(t, err)
+
+			require.NoError(t, idx.Train(vectors))
+			for i, vec := range vectors {
+				require.NoError(t, idx.Add(fmt.Sprintf("vec%d", i), vec, nil))
+			}
+
+			total := 0.0
+			for q := 0; q < numQueries; q++ {
+				query := vectors[q]
+
+				results, serr := idx.Search(query, topK, 12)
+				require.NoError(t, serr)
+
+				found := make(map[string]bool, len(results))
+				for _, res := range results {
+					found[res.ID] = true
+				}
+
+				matches := 0
+				for _, id := range bruteForceTopK(vectors, query, topK) {
+					if found[id] {
+						matches++
+					}
+				}
+				total += float64(matches) / float64(topK)
+			}
+
+			mean := total / float64(numQueries)
+			t.Logf("mean recall@%d over %d queries: %.3f", topK, numQueries, mean)
+
+			assert.GreaterOrEqual(t, mean, recallFloor,
+				"mean IVF recall@%d must hold the %.0f%% floor", topK, recallFloor*100)
+		})
 	}
+}
 
-	idx, _ := NewIndex(config)
-
-	// Create dataset
-	numVectors := 1000
-	vectors := generateRandomVectors(numVectors, 128)
-
-	// Train
-	require.NoError(t, idx.Train(vectors))
-
-	// Add vectors
-	for i, vec := range vectors {
-		_ = idx.Add(fmt.Sprintf("vec%d", i), vec, nil)
+// seededVectors builds a reproducible dataset. A local source rather than the
+// global one, so the fixture is unaffected by anything else the package does.
+func seededVectors(count, dims int, seed int64) [][]float32 {
+	r := rand.New(rand.NewSource(seed)) //nolint:gosec // G404: test fixture, reproducibility is the point
+	vectors := make([][]float32, count)
+	for i := range vectors {
+		vectors[i] = make([]float32, dims)
+		for j := range vectors[i] {
+			vectors[i][j] = r.Float32()*2 - 1 // [-1, 1]
+		}
 	}
+	return vectors
+}
 
-	// Test query
-	query := vectors[0] // Use a vector from the dataset
-
-	// IVF search
-	ivfResults, err := idx.Search(query, 10, 12) // Search most clusters
-	require.NoError(t, err)
-
-	// Brute force search (ground truth)
-	type result struct {
+// bruteForceTopK returns the ids of the topK nearest vectors to query, which is
+// the ground truth recall is measured against.
+func bruteForceTopK(vectors [][]float32, query []float32, topK int) []string {
+	type scored struct {
 		id   string
 		dist float32
 	}
-	bruteForce := make([]result, numVectors)
+	all := make([]scored, len(vectors))
 	for i, vec := range vectors {
-		bruteForce[i] = result{
-			id:   fmt.Sprintf("vec%d", i),
-			dist: L2(query, vec),
-		}
+		all[i] = scored{id: fmt.Sprintf("vec%d", i), dist: L2(query, vec)}
 	}
+	sort.Slice(all, func(i, j int) bool { return all[i].dist < all[j].dist })
 
-	// Sort brute force results
-	for i := 0; i < 10; i++ {
-		minIdx := i
-		for j := i + 1; j < len(bruteForce); j++ {
-			if bruteForce[j].dist < bruteForce[minIdx].dist {
-				minIdx = j
-			}
-		}
-		bruteForce[i], bruteForce[minIdx] = bruteForce[minIdx], bruteForce[i]
+	ids := make([]string, 0, topK)
+	for i := 0; i < topK && i < len(all); i++ {
+		ids = append(ids, all[i].id)
 	}
-
-	// Calculate recall@10
-	ivfIDs := make(map[string]bool)
-	for _, res := range ivfResults {
-		ivfIDs[res.ID] = true
-	}
-
-	matches := 0
-	for i := 0; i < 10; i++ {
-		if ivfIDs[bruteForce[i].id] {
-			matches++
-		}
-	}
-
-	recall := float64(matches) / 10.0
-	t.Logf("Recall@10: %.2f", recall)
-
-	// IVF should achieve >80% recall with nprobe=8 (half the clusters)
-	assert.GreaterOrEqual(t, recall, 0.7, "IVF recall should be >=70%%")
+	return ids
 }
 
 // Benchmarks
