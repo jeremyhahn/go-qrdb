@@ -66,6 +66,7 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 	k.handlers = map[byte]updateHandler{
 		// Basic KV
 		kv.OpPut:         k.handlePut,
+		kv.OpPutIfAbsent: k.handlePutIfAbsent,
 		kv.OpDelete:      k.handleDelete,
 		protocol.OpBatch: k.handleBatch,
 

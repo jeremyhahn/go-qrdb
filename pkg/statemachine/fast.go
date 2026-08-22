@@ -41,6 +41,10 @@ const shardCount = 256
 type shard struct {
 	mu   sync.RWMutex
 	data map[string][]byte
+
+	// order keeps this shard's asynchronous storage writes in apply order.
+	// See persistOrder.
+	order persistOrder
 }
 
 // updateHandler is the function signature for write operation handlers.
@@ -138,6 +142,7 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 
 	for i := range f.shards {
 		f.shards[i].data = make(map[string][]byte)
+		f.shards[i].order.init()
 	}
 
 	for _, opt := range opts {
@@ -148,6 +153,7 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 	f.handlers = map[byte]updateHandler{
 		// Basic KV
 		kv.OpPut:         f.handlePut,
+		kv.OpPutIfAbsent: f.handlePutIfAbsent,
 		kv.OpDelete:      f.handleDelete,
 		protocol.OpBatch: f.handleBatch,
 
@@ -620,19 +626,35 @@ func (f *FastStateMachine) cacheSet(key string, value []byte) {
 	s := f.shardFor(key)
 	s.mu.Lock()
 	s.data[key] = value
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
+	f.persistAsync(s, ticket, key, value)
+}
+
+// persistAsync writes the pair to storage in the background. It is the single
+// asynchronous write path, shared by cacheSet and by the guarded
+// handlePutIfAbsent, so a write authorised by the guard reaches storage the
+// same way an unconditional one does.
+func (f *FastStateMachine) persistAsync(s *shard, ticket uint64, key string, value []byte) {
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()
-		if err := f.storage.Set([]byte(key), value); err != nil {
-			f.logger.Error("async storage set failed",
-				"key", key,
-				"error", err,
-				"shard_id", f.shardID,
-				"replica_id", f.replicaID)
-		}
+		s.order.run(ticket, func() {
+			f.persistSet(key, value)
+		})
 	}()
+}
+
+// persistSet is the storage write itself, run in order by persistAsync.
+func (f *FastStateMachine) persistSet(key string, value []byte) {
+	if err := f.storage.Set([]byte(key), value); err != nil {
+		f.logger.Error("async storage set failed",
+			"key", key,
+			"error", err,
+			"shard_id", f.shardID,
+			"replica_id", f.replicaID)
+	}
 }
 
 // cacheDelete sets a tombstone in the cache shard and asynchronously
@@ -644,18 +666,21 @@ func (f *FastStateMachine) cacheDelete(key string) {
 	s := f.shardFor(key)
 	s.mu.Lock()
 	s.data[key] = nil // tombstone
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
 	f.wg.Add(1)
 	go func() {
 		defer f.wg.Done()
-		if err := f.storage.Delete([]byte(key)); err != nil {
-			f.logger.Error("async storage delete failed",
-				"key", key,
-				"error", err,
-				"shard_id", f.shardID,
-				"replica_id", f.replicaID)
-		}
+		s.order.run(ticket, func() {
+			if err := f.storage.Delete([]byte(key)); err != nil {
+				f.logger.Error("async storage delete failed",
+					"key", key,
+					"error", err,
+					"shard_id", f.shardID,
+					"replica_id", f.replicaID)
+			}
+		})
 	}()
 }
 

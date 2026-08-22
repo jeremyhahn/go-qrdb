@@ -36,6 +36,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -236,8 +238,17 @@ func TestRunStart_InitializeNodeError(t *testing.T) {
 // short context timeout, this verifies the fallback path.
 // ---------------------------------------------------------------------------
 
-func TestRunFirstBoot_CreationFailsFallsToReplicationWait(t *testing.T) {
-	sentinel := errors.New("not leader")
+// A first-boot failure that is NOT a NotLeader condition propagates with its
+// own cause instead of being reported as a replication timeout.
+//
+// This test previously asserted the opposite, using an untyped
+// errors.New("not leader") as the stand-in for followership — which is what
+// let go-qrdb#86 hide: a state machine that could not apply kv.OpPutIfAbsent
+// produced an ordinary apply error, the fallback read it as "the leader will
+// do this instead", and 30 s later startup failed with a message about
+// replication that named nothing real.
+func TestRunFirstBoot_NonLeaderFailurePropagatesItsCause(t *testing.T) {
+	sentinel := errors.New("statemachine: unknown opcode: 4")
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
@@ -257,10 +268,57 @@ func TestRunFirstBoot_CreationFailsFallsToReplicationWait(t *testing.T) {
 			},
 		},
 		&mockTenantServicer{}, false, nil, "")
-	// Should fall through to waitForAdminReplication which times out.
+
 	require.Error(t, err)
+	require.ErrorIs(t, err, sentinel,
+		"the real cause must survive: an operator reading this needs the apply "+
+			"failure, not a replication timeout")
 	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
+	require.False(t, errors.As(err, &abe),
+		"a local failure was reported as an admin-replication wait")
+}
+
+// A genuine NotLeader condition still falls through to the replication wait.
+//
+// This is the case the fallback exists for, and no test covered it before:
+// every test that claimed to used an untyped error whose text merely said
+// "not leader". Both layers that express the condition are checked, since
+// which one surfaces depends on how deep the proposal reached.
+func TestRunFirstBoot_NotLeaderFallsToReplicationWait(t *testing.T) {
+	notLeaders := map[string]error{
+		"service":  &service.NotLeaderError{ShardID: 1, LeaderID: 2},
+		"quicraft": &quicraft.NotLeaderError{ShardID: 1, LeaderID: 2},
+	}
+
+	for name, notLeader := range notLeaders {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+
+			node := &mockRaftNode{}
+			err := runFirstBoot(ctx, node, 1,
+				&mockUserServicer{
+					getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+						return nil, &user.UserNotFoundError{Lookup: "admin"}
+					},
+					createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+						return nil, notLeader
+					},
+				},
+				&mockRoleServicer{
+					createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
+						return nil, notLeader
+					},
+				},
+				&mockTenantServicer{}, false, nil, "")
+
+			require.Error(t, err)
+			var abe *AuthBootstrapError
+			require.True(t, errors.As(err, &abe),
+				"a follower must wait for the leader to replicate the admin user")
+			assert.Equal(t, "wait for admin replication", abe.Step)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

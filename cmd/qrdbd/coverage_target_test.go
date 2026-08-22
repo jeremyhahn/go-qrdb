@@ -22,8 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -262,13 +264,16 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
 	)
 
-	// Line 2489 is hit: firstBootErr = fbErr (the FirstBootError from
-	// BootstrapSystem). Then waitForAdminReplication is called but the context
-	// deadline expires quickly, returning AuthBootstrapError.
-	require.Error(t, err, "runFirstBoot must return an error when FirstBootError is assigned and replication times out")
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe),
-		"expected *AuthBootstrapError from waitForAdminReplication after line 2489, got %T: %v", err, err)
+	// firstBootErr is assigned the *bootstrap.FirstBootError from
+	// BootstrapSystem. It is not a NotLeader condition, so it propagates with
+	// the role-create failure that caused it rather than being reported as an
+	// admin-replication timeout (go-qrdb#86).
+	require.Error(t, err, "runFirstBoot must return an error when BootstrapSystem fails")
+	var fbErr *bootstrap.FirstBootError
+	require.True(t, errors.As(err, &fbErr),
+		"expected the *bootstrap.FirstBootError to survive, got %T: %v", err, err)
+	assert.Contains(t, err.Error(), "role create intentionally failed",
+		"the cause an operator needs was replaced by a generic wrapper")
 }
 
 // ---------------------------------------------------------------------------

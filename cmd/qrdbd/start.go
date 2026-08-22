@@ -3166,14 +3166,38 @@ func runFirstBoot(ctx context.Context, node raftNode, shardID uint64, userSvc us
 	}
 
 	if firstBootErr != nil {
-		// Creation failed, likely because this node is a follower whose
-		// SyncPropose returned NotLeader. Wait for the leader to create
-		// the admin and replicate it.
+		// Only a NotLeader condition means "the leader will do this instead".
+		// Every other failure is this node's own, and waiting for a
+		// replication that nobody is going to perform turns it into a 30 s
+		// timeout reported as "admin user not replicated" — a message that
+		// names the symptom and hides the cause. It cost a real diagnosis:
+		// a state machine that could not apply kv.OpPutIfAbsent surfaced here
+		// as a replication timeout, and six tests recorded the resulting
+		// startup failure as acceptable (go-qrdb#86).
+		if !isNotLeader(firstBootErr) {
+			return firstBootErr
+		}
 		slog.Info("first-boot: waiting for leader to replicate admin",
 			slog.Any("reason", firstBootErr))
 		return waitForAdminReplication(ctx, userSvc, tenant.SystemTenantID)
 	}
 	return nil
+}
+
+// isNotLeader reports whether err is the "this node is not the leader"
+// condition, at either layer that expresses it.
+//
+// The service layer translates quicraft's NotLeaderError into its own, so a
+// first-boot failure may carry either depending on how deep the proposal got.
+// Both are checked because matching only one would send a genuine follower
+// down the error path this function exists to keep it out of.
+func isNotLeader(err error) bool {
+	var svcErr *service.NotLeaderError
+	if errors.As(err, &svcErr) {
+		return true
+	}
+	var raftErr *quicraft.NotLeaderError
+	return errors.As(err, &raftErr)
 }
 
 // waitForLeaderElection polls GetLeaderID until a leader is known.

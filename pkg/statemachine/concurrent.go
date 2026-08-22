@@ -41,6 +41,10 @@ const concurrentShardCount = 16
 type concurrentShard struct {
 	mu   sync.RWMutex
 	data map[string][]byte
+
+	// order keeps this shard's asynchronous storage writes in apply order.
+	// See persistOrder.
+	order persistOrder
 }
 
 // ConcurrentOption configures a ConcurrentStateMachine at construction time.
@@ -138,6 +142,7 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 
 	for i := range c.shards {
 		c.shards[i].data = make(map[string][]byte)
+		c.shards[i].order.init()
 	}
 
 	for _, opt := range opts {
@@ -148,6 +153,7 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 	c.handlers = map[byte]updateHandler{
 		// Basic KV
 		kv.OpPut:         c.handlePut,
+		kv.OpPutIfAbsent: c.handlePutIfAbsent,
 		kv.OpDelete:      c.handleDelete,
 		protocol.OpBatch: c.handleBatch,
 
@@ -619,19 +625,35 @@ func (c *ConcurrentStateMachine) concurrentCacheSet(key string, value []byte) {
 	s := c.concurrentShardFor(key)
 	s.mu.Lock()
 	s.data[key] = value
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
+	c.persistAsync(s, ticket, key, value)
+}
+
+// persistAsync writes the pair to storage in the background. It is the single
+// asynchronous write path, shared by concurrentCacheSet and by the guarded
+// handlePutIfAbsent, so a write authorised by the guard reaches storage the
+// same way an unconditional one does.
+func (c *ConcurrentStateMachine) persistAsync(s *concurrentShard, ticket uint64, key string, value []byte) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		if err := c.storage.Set([]byte(key), value); err != nil {
-			c.logger.Error("async storage set failed",
-				"key", key,
-				"error", err,
-				"shard_id", c.shardID,
-				"replica_id", c.replicaID)
-		}
+		s.order.run(ticket, func() {
+			c.persistSet(key, value)
+		})
 	}()
+}
+
+// persistSet is the storage write itself, run in order by persistAsync.
+func (c *ConcurrentStateMachine) persistSet(key string, value []byte) {
+	if err := c.storage.Set([]byte(key), value); err != nil {
+		c.logger.Error("async storage set failed",
+			"key", key,
+			"error", err,
+			"shard_id", c.shardID,
+			"replica_id", c.replicaID)
+	}
 }
 
 // concurrentCacheDelete sets a tombstone in the cache shard and
@@ -640,18 +662,21 @@ func (c *ConcurrentStateMachine) concurrentCacheDelete(key string) {
 	s := c.concurrentShardFor(key)
 	s.mu.Lock()
 	s.data[key] = nil // tombstone
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		if err := c.storage.Delete([]byte(key)); err != nil {
-			c.logger.Error("async storage delete failed",
-				"key", key,
-				"error", err,
-				"shard_id", c.shardID,
-				"replica_id", c.replicaID)
-		}
+		s.order.run(ticket, func() {
+			if err := c.storage.Delete([]byte(key)); err != nil {
+				c.logger.Error("async storage delete failed",
+					"key", key,
+					"error", err,
+					"shard_id", c.shardID,
+					"replica_id", c.replicaID)
+			}
+		})
 	}()
 }
 

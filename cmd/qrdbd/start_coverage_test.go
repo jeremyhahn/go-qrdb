@@ -691,16 +691,16 @@ func TestRunFirstBoot_RoleCreateError(t *testing.T) {
 		},
 	}
 
-	// Creation failure causes fallback to waitForAdminReplication;
-	// use a short timeout so the test doesn't block for 30s.
+	// A role-create failure is this node's own, not a NotLeader condition, so
+	// it propagates with its cause rather than becoming a replication wait
+	// (go-qrdb#86).
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	node := &mockRaftNode{} // default: leader ready
 	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.Error(t, err)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
+	require.ErrorIs(t, err, sentinel)
 }
 
 // ---------------------------------------------------------------------------
@@ -719,8 +719,8 @@ func TestRunFirstBoot_AdminCreateError(t *testing.T) {
 
 	roleSvc := &mockRoleServicer{}
 
-	// Creation failure causes fallback to waitForAdminReplication;
-	// use a short timeout so the test doesn't block for 30s.
+	// An admin-create failure is this node's own, not a NotLeader condition,
+	// so it propagates with its cause (go-qrdb#86).
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
@@ -728,8 +728,9 @@ func TestRunFirstBoot_AdminCreateError(t *testing.T) {
 	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.Error(t, err)
 	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
-	assert.Equal(t, "wait for admin replication", abe.Step)
+	require.False(t, errors.As(err, &abe),
+		"a local create failure was reported as an admin-replication wait")
+	assert.Contains(t, err.Error(), "user create failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -843,9 +844,8 @@ func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
 
 	err := runFirstBoot(ctx, node, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "")
 	require.Error(t, err)
-	var abe *AuthBootstrapError
-	require.True(t, errors.As(err, &abe))
-	assert.Equal(t, "wait for admin replication", abe.Step)
+	require.ErrorIs(t, err, sentinel,
+		"a storage fault must surface as itself, not as a replication timeout")
 }
 
 // ---------------------------------------------------------------------------

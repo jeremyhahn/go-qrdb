@@ -127,6 +127,7 @@ func NewRegularStateMachine(opts ...RegularOption) *RegularStateMachine {
 	r.handlers = map[byte]updateHandler{
 		// Basic KV
 		kv.OpPut:         r.handlePut,
+		kv.OpPutIfAbsent: r.handlePutIfAbsent,
 		kv.OpDelete:      r.handleDelete,
 		protocol.OpBatch: r.handleBatch,
 
