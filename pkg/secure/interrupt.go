@@ -16,11 +16,27 @@ package secure
 
 import (
 	"os"
+	"os/signal"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/awnumar/memguard"
 )
+
+// signalExit is os.Exit, indirected so a test can drive the handler without
+// terminating the test binary.
+var signalExit = os.Exit
+
+// purgeFn is memguard.Purge, indirected for the same reason and a sharper one:
+// a test that drives the real purge destroys every enclave in the TEST BINARY,
+// so every later test in the package runs against purged memory. That is the
+// hazard this file exists to coordinate, arriving via the test suite — it was
+// measured, not theorised (the full run crashed in TestNewSecret).
+//
+// Swapping it changes nothing about the locking under test: coordinatedPurge
+// takes purgeMu and then calls this, so a test can assert the coordination
+// without the destruction.
+var purgeFn = memguard.Purge
 
 // initialized is set by CatchInterrupt. Purge refuses to run before it
 // is set — this surfaces lifecycle misuse at development time.
@@ -38,11 +54,51 @@ func CatchInterrupt() {
 	if !initialized.CompareAndSwap(false, true) {
 		return
 	}
-	// memguard.CatchSignal installs a handler that calls memguard.Purge
-	// and os.Exit(1) on the listed signals. We use both SIGINT and
-	// SIGTERM to cover Ctrl-C and orderly termination (systemd, docker
-	// stop, k8s preStop).
-	memguard.CatchSignal(func(_ os.Signal) {}, syscall.SIGINT, syscall.SIGTERM)
+	// NOT memguard.CatchSignal. Its handler calls memguard.Purge directly,
+	// which takes none of this package's locks — so a signal arriving while a
+	// borrow is live unmaps the borrowed pages underneath the reader, which is
+	// precisely the fault purgeMu exists to prevent (go-qrdb#71). The signal
+	// path is the one purge this package does not initiate, and it was the one
+	// left uncoordinated.
+	//
+	// Package-owned handling instead, routed through the same coordinated purge
+	// as every other caller. Behaviour is otherwise what memguard's handler
+	// gave: purge, then exit non-zero.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	go watchSignals(ch)
+}
+
+// watchSignals wipes and exits on the first signal delivered to ch.
+//
+// Split out from CatchInterrupt so it can be driven directly. A test that
+// delivered a REAL signal proved dangerous rather than merely awkward: signal
+// handlers are process-global and outlive the test that installed them, so a
+// stray handler receiving the raised SIGTERM called os.Exit and killed the test
+// binary mid-run — a fast FAIL with no panic and no failing test name, which is
+// exactly as confusing to diagnose as it sounds. Driving this function needs no
+// signal at all and cannot leak.
+func watchSignals(ch <-chan os.Signal) {
+	<-ch
+	coordinatedPurge()
+	signalExit(1)
+}
+
+// coordinatedPurge wipes all mlocked memory with purgeMu held exclusively.
+//
+// It WAITS for in-flight borrows. That is deliberate and it is a trade worth
+// stating: shutdown is delayed by any borrow still running, where the previous
+// behaviour terminated immediately and unmapped pages underneath readers. A
+// borrow in this package is required to be short — read the material and
+// return, no nested borrows — so a borrow that blocks shutdown indefinitely is
+// a caller bug, and the alternative is a use-after-unmap fault on the way out.
+//
+// Daemons that want to control their own exit code should use EnablePurge with
+// a deferred Purge rather than CatchInterrupt; that path is coordinated too.
+func coordinatedPurge() {
+	purgeMu.Lock()
+	defer purgeMu.Unlock()
+	purgeFn()
 }
 
 // EnablePurge marks the secure subsystem initialized so Purge works,
@@ -69,7 +125,11 @@ func Purge() error {
 	if !initialized.Load() {
 		return &NotInitializedError{}
 	}
-	memguard.Purge()
+	// THE purge, taken exclusively — this is the operation every borrow in the
+	// package is protected against, not merely one that might trigger it. A
+	// deferred Purge in main() racing a live borrow is the most direct instance
+	// of the hazard in this package. See purgeMu.
+	coordinatedPurge()
 	return nil
 }
 

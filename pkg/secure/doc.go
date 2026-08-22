@@ -42,6 +42,27 @@
 //     Destroy on one goroutine.
 //  5. Constructors that take a []byte consume the caller's slice — the
 //     bytes are wiped on entry. Do not reuse the slice after the call.
+//  6. Prefer Buffer.WithBytes to Buffer.Bytes for anything that reads the
+//     material. Only WithBytes holds the borrow across the read, which is
+//     what makes it safe against a process-wide purge (see below). Never
+//     call back into this package from inside a WithBytes callback — a
+//     nested borrow deadlocks.
+//
+// # Purge coordination
+//
+// memguard's failure path is process-wide. A failed allocation calls
+// core.Panic, which purges EVERY live enclave in the process and unmaps
+// their pages — it is not scoped to the component that failed. Since the
+// whole stack holds key material through this package, in one process,
+// concurrently, an unrelated subsystem's allocation failure can invalidate
+// key material another component is reading.
+//
+// This package serializes that internally: operations that can purge —
+// every constructor, Secret.Open, both Destroy methods, and Purge itself —
+// take a process-wide lock exclusively, and borrows take it shared. Callers
+// need no change for it EXCEPT the one case a lock cannot cover: the slice
+// returned by Buffer.Bytes outlives the call, so nothing protects it once
+// Bytes has returned. That is why rule 6 exists (go-qrdb#71).
 //
 // # Lifecycle
 //

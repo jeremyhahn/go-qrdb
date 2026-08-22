@@ -43,6 +43,10 @@ func NewBuffer(size int) (*Buffer, error) {
 	if size <= 0 {
 		return nil, &InvalidSizeError{Size: size}
 	}
+	// Purge-class: memguard purges the whole process if this allocation fails.
+	// See purgeMu.
+	purgeMu.Lock()
+	defer purgeMu.Unlock()
 	return &Buffer{buf: memguard.NewBuffer(size)}, nil
 }
 
@@ -53,6 +57,9 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 	if len(src) == 0 {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
+	// Purge-class, as NewBuffer. See purgeMu.
+	purgeMu.Lock()
+	defer purgeMu.Unlock()
 	// memguard.NewBufferFromBytes copies and wipes the source.
 	return &Buffer{buf: memguard.NewBufferFromBytes(src)}, nil
 }
@@ -61,17 +68,69 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // retain this slice beyond the lifetime of the Buffer, MUST NOT copy
 // its contents into unprotected memory, and MUST NOT mutate it unless
 // explicitly intended. Returns nil after Destroy.
+//
+// # This method cannot protect the slice it returns
+//
+// The purge coordination described on purgeMu covers the slice-header read
+// made HERE, and stops there. Once Bytes has returned, the caller holds a
+// slice into mlocked pages with no lock held, and a memguard failure anywhere
+// in the process can unmap those pages while the caller reads them — the
+// hazard purgeMu exists for, on the one path that cannot be closed from inside
+// this package (go-qrdb#71).
+//
+// Use WithBytes for anything that must be safe against that. It holds the
+// borrow for the whole read, which is the only shape a lock can cover. Bytes
+// remains because a large number of call sites take a slice and pass it
+// onward, and converting them is a separate change from adding the guarantee.
 func (b *Buffer) Bytes() []byte {
-	if b == nil || b.destroyed.Load() || b.buf == nil {
+	if b == nil {
+		return nil
+	}
+	purgeMu.RLock()
+	defer purgeMu.RUnlock()
+	if b.destroyed.Load() || b.buf == nil {
 		return nil
 	}
 	return b.buf.Bytes()
 }
 
+// WithBytes calls fn with the buffer's mlocked bytes, holding the borrow for
+// the whole call so no purge can run underneath it.
+//
+// This is the borrow with an actual guarantee, and the reason to prefer it to
+// Bytes: a memguard failure anywhere in the process purges every live enclave,
+// and only a borrow held across the READ — not merely across the accessor —
+// keeps the pages mapped while fn touches them.
+//
+// fn MUST NOT retain the slice beyond the call, and MUST NOT call back into
+// this package: a nested borrow deadlocks against any purge-class operation
+// that queued in between. See purgeMu.
+//
+// Returns *NilBufferError when the buffer is nil, destroyed, or a zero value.
+// Any error fn returns is passed through unchanged.
+func (b *Buffer) WithBytes(fn func([]byte) error) error {
+	if b == nil || fn == nil {
+		return &NilBufferError{}
+	}
+	purgeMu.RLock()
+	defer purgeMu.RUnlock()
+	if b.destroyed.Load() || b.buf == nil {
+		return &NilBufferError{}
+	}
+	return fn(b.buf.Bytes())
+}
+
 // Size returns the length of the underlying mlocked buffer. Returns 0
 // after Destroy or on a zero-value Buffer.
 func (b *Buffer) Size() int {
-	if b == nil || b.destroyed.Load() || b.buf == nil {
+	if b == nil {
+		return 0
+	}
+	// Borrow-class despite looking like a scalar read: Size is
+	// len(buffer.Bytes()), a slice header a concurrent purge rewrites.
+	purgeMu.RLock()
+	defer purgeMu.RUnlock()
+	if b.destroyed.Load() || b.buf == nil {
 		return 0
 	}
 	return b.buf.Size()
@@ -86,6 +145,11 @@ func (b *Buffer) Destroy() {
 	if !b.destroyed.CompareAndSwap(false, true) {
 		return
 	}
+	// PURGE-class, not a read. memguard's destroy calls core.Panic when
+	// releasing pages fails, which purges every live enclave in the process.
+	// See purgeMu.
+	purgeMu.Lock()
+	defer purgeMu.Unlock()
 	if b.buf != nil {
 		b.buf.Destroy()
 		b.buf = nil
