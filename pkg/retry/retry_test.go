@@ -16,6 +16,7 @@ package retry
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -315,8 +316,18 @@ func TestDo_MaxAttemptsExceeded(t *testing.T) {
 	assert.True(t, dberrors.Is(err, dberrors.ErrTimeout))
 }
 
+// A context cancelled DURING an attempt stops the loop before the next one.
+//
+// The cancellation is driven from inside the operation rather than by a
+// sleeping goroutine, which makes the attempt count exact instead of a race
+// the scheduler can win: by the time op returns, ctx is already done, so Do's
+// backoff select takes its ctx.Done() branch on the first poll. The previous
+// version slept 10ms against a 100ms backoff and asserted "at most 2 attempts",
+// which passes for the wrong reasons under load (go-qrdb#88).
 func TestDo_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	cfg := &Config{
 		MaxAttempts: 10,
 		Backoff: &ConstantBackoff{
@@ -326,47 +337,116 @@ func TestDo_ContextCancellation(t *testing.T) {
 	}
 
 	callCount := 0
-	op := func(ctx context.Context) error {
+	op := func(_ context.Context) error {
 		callCount++
-		if callCount == 1 {
-			// Cancel context in a goroutine during first backoff
-			go func() {
-				time.Sleep(10 * time.Millisecond)
-				cancel()
-			}()
-		}
+		cancel()
 		return dberrors.New(dberrors.ErrTimeout, "test.op", "timeout")
 	}
 
 	err := Do(ctx, cfg, op)
-	assert.Error(t, err)
-	assert.LessOrEqual(t, callCount, 2, "should stop retrying after context cancellation")
-	// The error could be either ErrCanceled or ErrTimeout depending on timing
-	// Just verify we get an error and stopped retrying
+
+	require.Error(t, err)
+	assert.Equal(t, 1, callCount,
+		"no attempt may follow a cancelled context")
+
+	// The returned error carries the OPERATION's code, not ErrCanceled:
+	// errors.Wrap preserves the code of an error that is already a QRDBError
+	// and only adds the operation, so the ErrCanceled that retry.Do passes is
+	// discarded. Asserted as it behaves rather than as the call site reads --
+	// a caller therefore cannot distinguish "gave up because the context was
+	// cancelled" from "gave up after MaxAttempts" by code alone.
+	var qe *dberrors.QRDBError
+	require.True(t, dberrors.As(err, &qe))
+	assert.Equal(t, "retry.Do", qe.Op, "the giving-up frame must name retry.Do")
+	assert.True(t, dberrors.Is(err, dberrors.ErrTimeout),
+		"the operation's own error must survive, got %v", err)
 }
 
+// A real, timer-driven DEADLINE stops the loop.
+//
+// Three versions of this test have now been wrong in three different ways, so
+// the reasoning is worth keeping. It began as a 30ms deadline against a 20ms
+// backoff asserting "at most 2 attempts" — ten milliseconds of margin, which a
+// loaded runner does not honour. It then became context.WithTimeout plus
+// cancel(), which reports context.Canceled and would have passed if deadline
+// handling specifically broke. It then became a synthetic context that
+// reported DeadlineExceeded from Err while reporting no deadline from
+// Deadline — a fake supplying the very value the test asserted, and a
+// context.Context contract violation besides (go-qrdb#88).
+//
+// This one uses a REAL context.WithTimeout, and makes the attempt count
+// deterministic by having the operation BLOCK on ctx.Done() rather than by
+// racing the timer. Scheduling therefore affects how long the test takes, not
+// what it observes: the second attempt cannot return until the deadline has
+// genuinely fired, so Do always stops there. The deadline is short enough to
+// keep the suite quick and long enough that nothing depends on winning a race.
 func TestDo_ContextTimeout(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	cfg := &Config{
 		MaxAttempts: 10,
 		Backoff: &ConstantBackoff{
-			Delay:  20 * time.Millisecond,
+			Delay:  time.Millisecond,
 			Jitter: 0,
 		},
 	}
 
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
+	var callCount atomic.Int32
+	op := func(opCtx context.Context) error {
+		if callCount.Add(1) == 2 {
+			// Wait for the real timer. No margin to lose: the attempt does not
+			// finish until the deadline has actually passed.
+			<-opCtx.Done()
+		}
 		return dberrors.New(dberrors.ErrUnavailable, "test.op", "service unavailable")
 	}
 
-	err := Do(ctx, cfg, op)
-	assert.Error(t, err)
-	// Should fail after 1-2 attempts due to timeout
-	assert.LessOrEqual(t, callCount, 2, "should stop retrying after timeout")
+	done := make(chan error, 1)
+	go func() { done <- Do(ctx, cfg, op) }()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(returnBound):
+		t.Fatalf("Do did not return within %v of a %v deadline expiring",
+			returnBound, 50*time.Millisecond)
+	}
+
+	require.Error(t, err)
+	assert.Equal(t, int32(2), callCount.Load(),
+		"the loop must stop on the attempt that saw the deadline expire, "+
+			"not continue to MaxAttempts")
+	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded,
+		"the context must have expired by DEADLINE, not by cancellation")
+
+	// See TestDo_ContextCancellation: the wrap preserves the operation's code.
+	var qe *dberrors.QRDBError
+	require.True(t, dberrors.As(err, &qe))
+	assert.Equal(t, "retry.Do", qe.Op)
+	assert.True(t, dberrors.Is(err, dberrors.ErrUnavailable),
+		"the operation's own error must survive, got %v", err)
+}
+
+// A context that is ALREADY done is not attempted at all.
+//
+// This is Do's pre-attempt guard, distinct from the two cases above: with no
+// previous error to wrap it returns ctx.Err() unchanged, and the operation is
+// never called.
+func TestDo_ContextAlreadyDone_NeverCallsTheOperation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	callCount := 0
+	err := Do(ctx, &Config{MaxAttempts: 5, Backoff: &ConstantBackoff{Delay: time.Millisecond}},
+		func(_ context.Context) error {
+			callCount++
+			return nil
+		})
+
+	require.Error(t, err)
+	assert.Equal(t, 0, callCount, "an already-cancelled context must not be attempted")
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func TestDo_OnRetryCallback(t *testing.T) {
@@ -659,6 +739,24 @@ func TestDo_ContextCanceledBeforeFirstAttempt(t *testing.T) {
 	assert.Equal(t, 0, callCount, "operation should not be called when context is already canceled")
 }
 
+// A cancellation arriving around the backoff wait ends it.
+//
+// Distinct from TestDo_ContextCancellation, where the context is already done
+// before Do reaches the select. Here the cancel is issued concurrently with
+// Do entering it — whether the select had begun waiting is not synchronised,
+// and the guarantee asserted does not need it to be.
+//
+// Two constraints pull against each other here and both have to hold. The
+// backoff must be long enough that a second attempt cannot happen however late
+// the cancel lands — otherwise the attempt count is a coin flip, which is the
+// flake this issue is about. But a long backoff must not become the test's
+// runtime when the behaviour REGRESSES: asserting elapsed time after Do
+// returns bounds nothing, because a Do that stopped honouring cancellation
+// simply sleeps out the timer first.
+//
+// So the backoff is long AND Do runs on its own goroutine under a bound this
+// test enforces. A regression fails in bounded time with a diagnostic instead
+// of tying up a CI runner (go-qrdb#88).
 func TestDo_ContextCanceledDuringBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -666,30 +764,44 @@ func TestDo_ContextCanceledDuringBackoff(t *testing.T) {
 	cfg := &Config{
 		MaxAttempts: 10,
 		Backoff: &ConstantBackoff{
-			Delay:  50 * time.Millisecond,
+			Delay:  time.Hour,
 			Jitter: 0,
+		},
+		// Fires immediately before Do enters its backoff select. The cancel
+		// therefore lands either just before that select or while it waits —
+		// which of the two is not synchronised here, and the assertion does
+		// not depend on it: either way a cancelled context must end the
+		// backoff instead of sleeping through it.
+		OnRetry: func(_ int, _ error, _ time.Duration) {
+			go cancel()
 		},
 	}
 
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		if callCount == 1 {
-			// Cancel after first attempt, during backoff
-			go func() {
-				time.Sleep(10 * time.Millisecond)
-				cancel()
-			}()
-		}
+	var callCount atomic.Int32
+	op := func(_ context.Context) error {
+		callCount.Add(1)
 		return dberrors.New(dberrors.ErrTimeout, "test.op", "timeout")
 	}
 
-	err := Do(ctx, cfg, op)
-	assert.Error(t, err)
-	// Should have attempted once before cancellation
-	assert.GreaterOrEqual(t, callCount, 1)
-	assert.LessOrEqual(t, callCount, 2)
+	done := make(chan error, 1)
+	go func() { done <- Do(ctx, cfg, op) }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(returnBound):
+		t.Fatalf("Do did not return within %v: it is waiting out the %v backoff "+
+			"instead of returning on cancellation", returnBound, time.Hour)
+	}
+
+	assert.Equal(t, int32(1), callCount.Load(),
+		"a cancelled context must end the backoff instead of sleeping through it")
 }
+
+// returnBound is how long a test waits for a call that should return
+// immediately. Generous enough that a loaded runner never trips it, and short
+// enough that a genuine hang is reported rather than waited out.
+const returnBound = 30 * time.Second
 
 func TestDo_NilBackoff(t *testing.T) {
 	ctx := context.Background()
