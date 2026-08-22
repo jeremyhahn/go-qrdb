@@ -15,6 +15,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -82,12 +83,67 @@ const signalRetryInterval = 25 * time.Millisecond
 // by signalGuard, exactly as they are today, and deliveries after are received
 // by an already-cancelled context, which is a no-op.
 //
-// There is deliberately no timeout: any bound tight enough to fail fast would
-// be another bet on startup duration under load, and a runStart that never
-// returns is a real hang, best reported by the test binary's own timeout with
-// a full goroutine dump rather than by a bare "did not return" message.
+// The retry is bounded by the test's own deadline rather than by a fixed
+// duration, so a runStart that genuinely hangs fails THIS test with a
+// diagnostic instead of running the package into its global timeout and taking
+// every other test's result with it. The bound is never a bet on startup
+// duration: it is whatever the run was already going to allow, less a margin
+// for the rest of the package.
+//
+// It signals from t=0, which is correct for a caller that only wants runStart
+// to RETURN. A caller that needs startup to have reached a particular state
+// first must use signalAfterReady -- see the warning there.
 func signalUntilReturn(t *testing.T, done <-chan error, sig syscall.Signal) error {
 	t.Helper()
+	return signalAfterReady(t, done, sig, nil)
+}
+
+// signalDeadlineMargin is left for the remainder of the package when deriving
+// a per-test bound from t.Deadline().
+const signalDeadlineMargin = 30 * time.Second
+
+// signalAfterReady waits until ready reports the daemon has reached the state
+// the test means to exercise, then delivers sig until runStart returns.
+//
+// WHY THE GATE EXISTS, because removing it is an easy and invisible mistake.
+// runStart installs its signal handler EARLY -- before the seal build,
+// awaitUnseal, initializeNode, bootstrapAuth and warmup. Signalling at t=0
+// therefore cancels it before most of startup has run, and the tests still
+// PASS, because they accept any error from runStart via t.Logf. What they stop
+// doing is testing anything: measured on the _FullStartup family, runFirstBoot
+// coverage fell 60.6% -> 6.1% and adminExists and waitForAdminReplication both
+// fell to 0%, while PACKAGE coverage did not move at all because other tests
+// happen to cover the same functions. A test named _FullStartup that no longer
+// reaches first boot is worse than a missing test: it reports success for work
+// it never did (go-qrdb#83).
+//
+// A nil ready signals immediately, which is right only when the assertion is
+// purely "a signalled runStart returns".
+//
+// The gate ASSERTS. Not becoming ready fails the test, and so does runStart
+// returning before it does. An earlier revision capped the wait at five
+// seconds and signalled anyway, on the reasoning that an early cap "costs
+// coverage at worst, never a hang" -- but losing the coverage silently is
+// precisely the defect this helper exists to remove, and instrumenting the
+// predicate showed five of the six migrated tests hit that cap on EVERY run
+// and never became ready at all. A wait whose cap is always reached is a
+// time.Sleep wearing a predicate's clothes. What they were waiting for could
+// not happen: a state machine that could not apply kv.OpPutIfAbsent meant
+// first boot never finished, which is go-qrdb#86, fixed separately. With that
+// fixed the listener accepts in about five seconds and the gate is an
+// assertion again.
+//
+// The bound is the test's own deadline less a margin for the rest of the
+// package, never a guess at how long startup takes: whatever the run was
+// already going to allow.
+func signalAfterReady(t *testing.T, done <-chan error, sig syscall.Signal, ready func() bool) error {
+	t.Helper()
+
+	limit := readyDeadline(t)
+
+	if ready != nil {
+		awaitReady(t, done, ready, limit)
+	}
 
 	ticker := time.NewTicker(signalRetryInterval)
 	defer ticker.Stop()
@@ -101,6 +157,155 @@ func signalUntilReturn(t *testing.T, done <-chan error, sig syscall.Signal) erro
 			return runErr
 		case <-ticker.C:
 		}
+		if time.Now().After(limit) {
+			t.Fatalf("runStart did not return within the test deadline after repeated %v", sig)
+		}
+	}
+}
+
+// stopDaemon drives a running runStart to return, bounded, and reports
+// whether it did.
+//
+// It calls no testing methods, so it is safe from a cleanup function or a
+// failure path. That matters because t.Fatalf ends only the calling goroutine:
+// a helper that fails while runStart is still running leaves a daemon owning
+// listeners and PROCESS-WIDE signal registrations, free to consume the signals
+// a later test sends. That is the same class of cross-test interference this
+// file was written to remove, reintroduced through the failure path
+// (go-qrdb#83).
+func stopDaemon(done <-chan error, limit time.Time) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+
+	ticker := time.NewTicker(signalRetryInterval)
+	defer ticker.Stop()
+	for {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+			return true
+		case <-ticker.C:
+		}
+		if time.Now().After(limit) {
+			return false
+		}
+	}
+}
+
+// guardDaemonShutdown registers a cleanup that stops runStart if the test did
+// not, and restores the signal handlers either way.
+//
+// Registered by the readiness helpers rather than left to each caller: the
+// paths that need it most are the ones that fail, and a failing test does not
+// reach its own cleanup code.
+func guardDaemonShutdown(t *testing.T, done <-chan error) {
+	t.Helper()
+	t.Cleanup(func() {
+		// Runs on the test goroutine, so reporting here is safe.
+		defer resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+		// Only a FAILED test can have left the daemon running. The normal
+		// paths return only once runStart has returned — and in doing so they
+		// consume the single value on done, so the guard cannot observe it a
+		// second time. Checking done here on a passing test therefore finds an
+		// empty channel and signals a daemon that stopped long ago, waiting
+		// out the bound before reporting a failure that is entirely its own
+		// (measured: this cleanup failed every passing run until it asked
+		// t.Failed first).
+		if !t.Failed() {
+			return
+		}
+		if !stopDaemon(done, time.Now().Add(shutdownGuardBound)) {
+			t.Errorf("runStart did not return within %v of the test failing; it "+
+				"still owns its listeners and signal registrations",
+				shutdownGuardBound)
+		}
+	})
+}
+
+// readinessTimeout bounds a wait for something the daemon should do promptly
+// once it is serving. Long enough that a loaded runner never trips it, short
+// enough that a defect reports rather than being waited out.
+const readinessTimeout = 30 * time.Second
+
+// shutdownGuardBound is how long the cleanup waits for a daemon the test left
+// running. Generous, because it only runs when something has already gone
+// wrong, and bounded so a stuck daemon reports rather than hanging the package.
+const shutdownGuardBound = 30 * time.Second
+
+// awaitReady blocks until ready reports the daemon has reached the state the
+// caller means to exercise, failing if it never does or if runStart exits
+// first.
+//
+// Separate from signalAfterReady because an INTERMEDIATE signal needs the wait
+// without the shutdown. SIGHUP is the case: it must reach runStart's own
+// handler, which is installed only after initializeNode completes, but
+// delivering it must not end the daemon — the test goes on to shut down with
+// SIGTERM afterwards. Before this existed, the SIGHUP test slept three seconds
+// and hoped, so on a slow runner the signal arrived before the handler did,
+// the test's own notify channel absorbed it, and handleSIGHUP was never
+// exercised. The test passed having covered nothing on the reload path, which
+// is the exact failure this file exists to remove (go-qrdb#83).
+func awaitReady(t *testing.T, done <-chan error, ready func() bool, limit time.Time) {
+	t.Helper()
+
+	// However this test ends -- including on the Fatalf below, which ends only
+	// this goroutine -- the daemon is stopped and the handlers restored.
+	guardDaemonShutdown(t, done)
+
+	started := time.Now()
+	poll := time.NewTicker(signalRetryInterval)
+	defer poll.Stop()
+	for !ready() {
+		if time.Now().After(limit) {
+			// Shut the daemon down BEFORE failing. Fatalf ends this goroutine
+			// only, and a daemon left running consumes later tests' signals.
+			stopped := stopDaemon(done, time.Now().Add(shutdownGuardBound))
+			t.Fatalf("startup never became ready within %v (daemon stopped: %v): "+
+				"the test claims to exercise a fully started daemon and never "+
+				"reached one", time.Since(started), stopped)
+		}
+		select {
+		case runErr := <-done:
+			// Not a condition to signal into: a runStart that exits during
+			// startup has failed, and reporting its error to a caller that
+			// treats any error as acceptable is how a daemon that never
+			// started passed as a full-startup test for months.
+			t.Fatalf("runStart returned after %v, before becoming ready: %v",
+				time.Since(started), runErr)
+		case <-poll.C:
+		}
+	}
+}
+
+// readyDeadline is the bound awaitReady and signalAfterReady share: the test's
+// own deadline less a margin for the rest of the package, never a guess at how
+// long startup takes.
+func readyDeadline(t *testing.T) time.Time {
+	t.Helper()
+	limit := time.Now().Add(2 * time.Minute)
+	if d, ok := t.Deadline(); ok {
+		if adjusted := d.Add(-signalDeadlineMargin); adjusted.After(time.Now()) {
+			limit = adjusted
+		}
+	}
+	return limit
+}
+
+// listenerReady reports whether addr accepts a TCP connection, which is the
+// observable proof that runStart has finished startup and is serving -- the
+// state the _FullStartup tests are named for.
+func listenerReady(addr string) func() bool {
+	return func() bool {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
 	}
 }
 

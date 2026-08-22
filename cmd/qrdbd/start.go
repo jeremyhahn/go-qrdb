@@ -1097,6 +1097,9 @@ func runStart(f *startFlags) error {
 						seal.WithVolumePool(volumePool.Manager, volumePool.StateStore, volumePool.DefaultPoolName),
 						seal.WithPerTenantRegistry(volumePool.PerTenantRegistry),
 					)
+					if volumePoolAttached != nil {
+						volumePoolAttached()
+					}
 				}
 			}
 
@@ -1237,6 +1240,9 @@ func runStart(f *startFlags) error {
 			go func() {
 				for range sighupCh {
 					handleSIGHUP(bundle.Reloader, slog.Default())
+					if sighupHandled != nil {
+						sighupHandled()
+					}
 				}
 			}()
 			defer signal.Stop(sighupCh)
@@ -3304,6 +3310,29 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 		Err:  &AdminReplicationTimeoutError{Timeout: timeout},
 	}
 }
+
+// volumePoolAttached is invoked once the volume pool has been attached to the
+// barrier registry. It is nil in production and set only by tests.
+//
+// The wiring it reports is not observable from outside the process, and it
+// happens LATE — after the seal and volume-pool subsystems are built — while
+// runStart installs its termination handler EARLY. A test that signals on a
+// timer, or at t=0, can therefore cancel startup before the attachment and
+// still see runStart return cleanly, passing without exercising the wiring it
+// is named for (go-qrdb#83).
+var volumePoolAttached func()
+
+// sighupHandled is invoked after each SIGHUP has been processed. It is nil in
+// production and set only by tests.
+//
+// It exists because SIGHUP handling is otherwise unobservable from outside the
+// process. A test can see that the SIGNAL was delivered — its own
+// signal.Notify channel receives a copy — but delivery says nothing about
+// whether runStart's goroutine has run handleSIGHUP yet, and a test that
+// signals SIGTERM on the strength of its own copy can shut the daemon down
+// first. The reload path then never runs and the test passes anyway
+// (go-qrdb#83).
+var sighupHandled func()
 
 // handleSIGHUP processes a SIGHUP signal by reloading TLS certificates.
 // When the reloader is nil (e.g., when certificates were loaded from

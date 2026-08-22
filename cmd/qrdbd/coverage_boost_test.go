@@ -1162,27 +1162,18 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	// Wait long enough for the memory SM single-node to elect a leader,
-	// complete warmupReadIndex, and start the server.
-	time.Sleep(3 * time.Second)
-
-	// Send SIGTERM (not SIGINT) to unblock <-sigCtx.Done() at line 1064.
-	// SIGTERM is handled by signal.NotifyContext but does not terminate
-	// the test binary on its own (unlike SIGINT which triggers SIGINT handling
-	// in the test harness on some Go versions).
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill() error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			// Server start failure (port conflict) is acceptable —
-			// the coverage goal was reaching lines 968-1056.
-			t.Logf("runStart returned error (acceptable): %v", runErr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Wait until the admin listener accepts before signalling, then signal
+	// until runStart returns. Both halves matter: signalling at t=0 cancels
+	// startup before first boot and the test passes having covered nothing,
+	// and sleeping a fixed duration is a bet that loses under load. See
+	// signalAfterReady (go-qrdb#83).
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
+		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
@@ -1224,22 +1215,41 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		enableGRPC:      true,
 	}
 
+	// Observe the daemon's OWN handling of SIGHUP, not merely its delivery.
+	// Installed before runStart so no signal can be processed unobserved.
+	reloaded := make(chan struct{}, 1)
+	origHandled := sighupHandled
+	t.Cleanup(func() { sighupHandled = origHandled })
+	sighupHandled = func() {
+		select {
+		case reloaded <- struct{}{}:
+		default:
+		}
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		done <- runStart(f)
 	}()
 
-	// Wait for the server to start fully.
-	time.Sleep(3 * time.Second)
+	// Wait until the daemon is SERVING before raising SIGHUP.
+	//
+	// A sleep here was a bet on startup duration, and SIGHUP is the signal
+	// that loses it. runStart installs its own signal.Notify(SIGHUP) only
+	// after initializeNode completes; if the signal arrives first, the test's
+	// own notify channel below absorbs it, the delivery wait succeeds, and
+	// handleSIGHUP is never reached. The test then passes having covered
+	// nothing of the reload path it is named for — the same silent failure
+	// this file exists to remove, on the one signal that does not terminate
+	// the daemon (go-qrdb#83).
+	//
+	// The listener accepting means startup is past initializeNode, so the
+	// handler is installed by the time SIGHUP is sent.
+	awaitReady(t, done, listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort)), readyDeadline(t))
 
 	// Register our own SIGHUP notify channel BEFORE raising the signal.
-	// runStart installs its own signal.Notify(SIGHUP) only after
-	// initializeNode completes, which under full-suite load can take longer
-	// than the startup wait above. If SIGHUP were raised while no channel is
-	// registered, its default disposition (terminate) would escape to the
-	// whole test-runner process. Calling signal.Notify here installs a
-	// process-wide SIGHUP handler in this test binary, so the signal can
-	// never fall through to the default action. runStart's own goroutine
+	// Without a channel registered, SIGHUP's default disposition (terminate)
+	// would escape to the whole test-runner process. runStart's own goroutine
 	// still receives its copy, exercising the cert-reload path (a no-op when
 	// bundle.Reloader is nil, the expected case here).
 	sighupSeen := make(chan os.Signal, 1)
@@ -1258,21 +1268,30 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		t.Fatal("SIGHUP was not delivered within timeout")
 	}
 
-	// Brief pause to let runStart's SIGHUP goroutine process its copy.
-	time.Sleep(100 * time.Millisecond)
-
-	// Terminate the server.
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
+	// Then wait for runStart to have actually PROCESSED it.
+	//
+	// The receive above proves only that this test's own notify channel got a
+	// copy. runStart has its own channel and its own goroutine, and sending
+	// SIGTERM on the strength of our copy can shut the daemon down before that
+	// goroutine reaches handleSIGHUP — the reload path never runs and the test
+	// passes regardless, which is the failure this test exists to avoid
+	// (go-qrdb#83).
+	select {
+	case <-reloaded:
+	case <-time.After(readinessTimeout):
+		t.Fatalf("SIGHUP was delivered but runStart did not process it within %v: "+
+			"handleSIGHUP was never reached", readinessTimeout)
 	}
 
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned error (acceptable): %v", runErr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Readiness was established before the SIGHUP above, so this only has to
+	// drive the shutdown. Re-waiting for a listener that is already accepting
+	// would assert nothing new.
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
@@ -1336,32 +1355,42 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	time.Sleep(3 * time.Second)
-
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Wait until the admin listener accepts before signalling, then signal
+	// until runStart returns. Both halves matter: signalling at t=0 cancels
+	// startup before first boot and the test passes having covered nothing,
+	// and sleeping a fixed duration is a bet that loses under load. See
+	// signalAfterReady (go-qrdb#83).
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
+		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
 }
 
 // ---------------------------------------------------------------------------
-// runStart: seal config software strategy (lines 860-942)
+// runStart: seal config software strategy — the SEALED WINDOW, not full startup
 //
-// Full startup with sealConfig.Enabled = true covers the seal barrier
-// initialization path. The software strategy is the default.
+// With sealConfig enabled, runStart brings up a pre-host sealed-window server
+// on the admin port and then blocks in awaitUnseal until the barrier is
+// unsealed. The Raft host, first boot and the regular server all come after
+// that. Nothing here performs the unseal ceremony, so this test exercises the
+// sealed window and its shutdown, and it never reaches full startup.
+//
+// It was named _FullStartup and gated on the admin port accepting — which the
+// SEALED-WINDOW listener satisfies, so the gate went green while the daemon
+// was still sealed. That is why this test reached "readiness" in ~0.8 s while
+// its siblings took ~5 s; I recorded the discrepancy as an oddity and did not
+// chase it. Renamed rather than re-gated: the honest fix for a test that does
+// not reach a state is to stop claiming it, and a test that DOES drive the
+// unseal ceremony is a different test worth writing on its own (go-qrdb#83).
 // ---------------------------------------------------------------------------
 
-func TestRunStart_SealConfig_SoftwareStrategy_FullStartup(t *testing.T) {
+func TestRunStart_SealConfig_SoftwareStrategy_SealedWindow_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
 	raftPort, err := findFreeUDPPort()
@@ -1399,19 +1428,18 @@ func TestRunStart_SealConfig_SoftwareStrategy_FullStartup(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	time.Sleep(3 * time.Second)
-
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Wait until the admin listener accepts before signalling, then signal
+	// until runStart returns. Both halves matter: signalling at t=0 cancels
+	// startup before first boot and the test passes having covered nothing,
+	// and sleeping a fixed duration is a bet that loses under load. See
+	// signalAfterReady (go-qrdb#83).
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
+		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
@@ -1550,21 +1578,18 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	// Wait long enough for auth bootstrap to complete: leader election,
-	// role/user creation, warmupReadIndex, and server start.
-	time.Sleep(6 * time.Second)
-
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Wait until the admin listener accepts before signalling, then signal
+	// until runStart returns. Both halves matter: signalling at t=0 cancels
+	// startup before first boot and the test passes having covered nothing,
+	// and sleeping a fixed duration is a bet that loses under load. See
+	// signalAfterReady (go-qrdb#83).
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
+		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
@@ -1614,26 +1639,46 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 		},
 	}
 
+	// Observe the wiring this test is NAMED for before shutting down.
+	//
+	// runStart installs its termination handler EARLY — before
+	// initSealSubsystem, initVolumePoolSubsystem and BarrierRegistry.Attach —
+	// so signalling at t=0 can cancel startup before the attachment and let
+	// runStart return cleanly. The test would then pass having never wired the
+	// pool to the registry, which is the whole behaviour under test. Neither a
+	// sleep nor an immediate signal can rule that out; only the attachment
+	// reporting itself can (go-qrdb#83).
+	attached := make(chan struct{}, 1)
+	origAttached := volumePoolAttached
+	t.Cleanup(func() { volumePoolAttached = origAttached })
+	volumePoolAttached = func() {
+		select {
+		case attached <- struct{}{}:
+		default:
+		}
+	}
+
 	done := make(chan error, 1)
 	go func() {
 		done <- runStart(f)
 	}()
 
-	// Both subsystems initialize quickly (in-process, no Raft leader needed).
-	// After a short delay the sealed barrier causes runStart to block in
-	// awaitUnseal; send SIGTERM to trigger the awaitUnsealCanceledError path.
-	time.Sleep(500 * time.Millisecond)
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
+	select {
+	case <-attached:
+	case runErr := <-done:
+		t.Fatalf("runStart returned before the volume pool was attached to the "+
+			"barrier registry, so the wiring under test never happened: %v", runErr)
+	case <-time.After(readinessTimeout):
+		t.Fatalf("the volume pool was not attached to the barrier registry within %v",
+			readinessTimeout)
 	}
 
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// The wiring is done; now drive the shutdown.
+	if runErr := signalUntilReturn(t, done, syscall.SIGTERM); runErr != nil {
+		// Not "acceptable": startup reached the attachment, so a signalled
+		// runStart shuts down cleanly and returns nil. Logging the error here
+		// is what let a startup that never got this far pass (go-qrdb#83).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)

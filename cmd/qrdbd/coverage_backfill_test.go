@@ -803,19 +803,18 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 		done <- runStart(f)
 	}()
 
-	// Wait for startup then send SIGTERM.
-	time.Sleep(3 * time.Second)
-	if killErr := syscall.Kill(os.Getpid(), syscall.SIGTERM); killErr != nil {
-		t.Fatalf("Kill(SIGTERM) error = %v", killErr)
-	}
-
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Logf("runStart returned (acceptable): %v", runErr)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runStart did not return within timeout after SIGTERM")
+	// Wait until the admin listener accepts before signalling, then signal
+	// until runStart returns. Both halves matter: signalling at t=0 cancels
+	// startup before first boot and the test passes having covered nothing,
+	// and sleeping a fixed duration is a bet that loses under load. See
+	// signalAfterReady (go-qrdb#83).
+	if runErr := signalAfterReady(t, done, syscall.SIGTERM,
+		listenerReady(fmt.Sprintf("127.0.0.1:%d", adminPort))); runErr != nil {
+		// A daemon that reached its listener and was then signalled shuts
+		// down cleanly and returns nil. Logging an error as "acceptable"
+		// here is what let a startup that never completed pass this test
+		// (go-qrdb#83, cause in go-qrdb#86).
+		t.Fatalf("runStart returned an error after a clean shutdown: %v", runErr)
 	}
 
 	resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM)
