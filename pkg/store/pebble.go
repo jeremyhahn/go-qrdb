@@ -650,13 +650,16 @@ func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interfa
 		return &SnapshotError{Op: "save", Err: err}
 	}
 
-	var count uint32
+	var counter snapshotEntryCounter
 	for iter.First(); iter.Valid(); iter.Next() {
 		k := iter.Key()
 		if len(k) > 0 && k[0] == '\x00' {
 			continue
 		}
-		count++
+		if err := counter.add(); err != nil {
+			_ = iter.Close()
+			return err
+		}
 	}
 	if err := iter.Error(); err != nil {
 		_ = iter.Close()
@@ -664,7 +667,7 @@ func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interfa
 	}
 	_ = iter.Close()
 
-	if err := binary.Write(w, binary.LittleEndian, count); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, counter.count()); err != nil {
 		return &SnapshotError{Op: "save", Err: err}
 	}
 
@@ -692,17 +695,8 @@ func (s *PebbleStateMachine) SaveSnapshot(_ context.Context, snapshotCtx interfa
 			return &SnapshotError{Op: "save", Err: err}
 		}
 
-		if err := binary.Write(w, binary.LittleEndian, uint32(len(k))); err != nil {
-			return &SnapshotError{Op: "save", Err: err}
-		}
-		if _, err := w.Write(k); err != nil {
-			return &SnapshotError{Op: "save", Err: err}
-		}
-		if err := binary.Write(w, binary.LittleEndian, uint32(len(v))); err != nil {
-			return &SnapshotError{Op: "save", Err: err}
-		}
-		if _, err := w.Write(v); err != nil {
-			return &SnapshotError{Op: "save", Err: err}
+		if err := writeSnapshotEntry(w, k, v); err != nil {
+			return err
 		}
 	}
 

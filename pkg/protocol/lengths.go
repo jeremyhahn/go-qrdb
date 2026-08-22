@@ -80,12 +80,19 @@ func checkUint16Len(n int, field string) error {
 	return nil
 }
 
-// checkUint32Len reports whether n fits a four-byte length field. See
+// CheckUint32Len reports whether n fits a four-byte length field. See
 // checkUint16Len for why the check is separate from the write.
 // The comparison is made in uint64 space because the bound does not fit an int
 // everywhere. On a platform where it does not, len() cannot reach it either, so
 // the guard correctly never fires there rather than failing to build.
-func checkUint32Len(n int, field string) error {
+//
+// It is exported because the bound has a second caller outside this package:
+// pkg/store frames snapshot keys and values in the same four-byte field
+// (go-qrdb#54). Exporting the predicate rather than letting that package grow
+// its own copy is the point — two definitions of one bound is exactly the drift
+// this whole family of defects comes from, and TestCheckAndPutShareOneBound
+// pins that the check and the write agree.
+func CheckUint32Len(n int, field string) error {
 	if n < 0 || uint64(n) > MaxUint32Field {
 		return &FieldTooLongError{Field: field, Length: n, Max: MaxUint32Field}
 	}
@@ -167,13 +174,13 @@ func mulSize(n, factor int) (int, error) {
 // prefix. It is the measuring half of encodeFramedSlices, which is the writing
 // half; the two must agree on the frame layout.
 func framedSlicesSize(items [][]byte) (int, error) {
-	if err := checkUint32Len(len(items), "item count"); err != nil {
+	if err := CheckUint32Len(len(items), "item count"); err != nil {
 		return 0, err
 	}
 
 	size := frameSize
 	for _, item := range items {
-		if err := checkUint32Len(len(item), "item"); err != nil {
+		if err := CheckUint32Len(len(item), "item"); err != nil {
 			return 0, err
 		}
 		var err error
@@ -263,7 +270,7 @@ func putUint16Len(dst []byte, n int, field string) error {
 // out to be one line of test code; a bound that is checked cannot regress into
 // one that is merely improbable.
 func putUint32Len(dst []byte, n int, field string) error {
-	if err := checkUint32Len(n, field); err != nil {
+	if err := CheckUint32Len(n, field); err != nil {
 		return err
 	}
 	binary.LittleEndian.PutUint32(dst, uint32(n))

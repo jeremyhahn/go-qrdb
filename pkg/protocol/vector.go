@@ -93,10 +93,10 @@ func EncodeVectorUpsert(namespace, id string, vector []float32, metadata []byte)
 	if err := checkUint16Len(len(idBytes), "vector id"); err != nil {
 		return nil, err
 	}
-	if err := checkUint32Len(dim, "vector dimension"); err != nil {
+	if err := CheckUint32Len(dim, "vector dimension"); err != nil {
 		return nil, err
 	}
-	if err := checkUint32Len(len(metadata), "metadata"); err != nil {
+	if err := CheckUint32Len(len(metadata), "metadata"); err != nil {
 		return nil, err
 	}
 
@@ -256,10 +256,10 @@ func EncodeVectorBatchUpsert(namespace string, vectors []VectorUpsertParams) ([]
 		if err := checkUint16Len(len(v.ID), "vector id"); err != nil {
 			return nil, err
 		}
-		if err := checkUint32Len(len(v.Vector), "vector"); err != nil {
+		if err := CheckUint32Len(len(v.Vector), "vector"); err != nil {
 			return nil, err
 		}
-		if err := checkUint32Len(len(v.Metadata), "metadata"); err != nil {
+		if err := CheckUint32Len(len(v.Metadata), "metadata"); err != nil {
 			return nil, err
 		}
 		var err error

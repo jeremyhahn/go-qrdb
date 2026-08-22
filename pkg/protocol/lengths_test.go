@@ -210,7 +210,7 @@ func TestPutUint32Len_RefusesWhatItCannotDescribe(t *testing.T) {
 // keeps the conversion honest rather than relying on every caller upstream.
 func TestCheckUint32Len_RefusesANegativeLength(t *testing.T) {
 	var tooLong *FieldTooLongError
-	if !errors.As(checkUint32Len(-1, "item"), &tooLong) {
+	if !errors.As(CheckUint32Len(-1, "item"), &tooLong) {
 		t.Fatal("a negative length was accepted; converted to uint64 it is enormous")
 	}
 }

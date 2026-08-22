@@ -688,7 +688,7 @@ func EncodeOp(opType byte, key, value, rangeEnd []byte, leaseID int64) ([]byte, 
 		bytes []byte
 		name  string
 	}{{key, "key"}, {value, "value"}, {rangeEnd, "range end"}} {
-		if err := checkUint32Len(len(f.bytes), f.name); err != nil {
+		if err := CheckUint32Len(len(f.bytes), f.name); err != nil {
 			return nil, err
 		}
 		var err error
@@ -739,7 +739,7 @@ func EncodeCompare(key []byte, target, result byte, value []byte, version, creat
 		bytes []byte
 		name  string
 	}{{key, "key"}, {value, "value"}} {
-		if err := checkUint32Len(len(f.bytes), f.name); err != nil {
+		if err := CheckUint32Len(len(f.bytes), f.name); err != nil {
 			return nil, err
 		}
 		var err error
