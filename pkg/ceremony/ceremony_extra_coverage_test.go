@@ -471,6 +471,10 @@ func (b *errorableBackend) CompareAndDelete(ctx context.Context, key string, exp
 	return false, nil
 }
 
+func (b *errorableBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (b *errorableBackend) Delete(ctx context.Context, key string) error {
 	if b.failDelete {
 		return errInjectedBackend

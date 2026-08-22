@@ -854,6 +854,22 @@ type guardedDeleteBackend interface {
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
 }
 
+// guardedSwapBackend is the edit half of the same contract. It is a separate
+// interface from guardedDeleteBackend rather than one combined one so a
+// backend can offer either capability independently — a store may gain the
+// guarded swap without gaining the guarded delete, and a type assertion that
+// demanded both would refuse it for the wrong reason.
+type guardedSwapBackend interface {
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+}
+
+// ErrGuardedSwapUnsupported is returned when a storage backend offers no
+// guarded swap. As with the delete, there is no safe fallback: a read followed
+// by an unguarded write silently overwrites a value another caller
+// legitimately stored in between, which is the race the guard exists to
+// eliminate.
+var ErrGuardedSwapUnsupported = errors.New("seal: storage backend has no guarded swap")
+
 // ErrGuardedDeleteUnsupported is returned when a storage backend offers no
 // guarded delete. There is no safe fallback: a read followed by an
 // unguarded delete can remove a value another caller legitimately wrote in
@@ -875,6 +891,12 @@ func (b *StorageBarrier) CompareAndDelete(ctx context.Context, key string, expec
 	}
 	stored, err := b.base.Get(ctx, key)
 	if err != nil {
+		// Absent is an ordinary unchanged outcome, not a failure, and it must
+		// read the same way for every atomic verb on this type — see
+		// CompareAndSwap for why StorageBackend reports it as an error.
+		if errors.Is(err, ErrSecretNotFound) {
+			return false, nil
+		}
 		return false, err
 	}
 	if stored == nil {
@@ -892,6 +914,54 @@ func (b *StorageBarrier) CompareAndDelete(ctx context.Context, key string, expec
 		return false, ErrGuardedDeleteUnsupported
 	}
 	return guarded.CompareAndDelete(ctx, key, stored)
+}
+
+// CompareAndSwap replaces the key's value with next only when the DECRYPTED
+// stored value still equals expected.
+//
+// Two different values are compared at two different layers, and that is the
+// point. The caller's expectation is a plaintext, so it is compared against
+// the decrypted value here; the guard handed to the backend is the CIPHERTEXT
+// that was read, so the backend compares the exact bytes it holds. Comparing
+// ciphertexts against the caller's expectation would never match — the AEAD is
+// nonce-randomised, so encrypting the same plaintext twice gives different
+// bytes — and comparing plaintexts at the backend would require the backend to
+// hold the key.
+func (b *StorageBarrier) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if b.state.Load() != stateUnsealed {
+		return false, ErrSealed
+	}
+	stored, err := b.base.Get(ctx, key)
+	if err != nil {
+		// A StorageBackend signals a missing key with ErrSecretNotFound, not
+		// with (nil, nil) — MemoryBackend and the lifecycle kvSealBackend both
+		// do. Propagating it would report "absent" as a failure, when absent
+		// is an ordinary unswapped outcome (go-qrdb#56).
+		if errors.Is(err, ErrSecretNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if stored == nil {
+		// A swap does not create. See kvstore.AtomicKVStore.CompareAndSwap.
+		return false, nil
+	}
+	plaintext, derr := b.barrier.Decrypt(nil, stored)
+	if derr != nil {
+		return false, &GetError{Key: key, Err: derr}
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	guarded, ok := b.base.(guardedSwapBackend)
+	if !ok {
+		return false, ErrGuardedSwapUnsupported
+	}
+	ciphertext, eerr := b.barrier.Encrypt(nil, next)
+	if eerr != nil {
+		return false, eerr
+	}
+	return guarded.CompareAndSwap(ctx, key, stored, ciphertext)
 }
 
 // Delete removes the key from storage.
@@ -1064,6 +1134,21 @@ func (m *MemoryBackend) CompareAndDelete(_ context.Context, key string, expected
 		return false, nil
 	}
 	delete(m.data, key)
+	return true, nil
+}
+
+// CompareAndSwap replaces the key's value only when it still equals expected.
+// An absent key is left absent — a swap is not a create (go-qrdb#56).
+func (m *MemoryBackend) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	stored := make([]byte, len(next))
+	copy(stored, next)
+	m.data[key] = stored
 	return true, nil
 }
 

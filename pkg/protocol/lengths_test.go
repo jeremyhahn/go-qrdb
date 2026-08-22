@@ -1156,3 +1156,176 @@ func TestTSEncoders_RefuseATagBlockThatOverflowsWithTheFixedFields(t *testing.T)
 		})
 	}
 }
+
+// CompareAndSwap round-trips all three of its variable-length fields, and the
+// empty cases are distinguishable from each other.
+//
+// The framing is what makes this worth pinning: `next` is the unframed
+// remainder, so an empty replacement value and an empty EXPECTED value are
+// different frames that must decode differently. A decoder that got the two
+// length fields the wrong way round would still round-trip a symmetric fixture
+// and fail on these.
+func TestEncodeDecodeCompareAndSwap_RoundTrip(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      []byte
+		expected []byte
+		next     []byte
+	}{
+		{name: "ordinary", key: []byte("k"), expected: []byte("old"), next: []byte("new")},
+		{name: "empty expected", key: []byte("k"), expected: []byte{}, next: []byte("new")},
+		{name: "empty next", key: []byte("k"), expected: []byte("old"), next: []byte{}},
+		{name: "both empty", key: []byte("k"), expected: []byte{}, next: []byte{}},
+		{name: "binary content", key: []byte{0, 0xff}, expected: []byte{0, 1}, next: []byte{0xfe, 0}},
+		{
+			name:     "value longer than a two-byte field",
+			key:      []byte("k"),
+			expected: bytes.Repeat([]byte("e"), MaxUint16Field+1),
+			next:     bytes.Repeat([]byte("n"), MaxUint16Field+1),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, err := EncodeCompareAndSwap(tt.key, tt.expected, tt.next)
+			if err != nil {
+				t.Fatalf("EncodeCompareAndSwap: %v", err)
+			}
+			if cmd[0] != OpCompareAndSwap {
+				t.Fatalf("opcode = %d, want %d", cmd[0], OpCompareAndSwap)
+			}
+
+			gotKey, gotExpected, gotNext, derr := DecodeCompareAndSwap(cmd[1:])
+			if derr != nil {
+				t.Fatalf("DecodeCompareAndSwap: %v", derr)
+			}
+			if !bytes.Equal(gotKey, tt.key) {
+				t.Errorf("key = %q, want %q", gotKey, tt.key)
+			}
+			if !bytes.Equal(gotExpected, tt.expected) {
+				t.Errorf("expected = %d bytes, want %d", len(gotExpected), len(tt.expected))
+			}
+			if !bytes.Equal(gotNext, tt.next) {
+				t.Errorf("next = %d bytes, want %d", len(gotNext), len(tt.next))
+			}
+		})
+	}
+}
+
+// An expected value larger than a two-byte field must ENCODE, because a caller
+// can store a value that large and must be able to guard on it.
+//
+// This is the reason the expected value carries a four-byte length while the
+// key keeps two. Capping the guard at 65,535 bytes would let a caller write a
+// record they then cannot express a compare against — the same class of defect
+// as go-qrdb#52, arriving through the front door rather than through a cast.
+func TestEncodeCompareAndSwap_GuardsOnValuesLargerThanTwoBytesCanFrame(t *testing.T) {
+	big := bytes.Repeat([]byte("v"), MaxUint16Field+1024)
+
+	cmd, err := EncodeCompareAndSwap([]byte("k"), big, []byte("next"))
+	if err != nil {
+		t.Fatalf("a %d-byte expected value was refused: %v", len(big), err)
+	}
+	_, gotExpected, gotNext, derr := DecodeCompareAndSwap(cmd[1:])
+	if derr != nil {
+		t.Fatalf("DecodeCompareAndSwap: %v", derr)
+	}
+	if len(gotExpected) != len(big) {
+		t.Errorf("expected value round-tripped as %d bytes, want %d", len(gotExpected), len(big))
+	}
+	if string(gotNext) != "next" {
+		t.Errorf("next = %q, want %q", gotNext, "next")
+	}
+}
+
+// A key the two-byte field cannot describe is refused at encode time, on the
+// same terms as every other command's key.
+func TestEncodeCompareAndSwap_RefusesAnUnencodableKey(t *testing.T) {
+	cmd, err := EncodeCompareAndSwap(oversizedKey(), []byte("e"), []byte("n"))
+	if err == nil {
+		t.Fatal("an oversized key was accepted; it would decode as a shorter key and " +
+			"the state machine would compare and replace a DIFFERENT record")
+	}
+	if cmd != nil {
+		t.Fatalf("a refused encode returned %d bytes; it must return nil", len(cmd))
+	}
+	var tooLong *FieldTooLongError
+	if !errors.As(err, &tooLong) {
+		t.Fatalf("error = %T (%v), want *FieldTooLongError", err, err)
+	}
+	if tooLong.Field != "key" {
+		t.Errorf("Field = %q, want %q", tooLong.Field, "key")
+	}
+}
+
+// Every truncated or over-long frame is refused rather than panicking.
+//
+// The decoder runs on every replica before the command is applied, so a frame
+// a client can craft must not be able to take a node down. Each case below
+// slices a valid command short or rewrites one of its two length fields to
+// claim more than the payload holds.
+func TestDecodeCompareAndSwap_RefusesAMalformedFrame(t *testing.T) {
+	valid, err := EncodeCompareAndSwap([]byte("key"), []byte("old"), []byte("new"))
+	if err != nil {
+		t.Fatalf("EncodeCompareAndSwap: %v", err)
+	}
+	payload := valid[1:] // strip the opcode, as the state machine does
+
+	build := func(mutate func([]byte) []byte) []byte {
+		cp := append([]byte(nil), payload...)
+		return mutate(cp)
+	}
+
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{name: "empty", payload: []byte{}},
+		{name: "one byte", payload: []byte{0}},
+		{name: "key length only", payload: build(func(p []byte) []byte { return p[:2] })},
+		{
+			name: "key length exceeds payload",
+			payload: build(func(p []byte) []byte {
+				binary.LittleEndian.PutUint16(p[0:2], uint16(len(p)))
+				return p
+			}),
+		},
+		{
+			name:    "truncated before the expected length",
+			payload: build(func(p []byte) []byte { return p[:2+3+2] }),
+		},
+		{
+			name: "expected length exceeds payload",
+			payload: build(func(p []byte) []byte {
+				binary.LittleEndian.PutUint32(p[2+3:], math.MaxUint32)
+				return p
+			}),
+		},
+		{
+			name: "expected length just past the remainder",
+			payload: build(func(p []byte) []byte {
+				binary.LittleEndian.PutUint32(p[2+3:], uint32(len(p)))
+				return p
+			}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("decoder panicked on a malformed frame: %v", r)
+				}
+			}()
+
+			key, expected, next, derr := DecodeCompareAndSwap(tt.payload)
+			if derr == nil {
+				t.Fatalf("a malformed frame decoded as key=%q expected=%q next=%q", key, expected, next)
+			}
+			var invalid *InvalidCommandError
+			if !errors.As(derr, &invalid) {
+				t.Fatalf("error is %T (%v), want *InvalidCommandError", derr, derr)
+			}
+		})
+	}
+}

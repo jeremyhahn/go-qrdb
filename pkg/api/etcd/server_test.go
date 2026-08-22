@@ -977,3 +977,8 @@ func TestStartAllServicesRegistersAll(t *testing.T) {
 func (m *mockMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevisionRequest) (*service.RestoreRevisionResult, error) {
 	return nil, nil
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockMVCCSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

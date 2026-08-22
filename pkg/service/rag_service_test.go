@@ -481,3 +481,8 @@ func TestRAGService_ClosedService(t *testing.T) {
 	_, err = svc.ListDocuments(context.Background(), &ListRAGDocumentsRequest{Namespace: "z"})
 	assert.IsType(t, &RAGServiceClosedError{}, err)
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*ragMockKVSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

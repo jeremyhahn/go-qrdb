@@ -260,4 +260,31 @@ type AtomicKVStore interface {
 	// a replicated store must evaluate it inside its state machine so every
 	// replica decides identically from the same log position.
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
+
+	// CompareAndSwap atomically replaces key's value with next only when its
+	// stored value still equals expected. It reports swapped=true when this
+	// call replaced the value, and swapped=false with a nil error when the key
+	// was absent or held a different value — in which case the store is
+	// unchanged. A non-nil error means the outcome is unknown and the caller
+	// must not assume either way.
+	//
+	// An absent key is NOT created. That is the distinction from PutIfAbsent,
+	// and it is deliberate: a swap says "this record should move from A to B",
+	// which is not a statement anyone can make about a record that does not
+	// exist.
+	//
+	// It completes what PutIfAbsent and CompareAndDelete began. A guarded
+	// create and a guarded release with no guarded EDIT between them is two
+	// thirds of a primitive: the endpoints are decided against replicated
+	// state and the transition in the middle is decided nowhere. Composing one
+	// from the existing pair does not work — CompareAndDelete followed by
+	// PutIfAbsent leaves the key briefly ABSENT, so readers see "not found"
+	// for a live record, and it reopens the delete-then-recreate window that
+	// lets a stalled contender take the key as a fresh create (go-qrdb#56).
+	//
+	// Atomicity is per consistency domain, exactly as for the other two: a
+	// single-process store serialises the compare-then-write internally, and a
+	// replicated store must evaluate it inside its state machine so every
+	// replica decides identically from the same log position.
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
 }

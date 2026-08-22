@@ -74,6 +74,11 @@ func (s *tenantBarrierKVStore) CompareAndDelete(ctx context.Context, key string,
 	return s.barrier.CompareAndDelete(ctx, key, expected)
 }
 
+// CompareAndSwap replaces the key's value only when it still equals expected.
+func (s *tenantBarrierKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return s.barrier.CompareAndSwap(ctx, key, expected, next)
+}
+
 // Get decrypts and returns the value for key. It translates the seal
 // subsystem's ErrSecretNotFound into (nil, nil) to satisfy the
 // kvstore.KVStore contract ("returns nil, nil when key does not exist").

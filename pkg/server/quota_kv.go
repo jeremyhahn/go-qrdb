@@ -125,6 +125,58 @@ func (s *quotaKVService) CompareAndDelete(ctx context.Context, key string, expec
 	return true, nil
 }
 
+// CompareAndSwap replaces key's value only when it still equals expected,
+// accounting the DELTA between the two.
+//
+// No priorSize read is needed here, unlike Delete: the guard is what makes the
+// delta exact. The swap lands only if the stored value equals expected, so
+// len(expected) IS the currently accounted size, and len(next)-len(expected)
+// is the change — read from the arguments rather than from a value that could
+// move between the read and the write.
+//
+// Growth is reserved BEFORE the write and released if the swap does not
+// happen, for the same reason PutIfAbsent reserves first: admitting the write
+// only after it lands would let a tenant exceed their limit whenever two swaps
+// are in flight. A shrink is released only after the swap succeeds, because a
+// refused swap frees nothing.
+//
+// An ERROR is not a refusal. AtomicKVStore says a non-nil error leaves the
+// outcome unknown, and for a Raft-backed store that is a real state, not a
+// formality: SyncPropose can commit the entry and then fail to deliver its
+// response. Releasing the reservation there would drop the accounting for a
+// value that IS stored, and the tenant's usage would sit permanently below
+// what they hold — every later write measured against a limit that no longer
+// bounds anything.
+//
+// So the reservation is retained on error. That errs toward over-counting: a
+// swap that genuinely did not land leaves the growth reserved until the
+// reconciler corrects it. Over-counting costs a tenant headroom they should
+// have had; under-counting costs the limit its meaning, and only one of those
+// is a quota failure (go-qrdb#56).
+func (s *quotaKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	growth := len(next) - len(expected)
+	if growth > 0 {
+		if err := s.reserve(ctx, growth); err != nil {
+			return false, err
+		}
+	}
+	swapped, err := s.inner.CompareAndSwap(ctx, key, expected, next)
+	if err != nil {
+		return swapped, err
+	}
+	if !swapped {
+		// Definitively refused: nothing was written, so nothing is owed.
+		if growth > 0 {
+			s.acct.Release(s.tenantID, int64(growth))
+		}
+		return false, nil
+	}
+	if growth < 0 {
+		s.acct.Release(s.tenantID, int64(-growth))
+	}
+	return true, nil
+}
+
 // PutWithMode accounts len(value) bytes after admitting the write.
 func (s *quotaKVService) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
 	n := len(value)

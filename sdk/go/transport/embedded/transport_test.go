@@ -1167,3 +1167,8 @@ func TestExists_AfterDelete(t *testing.T) {
 		t.Error("expected Exists to return false after delete")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

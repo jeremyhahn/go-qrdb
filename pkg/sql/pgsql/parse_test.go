@@ -1734,3 +1734,8 @@ func TestInferParamOIDs_UpsertAssignmentOfAnUnknownColumn(t *testing.T) {
 	assert.Equal(t, uint32(pgtype.ByteaOID), oids[2])
 	assert.NotContains(t, oids, 3, "a non-parameter assignment contributes no OID")
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

@@ -475,3 +475,8 @@ func TestGRPCAuthFactor_AllMethods_Success(t *testing.T) {
 		}
 	})
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*fakeMVCCServicer) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

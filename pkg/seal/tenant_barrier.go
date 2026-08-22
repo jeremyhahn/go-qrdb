@@ -142,6 +142,12 @@ func (t *TenantBarrier) CompareAndDelete(ctx context.Context, key string, expect
 	return t.barrier.CompareAndDelete(ctx, key, expected)
 }
 
+// CompareAndSwap replaces the key's value in the tenant's storage only when it
+// still equals expected.
+func (t *TenantBarrier) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return t.barrier.CompareAndSwap(ctx, key, expected, next)
+}
+
 // Delete removes the key from the tenant's storage.
 func (t *TenantBarrier) Delete(ctx context.Context, key string) error {
 	return t.barrier.Delete(ctx, key)
@@ -209,6 +215,16 @@ func (n *NamespacedBackend) CompareAndDelete(ctx context.Context, key string, ex
 		return false, ErrGuardedDeleteUnsupported
 	}
 	return guarded.CompareAndDelete(ctx, n.prefix+key, expected)
+}
+
+// CompareAndSwap replaces the namespaced key's value only when it still equals
+// expected. A base offering no guarded swap is refused rather than degraded.
+func (n *NamespacedBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	guarded, ok := n.base.(guardedSwapBackend)
+	if !ok {
+		return false, ErrGuardedSwapUnsupported
+	}
+	return guarded.CompareAndSwap(ctx, n.prefix+key, expected, next)
 }
 
 // Delete removes the namespaced key from storage.

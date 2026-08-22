@@ -228,6 +228,24 @@ func (s *MVCCKVService) CompareAndDelete(ctx context.Context, key string, expect
 	return result.Value == protocol.ResultDeleted, nil
 }
 
+// CompareAndSwap replaces key's value with next only when its stored value
+// still equals expected, evaluated inside the state machine. See
+// KVService.CompareAndSwap.
+func (s *MVCCKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	cmd, err := protocol.EncodeCompareAndSwap([]byte(key), expected, next)
+	if err != nil {
+		return false, &EncodeRequestError{Err: err}
+	}
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == protocol.ResultSwapped, nil
+}
+
 // Get retrieves the latest value for a key with a linearizable read.
 // Returns KeyNotFoundError when the key does not exist.
 func (s *MVCCKVService) Get(ctx context.Context, key string) ([]byte, error) {

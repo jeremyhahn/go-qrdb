@@ -121,6 +121,22 @@ func (s *BackendKVService) CompareAndDelete(ctx context.Context, key string, exp
 	return deleted, nil
 }
 
+// CompareAndSwap replaces key's value with next only when its stored value
+// still equals expected. A backend that cannot honour it is refused rather
+// than degraded to a read-then-write, which would deliver the exact race the
+// capability exists to eliminate while reporting success.
+func (s *BackendKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	atomicBackend, ok := s.backend.(database.AtomicBackend)
+	if !ok {
+		return false, database.ErrAtomicWriteUnsupported
+	}
+	swapped, err := atomicBackend.CompareAndSwap(ctx, []byte(key), expected, next)
+	if err != nil {
+		return false, s.translateSealed(err)
+	}
+	return swapped, nil
+}
+
 // Get retrieves a value by key. Returns KeyNotFoundError when the key
 // does not exist.
 func (s *BackendKVService) Get(ctx context.Context, key string) ([]byte, error) {

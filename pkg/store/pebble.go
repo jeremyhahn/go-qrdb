@@ -129,6 +129,7 @@ func (s *PebbleStateMachine) buildUpdateHandlers() map[byte]pebbleUpdateHandler 
 		protocol.OpBatch:            pebbleHandleBatch,
 		protocol.OpTransaction:      pebbleHandleTransaction,
 		protocol.OpCompareAndDelete: pebbleHandleCompareAndDelete,
+		protocol.OpCompareAndSwap:   pebbleHandleCompareAndSwap,
 
 		// Lease operations.
 		protocol.OpLeaseGrant:     pebbleHandleLeaseGrant,
@@ -986,6 +987,53 @@ func pebbleHandleCompareAndDelete(s *PebbleStateMachine, batch *pebble.Batch, pa
 	}
 
 	return sm.Result{Value: protocol.ResultDeleted}, notifs, nil
+}
+
+// pebbleHandleCompareAndSwap replaces a key's value only when the value in
+// this batch still equals expected.
+//
+// The read goes through getKeyInBatch, not the database, for the same reason
+// the delete does: earlier operations in the same batch are not yet visible to
+// the store, so reading past them would evaluate the guard against a stale
+// value and decide differently from a replica whose batch was split
+// differently.
+//
+// An absent key is NOT created — a swap moves a record between states, which
+// is not a statement about a record that does not exist. Creating here would
+// also make the operation indistinguishable from PutIfAbsent at a call site.
+func pebbleHandleCompareAndSwap(s *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
+	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	current, getErr := s.getKeyInBatch(batch, key)
+	if getErr != nil {
+		var notFound *kv.KeyNotFoundError
+		if !errors.As(getErr, &notFound) {
+			return sm.Result{}, nil, getErr
+		}
+		return sm.Result{Value: protocol.ResultNotSwapped}, nil, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return sm.Result{Value: protocol.ResultNotSwapped}, nil, nil
+	}
+
+	if serr := batch.Set(key, next, pebble.Sync); serr != nil {
+		return sm.Result{}, nil, &WriteError{Err: serr}
+	}
+
+	var notifs []pebbleNotification
+	if s.hub != nil {
+		notifs = []pebbleNotification{{
+			eventType: watch.EventPut,
+			key:       key,
+			kv:        &qrdbkv.KeyValue{Key: key, Value: next},
+			prevKv:    &qrdbkv.KeyValue{Key: key, Value: current},
+		}}
+	}
+
+	return sm.Result{Value: protocol.ResultSwapped}, notifs, nil
 }
 
 // pebbleHandleGet processes a base KV Get command (OpGet=2). Gets are

@@ -76,6 +76,12 @@ func (s *namespacedKVService) CompareAndDelete(ctx context.Context, key string, 
 	return s.inner.CompareAndDelete(ctx, s.prefix+key, expected)
 }
 
+// CompareAndSwap replaces the prefixed key's value only when it still equals
+// expected.
+func (s *namespacedKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return s.inner.CompareAndSwap(ctx, s.prefix+key, expected, next)
+}
+
 // Get retrieves a value by prefixed key.
 func (s *namespacedKVService) Get(ctx context.Context, key string) ([]byte, error) {
 	return s.inner.Get(ctx, s.prefix+key)

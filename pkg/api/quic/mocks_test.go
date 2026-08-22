@@ -717,3 +717,8 @@ func (m *mockMVCCKVService) RestoreToRevision(ctx context.Context, req *service.
 	}
 	return &service.RestoreRevisionResult{}, nil
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

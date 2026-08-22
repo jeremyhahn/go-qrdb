@@ -101,4 +101,15 @@ type AtomicBackend interface {
 	// the release half of PutIfAbsent: an unguarded delete can un-decide what
 	// a guarded create decided (go-qrdb#41).
 	CompareAndDelete(ctx context.Context, key, expected []byte) (deleted bool, err error)
+
+	// CompareAndSwap atomically replaces key's value with next only when its
+	// stored value still equals expected, reporting whether this call replaced
+	// it. An absent key is left absent — a swap is not a create.
+	//
+	// It is the edit half of the same set. A guarded create and a guarded
+	// delete with no guarded edit between them is two thirds of a primitive,
+	// and composing one from the pair leaves the key briefly ABSENT, which
+	// both breaks readers and reopens the window a guarded create closed
+	// (go-qrdb#56).
+	CompareAndSwap(ctx context.Context, key, expected, next []byte) (swapped bool, err error)
 }

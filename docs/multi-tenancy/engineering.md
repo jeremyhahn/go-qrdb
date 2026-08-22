@@ -73,6 +73,23 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   create with an unguarded release is half a primitive: two releasers both
   read holder A, the first deletes, another tenant legitimately claims the
   now-absent id, and the second delete removes THEIR claim.
+- **A claim is EDITED through a guarded swap**
+  (`kvstore.AtomicKVStore.CompareAndSwap`, added in #56), never a plain put.
+  It completes the set: `PutIfAbsent` takes a claim, `CompareAndDelete`
+  releases one, and `CompareAndSwap` moves one from a value the caller
+  observed to a new one, refusing if the record moved in between. A plain put
+  over a claim discards whatever landed since the read, which is the same
+  lost-update the guarded create exists to prevent, one operation later.
+  An absent key is NOT created by a swap — a swap edits what is there, and
+  creating on absence would let a released claim be resurrected by a caller
+  holding a stale view of it.
+- **Absence is `(false, nil)` for every guarded verb**, never an error. A
+  backend that reports a missing key as a failure makes callers unable to
+  distinguish "nothing was there" from "the store is broken", and the natural
+  retry loop around a guarded verb spins on an error that will never clear.
+  This holds through the encrypted wrappers too: `seal.StorageBarrier` maps
+  its backend's `ErrSecretNotFound` to `(false, nil)` for both the swap and
+  the delete.
 - **A claim succeeds only for the call that created it.** A pre-existing entry
   is refused whatever tenant holds it, the claimant's own included: proceeding
   on a claim you did not win lets a concurrent same-tenant delete release it

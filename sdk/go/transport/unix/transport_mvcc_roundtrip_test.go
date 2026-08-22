@@ -641,3 +641,8 @@ func TestUnixRT_ImportFile_ServiceError(t *testing.T) {
 		t.Fatal("expected error from server")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockMVCCSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

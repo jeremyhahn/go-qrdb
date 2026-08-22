@@ -269,6 +269,7 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpIndexDrop:        e.handleIndexDrop,
 		protocol.OpBatch:            e.handleBatch,
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
 	}
 }
 
@@ -462,6 +463,63 @@ func (e *KVEngine) handleCompareAndDelete(payload []byte) (sm.Result, error) {
 	}
 
 	return sm.Result{Value: protocol.ResultDeleted}, nil
+}
+
+// handleCompareAndSwap replaces a key's value only when its stored value still
+// equals expected.
+//
+// An absent key is NOT created — a swap moves a record between two states, and
+// a record that does not exist has no first state. Use OpMVCCPutIfAbsent to
+// create.
+//
+// The index reconciliation is a REPLACE, and it goes through the same
+// UpdateIndexesBatch the unguarded put uses, passing the previous value so the
+// old entries are retracted as the new ones land. Calling RemoveIndexesBatch
+// first as the guarded DELETE does would retract twice — Update already does
+// it from prevKv — and a second definition of "what it means to store a value"
+// is exactly the drift the guard is meant to avoid.
+func (e *KVEngine) handleCompareAndSwap(payload []byte) (sm.Result, error) {
+	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
+	if err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	current, gerr := e.stg.Get(key)
+	if gerr != nil {
+		return sm.Result{Value: 1}, gerr
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return sm.Result{Value: protocol.ResultNotSwapped}, nil
+	}
+
+	batch := e.stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	prevKv := &qkv.KeyValue{Key: key, Value: current}
+	nextKv := &qkv.KeyValue{Key: key, Value: next}
+
+	if err := batch.Set(key, next); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+	if len(e.indexes) > 0 {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, key, next, prevKv); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+	if len(e.compoundIndexes) > 0 {
+		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, key, next, prevKv); err != nil {
+			return sm.Result{Value: 1}, err
+		}
+	}
+	if err := batch.Commit(); err != nil {
+		return sm.Result{Value: 1}, err
+	}
+
+	if e.hub != nil {
+		e.hub.NotifyPut(key, nextKv, prevKv)
+	}
+
+	return sm.Result{Value: protocol.ResultSwapped}, nil
 }
 
 // kvHandleDelete removes a key, cleans up secondary indexes atomically

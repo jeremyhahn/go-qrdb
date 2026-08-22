@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1200,5 +1201,192 @@ func TestMemoryKVStore_CompareAndDelete_FreesAUniqueIndexValue(t *testing.T) {
 	if err := s.Put(ctx, "person/2", record); err != nil {
 		t.Fatalf("re-inserting the freed unique value: %v — the guarded delete "+
 			"left a stale unique index entry", err)
+	}
+}
+
+// The guarded swap decides on the stored value, and reports the two outcomes
+// apart: swapped=true with the new value stored, or swapped=false with the
+// store untouched.
+func TestMemoryKVStore_CompareAndSwap(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		seed        *string // nil means the key is absent
+		expected    string
+		next        string
+		wantSwapped bool
+		wantStored  *string // nil means still absent
+	}{
+		{
+			name: "matching value swaps", seed: ptr("old"), expected: "old", next: "new",
+			wantSwapped: true, wantStored: ptr("new"),
+		},
+		{
+			name: "different value is refused", seed: ptr("old"), expected: "stale", next: "new",
+			wantSwapped: false, wantStored: ptr("old"),
+		},
+		{
+			// The distinction from PutIfAbsent, and the one most likely to be
+			// got wrong: a swap must NOT create.
+			name: "absent key is not created", seed: nil, expected: "", next: "new",
+			wantSwapped: false, wantStored: nil,
+		},
+		{
+			// An empty stored value is a real value, not absence, and it is
+			// guardable.
+			name: "empty stored value is swappable", seed: ptr(""), expected: "", next: "new",
+			wantSwapped: true, wantStored: ptr("new"),
+		},
+		{
+			name: "swapping to an empty value is a swap, not a delete", seed: ptr("old"), expected: "old", next: "",
+			wantSwapped: true, wantStored: ptr(""),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewMemoryKVStore()
+			const key = "k"
+			if tt.seed != nil {
+				if err := s.Put(ctx, key, []byte(*tt.seed)); err != nil {
+					t.Fatalf("Put: %v", err)
+				}
+			}
+
+			swapped, err := s.CompareAndSwap(ctx, key, []byte(tt.expected), []byte(tt.next))
+			if err != nil {
+				t.Fatalf("CompareAndSwap: %v", err)
+			}
+			if swapped != tt.wantSwapped {
+				t.Errorf("swapped = %v, want %v", swapped, tt.wantSwapped)
+			}
+
+			got, gerr := s.Get(ctx, key)
+			if gerr != nil {
+				t.Fatalf("Get: %v", gerr)
+			}
+			switch {
+			case tt.wantStored == nil:
+				if got != nil {
+					t.Errorf("stored = %q, want the key still absent", got)
+				}
+			case got == nil:
+				t.Errorf("key is absent, want %q stored", *tt.wantStored)
+			case string(got) != *tt.wantStored:
+				t.Errorf("stored = %q, want %q", got, *tt.wantStored)
+			}
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// A guarded swap REPLACES the index entries, and a refused one changes
+// nothing.
+//
+// This is the half most easily got wrong: retracting the old entry without
+// adding the new one leaves the record invisible to index queries, and adding
+// without retracting leaves the key answering to a value it no longer holds.
+// The guard changes when the write happens, never what a write means.
+func TestMemoryKVStore_CompareAndSwap_ReplacesIndexEntries(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryKVStore()
+
+	if err := s.RegisterEntityIndexes("person", []EntityIndex{
+		{FieldName: "Email", JSONFieldName: "email"},
+	}); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+
+	const key = "person/1"
+	before := []byte(`{"email":"a@example.com"}`)
+	after := []byte(`{"email":"b@example.com"}`)
+	if err := s.Put(ctx, key, before); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	// A refused guard leaves the index exactly as it was.
+	swapped, err := s.CompareAndSwap(ctx, key, []byte(`{"email":"wrong@example.com"}`), after)
+	if err != nil || swapped {
+		t.Fatalf("refused guard = (%v, %v), want (false, nil)", swapped, err)
+	}
+	if ids, qerr := s.QueryIndex(ctx, "person.Email", []byte("a@example.com")); qerr != nil || len(ids) != 1 {
+		t.Fatalf("index after a refused guard = (%v, %v), want it intact", ids, qerr)
+	}
+
+	swapped, err = s.CompareAndSwap(ctx, key, before, after)
+	if err != nil || !swapped {
+		t.Fatalf("CompareAndSwap = (%v, %v), want (true, nil)", swapped, err)
+	}
+
+	old, err := s.QueryIndex(ctx, "person.Email", []byte("a@example.com"))
+	if err != nil {
+		t.Fatalf("QueryIndex(old): %v", err)
+	}
+	if len(old) != 0 {
+		t.Errorf("the OLD index value still returns %d id(s); the swap did not retract it", len(old))
+	}
+
+	fresh, err := s.QueryIndex(ctx, "person.Email", []byte("b@example.com"))
+	if err != nil {
+		t.Fatalf("QueryIndex(new): %v", err)
+	}
+	if len(fresh) != 1 {
+		t.Errorf("the NEW index value returns %d id(s), want 1; the swap did not index it", len(fresh))
+	}
+}
+
+// Concurrent swappers from the same expected value: exactly one wins.
+//
+// This is the property the whole opcode exists for. A read-then-write under a
+// caller-side mutex passes every single-threaded test above and fails this one
+// the moment there are two writers.
+func TestMemoryKVStore_CompareAndSwap_AdmitsExactlyOneOfNContenders(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryKVStore()
+	const key = "k"
+	if err := s.Put(ctx, key, []byte("start")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	const contenders = 24
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		winners []string
+	)
+	start := make(chan struct{})
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			mine := "winner-" + strconv.Itoa(id)
+			<-start // release them together, so the swaps really contend
+			swapped, err := s.CompareAndSwap(ctx, key, []byte("start"), []byte(mine))
+			if err != nil {
+				t.Errorf("contender %d: %v", id, err)
+				return
+			}
+			if swapped {
+				mu.Lock()
+				winners = append(winners, mine)
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if len(winners) != 1 {
+		t.Fatalf("%d contenders swapped from the same expected value, want exactly 1: %v",
+			len(winners), winners)
+	}
+	stored, err := s.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(stored) != winners[0] {
+		t.Errorf("stored = %q, want the winner's value %q", stored, winners[0])
 	}
 }

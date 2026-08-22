@@ -299,3 +299,10 @@ func (s *atomicNamespacedKVStore) PutIfAbsent(ctx context.Context, key string, v
 func (s *atomicNamespacedKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	return s.inner.CompareAndDelete(ctx, s.route(key), expected)
 }
+
+// CompareAndSwap replaces the namespaced key's value only when its stored
+// value still equals expected. As with the other two guarded operations the
+// atomicity is the inner store's; this type only routes the key.
+func (s *atomicNamespacedKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return s.inner.CompareAndSwap(ctx, s.route(key), expected, next)
+}

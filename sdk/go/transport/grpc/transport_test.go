@@ -1780,3 +1780,8 @@ func TestGetTopology_OnClosedTransport(t *testing.T) {
 		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

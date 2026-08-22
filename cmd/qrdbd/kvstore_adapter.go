@@ -77,6 +77,11 @@ func (a *kvServiceAdapter) CompareAndDelete(ctx context.Context, key string, exp
 	return a.svc.CompareAndDelete(ctx, key, expected)
 }
 
+// CompareAndSwap replaces key's value only when it still equals expected.
+func (a *kvServiceAdapter) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return a.svc.CompareAndSwap(ctx, key, expected, next)
+}
+
 // Get retrieves a value by key. Returns nil, nil when the key does not
 // exist, matching the kvstore.KVStore contract.
 func (a *kvServiceAdapter) Get(ctx context.Context, key string) ([]byte, error) {

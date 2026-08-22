@@ -107,6 +107,27 @@ func (a *StorageAdapter) CompareAndDelete(_ context.Context, key string, expecte
 	return true, nil
 }
 
+// CompareAndSwap replaces the key's value only when it still equals expected,
+// under the same write mutex the guarded delete uses — that lock is what makes
+// the read-then-write atomic for this adapter. An absent key is left absent
+// (go-qrdb#56).
+func (a *StorageAdapter) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+
+	current, err := a.inner.Get([]byte(key))
+	if err != nil {
+		return false, err
+	}
+	if current == nil || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	if err := a.inner.Set([]byte(key), next); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete removes the key from storage.
 func (a *StorageAdapter) Delete(_ context.Context, key string) error {
 	a.writeMu.Lock()

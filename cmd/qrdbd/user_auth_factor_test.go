@@ -48,6 +48,10 @@ func (fakeAuthFactorKV) PutIfAbsent(context.Context, string, []byte) (bool, erro
 func (fakeAuthFactorKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	return false, nil
 }
+
+func (fakeAuthFactorKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
 func (fakeAuthFactorKV) Get(context.Context, string) ([]byte, error) { return nil, nil }
 func (fakeAuthFactorKV) Delete(context.Context, string) error        { return nil }
 func (fakeAuthFactorKV) List(context.Context, string) ([]string, error) {

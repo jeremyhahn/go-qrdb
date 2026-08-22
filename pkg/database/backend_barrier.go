@@ -144,6 +144,58 @@ func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []b
 	return atomicInner.CompareAndDelete(ctx, key, stored)
 }
 
+// CompareAndSwap replaces key's value with next only when the value stored
+// there still decrypts to expected.
+//
+// Like CompareAndDelete it guards on the CIPHERTEXT this call read, because
+// encryption is randomised and a re-encryption of expected would never match
+// what the inner backend holds.
+//
+// Its absence was a breaking defect, not merely a missing feature: widening
+// AtomicBackend without implementing it here meant BarrierBackend stopped
+// satisfying the interface, so BackendKVService's type assertion failed for
+// every barrier-backed database and the PRE-EXISTING PutIfAbsent and
+// CompareAndDelete began returning ErrAtomicWriteUnsupported — silently
+// disabling uniqueness and single-use claims on encrypted databases. The
+// compile-time assertion below exists so that cannot recur (go-qrdb#56).
+func (b *BarrierBackend) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
+	if b.barrier.IsSealed() {
+		return false, &SealedError{}
+	}
+	atomicInner, ok := b.inner.(AtomicBackend)
+	if !ok {
+		return false, ErrAtomicWriteUnsupported
+	}
+	stored, err := b.inner.Get(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if stored == nil {
+		// A swap does not create.
+		return false, nil
+	}
+	plaintext, derr := b.barrier.Decrypt(nil, stored)
+	if derr != nil {
+		return false, &BarrierDecryptError{Key: string(key), Err: derr}
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	encrypted, eerr := b.barrier.Encrypt(nil, next)
+	if eerr != nil {
+		return false, &BarrierEncryptError{Key: string(key), Err: eerr}
+	}
+	return atomicInner.CompareAndSwap(ctx, key, stored, encrypted)
+}
+
+// Compile-time proof that BarrierBackend still satisfies AtomicBackend.
+//
+// Without it, widening the interface degrades this type silently: the code
+// keeps compiling, the runtime type assertion in BackendKVService starts
+// failing, and every guarded write on an encrypted database reports
+// "unsupported" (go-qrdb#56).
+var _ AtomicBackend = (*BarrierBackend)(nil)
+
 // Delete removes the key. No decryption is needed for deletion.
 func (b *BarrierBackend) Delete(ctx context.Context, key []byte) error {
 	if b.barrier.IsSealed() {

@@ -669,3 +669,13 @@ func TestResolveReadConsistency_NoOptions(t *testing.T) {
 		t.Error("expected specified=false when no read options are given")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*captureKVSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*captureMVCCSvcCapture) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

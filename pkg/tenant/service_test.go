@@ -68,6 +68,10 @@ func (f *failingBackend) PutIfAbsent(ctx context.Context, key string, data []byt
 func (f *failingBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	return false, nil
 }
+
+func (f *failingBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
 func (f *failingBackend) Delete(ctx context.Context, key string) error {
 	if f.failDel {
 		return errStoreFault

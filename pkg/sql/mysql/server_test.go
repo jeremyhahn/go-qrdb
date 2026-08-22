@@ -535,3 +535,8 @@ func gmssqlRowString(row gmssql.Row) string {
 	s, _ := row[0].(string)
 	return s
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

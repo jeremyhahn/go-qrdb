@@ -1448,3 +1448,8 @@ func TestServer_MCPServer(t *testing.T) {
 		t.Error("MCPServer() returned different instance")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

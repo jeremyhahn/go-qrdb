@@ -286,6 +286,10 @@ func (h *hookSlotStore) CompareAndDelete(ctx context.Context, key string, expect
 	return false, nil
 }
 
+func (h *hookSlotStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 // TestReplicatedSlot_UnresolvableRecordRepicks proves that a recorded slot that
 // cannot be resolved to a local candidate (out-of-range index — e.g. a
 // heterogeneous-topology misconfiguration) falls back to a fresh node-local

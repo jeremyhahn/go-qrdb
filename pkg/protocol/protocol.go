@@ -151,6 +151,22 @@ const (
 	// same reason the conditional put's guard must run there: every replica
 	// must decide identically from the same log position.
 	OpCompareAndDelete byte = 66
+
+	// OpCompareAndSwap replaces a key's value only when its stored value still
+	// equals an expected value, evaluated inside the state machine.
+	//
+	// It completes the guarded set that OpMVCCPutIfAbsent and
+	// OpCompareAndDelete began. A guarded create and a guarded delete with no
+	// guarded EDIT between them is two thirds of a primitive: the create and
+	// the release are decided against replicated state, and the transition in
+	// the middle is decided nowhere.
+	//
+	// Composing one from the existing pair does not work. CompareAndDelete
+	// followed by PutIfAbsent leaves the key briefly ABSENT — readers see "not
+	// found" for a live record — and it reopens exactly the delete-then-recreate
+	// window that lets a stalled contender take the key as a fresh create
+	// (go-qrdb#56).
+	OpCompareAndSwap byte = 67
 )
 
 // Range flags (bit mask for OpMVCCRange).
@@ -296,6 +312,103 @@ func EncodeCompareAndDelete(key, expected []byte) ([]byte, error) {
 	copy(buf[3:], key)
 	copy(buf[3+len(key):], expected)
 	return buf, nil
+}
+
+// Result values reported by OpCompareAndSwap, mirroring the Deleted pair above
+// so the three guarded operations read the same way at a call site.
+const (
+	// ResultSwapped means this call replaced the key's value.
+	ResultSwapped uint64 = 1
+
+	// ResultNotSwapped means the key was absent or held a different value.
+	// The store is unchanged and this is a normal outcome, not an error.
+	ResultNotSwapped uint64 = 0
+)
+
+// EncodeCompareAndSwap creates a binary conditional-replace command.
+// Format: [op:1][keyLen:2 LE][key][expectedLen:4 LE][expected][next].
+//
+// Two length fields rather than one, because this command carries THREE
+// variable-length values and only the last can be the unframed remainder.
+// EncodeCompareAndDelete gets away with one because `expected` is its tail.
+//
+// The expected value is framed in FOUR bytes, not two. A two-byte field would
+// cap the value a caller may guard on at 65,535 bytes while the value they can
+// STORE is bounded only by the Raft entry size — so a caller could write a
+// record and then be unable to express a compare against it, which is the
+// same class of defect as go-qrdb#52 arriving through the front door. The key
+// keeps its two-byte field to match every other command's key framing.
+//
+// `next` is the unframed remainder, so an empty replacement value is
+// representable and is distinct from a delete (which is OpCompareAndDelete).
+func EncodeCompareAndSwap(key, expected, next []byte) ([]byte, error) {
+	if err := checkUint16Len(len(key), "key"); err != nil {
+		return nil, err
+	}
+	if err := CheckUint32Len(len(expected), "expected value"); err != nil {
+		return nil, err
+	}
+	size, err := addSizes(headerSize, 2, len(key), frameSize, len(expected), len(next))
+	if err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, size)
+	off := 0
+	buf[off] = OpCompareAndSwap
+	off += headerSize
+
+	if err := putUint16Len(buf[off:], len(key), "key"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], key)
+	off += len(key)
+
+	if err := putUint32Len(buf[off:], len(expected), "expected value"); err != nil {
+		return nil, err
+	}
+	off += frameSize
+	copy(buf[off:], expected)
+	off += len(expected)
+
+	copy(buf[off:], next)
+	return buf, nil
+}
+
+// DecodeCompareAndSwap parses a conditional-replace payload, which is the
+// command with its op byte already stripped.
+//
+// Every length is bounded against the bytes that actually remain before it is
+// used as a slice bound, through decodeLen, so a corrupt or hostile frame is
+// refused rather than panicking the state machine that decodes it (go-qrdb#52).
+func DecodeCompareAndSwap(payload []byte) (key, expected, next []byte, err error) {
+	off := 0
+	if len(payload) < 2 {
+		return nil, nil, nil, &InvalidCommandError{Reason: "compare and swap: payload too short"}
+	}
+	rawKeyLen := binary.LittleEndian.Uint16(payload[off:])
+	off += 2
+	keyLen, err := decodeLen(uint32(rawKeyLen), len(payload)-off, "compare and swap: key exceeds payload")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	key = payload[off : off+keyLen]
+	off += keyLen
+
+	if off+frameSize > len(payload) {
+		return nil, nil, nil, &InvalidCommandError{Reason: "compare and swap: missing expected length"}
+	}
+	rawExpLen := binary.LittleEndian.Uint32(payload[off:])
+	off += frameSize
+	expLen, err := decodeLen(rawExpLen, len(payload)-off, "compare and swap: expected value exceeds payload")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	expected = payload[off : off+expLen]
+	off += expLen
+
+	return key, expected, payload[off:], nil
 }
 
 // DecodeCompareAndDelete parses a conditional-delete payload, which is the

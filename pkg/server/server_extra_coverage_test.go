@@ -1466,3 +1466,13 @@ var _ SealedWindowProbe = (*extraSealedWindowProbe)(nil)
 
 // Suppress unused import for authfactors (referenced via AuthFactorServicer).
 var _ = authfactors.NewFactorRegistry
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*extraKVPassthrough) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*extraFailingKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

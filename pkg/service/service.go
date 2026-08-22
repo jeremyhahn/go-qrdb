@@ -70,6 +70,13 @@ type KVServicer interface {
 	// a guarded create decided (go-qrdb#41).
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
 
+	// CompareAndSwap atomically replaces key's value with next only when its
+	// stored value still equals expected, reporting whether this call replaced
+	// it. An absent key is left absent — a swap is not a create. It is the
+	// edit half of the guarded set PutIfAbsent and CompareAndDelete began
+	// (go-qrdb#56).
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
+
 	// Get retrieves a value by key with a linearizable read.
 	Get(ctx context.Context, key string) ([]byte, error)
 
@@ -450,6 +457,24 @@ func (s *KVService) CompareAndDelete(ctx context.Context, key string, expected [
 		return false, resultErr
 	}
 	return result.Value == protocol.ResultDeleted, nil
+}
+
+// CompareAndSwap replaces key's value with next only when its stored value
+// still equals expected, evaluated inside the state machine. See
+// kvstore.AtomicKVStore.CompareAndSwap for why an absent key is not created.
+func (s *KVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	cmd, err := protocol.EncodeCompareAndSwap([]byte(key), expected, next)
+	if err != nil {
+		return false, &EncodeRequestError{Err: err}
+	}
+	result, err := s.host.SyncPropose(ctx, s.shardID, cmd)
+	if err != nil {
+		return false, s.translateProposeError(err)
+	}
+	if resultErr := checkResultError(result); resultErr != nil {
+		return false, resultErr
+	}
+	return result.Value == protocol.ResultSwapped, nil
 }
 
 // Get retrieves a value by key with a linearizable read through the Raft

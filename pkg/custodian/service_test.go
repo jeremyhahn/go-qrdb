@@ -798,3 +798,8 @@ func TestRegisterCustodian_DeterministicID(t *testing.T) {
 		t.Errorf("unexpected UUID length: %d", len(resp.Custodian.ID))
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*memKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

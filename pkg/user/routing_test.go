@@ -89,6 +89,10 @@ func (s *fakeKVStore) CompareAndDelete(ctx context.Context, key string, expected
 	return true, nil
 }
 
+func (s *fakeKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (s *fakeKVStore) Get(ctx context.Context, k string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

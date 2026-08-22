@@ -265,3 +265,82 @@ func TestPebbleStateMachine_CompareAndDelete_Contract(t *testing.T) {
 		}
 	})
 }
+
+// The pebble state machine's guarded swap — the third implementation of the
+// contract, alongside KVEngine and MVCCEngine.
+//
+// Three implementations is exactly why each is tested against the same
+// statements rather than against itself: a contract that only one of them
+// honours is not a contract, and a replica running a different engine from its
+// leader would decide differently from the same log entry.
+func TestPebbleStateMachine_CompareAndSwap_Contract(t *testing.T) {
+	entry := func(idx uint64, key, expected, next string) sm.Entry {
+		cmd, err := protocol.EncodeCompareAndSwap([]byte(key), []byte(expected), []byte(next))
+		if err != nil {
+			t.Fatalf("EncodeCompareAndSwap: %v", err)
+		}
+		return sm.Entry{Index: idx, Cmd: cmd}
+	}
+	read := func(t *testing.T, s *PebbleStateMachine, key string) (string, bool) {
+		t.Helper()
+		got, closer, gerr := s.db.Get([]byte(key))
+		if gerr != nil {
+			return "", false
+		}
+		value := string(got)
+		_ = closer.Close()
+		return value, true
+	}
+
+	t.Run("swaps on a match, seeing the write earlier in the same batch", func(t *testing.T) {
+		s := newTestPebbleSM(t)
+		results := make([]sm.Result, 2)
+		if err := s.Update(context.Background(), []sm.Entry{
+			baseKVPutIfAbsentEntry(t, 1, []byte("lease"), []byte("gen-1")),
+			entry(2, "lease", "gen-1", "gen-2"),
+		}, results); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if results[1].Value != protocol.ResultSwapped {
+			t.Fatalf("Value = %d, want ResultSwapped — the guard did not see the "+
+				"write packed ahead of it in the same batch", results[1].Value)
+		}
+		if v, ok := read(t, s, "lease"); !ok || v != "gen-2" {
+			t.Fatalf("value = %q (present=%v), want %q", v, ok, "gen-2")
+		}
+	})
+
+	t.Run("refuses on a mismatch and keeps the holder", func(t *testing.T) {
+		s := newTestPebbleSM(t)
+		results := make([]sm.Result, 2)
+		if err := s.Update(context.Background(), []sm.Entry{
+			baseKVPutIfAbsentEntry(t, 1, []byte("lease"), []byte("gen-2")),
+			entry(2, "lease", "gen-1", "gen-9"),
+		}, results); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if results[1].Value != protocol.ResultNotSwapped {
+			t.Fatalf("Value = %d, want ResultNotSwapped — a writer holding a stale "+
+				"expectation overwrote the current holder", results[1].Value)
+		}
+		if v, ok := read(t, s, "lease"); !ok || v != "gen-2" {
+			t.Fatalf("value = %q (present=%v), want the holder's %q", v, ok, "gen-2")
+		}
+	})
+
+	t.Run("does NOT create an absent key", func(t *testing.T) {
+		s := newTestPebbleSM(t)
+		results := make([]sm.Result, 1)
+		if err := s.Update(context.Background(), []sm.Entry{
+			entry(1, "never", "", "value"),
+		}, results); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if results[0].Value != protocol.ResultNotSwapped {
+			t.Fatalf("Value = %d, want ResultNotSwapped", results[0].Value)
+		}
+		if v, ok := read(t, s, "never"); ok {
+			t.Fatalf("a guarded swap CREATED an absent key (%q); that is PutIfAbsent's job", v)
+		}
+	})
+}

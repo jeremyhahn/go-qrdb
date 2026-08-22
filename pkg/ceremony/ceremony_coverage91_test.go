@@ -583,6 +583,10 @@ func (b *listThenFailBackend) CompareAndDelete(ctx context.Context, key string, 
 	return false, nil
 }
 
+func (b *listThenFailBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (b *listThenFailBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)
 }

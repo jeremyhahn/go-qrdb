@@ -613,3 +613,8 @@ func TestAuthFactorService_RevokeFactor_alreadyRevoked(t *testing.T) {
 		t.Errorf("RevokeFactor(already revoked): expected EnrollmentRevokedError, got %T: %v", err, err)
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*afMockKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

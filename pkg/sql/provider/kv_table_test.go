@@ -770,3 +770,8 @@ func TestKVTable_Insert_UnsupportedValueType(t *testing.T) {
 	err := inserter.Insert(ctx, sqle.Row{"key1", 12345})
 	assert.IsType(t, &InvalidValueError{}, err)
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

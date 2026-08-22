@@ -723,3 +723,21 @@ func TestEmbeddedTx_PropagatesTheRevision(t *testing.T) {
 		}
 	})
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+//
+// A canned answer is right HERE and wrong elsewhere. These doubles stand in for
+// the SERVICE beneath the embedded transport, and what the transport is tested
+// for is forwarding: that a call reaches the service and its answer comes back.
+// The swap SEMANTICS are covered where they live, against the real evaluator,
+// in pkg/service and pkg/server — which is why the kvstore-level double there
+// was implemented for real instead of stubbed.
+func (*mockMVCCService) CompareAndSwap(_ context.Context, _ string, _, _ []byte) (bool, error) {
+	return false, nil
+}
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+// See mockMVCCService.CompareAndSwap for why a canned answer is correct here.
+func (*mockMVCCFailing) CompareAndSwap(_ context.Context, _ string, _, _ []byte) (bool, error) {
+	return false, nil
+}

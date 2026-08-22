@@ -478,3 +478,100 @@ func TestKVEngine_CompareAndDelete_AFailedGuardReadDeletesNothing(t *testing.T) 
 		t.Fatalf("value after a failed guard read = %q, want %q", got, "acme")
 	}
 }
+
+// kvCompareAndSwapEntry builds a guarded-swap entry for the base KV engine.
+func kvCompareAndSwapEntry(idx uint64, key, expected, next string) sm.Entry {
+	cmd, err := protocol.EncodeCompareAndSwap([]byte(key), []byte(expected), []byte(next))
+	if err != nil {
+		panic(err) // test values are small; an error here is a test bug
+	}
+	return sm.Entry{Index: idx, Cmd: cmd}
+}
+
+// The base KV engine's guarded swap, held to the same contract as its guarded
+// delete: decided inside the state machine, and a refused guard changes
+// nothing.
+func TestKVEngine_CompareAndSwap_Contract(t *testing.T) {
+	lookup := func(t *testing.T, eng *KVEngine, key string) ([]byte, bool) {
+		t.Helper()
+		got, err := eng.Lookup(context.Background(), key)
+		if err != nil || got == nil {
+			return nil, false
+		}
+		b, ok := got.([]byte)
+		if !ok || b == nil {
+			return nil, false
+		}
+		return b, true
+	}
+
+	t.Run("swaps on a match", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		eng := NewKVEngine(stg)
+
+		applyKVEntries(t, eng, []sm.Entry{kvPutIfAbsentEntry(1, "lease", "gen-1")})
+		results := applyKVEntries(t, eng, []sm.Entry{kvCompareAndSwapEntry(2, "lease", "gen-1", "gen-2")})
+
+		if results[0].Value != protocol.ResultSwapped {
+			t.Fatalf("Value = %d, want ResultSwapped", results[0].Value)
+		}
+		got, ok := lookup(t, eng, "lease")
+		if !ok || string(got) != "gen-2" {
+			t.Fatalf("value = %q (present=%v), want %q", got, ok, "gen-2")
+		}
+	})
+
+	t.Run("refuses on a mismatch and keeps the current value", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		eng := NewKVEngine(stg)
+
+		applyKVEntries(t, eng, []sm.Entry{kvPutIfAbsentEntry(1, "lease", "gen-2")})
+		results := applyKVEntries(t, eng, []sm.Entry{kvCompareAndSwapEntry(2, "lease", "gen-1", "gen-9")})
+
+		if results[0].Value != protocol.ResultNotSwapped {
+			t.Fatalf("Value = %d, want ResultNotSwapped — a writer holding a stale "+
+				"expectation overwrote the current holder", results[0].Value)
+		}
+		got, ok := lookup(t, eng, "lease")
+		if !ok || string(got) != "gen-2" {
+			t.Fatalf("value = %q (present=%v), want the holder's %q", got, ok, "gen-2")
+		}
+	})
+
+	t.Run("does NOT create an absent key", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		eng := NewKVEngine(stg)
+
+		results := applyKVEntries(t, eng, []sm.Entry{kvCompareAndSwapEntry(1, "never", "", "value")})
+		if results[0].Value != protocol.ResultNotSwapped {
+			t.Fatalf("Value = %d, want ResultNotSwapped", results[0].Value)
+		}
+		if got, ok := lookup(t, eng, "never"); ok {
+			t.Fatalf("a guarded swap CREATED an absent key (%q); that is PutIfAbsent's job", got)
+		}
+	})
+
+	t.Run("swapping to an empty value is a swap, not a delete", func(t *testing.T) {
+		stg := memory.NewStorage()
+		defer func() { _ = stg.Close() }()
+		eng := NewKVEngine(stg)
+
+		applyKVEntries(t, eng, []sm.Entry{kvPutIfAbsentEntry(1, "k", "full")})
+		results := applyKVEntries(t, eng, []sm.Entry{kvCompareAndSwapEntry(2, "k", "full", "")})
+
+		if results[0].Value != protocol.ResultSwapped {
+			t.Fatalf("Value = %d, want ResultSwapped", results[0].Value)
+		}
+		got, err := eng.Lookup(context.Background(), "k")
+		if err != nil {
+			t.Fatalf("Lookup: %v", err)
+		}
+		b, _ := got.([]byte)
+		if len(b) != 0 {
+			t.Fatalf("value = %q, want it stored as empty", b)
+		}
+	})
+}

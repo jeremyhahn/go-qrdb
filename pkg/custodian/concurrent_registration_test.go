@@ -85,6 +85,10 @@ func (h *hookKV) CompareAndDelete(ctx context.Context, key string, expected []by
 	return false, nil
 }
 
+func (h *hookKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func newHookService(t *testing.T, store *hookKV) custodian.Servicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -628,6 +632,10 @@ func (u *unreadableClaimKV) CompareAndDelete(ctx context.Context, key string, ex
 	return false, nil
 }
 
+func (u *unreadableClaimKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (u *unreadableClaimKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if u.armed.Load() && strings.HasPrefix(key, "__sys:custodian-idx/username/") {
 		return nil, errors.New("simulated claim read failure")
@@ -714,6 +722,10 @@ func (c *claimReleaseKV) PutIfAbsent(ctx context.Context, key string, value []by
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
 // it removes the key only when the stored value still equals expected.
 func (c *claimReleaseKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	return false, nil
+}
+
+func (c *claimReleaseKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
 

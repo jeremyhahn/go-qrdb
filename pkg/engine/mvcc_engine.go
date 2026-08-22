@@ -520,6 +520,7 @@ func (e *MVCCEngine) buildUpdateHandlers() map[byte]mvccHandler {
 		protocol.OpMVCCCompact:      handleMVCCCompact,
 		protocol.OpTransaction:      e.handleTransaction,
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
 		protocol.OpBatch:            e.handleBatch,
 		protocol.OpLeaseGrant:       handleLeaseGrant,
 		protocol.OpLeaseRevoke:      handleLeaseRevoke,
@@ -734,6 +735,65 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 		PrevKV:    prevKv,
 	}}
 	return sm.Result{Value: protocol.ResultDeleted}, notifs, nil
+}
+
+// handleCompareAndSwap replaces a key's value only when the value visible in
+// this batch still equals expected.
+//
+// The read uses getInBatchAllowingAbsence for the reason the guarded delete
+// does: an earlier operation in the same batch is not yet visible to the
+// store, so reading past it would evaluate the guard against a stale value and
+// decide differently from a replica whose batch was split differently.
+//
+// An absent key is NOT created. A swap moves a record between two states, and
+// there is no first state for a record that does not exist; creating here
+// would also make this indistinguishable from OpMVCCPutIfAbsent.
+//
+// The LEASE SURVIVES the swap. This edits a value, and a value edit is not a
+// reason to detach a lease the key already holds — dropping it would silently
+// convert a leased key into a permanent one, which is a change to the record's
+// lifetime that nobody asked for. The write half otherwise mirrors
+// handleMVCCPut: unique pre-check, index update, a fresh revision, and a PUT
+// notification carrying the previous value.
+func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
+	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
+	if err != nil {
+		return sm.Result{}, nil, err
+	}
+
+	current, getErr := getInBatchAllowingAbsence(s, batch, key)
+	if getErr != nil {
+		return sm.Result{}, nil, getErr
+	}
+	if current == nil || !bytes.Equal(current.Value, expected) {
+		return sm.Result{Value: protocol.ResultNotSwapped}, nil, nil
+	}
+
+	// Read-only pre-check, as in handleMVCCPut: a unique-index violation is a
+	// non-fatal application error, not a reason to stall consensus.
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, next); verr != nil {
+		if res, handled, aerr := asAppErrResult(verr); handled {
+			return res, nil, aerr
+		}
+		return sm.Result{}, nil, verr
+	}
+	if ierr := UpdateIndexes(e.indexes, e.indexFields, key, next, current); ierr != nil {
+		return sm.Result{}, nil, ierr
+	}
+
+	kvResult, perr := s.PutInBatch(batch, key, next, current.LeaseID, s.CurrentRevision()+1)
+	if perr != nil {
+		return sm.Result{}, nil, perr
+	}
+	s.SetRevision(kvResult.ModRevision)
+
+	notifs := []Notification{{
+		EventType: service.EventPut,
+		Key:       key,
+		KV:        kvResult,
+		PrevKV:    current,
+	}}
+	return sm.Result{Value: protocol.ResultSwapped}, notifs, nil
 }
 
 // getInBatchAllowingAbsence reads a key inside the apply batch, reporting a

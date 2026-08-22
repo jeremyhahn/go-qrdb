@@ -79,6 +79,25 @@ func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []
 	return true, nil
 }
 
+// CompareAndSwap is the edit half of the same guarded set: it replaces the
+// value only when the stored one still equals expected, and does NOT create an
+// absent key. Implemented for real because this store is asserted to
+// kvstore.AtomicKVStore at RUN time — a stub would make the assertion succeed
+// while the behaviour it promises is absent (go-qrdb#56).
+func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	current, ok := m.data[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	valueCopy := make([]byte, len(next))
+	copy(valueCopy, next)
+	m.data[key] = valueCopy
+	return true, nil
+}
+
 func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
 	if m.err != nil {
 		return nil, m.err

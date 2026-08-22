@@ -54,6 +54,10 @@ func (f *failingBackend) CompareAndDelete(ctx context.Context, key string, expec
 	return false, nil
 }
 
+func (f *failingBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (f *failingBackend) Delete(ctx context.Context, key string) error {
 	if f.deleteErr != nil {
 		return f.deleteErr

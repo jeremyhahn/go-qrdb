@@ -135,6 +135,10 @@ func (m *mockKVServicer) CompareAndDelete(ctx context.Context, key string, expec
 	return false, nil
 }
 
+func (m *mockKVServicer) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 func (m *mockKVServicer) Get(ctx context.Context, key string) ([]byte, error) {
 	if m.getFn != nil {
 		return m.getFn(ctx, key)

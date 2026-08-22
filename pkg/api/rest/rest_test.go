@@ -2440,3 +2440,8 @@ func TestWithCABootstrap_SetsFields(t *testing.T) {
 		t.Fatalf("caBootstrapKey = %q, want %q", srv.caBootstrapKey, "key-data")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

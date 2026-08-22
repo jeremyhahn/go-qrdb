@@ -2280,3 +2280,24 @@ func TestStopAllEtcd_EmptyMap(t *testing.T) {
 		t.Fatal("expected stopEtcdServerFn not to be called when map is empty")
 	}
 }
+
+// CompareAndSwap mirrors CompareAndDelete's guard on the edit side: it
+// replaces the value only when the stored one still equals expected.
+//
+// It is implemented rather than stubbed. A stub returning (false, nil)
+// satisfies the runtime type assertion that discovers AtomicKVStore while
+// exercising none of the behaviour, so every caller's guarded-swap path reads
+// as "refused" and its success branch is never taken — worse than no double at
+// all, because the assertion passes (go-qrdb#56).
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	current, ok := m.store[key]
+	if !ok {
+		// A swap does not create.
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
+}

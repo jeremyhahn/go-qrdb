@@ -564,3 +564,8 @@ func TestKVServiceAdapter_RegisterEntityIndexes_RefusesWithoutLookup(t *testing.
 		t.Error("a refused registration must not reach the registerer")
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*adapterMockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

@@ -20,8 +20,15 @@ import "github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 // KVStore types (core interface is already in dao.go as KVStore)
 // ---------------------------------------------------------------------------
 
-// AtomicKVStore is a KVStore that additionally offers PutIfAbsent — a write
-// whose outcome is defined under concurrency.
+// AtomicKVStore is a KVStore that additionally offers the three guarded
+// writes — PutIfAbsent, CompareAndSwap and CompareAndDelete — whose outcomes
+// are defined under concurrency.
+//
+// They are a set, not three conveniences. A guarded create and a guarded
+// delete with no guarded EDIT between them leaves the transition in the middle
+// decided nowhere, and composing a swap from the other two leaves the key
+// briefly ABSENT — so readers see "not found" for a live record, and a stalled
+// contender can take it as a fresh create (go-qrdb#41, go-qrdb#56).
 //
 // It is discovered by type assertion, so a consumer that needs exactly-once
 // semantics asserts for it at construction and fails closed:

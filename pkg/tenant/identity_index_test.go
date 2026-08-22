@@ -297,6 +297,10 @@ func (c *countingAtomicStore) CompareAndDelete(ctx context.Context, key string, 
 	return false, nil
 }
 
+func (c *countingAtomicStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}
+
 // The conflict path has TWO implementations — the compare-and-set branch and
 // the serial branch for stores without it — and the tests above exercise only
 // the serial one, because every fixture store lacks CAS. The production
@@ -394,6 +398,10 @@ func (s *interleavingStore) CompareAndDelete(ctx context.Context, key string, ex
 		hook()
 	}
 	return s.AtomicKVStore.CompareAndDelete(ctx, key, expected)
+}
+
+func (s *interleavingStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
 }
 
 // THE ACCEPTANCE CASE for generation tokens: an ABA race the tenant alone
@@ -512,4 +520,8 @@ func (s *guardFaultStore) CompareAndDelete(ctx context.Context, key string, expe
 		return false, errGuardFault
 	}
 	return s.AtomicKVStore.CompareAndDelete(ctx, key, expected)
+}
+
+func (s *guardFaultStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
 }

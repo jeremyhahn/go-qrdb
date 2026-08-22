@@ -11,6 +11,10 @@ func (c *Client) Index() transport.IndexClient
 func (c *Client) KVStore() KVStore   // routes index ops to IndexClient
 
 // Store capability, for consumers that must know before they depend on it.
+// PutIfAbsent (take), CompareAndSwap (edit) and CompareAndDelete (release).
+// Discovered by RUNTIME type assertion, so an implementation missing any one
+// of them fails at run time rather than at build time — widening this
+// interface means implementing it everywhere in the same change (#56).
 type AtomicKVStore = kvstore.AtomicKVStore
 var  ErrKVIndexUnsupported       = kvstore.ErrIndexUnsupported
 var  ErrKVAtomicWriteUnsupported = kvstore.ErrAtomicWriteUnsupported
@@ -230,6 +234,9 @@ bucketing — see [../time-series/](../time-series/engineering.md).
 | Store maintains no indexes — planned `Find().Where(...)` | full scan, correct results | **yes** — no plan routes to an index that does not exist |
 | Registration fails for any other reason | DAO construction fails | **yes** |
 | Shared store lacks compare-and-set — `tenantSharedKVStore.PutIfAbsent` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — never degrades to `Exists`-then-`Put` |
+| Store lacks the guarded swap — `CompareAndSwap` | `kvstore.ErrAtomicWriteUnsupported` | **yes** — a read followed by an unguarded put is the race the guard exists to close |
+| Guarded verb on an ABSENT key — `CompareAndSwap` / `CompareAndDelete` | `(false, nil)` | **yes** — absence is an outcome, not a failure; an error here cannot be told from a broken store |
+| `CompareAndSwap` outcome UNKNOWN (non-nil error) | error, reservation retained by the quota wrapper | **yes** — a Raft proposal can commit and lose its response; releasing would under-count a stored value |
 
 The unknown-index refusal matters: degrading to a full scan would turn a typo
 into a silent performance cliff on a production dataset.

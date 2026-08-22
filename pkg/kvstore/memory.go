@@ -212,6 +212,33 @@ func (s *MemoryKVStore) CompareAndDelete(ctx context.Context, key string, expect
 	return true, nil
 }
 
+// CompareAndSwap replaces key's value with next only when its stored value
+// still equals expected, reporting whether the swap happened.
+//
+// An absent key is left absent: a swap moves a record from one state to
+// another, which is not a statement about a record that does not exist. Use
+// PutIfAbsent to create.
+//
+// The write goes through putLocked, so the index reconciliation is the SAME
+// code an unguarded Put uses — the guard changes when the write happens, never
+// what a write means. Reconciling by hand here would be a second definition of
+// "what it means to store a value", and the two would drift.
+func (s *MemoryKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.data[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	if err := s.putLocked(key, next); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // putLocked writes the value and reconciles the indexes. The caller holds
 // the write lock.
 func (s *MemoryKVStore) putLocked(key string, value []byte) error {

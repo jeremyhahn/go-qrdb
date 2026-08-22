@@ -240,3 +240,122 @@ func TestApplyQuota_SkipsWhenNoAccountant(t *testing.T) {
 		t.Fatal("nil accountant must be passthrough")
 	}
 }
+
+// committedThenFailedKV is an inner store whose CompareAndSwap APPLIES the
+// swap and then reports an error.
+//
+// That is not a contrived double: for a Raft-backed service, SyncPropose can
+// commit the entry and then fail to deliver its response — a lost connection
+// after a durable write. AtomicKVStore says a non-nil error leaves the outcome
+// unknown, and this is what "unknown" actually looks like.
+type committedThenFailedKV struct {
+	*mockKVService
+	err error
+}
+
+func (m *committedThenFailedKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	// Apply first, then fail: the write is durable, the answer is lost.
+	if _, err := m.mockKVService.CompareAndSwap(ctx, key, expected, next); err != nil {
+		return false, err
+	}
+	return false, m.err
+}
+
+// A swap whose outcome is UNKNOWN keeps its reservation.
+//
+// Releasing on error would drop the accounting for a value that is stored, and
+// the tenant's usage would sit permanently below what they hold — every later
+// write measured against a limit that no longer bounds anything. The
+// conservative direction is to keep the reservation (go-qrdb#56).
+func TestQuotaKVService_CompareAndSwap_AmbiguousErrorKeepsReservation(t *testing.T) {
+	lost := errors.New("propose committed but the response was lost")
+	inner := &committedThenFailedKV{mockKVService: newMockKVService(), err: lost}
+	acct, _ := newTestAccountant(t, nil)
+	kv := newQuotaKVService(inner, acct, "t1", 100)
+	ctx := context.Background()
+
+	if err := kv.Put(ctx, "k", make([]byte, 10)); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	if got := acct.Usage("t1"); got != 10 {
+		t.Fatalf("usage after seed = %d, want 10", got)
+	}
+
+	// Grow 10 -> 40: reserves 30, the swap commits, the answer is lost.
+	swapped, err := kv.CompareAndSwap(ctx, "k", make([]byte, 10), make([]byte, 40))
+	if !errors.Is(err, lost) {
+		t.Fatalf("CompareAndSwap error = %v, want the inner error", err)
+	}
+	if swapped {
+		t.Error("an ambiguous outcome must not be reported as a completed swap")
+	}
+
+	// The value IS stored, so the growth must still be accounted.
+	if got := len(inner.store["k"]); got != 40 {
+		t.Fatalf("inner value = %d bytes, want the committed 40", got)
+	}
+	if got := acct.Usage("t1"); got != 40 {
+		t.Fatalf("usage = %d, want 40 — the growth was released for a value that "+
+			"is stored, so the tenant can now exceed their limit", got)
+	}
+
+	// The limit still bounds: 40 held, 100 limit, a 70-byte write must be refused.
+	err = kv.Put(ctx, "b", make([]byte, 70))
+	var ee *quota.ExceededError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *quota.ExceededError once usage is correct, got %v", err)
+	}
+}
+
+// A swap DEFINITIVELY refused releases its reservation.
+//
+// The counterpart to the ambiguous case: a guard that was evaluated and said
+// no wrote nothing, so holding the growth would leak headroom on every
+// contended swap.
+func TestQuotaKVService_CompareAndSwap_RefusedReleasesReservation(t *testing.T) {
+	inner := newMockKVService()
+	acct, _ := newTestAccountant(t, nil)
+	kv := newQuotaKVService(inner, acct, "t1", 100)
+	ctx := context.Background()
+
+	if err := kv.Put(ctx, "k", make([]byte, 10)); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+
+	// Guard does not match the stored value: refused, nothing written.
+	swapped, err := kv.CompareAndSwap(ctx, "k", make([]byte, 25), make([]byte, 40))
+	if err != nil || swapped {
+		t.Fatalf("CompareAndSwap = (%v, %v), want (false, nil)", swapped, err)
+	}
+	if got := acct.Usage("t1"); got != 10 {
+		t.Fatalf("usage = %d, want 10 — a refused swap must release its reservation", got)
+	}
+}
+
+// A swap that SUCCEEDS accounts the delta in both directions.
+func TestQuotaKVService_CompareAndSwap_AccountsTheDelta(t *testing.T) {
+	inner := newMockKVService()
+	acct, _ := newTestAccountant(t, nil)
+	kv := newQuotaKVService(inner, acct, "t1", 100)
+	ctx := context.Background()
+
+	if err := kv.Put(ctx, "k", make([]byte, 10)); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+
+	// Grow 10 -> 40.
+	if swapped, err := kv.CompareAndSwap(ctx, "k", make([]byte, 10), make([]byte, 40)); err != nil || !swapped {
+		t.Fatalf("grow = (%v, %v), want (true, nil)", swapped, err)
+	}
+	if got := acct.Usage("t1"); got != 40 {
+		t.Fatalf("usage after growth = %d, want 40", got)
+	}
+
+	// Shrink 40 -> 15.
+	if swapped, err := kv.CompareAndSwap(ctx, "k", make([]byte, 40), make([]byte, 15)); err != nil || !swapped {
+		t.Fatalf("shrink = (%v, %v), want (true, nil)", swapped, err)
+	}
+	if got := acct.Usage("t1"); got != 15 {
+		t.Fatalf("usage after shrink = %d, want 15", got)
+	}
+}

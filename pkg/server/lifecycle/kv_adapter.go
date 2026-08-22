@@ -83,12 +83,15 @@ func (b kvSealBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 // expected, expressed as the transaction service's own compare-and-execute:
 // the comparison runs inside the state machine, which is the cross-node
 // guarantee a read followed by a delete cannot give.
+//
+// Guarded on EXISTENCE as well as value — see existsGuard for why a value
+// compare alone is not enough.
 func (b kvSealBackend) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	if b.tx == nil {
 		return false, ErrNoTransactionService
 	}
 	resp, err := b.tx.Execute(ctx,
-		[]service.Compare{{
+		[]service.Compare{existsGuard(key), {
 			Key:    []byte(key),
 			Target: service.CompareValue,
 			Result: service.CompareEqual,
@@ -97,6 +100,35 @@ func (b kvSealBackend) CompareAndDelete(ctx context.Context, key string, expecte
 		[]service.Op{{
 			Type: service.OpDelete,
 			Key:  []byte(key),
+		}},
+		nil,
+	)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
+// CompareAndSwap replaces key's value only when its stored value still equals
+// expected, decided on the transaction plane so every replica agrees.
+//
+// The guard is the same pair the guarded delete uses; only the success op
+// differs. Both halves are required: see existsGuard.
+func (b kvSealBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if b.tx == nil {
+		return false, ErrNoTransactionService
+	}
+	resp, err := b.tx.Execute(ctx,
+		[]service.Compare{existsGuard(key), {
+			Key:    []byte(key),
+			Target: service.CompareValue,
+			Result: service.CompareEqual,
+			Value:  expected,
+		}},
+		[]service.Op{{
+			Type:  service.OpPut,
+			Key:   []byte(key),
+			Value: next,
 		}},
 		nil,
 	)
@@ -186,6 +218,11 @@ func (a *kvStoreAdapter) PutIfAbsent(ctx context.Context, key string, value []by
 // expected, delegating to the KV service's own guarded delete.
 func (a *kvStoreAdapter) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
 	return a.svc.CompareAndDelete(ctx, key, expected)
+}
+
+// CompareAndSwap replaces key's value only when it still equals expected.
+func (a *kvStoreAdapter) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return a.svc.CompareAndSwap(ctx, key, expected, next)
 }
 
 // Put stores a key-value pair through the KV service.
@@ -348,4 +385,31 @@ func (a *kvStoreAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][]b
 // ScanCompoundIndex refuses; see QueryCompoundIndex.
 func (a *kvStoreAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
 	return nil, kvstore.ErrIndexUnsupported
+}
+
+// existsGuard refuses a key that is absent, as a compare the state machine
+// evaluates alongside the value compare.
+//
+// A value compare ALONE does not do it, and the reason is easy to miss: an
+// absent key's value is nil, and nil compares equal to an empty slice. So
+// CompareAndSwap(key, []byte{}, next) on an absent key satisfies the value
+// guard and executes its OpPut — turning a swap into a create, which the
+// AtomicKVStore contract forbids. CompareAndDelete has the same hole, where it
+// reports having deleted a key that was never there.
+//
+// pkg/store's evaluator states the behaviour outright ("Key does not exist:
+// only equal-to-zero-length succeeds"), so this was documented as true while a
+// comment here claimed the opposite (go-qrdb#56).
+//
+// Version is the target because both state machines carry it for an absent
+// key: the MVCC store reports the key's real version, and the pebble store
+// degrades honestly to 0 absent and 1 present. Create/mod revision would not
+// work — pebble keeps no revisions and rejects those compares up front.
+func existsGuard(key string) service.Compare {
+	return service.Compare{
+		Key:     []byte(key),
+		Target:  service.CompareVersion,
+		Result:  service.CompareGreater,
+		Version: 0,
+	}
 }

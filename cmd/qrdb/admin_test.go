@@ -626,3 +626,8 @@ func TestAdminDrain_Success(t *testing.T) {
 		t.Errorf("output missing 'OK', got: %q", output)
 	}
 }
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*noopKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	return false, nil
+}

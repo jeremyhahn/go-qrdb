@@ -158,6 +158,38 @@ func (s *atomicTenantSharedKVStore) CompareAndDelete(ctx context.Context, key st
 	return s.shared.CompareAndDelete(ctx, physical, ciphertext)
 }
 
+// CompareAndSwap replaces the namespaced key's value with next only when the
+// DECRYPTED stored value still equals expected.
+//
+// As in StorageBarrier.CompareAndSwap, the caller's expectation is compared
+// against the plaintext while the guard handed to the shared store is the
+// ciphertext that was read: the AEAD is nonce-randomised, so the same
+// plaintext never encrypts to the same bytes twice and a ciphertext
+// expectation could never match.
+func (s *atomicTenantSharedKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	physical := s.prefix + key
+	ciphertext, err := s.shared.Get(ctx, physical)
+	if err != nil {
+		return false, err
+	}
+	if ciphertext == nil {
+		// A swap does not create.
+		return false, nil
+	}
+	plaintext, derr := s.barrier.Barrier().Decrypt(ciphertext)
+	if derr != nil {
+		return false, derr
+	}
+	if !bytes.Equal(plaintext, expected) {
+		return false, nil
+	}
+	nextCiphertext, eerr := s.barrier.Barrier().Encrypt(next)
+	if eerr != nil {
+		return false, eerr
+	}
+	return s.shared.CompareAndSwap(ctx, physical, ciphertext, nextCiphertext)
+}
+
 // Put encrypts value with the tenant DEK and stores it under the
 // namespaced key in the shared store.
 func (s *tenantSharedKVStore) Put(ctx context.Context, key string, value []byte) error {
