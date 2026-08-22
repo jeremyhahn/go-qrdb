@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -195,14 +196,62 @@ func stopDaemon(done <-chan error, limit time.Time) bool {
 	}
 }
 
+// guardedDaemons records the (test, done) pairs that already carry a shutdown
+// guard.
+//
+// The guard is registered by the readiness helpers, and a test that launches a
+// daemon may also register it at the launch site so the invariant is visible
+// where the goroutine is created rather than as a side effect three calls
+// away. Both are wanted, so registering twice has to be harmless — and without
+// this it is not. Two cleanups would each call stopDaemon; the first drains
+// done, and the second then signals a daemon that is already gone until
+// shutdownGuardBound expires and reports a failure that is entirely its own.
+// That is the same trap the t.Failed check below exists for, reached by a
+// different door.
+var guardedDaemons = struct {
+	sync.Mutex
+	keys map[daemonGuardKey]struct{}
+}{keys: make(map[daemonGuardKey]struct{})}
+
+// daemonGuardKey identifies one guarded daemon. Both fields are comparable, so
+// the pair is usable as a map key directly.
+type daemonGuardKey struct {
+	t    *testing.T
+	done <-chan error
+}
+
+// claimDaemonGuard reports whether this call is the one that owns the guard
+// for done, releasing the claim when the test ends.
+func claimDaemonGuard(t *testing.T, done <-chan error) bool {
+	key := daemonGuardKey{t: t, done: done}
+
+	guardedDaemons.Lock()
+	defer guardedDaemons.Unlock()
+
+	if _, claimed := guardedDaemons.keys[key]; claimed {
+		return false
+	}
+	guardedDaemons.keys[key] = struct{}{}
+	t.Cleanup(func() {
+		guardedDaemons.Lock()
+		defer guardedDaemons.Unlock()
+		delete(guardedDaemons.keys, key)
+	})
+	return true
+}
+
 // guardDaemonShutdown registers a cleanup that stops runStart if the test did
 // not, and restores the signal handlers either way.
 //
 // Registered by the readiness helpers rather than left to each caller: the
 // paths that need it most are the ones that fail, and a failing test does not
-// reach its own cleanup code.
+// reach its own cleanup code. Callers may also register it explicitly; a
+// repeat registration for the same daemon is a no-op.
 func guardDaemonShutdown(t *testing.T, done <-chan error) {
 	t.Helper()
+	if !claimDaemonGuard(t, done) {
+		return
+	}
 	t.Cleanup(func() {
 		// Runs on the test goroutine, so reporting here is safe.
 		defer resetSignalHandlers(syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -224,6 +273,38 @@ func guardDaemonShutdown(t *testing.T, done <-chan error) {
 				shutdownGuardBound)
 		}
 	})
+}
+
+// A daemon is guarded once, however many times the guard is registered.
+//
+// The consequence this pins is not cosmetic. Every extra registration is
+// another cleanup calling stopDaemon on the same channel, and only the first
+// can receive from it: the rest signal a process whose daemon has already
+// returned until shutdownGuardBound expires, then fail the test for a leak
+// they invented. Deduplication is what lets a test state the guard at its
+// launch site while the readiness helpers keep registering it for the tests
+// that do not.
+func TestClaimDaemonGuard_OnlyTheFirstClaimOwnsTheDaemon(t *testing.T) {
+	first := make(chan error, 1)
+
+	if !claimDaemonGuard(t, first) {
+		t.Fatal("the first claim on a daemon did not take ownership")
+	}
+	if claimDaemonGuard(t, first) {
+		t.Error("a second claim on the same daemon took ownership as well: " +
+			"the daemon would be stopped twice")
+	}
+	if claimDaemonGuard(t, first) {
+		t.Error("a third claim on the same daemon took ownership as well")
+	}
+
+	// Keyed on the daemon, not on the test: one test may launch more than one
+	// runStart, and each needs its own guard.
+	second := make(chan error, 1)
+	if !claimDaemonGuard(t, second) {
+		t.Error("a second daemon in the same test was refused a guard, so " +
+			"nothing would stop it when the test fails")
+	}
 }
 
 // readinessTimeout bounds a wait for something the daemon should do promptly

@@ -1192,6 +1192,9 @@ func runStart(f *startFlags) error {
 			var sealedWindowNode *lifecycle.Node
 			if sealSub != nil && sealSub.SealBarrier.IsSealed() {
 				sealNode, err := awaitUnseal(sigCtx, f, bundle, sealSub, ceremonyCA)
+				if err == nil && barrierUnsealed != nil {
+					barrierUnsealed()
+				}
 				var canceled *awaitUnsealCanceledError
 				if errors.As(err, &canceled) {
 					slog.Info("daemon shutdown during sealed boot")
@@ -2027,6 +2030,9 @@ func runStart(f *startFlags) error {
 			if err := srv.Start(); err != nil {
 				_ = shutdownNode(nodeCloser)
 				return err
+			}
+			if serverServing != nil {
+				serverServing()
 			}
 
 			// Leader-side lease-expiry sweeper. Leases granted with a TTL must be
@@ -3327,6 +3333,29 @@ func waitForAdminReplication(ctx context.Context, userSvc user.UserServicer, ten
 		Err:  &AdminReplicationTimeoutError{Timeout: timeout},
 	}
 }
+
+// serverServing is invoked once the regular multi-protocol server has started.
+// It is nil in production and set only by tests.
+//
+// This is the END of startup, and it is a different milestone from
+// barrierUnsealed: everything between them — initializeNode, first boot,
+// service construction, the server bind — can still fail. A test that stops at
+// the unseal has proved the barrier opened and nothing about the handover to a
+// serving node, which is the transition it is usually named for
+// (go-qrdb#96).
+var serverServing func()
+
+// barrierUnsealed is invoked once awaitUnseal has returned successfully, i.e.
+// the barrier is open and startup is proceeding to the Raft host, first boot
+// and the regular server. It is nil in production and set only by tests.
+//
+// The transition is not observable from outside the process. While sealed, the
+// daemon serves a pre-host sealed-window listener on the admin port; after the
+// unseal the regular server takes over THE SAME PORT, so a TCP dial cannot
+// tell the two apart. A test that gated on the port accepting was therefore
+// satisfied by the sealed window and never reached full startup at all, while
+// being named for it (go-qrdb#83, #96).
+var barrierUnsealed func()
 
 // volumePoolAttached is invoked once the volume pool has been attached to the
 // barrier registry. It is nil in production and set only by tests.
