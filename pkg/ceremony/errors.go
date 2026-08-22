@@ -83,6 +83,12 @@ var (
 	// given username.
 	ErrShareNotFound = errors.New("ceremony: share not found")
 
+	// ErrShareUnreadable is returned when a stored share's protected buffer
+	// yields no bytes — the shape a process-wide memguard purge leaves behind.
+	// Claim fails closed on it rather than returning a zero-filled slice of
+	// the right length and marking the real share consumed (go-qrdb#74).
+	ErrShareUnreadable = errors.New("ceremony: share buffer yielded no bytes")
+
 	// ErrChallengeVerificationFailed is returned when the nonce signature
 	// verification fails.
 	ErrChallengeVerificationFailed = errors.New("ceremony: nonce signature verification failed")

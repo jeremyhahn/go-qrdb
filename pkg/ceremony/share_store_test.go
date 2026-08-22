@@ -17,6 +17,7 @@ package ceremony
 import (
 	"testing"
 
+	"github.com/awnumar/memguard"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -257,4 +258,89 @@ func TestMemguardShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 
 	_, err := store.Claim("alice")
 	assert.ErrorIs(t, err, ErrShareAlreadyClaimed)
+}
+
+// A claim that FAILS must not consume the share.
+//
+// Claim destroys the sealed material and records the claim as its last acts,
+// and both must stay behind the successful read. A one-time recovery share
+// marked consumed by a claim that returned an error is unrecoverable: the
+// custodian holds nothing and the store will refuse to hand it over again.
+//
+// The failure is provoked with a real memguard purge rather than a stub,
+// because the purge IS the condition — it is what a memguard allocation
+// failure anywhere in the process does to every live enclave, including this
+// share's (go-qrdb#74). A test that faked the error would prove the error
+// path returns; only the purge proves the store survives the thing that
+// causes it.
+func TestMemguardShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
+	store := newSealedShareStore()
+
+	require.NoError(t, store.Store("alice", []byte(`{"index":1,"value":"abc123"}`)))
+	require.True(t, store.Exists("alice"))
+
+	// Destroys every live enclave in the process, this share's included.
+	memguard.Purge()
+
+	_, err := store.Claim("alice")
+	require.Error(t, err, "a claim on purged material must not report success")
+
+	assert.False(t, store.Claimed("alice"),
+		"a failed claim marked the share consumed — the custodian holds nothing "+
+			"and the store will never hand it over again")
+}
+
+// emptyBorrow is a borrow that yields no bytes — the shape a process-wide
+// memguard purge leaves a live buffer in.
+//
+// A fake is used because the condition cannot be built from a real
+// *secure.Buffer: both constructors reject a zero length, and WithBytes
+// refuses a destroyed buffer without calling the callback. The branch guards a
+// state only a purge produces, mid-Claim, between Open and the borrow.
+type emptyBorrow struct{ called bool }
+
+func (b *emptyBorrow) WithBytes(fn func([]byte) error) error {
+	b.called = true
+	return fn(nil)
+}
+
+// fullBorrow yields real bytes, so the same seam covers the success path.
+type fullBorrow struct{ data []byte }
+
+func (b *fullBorrow) WithBytes(fn func([]byte) error) error { return fn(b.data) }
+
+// A borrow that yields nothing is REFUSED, not copied.
+//
+// The failure this pins is silent and unrecoverable: copying zero bytes into a
+// correctly sized destination returns a zero-filled share that looks valid,
+// while Claim goes on to destroy the secret and mark the share consumed. The
+// custodian holds zeros and the store will never hand the real share over
+// again (go-qrdb#74).
+func TestCopyShareOut_RefusesAnEmptyBorrow(t *testing.T) {
+	src := &emptyBorrow{}
+
+	out, err := copyShareOut(src)
+
+	require.True(t, src.called, "the borrow was never entered")
+	assert.ErrorIs(t, err, ErrShareUnreadable)
+	assert.Nil(t, out, "a refused copy must return nothing, not a zero-filled slice")
+}
+
+// The success path returns an independent copy of the borrowed bytes.
+//
+// Independence matters as much as the contents: the source lives in protected
+// memory that is destroyed immediately after, so a returned slice aliasing it
+// would be freed under the caller.
+func TestCopyShareOut_CopiesTheBorrowedBytes(t *testing.T) {
+	data := []byte(`{"index":1,"value":"abc123"}`)
+	src := &fullBorrow{data: data}
+
+	out, err := copyShareOut(src)
+
+	require.NoError(t, err)
+	assert.Equal(t, data, out)
+
+	// Mutating the source must not change what the caller holds.
+	data[0] = 'X'
+	assert.NotEqual(t, data, out, "copyShareOut returned a slice aliasing the borrow")
 }

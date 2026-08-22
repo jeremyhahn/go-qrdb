@@ -141,7 +141,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 
 	// Wrap PIN in a secure.Buffer; NewBufferFromBytes wipes newPIN on
 	// entry so the caller's slice is zeroed.
-	pinBuf, err := secure.NewBufferFromBytes(newPIN)
+	pinBuf, err := newPINBuffer(newPIN)
 	if err != nil {
 		return err
 	}
@@ -157,7 +157,20 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		return ErrSOPINAlreadySet
 	}
 
-	record, err := hashPIN(pinBuf.Bytes())
+	// The borrow spans the KDF, not just the slice-header read: Bytes() left
+	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
+	// process while the hash was still running over them (go-qrdb#74).
+	//
+	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
+	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
+	// salt. Neither allocates protected memory, which is the condition for
+	// holding purgeMu shared across a call.
+	var record string
+	err = pinBuf.WithBytes(func(pin []byte) error {
+		var herr error
+		record, herr = hashPIN(pin)
+		return herr
+	})
 	if err != nil {
 		a.audit.Emit(ctx, audit.AuditEvent{
 			TenantID: tenantID,
@@ -199,7 +212,7 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return ErrSOPINEmptyPIN
 	}
 
-	pinBuf, err := secure.NewBufferFromBytes(presentedPIN)
+	pinBuf, err := newPINBuffer(presentedPIN)
 	if err != nil {
 		return err
 	}
@@ -220,7 +233,17 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return ErrSOPINNotSet
 	}
 
-	if err := verifyPIN(pinBuf.Bytes(), string(record)); err != nil {
+	// The borrow spans the KDF, not just the slice-header read: Bytes() left
+	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
+	// process while the hash was still running over them (go-qrdb#74).
+	//
+	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
+	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
+	// salt. Neither allocates protected memory, which is the condition for
+	// holding purgeMu shared across a call.
+	if err := pinBuf.WithBytes(func(pin []byte) error {
+		return verifyPIN(pin, string(record))
+	}); err != nil {
 		a.audit.Emit(ctx, audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
@@ -254,13 +277,26 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 		return err
 	}
 
-	newBuf, err := secure.NewBufferFromBytes(newPIN)
+	newBuf, err := newPINBuffer(newPIN)
 	if err != nil {
 		return err
 	}
 	defer newBuf.Destroy()
 
-	record, err := hashPIN(newBuf.Bytes())
+	// The borrow spans the KDF, not just the slice-header read: Bytes() left
+	// the PIN's pages unmapped-able by a memguard failure elsewhere in the
+	// process while the hash was still running over them (go-qrdb#74).
+	//
+	// Safe to hold because hashPIN and verifyPIN are pure KDFs in this file —
+	// PBKDF2 or Argon2 over ordinary heap slices, with cryptoRandRead for the
+	// salt. Neither allocates protected memory, which is the condition for
+	// holding purgeMu shared across a call.
+	var record string
+	err = newBuf.WithBytes(func(pin []byte) error {
+		var herr error
+		record, herr = hashPIN(pin)
+		return herr
+	})
 	if err != nil {
 		a.audit.Emit(ctx, audit.AuditEvent{
 			TenantID: tenantID,
@@ -307,7 +343,36 @@ func fipsEnabled() bool {
 //
 // where kdfTag is 'A' (Argon2id) or 'P' (PBKDF2-SHA256).
 // A 32-byte random salt is generated for each call.
-func hashPIN(pin []byte) (string, error) {
+// hashPIN and verifyPIN are variables for the same reason cryptoRandRead above
+// is: they are the only points inside the PIN borrow a test can observe. The
+// property under test is a LOCK LIFETIME — that the borrow is held across the
+// KDF rather than merely across the slice-header read — and a lifetime is only
+// visible from inside the window it covers (go-qrdb#74).
+// pinBuffer is the protected-memory buffer a PIN lives in while it is hashed:
+// the borrow, and the destroy that ends its life.
+//
+// An interface rather than *secure.Buffer so a test can observe that the KDF
+// runs INSIDE the borrow callback. That is the property these three methods
+// were changed for, and it is not observable from outside the window it covers
+// — which is why the previous Bytes() form survived every success and error
+// test in this package (go-qrdb#74).
+type pinBuffer interface {
+	WithBytes(fn func([]byte) error) error
+	Destroy()
+}
+
+// newPINBuffer seals a PIN into protected memory, consuming src. A variable
+// for the same reason as the KDFs below: it is the injection point for the
+// borrow observation.
+var newPINBuffer = func(src []byte) (pinBuffer, error) {
+	return secure.NewBufferFromBytes(src)
+}
+
+var hashPIN = hashPINImpl
+
+var verifyPIN = verifyPINImpl
+
+func hashPINImpl(pin []byte) (string, error) {
 	salt := make([]byte, 32)
 	if _, err := cryptoRandRead(salt); err != nil {
 		return "", &OperationError{Op: "generate salt", Cause: err}
@@ -337,7 +402,7 @@ func hashPIN(pin []byte) (string, error) {
 
 // verifyPIN checks presentedPIN against the stored hash record using
 // constant-time comparison.
-func verifyPIN(presentedPIN []byte, record string) error {
+func verifyPINImpl(presentedPIN []byte, record string) error {
 	if len(record) < 3 {
 		return ErrSOPINInvalid
 	}
