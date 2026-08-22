@@ -454,6 +454,48 @@ and `node.EnableEncryption()`.
 
   Source: `pkg/engine/`, `pkg/storage/`, `pkg/store/`
 
+- **The base KV opcode set is a contract every state machine must satisfy in
+  full.** `kv.OpPut`, `kv.OpDelete` and `kv.OpPutIfAbsent` (op code 4) are
+  handled by `pkg/store`, both engines in `pkg/engine`, and all four state
+  machines in `pkg/statemachine`. The set is discovered at RUN time — a state
+  machine that omits one still compiles and still starts, and fails only when
+  an entry carrying that op code is applied. `OpPutIfAbsent` was missing from
+  all four `pkg/statemachine` implementations until go-qrdb#86, which meant
+  the identity index could not claim an identity on `--sm-type memory` or
+  `concurrent` and first boot could not complete. Adding an op code means
+  adding it everywhere in the same change; the conformance test in
+  `pkg/statemachine/putifabsent_test.go` is what enforces that.
+
+  Source: `pkg/statemachine/putifabsent.go`, `pkg/store/pebble.go`,
+  `pkg/engine/`
+
+- **The sharded state machines acknowledge a write before it is durable.**
+  `FastStateMachine` and `ConcurrentStateMachine` write to their in-memory
+  shard cache, persist to storage on a background goroutine, and return a
+  successful result immediately. `KVStateMachine` and `RegularStateMachine`
+  do NOT: they write through their backend synchronously and return its
+  error.
+
+  Two consequences follow for the sharded pair, and neither is a durability
+  guarantee:
+
+  1. **A failed storage write is currently only logged.** A caller can be told
+     its write succeeded — including a `PutIfAbsent` reporting
+     `kv.ResultStored`, which is the answer to "did I win this claim?" — while
+     the value is absent after a restart. Tracked as **go-qrdb#94**, pending a
+     decision on which contract these two offer.
+  2. **Writes reach storage in apply order, per shard.** They did not
+     originally: each write persisted on an independent goroutine, so
+     `Delete(k)` followed by `PutIfAbsent(k, v)` could leave storage with no
+     key at all. `persistOrder` draws a ticket under the shard's data lock —
+     where apply order is already established — and each writer waits its turn.
+     Writes remain asynchronous, so apply never blocks on the disk; only their
+     ORDER is constrained. A key belongs to exactly one shard, so per-shard
+     ordering is per-key ordering.
+
+  Source: `pkg/statemachine/persist_order.go`, `pkg/statemachine/fast.go`,
+  `pkg/statemachine/concurrent.go`
+
 - **Interface segregation across service boundaries.** Each feature domain
   has its own service interface (`KVService`, `MVCCKVService`,
   `TransactionService`, `WatchService`, `LeaseService`, `BatchService`,

@@ -68,7 +68,8 @@ reach disk in raw form.
 | Conflicting admin certificate inputs | 400 | `INVALID_ARGUMENT` |
 | Admin certificate without a pool | 400 | `INVALID_ARGUMENT` |
 | Admin certificate rejected | 403 | `PERMISSION_DENIED` |
-| Follower attempted creation | — | retried after replication (`NotLeader`) |
+| Follower attempted creation | — | retried after replication (`NotLeader` only) |
+| Any other first-boot failure | the underlying cause | returned, not retried — it is this node's own failure |
 | No bootstrap certificate configured | 404 (`/v1/ca/bootstrap` unregistered) | — |
 
 ## Versioning

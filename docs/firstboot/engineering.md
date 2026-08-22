@@ -46,6 +46,14 @@ a second, unrelated credential bound instead.
   immediate return without duplicates.
 - **Only the leader creates.** Followers detect `NotLeader` and wait for
   replication.
+- **Only a `NotLeader` failure waits.** The follower wait is entered for that
+  condition alone, checked at both layers that express it
+  (`service.NotLeaderError` and `quicraft.NotLeaderError`). Every other
+  first-boot failure propagates with its own cause. It previously caught
+  ANY error, so a local fault — a state machine unable to apply an op code,
+  say — was reported 30 seconds later as `admin user not replicated`, a
+  message naming the symptom while the cause appeared only in a log line
+  (go-qrdb#86).
 - **Ceremony runs before firstboot**, and both are safe to re-run on cluster
   nodes.
 

@@ -133,7 +133,10 @@ An `admin` user for the system tenant is created alongside, bound to the
 - **A presented certificate is validated against an operator-supplied pool**,
   never against the platform CA.
 - **Only the leader may create.** In multi-node clusters followers detect
-  `NotLeader` and wait for the leader's writes to replicate.
+  `NotLeader` and wait for the leader's writes to replicate. That wait is
+  entered for a `NotLeader` condition and nothing else — a first-boot failure
+  of any other kind is returned with its cause rather than being retried as
+  though a leader elsewhere were about to fix it.
 - **Sensitive keys live in the barrier.** After unseal they are available in
   memory through `seal.EncryptionBarrier.Decrypt()`.
 

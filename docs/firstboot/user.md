@@ -110,6 +110,10 @@ roles and the admin user cause an immediate return.
 **On a cluster, a node says "not leader".** Only the leader creates; followers
 wait for the writes to replicate. Nothing to do.
 
+**A node reports something other than "not leader" during first boot.** That is
+this node's own failure and it is reported as itself — read the error. It is
+not a replication delay and waiting will not clear it.
+
 **The system started but the barrier is sealed.** Bootstrap does not unseal for
 you. See [../barrier-seal/user.md](../barrier-seal/user.md).
 
