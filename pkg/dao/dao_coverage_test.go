@@ -508,8 +508,23 @@ func TestWithTx_FunctionReturnsError(t *testing.T) {
 // evaluateCondition — ConditionVersion on non-Versioned existing entity
 // ---------------------------------------------------------------------------
 
-// TestEvaluateCondition_VersionOnNonVersioned verifies that when an existing
-// entity does not implement the Versioned interface, version 1 is assumed.
+// TestEvaluateCondition_VersionOnNonVersioned pins that a ConditionVersion
+// guard on an entity that carries no version is REFUSED.
+//
+// This test previously asserted the opposite — that "version 1 is assumed" —
+// which is how the defect survived: it read as a deliberate convention rather
+// than a fabricated comparison. What the constant actually bought was a guard
+// that never guards. Nothing about the stored record was consulted, so
+// OpEqual 1 passed on the first update and on the ten-thousandth, and OpEqual 2
+// failed on both. A caller following data-access.md ("any read-modify-write of
+// an entity uses SaveWithCondition with ConditionVersion, or it is a
+// lost-update bug") got a call that compiled, returned nil, and guarded
+// nothing.
+//
+// The refusal is the same shape ConditionCreate and ConditionMod already use
+// for an entity that does not implement Timestamped, so the three targets now
+// agree: a condition that cannot be evaluated is an error, not a default
+// (go-qrdb#59).
 func TestEvaluateCondition_VersionOnNonVersioned(t *testing.T) {
 	store := newMemoryKVStore()
 	dao, err := NewTransactional[*TestEntity](
@@ -523,20 +538,75 @@ func TestEvaluateCondition_VersionOnNonVersioned(t *testing.T) {
 	entity := &TestEntity{ID: 10001, Name: "Original"}
 	require.NoError(t, dao.Save(ctx, entity))
 
+	// Every comparison value is refused, not just the ones that used to fail.
+	// Asserting only that OpEqual 2 errors would pass against the constant as
+	// well, since 2 != 1 — it is OpEqual 1, the value the constant silently
+	// satisfied, that distinguishes the fix.
+	for _, want := range []int64{0, 1, 2} {
+		tx, err := dao.BeginTx(ctx)
+		require.NoError(t, err)
+
+		updated := &TestEntity{ID: 10001, Name: "Updated"}
+		err = tx.SaveWithCondition(updated, Condition{
+			Target:   ConditionVersion,
+			Operator: OpEqual,
+			Value:    want,
+		})
+		require.NoError(t, err, "queuing the operation must not fail")
+
+		err = tx.Commit(ctx)
+		require.Error(t, err, "ConditionVersion on a non-Versioned entity must be refused (value %d)", want)
+
+		var failed ConditionFailedError
+		require.ErrorAs(t, err, &failed)
+		assert.Contains(t, failed.Reason, "does not implement Versioned",
+			"the refusal must name the missing interface, not report a version mismatch")
+	}
+
+	// The record is untouched: a refused guard must not write.
+	retrieved, err := dao.Get(ctx, 10001)
+	require.NoError(t, err)
+	assert.Equal(t, "Original", retrieved.Name)
+}
+
+// And the guard still WORKS for an entity that does carry a version, so the
+// refusal above is a distinction rather than a blanket rejection.
+func TestEvaluateCondition_VersionOnVersionedStillDecides(t *testing.T) {
+	store := newMemoryKVStore()
+	dao, err := NewTransactional[*VersionedTestEntity](
+		store,
+		"version_versioned",
+		func() *VersionedTestEntity { return &VersionedTestEntity{} },
+	)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, dao.Save(ctx, &VersionedTestEntity{ID: 20001, Name: "Original", Version: 7}))
+
+	// The stored version is consulted: 7 passes.
 	tx, err := dao.BeginTx(ctx)
 	require.NoError(t, err)
-
-	updated := &TestEntity{ID: 10001, Name: "Updated"}
-	// TestEntity is not Versioned; version is treated as 1 for existing entities.
-	err = tx.SaveWithCondition(updated, Condition{
-		Target:   ConditionVersion,
-		Operator: OpEqual,
-		Value:    int64(1),
-	})
-	require.NoError(t, err)
+	require.NoError(t, tx.SaveWithCondition(
+		&VersionedTestEntity{ID: 20001, Name: "Updated", Version: 8},
+		Condition{Target: ConditionVersion, Operator: OpEqual, Value: int64(7)},
+	))
 	require.NoError(t, tx.Commit(ctx))
 
-	retrieved, err := dao.Get(ctx, 10001)
+	retrieved, err := dao.Get(ctx, 20001)
+	require.NoError(t, err)
+	assert.Equal(t, "Updated", retrieved.Name)
+
+	// And a stale expectation fails, now against the version the record
+	// actually carries (8) rather than a constant.
+	tx, err = dao.BeginTx(ctx)
+	require.NoError(t, err)
+	require.NoError(t, tx.SaveWithCondition(
+		&VersionedTestEntity{ID: 20001, Name: "Stale", Version: 9},
+		Condition{Target: ConditionVersion, Operator: OpEqual, Value: int64(7)},
+	))
+	require.Error(t, tx.Commit(ctx))
+
+	retrieved, err = dao.Get(ctx, 20001)
 	require.NoError(t, err)
 	assert.Equal(t, "Updated", retrieved.Name)
 }

@@ -180,8 +180,19 @@ func BatchDelete[E Entity](ctx context.Context, dao TransactionalDAO[E], entitie
 	})
 }
 
-// SaveWithOptimisticLock saves an entity only if its version matches the expected version.
-// This implements optimistic concurrency control.
+// SaveWithOptimisticLock saves an entity only if its version matches the
+// expected version.
+//
+// It does NOT implement optimistic concurrency control, whatever the name
+// suggests: it delegates to SaveWithCondition, which evaluates the version with
+// a read followed by a write. Two callers holding the same expectedVersion can
+// both pass and both save. Use it to catch an obviously stale write, not to
+// serialise contested ones — those need a guarded operation on the transaction
+// plane (go-qrdb#59).
+//
+// E must implement Versioned; the constraint is Entity for compatibility, so a
+// type that does not carry a version is refused at run time with
+// ConditionFailedError rather than rejected by the compiler.
 //
 // Example:
 //

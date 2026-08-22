@@ -492,17 +492,21 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 		store := newMemoryKVStore()
 		ctx := context.Background()
 
-		dao, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
+		// VersionedTestEntity, not TestEntity: this subtest is named for a
+		// version condition SUCCEEDING, and it used to get that from the
+		// fabricated version-1 constant rather than from a stored version, so
+		// it passed against an entity type that has no version at all
+		// (go-qrdb#59).
+		dao, err := New[*VersionedTestEntity](store, "users",
+			func() *VersionedTestEntity { return &VersionedTestEntity{} })
 		require.NoError(t, err)
 
 		// Save initial entity
-		user := &TestEntity{ID: 1, Name: "Alice", Email: "alice@test.com"}
+		user := &VersionedTestEntity{ID: 1, Name: "Alice", Version: 1}
 		err = dao.Save(ctx, user)
 		require.NoError(t, err)
 
-		// SaveWithCondition for existing entity with version check.
-		// Since TestEntity does not implement Versioned, existing entity is treated as version 1.
-		updated := &TestEntity{ID: 1, Name: "Alice Updated", Email: "alice2@test.com"}
+		updated := &VersionedTestEntity{ID: 1, Name: "Alice Updated", Version: 2}
 		cond := Condition{
 			Target:   ConditionVersion,
 			Operator: OpEqual,
@@ -515,22 +519,30 @@ func TestGenericDAO_SaveWithCondition(t *testing.T) {
 		retrieved, err := dao.Get(ctx, 1)
 		require.NoError(t, err)
 		assert.Equal(t, "Alice Updated", retrieved.Name)
+		assert.Equal(t, int64(2), retrieved.Version)
 	})
 
 	t.Run("SaveWithConditionFailsWhenConditionNotMet", func(t *testing.T) {
 		store := newMemoryKVStore()
 		ctx := context.Background()
 
-		dao, err := New[*TestEntity](store, "users", func() *TestEntity { return &TestEntity{} })
+		// Also VersionedTestEntity, so the refusal comes from the STORED
+		// version disagreeing with the expectation. Against a non-Versioned
+		// entity this subtest passes either way — before the fix because 999
+		// != the constant 1, after it because the condition is inevaluable —
+		// and neither outcome says anything about version comparison
+		// (go-qrdb#59).
+		dao, err := New[*VersionedTestEntity](store, "users",
+			func() *VersionedTestEntity { return &VersionedTestEntity{} })
 		require.NoError(t, err)
 
 		// Save initial entity
-		user := &TestEntity{ID: 1, Name: "Alice", Email: "alice@test.com"}
+		user := &VersionedTestEntity{ID: 1, Name: "Alice", Version: 1}
 		err = dao.Save(ctx, user)
 		require.NoError(t, err)
 
 		// Try to save with wrong version
-		updated := &TestEntity{ID: 1, Name: "Should Not Save", Email: "no@test.com"}
+		updated := &VersionedTestEntity{ID: 1, Name: "Should Not Save", Version: 1000}
 		cond := Condition{
 			Target:   ConditionVersion,
 			Operator: OpEqual,

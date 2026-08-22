@@ -441,12 +441,23 @@ func (tx *daoTransaction[E]) evaluateCondition(ctx context.Context, entity E, co
 	// Entity exists - evaluate condition based on target
 	switch cond.Target {
 	case ConditionVersion:
-		// For entities that implement Versioned interface
-		if versioned, ok := any(existing).(Versioned); ok {
-			return tx.evaluateNumericCondition(versioned.GetVersion(), cond)
+		// An entity that carries no version has none to compare. Substituting
+		// a constant here made the guard decide on a value the stored record
+		// never held: OpEqual 1 passed on the first update and on the
+		// ten-thousandth, and no other expectation could ever pass. A caller
+		// following data-access.md's read-modify-write rule held a guard that
+		// guarded nothing, which is the lost update the condition exists to
+		// prevent. Refuse instead, exactly as ConditionCreate and ConditionMod
+		// below refuse an entity that does not implement Timestamped
+		// (go-qrdb#59).
+		versioned, ok := any(existing).(Versioned)
+		if !ok {
+			return ConditionFailedError{
+				Condition: *cond,
+				Reason:    "entity does not implement Versioned interface",
+			}
 		}
-		// If not versioned, treat as version 1 for existing entities
-		return tx.evaluateNumericCondition(1, cond)
+		return tx.evaluateNumericCondition(versioned.GetVersion(), cond)
 
 	case ConditionCreate:
 		if timestamped, ok := any(existing).(Timestamped); ok {

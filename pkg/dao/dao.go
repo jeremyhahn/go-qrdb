@@ -66,9 +66,11 @@ type Pager[E any] interface {
 //	// Paginate
 //	result, err := userDAO.Page(ctx, dao.PageQuery{Page: 1, PageSize: 25})
 //
-//	// Conditional save (optimistic locking)
+//	// Conditional save. NOT optimistic locking: the condition is evaluated
+//	// with a read followed by a write, and User must implement Versioned for
+//	// ConditionVersion to be evaluable at all. See SaveWithCondition.
 //	err = userDAO.SaveWithCondition(ctx, user, dao.Condition{
-//	    Target: dao.ConditionVersion, Operator: dao.OpEqual, Value: int64(1),
+//	    Target: dao.ConditionVersion, Operator: dao.OpEqual, Value: user.GetVersion(),
 //	})
 type GenericDAO[E Entity] interface {
 	// Save persists an entity to storage.
@@ -94,10 +96,25 @@ type GenericDAO[E Entity] interface {
 	// silently degrading to a racy read-then-write.
 	SaveIfAbsent(ctx context.Context, entity E) (stored bool, err error)
 
-	// SaveWithCondition persists an entity only if the given condition is satisfied.
-	// This enables optimistic locking patterns at the GenericDAO level without
-	// requiring callers to manage transactions directly for single-operation cases.
-	// Internally, it wraps the operation in a single-operation transaction.
+	// SaveWithCondition persists an entity only if the given condition is
+	// satisfied.
+	//
+	// The condition is evaluated with a READ FOLLOWED BY A WRITE, not as one
+	// guarded store operation. Two callers can therefore both observe the same
+	// version, both pass, and both save — the lost update the condition reads
+	// as preventing. This is NOT optimistic locking, and it is not a substitute
+	// for SaveIfAbsent above, which is the only write on this interface with a
+	// defined outcome under concurrency.
+	//
+	// It said "enables optimistic locking patterns" and "wraps the operation in
+	// a single-operation transaction for atomicity" until go-qrdb#59; that
+	// transaction sequences the read and the write but does not make them
+	// atomic against another caller, and a consumer reading the old text
+	// believed they held a guarantee the code does not offer.
+	//
+	// ConditionVersion requires the entity to implement Versioned (re-exported
+	// as sdk/go.DAOVersioned) and returns ConditionFailedError when it does
+	// not, rather than comparing against a fabricated version.
 	SaveWithCondition(ctx context.Context, entity E, cond Condition) error
 
 	// Get retrieves an entity by ID.

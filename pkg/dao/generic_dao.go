@@ -292,8 +292,11 @@ func (d *genericDAO[E]) SaveIfAbsent(ctx context.Context, entity E) (bool, error
 	return atomicStore.PutIfAbsent(ctx, d.makeKey(entity.EntityID()), data)
 }
 
-// SaveWithCondition persists an entity only if the given condition is satisfied.
-// It wraps the operation in a single-operation transaction for atomicity.
+// SaveWithCondition persists an entity only if the given condition is
+// satisfied. See the GenericDAO interface for the contract: the condition is
+// evaluated with a read followed by a write, so the single-operation
+// transaction below sequences the two but does not make them atomic against a
+// concurrent caller (go-qrdb#59).
 func (d *genericDAO[E]) SaveWithCondition(ctx context.Context, entity E, cond Condition) error {
 	tx, err := d.beginTx(ctx)
 	if err != nil {
