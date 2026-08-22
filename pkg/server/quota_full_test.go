@@ -49,7 +49,16 @@ func TestQuotaKVService_PutWithModeAccountsAndReleases(t *testing.T) {
 	}
 }
 
-func TestQuotaKVService_PutInnerErrorReleases(t *testing.T) {
+// A failed inner write RETAINS its reservation.
+//
+// This asserted the opposite until go-qrdb#90. A non-nil error does not mean
+// the write did not happen — a Raft proposal can commit and then fail to
+// deliver its response — so releasing dropped the accounting for a value that
+// might well be stored, letting the tenant exceed their limit. Retaining
+// over-counts a write that genuinely failed, which the reconciler corrects;
+// releasing under-counts one that succeeded, which nothing corrects. See the
+// note above quotaKVService.Put.
+func TestQuotaKVService_PutInnerErrorRetainsReservation(t *testing.T) {
 	inner := &failingKV{mockKVService: newMockKVService(), putErr: errBoom}
 	acct, _ := newTestAccountant(t, nil)
 	q := newQuotaKVService(inner, acct, "t1", 1000)
@@ -58,16 +67,16 @@ func TestQuotaKVService_PutInnerErrorReleases(t *testing.T) {
 	if err := q.Put(ctx, "a", make([]byte, 50)); !errors.Is(err, errBoom) {
 		t.Fatalf("Put err = %v, want errBoom", err)
 	}
-	// The reservation is released because the inner write failed.
-	if got := acct.Usage("t1"); got != 0 {
-		t.Fatalf("usage after failed put = %d, want 0 (released)", got)
+	if got := acct.Usage("t1"); got != 50 {
+		t.Fatalf("usage after a failed put = %d, want 50 retained — the outcome is "+
+			"unknown, and releasing it is how a stored value goes unaccounted", got)
 	}
 
 	if err := q.PutWithMode(ctx, "a", make([]byte, 50), writemode.Mode(0)); !errors.Is(err, errBoom) {
 		t.Fatalf("PutWithMode err = %v, want errBoom", err)
 	}
-	if got := acct.Usage("t1"); got != 0 {
-		t.Fatalf("usage after failed PutWithMode = %d, want 0 (released)", got)
+	if got := acct.Usage("t1"); got != 100 {
+		t.Fatalf("usage after a failed PutWithMode = %d, want 100 retained", got)
 	}
 }
 
@@ -140,7 +149,14 @@ func TestQuotaKVService_EntityAccounting(t *testing.T) {
 	}
 }
 
-func TestQuotaKVService_PutEntityInnerErrorReleases(t *testing.T) {
+// A failed PutEntity RETAINS its reservation, like every other reserving verb.
+//
+// This asserted the opposite until go-qrdb#90 round 1. PutEntity was the one
+// method the first fix missed: it delegates to the same Raft-backed Put, so it
+// commits and loses its response in exactly the way the plain verbs do, and
+// releasing there left the entity stored with its bytes unaccounted. See the
+// note above quotaKVService.Put.
+func TestQuotaKVService_PutEntityInnerErrorRetainsReservation(t *testing.T) {
 	inner := &failingKV{mockKVService: newMockKVService(), putEntErr: errBoom}
 	acct, _ := newTestAccountant(t, nil)
 	q := newQuotaKVService(inner, acct, "t1", 1000)
@@ -149,8 +165,10 @@ func TestQuotaKVService_PutEntityInnerErrorReleases(t *testing.T) {
 	if _, err := q.PutEntity(ctx, &service.PutEntityRequest{ID: "e", Data: make([]byte, 30)}); !errors.Is(err, errBoom) {
 		t.Fatalf("PutEntity err = %v, want errBoom", err)
 	}
-	if got := acct.Usage("t1"); got != 0 {
-		t.Fatalf("usage after failed PutEntity = %d, want 0 (released)", got)
+	if got := acct.Usage("t1"); got != 30 {
+		t.Fatalf("usage after a failed PutEntity = %d, want 30 retained — the "+
+			"outcome is unknown, and releasing it is how a stored entity goes "+
+			"unaccounted", got)
 	}
 }
 

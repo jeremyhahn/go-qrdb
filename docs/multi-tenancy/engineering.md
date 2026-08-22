@@ -73,6 +73,22 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   create with an unguarded release is half a primitive: two releasers both
   read holder A, the first deletes, another tenant legitimately claims the
   now-absent id, and the second delete removes THEIR claim.
+- **A failed write keeps its quota reservation only when its outcome is
+  UNKNOWN.** `quotaKVService` reserves bytes before the inner write and must
+  decide, on an error, whether the tenant still owes them. Three cases, not
+  two: a definitive REFUSAL (a guard evaluated and declined) releases; a
+  definitive FAILURE releases, because it proves nothing was stored —
+  validation, encoding, `NotLeader`, a state machine that applied nothing,
+  a refused atomic capability; anything else RETAINS, because a Raft proposal
+  can commit and then fail to deliver its response.
+  The default for an unrecognised error is to retain. Both mistakes are real
+  and they are not symmetric. Releasing an unknown outcome under-counts a
+  value that IS stored, and the limit stops bounding anything. Retaining a
+  definitive rejection leaks bytes on every invalid request — and for a
+  **prefix tenant that is permanent**, because the reconciler repairs volume
+  tenants from real storage and a prefix tenant's usage only ever climbs, so
+  a caller sending invalid requests in a loop could exhaust the quota without
+  writing a byte.
 - **A claim is EDITED through a guarded swap**
   (`kvstore.AtomicKVStore.CompareAndSwap`, added in #56), never a plain put.
   It completes the set: `PutIfAbsent` takes a claim, `CompareAndDelete`

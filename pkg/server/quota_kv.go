@@ -16,8 +16,10 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -78,6 +80,59 @@ func (s *quotaKVService) priorSize(ctx context.Context, key string) int64 {
 	return int64(len(v))
 }
 
+// A failed write keeps its reservation only when its outcome is UNKNOWN.
+//
+// The reasoning is identical for each and was got wrong on each of them
+// independently, so it is written once here and referenced below.
+//
+// A non-nil error from the inner store does not mean the write did not happen.
+// For a Raft-backed service it frequently means the opposite: SyncPropose can
+// commit the entry and then fail to deliver its response, so the value is
+// durable and the caller was told nothing. Releasing the reservation there
+// drops the accounting for a value that IS stored, and the tenant's usage sits
+// permanently below what they hold — every later write measured against a
+// limit that no longer bounds anything. That is quota failing OPEN.
+//
+// Retaining errs the other way: a write that genuinely did not land leaves its
+// bytes reserved until the reconciler corrects it. Over-counting costs a tenant
+// headroom they should have had; under-counting costs the limit its meaning,
+// and only one of those is a quota failure.
+//
+// A DEFINITIVE refusal is different and still releases. PutIfAbsent returning
+// (false, nil) means the guard was evaluated and declined, so nothing was
+// written and nothing is owed. The distinction is between "no" and "unknown",
+// which is exactly what the old `err != nil || !stored` collapsed
+// (go-qrdb#90; the same defect was fixed for CompareAndSwap in #56).
+//
+// NOT every error is unknown, and treating them alike is its own defect in the
+// opposite direction. An error raised BEFORE the write is proposed — a
+// validation failure, an encoding failure, a refusal by a state machine that
+// does not offer the operation — proves no value was stored. Retaining those
+// bytes leaks quota on every rejected request, and for a PREFIX tenant nothing
+// ever gives them back: the reconciler corrects volume tenants from real
+// storage, so a prefix tenant's usage only ever climbs. A caller sending
+// invalid requests in a loop could exhaust a tenant's quota without ever
+// writing a byte, which is a denial of service built out of a safety measure.
+//
+// So the rule is three-way, not two:
+//
+//   - definitive REFUSAL (a guard evaluated and declined)  -> release
+//   - definitive FAILURE (proven not written)              -> release
+//   - anything else                                        -> retain
+//
+// writeProvenNotStored draws the second line, and it defaults to RETAIN for
+// errors it does not recognise. That asymmetry is deliberate: an unrecognised
+// error might have committed, and mistaking "unknown" for "failed" is the
+// fail-open direction.
+//
+// The verbs that RESERVE are Put, PutIfAbsent, PutWithMode and PutEntity. The
+// rest never hold a reservation across the inner call: CompareAndDelete and
+// DeleteEntity release only on a definitive success, and CompareAndSwap only
+// on a definitive refusal or success. That enumeration is written out because
+// the first fix of this defect covered three of the four and left PutEntity
+// failing open — a wrapper is only as fail-closed as its least-examined
+// method.
+
 // Put accounts len(value) bytes after admitting the write through the quota.
 func (s *quotaKVService) Put(ctx context.Context, key string, value []byte) error {
 	n := len(value)
@@ -85,7 +140,7 @@ func (s *quotaKVService) Put(ctx context.Context, key string, value []byte) erro
 		return err
 	}
 	if err := s.inner.Put(ctx, key, value); err != nil {
-		s.acct.Release(s.tenantID, int64(n))
+		s.releaseIfProvenNotStored(err, n)
 		return err
 	}
 	return nil
@@ -106,9 +161,15 @@ func (s *quotaKVService) PutIfAbsent(ctx context.Context, key string, value []by
 		return false, err
 	}
 	stored, err := s.inner.PutIfAbsent(ctx, key, value)
-	if err != nil || !stored {
-		s.acct.Release(s.tenantID, int64(n))
+	if err != nil {
+		s.releaseIfProvenNotStored(err, n)
 		return stored, err
+	}
+	if !stored {
+		// Definitively declined: the key was already there and nothing was
+		// written, so nothing is owed.
+		s.acct.Release(s.tenantID, int64(n))
+		return false, nil
 	}
 	return true, nil
 }
@@ -184,7 +245,7 @@ func (s *quotaKVService) PutWithMode(ctx context.Context, key string, value []by
 		return err
 	}
 	if err := s.inner.PutWithMode(ctx, key, value, mode); err != nil {
-		s.acct.Release(s.tenantID, int64(n))
+		s.releaseIfProvenNotStored(err, n)
 		return err
 	}
 	return nil
@@ -218,7 +279,10 @@ func (s *quotaKVService) PutEntity(ctx context.Context, req *service.PutEntityRe
 	}
 	resp, err := s.inner.PutEntity(ctx, req)
 	if err != nil {
-		s.acct.Release(s.tenantID, int64(n))
+		// The entity path both VALIDATES before proposing and, once past that,
+		// delegates to the same Raft-backed Put — so it produces errors of
+		// both kinds and needs the same classification as the plain verbs.
+		s.releaseIfProvenNotStored(err, n)
 		return nil, err
 	}
 	return resp, nil
@@ -285,4 +349,54 @@ func (s *quotaKVService) GetEntity(ctx context.Context, req *service.GetEntityRe
 
 func (s *quotaKVService) ListEntities(ctx context.Context, req *service.ListEntitiesRequest) (*service.ListEntitiesResponse, error) {
 	return s.inner.ListEntities(ctx, req)
+}
+
+// releaseIfProvenNotStored gives back a reservation only when err proves the
+// write did not happen. See the note above Put for why the default is to keep
+// it.
+func (s *quotaKVService) releaseIfProvenNotStored(err error, n int) {
+	if writeProvenNotStored(err) {
+		s.acct.Release(s.tenantID, int64(n))
+	}
+}
+
+// writeProvenNotStored reports whether err was raised BEFORE anything could be
+// written, so the reservation is certainly owed back.
+//
+// Every case here is an error the service produces without reaching consensus,
+// or one a state machine returns having applied nothing:
+//
+//   - EncodeRequestError: the command could not be built, so it was never
+//     proposed.
+//   - the entity validation family: rejected on the request, before any
+//     proposal.
+//   - NotLeaderError: the proposal was refused rather than accepted. A leader
+//     elsewhere may later write something, but not THIS call's bytes.
+//   - SMNotConfiguredError: the entry applied, and the subsystem it needed was
+//     absent, so it stored nothing.
+//   - ErrAtomicWriteUnsupported: the capability was refused up front.
+//
+// Anything else — a ProposeError wrapping a transport failure, a deadline, a
+// cancelled context — may have committed, and is treated as unknown.
+func writeProvenNotStored(err error) bool {
+	var (
+		encodeErr     *service.EncodeRequestError
+		emptyType     *service.EntityEmptyTypeError
+		emptyID       *service.EntityEmptyIDError
+		emptyData     *service.EntityEmptyDataError
+		notLeader     *service.NotLeaderError
+		notConfigured *service.SMNotConfiguredError
+	)
+	switch {
+	case errors.As(err, &encodeErr),
+		errors.As(err, &emptyType),
+		errors.As(err, &emptyID),
+		errors.As(err, &emptyData),
+		errors.As(err, &notLeader),
+		errors.As(err, &notConfigured),
+		errors.Is(err, kvstore.ErrAtomicWriteUnsupported):
+		return true
+	default:
+		return false
+	}
 }
