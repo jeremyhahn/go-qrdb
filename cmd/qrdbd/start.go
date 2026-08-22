@@ -909,6 +909,23 @@ func runStart(f *startFlags) error {
 			slog.Info("TLS cert hot-reload enabled", "watch_dir", f.dataDir)
 		}
 	}
+	// The reloader's lifetime is THIS function's, so it is released here
+	// rather than only on the clean-shutdown path far below.
+	//
+	// It holds an inotify instance, and inotify instances are a per-user
+	// kernel resource, not a per-process one. The clean path already stops it;
+	// every other return between here and there did not, leaking one instance
+	// for the life of the process. In a daemon that is at most one and the
+	// process is exiting anyway — in a TEST BINARY it accumulates across every
+	// runStart in the package. Measured before this defer: the cmd/qrdbd
+	// TestRunStart family left 38 instances open in one run, against a runner
+	// limit of 128, which is what exhausted both CI hosts (go-qrdb#95).
+	//
+	// Stop is idempotent by design, so the existing call on the shutdown path
+	// stays correct and this one is a no-op after it.
+	if reloader := bundle.Reloader; reloader != nil {
+		defer func() { _ = reloader.Stop() }()
+	}
 
 	// Apply an explicitly configured TLS client-auth mode to the shared
 	// listener TLS config BEFORE any listener starts. The pre-host
