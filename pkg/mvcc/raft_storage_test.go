@@ -59,18 +59,22 @@ func (m *memStorage) Get(key []byte) ([]byte, error) {
 	}
 	v, ok := m.data[string(key)]
 	if !ok {
-		// NOTE: this contradicts storage.Reader.Get, which is documented as
-		// "Returns nil, nil when key does not exist" and which memory, file
-		// and pebble all honour. Correcting it here turns 59 of this
-		// package's 374 tests red, because pkg/mvcc's read path relies on the
-		// error spelling in roughly twenty places — a separate remediation,
-		// tracked in go-qrdb#24, deliberately NOT folded into a release.
+		// storage.Reader.Get: "Returns nil, nil when key does not exist".
 		//
-		// It is left as-is so the divergence stays visible in one place
-		// rather than being half-fixed. The construction path no longer
-		// depends on it: revision_freshstore_test.go drives the REAL engines.
-		return nil, errors.New(errors.ErrNotFound, "memStorage.Get", "key not found")
+		// This double used to return a typed ErrNotFound here, which no
+		// shipped engine does, and that single line is why go-qrdb#24 went
+		// unnoticed: every test in this package exercised an absence spelling
+		// the production code would never meet, so the guards that only tested
+		// errors.IsNotFound looked covered while being dead against memory,
+		// file and pebble alike. A double that contradicts the interface it
+		// stands in for does not reduce confidence in the tests — it inverts
+		// it.
+		return nil, nil
 	}
+	// Note the allocation: a key holding an EMPTY value returns a non-nil
+	// zero-length slice, exactly as the real engines do. That is what lets
+	// absent() distinguish it from a missing key, so this line is part of the
+	// contract being modelled and not an incidental copy.
 	cp := make([]byte, len(v))
 	copy(cp, v)
 	return cp, nil
@@ -1375,11 +1379,20 @@ func TestRaftStorage_Compact_Success(t *testing.T) {
 		t.Errorf("CompactedRevision: got %d, want 15", rev)
 	}
 
-	// Verify the old data key (rev 10) was removed from the underlying store
+	// Verify the old data key (rev 10) was removed from the underlying store.
+	//
+	// Absence is a nil slice with a NIL error, per storage.Reader.Get. This
+	// assertion used to read `if getErr == nil { t.Error(...) }`, which only
+	// passed because the test double reported absence as an error — the same
+	// inversion that hid go-qrdb#24. Against any real engine it would have
+	// failed on a correctly compacted store.
 	oldDataKey := EncodeDataKey([]byte("key1"), 10)
-	_, getErr := s.store.Get(oldDataKey)
-	if getErr == nil {
-		t.Error("expected old data key (rev 10) to be removed after compaction")
+	oldData, getErr := s.store.Get(oldDataKey)
+	if getErr != nil {
+		t.Fatalf("Get(old data key): %v", getErr)
+	}
+	if oldData != nil {
+		t.Errorf("expected old data key (rev 10) to be removed after compaction, got %d bytes", len(oldData))
 	}
 }
 

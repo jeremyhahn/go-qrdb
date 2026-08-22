@@ -127,15 +127,15 @@ func NewRaftStorage(config *RaftStorageConfig) (*RaftStorage, error) {
 	// and the reason a fresh store could not be opened with any engine.
 	compactedData, err := config.Store.Get(CompactedKey())
 	switch {
-	case err != nil && !errors.IsNotFound(err):
+	case absent(compactedData, err):
+		// Fresh store: compacted stays 0.
+	case err != nil:
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
 			"mvcc.NewRaftStorage",
 			"failed to load compacted revision",
 		)
-	case err != nil || len(compactedData) == 0:
-		// Absent: compacted stays 0.
 	default:
 		compactedRev, decErr := DecodeRevision(compactedData)
 		if decErr != nil {
@@ -283,18 +283,18 @@ func (s *RaftStorage) Put(ctx context.Context, key, value []byte) (*RaftKeyValue
 	metaData, err := s.store.Get(metaKey)
 	isNew := false
 
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, 0, errors.Wrapf(
-				err,
-				errors.ErrStorage,
-				"mvcc.Put",
-				"failed to read metadata",
-			)
-		}
-		// New key - will be created
+	switch {
+	case absent(metaData, err):
+		// New key - will be created.
 		isNew = true
-	} else {
+	case err != nil:
+		return nil, 0, errors.Wrapf(
+			err,
+			errors.ErrStorage,
+			"mvcc.Put",
+			"failed to read metadata",
+		)
+	default:
 		// Existing key - decode metadata
 		decoded, decErr := DecodeMeta(metaData)
 		if decErr != nil {
@@ -418,14 +418,14 @@ func (s *RaftStorage) getWithoutLock(ctx context.Context, key []byte, revision i
 	// Get metadata
 	metaKey := EncodeMetaKey(key)
 	metaData, err := s.store.Get(metaKey)
+	if absent(metaData, err) {
+		return nil, errors.Newf(
+			errors.ErrNotFound,
+			"mvcc.Get",
+			"key not found",
+		)
+	}
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil, errors.Newf(
-				errors.ErrNotFound,
-				"mvcc.Get",
-				"key not found",
-			)
-		}
 		return nil, errors.Wrapf(
 			err,
 			errors.ErrStorage,
@@ -724,18 +724,18 @@ func (s *RaftStorage) PutAtRevision(ctx context.Context, key, value []byte, leas
 	metaData, err := s.store.Get(metaKey)
 	isNew := false
 
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, errors.Wrapf(
-				err,
-				errors.ErrStorage,
-				"mvcc.PutAtRevision",
-				"failed to read metadata",
-			)
-		}
-		// New key - will be created
+	switch {
+	case absent(metaData, err):
+		// New key - will be created.
 		isNew = true
-	} else {
+	case err != nil:
+		return nil, errors.Wrapf(
+			err,
+			errors.ErrStorage,
+			"mvcc.PutAtRevision",
+			"failed to read metadata",
+		)
+	default:
 		// Existing key - decode metadata
 		decoded, decErr := DecodeMeta(metaData)
 		if decErr != nil {

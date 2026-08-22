@@ -597,12 +597,12 @@ func (t *raftTransaction) executePut(batch storage.Batch, key, value []byte, rev
 	metaData, err := t.storage.store.Get(metaKey)
 	isNew := false
 
-	if err != nil {
-		if !errors.IsNotFound(err) {
-			return nil, err
-		}
+	switch {
+	case absent(metaData, err):
 		isNew = true
-	} else {
+	case err != nil:
+		return nil, err
+	default:
 		decoded, decErr := DecodeMeta(metaData)
 		if decErr != nil {
 			return nil, decErr
@@ -644,10 +644,11 @@ func (t *raftTransaction) executePut(batch storage.Batch, key, value []byte, rev
 func (t *raftTransaction) executeDelete(batch storage.Batch, key []byte, rev int64) (*RaftKeyValue, error) {
 	metaKey := EncodeMetaKey(key)
 	metaData, err := t.storage.store.Get(metaKey)
+	if absent(metaData, err) {
+		// Deleting a key that does not exist is a no-op, not an error.
+		return nil, nil
+	}
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 
@@ -657,8 +658,11 @@ func (t *raftTransaction) executeDelete(batch storage.Batch, key []byte, rev int
 	}
 
 	dataKey := EncodeDataKey(key, meta.ModRevision)
+	// The metadata exists, so a missing data key is a torn write rather than
+	// an ordinary absence — but the previous behaviour was to report the
+	// deletion with a nil PrevKV.Value, and that is preserved here.
 	value, err := t.storage.store.Get(dataKey)
-	if err != nil && !errors.IsNotFound(err) {
+	if err != nil && !absent(value, err) {
 		return nil, err
 	}
 

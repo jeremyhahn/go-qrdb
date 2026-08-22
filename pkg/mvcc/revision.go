@@ -52,10 +52,15 @@ func newRevisionManager(store storage.Storage) (*revisionManager, error) {
 	// The IsNotFound arm is retained because it is not redundant: an engine or
 	// decorator MAY report absence as a typed error, and both spellings must
 	// mean "start at revision 1" rather than one of them meaning "corrupt".
+	//
+	// See absent: it tests data == nil rather than len(data) == 0, so a
+	// zero-length revision record that was actually STORED falls through to
+	// DecodeRevision and is reported as the corruption it is, instead of
+	// silently resetting the store to revision 1.
 	data, err := store.Get(RevisionKey())
 	switch {
-	case err != nil && errors.IsNotFound(err):
-		// Absence reported as a typed error.
+	case absent(data, err):
+		// Fresh store: the revision starts at 1 below.
 	case err != nil:
 		return nil, errors.Wrapf(
 			err,
@@ -63,8 +68,6 @@ func newRevisionManager(store storage.Storage) (*revisionManager, error) {
 			"revisionManager.newRevisionManager",
 			"failed to load current revision",
 		)
-	case len(data) == 0:
-		// Absence reported as the documented (nil, nil).
 	default:
 		rev, decErr := DecodeRevision(data)
 		if decErr != nil {
