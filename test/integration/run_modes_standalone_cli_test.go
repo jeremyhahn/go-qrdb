@@ -30,6 +30,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // writeStandaloneModeConfig writes a daemon YAML enabling the passphrase
@@ -133,8 +135,9 @@ func startStandaloneModeNode(t *testing.T, backend string) *multiProtoNode {
 //  1. standard operations serve (kv put/get/exists/delete, database
 //     create/list),
 //  2. the capability profile is truthful (mode standalone; mvcc, watch,
-//     lease, lock, transaction, cluster, backup, rebalance all false; kv,
-//     batch, index true),
+//     lease, lock, cluster, backup, rebalance all false; kv, batch, index
+//     and TRANSACTION true — see the go-qrdb#62 amendment in
+//     docs/run-modes.md),
 //  3. raft-only families are refused with an error naming the remedy.
 func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
 	node := startStandaloneModeNode(t, "pebble")
@@ -199,13 +202,43 @@ func TestStandaloneMode_StandardOpsAndRefusals_PerProtocol(t *testing.T) {
 			}
 			for name, v := range map[string]bool{
 				"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease,
-				"lock": caps.Lock, "transaction": caps.Transaction,
-				"cluster": caps.Cluster, "backup": caps.Backup,
-				"rebalance": caps.Rebalance,
+				"lock": caps.Lock, "cluster": caps.Cluster,
+				"backup": caps.Backup, "rebalance": caps.Rebalance,
 			} {
 				if v {
 					t.Errorf("capabilities %s = true, want false (raft-only)", name)
 				}
+			}
+			// Transactions are served in every mode (owner ruling
+			// 2026-08-23, go-qrdb#62): consensus is what makes a
+			// compare-and-swap linearizable across REPLICAS, and a
+			// standalone node has none. Asserted per protocol because the
+			// capability travels a different encoder on each.
+			if !caps.Transaction {
+				t.Error("capabilities transaction = false; standalone serves " +
+					"compare-and-swap, so the report must say so")
+			}
+
+			// --- 2b. Transactions actually EXECUTE. ---------------------
+			// The capability assertion above says standalone serves CAS;
+			// this proves it over the same transport, because a truthful
+			// capability report and a working primitive are different
+			// claims. The guarded create is run TWICE: the second must
+			// report Succeeded=false rather than overwrite, since "did I
+			// win the claim?" is the only thing a key store asks a CAS.
+			txKey := "sa-tx-" + proto.name
+			if resp := runTxPutIfAbsent(t, node, proto, txKey, "first"); !resp.Succeeded {
+				t.Fatalf("guarded create of an absent key must succeed over %s", proto.name)
+			}
+			if resp := runTxPutIfAbsent(t, node, proto, txKey, "second"); resp.Succeeded {
+				t.Errorf("guarded create of a PRESENT key succeeded over %s", proto.name)
+			}
+			out, err = runCLIProto(t, node, proto, "kv", "get", txKey)
+			if err != nil {
+				t.Fatalf("kv get after tx: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "first") {
+				t.Errorf("the losing writer overwrote the winner over %s: %q", proto.name, out)
 			}
 
 			// --- 3. Raft-only families are refused. ---------------------
@@ -259,4 +292,50 @@ func TestStandaloneMode_BootsPerBackend(t *testing.T) {
 			}
 		})
 	}
+}
+
+// runTxPutIfAbsent drives `qrdb tx execute` with a guarded-create
+// transaction over the given protocol. The request is built from the SDK's
+// own transport types rather than hand-written JSON so the enum values and
+// the base64 key/value encoding come from the same source the daemon
+// decodes with -- a hand-written fixture that disagreed would fail as a
+// transaction bug.
+func runTxPutIfAbsent(t *testing.T, node *multiProtoNode, proto multiProtocol, key, value string) txResult {
+	t.Helper()
+
+	req := transport.TransactionRequest{
+		Compares: []transport.Compare{{
+			Key:            []byte(key),
+			Target:         transport.CompareCreateRevision,
+			Result:         transport.CompareEqual,
+			CreateRevision: 0,
+		}},
+		SuccessOps: []transport.Op{{
+			Type:  transport.OpPut,
+			Key:   []byte(key),
+			Value: []byte(value),
+		}},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal transaction: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "tx.json")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write transaction file: %v", err)
+	}
+
+	out, err := runCLIProto(t, node, proto, "--output", "json", "tx", "execute", "--file", path)
+	if err != nil {
+		t.Fatalf("tx execute over %s: %v\n%s", proto.name, err, out)
+	}
+	jsonStart := strings.Index(out, "{")
+	if jsonStart < 0 {
+		t.Fatalf("tx execute output carries no JSON: %s", out)
+	}
+	var res txResult
+	if err := json.Unmarshal([]byte(out[jsonStart:]), &res); err != nil {
+		t.Fatalf("decode tx result %q: %v", out, err)
+	}
+	return res
 }

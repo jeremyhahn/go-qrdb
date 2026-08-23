@@ -23,6 +23,9 @@ identical to raft mode.
 Serves **standard database operations**:
 
 - KV (get/put/delete/range/scan), batch, secondary indexes
+- **Transactions / compare-and-swap** (`PutIfAbsent`, `CompareAndSwap`,
+  `CompareAndDelete`, and the general transaction API) — see the amendment
+  of 2026-08-23 below
 - Collections and entity CRUD
 - Database management (create/list/delete; engines kv, timeseries, vector)
 - SQL (build-tag gated, `qrdb_sql`)
@@ -31,9 +34,14 @@ Serves **standard database operations**:
   in `pkg/engine/kv_engine.go`)
 
 Plus the **always-on security core** (below). Everything consensus-shaped —
-MVCC revisions, watch, lease, lock, transactions, etcd compatibility,
-cluster operations — is refused with a typed error whose text names the
-remedy: `requires mode: raft`.
+MVCC revisions, watch, lease, lock, etcd compatibility, cluster operations —
+is refused with a typed error whose text names the remedy:
+`requires mode: raft`.
+
+Transactions are **not** in that list, as of the amendment of 2026-08-23.
+Consensus is what makes a compare-and-swap linearizable across *replicas*; a
+standalone node is engine-direct and single-process and has none, so it can
+offer the guarantee outright.
 
 Status: implemented everywhere — the SDK (`node://` /
 `sdk/go/node.NewStandaloneNode`, the flat `embedded://` driver) and the
@@ -112,7 +120,8 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 - `mode: standalone` + explicit `mvcc.enabled`/`watch.enabled`/
   `lease.enabled: true`, `raft.join`, or a multi-member `raft.peers` list →
   validation error: `requires mode: raft (standalone serves standard
-  database operations only)`. Standalone skips the raft identity
+  database operations only)`. Transactions have no such gate: they are a
+  standard database operation in both modes (amendment of 2026-08-23). Standalone skips the raft identity
   requirements (only `raft.data_dir` stays mandatory). Etcd is enabled
   per-database at runtime, so its mode gate lives at service composition.
 - Enabling a wire protocol whose build tag is absent → boot-time error
@@ -123,7 +132,9 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
   families answer 501/Unimplemented with the `requires mode: raft` hint
   on every transport (nil singletons plus the gated per-database service
   registry, `pkg/server/standalone_gate.go`), while the SQL catalog keeps
-  its internal MVCC/transaction plumbing.
+  its internal MVCC plumbing. The transaction family is wired as a singleton
+  and passed through by the gated registry in **both** modes, so the network
+  surface matches what the SDK's in-process transport serves.
 - Refusals at runtime surface through the existing per-transport typed
   errors (REST 501 / gRPC & QUIC Unimplemented) with the
   `requires mode: raft` hint.
@@ -131,6 +142,45 @@ mode: raft   # "standalone" | "raft"; absent = raft (full back-compat)
 ## Behavior change notice
 
 SDK standalone (`NewStandaloneNode`) historically composed MVCC, lease,
-and transaction services over `LocalBackend`. Under this requirement those
-become raft-mode-only everywhere; standalone compositions stop building
-them. Downstream consumers are notified via Gitea issues on their repos.
+and transaction services over `LocalBackend`. Under this requirement MVCC,
+watch and lease become raft-mode-only everywhere; standalone compositions
+stop building them. Downstream consumers are notified via Gitea issues on
+their repos.
+
+## Amendment 2026-08-23 — transactions are served in both modes
+
+**Owner ruling, from [go-qrdb#62](../../issues/62).** The transaction /
+compare-and-swap family is served in **every** run mode. The ruling reverses
+this document's original inclusion of transactions among the raft-only
+families, and settles a conflict between two current normative statements:
+this document made transactions raft-only, while the project's agent spec
+states that *the SDK surface is identical in all three modes*. The agent spec
+governs.
+
+**Why transactions are not like the others.** Consensus makes a
+compare-and-swap linearizable across *replicas*. A standalone node is
+engine-direct and single-process and has no replicas, so the guarantee holds
+without it. MVCC, watch and lease are different in kind — they are about
+observing and coordinating state across replicas over time — and stay
+raft-only.
+
+**What it fixed.** Withholding it left a standalone consumer with no
+compare-and-swap primitive on any surface. `go-xkms` hosts qrdb in-process
+and its CA key store reaches `PutIfAbsent` on the first write of a fresh
+node, so the daemon failed to start on every `storage.backend: qrdb`
+configuration with `embedded: TransactionServicer must not be nil`. Both
+sites now serve it: `sdk/go/node.buildEmbeddedOpts` wires
+`embedded.WithTransactionService` unconditionally, and
+`pkg/server/standalone_gate.go` passes `TransactionService` through.
+
+**One limit, stated because it is a capability boundary rather than a bug.**
+Transactions require the MVCC-capable engine, which `NewLocalEngine`
+composes for the memory and pebble backends. The **file** and **objstore**
+backends compose the plain KV engine, which has no transaction opcode, so a
+transaction there fails with a typed `engine.UnsupportedOperationError`. That
+is the same engine boundary already documented for MVCC-shaped features
+above, not a mode gate.
+
+**Consumer-side fallbacks are not permitted.** A consumer must not
+substitute a process-local lock or any other consistency mechanism when a
+compare-and-swap is unavailable; it fails closed and reports.

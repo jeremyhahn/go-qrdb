@@ -25,14 +25,20 @@ const StandaloneModeHint = "requires mode: raft"
 
 // WithStandaloneMode marks the server as running the raft-free standalone
 // composition. The transports' per-(tenant, db) service registry is
-// wrapped so the raft-only resolutions — MVCC, watch, lease, and the
-// etcd-style transaction API — are refused with a typed error naming the
-// remedy, while the standard-operations surface (KV, batch, index,
-// timeseries, vector, and the SQL catalog services, which consume the
+// wrapped so the raft-only resolutions — MVCC, watch and lease — are
+// refused with a typed error naming the remedy, while the
+// standard-operations surface (KV, batch, index, timeseries, vector, the
+// transaction/CAS family, and the SQL catalog services, which consume the
 // MVCC-capable engine internally) resolves as usual. The caller is
 // responsible for not passing the raft-only singleton services
-// (WithMVCC/WithWatch/WithLease/WithLockService/WithTransaction/
-// WithRebalance/WithBackupService) in this mode.
+// (WithMVCC/WithWatch/WithLease/WithLockService/WithRebalance/
+// WithBackupService) in this mode.
+//
+// Transactions are NOT gated (owner ruling 2026-08-23, go-qrdb#62): a
+// standalone node is engine-direct and single-process, so a
+// compare-and-swap there is already linearizable without consensus.
+// Gating it here while the SDK's in-process transport serves it would put
+// the same contradiction back that #62 found, one seam over.
 func WithStandaloneMode() ServerOption {
 	return func(o *serverOptions) { o.standaloneMode = true }
 }
@@ -74,8 +80,11 @@ func (r *raftOnlyGatedRegistry) LeaseService(tenant, db string) (service.LeaseSe
 	return nil, &rest.ServiceNotImplementedError{Service: "lease", Hint: StandaloneModeHint}
 }
 
+// TransactionService passes through: compare-and-swap is a standard
+// database operation that a single-process engine-direct node serves
+// correctly (owner ruling 2026-08-23, go-qrdb#62).
 func (r *raftOnlyGatedRegistry) TransactionService(tenant, db string) (service.TransactionServicer, error) {
-	return nil, &rest.ServiceNotImplementedError{Service: "transaction", Hint: StandaloneModeHint}
+	return r.inner.TransactionService(tenant, db)
 }
 
 func (r *raftOnlyGatedRegistry) IndexService(tenant, db string) (service.IndexServicer, error) {

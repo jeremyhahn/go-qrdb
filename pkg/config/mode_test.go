@@ -182,13 +182,25 @@ func TestEffectiveCapabilities_StandaloneProfile(t *testing.T) {
 	}
 	for name, v := range map[string]bool{
 		"mvcc": caps.MVCC, "watch": caps.Watch, "lease": caps.Lease,
-		"transaction": caps.Transaction, "lock": caps.Lock,
-		"cluster": caps.Cluster, "backup": caps.Backup,
+		"lock": caps.Lock, "cluster": caps.Cluster, "backup": caps.Backup,
 		"rebalance": caps.Rebalance, "etcd": caps.Etcd,
 	} {
 		if v {
 			t.Errorf("standalone profile: %s = true, want false (raft-only)", name)
 		}
+	}
+	// Transactions moved OUT of the raft-only set (owner ruling 2026-08-23,
+	// go-qrdb#62). Consensus is what makes a compare-and-swap linearizable
+	// across REPLICAS, and a standalone node is engine-direct and
+	// single-process with none, so it serves the guarantee outright.
+	//
+	// Asserted here rather than merely dropped from the loop above: both the
+	// SDK's in-process transport and the daemon's gated registry now serve
+	// transactions in standalone, so a capability report saying otherwise
+	// would be the lie rather than the gate.
+	if !caps.Transaction {
+		t.Error("standalone profile: transaction = false; standalone serves " +
+			"compare-and-swap, so the capability report must say so")
 	}
 }
 

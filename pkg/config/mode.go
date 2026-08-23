@@ -149,16 +149,32 @@ func (c *Config) EffectiveCapabilities() capabilities.Capabilities {
 		Batch: true,
 		Index: true,
 
-		// Raft-only features, further narrowed by config toggles.
-		MVCC:        raft && enabled(c.MVCC.Enabled),
-		Watch:       raft && enabled(c.Watch.Enabled),
-		Lease:       raft && enabled(c.Lease.Enabled),
-		Transaction: raft,
-		Lock:        raft,
-		Cluster:     raft,
-		Backup:      raft,
-		Rebalance:   raft,
-		Etcd:        raft && capabilities.Has("etcd"),
+		// Transactions / compare-and-swap are served in EVERY mode (owner
+		// ruling 2026-08-23, go-qrdb#62): consensus is what makes a
+		// compare-and-swap linearizable across REPLICAS, and a standalone
+		// node is engine-direct and single-process with none. Reporting
+		// false here while both the SDK's in-process transport and the
+		// daemon's gated registry serve it would make the capability report
+		// the lie instead of the gate.
+		//
+		// Like MVCC and the other engine-shaped rows, this is a MODE-level
+		// statement. The file and objstore backends compose the plain KV
+		// engine and cannot execute a transaction on any mode; that is the
+		// engine boundary (docs/run-modes.md), reported per operation as a
+		// typed engine.UnsupportedOperationError, not per node here.
+		Transaction: true,
+
+		// Raft-only features, further narrowed by config toggles. Unlike
+		// CAS these are not single-process-satisfiable: they are about
+		// observing and coordinating state ACROSS replicas over time.
+		MVCC:      raft && enabled(c.MVCC.Enabled),
+		Watch:     raft && enabled(c.Watch.Enabled),
+		Lease:     raft && enabled(c.Lease.Enabled),
+		Lock:      raft,
+		Cluster:   raft,
+		Backup:    raft,
+		Rebalance: raft,
+		Etcd:      raft && capabilities.Has("etcd"),
 
 		// Build-tag-gated features available in both modes.
 		TimeSeries: capabilities.Has("timeSeries"),

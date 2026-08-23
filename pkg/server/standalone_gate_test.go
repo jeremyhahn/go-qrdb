@@ -35,6 +35,15 @@ func (s *stubRegistry) KVService(tenant, db string) (service.KVServicer, error) 
 	return nil, nil
 }
 
+// TransactionService is overridden because the gate now PASSES IT THROUGH
+// (owner ruling 2026-08-23, go-qrdb#62). stubRegistry embeds a nil
+// service.Registry, so a resolution the gate forwards without a method here
+// panics rather than failing an assertion.
+func (s *stubRegistry) TransactionService(tenant, db string) (service.TransactionServicer, error) {
+	s.calls = append(s.calls, "transaction")
+	return nil, nil
+}
+
 func (s *stubRegistry) IndexService(tenant, db string) (service.IndexServicer, error) {
 	s.calls = append(s.calls, "index")
 	return nil, nil
@@ -84,7 +93,6 @@ func TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies(t *testing.T) {
 		{"mvcc", func() error { _, err := gated.MVCCService("t", "db"); return err }},
 		{"watch", func() error { _, err := gated.WatchService("t", "db"); return err }},
 		{"lease", func() error { _, err := gated.LeaseService("t", "db"); return err }},
-		{"transaction", func() error { _, err := gated.TransactionService("t", "db"); return err }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,9 +114,36 @@ func TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies(t *testing.T) {
 	}
 }
 
+// TestRaftOnlyGatedRegistry_PassesThroughTransactions covers the owner ruling
+// of 2026-08-23 on go-qrdb#62, and replaces this family's row in the refusal
+// table above.
+//
+// The transaction/CAS family was refused here with "requires mode: raft". It
+// is a standard database operation that a single-process engine-direct node
+// serves correctly -- consensus is what makes a compare-and-swap linearizable
+// across REPLICAS, and a standalone node has none. Withholding it left a
+// standalone deployment with no compare-and-swap on any surface, which is why
+// go-xkms could not boot.
+//
+// Asserted separately from the pass-through table below because this one is a
+// deliberate reversal: a future change that re-gated it would otherwise only
+// break an entry in a list of eight.
+func TestRaftOnlyGatedRegistry_PassesThroughTransactions(t *testing.T) {
+	inner := &stubRegistry{}
+	gated := &raftOnlyGatedRegistry{inner: inner}
+
+	if _, err := gated.TransactionService("t", "db"); err != nil {
+		t.Fatalf("TransactionService = %v; want nil -- standalone serves CAS", err)
+	}
+	if len(inner.calls) != 1 || inner.calls[0] != "transaction" {
+		t.Fatalf("inner calls = %v; want [transaction] -- the resolution must reach "+
+			"the real registry, not be swallowed", inner.calls)
+	}
+}
+
 // TestRaftOnlyGatedRegistry_PassesThroughStandardAndSQL pins the flip
 // side: standard operations AND the SQL catalog resolutions (which
-// consume MVCC/transaction internally) flow through untouched.
+// consume MVCC internally) flow through untouched.
 func TestRaftOnlyGatedRegistry_PassesThroughStandardAndSQL(t *testing.T) {
 	inner := &stubRegistry{}
 	gated := &raftOnlyGatedRegistry{inner: inner}

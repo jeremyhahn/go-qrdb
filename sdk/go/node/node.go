@@ -1950,13 +1950,21 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 		embedded.WithRAGService(svcNode.RAG),
 		embedded.WithDatabaseService(svcNode.Database),
 	}
-	// Raft-only families are not exposed on the standalone in-process
-	// transport (ratified run-modes split); their embedded clients return
-	// the transport's typed not-configured error.
+	// The transaction/CAS family is served in EVERY mode (owner ruling
+	// 2026-08-23, go-qrdb#62). A standalone node is engine-direct and
+	// single-process, so a compare-and-swap there is already linearizable
+	// without consensus — consensus is what makes it linearizable across
+	// REPLICAS, and a standalone node has none. Withholding it left a
+	// consumer holding node.Client() with no compare-and-swap primitive at
+	// all, which is why go-xkms could not boot: its CA key store reaches
+	// PutIfAbsent on the first write of a fresh node.
+	opts = append(opts, embedded.WithTransactionService(svcNode.Transaction))
+	// MVCC, lease and watch remain raft-only. Unlike CAS these are not
+	// single-process-satisfiable: they are about observing and coordinating
+	// state ACROSS replicas over time.
 	if !standalone {
 		opts = append(opts,
 			embedded.WithMVCCService(svcNode.MVCC),
-			embedded.WithTransactionService(svcNode.Transaction),
 			embedded.WithLeaseService(svcNode.Lease),
 			embedded.WithWatchService(svcNode.Watch),
 		)

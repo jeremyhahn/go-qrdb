@@ -1886,18 +1886,26 @@ func runStart(f *startFlags) error {
 				server.WithDatabaseService(dbSvc),
 				server.WithDatabaseManager(dbManager),
 			}
-			// The raft-only API surface is composed only in raft mode; in
-			// standalone the transports refuse these families with a typed
-			// "requires mode: raft" error (nil singletons + the gated
+			// The transaction/CAS family is served in BOTH modes (owner
+			// ruling 2026-08-23, go-qrdb#62): a standalone node is
+			// engine-direct and single-process, so a compare-and-swap there
+			// is already linearizable without consensus. It is wired as a
+			// singleton here and passed through by the gated per-database
+			// registry, so the network surface matches what the SDK's
+			// in-process transport serves.
+			//
+			// The remaining raft-only API surface is composed only in raft
+			// mode; in standalone the transports refuse those families with a
+			// typed "requires mode: raft" error (nil singletons + the gated
 			// per-database registry, see server.WithStandaloneMode). The
-			// underlying engine still serves MVCC/transaction operations
-			// internally for the SQL catalog and collections.
+			// underlying engine still serves MVCC operations internally for
+			// the SQL catalog and collections.
+			serverOpts = append(serverOpts, server.WithTransaction(txSvc))
 			if standalone {
 				serverOpts = append(serverOpts, server.WithStandaloneMode())
 			} else {
 				serverOpts = append(serverOpts,
 					server.WithHost(host),
-					server.WithTransaction(txSvc),
 					server.WithMVCC(mvccSvc),
 					server.WithLease(leaseSvc),
 					server.WithLockService(lockSvc),
