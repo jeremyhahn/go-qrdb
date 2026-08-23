@@ -501,6 +501,7 @@ func mapRoleError(err error) int {
 	var rnf *role.RoleNotFoundError
 	var rne *role.RoleNameExistsError
 	var rie *role.RoleIDExistsError
+	var rrn *role.ReservedRoleNameError
 	var sri *role.SystemRoleImmutableError
 	var se *role.StoreError
 	var ip *role.InvalidPermissionError
@@ -522,6 +523,14 @@ func mapRoleError(err error) int {
 		return http.StatusBadRequest
 	case errors.As(err, &rnf):
 		return http.StatusNotFound
+	case errors.As(err, &rrn):
+		// A create under a canonical system role name that is not the
+		// canonical role itself. 400, NOT 409: the name is reserved whether or
+		// not anything holds it, so this is a malformed request rather than a
+		// collision — and conflating it with RoleNameExistsError would tell
+		// the caller to pick another name when the real remedy is to stop
+		// trying to mint a built-in.
+		return http.StatusBadRequest
 	case errors.As(err, &rne):
 		return http.StatusConflict
 	case errors.As(err, &rie):

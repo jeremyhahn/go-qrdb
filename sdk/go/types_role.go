@@ -75,6 +75,38 @@ type RoleValidationError = role.ValidationError
 // registry nor a whole-segment wildcard (e.g. "keys:*").
 type RoleInvalidPermissionError = role.InvalidPermissionError
 
+// ReservedRoleNameError is returned when a create would take a system role's
+// name without being the canonical role that name denotes — a wrong id, or a
+// permission set other than the constructor's.
+//
+// Consumers need to tell this apart from RoleNameExistsError: that one means
+// "something already holds this name", while this one refuses the name whether
+// or not anything holds it. A consumer provisioning its own roles gets a
+// different remedy from each — pick another name, versus stop trying to mint a
+// built-in.
+type ReservedRoleNameError = role.ReservedRoleNameError
+
+// SystemRoleImmutableError is returned when an operation would alter a system
+// role: deleting it, renaming it, or replacing its permission set. Op names the
+// refused operation ("deleted", "renamed", "re-permissioned").
+//
+// Consumers could not previously receive this: every seeded built-in was
+// persisted with System: false, so the guards that return it never fired
+// (go-qrdb#17). It is re-exported in the change that makes it reachable,
+// because a consumer that deletes roles now has an outcome to distinguish —
+// "this role is protected" is not the same answer as "this role is missing"
+// or "your write failed", and only the typed error separates them.
+type SystemRoleImmutableError = role.SystemRoleImmutableError
+
+// IsSystemRoleName reports whether a role name is one of the canonical system
+// role names — the six FIPS 140-3 / PCI-DSS roles or Owner.
+//
+// It is the same predicate the role store uses to decide the System flag, so a
+// consumer can tell BEFORE issuing a create, rename, or delete whether the
+// name it is about to use is reserved, instead of discovering it from a
+// refusal. The names are reserved in EVERY tenant, not only the system tenant.
+var IsSystemRoleName = role.IsSystemRoleName
+
 // Canonical built-in role names. These are the role names a token's `roles`
 // claim carries and that the PDP resolves to permissions. Consumers (e.g. the
 // quicbaas broker) reconcile their admin identity against these instead of

@@ -55,14 +55,46 @@ func (e *RoleIDExistsError) Error() string {
 	return "role: id already exists: " + e.ID + " in tenant " + e.TenantID
 }
 
-// SystemRoleImmutableError is returned when trying to delete a system role.
+// SystemRoleImmutableError is returned when an operation would delete or
+// rename a system role. Op names the refused operation in past tense
+// ("deleted", "renamed") and defaults to the general "modified" so a zero
+// value still reads correctly.
 type SystemRoleImmutableError struct {
 	ID string
+	Op string
 }
 
 // Error returns a human-readable description of the immutability constraint.
 func (e *SystemRoleImmutableError) Error() string {
-	return "role: system role cannot be deleted: " + e.ID
+	op := e.Op
+	if op == "" {
+		op = "modified"
+	}
+	return "role: system role cannot be " + op + ": " + e.ID
+}
+
+// ReservedRoleNameError is returned when a create would take a system role's
+// name without being the canonical role that name denotes — a wrong
+// identifier, or a permission set other than the constructor's.
+//
+// It is distinct from RoleNameExistsError: that one reports a collision with a
+// role that is present, while this one refuses a name whether or not anything
+// holds it yet. The distinction is load-bearing, because the case worth
+// refusing is precisely the one where the built-in has NOT been seeded and the
+// name is therefore still free.
+type ReservedRoleNameError struct {
+	Name     string
+	TenantID string
+	Detail   string
+}
+
+// Error returns a human-readable description of the reserved-name refusal.
+func (e *ReservedRoleNameError) Error() string {
+	msg := "role: reserved system role name: " + e.Name + " in tenant " + e.TenantID
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	return msg
 }
 
 // StoreError is returned for store-level operation failures.

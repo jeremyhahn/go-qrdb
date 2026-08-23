@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -89,4 +90,41 @@ func TestSystemRoleIDs_ExposesBothFormsToConsumers(t *testing.T) {
 
 	// A RoleNameResolver is what the SDK asks consumers for.
 	var _ RoleNameResolver = legacyRoleStore{}
+}
+
+// TestIsSystemRoleName_ReExported proves the predicate reaches consumers
+// through the SDK and answers for the alias the SDK itself publishes.
+//
+// The negative case matters as much as the positive: a re-export that always
+// said true would be indistinguishable from one that worked, and consumers use
+// this to decide whether a name they are about to create is reserved.
+func TestIsSystemRoleName_ReExported(t *testing.T) {
+	for _, name := range []string{
+		RoleNameSO, RoleNameAdmin, RoleNameOperator,
+		RoleNameUser, RoleNameAuditor, RoleNameCustodian, RoleNameOwner,
+	} {
+		if !IsSystemRoleName(name) {
+			t.Errorf("IsSystemRoleName(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"", "editor", "viewer", "Owner"} {
+		if IsSystemRoleName(name) {
+			t.Errorf("IsSystemRoleName(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestSystemRoleImmutableError_ReExported checks the alias matches the error
+// the store actually returns, which is the only property a consumer relies on:
+// errors.As against the SDK type must catch the pkg/role value.
+func TestSystemRoleImmutableError_ReExported(t *testing.T) {
+	var err error = &role.SystemRoleImmutableError{ID: "role-id", Op: "deleted"}
+
+	var target *SystemRoleImmutableError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As via the SDK alias did not match the pkg/role error")
+	}
+	if target.ID != "role-id" || target.Op != "deleted" {
+		t.Errorf("fields not carried through the alias: %+v", target)
+	}
 }

@@ -654,6 +654,15 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.AlreadyExists, err.Error())
 	}
 
+	// A create under a canonical system role name that is not the canonical
+	// role itself. InvalidArgument, NOT AlreadyExists: the name is reserved
+	// whether or not anything holds it, so this is a malformed request rather
+	// than a collision.
+	var rrn *role.ReservedRoleNameError
+	if errors.As(err, &rrn) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	var sri *role.SystemRoleImmutableError
 	if errors.As(err, &sri) {
 		return status.Error(codes.FailedPrecondition, err.Error())

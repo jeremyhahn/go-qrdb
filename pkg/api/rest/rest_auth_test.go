@@ -2363,8 +2363,23 @@ func TestMapRoleError_AllTypes(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
+			// 400, deliberately NOT the 409 its sibling above gets: a reserved
+			// name is refused whether or not any role holds it, so it is a
+			// malformed request rather than a collision. Mapping both to 409
+			// would tell the caller to pick another name when the real remedy
+			// is to stop trying to mint a built-in (go-qrdb#17).
+			name:     "ReservedRoleNameError",
+			err:      &role.ReservedRoleNameError{Name: "so", TenantID: "t1", Detail: "wrong id"},
+			wantCode: http.StatusBadRequest,
+		},
+		{
 			name:     "SystemRoleImmutableError",
 			err:      &role.SystemRoleImmutableError{ID: "sys-admin"},
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "SystemRoleImmutableError/re-permissioned",
+			err:      &role.SystemRoleImmutableError{ID: "sys-admin", Op: "re-permissioned"},
 			wantCode: http.StatusForbidden,
 		},
 		{

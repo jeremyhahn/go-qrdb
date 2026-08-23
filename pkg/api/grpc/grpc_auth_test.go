@@ -380,6 +380,17 @@ func TestMapAuthServiceError_UserDisabledError(t *testing.T) {
 	}
 }
 
+// TestMapAuthServiceError_ReservedRoleNameError pins InvalidArgument, not
+// AlreadyExists: a reserved system role name is refused whether or not any role
+// holds it, so it is a malformed request rather than a collision (go-qrdb#17).
+func TestMapAuthServiceError_ReservedRoleNameError(t *testing.T) {
+	err := mapAuthServiceError(&role.ReservedRoleNameError{Name: "so", TenantID: "t1", Detail: "wrong id"})
+	st, _ := status.FromError(err)
+	if st.Code() != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %s", st.Code())
+	}
+}
+
 func TestMapAuthServiceError_SystemUserImmutableError(t *testing.T) {
 	err := mapAuthServiceError(&user.SystemUserImmutableError{ID: 1})
 	st, _ := status.FromError(err)
@@ -421,10 +432,16 @@ func TestMapAuthServiceError_RoleNameExistsError(t *testing.T) {
 }
 
 func TestMapAuthServiceError_SystemRoleImmutableError(t *testing.T) {
-	err := mapAuthServiceError(&role.SystemRoleImmutableError{ID: "r1"})
-	st, _ := status.FromError(err)
-	if st.Code() != codes.FailedPrecondition {
-		t.Fatalf("expected FailedPrecondition, got %s", st.Code())
+	// Every Op the store can produce, plus the zero value. Rename and
+	// re-permission became reachable with go-qrdb#17; before it, only the
+	// delete path could return this error and only in theory, since no seeded
+	// role ever carried System: true.
+	for _, op := range []string{"", "deleted", "renamed", "re-permissioned"} {
+		err := mapAuthServiceError(&role.SystemRoleImmutableError{ID: "r1", Op: op})
+		st, _ := status.FromError(err)
+		if st.Code() != codes.FailedPrecondition {
+			t.Fatalf("op %q: expected FailedPrecondition, got %s", op, st.Code())
+		}
 	}
 }
 

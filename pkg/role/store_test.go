@@ -858,8 +858,15 @@ func TestDeleteRole_SystemRole(t *testing.T) {
 	svc, _ := NewStore(kv)
 	ctx := context.Background()
 
-	// Create a role then mark it as system directly in KV.
-	r := createTestRole(t, svc, "admin", "acme")
+	// Create an ordinary role then mark it as system directly in KV.
+	//
+	// This exercises DeleteRole's guard against a hand-set flag, which is a
+	// weaker statement than it looks: it passed throughout the entire lifetime
+	// of go-qrdb#17 precisely because it sets the flag itself. The real
+	// coverage is TestSeededSystemRoles_CannotBeDeleted, which seeds through
+	// the bootstrap path. The name is non-reserved because a canonical one is
+	// now refused on the ordinary create path.
+	r := createTestRole(t, svc, "manager", "acme")
 
 	// Fetch, modify to system, and re-store.
 	fetched, _ := svc.GetRole(ctx, r.ID)
@@ -944,7 +951,7 @@ func TestListRoles_WithRoles(t *testing.T) {
 
 	createTestRole(t, svc, "editor", "acme")
 	createTestRole(t, svc, "viewer", "acme")
-	createTestRole(t, svc, "admin", "acme")
+	createTestRole(t, svc, "manager", "acme")
 
 	resp, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: "acme"})
 	if err != nil {
@@ -967,7 +974,7 @@ func TestListRoles_ByTenant(t *testing.T) {
 
 	createTestRole(t, svc, "editor", "acme")
 	createTestRole(t, svc, "viewer", "acme")
-	createTestRole(t, svc, "admin", "globex")
+	createTestRole(t, svc, "manager", "globex")
 
 	respAcme, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: "acme"})
 	if err != nil {
@@ -992,7 +999,7 @@ func TestListRoles_Pagination(t *testing.T) {
 
 	createTestRole(t, svc, "editor", "acme")
 	createTestRole(t, svc, "viewer", "acme")
-	createTestRole(t, svc, "admin", "acme")
+	createTestRole(t, svc, "manager", "acme")
 
 	// Page 1: size 2
 	resp1, err := svc.ListRoles(ctx, &ListRolesRequest{
@@ -2767,10 +2774,13 @@ func TestCreateRole_PreAssignedID(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 
-	const wantID = "deterministic-admin-id"
+	// A non-reserved name: this test is about honouring a caller-supplied id,
+	// and a canonical system role name now requires the canonical id, which
+	// would make "the id I asked for" untestable here.
+	const wantID = "deterministic-manager-id"
 	r, err := svc.CreateRole(ctx, &CreateRoleRequest{
 		ID:          wantID,
-		Name:        "admin",
+		Name:        "manager",
 		TenantID:    "acme",
 		Permissions: []permission.Permission{permission.KVPut},
 	})
@@ -2789,8 +2799,8 @@ func TestCreateRole_PreAssignedID(t *testing.T) {
 	if got.ID != wantID {
 		t.Errorf("GetRole ID: got %q, want %q", got.ID, wantID)
 	}
-	if got.Name != "admin" {
-		t.Errorf("GetRole Name: got %q, want %q", got.Name, "admin")
+	if got.Name != "manager" {
+		t.Errorf("GetRole Name: got %q, want %q", got.Name, "manager")
 	}
 }
 

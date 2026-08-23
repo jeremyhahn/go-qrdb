@@ -38,18 +38,49 @@ import (
 // ScopeCross) is exercised through the wired authorizer.
 func seedAdminRole(t *testing.T, roleSvc role.RoleServicer, tenantID string) string {
 	t.Helper()
+	// Seeded with the CANONICAL Admin grant set, not a hand-picked pair.
+	// A system role name may only be created as the role it denotes
+	// (go-qrdb#17), and the canonical set contains both permissions this test
+	// needs — tenants:read (self-scope) and tenants:list:cross (cross-scope) —
+	// so the scope rule is still exercised, now through the real Admin role
+	// rather than a stand-in wearing its name.
 	id := role.SystemRoleID(tenantID, role.RoleNameAdmin)
+	var adminPerms []permission.Permission
+	for _, r := range role.BuiltInRoles(tenantID) {
+		if r.Name == role.RoleNameAdmin {
+			adminPerms = r.Permissions
+			break
+		}
+	}
+	require.NotEmpty(t, adminPerms, "canonical Admin permissions must resolve")
 	_, err := roleSvc.CreateRole(context.Background(), &role.CreateRoleRequest{
-		ID:       id,
-		Name:     role.RoleNameAdmin,
-		TenantID: tenantID,
-		Permissions: []permission.Permission{
-			permission.TenantsRead,
-			permission.TenantsListCross,
-		},
+		ID:          id,
+		Name:        role.RoleNameAdmin,
+		TenantID:    tenantID,
+		Permissions: adminPerms,
 	})
 	require.NoError(t, err)
 	return id
+}
+
+// seedNarrowRole creates an ordinary (non-system) role holding exactly the
+// permissions given, and returns its id.
+//
+// A deny test must not seed the canonical Admin role: Admin's grant set is
+// broad — it includes keys:delete among 110 permissions — so "the action is
+// not in the role" would be a claim about a list this test does not control
+// and did not check. A role whose entire grant set is written here cannot
+// drift out from under the assertion.
+func seedNarrowRole(t *testing.T, roleSvc role.RoleServicer, tenantID, name string, perms ...permission.Permission) string {
+	t.Helper()
+	r, err := roleSvc.CreateRole(context.Background(), &role.CreateRoleRequest{
+		Name:        name,
+		TenantID:    tenantID,
+		Permissions: perms,
+	})
+	require.NoError(t, err)
+	require.False(t, r.System, "a deny fixture must not be a system role")
+	return r.ID
 }
 
 // TestEmbeddedNode_RBACAuthorize_Works is the regression guard for the gating
@@ -95,16 +126,17 @@ func TestEmbeddedNode_RBACAuthorize_DeniesUnpermitted(t *testing.T) {
 	n := newMemoryNodeWithUser(t)
 	svcNode := n.Services()
 
-	adminRoleID := seedAdminRole(t, svcNode.Role, tenant.SystemTenantID)
+	roleID := seedNarrowRole(t, svcNode.Role, tenant.SystemTenantID, "reader",
+		permission.TenantsRead)
 	rbacClient := n.Client().RBAC()
 
 	id := &transport.Identity{
 		Subject:  "admin",
 		TenantID: tenant.SystemTenantID,
-		Roles:    []string{adminRoleID},
+		Roles:    []string{roleID},
 	}
 
-	// keys:delete is NOT in the seeded Admin permission set, so the request
+	// The seeded role holds tenants:read and nothing else, so keys:delete
 	// must be denied at the permission-resolution layer.
 	selfCtx := tenant.WithTenantID(ctx, tenant.SystemTenantID)
 	err := rbacClient.Authorize(selfCtx, id, "keys", "delete")

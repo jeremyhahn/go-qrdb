@@ -262,7 +262,10 @@ func TestRoutingRoleService_TwoBarrierTenantsIsolated(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ra, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "admin", TenantID: "a"})
+	// A non-reserved name: this test is about cross-tenant routing, and a
+	// canonical system role name would now be refused unless created with its
+	// canonical id and permission set.
+	ra, err := svc.CreateRole(ctx, &CreateRoleRequest{Name: "manager", TenantID: "a"})
 	if err != nil {
 		t.Fatalf("CreateRole(a): %v", err)
 	}

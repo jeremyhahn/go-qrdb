@@ -21,6 +21,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -120,6 +121,16 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 		return nil, err
 	}
 
+	// A reserved name may be taken only by the canonical role it denotes.
+	// Checked before any write, and before the name-uniqueness lookup, so a
+	// malformed built-in is refused on its own terms rather than by whichever
+	// conflict it happens to hit first.
+	if IsSystemRoleName(req.Name) {
+		if err := requireCanonicalSystemRole(tenantID, req); err != nil {
+			return nil, err
+		}
+	}
+
 	// Check name uniqueness via the secondary index.
 	nameKey := nameIndexKey(tenantID, req.Name)
 	existing, err := s.store.Get(ctx, nameKey)
@@ -140,9 +151,16 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 		Name:        req.Name,
 		TenantID:    tenantID,
 		Permissions: req.Permissions,
-		System:      false,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		// DERIVED, never supplied. The bootstrap seeding path reaches this
+		// function through CreateRoleRequest, which has no System field, so
+		// every built-in role used to be persisted with System: false and the
+		// immutability guards in DeleteRole and UpdateRole never fired for a
+		// single one of them (go-qrdb#17). Deriving it here is what makes the
+		// flag true of the record on disk rather than only of the in-memory
+		// value BuiltInRoles returns.
+		System:    IsSystemRoleName(req.Name),
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if r.Permissions == nil {
 		r.Permissions = []permission.Permission{}
@@ -288,7 +306,14 @@ func (s *kvRoleStore) GetRoleByName(ctx context.Context, tenantID, name string) 
 // UpdateRole applies partial updates to an existing role. An empty
 // Name means no change; nil Permissions means no change. If the name
 // changes, uniqueness is re-validated and the secondary index is
-// updated atomically. System roles cannot have their names changed.
+// updated atomically.
+//
+// A system role is immutable in both its name and its grants: it cannot be
+// renamed, no role can be renamed into its name, and its permission set cannot
+// be replaced. That is the contract docs/firstboot/user.md states to operators
+// — "they are undeletable and their permissions are fixed. Create additional
+// roles instead" — and docs/firstboot/architecture.md repeats as a non-goal.
+// Only ordinary roles are updatable.
 func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*Role, error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
@@ -303,6 +328,54 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	}
 
 	nameChanged := req.Name != "" && req.Name != existing.Name
+
+	// The two halves of ONE invariant: the name a role carries and the System
+	// flag stored on it must never disagree, because IsSystemRoleName is what
+	// CreateRole derives the flag from. Renaming is the only operation that
+	// can pull them apart, so it is guarded from both directions.
+	//
+	// Renaming a system role AWAY from its canonical name would strand a
+	// record with System: true under a name nothing recognises, and would
+	// silently break the RBAC authorizer's name-resolved controls — the SO
+	// deny-list (FIPS 140-3 AS10.03) and the strict-separation-of-duties Owner
+	// strip both reach the role through its name. UpdateRole's doc comment has
+	// claimed this guard exists since the package was written; until
+	// go-qrdb#17 it did not.
+	if nameChanged && existing.System {
+		return nil, &SystemRoleImmutableError{ID: existing.ID, Op: "renamed"}
+	}
+
+	// Renaming an ordinary role INTO a canonical name is the same divergence
+	// from the other side: the record would carry a reserved name while its
+	// stored System flag stayed false, so DeleteRole would happily remove the
+	// role the authorizer had begun resolving by that name. Name uniqueness
+	// blocks this whenever the built-in already exists, which is exactly why
+	// it must be refused explicitly for the tenants where it does not.
+	if nameChanged && IsSystemRoleName(req.Name) {
+		return nil, &ValidationError{
+			Field:  "name",
+			Reason: "system role names are reserved and cannot be taken by renaming: " + req.Name,
+		}
+	}
+
+	// A system role's GRANTS are fixed too, not just its identity.
+	//
+	// docs/firstboot/user.md states it to operators as a contract — "You want
+	// to change the built-in roles. You cannot — they are undeletable and
+	// their permissions are fixed. Create additional roles instead" — and
+	// docs/firstboot/architecture.md repeats it as a deliberate non-goal. The
+	// code never enforced either half.
+	//
+	// It matters more than the name guard: rewriting the custodian role's
+	// single barrier:unseal-share grant, or widening Auditor past read-only,
+	// changes the compliance posture (FIPS 140-3 AS10.03/AS10.06/AS10.10)
+	// while the record still presents as a canonical system role to anything
+	// that inspects it. Nothing in the tree ever performs such an update —
+	// there is no built-in permission reconcile path on boot — so this
+	// refusal costs no existing caller.
+	if existing.System && req.Permissions != nil {
+		return nil, &SystemRoleImmutableError{ID: existing.ID, Op: "re-permissioned"}
+	}
 
 	if nameChanged {
 		// Check that the new name is not already taken.
@@ -369,7 +442,7 @@ func (s *kvRoleStore) DeleteRole(ctx context.Context, id string) error {
 		return err
 	}
 	if existing.System {
-		return &SystemRoleImmutableError{ID: id}
+		return &SystemRoleImmutableError{ID: id, Op: "deleted"}
 	}
 
 	// ORDER IS LOAD-BEARING. The primary record is removed LAST of the
@@ -600,6 +673,149 @@ func BuiltInRoles(tenantID string) []*Role {
 			UpdatedAt:   now,
 		},
 	}
+}
+
+// systemRoleNames is the set of role names that denote a system role.
+//
+// DERIVED from BuiltInRoles and OwnerRole rather than written out a second
+// time: a role added to either constructor becomes immutable without an edit
+// here, so the two statements of "which roles are built in" cannot drift
+// apart. A hand-maintained duplicate list is the shape that produced this
+// defect in the first place.
+//
+// Built lazily rather than in a package initializer. BuiltInRoles resolves its
+// permissions through the global permission registry, and an initializer would
+// bind this set to whatever that registry happened to hold at package-init
+// time — an ordering dependency this predicate does not need, since it reads
+// only the names.
+var systemRoleNames = sync.OnceValue(func() map[string]struct{} {
+	builtIn := BuiltInRoles(tenant.SystemTenantID)
+	names := make(map[string]struct{}, len(builtIn)+1)
+	for _, r := range builtIn {
+		names[r.Name] = struct{}{}
+	}
+	names[OwnerRole(tenant.SystemTenantID).Name] = struct{}{}
+	return names
+})
+
+// IsSystemRoleName reports whether name denotes a system role — one of the six
+// canonical FIPS 140-3 / PCI-DSS roles or Owner.
+//
+// This is the sole authority for the Role.System flag: CreateRole DERIVES the
+// flag from the name it is given and CreateRoleRequest carries no System field
+// at all. That is deliberate and is the security property, not an omission. An
+// API-settable System flag would let any caller holding roles:create mint a
+// role nothing can ever delete — a privilege-escalation surface offered in
+// exchange for nothing, since the only roles that need the flag are the ones
+// this package constructs itself.
+//
+// Immutability is keyed on the NAME, in every tenant, and deliberately NOT on
+// the identifier. Two reasons:
+//
+//   - A cluster seeded before the move off UUIDv5 holds its system roles under
+//     legacy identifiers (see SystemRoleID). Keying on the identifier would
+//     leave exactly those roles mutable — the oldest deployments, the ones
+//     with the most to lose.
+//   - Role names are unique within a tenant, so "the role named admin in
+//     tenant T" is a stable designation while an identifier is not.
+//
+// The consequence is that the canonical names are RESERVED in every tenant: a
+// caller who creates a role named "admin" gets an immutable one, holding
+// whatever permissions they asked for. That is the intended reading — the
+// names carry meaning to the RBAC authorizer, which resolves the SO deny-list
+// and the strict-separation-of-duties Owner strip through them.
+func IsSystemRoleName(name string) bool {
+	_, ok := systemRoleNames()[name]
+	return ok
+}
+
+// canonicalSystemRole returns the role a system name MUST denote in the given
+// tenant — the constructor-defined record, with its deterministic id and its
+// fixed permission set — or nil when the name is not a system role name.
+func canonicalSystemRole(tenantID, name string) *Role {
+	for _, r := range BuiltInRoles(tenantID) {
+		if r.Name == name {
+			return r
+		}
+	}
+	if owner := OwnerRole(tenantID); owner.Name == name {
+		return owner
+	}
+	return nil
+}
+
+// requireCanonicalSystemRole refuses any create under a reserved name that is
+// not the canonical role that name denotes.
+//
+// Deriving System from the name alone is not enough on its own. A caller
+// holding roles:create could otherwise persist a role named "so" with a random
+// id and one unrelated permission, and the derivation would make that record
+// UNDELETABLE — squatting the unique name that bootstrap needs and that the
+// RBAC authorizer resolves through, with no way to remove it. The immutability
+// added for go-qrdb#17 would have handed an attacker a better weapon than the
+// mutable roles it fixed, which is the blast-radius trap: a fix that opens a
+// worse failure mode than the defect.
+//
+// Both halves of the identity are checked because docs/firstboot/architecture.md
+// makes both normative: each built-in "gets a fixed UUIDv8 (SHA-256) derived
+// from its name, so role identity is stable across clusters", and "the six
+// built-in roles are fixed". Requiring the id alone would still admit a
+// canonical-id role carrying arbitrary grants.
+//
+// Nothing is lost by being strict: both seeding paths — pkg/bootstrap's
+// seedTenantRoles and pkg/firstboot — already pass exactly the constructor's
+// id and permissions, so the only create this refuses is one that would have
+// produced a malformed built-in. A caller who reconstructs the canonical role
+// exactly is admitted, because that create is indistinguishable from seeding.
+func requireCanonicalSystemRole(tenantID string, req *CreateRoleRequest) error {
+	canonical := canonicalSystemRole(tenantID, req.Name)
+	if canonical == nil {
+		// Unreachable while systemRoleNames is derived from the same two
+		// constructors; refuse rather than fall through to a permissive path
+		// if that ever stops being true.
+		return &ReservedRoleNameError{
+			Name:     req.Name,
+			TenantID: tenantID,
+			Detail:   "reserved name denotes no canonical role",
+		}
+	}
+	if req.ID != canonical.ID {
+		return &ReservedRoleNameError{
+			Name:     req.Name,
+			TenantID: tenantID,
+			Detail:   "a system role must be created with its canonical deterministic id",
+		}
+	}
+	if !permissionSetsEqual(req.Permissions, canonical.Permissions) {
+		return &ReservedRoleNameError{
+			Name:     req.Name,
+			TenantID: tenantID,
+			Detail:   "a system role must be created with exactly its canonical permission set",
+		}
+	}
+	return nil
+}
+
+// permissionSetsEqual compares two permission lists as SETS: order carries no
+// meaning in a grant, and a repeated permission grants nothing extra.
+func permissionSetsEqual(a, b []permission.Permission) bool {
+	as := make(map[permission.Permission]struct{}, len(a))
+	for _, p := range a {
+		as[p] = struct{}{}
+	}
+	bs := make(map[permission.Permission]struct{}, len(b))
+	for _, p := range b {
+		bs[p] = struct{}{}
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for p := range as {
+		if _, ok := bs[p]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // OwnerRole returns the standard-posture Owner role for the given tenant.

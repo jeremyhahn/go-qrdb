@@ -71,10 +71,37 @@ func TestRoleNameExistsError_As(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSystemRoleImmutableError_Message(t *testing.T) {
-	err := &SystemRoleImmutableError{ID: "admin-role-id"}
-	want := "role: system role cannot be deleted: admin-role-id"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
+	tests := []struct {
+		name string
+		err  *SystemRoleImmutableError
+		want string
+	}{
+		{
+			name: "delete",
+			err:  &SystemRoleImmutableError{ID: "admin-role-id", Op: "deleted"},
+			want: "role: system role cannot be deleted: admin-role-id",
+		},
+		{
+			name: "rename",
+			err:  &SystemRoleImmutableError{ID: "admin-role-id", Op: "renamed"},
+			want: "role: system role cannot be renamed: admin-role-id",
+		},
+		{
+			// A zero Op must still read as a sentence rather than losing the
+			// verb: the type is constructed in two places today and a third
+			// that forgets Op should degrade, not produce "cannot be : id".
+			name: "unset op falls back",
+			err:  &SystemRoleImmutableError{ID: "admin-role-id"},
+			want: "role: system role cannot be modified: admin-role-id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Fatalf("Error(): got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
