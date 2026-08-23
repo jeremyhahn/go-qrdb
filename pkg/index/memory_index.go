@@ -17,6 +17,7 @@ package index
 import (
 	"bytes"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -27,17 +28,55 @@ type MemoryIndex struct {
 	mu     sync.RWMutex
 	name   string
 	unique bool
-	data   map[string][][]byte
+	// caseInsensitive folds string field values before they are used as map
+	// keys, on write, lookup, delete and scan bounds alike. Folding on only
+	// some of those paths is worse than not folding at all: a lookup would
+	// answer empty with a nil error over an index holding the match.
+	caseInsensitive bool
+	data            map[string][][]byte
 }
 
-// NewMemoryIndex creates a new in-memory index with the given name.
-// When unique is true, each field value may map to at most one entity key.
+// NewMemoryIndex creates a new case-sensitive in-memory index with the given
+// name. When unique is true, each field value may map to at most one entity
+// key.
 func NewMemoryIndex(name string, unique bool) *MemoryIndex {
+	return NewMemoryIndexWithConfig(name, IndexConfig{Unique: unique, CaseSensitive: true})
+}
+
+// NewMemoryIndexWithConfig creates a new in-memory index configured by config.
+// Only Unique and CaseSensitive are meaningful here; a MemoryIndex holds raw
+// string terms and has no numeric encoding.
+//
+// Note config.CaseSensitive is named for the DEFAULT, so its zero value folds
+// case. Callers that mean "the ordinary index" must set it to true, which is
+// what NewMemoryIndex does.
+func NewMemoryIndexWithConfig(name string, config IndexConfig) *MemoryIndex {
 	return &MemoryIndex{
-		name:   name,
-		unique: unique,
-		data:   make(map[string][][]byte),
+		name:            name,
+		unique:          config.Unique,
+		caseInsensitive: !config.CaseSensitive,
+		data:            make(map[string][][]byte),
 	}
+}
+
+// foldKey renders a raw field value as the map key this index stores it
+// under, folding case when the index is case-insensitive.
+func (m *MemoryIndex) foldKey(fieldValue []byte) string {
+	if m.caseInsensitive {
+		return strings.ToLower(string(fieldValue))
+	}
+	return string(fieldValue)
+}
+
+// foldBound renders a Scan boundary the same way foldKey renders a stored
+// term, so a bound and the terms it is compared against live in the same
+// domain. Without this an upper bound of "M" would exclude every folded term
+// on a case-insensitive index, since 'm' > 'M' in byte order.
+func (m *MemoryIndex) foldBound(bound []byte) []byte {
+	if bound == nil || !m.caseInsensitive {
+		return bound
+	}
+	return []byte(strings.ToLower(string(bound)))
 }
 
 // Name returns the index name.
@@ -66,7 +105,7 @@ func (m *MemoryIndex) Put(entityKey []byte, fieldValue []byte) error {
 		return &ClosedError{Name: m.name}
 	}
 
-	key := string(fieldValue)
+	key := m.foldKey(fieldValue)
 	keys := m.data[key]
 
 	// Check unique constraint.
@@ -108,7 +147,7 @@ func (m *MemoryIndex) Get(fieldValue []byte) ([][]byte, error) {
 		return nil, &ClosedError{Name: m.name}
 	}
 
-	keys := m.data[string(fieldValue)]
+	keys := m.data[m.foldKey(fieldValue)]
 	if len(keys) == 0 {
 		return [][]byte{}, nil
 	}
@@ -136,7 +175,7 @@ func (m *MemoryIndex) Delete(entityKey []byte, fieldValue []byte) error {
 		return &ClosedError{Name: m.name}
 	}
 
-	key := string(fieldValue)
+	key := m.foldKey(fieldValue)
 	keys := m.data[key]
 
 	for i, k := range keys {
@@ -176,13 +215,16 @@ func (m *MemoryIndex) Scan(start, end []byte) (map[string][][]byte, error) {
 	}
 	sort.Strings(fieldKeys)
 
+	lower := m.foldBound(start)
+	upper := m.foldBound(end)
+
 	result := make(map[string][][]byte)
 	for _, k := range fieldKeys {
 		keyBytes := []byte(k)
-		if start != nil && bytes.Compare(keyBytes, start) < 0 {
+		if lower != nil && bytes.Compare(keyBytes, lower) < 0 {
 			continue
 		}
-		if end != nil && bytes.Compare(keyBytes, end) >= 0 {
+		if upper != nil && bytes.Compare(keyBytes, upper) >= 0 {
 			continue
 		}
 

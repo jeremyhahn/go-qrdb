@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -51,7 +52,13 @@ type PebbleIndex struct {
 	name      string
 	unique    bool
 	valueType IndexValueType
-	closed    atomic.Bool
+	// caseInsensitive folds string field values inside encodeValue and
+	// resolveScanBound, so writes, lookups, deletes and scan bounds all live
+	// in the same folded domain. Folding on only some of those paths is worse
+	// than not folding at all: a lookup would answer empty with a nil error
+	// over an index holding the match.
+	caseInsensitive bool
+	closed          atomic.Bool
 }
 
 // NewPebbleIndex creates a new PebbleDB-backed index with the given name.
@@ -62,6 +69,23 @@ type PebbleIndex struct {
 // fixed-width 8-byte big-endian integers with a sign-bit flip so that
 // byte ordering matches numeric ordering.
 func NewPebbleIndex(db *pebble.DB, name string, unique bool, valueType IndexValueType) (*PebbleIndex, error) {
+	return NewPebbleIndexWithConfig(db, name, IndexConfig{
+		Unique:        unique,
+		ValueType:     valueType,
+		CaseSensitive: true,
+	})
+}
+
+// NewPebbleIndexWithConfig creates a new PebbleDB-backed index configured by
+// config. Unique, ValueType and CaseSensitive are the meaningful fields.
+//
+// Note config.CaseSensitive is named for the DEFAULT, so its zero value folds
+// case. Callers that mean "the ordinary index" must set it to true, which is
+// what NewPebbleIndex does.
+//
+// CaseSensitive is ignored for a numeric index: its values are parsed as
+// numbers and encoded to a fixed-width form in which case has no meaning.
+func NewPebbleIndexWithConfig(db *pebble.DB, name string, config IndexConfig) (*PebbleIndex, error) {
 	if db == nil {
 		return nil, &NilDBError{}
 	}
@@ -69,10 +93,11 @@ func NewPebbleIndex(db *pebble.DB, name string, unique bool, valueType IndexValu
 		return nil, &EmptyNameError{}
 	}
 	return &PebbleIndex{
-		db:        db,
-		name:      name,
-		unique:    unique,
-		valueType: valueType,
+		db:              db,
+		name:            name,
+		unique:          config.Unique,
+		valueType:       config.ValueType,
+		caseInsensitive: !config.CaseSensitive && config.ValueType != IndexValueTypeNumeric,
 	}, nil
 }
 
@@ -82,6 +107,9 @@ func NewPebbleIndex(db *pebble.DB, name string, unique bool, valueType IndexValu
 // callers must skip the index entry in that case.
 func (p *PebbleIndex) encodeValue(raw []byte) ([]byte, bool) {
 	if p.valueType != IndexValueTypeNumeric {
+		if p.caseInsensitive {
+			return []byte(strings.ToLower(string(raw))), true
+		}
 		return raw, true
 	}
 	encoded, err := EncodeNumericValue(string(raw))
@@ -92,8 +120,11 @@ func (p *PebbleIndex) encodeValue(raw []byte) ([]byte, bool) {
 }
 
 // resolveScanBound encodes a Scan boundary value produced by the query
-// planner. For string indexes (including case-insensitive ones, which are
-// normalized upstream) the raw bytes are used unchanged: this also covers
+// planner. For a case-insensitive string index the bound is folded the same
+// way encodeValue folds a stored term, so the two are compared in one domain;
+// without that an upper bound of "M" would exclude every folded term, since
+// 'm' > 'M' in byte order. For other string indexes the raw bytes are used
+// unchanged: this also covers
 // the exclusivity marker convention used by pkg/sql/provider/range_translator.go,
 // where a trailing 0x00 byte is appended to a bound to advance it past the
 // exact value it was derived from — lexicographic byte comparison already
@@ -114,6 +145,9 @@ func (p *PebbleIndex) encodeValue(raw []byte) ([]byte, bool) {
 // to an empty result: a malformed bound is a caller error, not "no matches".
 func (p *PebbleIndex) resolveScanBound(raw []byte, op string) ([]byte, error) {
 	if p.valueType != IndexValueTypeNumeric {
+		if p.caseInsensitive {
+			return []byte(strings.ToLower(string(raw))), nil
+		}
 		return raw, nil
 	}
 	return resolveNumericScanBound(raw, p.name, op)

@@ -14,11 +14,29 @@
 
 package transport
 
-// IndexConfig configures a secondary index at creation time.
+// IndexConfig configures a secondary index at creation time. The zero value
+// describes the server's default index: non-unique, non-sparse,
+// string-ordered and case-SENSITIVE.
 type IndexConfig struct {
-	Unique  bool `json:"unique"`
-	Sparse  bool `json:"sparse"`
+	// Unique enforces a one-to-one mapping between indexed values and keys.
+	Unique bool `json:"unique"`
+
+	// Sparse skips keys where the indexed field is absent.
+	Sparse bool `json:"sparse"`
+
+	// Numeric encodes field values as fixed-width 8-byte big-endian integers
+	// so byte ordering matches numeric ordering.
 	Numeric bool `json:"numeric"`
+
+	// CaseInsensitive folds string field values on write, backfill and lookup,
+	// so "Alpha" and "alpha" are the same term.
+	//
+	// Named for the non-default so the zero value is the default and so the
+	// field agrees with the wire encoding underneath it: both mark the
+	// POSITIVE claim, and an absent value therefore means case-sensitive --
+	// what every request written before this field existed meant
+	// (go-qrdb#34).
+	CaseInsensitive bool `json:"case_insensitive"`
 }
 
 // IndexQueryResponse is the response from an index query operation.

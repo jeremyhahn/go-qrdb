@@ -53,20 +53,16 @@ type mockIndexManager struct {
 type mockCreateCall struct {
 	name      string
 	fieldName string
-	unique    bool
-	sparse    bool
-	numeric   bool
+	opts      protocol.IndexCreateOptions
 }
 
-func (m *mockIndexManager) CreateIndex(name, fieldName string, unique, sparse, numeric bool) error {
+func (m *mockIndexManager) CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalls = append(m.createCalls, mockCreateCall{
 		name:      name,
 		fieldName: fieldName,
-		unique:    unique,
-		sparse:    sparse,
-		numeric:   numeric,
+		opts:      opts,
 	})
 	return m.createErr
 }
@@ -161,10 +157,10 @@ func TestIndexCreate_Success(t *testing.T) {
 	if calls[0].fieldName != "email" {
 		t.Fatalf("expected field name 'email', got %q", calls[0].fieldName)
 	}
-	if !calls[0].unique {
+	if !calls[0].opts.Unique {
 		t.Fatal("expected unique=true")
 	}
-	if calls[0].sparse {
+	if calls[0].opts.Sparse {
 		t.Fatal("expected sparse=false")
 	}
 }
@@ -185,10 +181,10 @@ func TestIndexCreate_WithSparse(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 CreateIndex call, got %d", len(calls))
 	}
-	if calls[0].unique {
+	if calls[0].opts.Unique {
 		t.Fatal("expected unique=false")
 	}
-	if !calls[0].sparse {
+	if !calls[0].opts.Sparse {
 		t.Fatal("expected sparse=true")
 	}
 }
@@ -566,7 +562,7 @@ func TestIndexCreateDrop_RoundTrip(t *testing.T) {
 	if creates[0].name != "product_sku" || creates[0].fieldName != "sku" {
 		t.Fatalf("unexpected create params: %+v", creates[0])
 	}
-	if !creates[0].unique || !creates[0].sparse {
+	if !creates[0].opts.Unique || !creates[0].opts.Sparse {
 		t.Fatal("expected unique=true, sparse=true")
 	}
 

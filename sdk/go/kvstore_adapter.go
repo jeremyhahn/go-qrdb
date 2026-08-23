@@ -141,22 +141,20 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		if ei.IsCompound() {
 			return kvstore.ErrIndexUnsupported
 		}
-		// transport.IndexConfig carries Unique, Sparse and Numeric and no
-		// case-sensitivity flag, so a case-INSENSITIVE definition would be
-		// created case-sensitive on the server while this adapter reported
-		// success — and a lookup for "Alpha" over a stored "alpha" would come
-		// back empty with a nil error. Refuse instead; the DAO then plans a
-		// correct full scan. Tracked as #34.
+		// A case-INSENSITIVE definition used to be refused here:
+		// transport.IndexConfig carried no case-sensitivity flag, so the
+		// server created the index case-sensitive while this adapter reported
+		// success -- a lookup for "Alpha" over a stored "alpha" coming back
+		// empty with a nil error. #34 added the flag to transport.IndexConfig
+		// and to every protocol underneath it, so the refusal is gone.
 		//
-		// This only fires for an explicit `index:"case_insensitive"` tag —
-		// index.ParseIndexTags defaults CaseSensitive to true, so ordinary
-		// `index:"true"` and `index:"unique"` fields keep their real index.
-		if !ei.CaseSensitive {
-			return kvstore.ErrIndexUnsupported
-		}
+		// The polarity is inverted here on purpose: transport.IndexConfig
+		// marks the POSITIVE claim (CaseInsensitive) while kvstore.EntityIndex
+		// names the default (CaseSensitive).
 		cfg := transport.IndexConfig{
-			Unique: ei.Unique,
-			Sparse: ei.Sparse,
+			Unique:          ei.Unique,
+			Sparse:          ei.Sparse,
+			CaseInsensitive: !ei.CaseSensitive,
 		}
 		if err := a.index.IndexCreate(ctx, ei.ResolvedName(entityType), ei.JSONFieldName, cfg); err != nil {
 			return err

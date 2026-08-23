@@ -16,7 +16,10 @@
 // backed by persistent storage for use as a Raft state machine.
 package statemachine
 
-import "github.com/jeremyhahn/go-qrdb/pkg/lock"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+)
 
 // WatchManager receives notifications about key changes.
 type WatchManager interface {
@@ -66,12 +69,16 @@ type LeaseManager interface {
 // consensus, and read-only queries (Query, Scan, List) during Lookup.
 type IndexManager interface {
 	// CreateIndex registers a new secondary index with the given name and
-	// field configuration. If unique is true, the index enforces a
-	// one-to-one mapping between indexed values and keys. If sparse is
-	// true, keys where the indexed field is absent are skipped. If numeric
-	// is true, field values are encoded as fixed-width 8-byte big-endian
-	// integers so that byte ordering matches numeric ordering.
-	CreateIndex(name, fieldName string, unique, sparse, numeric bool) error
+	// field configuration. opts carries the index properties exactly as the
+	// OpIndexCreate command encoded them — uniqueness, sparseness, numeric
+	// ordering and case-insensitivity — so a property added to the wire
+	// format reaches an implementation without another signature change.
+	//
+	// An implementation that cannot honour a property must REFUSE the
+	// definition rather than create an index that silently lacks it: an index
+	// created case-sensitive under a case-insensitive definition answers
+	// lookups with an empty result and a nil error (go-qrdb#34, #32).
+	CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error
 
 	// DropIndex removes a secondary index by name.
 	DropIndex(name string) error

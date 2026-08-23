@@ -1543,11 +1543,10 @@ func pebbleHandleLeaseKeepAlive(s *PebbleStateMachine, _ *pebble.Batch, payload 
 // pebbleHandleIndexCreate creates a new secondary index backed by the
 // same PebbleDB instance.
 func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	name, _, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
+	name, _, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	_ = sparse // reserved for future use
 
 	if _, exists := s.indexes[name]; exists {
 		// Index already present — idempotent success so Raft Apply does not
@@ -1558,11 +1557,25 @@ func (s *PebbleStateMachine) pebbleHandleIndexCreate(_ *PebbleStateMachine, _ *p
 	}
 
 	valueType := index.IndexValueTypeString
-	if numeric {
+	if opts.Numeric {
 		valueType = index.IndexValueTypeNumeric
 	}
 
-	idx, idxErr := index.NewPebbleIndex(s.db, name, unique, valueType)
+	// Sparse is carried on the config for fidelity with the command; no Index
+	// implementation reads it, so nothing observable changes here.
+	//
+	// CaseSensitive is derived from the command instead of left at its zero
+	// value. This handler used to discard the flag, so an
+	// index:"case_insensitive" definition became a case-SENSITIVE index and a
+	// lookup for "Alpha" over a stored "alpha" answered empty with a nil error
+	// (go-qrdb#34).
+	idx, idxErr := index.NewPebbleIndexWithConfig(s.db, name, index.IndexConfig{
+		Name:          name,
+		Unique:        opts.Unique,
+		Sparse:        opts.Sparse,
+		ValueType:     valueType,
+		CaseSensitive: !opts.CaseInsensitive,
+	})
 	if idxErr != nil {
 		return sm.Result{}, nil, idxErr
 	}

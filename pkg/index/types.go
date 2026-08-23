@@ -57,6 +57,20 @@ type IndexConfig struct {
 
 	// CaseSensitive indicates whether string comparisons are case-sensitive.
 	// Only applies to string fields.
+	//
+	// This field is named for the DEFAULT, so its ZERO VALUE folds case.
+	// Every construction site must set it explicitly: since go-qrdb#34 the
+	// engines derive an index's case behaviour from this field instead of
+	// hardcoding CaseSensitive:true, so a composite literal that omits it
+	// builds a case-INSENSITIVE index. Nothing fails loudly when that
+	// happens — folding only ever ADDS matches — which is why the transports,
+	// the lifecycle adapter and the collection service each state it.
+	//
+	// The wire and transport layers invert the polarity on purpose
+	// (protocol.IndexFlagCaseInsensitive, transport.IndexConfig.CaseInsensitive):
+	// there the bit marks the POSITIVE claim, so an absent flag — including in
+	// every Raft command written before the flag existed — means
+	// case-sensitive.
 	CaseSensitive bool
 
 	// Unique enforces that each indexed value maps to at most one key.
@@ -64,6 +78,10 @@ type IndexConfig struct {
 
 	// Sparse skips indexing keys where the indexed field is absent
 	// or empty.
+	//
+	// Recorded for fidelity with the definition; no Index implementation
+	// reads it today. Skipping absent fields happens in the backfill and
+	// index-maintenance callers.
 	Sparse bool
 }
 

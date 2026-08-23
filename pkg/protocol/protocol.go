@@ -190,6 +190,18 @@ const (
 	// integers so that byte ordering matches numeric ordering. Range scans
 	// like [1, 222) will not incorrectly include 1234.
 	IndexFlagNumeric byte = 1 << 2
+
+	// IndexFlagCaseInsensitive folds string field values before they are
+	// indexed and before they are looked up, so "Alpha" and "alpha" are the
+	// same term.
+	//
+	// The polarity is deliberate: the bit marks the POSITIVE claim, so an
+	// absent bit — including in every command written before this flag
+	// existed — decodes to CaseSensitive: true, which is the behaviour those
+	// commands were created under. Encoding the flag the other way round
+	// would silently reinterpret every replayed log entry as case-insensitive
+	// (go-qrdb#34).
+	IndexFlagCaseInsensitive byte = 1 << 3
 )
 
 // headerSize is 1 byte for the op code.
@@ -528,9 +540,76 @@ func EncodeLeaseKeepAlive(leaseID int64) ([]byte, error) {
 // Index encoders
 // ---------------------------------------------------------------------------
 
-// EncodeIndexCreate creates a binary Index Create command.
-// Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
+// IndexCreateOptions carries the index properties an OpIndexCreate command
+// encodes. A zero value describes the engine's default index: non-unique,
+// non-sparse, string-ordered and case-SENSITIVE.
+//
+// A struct rather than a longer positional bool list. Four adjacent booleans at
+// a call site say nothing about which is which, and the list has already grown
+// twice.
+type IndexCreateOptions struct {
+	// Unique enforces unique index values.
+	Unique bool
+
+	// Sparse skips indexing absent fields.
+	Sparse bool
+
+	// Numeric encodes field values as fixed-width 8-byte big-endian integers
+	// so byte ordering matches numeric ordering.
+	Numeric bool
+
+	// CaseInsensitive folds string field values on write, backfill and lookup.
+	//
+	// Named for the non-default so the zero value is the default, and so the
+	// wire flag and this field agree: both mark the positive claim.
+	CaseInsensitive bool
+}
+
+// Flags renders the options as the command's flag byte.
+func (o IndexCreateOptions) Flags() byte {
+	var flags byte
+	if o.Unique {
+		flags |= IndexFlagUnique
+	}
+	if o.Sparse {
+		flags |= IndexFlagSparse
+	}
+	if o.Numeric {
+		flags |= IndexFlagNumeric
+	}
+	if o.CaseInsensitive {
+		flags |= IndexFlagCaseInsensitive
+	}
+	return flags
+}
+
+// indexCreateOptionsFromFlags is the inverse of Flags.
+func indexCreateOptionsFromFlags(flags byte) IndexCreateOptions {
+	return IndexCreateOptions{
+		Unique:          flags&IndexFlagUnique != 0,
+		Sparse:          flags&IndexFlagSparse != 0,
+		Numeric:         flags&IndexFlagNumeric != 0,
+		CaseInsensitive: flags&IndexFlagCaseInsensitive != 0,
+	}
+}
+
+// EncodeIndexCreate builds an Index Create command.
+//
+// Deprecated: it cannot express case-insensitivity. Use EncodeIndexCreateOpts,
+// which this delegates to. Kept because it is the shape a large number of
+// existing tests are written in, and mechanically rewriting them would be a
+// bigger change than the feature.
 func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]byte, error) {
+	return EncodeIndexCreateOpts(name, fieldName, IndexCreateOptions{
+		Unique:  unique,
+		Sparse:  sparse,
+		Numeric: numeric,
+	})
+}
+
+// EncodeIndexCreateOpts builds an Index Create command from opts.
+// Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
+func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]byte, error) {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
 	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
@@ -559,17 +638,7 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]
 	copy(buf[off:], fieldBytes)
 	off += len(fieldBytes)
 
-	var flags byte
-	if unique {
-		flags |= IndexFlagUnique
-	}
-	if sparse {
-		flags |= IndexFlagSparse
-	}
-	if numeric {
-		flags |= IndexFlagNumeric
-	}
-	buf[off] = flags
+	buf[off] = opts.Flags()
 
 	return buf, nil
 }
@@ -1118,41 +1187,53 @@ func DecodeLeaseKeepAlive(payload []byte) (int64, error) {
 	return int64(binary.LittleEndian.Uint64(payload[0:8])), nil
 }
 
-// DecodeIndexCreate extracts name, field, and flags from an Index Create payload.
+// DecodeIndexCreate extracts name, field and flags from an Index Create payload.
+//
+// Deprecated: it cannot report case-insensitivity. Use DecodeIndexCreateOpts,
+// which this delegates to.
 func DecodeIndexCreate(payload []byte) (name, fieldName string, unique, sparse, numeric bool, err error) {
+	n, f, opts, derr := DecodeIndexCreateOpts(payload)
+	if derr != nil {
+		return "", "", false, false, false, derr
+	}
+	return n, f, opts.Unique, opts.Sparse, opts.Numeric, nil
+}
+
+// DecodeIndexCreateOpts extracts the fields of an Index Create payload,
+// including the flags the deprecated DecodeIndexCreate cannot report.
+//
+// A payload written before IndexFlagCaseInsensitive existed has the bit clear
+// and therefore decodes to CaseInsensitive: false — case-SENSITIVE, which is
+// what those commands meant. Replay of an existing Raft log is unchanged.
+func DecodeIndexCreateOpts(payload []byte) (name, fieldName string, opts IndexCreateOptions, err error) {
 	if len(payload) < 2 {
-		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: payload too short"}
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: payload too short"}
 	}
 
 	off := 0
 	nameLen := int(binary.LittleEndian.Uint16(payload[off:]))
 	off += 2
 	if off+nameLen > len(payload) {
-		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: name length exceeds payload"}
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: name length exceeds payload"}
 	}
 	name = string(payload[off : off+nameLen])
 	off += nameLen
 
 	if off+2 > len(payload) {
-		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: missing field length"}
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: missing field length"}
 	}
 	fieldLen := int(binary.LittleEndian.Uint16(payload[off:]))
 	off += 2
 	if off+fieldLen > len(payload) {
-		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: field length exceeds payload"}
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: field length exceeds payload"}
 	}
 	fieldName = string(payload[off : off+fieldLen])
 	off += fieldLen
 
 	if off >= len(payload) {
-		return "", "", false, false, false, &InvalidCommandError{Reason: "index create: missing flags"}
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: missing flags"}
 	}
-	flags := payload[off]
-	unique = flags&IndexFlagUnique != 0
-	sparse = flags&IndexFlagSparse != 0
-	numeric = flags&IndexFlagNumeric != 0
-
-	return name, fieldName, unique, sparse, numeric, nil
+	return name, fieldName, indexCreateOptionsFromFlags(payload[off]), nil
 }
 
 // DecodeIndexDrop extracts the index name from an Index Drop payload.

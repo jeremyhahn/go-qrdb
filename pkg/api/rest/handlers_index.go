@@ -31,6 +31,13 @@ type indexCreateRequest struct {
 	FieldName string `json:"field_name"`
 	Unique    bool   `json:"unique"`
 	Sparse    bool   `json:"sparse"`
+	// Numeric encodes field values as fixed-width big-endian integers so byte
+	// ordering matches numeric ordering. The field was absent entirely, so a
+	// numeric index was unreachable over REST (go-qrdb#34).
+	Numeric bool `json:"numeric"`
+	// CaseInsensitive marks the POSITIVE claim, so an absent value means a
+	// case-SENSITIVE index -- what every request predating the field meant.
+	CaseInsensitive bool `json:"case_insensitive"`
 }
 
 // indexDropRequest is the JSON payload for POST /index/drop.
@@ -78,6 +85,14 @@ func (s *Server) handleIndexCreate(w http.ResponseWriter, r *http.Request) {
 	config := index.IndexConfig{
 		Unique: req.Unique,
 		Sparse: req.Sparse,
+		// index.IndexConfig names the field for the DEFAULT, so its zero value
+		// is case-INSENSITIVE. It must be set explicitly at every construction
+		// site now that the engine derives the index's case behaviour from the
+		// config instead of hardcoding CaseSensitive:true (go-qrdb#34).
+		CaseSensitive: !req.CaseInsensitive,
+	}
+	if req.Numeric {
+		config.ValueType = index.IndexValueTypeNumeric
 	}
 
 	if err := indexSvc.CreateIndex(ctx, req.Name, req.FieldName, config); err != nil {

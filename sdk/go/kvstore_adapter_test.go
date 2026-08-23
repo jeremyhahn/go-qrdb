@@ -534,21 +534,20 @@ func TestKVStoreAdapter_CompileTimeCheck(t *testing.T) {
 	var _ kvstore.KVStore = (*kvStoreAdapter)(nil)
 }
 
-// TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions pins
-// the two definitions this adapter cannot honour.
+// TestKVStoreAdapter_RegisterEntityIndexes_RefusesACompoundDefinition pins the
+// one definition this adapter still cannot honour.
 //
-// transport.IndexConfig carries Unique, Sparse and Numeric and no
-// case-sensitivity flag, so a case-INSENSITIVE index would be created
-// case-sensitive on the server while this adapter reported success — and a
-// lookup for "Alpha" over a stored "alpha" would come back empty with a nil
-// error. A COMPOUND definition was worse: the adapter composed
-// entityType + "." + ei.FieldName, and FieldName is empty for a compound
-// index, so it created a garbage index named "entity." and reported success.
+// transport.IndexClient has no compound creation verb, and the compound query
+// methods cannot serve one either. Previously this composed
+// entityType + "." + ei.FieldName for a compound definition, where FieldName
+// is empty — creating a garbage index named "entity." while telling the caller
+// its compound index existed. Refusing makes pkg/dao plan a correct full scan.
 //
-// Both now refuse, so pkg/dao plans a correct full scan. The case-sensitivity
-// gap is tracked as go-qrdb#34; the refusal is narrow, since
-// index.ParseIndexTags defaults CaseSensitive to true.
-func TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions(t *testing.T) {
+// The case-insensitivity refusal that used to live here is gone: go-qrdb#34
+// added CaseInsensitive to transport.IndexConfig and to every protocol
+// underneath it. See
+// TestKVStoreAdapter_RegisterEntityIndexes_ForwardsCaseInsensitivity.
+func TestKVStoreAdapter_RegisterEntityIndexes_RefusesACompoundDefinition(t *testing.T) {
 	var created int
 	idx := &mockTransportIndex{
 		createFn: func(_ context.Context, _, _ string, _ transport.IndexConfig) error {
@@ -557,13 +556,6 @@ func TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions(t *te
 		},
 	}
 	adapter := newTestAdapter(&mockTransportKV{}, idx)
-
-	caseInsensitive := []kvstore.EntityIndex{
-		{FieldName: "Name", JSONFieldName: "name", CaseSensitive: false},
-	}
-	if err := adapter.RegisterEntityIndexes("entity", caseInsensitive); !errors.Is(err, kvstore.ErrIndexUnsupported) {
-		t.Fatalf("case-insensitive definition = %v; want kvstore.ErrIndexUnsupported", err)
-	}
 
 	compound := []kvstore.EntityIndex{{
 		FieldNames:     []string{"Team", "Name"},
@@ -576,6 +568,52 @@ func TestKVStoreAdapter_RegisterEntityIndexes_RefusesUnservableDefinitions(t *te
 
 	if created != 0 {
 		t.Errorf("created %d indexes; a refused definition must create none", created)
+	}
+}
+
+// TestKVStoreAdapter_RegisterEntityIndexes_ForwardsCaseInsensitivity covers
+// go-qrdb#34 on the SDK path, and replaces the refusal above.
+//
+// The polarity is inverted across this boundary on purpose:
+// kvstore.EntityIndex names the default (CaseSensitive) while
+// transport.IndexConfig marks the positive claim (CaseInsensitive). Both
+// directions are asserted, because an adapter that hardcoded either one would
+// pass a test of the other — and dropping the flag would create a
+// case-SENSITIVE index on the server while reporting success, which is a
+// lookup that answers empty with a nil error.
+func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsCaseInsensitivity(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		caseSensitive       bool
+		wantCaseInsensitive bool
+	}{
+		{"case-insensitive definition", false, true},
+		{"ordinary definition", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []transport.IndexConfig
+			idx := &mockTransportIndex{
+				createFn: func(_ context.Context, _, _ string, cfg transport.IndexConfig) error {
+					got = append(got, cfg)
+					return nil
+				},
+			}
+			adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+			err := adapter.RegisterEntityIndexes("entity", []kvstore.EntityIndex{
+				{FieldName: "Name", JSONFieldName: "name", CaseSensitive: tc.caseSensitive},
+			})
+			if err != nil {
+				t.Fatalf("RegisterEntityIndexes = %v; want nil", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("created %d indexes; want 1", len(got))
+			}
+			if got[0].CaseInsensitive != tc.wantCaseInsensitive {
+				t.Errorf("forwarded CaseInsensitive=%v; want %v",
+					got[0].CaseInsensitive, tc.wantCaseInsensitive)
+			}
+		})
 	}
 }
 

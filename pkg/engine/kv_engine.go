@@ -578,7 +578,7 @@ func kvHandleDelete(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 // creation, all existing key-value pairs are scanned to backfill the
 // index.
 func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
-	name, fieldName, unique, _, numeric, err := protocol.DecodeIndexCreate(payload)
+	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{Value: 1}, err
 	}
@@ -589,15 +589,25 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 	}
 
 	cfg := index.IndexConfig{
-		Name:          name,
-		Type:          index.IndexTypeNormal,
-		CaseSensitive: true,
+		Name: name,
+		Type: index.IndexTypeNormal,
+		// Derived from the command instead of hardcoded true. A DAO field
+		// tagged index:"case_insensitive" used to reach here as a
+		// case-SENSITIVE index, so a lookup for "Alpha" over a stored "alpha"
+		// returned empty with a nil error (go-qrdb#34).
+		CaseSensitive: !opts.CaseInsensitive,
+		// Sparse was decoded and discarded here. It is now recorded on the
+		// config for fidelity with the command, but nothing observable changes
+		// yet: no Index implementation reads IndexConfig.Sparse — skipping
+		// absent fields happens in the backfill/maintenance callers. Stated
+		// rather than claimed, since the field reads like a behaviour switch.
+		Sparse: opts.Sparse,
 	}
-	if unique {
+	if opts.Unique {
 		cfg.Type = index.IndexTypeUnique
 		cfg.Unique = true
 	}
-	if numeric {
+	if opts.Numeric {
 		cfg.ValueType = index.IndexValueTypeNumeric
 	}
 

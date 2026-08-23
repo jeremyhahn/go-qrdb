@@ -75,7 +75,7 @@ type kvMockIndexManager struct {
 	dropCalled   bool
 }
 
-func (m *kvMockIndexManager) CreateIndex(name, fieldName string, unique, sparse, numeric bool) error {
+func (m *kvMockIndexManager) CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error {
 	m.createCalled = true
 	return nil
 }

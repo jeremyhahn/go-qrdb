@@ -1646,6 +1646,15 @@ message IndexCreateRequest {
     string field_name = 2;
     bool unique = 3;
     bool sparse = 4;
+    // numeric encodes field values as fixed-width 8-byte big-endian integers
+    // so byte ordering matches numeric ordering. Absent means string ordering,
+    // which is what every request written before this field existed meant.
+    bool numeric = 5;
+    // case_insensitive folds string field values on write, backfill and
+    // lookup. The field marks the POSITIVE claim so an absent value decodes to
+    // a case-SENSITIVE index -- the behaviour requests predating it were
+    // created under (go-qrdb#34).
+    bool case_insensitive = 6;
 }
 
 // IndexDropRequest removes a secondary index.

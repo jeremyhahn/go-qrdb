@@ -1338,11 +1338,10 @@ func handleLeaseKeepAlive(_ *mvcc.Store, lr *lease.Lessor, _ storage.Batch, payl
 // is available, the index is backed by PebbleDB. Otherwise, an in-memory
 // index is used. After creation, existing data is backfilled into the index.
 func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch storage.Batch, payload []byte) (sm.Result, []Notification, error) {
-	name, fieldName, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
+	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{}, nil, err
 	}
-	_ = sparse // reserved for future use
 
 	e.indexMu.Lock()
 	if _, exists := e.indexes[name]; exists {
@@ -1358,20 +1357,35 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	}
 
 	valueType := index.IndexValueTypeString
-	if numeric {
+	if opts.Numeric {
 		valueType = index.IndexValueTypeNumeric
+	}
+
+	// Sparse is carried on the config for fidelity with the command, but no
+	// Index implementation reads it: skipping absent fields happens in the
+	// backfill/maintenance callers (see indexing.go), not in the index.
+	cfg := index.IndexConfig{
+		Name:      name,
+		Unique:    opts.Unique,
+		Sparse:    opts.Sparse,
+		ValueType: valueType,
+		// Derived from the command instead of left at its zero value. This
+		// engine used to discard the flag, so an index:"case_insensitive"
+		// definition became a case-SENSITIVE index and a lookup for "Alpha"
+		// over a stored "alpha" answered empty with a nil error (go-qrdb#34).
+		CaseSensitive: !opts.CaseInsensitive,
 	}
 
 	var idx index.Index
 	if e.pebbleDB != nil {
-		pebbleIdx, pebbleErr := index.NewPebbleIndex(e.pebbleDB, name, unique, valueType)
+		pebbleIdx, pebbleErr := index.NewPebbleIndexWithConfig(e.pebbleDB, name, cfg)
 		if pebbleErr != nil {
 			e.indexMu.Unlock()
 			return sm.Result{}, nil, pebbleErr
 		}
 		idx = pebbleIdx
 	} else {
-		idx = index.NewMemoryIndex(name, unique)
+		idx = index.NewMemoryIndexWithConfig(name, cfg)
 	}
 
 	e.indexMu.Unlock()

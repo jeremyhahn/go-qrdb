@@ -4122,13 +4122,22 @@ func (x *LockListResponse) GetLocks() []*LockInfo {
 
 // IndexCreateRequest creates a new secondary index.
 type IndexCreateRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	FieldName     string                 `protobuf:"bytes,2,opt,name=field_name,json=fieldName,proto3" json:"field_name,omitempty"`
-	Unique        bool                   `protobuf:"varint,3,opt,name=unique,proto3" json:"unique,omitempty"`
-	Sparse        bool                   `protobuf:"varint,4,opt,name=sparse,proto3" json:"sparse,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Name      string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	FieldName string                 `protobuf:"bytes,2,opt,name=field_name,json=fieldName,proto3" json:"field_name,omitempty"`
+	Unique    bool                   `protobuf:"varint,3,opt,name=unique,proto3" json:"unique,omitempty"`
+	Sparse    bool                   `protobuf:"varint,4,opt,name=sparse,proto3" json:"sparse,omitempty"`
+	// numeric encodes field values as fixed-width 8-byte big-endian integers
+	// so byte ordering matches numeric ordering. Absent means string ordering,
+	// which is what every request written before this field existed meant.
+	Numeric bool `protobuf:"varint,5,opt,name=numeric,proto3" json:"numeric,omitempty"`
+	// case_insensitive folds string field values on write, backfill and
+	// lookup. The field marks the POSITIVE claim so an absent value decodes to
+	// a case-SENSITIVE index -- the behaviour requests predating it were
+	// created under (go-qrdb#34).
+	CaseInsensitive bool `protobuf:"varint,6,opt,name=case_insensitive,json=caseInsensitive,proto3" json:"case_insensitive,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *IndexCreateRequest) Reset() {
@@ -4185,6 +4194,20 @@ func (x *IndexCreateRequest) GetUnique() bool {
 func (x *IndexCreateRequest) GetSparse() bool {
 	if x != nil {
 		return x.Sparse
+	}
+	return false
+}
+
+func (x *IndexCreateRequest) GetNumeric() bool {
+	if x != nil {
+		return x.Numeric
+	}
+	return false
+}
+
+func (x *IndexCreateRequest) GetCaseInsensitive() bool {
+	if x != nil {
+		return x.CaseInsensitive
 	}
 	return false
 }
@@ -24263,13 +24286,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x0fLockListRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\";\n" +
 	"\x10LockListResponse\x12'\n" +
-	"\x05locks\x18\x01 \x03(\v2\x11.qrdb.v1.LockInfoR\x05locks\"w\n" +
+	"\x05locks\x18\x01 \x03(\v2\x11.qrdb.v1.LockInfoR\x05locks\"\xbc\x01\n" +
 	"\x12IndexCreateRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
 	"field_name\x18\x02 \x01(\tR\tfieldName\x12\x16\n" +
 	"\x06unique\x18\x03 \x01(\bR\x06unique\x12\x16\n" +
-	"\x06sparse\x18\x04 \x01(\bR\x06sparse\"&\n" +
+	"\x06sparse\x18\x04 \x01(\bR\x06sparse\x12\x18\n" +
+	"\anumeric\x18\x05 \x01(\bR\anumeric\x12)\n" +
+	"\x10case_insensitive\x18\x06 \x01(\bR\x0fcaseInsensitive\"&\n" +
 	"\x10IndexDropRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"H\n" +
 	"\x11IndexQueryRequest\x12\x1d\n" +

@@ -75,6 +75,12 @@ func toolIndexCreate() mcp.Tool {
 		mcp.WithBoolean("sparse",
 			mcp.Description("Skip indexing keys where the indexed field is absent or empty. Defaults to false."),
 		),
+		mcp.WithBoolean("numeric",
+			mcp.Description("Encode field values as fixed-width big-endian integers so that ordering is numeric rather than lexicographic. Defaults to false."),
+		),
+		mcp.WithBoolean("case_insensitive",
+			mcp.Description("Fold string field values on write, backfill and lookup, so \"Alpha\" and \"alpha\" are the same term. Defaults to false, i.e. case-sensitive."),
+		),
 	)
 }
 
@@ -98,6 +104,14 @@ func handleIndexCreate(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc
 		config := index.IndexConfig{
 			Unique: mcp.ParseBoolean(req, "unique", false),
 			Sparse: mcp.ParseBoolean(req, "sparse", false),
+			// index.IndexConfig names the field for the DEFAULT, so its zero
+			// value is case-INSENSITIVE. It must be set explicitly now that
+			// the engine derives the index's case behaviour from the config
+			// instead of hardcoding CaseSensitive:true (go-qrdb#34).
+			CaseSensitive: !mcp.ParseBoolean(req, "case_insensitive", false),
+		}
+		if mcp.ParseBoolean(req, "numeric", false) {
+			config.ValueType = index.IndexValueTypeNumeric
 		}
 
 		if err := indexSvc.CreateIndex(ctx, name, fieldName, config); err != nil {

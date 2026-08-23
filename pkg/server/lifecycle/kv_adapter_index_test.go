@@ -394,33 +394,60 @@ func TestNewReplicatedSealBackend_UsesTheTransactionForAtomicity(t *testing.T) {
 	}
 }
 
-// TestKVStoreAdapter_CaseInsensitiveDefinitionsAreRefused covers a review
-// finding. service.IndexServicer.CreateIndex encodes its request with
-// protocol.EncodeIndexCreate, whose wire format carries name, field, unique,
-// sparse and numeric — and no case-sensitivity flag — so
-// KVEngine.handleIndexCreate builds every index with CaseSensitive:true.
+// TestKVStoreAdapter_CaseInsensitiveDefinitionsReachTheEngine covers
+// go-qrdb#34, and replaces the refusal this adapter used to return.
 //
-// Accepting a case-insensitive definition would therefore create a
-// case-SENSITIVE index while reporting success, and a DAO lookup for "Alpha"
-// over a stored "alpha" would come back empty with a nil error. The refusal
-// makes pkg/dao plan a correct full scan instead.
+// service.IndexServicer.CreateIndex encoded its request with a wire format
+// carrying name, field, unique, sparse and numeric — and no case-sensitivity
+// flag — so KVEngine.handleIndexCreate built every index with
+// CaseSensitive:true. Accepting a case-insensitive definition would have
+// created a case-SENSITIVE index while reporting success, and a DAO lookup for
+// "Alpha" over a stored "alpha" would have come back empty with a nil error.
+// The definition was therefore refused with kvstore.ErrIndexUnsupported so
+// pkg/dao planned a correct full scan.
 //
-// Note this only fires for an explicit `index:"case_insensitive"` tag:
-// index.ParseIndexTags defaults CaseSensitive to true, so ordinary
-// `index:"true"` and `index:"unique"` fields keep their real engine index.
-func TestKVStoreAdapter_CaseInsensitiveDefinitionsAreRefused(t *testing.T) {
+// protocol.IndexFlagCaseInsensitive carries the flag now, so the definition
+// must be CREATED, and created with the case behaviour the caller asked for.
+// Asserting the forwarded config rather than only the absence of an error is
+// the point: an adapter that created the index while dropping the flag would
+// satisfy a "no error" assertion and reintroduce the silent-empty defect.
+func TestKVStoreAdapter_CaseInsensitiveDefinitionsReachTheEngine(t *testing.T) {
 	idx := &mockIndexServicer{}
 	store := newKVStoreAdapter(&mockKVServicer{}, idx)
 
 	err := store.RegisterEntityIndexes("member", []kvstore.EntityIndex{
 		{FieldName: "Team", JSONFieldName: "team", CaseSensitive: false},
 	})
-	if !errors.Is(err, kvstore.ErrIndexUnsupported) {
-		t.Fatalf("RegisterEntityIndexes = %v; want kvstore.ErrIndexUnsupported", err)
+	if err != nil {
+		t.Fatalf("RegisterEntityIndexes = %v; want nil", err)
 	}
-	if len(idx.created) != 0 {
-		t.Errorf("created %+v; a definition the engine cannot honour must not be created",
-			idx.created)
+	if len(idx.created) != 1 {
+		t.Fatalf("created %d indexes; want 1", len(idx.created))
+	}
+	if idx.created[0].config.CaseSensitive {
+		t.Error("a case-insensitive definition was forwarded as CaseSensitive:true; " +
+			"the engine would build a case-SENSITIVE index and answer a folded " +
+			"lookup empty with a nil error")
+	}
+}
+
+// TestKVStoreAdapter_CaseSensitiveDefinitionStaysSensitive is the control and
+// the polarity guard. index.IndexConfig names its field for the DEFAULT, so a
+// config left at its zero value folds case: an adapter that merely stopped
+// refusing, without forwarding the flag, would turn every ordinary index
+// case-insensitive.
+func TestKVStoreAdapter_CaseSensitiveDefinitionStaysSensitive(t *testing.T) {
+	idx := &mockIndexServicer{}
+	store := newKVStoreAdapter(&mockKVServicer{}, idx)
+
+	if err := store.RegisterEntityIndexes("member", memberIndexDefs()); err != nil {
+		t.Fatalf("RegisterEntityIndexes: %v", err)
+	}
+	if len(idx.created) != 1 {
+		t.Fatalf("created %d indexes; want 1", len(idx.created))
+	}
+	if !idx.created[0].config.CaseSensitive {
+		t.Error("an ordinary definition was forwarded as case-INSENSITIVE")
 	}
 }
 

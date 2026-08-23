@@ -173,12 +173,12 @@ func (k *KVStateMachine) handleIndexCreate(payload []byte, revision uint64) (sm.
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "index"}
 	}
 
-	name, fieldName, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
+	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "index create: " + err.Error()}
 	}
 
-	if createErr := k.indexManager.CreateIndex(name, fieldName, unique, sparse, numeric); createErr != nil {
+	if createErr := k.indexManager.CreateIndex(name, fieldName, opts); createErr != nil {
 		return sm.Result{}, &StorageError{Op: "index-create", Inner: createErr}
 	}
 

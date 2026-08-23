@@ -43,7 +43,7 @@ type gapErrIndexManager struct {
 	dropErr   error
 }
 
-func (m *gapErrIndexManager) CreateIndex(name, fieldName string, unique, sparse, numeric bool) error {
+func (m *gapErrIndexManager) CreateIndex(name, fieldName string, opts protocol.IndexCreateOptions) error {
 	return m.createErr
 }
 func (m *gapErrIndexManager) DropIndex(name string) error { return m.dropErr }

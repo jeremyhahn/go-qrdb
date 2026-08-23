@@ -38,10 +38,12 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	}
 
 	_, err := t.client.IndexCreate(ctx, &pb.IndexCreateRequest{
-		Name:      name,
-		FieldName: fieldName,
-		Unique:    config.Unique,
-		Sparse:    config.Sparse,
+		Name:            name,
+		FieldName:       fieldName,
+		Unique:          config.Unique,
+		Sparse:          config.Sparse,
+		Numeric:         config.Numeric,
+		CaseInsensitive: config.CaseInsensitive,
 	})
 	if err != nil {
 		return mapGRPCError("IndexCreate", err)

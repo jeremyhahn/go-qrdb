@@ -33,10 +33,12 @@ var _ transport.IndexClient = (*Transport)(nil)
 
 // indexCreateWireRequest matches the JSON payload for POST /index/create.
 type indexCreateWireRequest struct {
-	Name      string `json:"name"`
-	FieldName string `json:"field_name"`
-	Unique    bool   `json:"unique"`
-	Sparse    bool   `json:"sparse"`
+	Name            string `json:"name"`
+	FieldName       string `json:"field_name"`
+	Unique          bool   `json:"unique"`
+	Sparse          bool   `json:"sparse"`
+	Numeric         bool   `json:"numeric"`
+	CaseInsensitive bool   `json:"case_insensitive"`
 }
 
 // indexDropWireRequest matches the JSON payload for POST /index/drop.
@@ -72,10 +74,12 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	}
 
 	payload := indexCreateWireRequest{
-		Name:      name,
-		FieldName: fieldName,
-		Unique:    config.Unique,
-		Sparse:    config.Sparse,
+		Name:            name,
+		FieldName:       fieldName,
+		Unique:          config.Unique,
+		Sparse:          config.Sparse,
+		Numeric:         config.Numeric,
+		CaseInsensitive: config.CaseInsensitive,
 	}
 
 	return t.postJSON(ctx, "IndexCreate", "/index/create", payload)

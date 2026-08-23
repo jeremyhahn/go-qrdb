@@ -217,6 +217,12 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 				Name:   idxName,
 				Unique: def.Unique,
 				Sparse: def.Sparse,
+				// A collection index definition has no case-sensitivity
+				// field, so it keeps the behaviour it has always had. Stated
+				// explicitly because index.IndexConfig names the field for the
+				// DEFAULT and its zero value is case-INSENSITIVE, which the
+				// engine now honours instead of hardcoding true (go-qrdb#34).
+				CaseSensitive: true,
 			}
 			if err := s.indexSvc.CreateIndex(ctx, idxName, def.FieldName, cfg); err != nil {
 				return nil, &CollectionMetadataError{Op: "create-index", Err: err}

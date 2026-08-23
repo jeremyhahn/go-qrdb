@@ -42,6 +42,12 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	if config.Sparse {
 		params["sparse"] = true
 	}
+	if config.Numeric {
+		params["numeric"] = true
+	}
+	if config.CaseInsensitive {
+		params["case_insensitive"] = true
+	}
 
 	_, err := t.callTool(ctx, "qrdb_index_create", params)
 	return err

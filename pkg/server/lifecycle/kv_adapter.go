@@ -303,29 +303,24 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 		if ei.IsCompound() {
 			return kvstore.ErrIndexUnsupported
 		}
-		// A case-INSENSITIVE definition is refused for the same reason a
-		// compound one is: this path cannot honour it.
-		// service.IndexServicer.CreateIndex encodes its request with
-		// protocol.EncodeIndexCreate, whose wire format carries name, field,
-		// unique, sparse and numeric — and no case-sensitivity flag — so
-		// KVEngine.handleIndexCreate builds every index with
-		// CaseSensitive:true. Accepting the definition would create a
-		// case-SENSITIVE index while telling the DAO it had a case-insensitive
-		// one, and a lookup for "Alpha" over a stored "alpha" would come back
-		// empty with a nil error.
+		// A case-INSENSITIVE definition used to be refused here: the
+		// OpIndexCreate wire format carried no case-sensitivity flag, so
+		// KVEngine.handleIndexCreate built every index with
+		// CaseSensitive:true and accepting the definition would have produced
+		// a case-SENSITIVE index while telling the DAO it had a
+		// case-insensitive one -- a lookup for "Alpha" over a stored "alpha"
+		// coming back empty with a nil error. #34 added
+		// protocol.IndexFlagCaseInsensitive, so the definition now reaches
+		// the engine intact and the refusal is gone.
 		//
-		// Carrying the flag through the Raft command encoding is the real fix
-		// and is deliberately not done here: it changes a command format that
-		// existing Raft logs replay through. Tracked as #34; until then the
-		// DAO plans a correct full scan.
-		//
-		// This only fires for an explicit `index:"case_insensitive"` tag —
-		// index.ParseIndexTags defaults CaseSensitive to true, so ordinary
-		// `index:"true"` and `index:"unique"` fields keep their real index.
-		if !ei.CaseSensitive {
-			return kvstore.ErrIndexUnsupported
+		// CaseSensitive is passed through explicitly rather than left zero:
+		// index.IndexConfig names the field for the DEFAULT, so its zero
+		// value is case-INSENSITIVE, which the engine now honours.
+		cfg := index.IndexConfig{
+			Unique:        ei.Unique,
+			Sparse:        ei.Sparse,
+			CaseSensitive: ei.CaseSensitive,
 		}
-		cfg := index.IndexConfig{Unique: ei.Unique, Sparse: ei.Sparse}
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique
 		}

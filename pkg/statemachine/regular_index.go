@@ -28,12 +28,12 @@ func (r *RegularStateMachine) handleIndexCreate(payload []byte, revision uint64)
 		return sm.Result{}, &ServiceNotConfiguredError{Service: "index"}
 	}
 
-	name, fieldName, unique, sparse, numeric, err := protocol.DecodeIndexCreate(payload)
+	name, fieldName, opts, err := protocol.DecodeIndexCreateOpts(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "index create: " + err.Error()}
 	}
 
-	if err := r.indexManager.CreateIndex(name, fieldName, unique, sparse, numeric); err != nil {
+	if err := r.indexManager.CreateIndex(name, fieldName, opts); err != nil {
 		return sm.Result{}, &StorageError{Op: "index-create", Inner: err}
 	}
 

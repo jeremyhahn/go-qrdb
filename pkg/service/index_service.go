@@ -47,8 +47,16 @@ func NewIndexService(host Host, shardID uint64) IndexServicer {
 
 // CreateIndex creates a new secondary index through Raft consensus.
 func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, config IndexConfig) error {
-	numeric := config.ValueType == index.IndexValueTypeNumeric
-	cmd, err := protocol.EncodeIndexCreate(name, fieldName, config.Unique, config.Sparse, numeric)
+	// CaseInsensitive is the inverse of the config's CaseSensitive: the wire
+	// flag marks the positive claim so an absent bit means case-sensitive,
+	// which is what every command written before the flag existed meant
+	// (go-qrdb#34).
+	cmd, err := protocol.EncodeIndexCreateOpts(name, fieldName, protocol.IndexCreateOptions{
+		Unique:          config.Unique,
+		Sparse:          config.Sparse,
+		Numeric:         config.ValueType == index.IndexValueTypeNumeric,
+		CaseInsensitive: !config.CaseSensitive,
+	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}

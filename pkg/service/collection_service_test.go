@@ -1052,6 +1052,17 @@ func TestCollectionService_CreateCollection_WithIndexes(t *testing.T) {
 	ageIdx, ok := idxSvc.indexes["mydb.users.age"]
 	require.True(t, ok)
 	assert.True(t, ageIdx.Sparse)
+
+	// A collection index definition has no case-sensitivity field, so both
+	// must be created case-SENSITIVE, which is the behaviour they have always
+	// had. Asserted because index.IndexConfig names the field for the DEFAULT:
+	// its zero value folds case, and the engine honours the config now instead
+	// of hardcoding CaseSensitive:true (go-qrdb#34). Leaving the field off this
+	// literal would turn every collection index case-insensitive silently.
+	assert.True(t, emailIdx.CaseSensitive,
+		"collection index created case-INSENSITIVE")
+	assert.True(t, ageIdx.CaseSensitive,
+		"collection index created case-INSENSITIVE")
 }
 
 func TestCollectionService_CreateCollection_WithIndexes_NoIndexSvc(t *testing.T) {

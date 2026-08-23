@@ -1195,6 +1195,14 @@ func (s *qrdbServiceServer) IndexCreate(ctx context.Context, req *pb.IndexCreate
 	cfg := index.IndexConfig{
 		Unique: req.GetUnique(),
 		Sparse: req.GetSparse(),
+		// index.IndexConfig names the field for the DEFAULT, so its zero value
+		// is case-INSENSITIVE. It must be set explicitly at every construction
+		// site now that the engine derives the index's case behaviour from the
+		// config instead of hardcoding CaseSensitive:true (go-qrdb#34).
+		CaseSensitive: !req.GetCaseInsensitive(),
+	}
+	if req.GetNumeric() {
+		cfg.ValueType = index.IndexValueTypeNumeric
 	}
 	if err := indexSvc.CreateIndex(ctx, req.GetName(), req.GetFieldName(), cfg); err != nil {
 		return nil, mapServiceError(err)

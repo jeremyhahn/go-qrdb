@@ -39,10 +39,12 @@ func (t *Transport) IndexCreate(ctx context.Context, name, fieldName string, con
 	}
 
 	payload, err := proto.Marshal(&pb.IndexCreateRequest{
-		Name:      name,
-		FieldName: fieldName,
-		Unique:    config.Unique,
-		Sparse:    config.Sparse,
+		Name:            name,
+		FieldName:       fieldName,
+		Unique:          config.Unique,
+		Sparse:          config.Sparse,
+		Numeric:         config.Numeric,
+		CaseInsensitive: config.CaseInsensitive,
 	})
 	if err != nil {
 		return &marshalError{Err: err}
