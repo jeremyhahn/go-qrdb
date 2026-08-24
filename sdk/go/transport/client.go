@@ -55,6 +55,38 @@ type KVClient interface {
 	Exists(ctx context.Context, key string, opts ...ReadOption) (bool, error)
 }
 
+// GuardedKVClient is a KVClient that also carries the single-key guarded write
+// verbs — the conditional writes that arbitrate a cross-process race in one
+// round trip rather than a read-then-write a second writer can slip between.
+//
+// It is a CAPABILITY interface, deliberately separate from KVClient, because a
+// transport can only offer these once its wire contract carries them: the
+// embedded transport delegates straight to the service and implements this
+// today, while a remote transport implements it only when its protocol gains
+// the verbs. A consumer detects the capability with a type assertion —
+// `gv, ok := client.(GuardedKVClient)` — and MUST NOT assume a plain KVClient
+// has it; that is what keeps a wrapper from promoting a guarded surface a
+// transport cannot actually honour (go-qrdb#119).
+type GuardedKVClient interface {
+	KVClient
+
+	// PutIfAbsent atomically stores value under key only when key is absent,
+	// returning whether it stored. It is the acquire half of a claim: the
+	// condition is evaluated in the state machine, so replicas cannot diverge
+	// and two proposers cannot both win.
+	//
+	// It takes no WriteOption: a conditional write must be linearizable to mean
+	// anything, so it is always synchronous — a relaxed-durability guarded write
+	// would be a guarantee it cannot keep.
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+
+	// CompareAndDelete atomically removes key only when its stored value still
+	// equals expected, returning whether it deleted. It is the release half of
+	// PutIfAbsent: an unguarded delete could un-decide what the guarded put
+	// decided. Synchronous for the same reason as PutIfAbsent.
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
+}
+
 // ---------------------------------------------------------------------------
 // Admin operations
 // ---------------------------------------------------------------------------

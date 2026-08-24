@@ -50,6 +50,7 @@ import (
 var (
 	_ transport.Transport            = (*Transport)(nil)
 	_ transport.KVClient             = (*Transport)(nil)
+	_ transport.GuardedKVClient      = (*Transport)(nil)
 	_ transport.AdminClient          = (*Transport)(nil)
 	_ transport.MVCCClient           = (*Transport)(nil)
 	_ transport.TransactionClient    = (*Transport)(nil)
@@ -564,6 +565,30 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 		return translateError(t.kvSvc.DeleteWithMode(ctx, key, mode))
 	}
 	return translateError(t.kvSvc.Delete(ctx, key))
+}
+
+// PutIfAbsent atomically stores value under key only when key is absent,
+// delegating to the KV service's own guarded primitive: the condition is
+// evaluated inside the state machine, so replicas cannot diverge. This is the
+// GuardedKVClient capability, which the embedded transport can offer because it
+// reaches the service directly (go-qrdb#119).
+func (t *Transport) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	stored, err := t.kvSvc.PutIfAbsent(ctx, key, value)
+	return stored, translateError(err)
+}
+
+// CompareAndDelete atomically removes key only when its stored value still
+// equals expected, delegating to the KV service's guarded delete. It is the
+// release half of PutIfAbsent.
+func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	deleted, err := t.kvSvc.CompareAndDelete(ctx, key, expected)
+	return deleted, translateError(err)
 }
 
 // List returns sorted keys matching the given prefix through the
