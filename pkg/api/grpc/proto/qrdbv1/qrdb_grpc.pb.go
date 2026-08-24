@@ -37,6 +37,8 @@ const (
 	QRDBService_Put_FullMethodName                               = "/qrdb.v1.QRDBService/Put"
 	QRDBService_Get_FullMethodName                               = "/qrdb.v1.QRDBService/Get"
 	QRDBService_Delete_FullMethodName                            = "/qrdb.v1.QRDBService/Delete"
+	QRDBService_PutIfAbsent_FullMethodName                       = "/qrdb.v1.QRDBService/PutIfAbsent"
+	QRDBService_CompareAndDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CompareAndDelete"
 	QRDBService_List_FullMethodName                              = "/qrdb.v1.QRDBService/List"
 	QRDBService_Scan_FullMethodName                              = "/qrdb.v1.QRDBService/Scan"
 	QRDBService_PutWithLease_FullMethodName                      = "/qrdb.v1.QRDBService/PutWithLease"
@@ -238,6 +240,15 @@ type QRDBServiceClient interface {
 	Get(ctx context.Context, in *GetRequest, opts ...grpc.CallOption) (*GetResponse, error)
 	// Delete removes a key via Raft consensus.
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// PutIfAbsent atomically stores a key-value pair only when the key is
+	// absent, evaluating the condition in the state machine. It is the acquire
+	// half of a claim (go-qrdb#119); a guarded put is still a put, so it
+	// carries the kv:put permission.
+	PutIfAbsent(ctx context.Context, in *PutIfAbsentRequest, opts ...grpc.CallOption) (*PutIfAbsentResponse, error)
+	// CompareAndDelete atomically removes a key only when its stored value
+	// still equals the expected value. It is the release half of PutIfAbsent
+	// (go-qrdb#119); a guarded delete is still a delete.
+	CompareAndDelete(ctx context.Context, in *CompareAndDeleteRequest, opts ...grpc.CallOption) (*CompareAndDeleteResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
 	// Scan returns key-value pairs matching a prefix.
@@ -694,6 +705,26 @@ func (c *qRDBServiceClient) Delete(ctx context.Context, in *DeleteRequest, opts 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteResponse)
 	err := c.cc.Invoke(ctx, QRDBService_Delete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) PutIfAbsent(ctx context.Context, in *PutIfAbsentRequest, opts ...grpc.CallOption) (*PutIfAbsentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PutIfAbsentResponse)
+	err := c.cc.Invoke(ctx, QRDBService_PutIfAbsent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CompareAndDelete(ctx context.Context, in *CompareAndDeleteRequest, opts ...grpc.CallOption) (*CompareAndDeleteResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompareAndDeleteResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CompareAndDelete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2582,6 +2613,15 @@ type QRDBServiceServer interface {
 	Get(context.Context, *GetRequest) (*GetResponse, error)
 	// Delete removes a key via Raft consensus.
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	// PutIfAbsent atomically stores a key-value pair only when the key is
+	// absent, evaluating the condition in the state machine. It is the acquire
+	// half of a claim (go-qrdb#119); a guarded put is still a put, so it
+	// carries the kv:put permission.
+	PutIfAbsent(context.Context, *PutIfAbsentRequest) (*PutIfAbsentResponse, error)
+	// CompareAndDelete atomically removes a key only when its stored value
+	// still equals the expected value. It is the release half of PutIfAbsent
+	// (go-qrdb#119); a guarded delete is still a delete.
+	CompareAndDelete(context.Context, *CompareAndDeleteRequest) (*CompareAndDeleteResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(context.Context, *ListRequest) (*ListResponse, error)
 	// Scan returns key-value pairs matching a prefix.
@@ -3022,6 +3062,12 @@ func (UnimplementedQRDBServiceServer) Get(context.Context, *GetRequest) (*GetRes
 }
 func (UnimplementedQRDBServiceServer) Delete(context.Context, *DeleteRequest) (*DeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Delete not implemented")
+}
+func (UnimplementedQRDBServiceServer) PutIfAbsent(context.Context, *PutIfAbsentRequest) (*PutIfAbsentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PutIfAbsent not implemented")
+}
+func (UnimplementedQRDBServiceServer) CompareAndDelete(context.Context, *CompareAndDeleteRequest) (*CompareAndDeleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompareAndDelete not implemented")
 }
 func (UnimplementedQRDBServiceServer) List(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method List not implemented")
@@ -3652,6 +3698,42 @@ func _QRDBService_Delete_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).Delete(ctx, req.(*DeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_PutIfAbsent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PutIfAbsentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).PutIfAbsent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_PutIfAbsent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).PutIfAbsent(ctx, req.(*PutIfAbsentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CompareAndDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompareAndDeleteRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CompareAndDelete(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CompareAndDelete_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CompareAndDelete(ctx, req.(*CompareAndDeleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7015,6 +7097,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Delete",
 			Handler:    _QRDBService_Delete_Handler,
+		},
+		{
+			MethodName: "PutIfAbsent",
+			Handler:    _QRDBService_PutIfAbsent_Handler,
+		},
+		{
+			MethodName: "CompareAndDelete",
+			Handler:    _QRDBService_CompareAndDelete_Handler,
 		},
 		{
 			MethodName: "List",

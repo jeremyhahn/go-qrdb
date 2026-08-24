@@ -41,10 +41,11 @@ import (
 
 // Compile-time interface assertions.
 var (
-	_ transport.Transport      = (*Transport)(nil)
-	_ transport.KVClient       = (*Transport)(nil)
-	_ transport.AdminClient    = (*Transport)(nil)
-	_ transport.DatabaseScoper = (*Transport)(nil)
+	_ transport.Transport       = (*Transport)(nil)
+	_ transport.KVClient        = (*Transport)(nil)
+	_ transport.GuardedKVClient = (*Transport)(nil)
+	_ transport.AdminClient     = (*Transport)(nil)
+	_ transport.DatabaseScoper  = (*Transport)(nil)
 )
 
 // Transport implements the QRDB SDK transport interface using gRPC. It
@@ -264,6 +265,36 @@ func (t *Transport) Delete(ctx context.Context, key string, opts ...transport.Wr
 		return mapGRPCError("Delete", err)
 	}
 	return nil
+}
+
+// PutIfAbsent atomically stores value under key only when key is absent,
+// forwarding to the server's guarded RPC — the condition is decided in the
+// state machine, not emulated here. This is the GuardedKVClient capability,
+// which the gRPC transport can offer now that its wire contract carries the
+// verb (go-qrdb#119). No WriteOption: a conditional write is always synchronous.
+func (t *Transport) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	resp, err := t.client.PutIfAbsent(ctx, &pb.PutIfAbsentRequest{Key: key, Value: value})
+	if err != nil {
+		return false, mapGRPCError("PutIfAbsent", err)
+	}
+	return resp.GetStored(), nil
+}
+
+// CompareAndDelete atomically removes key only when its stored value still
+// equals expected, forwarding to the server's guarded RPC — the release half
+// of PutIfAbsent (go-qrdb#119).
+func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	resp, err := t.client.CompareAndDelete(ctx, &pb.CompareAndDeleteRequest{Key: key, Expected: expected})
+	if err != nil {
+		return false, mapGRPCError("CompareAndDelete", err)
+	}
+	return resp.GetDeleted(), nil
 }
 
 // List returns sorted keys matching the given prefix. An empty prefix

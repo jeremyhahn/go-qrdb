@@ -338,6 +338,37 @@ func (s *qrdbServiceServer) Put(ctx context.Context, req *pb.PutRequest) (*pb.Pu
 	return &pb.PutResponse{}, nil
 }
 
+// PutIfAbsent stores the value only when the key is absent, delegating to the
+// KV service's atomic primitive so the condition is decided in the state
+// machine rather than emulated on the client (go-qrdb#119). The stored flag
+// tells an acquirer whether it won the claim.
+func (s *qrdbServiceServer) PutIfAbsent(ctx context.Context, req *pb.PutIfAbsentRequest) (*pb.PutIfAbsentResponse, error) {
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+	stored, err := kvSvc.PutIfAbsent(ctx, req.GetKey(), req.GetValue())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.PutIfAbsentResponse{Stored: stored}, nil
+}
+
+// CompareAndDelete removes the key only when its stored value still equals the
+// expected value, delegating to the KV service's guarded delete — the release
+// half of PutIfAbsent (go-qrdb#119).
+func (s *qrdbServiceServer) CompareAndDelete(ctx context.Context, req *pb.CompareAndDeleteRequest) (*pb.CompareAndDeleteResponse, error) {
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+	deleted, err := kvSvc.CompareAndDelete(ctx, req.GetKey(), req.GetExpected())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.CompareAndDeleteResponse{Deleted: deleted}, nil
+}
+
 // Get retrieves a value by key using a linearizable read.
 func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
 	kvSvc, svcErr := s.kvSvcFor(ctx)

@@ -43,6 +43,21 @@ service QRDBService {
         option (qrdb.v1.permission) = "kv:delete";
     }
 
+    // PutIfAbsent atomically stores a key-value pair only when the key is
+    // absent, evaluating the condition in the state machine. It is the acquire
+    // half of a claim (go-qrdb#119); a guarded put is still a put, so it
+    // carries the kv:put permission.
+    rpc PutIfAbsent(PutIfAbsentRequest) returns (PutIfAbsentResponse) {
+        option (qrdb.v1.permission) = "kv:put";
+    }
+
+    // CompareAndDelete atomically removes a key only when its stored value
+    // still equals the expected value. It is the release half of PutIfAbsent
+    // (go-qrdb#119); a guarded delete is still a delete.
+    rpc CompareAndDelete(CompareAndDeleteRequest) returns (CompareAndDeleteResponse) {
+        option (qrdb.v1.permission) = "kv:delete";
+    }
+
     // List returns sorted keys matching a prefix.
     rpc List(ListRequest) returns (ListResponse) {
         option (qrdb.v1.permission) = "kv:list";
@@ -1162,6 +1177,30 @@ message DeleteRequest {
 
 // DeleteResponse is the response payload for Delete.
 message DeleteResponse {}
+
+// PutIfAbsentRequest is the request payload for PutIfAbsent.
+message PutIfAbsentRequest {
+    string key = 1;
+    bytes value = 2;
+}
+
+// PutIfAbsentResponse reports whether the value was stored: true when the key
+// was absent and the value was written, false when the key was already present.
+message PutIfAbsentResponse {
+    bool stored = 1;
+}
+
+// CompareAndDeleteRequest is the request payload for CompareAndDelete.
+message CompareAndDeleteRequest {
+    string key = 1;
+    bytes expected = 2;
+}
+
+// CompareAndDeleteResponse reports whether the key was deleted: true when the
+// stored value equalled expected and the key was removed, false otherwise.
+message CompareAndDeleteResponse {
+    bool deleted = 1;
+}
 
 // ListRequest is the request payload for List.
 message ListRequest {
