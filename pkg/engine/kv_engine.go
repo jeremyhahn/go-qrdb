@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	qkv "github.com/jeremyhahn/go-qrdb/pkg/kv"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
@@ -260,9 +261,9 @@ func (e *KVEngine) buildHandlers() map[byte]kvHandler {
 }
 
 // buildExtHandlers creates the extended protocol handler dispatch map.
-// Only index create and index drop are supported; all MVCC, lease,
-// transaction, and time-series opcodes are absent and will trigger
-// UnsupportedOperationError.
+// Index, batch, the single-key guarded verbs, and the multi-key compare-and-
+// execute transaction are supported; MVCC-, lease-, and time-series-specific
+// opcodes are absent and will trigger UnsupportedOperationError.
 func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 	return map[byte]extHandler{
 		protocol.OpIndexCreate:      e.handleIndexCreate,
@@ -270,6 +271,7 @@ func (e *KVEngine) buildExtHandlers() map[byte]extHandler {
 		protocol.OpBatch:            e.handleBatch,
 		protocol.OpCompareAndDelete: e.handleCompareAndDelete,
 		protocol.OpCompareAndSwap:   e.handleCompareAndSwap,
+		protocol.OpTransaction:      e.handleTransaction,
 	}
 }
 
@@ -520,6 +522,202 @@ func (e *KVEngine) handleCompareAndSwap(payload []byte) (sm.Result, error) {
 	}
 
 	return sm.Result{Value: protocol.ResultSwapped}, nil
+}
+
+// handleTransaction applies an etcd-style compare-and-execute transaction over
+// the base KV store: every compare is evaluated against current state, and the
+// success or failure operation set is then applied atomically in a single
+// batch. It is the file/objstore engine's counterpart to the MVCC and PebbleDB
+// transaction handlers, so CompareAndSwap, PutIfAbsent, and multi-key
+// conditional writes have identical semantics on every engine (go-qrdb#117).
+//
+// This engine keeps no MVCC revisions, so create_revision/mod_revision compares
+// have nothing to compare against. They are refused with an application error
+// — exactly as the PebbleDB backend refuses them — rather than silently reading
+// revision 0: a client written for the MVCC engine does read-then-CAS on a
+// revision, would read 0 here, compare equal, and commit, so two concurrent
+// writers both "succeed" and one update is lost with no signal. The refusal is
+// encoded into Result.Data (not returned as a Go error, which would stall the
+// Raft apply loop for every client).
+func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
+	txn, err := protocol.DecodeTransaction(payload)
+	if err != nil {
+		return sm.Result{}, err
+	}
+
+	for _, dc := range txn.Compares {
+		if service.CompareTarget(dc.Target) == service.CompareCreateRevision ||
+			service.CompareTarget(dc.Target) == service.CompareModRevision {
+			return appErrResult("transaction: create_revision/mod_revision compares require an " +
+				"MVCC state machine; this node runs a non-MVCC (file/objstore) backend. " +
+				"Compare on value or version instead."), nil
+		}
+	}
+
+	succeeded := true
+	for _, dc := range txn.Compares {
+		ok, cerr := e.evaluateTxnCompare(dc)
+		if cerr != nil {
+			// A storage read failure is a genuine, possibly non-deterministic
+			// fault, NOT a compare miss: swallowing it would let one replica
+			// read the key and take the failure branch while another fails the
+			// read and takes the success branch — a state-machine divergence,
+			// and a fail-open on absence guards. Return it to the Raft layer.
+			return sm.Result{}, cerr
+		}
+		if !ok {
+			succeeded = false
+			break
+		}
+	}
+
+	ops := txn.SuccessOps
+	if !succeeded {
+		ops = txn.FailureOps
+	}
+
+	// Pre-validate unique-index constraints for the whole selected op set
+	// (read-only, delete-aware) so a violation rejects the transaction
+	// atomically via a non-fatal application error — no partial writes, no
+	// consensus stall — matching the MVCC and batch handlers.
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+		if res, handled, aerr := asAppErrResult(verr); handled {
+			return res, aerr
+		}
+		return sm.Result{}, verr
+	}
+
+	batch := e.stg.Batch()
+	defer func() { _ = batch.Close() }()
+
+	// Watch notifications are collected during the batch and emitted only after
+	// a successful commit, so a failed commit publishes nothing.
+	type txnNotify struct {
+		put    bool
+		key    []byte
+		kv     *qkv.KeyValue
+		prevKv *qkv.KeyValue
+	}
+	var notifs []txnNotify
+
+	for _, op := range ops {
+		switch op.Type {
+		case protocol.OpMVCCPut:
+			var prevKv *qkv.KeyValue
+			if len(e.indexes) > 0 || len(e.compoundIndexes) > 0 || e.hub != nil {
+				// Read through the batch, not the committed store: an earlier
+				// operation in this same transaction may have already written or
+				// deleted this key, and index maintenance and the watch prevKv
+				// must observe that (read-your-own-writes). Reading committed
+				// state would leave a stale index entry after put→put on one
+				// indexed key and emit an incorrect previous value.
+				oldVal, gerr := batch.Get(op.Key)
+				if gerr != nil {
+					return sm.Result{}, gerr
+				}
+				if oldVal != nil {
+					prevKv = &qkv.KeyValue{Key: op.Key, Value: oldVal}
+				}
+			}
+			if err := batch.Set(op.Key, op.Value); err != nil {
+				return sm.Result{}, err
+			}
+			if len(e.indexes) > 0 {
+				if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, op.Key, op.Value, prevKv); err != nil {
+					return sm.Result{}, err
+				}
+			}
+			if len(e.compoundIndexes) > 0 {
+				if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, op.Value, prevKv); err != nil {
+					return sm.Result{}, err
+				}
+			}
+			if e.hub != nil {
+				notifs = append(notifs, txnNotify{put: true, key: op.Key,
+					kv: &qkv.KeyValue{Key: op.Key, Value: op.Value}, prevKv: prevKv})
+			}
+
+		case protocol.OpMVCCDelete:
+			var prevKv *qkv.KeyValue
+			if len(e.indexes) > 0 || len(e.compoundIndexes) > 0 || e.hub != nil {
+				// Read through the batch, not the committed store: an earlier
+				// operation in this same transaction may have already written or
+				// deleted this key, and index maintenance and the watch prevKv
+				// must observe that (read-your-own-writes). Reading committed
+				// state would leave a stale index entry after put→put on one
+				// indexed key and emit an incorrect previous value.
+				oldVal, gerr := batch.Get(op.Key)
+				if gerr != nil {
+					return sm.Result{}, gerr
+				}
+				if oldVal != nil {
+					prevKv = &qkv.KeyValue{Key: op.Key, Value: oldVal}
+				}
+			}
+			if err := batch.Delete(op.Key); err != nil {
+				return sm.Result{}, err
+			}
+			if len(e.indexes) > 0 {
+				if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, op.Key, prevKv); err != nil {
+					return sm.Result{}, err
+				}
+			}
+			if len(e.compoundIndexes) > 0 {
+				if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, prevKv); err != nil {
+					return sm.Result{}, err
+				}
+			}
+			if e.hub != nil {
+				notifs = append(notifs, txnNotify{put: false, key: op.Key,
+					kv: &qkv.KeyValue{Key: op.Key}, prevKv: prevKv})
+			}
+
+		default:
+			return sm.Result{}, &protocol.UnknownOpError{Op: op.Type}
+		}
+	}
+
+	if err := batch.Commit(); err != nil {
+		return sm.Result{}, err
+	}
+
+	for _, n := range notifs {
+		if n.put {
+			e.hub.NotifyPut(n.key, n.kv, n.prevKv)
+		} else {
+			e.hub.NotifyDelete(n.key, n.kv, n.prevKv)
+		}
+	}
+
+	// Value carries the number of applied operations; Data[0] is the
+	// succeeded flag, matching the MVCC and PebbleDB transaction result shape.
+	var data [1]byte
+	if succeeded {
+		data[0] = 1
+	}
+	return sm.Result{Value: uint64(len(ops)), Data: data[:]}, nil
+}
+
+// evaluateTxnCompare evaluates one transaction compare against current
+// committed KV state. It reuses decodedCompareToService + mvcc.Evaluate so a
+// value or version compare decides identically to the MVCC engine;
+// create/mod-revision targets are refused before this is reached. Existence is
+// projected onto the non-MVCC store as version 1 (present) or 0 (absent), so a
+// version compare degrades honestly and a value compare against an absent key
+// matches only an equal, empty target. A storage read error is returned, never
+// folded into the boolean as "absent" — see the caller for why that would
+// diverge replicas.
+func (e *KVEngine) evaluateTxnCompare(dc protocol.DecodedCompare) (bool, error) {
+	cmp := decodedCompareToService(dc)
+	current, err := e.stg.Get(dc.Key)
+	if err != nil {
+		return false, err
+	}
+	var kv *service.KeyValue
+	if current != nil {
+		kv = &service.KeyValue{Key: dc.Key, Value: current, Version: 1}
+	}
+	return mvcc.Evaluate(&cmp, kv), nil
 }
 
 // kvHandleDelete removes a key, cleans up secondary indexes atomically
