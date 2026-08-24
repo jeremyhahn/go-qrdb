@@ -22,6 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
@@ -476,6 +477,56 @@ type persistCloser interface {
 	Close(ctx context.Context) error
 }
 
+// applyResult carries an apply's outcome back from its own goroutine.
+type applyResult struct {
+	res sm.Result
+	err error
+}
+
+// applyAsync drives one apply on its own goroutine.
+//
+// The guarded verbs persist synchronously (go-qrdb#94), so an apply that has
+// writes held ahead of it -- or whose own write is the held one -- cannot
+// return until the test goroutine releases them. Every reordering test below
+// therefore drives the guarded apply here and releases from the test
+// goroutine.
+//
+// Nothing here reports a failure: conformanceTarget.apply returns (result,
+// error) and never calls t.Fatalf, which matters because t.Fatalf ends only
+// the goroutine it runs on -- a failure raised here would leave the test
+// goroutine waiting on a channel that never receives. The outcome travels
+// back and awaitApply judges it.
+func applyAsync(t *testing.T, target conformanceTarget, cmd []byte) <-chan applyResult {
+	t.Helper()
+	done := make(chan applyResult, 1)
+	go func() {
+		res, err := target.apply(t, cmd)
+		done <- applyResult{res: res, err: err}
+	}()
+	return done
+}
+
+// awaitApply waits for an applyAsync outcome under a bound and fails the test
+// if it does not arrive.
+//
+// The bound is on the WAIT, not asserted after the call returns: a regression
+// that stopped releasing the guarded write would otherwise hang the package
+// until go test's own timeout killed it, and the failure would read as an
+// infrastructure problem rather than as this test.
+func awaitApply(t *testing.T, done <-chan applyResult) sm.Result {
+	t.Helper()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("apply: %v", got.err)
+		}
+		return got.res
+	case <-time.After(30 * time.Second):
+		t.Fatal("the apply never returned — the guarded write is not being released")
+		return sm.Result{}
+	}
+}
+
 func shardedPersistTargets() map[string]func(storage.Storage) (conformanceTarget, persistCloser) {
 	return map[string]func(storage.Storage) (conformanceTarget, persistCloser){
 		"FastStateMachine": func(store storage.Storage) (conformanceTarget, persistCloser) {
@@ -520,17 +571,21 @@ func TestShardedStateMachines_PutIfAbsent_SurvivesASlowDeleteAhead(t *testing.T)
 			// The seed Put's storage write is the one being held.
 			<-store.held
 
-			res, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("new")))
-			if err != nil {
-				t.Fatalf("PutIfAbsent: %v", err)
-			}
+			// The guarded apply runs OFF the test goroutine because it is now
+			// synchronous (go-qrdb#94): it waits for the writes queued ahead of
+			// it, and those are blocked on a release only this goroutine can
+			// perform. Driving it inline would deadlock the test rather than
+			// exercise the ordering.
+			done := applyAsync(t, target, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("new")))
+
+			// Everything is now queued behind the held write; let it all go.
+			close(store.release)
+
+			res := awaitApply(t, done)
 			if res.Value != kv.ResultStored {
 				t.Fatalf("Result.Value = %d, want kv.ResultStored (%d)", res.Value, kv.ResultStored)
 			}
 
-			// Everything is now queued behind the held write; let it all go and
-			// wait for persistence to drain.
-			close(store.release)
 			if cerr := closer.Close(context.Background()); cerr != nil {
 				t.Fatalf("Close: %v", cerr)
 			}
@@ -570,22 +625,28 @@ func TestShardedStateMachines_PutAfterPutIfAbsent_PersistsLast(t *testing.T) {
 			store := newReorderingStorage()
 			target, closer := build(store)
 
-			res, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("first")))
-			if err != nil {
-				t.Fatalf("PutIfAbsent: %v", err)
-			}
-			if res.Value != kv.ResultStored {
-				t.Fatalf("Result.Value = %d, want kv.ResultStored", res.Value)
-			}
+			// The guarded apply runs OFF the test goroutine: its own storage
+			// set is the one reorderingStorage holds, and the guarded write is
+			// synchronous now (go-qrdb#94), so it cannot return until this
+			// goroutine releases it.
+			done := applyAsync(t, target, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("first")))
 
 			// The guarded write's storage set is the one being held.
 			<-store.held
 
+			// Applied while the guarded write is still mid-flight, so the Put
+			// really is racing it rather than following a settled state.
 			if _, err := target.apply(t, buildKVCmd(kv.OpPut, []byte("k"), []byte("second"))); err != nil {
 				t.Fatalf("Put: %v", err)
 			}
 
 			close(store.release)
+
+			res := awaitApply(t, done)
+			if res.Value != kv.ResultStored {
+				t.Fatalf("Result.Value = %d, want kv.ResultStored", res.Value)
+			}
+
 			if cerr := closer.Close(context.Background()); cerr != nil {
 				t.Fatalf("Close: %v", cerr)
 			}

@@ -45,6 +45,16 @@ type shard struct {
 	// order keeps this shard's asynchronous storage writes in apply order.
 	// See persistOrder.
 	order persistOrder
+
+	// claims maps a key with an IN-FLIGHT guarded write to that write's
+	// persistence ticket, so a claim whose storage write fails can tell
+	// whether the cache entry it would restore is still its own.
+	//
+	// It is not a cache of every key: an entry exists only between the guard
+	// admitting a claim and that claim's storage write settling, and the
+	// shard lock is released in between. Any later write to the key removes
+	// the entry, which is what makes the test exact — see withdrawClaim.
+	claims map[string]uint64
 }
 
 // updateHandler is the function signature for write operation handlers.
@@ -142,6 +152,7 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 
 	for i := range f.shards {
 		f.shards[i].data = make(map[string][]byte)
+		f.shards[i].claims = make(map[string]uint64)
 		f.shards[i].order.init()
 	}
 
@@ -627,6 +638,11 @@ func (f *FastStateMachine) cacheSet(key string, value []byte) {
 	s.mu.Lock()
 	s.data[key] = value
 	ticket := s.order.ticket()
+	// A later write to this key retires any in-flight guarded claim on it: the
+	// claim's rollback must not restore a value this write has superseded
+	// (go-qrdb#94, Codex review on PR #110). Done under the same lock as the
+	// cache write, so the retirement and the write are one step.
+	delete(s.claims, key)
 	s.mu.Unlock()
 
 	f.persistAsync(s, ticket, key, value)
@@ -644,6 +660,21 @@ func (f *FastStateMachine) persistAsync(s *shard, ticket uint64, key string, val
 			f.persistSet(key, value)
 		})
 	}()
+}
+
+// persistClaim is the guarded verb's synchronous write. The decision lives in
+// persistClaimLocked, shared with the other sharded state machine; this adds
+// only the log line, which needs this replica's identity.
+func (f *FastStateMachine) persistClaim(s *shard, claimed claim, key string, value []byte) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, f.storage.Set, claimed, key, value)
+	if err != nil {
+		f.logger.Error("guarded storage set failed; claim withdrawn",
+			"key", key,
+			"error", err,
+			"shard_id", f.shardID,
+			"replica_id", f.replicaID)
+	}
+	return err
 }
 
 // persistSet is the storage write itself, run in order by persistAsync.
@@ -667,6 +698,11 @@ func (f *FastStateMachine) cacheDelete(key string) {
 	s.mu.Lock()
 	s.data[key] = nil // tombstone
 	ticket := s.order.ticket()
+	// A later write to this key retires any in-flight guarded claim on it: the
+	// claim's rollback must not restore a value this write has superseded
+	// (go-qrdb#94, Codex review on PR #110). Done under the same lock as the
+	// cache write, so the retirement and the write are one step.
+	delete(s.claims, key)
 	s.mu.Unlock()
 
 	f.wg.Add(1)
