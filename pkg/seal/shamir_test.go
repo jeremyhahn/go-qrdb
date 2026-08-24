@@ -10,6 +10,7 @@ package seal
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -411,20 +412,50 @@ func TestShamirUnsealWithShare_CombineFails(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	// Submit 3 garbage shares that will pass dedup but fail Combine.
+	// Submit valid-base64 shares that pass NewProtectedShare's format check and
+	// dedup but are not real Shamir shares, so Combine fails once the threshold
+	// (3) is met. Malformed, non-base64 input is now rejected earlier — at
+	// submission — because NewProtectedShare bounds and validates the value
+	// before it reaches locked memory.
+	garbage := []string{
+		base64.StdEncoding.EncodeToString([]byte("garbage-share-payload-0")),
+		base64.StdEncoding.EncodeToString([]byte("garbage-share-payload-1")),
+		base64.StdEncoding.EncodeToString([]byte("garbage-share-payload-2")),
+	}
 	for i := 0; i < 2; i++ {
-		_, err := b.UnsealWithShare(ctx, "garbage-share-"+string(rune('a'+i)))
+		_, err := b.UnsealWithShare(ctx, garbage[i])
 		if err != nil {
 			t.Fatalf("UnsealWithShare(%d): %v", i, err)
 		}
 	}
 
-	// The third share meets the threshold and triggers Combine which should fail.
-	_, err := b.UnsealWithShare(ctx, "garbage-share-c")
+	// The third share meets the threshold and triggers Combine, which fails.
+	_, err := b.UnsealWithShare(ctx, garbage[2])
 	if err == nil {
 		t.Fatal("expected error from Combine with garbage shares")
 	}
 	if !errors.Is(err, ErrShamirCombineFailed) {
+		t.Errorf("expected ErrShamirCombineFailed, got %v", err)
+	}
+}
+
+// TestShamirUnsealWithShare_MalformedShareRejected proves a non-base64 share is
+// rejected at SUBMISSION by NewProtectedShare's validation — before it reaches
+// the accumulator or locked memory — rather than being accepted and failing
+// later at Combine.
+func TestShamirUnsealWithShare_MalformedShareRejected(t *testing.T) {
+	b, _ := newShamirTestBarrier(t)
+	ctx := context.Background()
+	if _, err := b.InitializeShamir(ctx, Credentials{Secret: []byte("test-password")}); err != nil {
+		t.Fatalf("InitializeShamir: %v", err)
+	}
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	if _, err := b.UnsealWithShare(ctx, "not valid base64!!"); err == nil {
+		t.Fatal("expected a malformed share to be rejected at submission")
+	} else if !errors.Is(err, ErrShamirCombineFailed) {
 		t.Errorf("expected ErrShamirCombineFailed, got %v", err)
 	}
 }
@@ -754,11 +785,11 @@ func TestShamirLoadOrCreateAccumulator_CreatesNew(t *testing.T) {
 	}
 
 	// Verify the accumulator is functional with the configured threshold.
-	// AddShare should succeed and report Required=3.
+	// AddProtectedShare should succeed and report Required=3.
 	ctx := context.Background()
-	prog, err := acc.AddShare(ctx, "share-1")
+	prog, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "share-1"))
 	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 	if prog.Required != 3 {
 		t.Errorf("expected Required=3, got %d", prog.Required)
@@ -773,13 +804,14 @@ func TestShamirLoadOrCreateAccumulator_ReusesExisting(t *testing.T) {
 
 	// Add a share via acc1, then verify acc2 sees it (same instance).
 	ctx := context.Background()
-	_, err := acc1.AddShare(ctx, "test-share")
+	_, err := acc1.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "test-share"))
 	if err != nil {
-		t.Fatalf("AddShare via acc1: %v", err)
+		t.Fatalf("AddProtectedShare via acc1: %v", err)
 	}
 
-	// If acc2 is the same instance, adding the same share should be rejected.
-	_, err = acc2.AddShare(ctx, "test-share")
+	// If acc2 is the same instance, adding a share with the same value should
+	// be rejected as a duplicate.
+	_, err = acc2.AddProtectedShare(ctx, mkShare(t, 2, 3, 5, "test-share"))
 	if err != ErrShamirDuplicateShare {
 		t.Errorf("expected ErrShamirDuplicateShare (same instance), got %v", err)
 	}
@@ -795,18 +827,18 @@ func TestShamirLoadOrCreateAccumulator_ReplacesExpired(t *testing.T) {
 	// a brief pause. Force expiration by adding a share to confirm
 	// it was created, then verify a new one replaces it.
 	ctx := context.Background()
-	_, _ = acc1.AddShare(ctx, "share-a")
+	_, _ = acc1.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "share-a"))
 
 	// Wait just enough for the zero TTL to kick in.
 	time.Sleep(1 * time.Millisecond)
 
 	acc2 := b.loadOrCreateAccumulator(3, 5, 5*time.Minute)
 
-	// acc2 should be a fresh accumulator. Adding "share-a" should succeed
-	// (no duplicate error), proving it is a different instance.
-	prog, err := acc2.AddShare(ctx, "share-a")
+	// acc2 should be a fresh accumulator. Adding a share with value "share-a"
+	// should succeed (no duplicate error), proving it is a different instance.
+	prog, err := acc2.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "share-a"))
 	if err != nil {
-		t.Fatalf("AddShare on fresh accumulator: %v", err)
+		t.Fatalf("AddProtectedShare on fresh accumulator: %v", err)
 	}
 	if prog.Submitted != 1 {
 		t.Errorf("expected Submitted=1, got %d", prog.Submitted)

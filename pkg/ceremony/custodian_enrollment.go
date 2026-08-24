@@ -142,10 +142,28 @@ func newUnsealAccumulator(threshold int) *unsealAccumulator {
 // submit appends the share (zeroing it on return) and reports whether
 // the threshold was just reached for the first time. The returned bool
 // is true only for the call that crosses the threshold.
-func (a *unsealAccumulator) submit(share []byte) (submitted int, thresholdReached bool) {
+//
+// A submission arriving after the threshold has already been crossed is
+// REFUSED, and refused before the share is copied anywhere. It used to be
+// appended: the copy went into a.shares, the count no longer equalled the
+// threshold so reconstruction never ran, sealed was already false so no later
+// submission could trigger it either, and clearMaterial had already run — so
+// the share sat in ordinary heap memory for the life of the process while the
+// API reported the submission as successful (found in review of go-qrdb#46).
+//
+// The check and the append are under one lock, so a submission racing the
+// threshold-crossing call is either counted before it or refused after it,
+// never both.
+func (a *unsealAccumulator) submit(share []byte) (submitted int, thresholdReached bool, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	defer secure.Wipe(share)
+
+	if !a.sealed.Load() {
+		// Terminal: the quorum has already been consumed by a reconstruction
+		// attempt. The caller's bytes are wiped by the defer above.
+		return len(a.shares), false, ErrUnsealQuorumClosed
+	}
 
 	shareCopy := make([]byte, len(share))
 	copy(shareCopy, share)
@@ -155,16 +173,53 @@ func (a *unsealAccumulator) submit(share []byte) (submitted int, thresholdReache
 	if submitted == a.threshold && a.sealed.CompareAndSwap(true, false) {
 		thresholdReached = true
 	}
-	return submitted, thresholdReached
+	return submitted, thresholdReached, nil
 }
 
+// ErrUnsealQuorumClosed is returned when a share arrives after the quorum has
+// already been consumed by a reconstruction attempt.
+//
+// It is refused rather than accumulated because there is nothing that will ever
+// consume it: the accumulator is terminal, so the share would be held in
+// ordinary memory indefinitely while the caller believed it had contributed.
+var ErrUnsealQuorumClosed = errUnsealQuorumClosed
+
+var errUnsealQuorumClosed = newSentinel("ceremony: unseal quorum is closed; the threshold has already been reached")
+
 // collect returns all accumulated shares. Must be called after thresholdReached.
+//
+// The returned slice headers ALIAS the accumulator's buffers: copy on a
+// [][]byte copies headers, not arrays. That is deliberate — wiping an element
+// of the result clears the accumulator's copy too — but it means a caller must
+// treat what it gets as the accumulator's material and not merely its own.
 func (a *unsealAccumulator) collect() [][]byte {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := make([][]byte, len(a.shares))
 	copy(out, a.shares)
 	return out
+}
+
+// clearMaterial zeroes every accumulated share and drops the references.
+//
+// Called after a terminal reconstruction attempt, whether it succeeded or
+// failed. Reconstruction wipes the buffers it was handed, and those alias
+// these, so the zeroing is usually redundant — it is done anyway because
+// "usually" is not a property to rely on for key material, and dropping the
+// references is what stops the accumulator pinning them afterwards.
+//
+// It deliberately does NOT touch sealed. Whether a failed reconstruction may
+// be retried with a fresh set of shares is a ceremony policy question — it
+// decides whether a caller can resubmit indefinitely — and this is a cleanup
+// routine, not the place to settle it (go-qrdb#46).
+func (a *unsealAccumulator) clearMaterial() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.shares {
+		secure.Wipe(a.shares[i])
+		a.shares[i] = nil
+	}
+	a.shares = nil
 }
 
 // custodianServiceFields are the fields added to CeremonyService for Phase 4.
@@ -500,7 +555,18 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 	acc := ext.accumulator
 	ext.accMu.Unlock()
 
-	submitted, reached := acc.submit(req.ShareBytes) // zeroes req.ShareBytes
+	submitted, reached, submitErr := acc.submit(req.ShareBytes) // zeroes req.ShareBytes
+	if submitErr != nil {
+		if ext.AuditLogger != nil {
+			ext.AuditLogger.Emit(ctx, audit.AuditEvent{
+				Resource:   "barrier",
+				Action:     "unseal-share",
+				Outcome:    audit.OutcomeFailure + ":quorum-closed",
+				Attributes: map[string]any{"custodianID": req.CustodianID},
+			})
+		}
+		return nil, submitErr
+	}
 
 	if ext.AuditLogger != nil {
 		ext.AuditLogger.Emit(ctx, audit.AuditEvent{
@@ -522,6 +588,10 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 
 	if reached {
 		shares := acc.collect()
+		// The attempt is terminal either way: reached fires exactly once, so
+		// this accumulator will never reconstruct again and must not keep the
+		// share material alive after it.
+		defer acc.clearMaterial()
 		if err := s.reconstructAndUnseal(ctx, shares, ext); err != nil {
 			if ext.AuditLogger != nil {
 				ext.AuditLogger.Emit(ctx, audit.AuditEvent{
@@ -553,40 +623,87 @@ func (s *CeremonyService) SubmitUnsealShare(ctx context.Context, req SubmitUnsea
 // Shamir Combine, unseals the barrier, and zeroes all key material.
 // Each element of shares is a JSON-encoded *shamir.Share.
 func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares [][]byte, ext *CeremonyExtension) error {
-	if ext.BarrierUnseal == nil {
-		return ErrNotImplemented
-	}
-
-	shamirShares := make([]*quicraftShamir.Share, 0, len(rawShares))
-	for _, raw := range rawShares {
-		var sh quicraftShamir.Share
-		if err := unmarshalShare(raw, &sh); err != nil {
-			return &ShamirSplitError{Err: err}
-		}
-		shamirShares = append(shamirShares, &sh)
-	}
-
-	rootKey, err := quicraftShamir.Combine(shamirShares) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
-	if err != nil {
-		return &ShamirSplitError{Err: err}
-	}
-
-	// Wrap the reconstructed root key in a *secure.Buffer; the buffer
-	// is destroyed after unseal, and raw share bytes are wiped behind
-	// it. NewBufferFromBytes wipes rootKey on entry.
-	rootBuf, err := secure.NewBufferFromBytes(rootKey)
-	if err != nil {
-		for _, share := range rawShares {
-			secure.Wipe(share)
-		}
-		return err
-	}
+	// Wipe the raw share JSON on EVERY path out, registered before anything
+	// that can fail — including the BarrierUnseal nil check below, which used
+	// to return ahead of it and leave a direct caller's plaintext readable. It used to be wiped only by a defer installed after
+	// CombineProtected succeeded, so a share that failed to unmarshal, or a
+	// syntactically valid set that would not combine, returned with the
+	// plaintext still resident (found in review of go-qrdb#46).
+	//
+	// That is not merely untidy. These slices ALIAS the accumulator's own
+	// buffers — collect() copies the slice headers, not the arrays — and the
+	// accumulator has already flipped sealed to false by the time this runs,
+	// so it never attempts reconstruction again and nothing else would ever
+	// clear them. The material would sit in collectable memory for the life of
+	// the process. Wiping here clears the accumulator's copies by the same
+	// aliasing.
 	defer func() {
-		rootBuf.Destroy()
 		for _, share := range rawShares {
 			secure.Wipe(share)
 		}
 	}()
+
+	if ext.BarrierUnseal == nil {
+		return ErrNotImplemented
+	}
+
+	// Decoding a ProtectedShare is a CONSTRUCTION: each one allocates locked
+	// memory that must be destroyed, so the slice is built with its cleanup
+	// already deferred rather than after the loop succeeds. A share that
+	// decodes and then meets an error two iterations later must still be
+	// released — locked memory is charged against RLIMIT_MEMLOCK, whose
+	// exhaustion memguard answers by terminating the process.
+	//
+	// The set size is bounded upstream by enrollment: rawShares is assembled
+	// by the accumulator from enrolled custodians' submissions (see the caller
+	// above), not decoded from one caller-supplied JSON array. That is the
+	// case UnmarshalShareSet exists for, and it is not this one.
+	shamirShares := make([]*quicraftShamir.ProtectedShare, 0, len(rawShares))
+	defer func() {
+		for _, share := range shamirShares {
+			share.Destroy()
+		}
+	}()
+	for _, raw := range rawShares {
+		sh := new(quicraftShamir.ProtectedShare)
+		if err := unmarshalShare(raw, sh); err != nil {
+			return &ShamirSplitError{Err: err}
+		}
+		shamirShares = append(shamirShares, sh)
+	}
+
+	rootEnclave, err := quicraftShamir.CombineProtected(shamirShares)
+	if err != nil {
+		return &ShamirSplitError{Err: err}
+	}
+
+	// Reconstruction lands in the enclave rather than an ordinary heap
+	// allocation; the brief, immediately-wiped copy below is the only heap
+	// window, taken because the unseal cannot run inside the borrow (see next).
+	defer rootEnclave.Destroy()
+
+	// Copy the reconstructed root key into a PROTECTED buffer and unseal OUTSIDE
+	// the enclave borrow. UnsealWithKey allocates protected memory of its own,
+	// and go-quicraft v0.9's MemoryEnclave.WithBytes holds the enclave package's
+	// purgeMu as a READ lock for the whole callback — so an allocation inside
+	// the callback deadlocks trying to take that same lock EXCLUSIVELY. The
+	// destination buffer and its view are obtained BEFORE the source borrow, so
+	// no protected allocation runs under it; pkg/secure has its own purgeMu,
+	// distinct from the enclave package's, so allocating the buffer does not
+	// contend with the source borrow. The key never lands in ordinary heap
+	// memory, and the buffer is destroyed the moment UnsealWithKey returns.
+	rootBuf, err := secure.NewBuffer(rootEnclave.Size())
+	if err != nil {
+		return err
+	}
+	defer rootBuf.Destroy()
+	view := rootBuf.Bytes()
+	if err := rootEnclave.WithBytes(func(b []byte) error {
+		copy(view, b)
+		return nil
+	}); err != nil {
+		return err
+	}
 
 	if err := ext.BarrierUnseal.UnsealWithKey(ctx, rootBuf.Bytes()); err != nil {
 		return err
@@ -599,7 +716,7 @@ func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares []
 }
 
 // unmarshalShare deserialises JSON-encoded share bytes into a *quicraftShamir.Share.
-func unmarshalShare(data []byte, sh *quicraftShamir.Share) error {
+func unmarshalShare(data []byte, sh *quicraftShamir.ProtectedShare) error {
 	return json.Unmarshal(data, sh)
 }
 

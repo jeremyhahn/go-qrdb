@@ -49,11 +49,21 @@ type SealedRootKey = quicraftseal.SealedRootKey
 // layout as the leader or DEKs diverge.
 type HKDFVersion = quicraftseal.HKDFVersion
 
-// ShareAccumulator collects shares until the quorum threshold is met.
-type ShareAccumulator = quicraftseal.ShareAccumulator
+// ShareAccumulator collects protected Shamir shares until the quorum
+// threshold is met, holding every one in protected memory on the way in and
+// returning the reconstructed secret in an enclave on the way out.
+//
+// It aliases go-quicraft's ProtectedShareAccumulator. The string-valued
+// sibling that existed through go-quicraft v0.8.0-alpha was removed upstream
+// (go-quicraft #35/#37): an accumulator that took a Go string still admitted
+// an immortal, un-wipeable heap copy of the share, which is exactly the
+// exposure the ProtectedShare family exists to close.
+type ShareAccumulator = quicraftseal.ProtectedShareAccumulator
 
-// ShareSplitter splits a secret into M-of-N Shamir shares.
-type ShareSplitter = quicraftseal.ShareSplitter
+// ShareSplitter splits a secret into M-of-N Shamir shares whose values live in
+// protected memory. It aliases go-quicraft's ProtectedShareSplitter; the
+// string-valued sibling was removed upstream for the reason above.
+type ShareSplitter = quicraftseal.ProtectedShareSplitter
 
 // QuorumProgress reports the current state of a quorum accumulator.
 type QuorumProgress = quicraftseal.QuorumProgress

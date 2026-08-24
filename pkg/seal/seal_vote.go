@@ -19,6 +19,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -52,7 +54,21 @@ func (b *StorageBarrier) SubmitSealVote(ctx context.Context, shareValue string) 
 
 	acc := b.loadOrCreateSealVoteAccumulator(threshold, total, ttl)
 
-	prog, err := acc.AddShare(ctx, shareValue)
+	// Wrap the operator's share string into protected memory before it enters
+	// the accumulator, which then owns and destroys it. Index is metadata
+	// CombineProtected ignores (it reads the x-coordinate from the value), so a
+	// positional label within [1, total] is sufficient.
+	raw := []byte(shareValue)
+	share, err := shamir.NewProtectedShare(acc.GetProgress().Submitted+1, threshold, total, raw)
+	// Wipe raw unconditionally: NewProtectedShare wipes it on success but leaves
+	// it untouched on a validation failure, which would otherwise strand a
+	// plaintext copy on the heap.
+	secure.Wipe(raw)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "protect share", Cause: err}
+	}
+
+	prog, err := acc.AddProtectedShare(ctx, share)
 	if err != nil {
 		return nil, err
 	}
@@ -66,21 +82,32 @@ func (b *StorageBarrier) SubmitSealVote(ctx context.Context, shareValue string) 
 		return prog, nil
 	}
 
-	// Threshold met: reconstruct the secret and verify it against the
-	// sealed root key before sealing. This ensures SOs cannot cause a seal
-	// with random/garbage shares.
-	secret, err := acc.Reconstruct(ctx)
+	// Threshold met: reconstruct the secret into protected memory and verify
+	// it against the sealed root key before sealing. This ensures SOs cannot
+	// cause a seal with random/garbage shares.
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
 		acc.Reset()
 		b.clearSealVoteAccumulator()
 		return nil, ErrSealVoteVerificationFailed
 	}
-	defer secure.Wipe(secret)
+	defer secretEnclave.Destroy()
 
-	// Verify the reconstructed secret. Reset and reject on failure so
-	// the round can be retried with correct shares. The returned root key
-	// copy is wiped immediately — only the verification outcome is used.
-	rootKey, verifyErr := b.verifySecretAndGetRootKey(ctx, secret)
+	// Copy the reconstructed secret into a protected buffer and verify OUTSIDE
+	// the enclave borrow: verifySecretAndGetRootKey performs an AEAD unwrap that
+	// allocates protected memory, which deadlocks if run inside WithBytes (see
+	// copyEnclaveToBuffer in shamir.go). Reset and reject on failure so the round
+	// can be retried with correct shares. The buffer is destroyed and the
+	// returned root key wiped immediately — only the verification outcome is used.
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		acc.Reset()
+		b.clearSealVoteAccumulator()
+		return nil, ErrSealVoteVerificationFailed
+	}
+	defer secretBuf.Destroy()
+
+	rootKey, verifyErr := b.verifySecretAndGetRootKey(ctx, secretBuf.Bytes())
 	if verifyErr != nil {
 		acc.Reset()
 		b.clearSealVoteAccumulator()

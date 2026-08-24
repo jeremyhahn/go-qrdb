@@ -16,6 +16,7 @@ package seal
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 )
@@ -127,16 +128,38 @@ func TestSubmitSealVote_GarbageSharesVerificationFailed(t *testing.T) {
 	b, _ := newSealVoteBarrier(t)
 	ctx := context.Background()
 
-	// Submit two distinct garbage shares to meet threshold=2.
-	_, err1 := b.SubmitSealVote(ctx, "garbage-share-aaaaaaaaa")
+	// Submit two distinct valid-base64 shares to meet threshold=2. They pass
+	// NewProtectedShare's format check and dedup but are not real Shamir
+	// shares, so reconstruction fails verification once the threshold is met.
+	// (Malformed, non-base64 input is now rejected earlier, at submission.)
+	_, err1 := b.SubmitSealVote(ctx, base64.StdEncoding.EncodeToString([]byte("garbage-share-payload-a")))
 	if err1 != nil {
-		// First garbage share should be accepted (AddShare can't verify
-		// correctness until threshold is met).
+		// First share should be accepted (verification cannot happen until
+		// the threshold is met).
 		t.Fatalf("first garbage share unexpected error: %v", err1)
 	}
-	_, gotErr := b.SubmitSealVote(ctx, "garbage-share-bbbbbbbbb")
+	_, gotErr := b.SubmitSealVote(ctx, base64.StdEncoding.EncodeToString([]byte("garbage-share-payload-b")))
 	if !errors.Is(gotErr, ErrSealVoteVerificationFailed) {
 		t.Errorf("got %v, want ErrSealVoteVerificationFailed", gotErr)
+	}
+
+	// Barrier must not be sealed.
+	if b.IsSealed() {
+		t.Error("barrier must not be sealed after failed verification")
+	}
+}
+
+// TestSubmitSealVote_MalformedShareRejected proves a non-base64 share is
+// rejected at SUBMISSION by NewProtectedShare's validation, before it reaches
+// the accumulator or locked memory.
+func TestSubmitSealVote_MalformedShareRejected(t *testing.T) {
+	b, _ := newSealVoteBarrier(t)
+	ctx := context.Background()
+
+	if _, err := b.SubmitSealVote(ctx, "not valid base64!!"); err == nil {
+		t.Fatal("expected a malformed share to be rejected at submission")
+	} else if !errors.Is(err, ErrShamirCombineFailed) {
+		t.Errorf("expected ErrShamirCombineFailed, got %v", err)
 	}
 
 	// Barrier must not be sealed.

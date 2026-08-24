@@ -125,25 +125,50 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 		return ErrShamirQuorumIncomplete
 	}
 
-	// Build Share objects for Shamir combine.
-	shares := make([]*shamir.Share, len(shareValues))
-	for i, val := range shareValues {
-		shares[i] = &shamir.Share{
-			Index:     i + 1,
-			Threshold: meta.Threshold,
-			Total:     meta.Total,
-			Value:     val,
+	// Each share is one mlock'd allocation against RLIMIT_MEMLOCK; destroy the
+	// set on every path out of this function.
+	shares := make([]*shamir.ProtectedShare, 0, len(shareValues))
+	defer func() {
+		for _, share := range shares {
+			share.Destroy()
 		}
+	}()
+	for i, val := range shareValues {
+		// NewProtectedShare wipes raw as it enters protected memory on success;
+		// wipe unconditionally so a validation failure (which leaves it
+		// untouched) does not strand a plaintext copy on the heap. The caller's
+		// string cannot be wiped (go-quicraft#35).
+		raw := []byte(val)
+		share, err := shamir.NewProtectedShare(i+1, meta.Threshold, meta.Total, raw)
+		secure.Wipe(raw)
+		if err != nil {
+			return ErrShamirCombineFailed
+		}
+		shares = append(shares, share)
 	}
 
-	rootKey, err := shamir.CombineUnverified(shares) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
+	rootEnclave, err := shamir.CombineProtected(shares)
 	if err != nil {
 		return ErrShamirCombineFailed
 	}
-	defer secure.Wipe(rootKey)
+	defer rootEnclave.Destroy()
 
-	// Use unsealDirect to initialize/unseal the EpochBarrier with
-	// the recovered root key.
+	// Copy the recovered root key into a protected buffer and run the recovery
+	// OUTSIDE the enclave borrow: barrier.Unseal allocates protected memory,
+	// which deadlocks if run inside WithBytes (see copyEnclaveToBuffer in
+	// shamir.go). The buffer is destroyed as soon as recovery returns. Nothing
+	// below retains rootKey — newRecoveryStrategy copies it into its own
+	// protected enclave and stampNoneOriginSealedState only reads — which was
+	// already the contract the deferred wipe imposed.
+	rootBuf, err := copyEnclaveToBuffer(rootEnclave)
+	if err != nil {
+		return err
+	}
+	defer rootBuf.Destroy()
+	rootKey := rootBuf.Bytes()
+
+	// Use unsealDirect to initialize/unseal the EpochBarrier with the recovered
+	// root key.
 	shamirStrat, ok := b.strategyByID(StrategyShamir)
 	if !ok {
 		// Create a temporary strategy to unseal.
@@ -165,7 +190,17 @@ func (b *StorageBarrier) RecoverWithKeys(ctx context.Context, shareValues []stri
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr
 	}
-	recStrat := newRecoveryStrategy(rootKey, shamirStrat)
+	// newRecoveryStrategy COPIES the root key into a protected enclave that only
+	// Close destroys, and Barrier.Unseal does not retain the strategy — it calls
+	// UnsealRootKey and drops it. So without this Close the copy outlives the
+	// enclave it was taken from, on both the success and the failure path, which
+	// would defeat the protected-memory guarantee this change is making (found
+	// in review of go-qrdb#46).
+	recStrat, recErr := newRecoveryStrategyFn(rootKey, shamirStrat)
+	if recErr != nil {
+		return recErr
+	}
+	defer func() { _ = recStrat.Close() }()
 	if unsealErr := b.barrier.Unseal(ctx, recStrat, Credentials{}); unsealErr != nil {
 		return unsealErr
 	}
@@ -210,7 +245,13 @@ func (b *StorageBarrier) recoverWithSoftwareStrategy(ctx context.Context, rootKe
 	}
 
 	// Use recoveryStrategy to inject the pre-recovered root key.
-	recStrat := newRecoveryStrategy(rootKey, delegate)
+	// As above: the strategy's protected copy of the root key is destroyed by
+	// Close, and nothing else destroys it.
+	recStrat, recErr := newRecoveryStrategyFn(rootKey, delegate)
+	if recErr != nil {
+		return recErr
+	}
+	defer func() { _ = recStrat.Close() }()
 	if unsealErr := b.barrier.Unseal(ctx, recStrat, Credentials{}); unsealErr != nil {
 		return unsealErr
 	}
@@ -226,28 +267,58 @@ func (b *StorageBarrier) recoverWithSoftwareStrategy(ctx context.Context, rootKe
 // deferred-passphrase software strategy) that are not available during
 // disaster recovery.
 type recoveryStrategy struct {
-	rootKey  []byte
+	// rootKey holds the pre-recovered root key in protected memory for the
+	// whole barrier-unseal operation, not an ordinary heap []byte. The most
+	// sensitive recovery material must live in an mlock'd, guard-paged enclave
+	// while the strategy is alive, and be genuinely wiped by Close — a plain
+	// slice cleared only at the end left it in collectable memory for the
+	// duration (found in review of go-qrdb#46).
+	rootKey  *secure.Secret
 	delegate SealingStrategy
 }
 
-func newRecoveryStrategy(rootKey []byte, delegate SealingStrategy) *recoveryStrategy {
+// newRecoveryStrategyFn is indirected so a test can observe the temporary
+// strategy the recovery paths build and assert its protected copy of the root
+// key is destroyed. The strategy is created and discarded inside those
+// functions, so there is no other seam through which the cleanup can be
+// verified — and verifying it matters, because Close is the only thing that
+// destroys that copy (go-qrdb#46).
+var newRecoveryStrategyFn = newRecoveryStrategy
+
+func newRecoveryStrategy(rootKey []byte, delegate SealingStrategy) (*recoveryStrategy, error) {
+	// Copy into a throwaway buffer NewSecret takes ownership of and wipes, so
+	// the caller's borrowed rootKey is left intact and no extra plaintext copy
+	// outlives this call.
 	key := make([]byte, len(rootKey))
 	copy(key, rootKey)
-	return &recoveryStrategy{rootKey: key, delegate: delegate}
+	sec, err := secure.NewSecret(key)
+	if err != nil {
+		secure.Wipe(key)
+		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Op: "protect recovery key", Cause: err}
+	}
+	return &recoveryStrategy{rootKey: sec, delegate: delegate}, nil
 }
 
 func (r *recoveryStrategy) ID() StrategyID       { return StrategyID("recovery") }
 func (r *recoveryStrategy) Available() bool      { return true }
 func (r *recoveryStrategy) HardwareBacked() bool { return false }
-func (r *recoveryStrategy) Close() error         { secure.Wipe(r.rootKey); return nil }
+func (r *recoveryStrategy) Close() error         { r.rootKey.Destroy(); return nil }
 
 func (r *recoveryStrategy) SealRootKey(_ context.Context, _ []byte, _ Credentials) (*SealedRootKey, error) {
 	return nil, ErrAlreadyInitialized
 }
 
 func (r *recoveryStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ Credentials) ([]byte, error) {
-	key := make([]byte, len(r.rootKey))
-	copy(key, r.rootKey)
+	// Borrow the protected key only for the moment it takes to hand a copy to
+	// Barrier.Unseal, which owns and wipes the returned slice. The enclave is
+	// re-sealed the instant the buffer is destroyed.
+	buf, err := r.rootKey.Open()
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "open recovery key", Cause: err}
+	}
+	defer buf.Destroy()
+	key := make([]byte, buf.Size())
+	copy(key, buf.Bytes())
 	return key, nil
 }
 

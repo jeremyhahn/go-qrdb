@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
+	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -188,6 +189,41 @@ func (b *StorageBarrier) updateSealedShamirParams(ctx context.Context, threshold
 	return nil
 }
 
+// copyEnclaveToBuffer copies the reconstructed secret out of enc into a freshly
+// allocated PROTECTED (mlock'd, guard-paged) buffer the caller MUST Destroy. The
+// secret therefore never lands in an ordinary garbage-collected heap allocation
+// — the layered protected-memory rule holds across the whole downstream
+// operation, not just until a wipe.
+//
+// The destination and its view are obtained BEFORE the source is borrowed, and
+// the copy happens inside the source borrow, so no protected ALLOCATION runs
+// while any enclave borrow is held. That ordering matters because the barrier's
+// unseal/verify — which the caller runs next, on buf.Bytes() — allocate
+// protected memory of their own, and go-quicraft v0.9's MemoryEnclave.WithBytes
+// holds the enclave package's purgeMu as a READ lock across its callback; taking
+// that lock EXCLUSIVELY for an allocation while already holding it as a reader
+// self-deadlocks. The caller reads the secret via buf.Bytes() with no borrow
+// held and Destroys the buffer when the downstream operation returns.
+//
+// pkg/secure and go-quicraft's enclave package have SEPARATE purgeMu mutexes, so
+// allocating this secure.Buffer does not contend with the source enclave's
+// borrow.
+func copyEnclaveToBuffer(enc *enclave.MemoryEnclave) (*secure.Buffer, error) {
+	dst, err := secure.NewBuffer(enc.Size())
+	if err != nil {
+		return nil, err
+	}
+	view := dst.Bytes()
+	if err := enc.WithBytes(func(src []byte) error {
+		copy(view, src)
+		return nil
+	}); err != nil {
+		dst.Destroy()
+		return nil, err
+	}
+	return dst, nil
+}
+
 // UnsealWithShare submits a single Shamir share toward the quorum threshold.
 // Once enough shares have been submitted, the barrier is automatically unsealed.
 // The quorum accumulator expires after the configured TTL (default 5 minutes).
@@ -211,7 +247,25 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 	// Get or create the accumulator. Reset if the previous one expired.
 	acc := b.loadOrCreateAccumulator(threshold, total, ttl)
 
-	prog, err := acc.AddShare(ctx, shareValue)
+	// Wrap the operator's share string into protected memory at once, then
+	// hand ownership to the accumulator. NewProtectedShare takes ownership of
+	// the byte copy and wipes it. Index is unauthenticated metadata that
+	// CombineProtected ignores — it reads the x-coordinate from the value — so
+	// a positional label suffices, and it stays within [1, total] because the
+	// quorum completes (and the accumulator resets) at threshold <= total. The
+	// caller's string itself cannot be wiped; that residue is the transport
+	// boundary go-quicraft #35 names.
+	raw := []byte(shareValue)
+	share, err := shamir.NewProtectedShare(acc.GetProgress().Submitted+1, threshold, total, raw)
+	// NewProtectedShare wipes raw on success but, by contract, leaves it
+	// untouched on a validation failure — so wipe unconditionally: a malformed
+	// submission must not strand a plaintext copy on the heap.
+	secure.Wipe(raw)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "protect share", Cause: err}
+	}
+
+	prog, err := acc.AddProtectedShare(ctx, share)
 	if err != nil {
 		return nil, err
 	}
@@ -220,29 +274,36 @@ func (b *StorageBarrier) UnsealWithShare(ctx context.Context, shareValue string)
 		return prog, nil
 	}
 
-	// Threshold met: reconstruct the secret and unseal.
-	secret, err := acc.Reconstruct(ctx)
+	// Threshold met: reconstruct the secret into protected memory and unseal.
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
 	}
-
-	// Wipe the transient reconstructed secret once the unseal has consumed it,
-	// and destroy every accumulated share immediately — a subsequent unseal
+	// Destroy the reconstructed secret once the unseal has consumed it, and
+	// destroy every accumulated share immediately — a subsequent unseal
 	// requires the Security Officers to submit fresh shares.
-	defer secure.Wipe(secret)
+	defer secretEnclave.Destroy()
 	acc.Reset()
+
+	// Copy the secret into a protected buffer and unseal OUTSIDE the enclave
+	// borrow: the unseal allocates protected memory, which deadlocks under
+	// WithBytes (see copyEnclaveToBuffer). The buffer is destroyed the moment
+	// the unseal returns.
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed secret", Cause: err}
+	}
+	defer secretBuf.Destroy()
 
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
 		// Direct mode: the reconstructed secret is the unseal key (or, on
 		// legacy barriers, the root key itself); unsealDirect resolves it.
-		if err := b.unsealDirect(ctx, secret); err != nil {
+		if err := b.unsealDirect(ctx, secretBuf.Bytes()); err != nil {
 			return nil, err
 		}
-	} else {
+	} else if err := b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()}); err != nil {
 		// Credential mode: the reconstructed secret is the password.
-		if err := b.Unseal(ctx, Credentials{Secret: secret}); err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 
 	return prog, nil
@@ -286,29 +347,56 @@ func (b *StorageBarrier) UnsealWithShares(ctx context.Context, shareValues []str
 		return ErrShamirQuorumIncomplete
 	}
 
-	shares := make([]*shamir.Share, len(shareValues))
-	for i, val := range shareValues {
-		shares[i] = &shamir.Share{
-			Index:     i + 1,
-			Threshold: threshold,
-			Total:     b.config.Shamir.TotalShares,
-			Value:     val,
+	// Each share is one mlock'd allocation, so the set is destroyed however
+	// this function unwinds — including the error return inside the loop.
+	shares := make([]*shamir.ProtectedShare, 0, len(shareValues))
+	defer func() {
+		for _, share := range shares {
+			share.Destroy()
 		}
+	}()
+	for i, val := range shareValues {
+		// NewProtectedShare takes ownership of raw and wipes it on success, so
+		// the copy is cleared as it enters protected memory; wipe unconditionally
+		// so a validation failure (which leaves raw untouched, by contract) does
+		// not strand a plaintext copy on the heap. The caller's string cannot be
+		// wiped — shareValues is []string because operators submit share strings
+		// through the transport, the residue at the transport boundary that
+		// go-quicraft#35 names (the string-mandating interface was removed in
+		// go-quicraft v0.9.0-alpha).
+		raw := []byte(val)
+		share, err := shamir.NewProtectedShare(i+1, threshold, b.config.Shamir.TotalShares, raw)
+		secure.Wipe(raw)
+		if err != nil {
+			return &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
+		}
+		shares = append(shares, share)
 	}
 
-	secret, err := shamir.CombineUnverified(shares) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
+	secretEnclave, err := shamir.CombineProtected(shares)
 	if err != nil {
 		return &ShamirError{Sentinel: ErrShamirCombineFailed, Cause: err}
 	}
-	// Wipe the transient reconstructed secret once the unseal has consumed it,
-	// matching the single-share UnsealWithShare path.
-	defer secure.Wipe(secret)
+	// The reconstructed secret no longer exists as an ordinary heap
+	// allocation. It used to, cleaned up with secure.Wipe — which is a real
+	// wipe, but only after the value had already lived in collectable memory
+	// for the duration of the unseal.
+	defer secretEnclave.Destroy()
+
+	// Copy the secret into a protected buffer and unseal OUTSIDE the enclave
+	// borrow: the unseal allocates protected memory, which deadlocks under
+	// WithBytes (see copyEnclaveToBuffer). The buffer is destroyed the moment
+	// the unseal returns.
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		return &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read reconstructed secret", Cause: err}
+	}
+	defer secretBuf.Destroy()
 
 	if shamirStrategy := b.ShamirStrategy(); shamirStrategy != nil {
-		return b.unsealDirect(ctx, secret)
+		return b.unsealDirect(ctx, secretBuf.Bytes())
 	}
-
-	return b.Unseal(ctx, Credentials{Secret: secret})
+	return b.Unseal(ctx, Credentials{Secret: secretBuf.Bytes()})
 }
 
 // Compile-time interface checks.
@@ -329,8 +417,8 @@ var (
 // Reconstruct.
 type shamirShareAccumulator struct {
 	mu        sync.Mutex
-	seen      map[string]struct{} // SHA-256 hex digests of submitted shares (one-way)
-	shares    []*secure.Secret    // enclave-sealed share values, in submission order
+	seen      map[string]struct{}      // SHA-256 hex digests of submitted shares (one-way)
+	shares    []*shamir.ProtectedShare // protected share values, in submission order
 	threshold int
 	total     int
 	ttl       time.Duration
@@ -342,7 +430,7 @@ type shamirShareAccumulator struct {
 func NewShamirShareAccumulator(threshold, total int, ttl time.Duration) ShareAccumulator {
 	return &shamirShareAccumulator{
 		seen:      make(map[string]struct{}),
-		shares:    make([]*secure.Secret, 0, threshold),
+		shares:    make([]*shamir.ProtectedShare, 0, threshold),
 		threshold: threshold,
 		total:     total,
 		ttl:       ttl,
@@ -350,31 +438,37 @@ func NewShamirShareAccumulator(threshold, total int, ttl time.Duration) ShareAcc
 	}
 }
 
-// AddShare seals a share into a memguard enclave toward the quorum. It rejects
-// expired accumulators and duplicate shares (identified by a SHA-256 digest,
-// so the raw share value is never retained outside the enclave).
-func (a *shamirShareAccumulator) AddShare(_ context.Context, share string) (*QuorumProgress, error) {
+// AddProtectedShare adds one protected share toward the quorum, TAKING
+// OWNERSHIP of it: the accumulator destroys the share whether or not it is
+// accepted and whether or not the quorum ever completes, so a caller must not
+// touch it again after this returns. It rejects expired accumulators and
+// duplicate shares, identified by a SHA-256 digest computed inside the share's
+// protected borrow so the raw value is never copied out to form the map key.
+func (a *shamirShareAccumulator) AddProtectedShare(_ context.Context, share *shamir.ProtectedShare) (*QuorumProgress, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	if a.expired() {
+		share.Destroy()
 		return nil, ErrShamirQuorumExpired
 	}
 
-	digest := sha256.Sum256([]byte(share))
-	key := hex.EncodeToString(digest[:])
+	var key string
+	if err := share.WithValue(func(v []byte) error {
+		digest := sha256.Sum256(v)
+		key = hex.EncodeToString(digest[:])
+		return nil
+	}); err != nil {
+		share.Destroy()
+		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Op: "digest share", Cause: err}
+	}
 	if _, exists := a.seen[key]; exists {
+		share.Destroy()
 		return nil, ErrShamirDuplicateShare
 	}
 
-	// Seal a copy of the share into an enclave; NewSecret wipes the copy.
-	sec, err := secure.NewSecret([]byte(share))
-	if err != nil {
-		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Op: "seal share", Cause: err}
-	}
-
 	a.seen[key] = struct{}{}
-	a.shares = append(a.shares, sec)
+	a.shares = append(a.shares, share)
 
 	submitted := len(a.shares)
 	return &QuorumProgress{
@@ -384,11 +478,13 @@ func (a *shamirShareAccumulator) AddShare(_ context.Context, share string) (*Quo
 	}, nil
 }
 
-// Reconstruct attempts to reconstruct the secret from accumulated shares.
-// Returns an error if the threshold has not been met. Share plaintext is
-// materialized only transiently: each enclave is opened into a buffer that is
-// destroyed before return.
-func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) {
+// ReconstructProtected reconstructs the secret from the accumulated shares into
+// locked memory. It returns an error if the threshold has not been met. The
+// caller owns the returned enclave and must Destroy it. The share plaintext is
+// never materialized as an ordinary, garbage-collected []byte: CombineProtected
+// works share by share inside protected memory and returns the secret in an
+// enclave.
+func (a *shamirShareAccumulator) ReconstructProtected(_ context.Context) (*enclave.MemoryEnclave, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -396,28 +492,11 @@ func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) 
 		return nil, ErrShamirQuorumIncomplete
 	}
 
-	bufs := make([]*secure.Buffer, 0, len(a.shares))
-	defer func() {
-		for _, b := range bufs {
-			b.Destroy()
-		}
-	}()
-
-	// Pass each share VALUE as a wipeable []byte straight from its enclave
-	// buffer to CombineBytes. The buffers are destroyed by the deferred cleanup
-	// above; this avoids ever materializing the share plaintext as an immutable,
-	// garbage-collected (un-wipeable) Go string.
-	values := make([][]byte, 0, len(a.shares))
-	for _, sec := range a.shares {
-		buf, err := sec.Open()
-		if err != nil {
-			return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "open share", Cause: err}
-		}
-		bufs = append(bufs, buf)
-		values = append(values, buf.Bytes())
+	secretEnclave, err := shamir.CombineProtected(a.shares)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "combine shares", Cause: err}
 	}
-
-	return shamir.CombineBytes(values, a.threshold)
+	return secretEnclave, nil
 }
 
 // Reset destroys every accumulated share enclave and resets the TTL timer.
@@ -426,11 +505,11 @@ func (a *shamirShareAccumulator) Reconstruct(_ context.Context) ([]byte, error) 
 func (a *shamirShareAccumulator) Reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for _, sec := range a.shares {
-		sec.Destroy()
+	for _, share := range a.shares {
+		share.Destroy()
 	}
 	a.seen = make(map[string]struct{})
-	a.shares = make([]*secure.Secret, 0, a.threshold)
+	a.shares = make([]*shamir.ProtectedShare, 0, a.threshold)
 	a.createdAt = time.Now()
 }
 
@@ -459,7 +538,8 @@ func (a *shamirShareAccumulator) expired() bool {
 	return time.Since(a.createdAt) > a.ttl
 }
 
-// shamirShareSplitter implements ShareSplitter using go-qrdb's Shamir library.
+// shamirShareSplitter implements ShareSplitter using go-quicraft's Shamir
+// library.
 type shamirShareSplitter struct{}
 
 // NewShamirShareSplitter creates a ShareSplitter.
@@ -467,15 +547,19 @@ func NewShamirShareSplitter() ShareSplitter {
 	return &shamirShareSplitter{}
 }
 
-// Split divides the secret into threshold-of-total Shamir shares.
-func (s *shamirShareSplitter) Split(secret []byte, threshold, total int) ([]string, error) {
-	shares, err := shamir.Split(secret, threshold, total) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
+// SplitProtected divides the secret into threshold-of-total Shamir shares whose
+// values live in protected memory. The caller owns the returned shares and MUST
+// Destroy every one of them, including on its own error paths — each is one
+// mlock'd allocation charged against RLIMIT_MEMLOCK.
+//
+// go-quicraft v0.9.0-alpha removed the string-returning Split interface this
+// once had to satisfy: splitting into locked memory only to copy each value
+// back into an immortal heap string defeated the protection, which is why the
+// SA1019 residue this replaces existed (go-quicraft #35/#37).
+func (s *shamirShareSplitter) SplitProtected(secret []byte, threshold, total int) ([]*shamir.ProtectedShare, error) {
+	shares, err := shamir.SplitProtected(secret, threshold, total)
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirSplitFailed, Cause: err}
 	}
-	result := make([]string, len(shares))
-	for i, share := range shares {
-		result[i] = share.Value //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
-	}
-	return result, nil
+	return shares, nil
 }

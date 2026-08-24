@@ -67,10 +67,14 @@ type Credentials = seal.Credentials
 // SealedRootKey is the serialized, encrypted root key blob.
 type SealedRootKey = seal.SealedRootKey
 
-// ShareAccumulator collects Shamir shares toward quorum.
+// ShareAccumulator collects protected Shamir shares toward quorum, holding
+// every share in protected memory and returning the reconstructed secret in an
+// enclave (go-quicraft's ProtectedShareAccumulator; the string-valued sibling
+// was removed in go-quicraft v0.9.0-alpha).
 type ShareAccumulator = seal.ShareAccumulator
 
-// ShareSplitter splits a secret into Shamir shares.
+// ShareSplitter splits a secret into Shamir shares whose values live in
+// protected memory (go-quicraft's ProtectedShareSplitter).
 type ShareSplitter = seal.ShareSplitter
 
 // QuorumProgress reports current progress toward share quorum.

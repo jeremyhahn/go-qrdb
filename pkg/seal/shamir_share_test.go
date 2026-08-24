@@ -11,9 +11,29 @@ package seal
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-quicraft/pkg/crypto/shamir"
 )
+
+// mkShare builds a ProtectedShare carrying a standard-base64 value for tests
+// that exercise the accumulator's bookkeeping — dedup, progress, TTL — where
+// the shares need not actually reconstruct. NewProtectedShare validates the
+// base64 shape and header but does not parse the Shamir payload (that happens
+// at combine), so an arbitrary distinct seed is enough to make a distinct
+// share. The accumulator TAKES OWNERSHIP of every share handed to it, so a
+// share passed to AddProtectedShare must not be destroyed by the test.
+func mkShare(t *testing.T, index, threshold, total int, seed string) *shamir.ProtectedShare {
+	t.Helper()
+	val := base64.StdEncoding.EncodeToString([]byte(seed))
+	s, err := shamir.NewProtectedShare(index, threshold, total, []byte(val))
+	if err != nil {
+		t.Fatalf("NewProtectedShare(%q): %v", seed, err)
+	}
+	return s
+}
 
 // ---------- ShareAccumulator (shamirShareAccumulator) tests ----------
 
@@ -21,9 +41,9 @@ func TestShareAccumulator_AddShare_UniqueShares(t *testing.T) {
 	acc := NewShamirShareAccumulator(2, 3, 5*time.Minute)
 	ctx := context.Background()
 
-	prog, err := acc.AddShare(ctx, "share-a")
+	prog, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "share-a"))
 	if err != nil {
-		t.Fatalf("AddShare(share-a): %v", err)
+		t.Fatalf("AddProtectedShare(share-a): %v", err)
 	}
 	if prog.Submitted != 1 {
 		t.Errorf("expected Submitted=1, got %d", prog.Submitted)
@@ -32,9 +52,9 @@ func TestShareAccumulator_AddShare_UniqueShares(t *testing.T) {
 		t.Error("expected Complete=false after 1 share")
 	}
 
-	prog, err = acc.AddShare(ctx, "share-b")
+	prog, err = acc.AddProtectedShare(ctx, mkShare(t, 2, 2, 3, "share-b"))
 	if err != nil {
-		t.Fatalf("AddShare(share-b): %v", err)
+		t.Fatalf("AddProtectedShare(share-b): %v", err)
 	}
 	if prog.Submitted != 2 {
 		t.Errorf("expected Submitted=2, got %d", prog.Submitted)
@@ -48,12 +68,13 @@ func TestShareAccumulator_AddShare_DuplicateRejected(t *testing.T) {
 	acc := NewShamirShareAccumulator(2, 3, 5*time.Minute)
 	ctx := context.Background()
 
-	_, err := acc.AddShare(ctx, "dup-val")
-	if err != nil {
-		t.Fatalf("first AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "dup-val")); err != nil {
+		t.Fatalf("first AddProtectedShare: %v", err)
 	}
 
-	_, err = acc.AddShare(ctx, "dup-val")
+	// A second share with the SAME value digests to the same key and is a
+	// duplicate. The accumulator takes ownership and destroys it either way.
+	_, err := acc.AddProtectedShare(ctx, mkShare(t, 2, 2, 3, "dup-val"))
 	if err != ErrShamirDuplicateShare {
 		t.Errorf("expected ErrShamirDuplicateShare, got %v", err)
 	}
@@ -65,7 +86,7 @@ func TestShareAccumulator_AddShare_ExpiredTTL(t *testing.T) {
 	time.Sleep(1 * time.Millisecond)
 
 	ctx := context.Background()
-	_, err := acc.AddShare(ctx, "late-share")
+	_, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "late-share"))
 	if err != ErrShamirQuorumExpired {
 		t.Errorf("expected ErrShamirQuorumExpired, got %v", err)
 	}
@@ -76,9 +97,9 @@ func TestShareAccumulator_Progress(t *testing.T) {
 	ctx := context.Background()
 
 	// First share: Required=3, Submitted=1, Complete=false.
-	prog, err := acc.AddShare(ctx, "share-1")
+	prog, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "share-1"))
 	if err != nil {
-		t.Fatalf("AddShare(1): %v", err)
+		t.Fatalf("AddProtectedShare(1): %v", err)
 	}
 	if prog.Required != 3 {
 		t.Errorf("expected Required=3, got %d", prog.Required)
@@ -92,9 +113,9 @@ func TestShareAccumulator_Progress(t *testing.T) {
 
 	// Add remaining shares to meet threshold.
 	for i := 2; i <= 3; i++ {
-		prog, err = acc.AddShare(ctx, string(rune('a'+i)))
+		prog, err = acc.AddProtectedShare(ctx, mkShare(t, i, 3, 5, string(rune('a'+i))))
 		if err != nil {
-			t.Fatalf("AddShare(%d): %v", i, err)
+			t.Fatalf("AddProtectedShare(%d): %v", i, err)
 		}
 	}
 
@@ -111,12 +132,11 @@ func TestShareAccumulator_Reconstruct_BelowThreshold(t *testing.T) {
 	ctx := context.Background()
 
 	// Only add 1 share, threshold is 3.
-	_, err := acc.AddShare(ctx, "share-1")
-	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 3, 5, "share-1")); err != nil {
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 
-	_, err = acc.Reconstruct(ctx)
+	_, err := acc.ReconstructProtected(ctx)
 	if err != ErrShamirQuorumIncomplete {
 		t.Errorf("expected ErrShamirQuorumIncomplete, got %v", err)
 	}
@@ -126,46 +146,46 @@ func TestShareAccumulator_Reconstruct_Success(t *testing.T) {
 	// Use the splitter to generate real shares, then accumulate and reconstruct.
 	secret := []byte("test-secret-data")
 	splitter := NewShamirShareSplitter()
-	shares, err := splitter.Split(secret, 2, 3)
+	shares, err := splitter.SplitProtected(secret, 2, 3)
 	if err != nil {
-		t.Fatalf("Split: %v", err)
+		t.Fatalf("SplitProtected: %v", err)
 	}
+	// The accumulator takes ownership of the shares it is given; destroy the
+	// remainder so no locked-memory share leaks.
+	defer destroyShares(shares[2:])
 
 	acc := NewShamirShareAccumulator(2, 3, 5*time.Minute)
 	ctx := context.Background()
 
 	for _, share := range shares[:2] {
-		_, err := acc.AddShare(ctx, share)
-		if err != nil {
-			t.Fatalf("AddShare: %v", err)
+		if _, err := acc.AddProtectedShare(ctx, share); err != nil {
+			t.Fatalf("AddProtectedShare: %v", err)
 		}
 	}
 
-	reconstructed, err := acc.Reconstruct(ctx)
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
-		t.Fatalf("Reconstruct: %v", err)
+		t.Fatalf("ReconstructProtected: %v", err)
 	}
+	defer secretEnclave.Destroy()
 
-	if string(reconstructed) != string(secret) {
-		t.Errorf("expected %q, got %q", secret, reconstructed)
-	}
+	assertEnclaveEquals(t, secretEnclave, secret)
 }
 
 func TestShareAccumulator_Reset(t *testing.T) {
 	acc := NewShamirShareAccumulator(2, 3, 5*time.Minute)
 	ctx := context.Background()
 
-	_, err := acc.AddShare(ctx, "share-1")
-	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "share-1")); err != nil {
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 
 	acc.Reset()
 
-	// After reset, the same share should be accepted again (no duplicate).
-	prog, err := acc.AddShare(ctx, "share-1")
+	// After reset, the same share value should be accepted again (no duplicate).
+	prog, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "share-1"))
 	if err != nil {
-		t.Fatalf("AddShare after Reset: %v", err)
+		t.Fatalf("AddProtectedShare after Reset: %v", err)
 	}
 	if prog.Submitted != 1 {
 		t.Errorf("expected Submitted=1 after Reset, got %d", prog.Submitted)
@@ -225,9 +245,8 @@ func TestShareAccumulator_GetProgress_AfterShares(t *testing.T) {
 	ctx := context.Background()
 
 	// Add one share and verify progress.
-	_, err := acc.AddShare(ctx, "share-1")
-	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "share-1")); err != nil {
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 
 	prog := acc.GetProgress()
@@ -242,9 +261,8 @@ func TestShareAccumulator_GetProgress_AfterShares(t *testing.T) {
 	}
 
 	// Add second share to meet threshold.
-	_, err = acc.AddShare(ctx, "share-2")
-	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 2, 2, 3, "share-2")); err != nil {
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 
 	prog = acc.GetProgress()
@@ -260,9 +278,8 @@ func TestShareAccumulator_GetProgress_AfterReset(t *testing.T) {
 	acc := NewShamirShareAccumulator(2, 3, 5*time.Minute)
 	ctx := context.Background()
 
-	_, err := acc.AddShare(ctx, "share-1")
-	if err != nil {
-		t.Fatalf("AddShare: %v", err)
+	if _, err := acc.AddProtectedShare(ctx, mkShare(t, 1, 2, 3, "share-1")); err != nil {
+		t.Fatalf("AddProtectedShare: %v", err)
 	}
 
 	acc.Reset()
@@ -282,19 +299,20 @@ func TestShareSplitter_Split_Success(t *testing.T) {
 	splitter := NewShamirShareSplitter()
 	secret := []byte("split-me")
 
-	shares, err := splitter.Split(secret, 2, 3)
+	shares, err := splitter.SplitProtected(secret, 2, 3)
 	if err != nil {
-		t.Fatalf("Split: %v", err)
+		t.Fatalf("SplitProtected: %v", err)
 	}
+	defer destroyShares(shares)
 
 	if len(shares) != 3 {
 		t.Fatalf("expected 3 shares, got %d", len(shares))
 	}
 
-	// Verify each share is non-empty.
+	// Verify each share carries a non-empty protected value.
 	for i, share := range shares {
-		if share == "" {
-			t.Errorf("share %d is empty", i)
+		if err := share.Validate(); err != nil {
+			t.Errorf("share %d is invalid: %v", i, err)
 		}
 	}
 }
@@ -303,7 +321,8 @@ func TestShareSplitter_Split_InvalidThreshold(t *testing.T) {
 	splitter := NewShamirShareSplitter()
 
 	// threshold < 2 is invalid for Shamir.
-	_, err := splitter.Split([]byte("secret"), 1, 3)
+	shares, err := splitter.SplitProtected([]byte("secret"), 1, 3)
+	defer destroyShares(shares)
 	if err == nil {
 		t.Fatal("expected error for threshold < 2")
 	}
@@ -312,7 +331,8 @@ func TestShareSplitter_Split_InvalidThreshold(t *testing.T) {
 func TestShareSplitter_Split_ThresholdExceedsTotal(t *testing.T) {
 	splitter := NewShamirShareSplitter()
 
-	_, err := splitter.Split([]byte("secret"), 5, 3)
+	shares, err := splitter.SplitProtected([]byte("secret"), 5, 3)
+	defer destroyShares(shares)
 	if err == nil {
 		t.Fatal("expected error for threshold > total")
 	}
@@ -321,7 +341,8 @@ func TestShareSplitter_Split_ThresholdExceedsTotal(t *testing.T) {
 func TestShareSplitter_Split_EmptySecret(t *testing.T) {
 	splitter := NewShamirShareSplitter()
 
-	_, err := splitter.Split([]byte{}, 2, 3)
+	shares, err := splitter.SplitProtected([]byte{}, 2, 3)
+	defer destroyShares(shares)
 	if err == nil {
 		t.Fatal("expected error for empty secret")
 	}
@@ -332,30 +353,29 @@ func TestShareSplitter_RoundTrip(t *testing.T) {
 	secret := []byte("round-trip-test-secret")
 	splitter := NewShamirShareSplitter()
 
-	shares, err := splitter.Split(secret, 3, 5)
+	shares, err := splitter.SplitProtected(secret, 3, 5)
 	if err != nil {
-		t.Fatalf("Split: %v", err)
+		t.Fatalf("SplitProtected: %v", err)
 	}
+	defer destroyShares(shares[3:])
 
 	acc := NewShamirShareAccumulator(3, 5, 5*time.Minute)
 	ctx := context.Background()
 
 	// Use only the first 3 shares (threshold).
 	for i := 0; i < 3; i++ {
-		_, err := acc.AddShare(ctx, shares[i])
-		if err != nil {
-			t.Fatalf("AddShare(%d): %v", i, err)
+		if _, err := acc.AddProtectedShare(ctx, shares[i]); err != nil {
+			t.Fatalf("AddProtectedShare(%d): %v", i, err)
 		}
 	}
 
-	reconstructed, err := acc.Reconstruct(ctx)
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
-		t.Fatalf("Reconstruct: %v", err)
+		t.Fatalf("ReconstructProtected: %v", err)
 	}
+	defer secretEnclave.Destroy()
 
-	if string(reconstructed) != string(secret) {
-		t.Errorf("expected %q, got %q", secret, reconstructed)
-	}
+	assertEnclaveEquals(t, secretEnclave, secret)
 }
 
 func TestShareSplitter_RoundTrip_DifferentShareSubset(t *testing.T) {
@@ -363,66 +383,65 @@ func TestShareSplitter_RoundTrip_DifferentShareSubset(t *testing.T) {
 	secret := []byte("any-subset-works")
 	splitter := NewShamirShareSplitter()
 
-	shares, err := splitter.Split(secret, 2, 5)
+	shares, err := splitter.SplitProtected(secret, 2, 5)
 	if err != nil {
-		t.Fatalf("Split: %v", err)
+		t.Fatalf("SplitProtected: %v", err)
 	}
+	// Shares 2 and 4 go to the accumulator; the rest must be destroyed here.
+	defer destroyShares([]*shamir.ProtectedShare{shares[0], shares[1], shares[3]})
 
-	// Use shares at index 2 and 4 (not the first ones).
 	acc := NewShamirShareAccumulator(2, 5, 5*time.Minute)
 	ctx := context.Background()
 
-	_, err = acc.AddShare(ctx, shares[2])
-	if err != nil {
-		t.Fatalf("AddShare(2): %v", err)
+	if _, err := acc.AddProtectedShare(ctx, shares[2]); err != nil {
+		t.Fatalf("AddProtectedShare(2): %v", err)
 	}
-	_, err = acc.AddShare(ctx, shares[4])
-	if err != nil {
-		t.Fatalf("AddShare(4): %v", err)
+	if _, err := acc.AddProtectedShare(ctx, shares[4]); err != nil {
+		t.Fatalf("AddProtectedShare(4): %v", err)
 	}
 
-	reconstructed, err := acc.Reconstruct(ctx)
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
-		t.Fatalf("Reconstruct: %v", err)
+		t.Fatalf("ReconstructProtected: %v", err)
 	}
+	defer secretEnclave.Destroy()
 
-	if string(reconstructed) != string(secret) {
-		t.Errorf("expected %q, got %q", secret, reconstructed)
-	}
+	assertEnclaveEquals(t, secretEnclave, secret)
 }
 
 func TestShareSplitter_RoundTrip_BinarySecret(t *testing.T) {
-	// Regression guard for the wipeable-[]byte reconstruction path
-	// (shamir.CombineBytes): a binary secret containing embedded NUL
-	// bytes and every byte value must survive Split -> AddShare ->
-	// Reconstruct unchanged. A string-based path that truncates on NUL
-	// or mangles non-UTF-8 bytes would corrupt this secret.
+	// Regression guard for the protected reconstruction path
+	// (shamir.CombineProtected): a binary secret containing embedded NUL
+	// bytes and every byte value must survive SplitProtected ->
+	// AddProtectedShare -> ReconstructProtected unchanged. A string-based
+	// path that truncates on NUL or mangles non-UTF-8 bytes would corrupt it.
 	secret := make([]byte, 256)
 	for i := range secret {
 		secret[i] = byte(i)
 	}
 
 	splitter := NewShamirShareSplitter()
-	shares, err := splitter.Split(secret, 3, 5)
+	shares, err := splitter.SplitProtected(secret, 3, 5)
 	if err != nil {
-		t.Fatalf("Split: %v", err)
+		t.Fatalf("SplitProtected: %v", err)
 	}
+	defer destroyShares(shares[3:])
 
 	acc := NewShamirShareAccumulator(3, 5, 5*time.Minute)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if _, err := acc.AddShare(ctx, shares[i]); err != nil {
-			t.Fatalf("AddShare(%d): %v", i, err)
+		if _, err := acc.AddProtectedShare(ctx, shares[i]); err != nil {
+			t.Fatalf("AddProtectedShare(%d): %v", i, err)
 		}
 	}
 
-	reconstructed, err := acc.Reconstruct(ctx)
+	secretEnclave, err := acc.ReconstructProtected(ctx)
 	if err != nil {
-		t.Fatalf("Reconstruct: %v", err)
+		t.Fatalf("ReconstructProtected: %v", err)
 	}
-	if !bytes.Equal(reconstructed, secret) {
-		t.Errorf("binary secret corrupted: got %d bytes %x, want %d bytes", len(reconstructed), reconstructed, len(secret))
-	}
+	defer secretEnclave.Destroy()
+
+	assertEnclaveEquals(t, secretEnclave, secret)
 }
 
 // ---------- Compile-time interface checks ----------
@@ -438,5 +457,31 @@ func TestShareSplitter_ImplementsInterface(t *testing.T) {
 	var splitter interface{} = NewShamirShareSplitter()
 	if _, ok := splitter.(ShareSplitter); !ok {
 		t.Fatal("ShamirShareSplitter does not implement ShareSplitter")
+	}
+}
+
+// destroyShares releases every protected share in the slice. Safe on nil
+// entries and a nil slice.
+func destroyShares(shares []*shamir.ProtectedShare) {
+	for _, s := range shares {
+		if s != nil {
+			s.Destroy()
+		}
+	}
+}
+
+// assertEnclaveEquals asserts the reconstructed secret held in the enclave
+// equals want, reading it only inside the protected borrow.
+func assertEnclaveEquals(t *testing.T, enc interface {
+	WithBytes(func([]byte) error) error
+}, want []byte) {
+	t.Helper()
+	if err := enc.WithBytes(func(got []byte) error {
+		if !bytes.Equal(got, want) {
+			t.Errorf("reconstructed secret mismatch: got %d bytes, want %d bytes", len(got), len(want))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
 	}
 }

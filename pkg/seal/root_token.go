@@ -52,25 +52,48 @@ func (b *StorageBarrier) GenerateRootToken(ctx context.Context, shareValues []st
 		return nil, ErrShamirQuorumIncomplete
 	}
 
-	// Build Share objects and combine to reconstruct the secret.
-	shares := make([]*shamir.Share, len(shareValues))
-	for i, val := range shareValues {
-		shares[i] = &shamir.Share{
-			Index:     i + 1,
-			Threshold: threshold,
-			Total:     b.config.Shamir.TotalShares,
-			Value:     val,
+	// Build protected shares and combine to reconstruct the secret. Each share
+	// is one mlock'd allocation, released however this function unwinds.
+	shares := make([]*shamir.ProtectedShare, 0, len(shareValues))
+	defer func() {
+		for _, share := range shares {
+			share.Destroy()
 		}
+	}()
+	for i, val := range shareValues {
+		// NewProtectedShare wipes raw as it enters protected memory on success;
+		// wipe unconditionally so a validation failure (which leaves it
+		// untouched) does not strand a plaintext copy on the heap. The caller's
+		// string cannot be wiped (go-quicraft#35).
+		raw := []byte(val)
+		share, err := shamir.NewProtectedShare(i+1, threshold, b.config.Shamir.TotalShares, raw)
+		secure.Wipe(raw)
+		if err != nil {
+			return nil, ErrShamirCombineFailed
+		}
+		shares = append(shares, share)
 	}
 
-	secret, err := shamir.CombineUnverified(shares) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
+	secretEnclave, err := shamir.CombineProtected(shares)
 	if err != nil {
 		return nil, ErrShamirCombineFailed
 	}
-	defer secure.Wipe(secret)
+	defer secretEnclave.Destroy()
 
-	// Verify the secret against the sealed root key.
-	rootKey, err := b.verifySecretAndGetRootKey(ctx, secret)
+	// Copy the reconstructed secret into a protected buffer and verify OUTSIDE
+	// the enclave borrow. verifySecretAndGetRootKey performs an AEAD unwrap that
+	// allocates protected memory, which deadlocks if run inside WithBytes (see
+	// copyEnclaveToBuffer in shamir.go). The buffer is destroyed and the returned
+	// rootKey wiped as soon as the token is derived; rootKey never aliases the
+	// buffer, since resolveDirectSecret copies in legacy mode and unwrapRootKey
+	// returns a freshly decrypted buffer.
+	secretBuf, err := copyEnclaveToBuffer(secretEnclave)
+	if err != nil {
+		return nil, ErrShamirCombineFailed
+	}
+	defer secretBuf.Destroy()
+
+	rootKey, err := b.verifySecretAndGetRootKey(ctx, secretBuf.Bytes())
 	if err != nil {
 		return nil, err
 	}

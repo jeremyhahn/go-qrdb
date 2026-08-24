@@ -208,21 +208,30 @@ func TestPutError_ErrorAndUnwrap(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestRecoveryStrategy_ID(t *testing.T) {
-	rs := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	if rsErr != nil {
+		t.Fatalf("newRecoveryStrategy: %v", rsErr)
+	}
 	if rs.ID() != StrategyID("recovery") {
 		t.Errorf("ID: got %q, want %q", rs.ID(), "recovery")
 	}
 }
 
 func TestRecoveryStrategy_Available(t *testing.T) {
-	rs := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	if rsErr != nil {
+		t.Fatalf("newRecoveryStrategy: %v", rsErr)
+	}
 	if !rs.Available() {
 		t.Error("Available: expected true")
 	}
 }
 
 func TestRecoveryStrategy_HardwareBacked(t *testing.T) {
-	rs := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	if rsErr != nil {
+		t.Fatalf("newRecoveryStrategy: %v", rsErr)
+	}
 	if rs.HardwareBacked() {
 		t.Error("HardwareBacked: expected false")
 	}
@@ -230,21 +239,32 @@ func TestRecoveryStrategy_HardwareBacked(t *testing.T) {
 
 func TestRecoveryStrategy_Close(t *testing.T) {
 	key := []byte{0x01, 0x02, 0x03}
-	rs := newRecoveryStrategy(key, nil)
+	rs, err := newRecoveryStrategy(key, nil)
+	if err != nil {
+		t.Fatalf("newRecoveryStrategy: %v", err)
+	}
+	// Before Close the key is readable through the protected enclave.
+	buf, openErr := rs.rootKey.Open()
+	if openErr != nil {
+		t.Fatalf("root key should be openable before Close: %v", openErr)
+	}
+	buf.Destroy()
+
 	if err := rs.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// After close, the internal key should be wiped.
-	for _, b := range rs.rootKey {
-		if b != 0 {
-			t.Error("Close should wipe the root key")
-			break
-		}
+	// After Close the protected enclave is destroyed: opening it must fail
+	// rather than yield readable key material.
+	if _, openErr := rs.rootKey.Open(); openErr == nil {
+		t.Error("Close should destroy the protected root key; Open still succeeded")
 	}
 }
 
 func TestRecoveryStrategy_SealRootKey(t *testing.T) {
-	rs := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	if rsErr != nil {
+		t.Fatalf("newRecoveryStrategy: %v", rsErr)
+	}
 	_, err := rs.SealRootKey(context.Background(), []byte("root"), Credentials{})
 	if !errors.Is(err, ErrAlreadyInitialized) {
 		t.Errorf("SealRootKey: got %v, want ErrAlreadyInitialized", err)
@@ -252,7 +272,10 @@ func TestRecoveryStrategy_SealRootKey(t *testing.T) {
 }
 
 func TestRecoveryStrategy_BarrierEncryptor_NilDelegate(t *testing.T) {
-	rs := newRecoveryStrategy([]byte("key"), nil)
+	rs, rsErr := newRecoveryStrategy([]byte("key"), nil)
+	if rsErr != nil {
+		t.Fatalf("newRecoveryStrategy: %v", rsErr)
+	}
 	enc, err := rs.BarrierEncryptor(context.Background(), []byte("root"))
 	if err != nil {
 		t.Fatalf("BarrierEncryptor with nil delegate: %v", err)
@@ -810,4 +833,120 @@ func (f *failingKVStore) QueryCompoundIndex(_ context.Context, _ string, _ [][]b
 
 func (f *failingKVStore) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
 	return nil, nil
+}
+
+// The temporary recovery strategy's heap copy of the root key is wiped before
+// RecoverWithKeys returns.
+//
+// newRecoveryStrategy COPIES the borrowed root key into an ordinary []byte, and
+// Close is the only thing that wipes it. Barrier.Unseal does not retain the
+// strategy — it calls UnsealRootKey and drops it — so without an explicit Close
+// that copy outlives the enclave it was taken from, at the one point where the
+// root key is most exposed (found in review of go-qrdb#46).
+//
+// The strategy is built and discarded inside the recovery functions, so it is
+// observed through newRecoveryStrategyFn; there is no other seam, and a fix
+// that is not observable is a fix nobody can keep.
+//
+// Scope: this covers the SUCCESS path. I could not build a fixture that fails
+// AFTER the strategy is constructed without corrupting barrier internals — a
+// malformed share set fails in CombineProtected, well before the strategy
+// exists — so the failure path rests on the cleanup being a `defer` rather than
+// an inline call, which is visible in the diff and is precisely why it is
+// written that way. TestRecoveryStrategy_CloseWipesItsRootKeyCopy pins the
+// other half: that Close does what the defer relies on.
+func TestRecoverWithKeys_WipesTheTemporaryStrategysRootKeyCopy(t *testing.T) {
+	b, _, dist := newRecoveryBarrierWithShamir(t)
+	ctx := context.Background()
+
+	if _, err := b.InitializeShamir(ctx, Credentials{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.GenerateRecoveryKeys(ctx, 2, 3); err != nil {
+		t.Fatal(err)
+	}
+	recShares := dist.Shares()
+	if err := b.Seal(); err != nil {
+		t.Fatal(err)
+	}
+
+	var captured *recoveryStrategy
+	original := newRecoveryStrategyFn
+	newRecoveryStrategyFn = func(rootKey []byte, delegate SealingStrategy) (*recoveryStrategy, error) {
+		rs, err := original(rootKey, delegate)
+		if err != nil {
+			return nil, err
+		}
+		captured = rs
+		// The strategy must hold a READABLE protected copy at construction, or
+		// its later destruction would prove nothing.
+		buf, openErr := captured.rootKey.Open()
+		if openErr != nil {
+			t.Fatalf("the strategy was handed an unreadable root key; "+
+				"this test would prove nothing: %v", openErr)
+		}
+		buf.Destroy()
+		return captured, nil
+	}
+	t.Cleanup(func() { newRecoveryStrategyFn = original })
+
+	if err := b.RecoverWithKeys(ctx, recShares[:2]); err != nil {
+		t.Fatalf("RecoverWithKeys: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("no recovery strategy was built; the seam did not fire")
+	}
+	// After RecoverWithKeys returns, Close has run and the temporary
+	// strategy's protected copy must be destroyed: opening it must fail rather
+	// than yield readable key material.
+	if _, openErr := captured.rootKey.Open(); openErr == nil {
+		t.Error("the temporary strategy's protected root-key copy was left " +
+			"readable after RecoverWithKeys returned")
+	}
+}
+
+// Close destroys the protected copy the deferred cleanup relies on. Asserted
+// directly because the recovery paths depend on it and nothing else in this
+// package does.
+func TestRecoveryStrategy_CloseWipesItsRootKeyCopy(t *testing.T) {
+	key := []byte("root-key-material")
+	want := append([]byte(nil), key...)
+	recStrat, err := newRecoveryStrategy(key, nil)
+	if err != nil {
+		t.Fatalf("newRecoveryStrategy: %v", err)
+	}
+
+	// The strategy holds a COPY in protected memory: clearing the caller's
+	// slice must not change what the strategy protects, or the test would pass
+	// against a constructor that aliased the caller's key.
+	for i := range key {
+		key[i] = 0
+	}
+	buf, openErr := recStrat.rootKey.Open()
+	if openErr != nil {
+		t.Fatalf("root key should be readable before Close: %v", openErr)
+	}
+	aliased := !bytes.Equal(buf.Bytes(), want)
+	buf.Destroy()
+	if aliased {
+		t.Fatal("the strategy aliased the caller's key instead of copying it")
+	}
+
+	if err := recStrat.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// After Close the protected enclave is destroyed: opening it must fail.
+	if _, openErr := recStrat.rootKey.Open(); openErr == nil {
+		t.Error("Close left the strategy's protected root-key copy readable")
+	}
+}
+
+func allZeroBytes(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }

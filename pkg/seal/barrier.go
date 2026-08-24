@@ -495,7 +495,10 @@ func (b *StorageBarrier) unsealDirect(ctx context.Context, secret []byte) error 
 	if setErr := b.barrier.SetSealedRootKey(&sealed); setErr != nil {
 		return setErr
 	}
-	recStrat := newRecoveryStrategy(rootKey, shamirStrat)
+	recStrat, recErr := newRecoveryStrategy(rootKey, shamirStrat)
+	if recErr != nil {
+		return recErr
+	}
 	defer func() { _ = recStrat.Close() }()
 	if unsealErr := b.barrier.Unseal(ctx, recStrat, Credentials{}); unsealErr != nil {
 		return unsealErr

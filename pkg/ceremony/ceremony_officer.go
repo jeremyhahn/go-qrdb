@@ -281,10 +281,18 @@ func sealSharesToOfficers(
 		return 0, ErrOfficerCountMismatch
 	}
 
-	shares, err := shamir.Split(shareSecret, threshold, total) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
+	shares, err := shamir.SplitProtected(shareSecret, threshold, total)
 	if err != nil {
 		return 0, &ShamirSplitError{Err: err}
 	}
+	// Each share is one mlock'd allocation against RLIMIT_MEMLOCK, whose
+	// exhaustion memguard answers by terminating the process. Destroy the set
+	// on every path out, including the error returns inside the loop below.
+	defer func() {
+		for _, share := range shares {
+			share.Destroy()
+		}
+	}()
 
 	for _, officer := range officers {
 		idx := officer.ShareIndex - 1 // 0-based into shares slice
@@ -300,10 +308,11 @@ func sealSharesToOfficers(
 		}
 	}
 
-	// Wipe plaintext share values from the in-process slice.
-	for i := range shares {
-		wipeString(&shares[i].Value) //nolint:staticcheck // SA1019: deprecated in go-quicraft v0.7.0-alpha in favour of the ProtectedShare family. Migrating is a key-custody change (mlock'd share values, per-share RLIMIT_MEMLOCK budgeting, destroy-as-consumed), tracked as #46 — not folded into a dependency bump. Closing #46 removes this directive.
-	}
+	// The share values are wiped by the deferred Destroy above. What stood
+	// here was a loop of wipeString(&shares[i].Value), which did not wipe
+	// anything: it converted the string to []byte — allocating a COPY —
+	// zeroed that copy, and dropped the reference. The original backing array
+	// was never touched. See wipeString's removal in this change.
 
 	return len(officers), nil
 }
@@ -490,11 +499,21 @@ func (s *CeremonyService) ensureOfficerRegistry() error {
 	return nil
 }
 
-// wipeString overwrites a string's backing bytes with zeros. This is a
-// best-effort operation — Go strings are not guaranteed to be in a fixed
-// memory location, but this clears the most likely copy.
-func wipeString(s *string) {
-	b := []byte(*s)
-	secure.Wipe(b)
-	*s = ""
-}
+// wipeString was removed here (go-qrdb#46). It read:
+//
+//	func wipeString(s *string) {
+//		b := []byte(*s)
+//		secure.Wipe(b)
+//		*s = ""
+//	}
+//
+// and it was documented as "best-effort ... clears the most likely copy". It
+// cleared no copy that existed before the call: []byte(*s) ALLOCATES a new
+// array and copies into it, so secure.Wipe zeroed a buffer the function had
+// just created, and the string's own backing bytes were left intact for the
+// collector. Assigning "" only drops a reference.
+//
+// The share values it was meant to protect now live in ProtectedShare
+// enclaves, which Destroy genuinely wipes. There is no correct wipeString to
+// write for a Go string, which is precisely why go-quicraft deprecated the
+// string-valued share API.
