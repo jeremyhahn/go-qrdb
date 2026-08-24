@@ -11,6 +11,71 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.11.0-alpha] - 2026-08-24
+
+### Added
+
+- **Standalone-mode transactions and compare-and-swap** (#62, #109). The
+  standalone server now serves the transaction plane and CompareAndSwap, so a
+  single-node deployment has the same conditional-write primitives a cluster
+  does. This is the primitive `xkmsd` needs to fresh-boot on a qrdb backend
+  (unblocks go-xkms #61).
+- **`kvstore.CompareAndSwap`** (#81) — the guarded edit the atomic set was
+  missing: replace a value only when the current value matches the expected one.
+- **`sdk/go` `GuardedSwap`** (#78) — an optimistic-CAS loop over the transaction
+  plane that retries a read-modify-write until it commits with no conflicting
+  writer.
+- **Write results now report whether a failed write was stored** (#103), stated
+  at the layer that knows rather than inferred by the caller.
+- **`sdk/go` re-exports `UsableAsMapKey`** (#68), so a consumer can guard a
+  per-store cache without reaching past the SDK boundary.
+
+### Changed — BREAKING (sdk/go)
+
+- **Index creation carries case-sensitivity end to end** (#34, #108). The
+  `sdk/go` index-create surface (`kvstore_adapter`, every transport's
+  `transport_index`) gains a case-sensitivity flag and its request shape
+  changes. A consumer pinning `sdk/go` must update its index-create calls.
+
+### Fixed
+
+- **A guarded write is durable before it acknowledges** (#94, #110). The state
+  machine persists the write before returning success, so an acknowledged
+  guarded write survives a crash.
+- **Built-in roles are actually immutable** (#105): the `System` flag is derived
+  from the role name rather than trusted from the stored record, so a built-in
+  role cannot be made editable by clearing the flag.
+- **Vector IVF clustering is seedable** (#99), and the recall test is fixed at
+  its source — the single shared random init — instead of by averaging
+  downstream of it.
+- **The quota reservation is kept on every ambiguous write, not just the swap**
+  (#98): a write whose stored/not-stored outcome is unknown no longer leaks
+  quota.
+- **The cert watcher is released on every `runStart` return, not only the clean
+  one** (#97).
+- **Snapshot framing is bounds-checked through the same predicate the encoders
+  use** (#80).
+- **`OpPutIfAbsent` is applied everywhere, and first boot reports its real
+  error** (#87).
+- **A version condition on an entity with no version is refused, not
+  fabricated** (#75).
+- **MVCC recognises the absence spelling every storage engine actually
+  produces** (#77).
+- **A failed compare read stalls the transaction instead of silently picking a
+  branch** (#64).
+- **An empty index tag is a registration error, not a silent no-op** (#67).
+- **A not-configured subsystem is encoded so its reader can decode it** (#70).
+- **A DAO miss is reported as NOT FOUND over both stores the SDK ships** (#65).
+- **One bounds-checked length writer in the protocol**, so the omission cannot
+  compile (#53).
+
+### Fixed — SECURITY
+
+- **Purge-class memguard calls are coordinated against live borrows** (#72), so
+  a purge cannot free memory another goroutine is still reading.
+- **The unseal ceremony fails closed on an unreadable share and holds the PIN
+  borrow across the KDF** (#91).
+
 ## [0.10.0-alpha] - 2026-08-20
 
 ### Fixed — SECURITY
