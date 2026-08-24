@@ -246,7 +246,7 @@ func TestGRPCIndex_AllMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("IndexScan", func(t *testing.T) {
-		if _, err := tr.IndexScan(ctx, "idx1", "a", "z"); err != nil {
+		if _, err := tr.IndexScan(ctx, "idx1", spIdx("a"), spIdx("z")); err != nil {
 			t.Fatalf("IndexScan: %v", err)
 		}
 	})

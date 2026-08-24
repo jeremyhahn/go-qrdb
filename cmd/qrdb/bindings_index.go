@@ -104,7 +104,16 @@ func (b *IndexBinding) Scan(indexName, start, end string) (*transport.IndexScanR
 		b.logger.Error("Scan failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Index().IndexScan(context.Background(), indexName, start, end)
+	// An empty start or end from the UI is an OPEN bound (go-qrdb#36); a
+	// non-empty value is an explicit bound.
+	var startBound, endBound *string
+	if start != "" {
+		startBound = &start
+	}
+	if end != "" {
+		endBound = &end
+	}
+	resp, err := cl.Index().IndexScan(context.Background(), indexName, startBound, endBound)
 	if err != nil {
 		b.logger.Error("Scan failed", "indexName", indexName, "error", err)
 		return nil, err

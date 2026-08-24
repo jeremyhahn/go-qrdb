@@ -89,14 +89,14 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 
 // IndexScan returns entries in an index within a value range [start, end)
 // by delegating to the injected IndexServicer.
-func (t *Transport) IndexScan(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
+func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 	if t.indexSvc == nil {
 		return nil, &NilServiceError{Service: "IndexServicer"}
 	}
-	rawEntries, err := t.indexSvc.Scan(ctx, indexName, []byte(start), []byte(end))
+	rawEntries, err := t.indexSvc.Scan(ctx, indexName, transport.OptionalBytes(start), transport.OptionalBytes(end))
 	if err != nil {
 		return nil, translateError(err)
 	}
@@ -215,6 +215,6 @@ type indexQueryRequest struct {
 
 type indexScanRequest struct {
 	IndexName string
-	Start     string
-	End       string
+	Start     *string
+	End       *string
 }

@@ -234,7 +234,7 @@ func TestIndexScan_Success(t *testing.T) {
 	tr, cleanup := connectIndexInProcess(t, svc)
 	defer cleanup()
 
-	resp, err := tr.IndexScan(context.Background(), "idx_name", "a", "z")
+	resp, err := tr.IndexScan(context.Background(), "idx_name", spIdx("a"), spIdx("z"))
 	if err != nil {
 		t.Fatalf("IndexScan: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestIndexScan_ServiceError(t *testing.T) {
 	tr, cleanup := connectIndexInProcess(t, svc)
 	defer cleanup()
 
-	if _, err := tr.IndexScan(context.Background(), "x", "a", "z"); err == nil {
+	if _, err := tr.IndexScan(context.Background(), "x", spIdx("a"), spIdx("z")); err == nil {
 		t.Fatal("expected error")
 	}
 }

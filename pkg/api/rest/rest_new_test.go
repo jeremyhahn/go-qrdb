@@ -1994,26 +1994,70 @@ func TestHandleIndexScan_MissingIndexName(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
-func TestHandleIndexScan_MissingStart(t *testing.T) {
-	indexSvc := &mockIndexService{}
+func TestHandleIndexScan_OpenLowerBound(t *testing.T) {
+	// An absent start query parameter is now an OPEN lower bound (go-qrdb#36):
+	// the handler must scan (not 400) and thread nil through to the service.
+	var gotStart, gotEnd []byte
+	var seen bool
+	indexSvc := &mockIndexService{
+		scanFn: func(_ context.Context, _ string, start, end []byte) (map[string][][]byte, error) {
+			gotStart, gotEnd, seen = start, end, true
+			return map[string][][]byte{"beta": {[]byte("1")}}, nil
+		},
+	}
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithIndex(indexSvc))
 
 	req := httptest.NewRequest(http.MethodGet, "/index/scan?index_name=idx1&end=z", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusBadRequest)
+	assertStatus(t, rec, http.StatusOK)
+	if !seen {
+		t.Fatal("service Scan was not reached")
+	}
+	if gotStart != nil {
+		t.Errorf("start = %q; an absent start must be a nil (open) bound", gotStart)
+	}
+	if string(gotEnd) != "z" {
+		t.Errorf("end = %q; want %q", gotEnd, "z")
+	}
+	var resp indexScanResponse
+	decodeJSON(t, rec, &resp)
+	if len(resp.Entries) == 0 {
+		t.Fatal("a one-sided range over an index with matches must not be empty")
+	}
 }
 
-func TestHandleIndexScan_MissingEnd(t *testing.T) {
-	indexSvc := &mockIndexService{}
+func TestHandleIndexScan_OpenUpperBound(t *testing.T) {
+	var gotStart, gotEnd []byte
+	var seen bool
+	indexSvc := &mockIndexService{
+		scanFn: func(_ context.Context, _ string, start, end []byte) (map[string][][]byte, error) {
+			gotStart, gotEnd, seen = start, end, true
+			return map[string][][]byte{"beta": {[]byte("1")}}, nil
+		},
+	}
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", WithIndex(indexSvc))
 
-	req := httptest.NewRequest(http.MethodGet, "/index/scan?index_name=idx1&start=a", nil)
+	req := httptest.NewRequest(http.MethodGet, "/index/scan?index_name=idx1&start=beta", nil)
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
-	assertStatus(t, rec, http.StatusBadRequest)
+	assertStatus(t, rec, http.StatusOK)
+	if !seen {
+		t.Fatal("service Scan was not reached")
+	}
+	if string(gotStart) != "beta" {
+		t.Errorf("start = %q; want %q", gotStart, "beta")
+	}
+	if gotEnd != nil {
+		t.Errorf("end = %q; an absent end must be a nil (open) bound", gotEnd)
+	}
+	var resp indexScanResponse
+	decodeJSON(t, rec, &resp)
+	if len(resp.Entries) == 0 {
+		t.Fatal("a one-sided range over an index with matches must not be empty")
+	}
 }
 
 func TestHandleIndexScan_ServiceError(t *testing.T) {

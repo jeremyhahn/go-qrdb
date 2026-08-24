@@ -68,7 +68,7 @@ type mockTransportIndex struct {
 	createFn func(ctx context.Context, name, fieldName string, config transport.IndexConfig) error
 	dropFn   func(ctx context.Context, name string) error
 	queryFn  func(ctx context.Context, indexName, value string) (*transport.IndexQueryResponse, error)
-	scanFn   func(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error)
+	scanFn   func(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error)
 	listFn   func(ctx context.Context) (*transport.IndexListResponse, error)
 }
 
@@ -84,7 +84,7 @@ func (m *mockTransportIndex) IndexQuery(ctx context.Context, indexName, value st
 	return m.queryFn(ctx, indexName, value)
 }
 
-func (m *mockTransportIndex) IndexScan(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
+func (m *mockTransportIndex) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	return m.scanFn(ctx, indexName, start, end)
 }
 
@@ -472,8 +472,8 @@ func TestKVStoreAdapter_ScanIndex(t *testing.T) {
 	ctx := context.Background()
 
 	idx := &mockTransportIndex{
-		scanFn: func(_ context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
-			if indexName != "user.name" || start != "a" || end != "c" {
+		scanFn: func(_ context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
+			if indexName != "user.name" || start == nil || *start != "a" || end == nil || *end != "c" {
 				return nil, errors.New("unexpected args")
 			}
 			return &transport.IndexScanResponse{
@@ -517,7 +517,7 @@ func TestKVStoreAdapter_ScanIndex_Error(t *testing.T) {
 	sentinel := errors.New("index scan error")
 
 	idx := &mockTransportIndex{
-		scanFn: func(_ context.Context, _, _, _ string) (*transport.IndexScanResponse, error) {
+		scanFn: func(_ context.Context, _ string, _, _ *string) (*transport.IndexScanResponse, error) {
 			return nil, sentinel
 		},
 	}
@@ -617,56 +617,70 @@ func TestKVStoreAdapter_RegisterEntityIndexes_ForwardsCaseInsensitivity(t *testi
 	}
 }
 
-// TestKVStoreAdapter_ScanIndexRefusesAnOpenBound covers a review finding.
-//
-// transport.IndexClient.IndexScan takes plain strings, so an open bound
-// cannot be expressed over it: a nil arrived as "", which every index
-// implementation reads as an explicit empty bound rather than an open one,
-// and REST rejects it as a missing parameter. Since the planner leaves one
-// side nil for every one-sided range, Team >= "beta" became ["beta", "") and
-// returned an empty result with a nil error over an index holding matches.
-//
-// Refusing surfaces the incapability instead of a wrong answer. Carrying
-// optional bounds through the transport contract is tracked as go-qrdb#36.
-func TestKVStoreAdapter_ScanIndexRefusesAnOpenBound(t *testing.T) {
-	var called int
-	idx := &mockTransportIndex{
-		scanFn: func(_ context.Context, _, _, _ string) (*transport.IndexScanResponse, error) {
-			called++
-			return &transport.IndexScanResponse{}, nil
-		},
-	}
-	adapter := newTestAdapter(&mockTransportKV{}, idx)
+// TestKVStoreAdapter_ScanIndexThreadsOpenBounds is the go-qrdb#36 replacement
+// for the earlier open-bound refusal. A nil []byte bound now reaches the
+// transport as a nil *string — an OPEN bound — instead of being refused or
+// collapsed to an explicit empty "". A one-sided range therefore returns its
+// matches.
+func TestKVStoreAdapter_ScanIndexThreadsOpenBounds(t *testing.T) {
 	ctx := context.Background()
 
+	type seen struct {
+		start, end *string
+	}
 	for _, tc := range []struct {
 		name       string
 		start, end []byte
+		wantStart  *string
+		wantEnd    *string
 	}{
-		{"open upper", []byte("beta"), nil},
-		{"open lower", nil, []byte("beta")},
-		{"both open", nil, nil},
+		{"open upper", []byte("beta"), nil, strPtr("beta"), nil},
+		{"open lower", nil, []byte("beta"), nil, strPtr("beta")},
+		{"both open", nil, nil, nil, nil},
+		{"both bounded", []byte("a"), []byte("z"), strPtr("a"), strPtr("z")},
+		{"present empty upper", []byte("beta"), []byte{}, strPtr("beta"), strPtr("")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := adapter.ScanIndex(ctx, "member.Team", tc.start, tc.end)
-			if !errors.Is(err, kvstore.ErrIndexUnsupported) {
-				t.Fatalf("ScanIndex = %v; want kvstore.ErrIndexUnsupported", err)
+			var got seen
+			idx := &mockTransportIndex{
+				scanFn: func(_ context.Context, _ string, start, end *string) (*transport.IndexScanResponse, error) {
+					got = seen{start: start, end: end}
+					return &transport.IndexScanResponse{
+						Entries: []transport.IndexScanEntry{{Value: "beta", Keys: []string{"t/1"}}},
+					}, nil
+				},
 			}
-			if got != nil {
-				t.Errorf("a refused scan carries no results, got %v", got)
+			adapter := newTestAdapter(&mockTransportKV{}, idx)
+
+			result, err := adapter.ScanIndex(ctx, "member.Team", tc.start, tc.end)
+			if err != nil {
+				t.Fatalf("ScanIndex over a one-sided range must not error: %v", err)
+			}
+			if len(result) == 0 {
+				t.Fatal("ScanIndex over an index holding matches must not return empty")
+			}
+			if !eqStrPtr(got.start, tc.wantStart) {
+				t.Errorf("start threaded to transport = %v; want %v", derefStr(got.start), derefStr(tc.wantStart))
+			}
+			if !eqStrPtr(got.end, tc.wantEnd) {
+				t.Errorf("end threaded to transport = %v; want %v", derefStr(got.end), derefStr(tc.wantEnd))
 			}
 		})
 	}
+}
 
-	if called != 0 {
-		t.Errorf("transport was called %d times; a refused scan must not reach it", called)
-	}
+func strPtr(s string) *string { return &s }
 
-	// A fully bounded scan still works.
-	if _, err := adapter.ScanIndex(ctx, "member.Team", []byte("a"), []byte("z")); err != nil {
-		t.Fatalf("a fully bounded scan must still work: %v", err)
+func eqStrPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
 	}
-	if called != 1 {
-		t.Errorf("transport called %d times; want 1", called)
+	return *a == *b
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return "<nil>"
 	}
+	return "\"" + *p + "\""
 }

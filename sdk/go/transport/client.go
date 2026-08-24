@@ -260,7 +260,10 @@ type IndexClient interface {
 	IndexQuery(ctx context.Context, indexName, value string) (*IndexQueryResponse, error)
 
 	// IndexScan returns entries in an index within a value range [start, end).
-	IndexScan(ctx context.Context, indexName, start, end string) (*IndexScanResponse, error)
+	// A nil start or end is an OPEN bound on that side, distinct from a non-nil
+	// empty bound which is an explicit "" value (go-qrdb#36). A one-sided range
+	// such as Team >= "beta" passes a non-nil start and a nil end.
+	IndexScan(ctx context.Context, indexName string, start, end *string) (*IndexScanResponse, error)
 
 	// IndexList returns the names of all registered indexes.
 	IndexList(ctx context.Context) (*IndexListResponse, error)

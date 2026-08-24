@@ -1676,8 +1676,11 @@ message IndexQueryResponse {
 // IndexScanRequest scans an index within a value range.
 message IndexScanRequest {
     string index_name = 1;
-    bytes start = 2;
-    bytes end = 3;
+    // start and end are OPTIONAL: an absent bound means the range is open on
+    // that side (go-qrdb#36). An explicit empty bound is distinct from an
+    // absent one, which is why proto3 `optional` presence is required here.
+    optional bytes start = 2;
+    optional bytes end = 3;
 }
 
 // IndexScanEntry maps an index value to its matching entry keys.

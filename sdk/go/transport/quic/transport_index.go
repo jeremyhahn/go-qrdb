@@ -108,15 +108,15 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 
 // IndexScan returns entries in an index within a value range [start, end)
 // through the QUIC transport.
-func (t *Transport) IndexScan(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
+func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := proto.Marshal(&pb.IndexScanRequest{
 		IndexName: indexName,
-		Start:     []byte(start),
-		End:       []byte(end),
+		Start:     transport.OptionalBytes(start),
+		End:       transport.OptionalBytes(end),
 	})
 	if err != nil {
 		return nil, &marshalError{Err: err}

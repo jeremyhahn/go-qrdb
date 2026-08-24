@@ -214,12 +214,10 @@ func toolIndexScan() mcp.Tool {
 			mcp.Description("The name of the index to scan."),
 		),
 		mcp.WithString("start",
-			mcp.Required(),
-			mcp.Description("The start value of the scan range (inclusive)."),
+			mcp.Description("The start value of the scan range (inclusive). Omit for an open lower bound."),
 		),
 		mcp.WithString("end",
-			mcp.Required(),
-			mcp.Description("The end value of the scan range (exclusive)."),
+			mcp.Description("The end value of the scan range (exclusive). Omit for an open upper bound."),
 		),
 	)
 }
@@ -236,16 +234,24 @@ func handleIndexScan(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 		if indexName == "" {
 			return mcp.NewToolResultError("index_name is required"), nil
 		}
-		start := mcp.ParseString(req, "start", "")
-		if start == "" {
-			return mcp.NewToolResultError("start is required"), nil
+		// An omitted start/end is an OPEN bound (nil); a provided one — even
+		// empty — is an explicit bound (go-qrdb#36).
+		args := req.GetArguments()
+		var start, end []byte
+		if _, ok := args["start"]; ok {
+			start = []byte(mcp.ParseString(req, "start", ""))
+			if start == nil {
+				start = []byte{}
+			}
 		}
-		end := mcp.ParseString(req, "end", "")
-		if end == "" {
-			return mcp.NewToolResultError("end is required"), nil
+		if _, ok := args["end"]; ok {
+			end = []byte(mcp.ParseString(req, "end", ""))
+			if end == nil {
+				end = []byte{}
+			}
 		}
 
-		entries, err := indexSvc.Scan(ctx, indexName, []byte(start), []byte(end))
+		entries, err := indexSvc.Scan(ctx, indexName, start, end)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_index_scan", Err: err}
 		}

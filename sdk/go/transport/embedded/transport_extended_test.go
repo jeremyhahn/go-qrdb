@@ -3372,7 +3372,7 @@ func TestEmbeddedIndex_Scan(t *testing.T) {
 		},
 	}
 	tr := newExtTransport(t, WithIndexService(svc))
-	resp, err := tr.IndexScan(context.Background(), "idx", "a", "c")
+	resp, err := tr.IndexScan(context.Background(), "idx", spIdx("a"), spIdx("c"))
 	if err != nil {
 		t.Fatalf("IndexScan: %v", err)
 	}
@@ -3387,7 +3387,7 @@ func TestEmbeddedIndex_Scan(t *testing.T) {
 
 func TestEmbeddedIndex_Scan_NilService(t *testing.T) {
 	tr := newExtTransport(t)
-	_, err := tr.IndexScan(context.Background(), "n", "a", "z")
+	_, err := tr.IndexScan(context.Background(), "n", spIdx("a"), spIdx("z"))
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
 		t.Fatalf("expected NilServiceError, got %T", err)
@@ -3396,7 +3396,7 @@ func TestEmbeddedIndex_Scan_NilService(t *testing.T) {
 
 func TestEmbeddedIndex_Scan_Closed(t *testing.T) {
 	tr := closedExtTransport(t, WithIndexService(&mockIndexService{}))
-	_, err := tr.IndexScan(context.Background(), "n", "a", "z")
+	_, err := tr.IndexScan(context.Background(), "n", spIdx("a"), spIdx("z"))
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T", err)
@@ -3410,7 +3410,7 @@ func TestEmbeddedIndex_Scan_Error(t *testing.T) {
 		},
 	}
 	tr := newExtTransport(t, WithIndexService(svc))
-	_, err := tr.IndexScan(context.Background(), "n", "a", "z")
+	_, err := tr.IndexScan(context.Background(), "n", spIdx("a"), spIdx("z"))
 	if !errors.Is(err, errSentinel) {
 		t.Errorf("expected errSentinel, got %v", err)
 	}
@@ -3519,7 +3519,7 @@ func TestEmbeddedIndex_Dispatch_Scan(t *testing.T) {
 	tr := newExtTransport(t, WithIndexService(&mockIndexService{}))
 	var resp *transport.IndexScanResponse
 	if err := tr.Request(context.Background(), "IndexScan",
-		&indexScanRequest{IndexName: "i", Start: "a", End: "z"}, &resp); err != nil {
+		&indexScanRequest{IndexName: "i", Start: spIdx("a"), End: spIdx("z")}, &resp); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 }
@@ -3544,3 +3544,5 @@ func TestEmbeddedIndex_Dispatch_List(t *testing.T) {
 func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
 }
+
+func spIdx(s string) *string { return &s }

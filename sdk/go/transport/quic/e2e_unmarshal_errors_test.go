@@ -219,7 +219,7 @@ func TestE2E_IndexScan_UnmarshalError(t *testing.T) {
 	srv.SetResponder("index.Scan", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageProto
 	})
-	if _, err := tr.IndexScan(context.Background(), "idx", "a", "z"); err == nil {
+	if _, err := tr.IndexScan(context.Background(), "idx", spIdx("a"), spIdx("z")); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

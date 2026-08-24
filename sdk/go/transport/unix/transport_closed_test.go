@@ -262,7 +262,7 @@ func TestUnixIndex_AfterClose(t *testing.T) {
 	if _, err := tr.IndexQuery(context.Background(), "i", "v"); !errors.As(err, &ce) {
 		t.Errorf("IndexQuery: %v", err)
 	}
-	if _, err := tr.IndexScan(context.Background(), "i", "a", "z"); !errors.As(err, &ce) {
+	if _, err := tr.IndexScan(context.Background(), "i", spIdx("a"), spIdx("z")); !errors.As(err, &ce) {
 		t.Errorf("IndexScan: %v", err)
 	}
 	if _, err := tr.IndexList(context.Background()); !errors.As(err, &ce) {
@@ -473,3 +473,5 @@ func TestUnixVector_AfterClose(t *testing.T) {
 		t.Errorf("GetCompactionProgress: %v", err)
 	}
 }
+
+func spIdx(s string) *string { return &s }

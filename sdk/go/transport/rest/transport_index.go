@@ -133,16 +133,22 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 
 // IndexScan returns entries in an index within a value range [start, end).
 // Maps to GET /index/scan?index_name=...&start=...&end=...
-func (t *Transport) IndexScan(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
+func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/index/scan?" + url.Values{
-		"index_name": {indexName},
-		"start":      {start},
-		"end":        {end},
-	}.Encode()
+	// Only present bounds are sent as query parameters; an absent parameter is
+	// an OPEN bound, which the server distinguishes from a present-but-empty
+	// one (go-qrdb#36).
+	params := url.Values{"index_name": {indexName}}
+	if start != nil {
+		params.Set("start", *start)
+	}
+	if end != nil {
+		params.Set("end", *end)
+	}
+	reqURL := t.baseURL + "/index/scan?" + params.Encode()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

@@ -218,19 +218,19 @@ func TestIndexScanCmd_Success(t *testing.T) {
 	}
 }
 
-func TestIndexScanCmd_MissingStart(t *testing.T) {
+func TestIndexScanCmd_OpenLowerBound(t *testing.T) {
+	// Omitting --start is now an OPEN lower bound (go-qrdb#36); the command
+	// must succeed rather than reject a required flag.
 	idxSvc := &mockIndexService{}
-	_, err := executeIndexCmd(t, idxSvc, "scan", "myindex", "--end", "z")
-	if err == nil {
-		t.Fatal("expected error for missing --start flag")
+	if _, err := executeIndexCmd(t, idxSvc, "scan", "myindex", "--end", "z"); err != nil {
+		t.Fatalf("omitting --start must scan with an open lower bound, got: %v", err)
 	}
 }
 
-func TestIndexScanCmd_MissingEnd(t *testing.T) {
+func TestIndexScanCmd_OpenUpperBound(t *testing.T) {
 	idxSvc := &mockIndexService{}
-	_, err := executeIndexCmd(t, idxSvc, "scan", "myindex", "--start", "a")
-	if err == nil {
-		t.Fatal("expected error for missing --end flag")
+	if _, err := executeIndexCmd(t, idxSvc, "scan", "myindex", "--start", "a"); err != nil {
+		t.Fatalf("omitting --end must scan with an open upper bound, got: %v", err)
 	}
 }
 

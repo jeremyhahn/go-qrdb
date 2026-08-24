@@ -724,7 +724,7 @@ func TestRESTIndex_Scan_Success(t *testing.T) {
 			},
 		})
 	})
-	resp, err := rt.IndexScan(context.Background(), "idx", "a", "z")
+	resp, err := rt.IndexScan(context.Background(), "idx", spIdx("a"), spIdx("z"))
 	if err != nil {
 		t.Fatalf("IndexScan: %v", err)
 	}
@@ -742,7 +742,7 @@ func TestRESTIndex_Scan_ServerError(t *testing.T) {
 	rs.handle(exactPath(http.MethodGet, "/index/scan"), func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fail", http.StatusInternalServerError)
 	})
-	_, err := rt.IndexScan(context.Background(), "i", "a", "z")
+	_, err := rt.IndexScan(context.Background(), "i", spIdx("a"), spIdx("z"))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -751,7 +751,7 @@ func TestRESTIndex_Scan_ServerError(t *testing.T) {
 func TestRESTIndex_Scan_AfterClose(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	_, err := rt.IndexScan(context.Background(), "i", "a", "z")
+	_, err := rt.IndexScan(context.Background(), "i", spIdx("a"), spIdx("z"))
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T", err)
@@ -792,3 +792,5 @@ func TestRESTIndex_List_AfterClose(t *testing.T) {
 		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
+
+func spIdx(s string) *string { return &s }

@@ -171,7 +171,7 @@ func TestE2E_IndexScan_HappyPath(t *testing.T) {
 			},
 		})
 	})
-	resp, err := tr.IndexScan(context.Background(), "idx", "a", "z")
+	resp, err := tr.IndexScan(context.Background(), "idx", spIdx("a"), spIdx("z"))
 	if err != nil {
 		t.Fatalf("IndexScan: %v", err)
 	}
@@ -193,3 +193,5 @@ func TestE2E_IndexList_HappyPath(t *testing.T) {
 		t.Fatalf("Names = %v", resp.Names)
 	}
 }
+
+func spIdx(s string) *string { return &s }

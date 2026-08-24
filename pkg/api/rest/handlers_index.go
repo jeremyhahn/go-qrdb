@@ -191,19 +191,25 @@ func (s *Server) handleIndexScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start := q.Get("start")
-	if start == "" {
-		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "start"})
-		return
+	// An absent start/end query parameter is an OPEN bound (nil); a present one
+	// — even empty — is an explicit bound (go-qrdb#36). Distinguishing the two
+	// is what lets a one-sided range return its matches instead of an empty
+	// result.
+	var start, end []byte
+	if q.Has("start") {
+		start = []byte(q.Get("start"))
+		if start == nil {
+			start = []byte{}
+		}
+	}
+	if q.Has("end") {
+		end = []byte(q.Get("end"))
+		if end == nil {
+			end = []byte{}
+		}
 	}
 
-	end := q.Get("end")
-	if end == "" {
-		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "end"})
-		return
-	}
-
-	entries, err := indexSvc.Scan(ctx, indexName, []byte(start), []byte(end))
+	entries, err := indexSvc.Scan(ctx, indexName, start, end)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

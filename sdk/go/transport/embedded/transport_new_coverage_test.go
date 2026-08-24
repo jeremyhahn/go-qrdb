@@ -897,7 +897,7 @@ func TestEmbedded_IndexDispatch_ErrorPaths(t *testing.T) {
 		req  any
 	}{
 		{"IndexQuery", &indexQueryRequest{IndexName: "idx", Value: "v"}},
-		{"IndexScan", &indexScanRequest{IndexName: "idx", Start: "a", End: "z"}},
+		{"IndexScan", &indexScanRequest{IndexName: "idx", Start: spIdx("a"), End: spIdx("z")}},
 	}
 
 	for _, tc := range cases {

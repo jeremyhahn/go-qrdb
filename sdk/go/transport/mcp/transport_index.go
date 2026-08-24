@@ -93,16 +93,21 @@ func (t *Transport) IndexQuery(ctx context.Context, indexName, value string) (*t
 // IndexScan scans a secondary index for entries whose values fall in
 // the half-open interval [start, end). Calls the qrdb_index_scan MCP
 // tool and parses the returned JSON map of value-to-keys entries.
-func (t *Transport) IndexScan(ctx context.Context, indexName, start, end string) (*transport.IndexScanResponse, error) {
+func (t *Transport) IndexScan(ctx context.Context, indexName string, start, end *string) (*transport.IndexScanResponse, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
 
-	text, err := t.callTool(ctx, "qrdb_index_scan", map[string]any{
-		"index_name": indexName,
-		"start":      start,
-		"end":        end,
-	})
+	// Only present bounds are sent; an absent argument is an OPEN bound, which
+	// the tool handler distinguishes from a present-but-empty one (go-qrdb#36).
+	args := map[string]any{"index_name": indexName}
+	if start != nil {
+		args["start"] = *start
+	}
+	if end != nil {
+		args["end"] = *end
+	}
+	text, err := t.callTool(ctx, "qrdb_index_scan", args)
 	if err != nil {
 		return nil, err
 	}

@@ -231,7 +231,7 @@ func TestE2E_IndexQuery_ServerErr(t *testing.T) {
 func TestE2E_IndexScan_ServerErr(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	serverErr(srv, "index.Scan", "err")
-	if _, err := tr.IndexScan(context.Background(), "idx", "a", "z"); err == nil {
+	if _, err := tr.IndexScan(context.Background(), "idx", spIdx("a"), spIdx("z")); err == nil {
 		t.Fatal("expected err")
 	}
 }

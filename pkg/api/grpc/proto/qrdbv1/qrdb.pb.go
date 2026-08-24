@@ -4357,10 +4357,13 @@ func (x *IndexQueryResponse) GetKeys() [][]byte {
 
 // IndexScanRequest scans an index within a value range.
 type IndexScanRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	IndexName     string                 `protobuf:"bytes,1,opt,name=index_name,json=indexName,proto3" json:"index_name,omitempty"`
-	Start         []byte                 `protobuf:"bytes,2,opt,name=start,proto3" json:"start,omitempty"`
-	End           []byte                 `protobuf:"bytes,3,opt,name=end,proto3" json:"end,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	IndexName string                 `protobuf:"bytes,1,opt,name=index_name,json=indexName,proto3" json:"index_name,omitempty"`
+	// start and end are OPTIONAL: an absent bound means the range is open on
+	// that side (go-qrdb#36). An explicit empty bound is distinct from an
+	// absent one, which is why proto3 `optional` presence is required here.
+	Start         []byte `protobuf:"bytes,2,opt,name=start,proto3,oneof" json:"start,omitempty"`
+	End           []byte `protobuf:"bytes,3,opt,name=end,proto3,oneof" json:"end,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -24302,12 +24305,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"index_name\x18\x01 \x01(\tR\tindexName\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"(\n" +
 	"\x12IndexQueryResponse\x12\x12\n" +
-	"\x04keys\x18\x01 \x03(\fR\x04keys\"Y\n" +
+	"\x04keys\x18\x01 \x03(\fR\x04keys\"u\n" +
 	"\x10IndexScanRequest\x12\x1d\n" +
 	"\n" +
-	"index_name\x18\x01 \x01(\tR\tindexName\x12\x14\n" +
-	"\x05start\x18\x02 \x01(\fR\x05start\x12\x10\n" +
-	"\x03end\x18\x03 \x01(\fR\x03end\":\n" +
+	"index_name\x18\x01 \x01(\tR\tindexName\x12\x19\n" +
+	"\x05start\x18\x02 \x01(\fH\x00R\x05start\x88\x01\x01\x12\x15\n" +
+	"\x03end\x18\x03 \x01(\fH\x01R\x03end\x88\x01\x01B\b\n" +
+	"\x06_startB\x06\n" +
+	"\x04_end\":\n" +
 	"\x0eIndexScanEntry\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x12\n" +
 	"\x04keys\x18\x02 \x03(\fR\x04keys\"F\n" +
@@ -27202,6 +27207,7 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_init() {
 		(*Compare_ModRevision)(nil),
 		(*Compare_Value)(nil),
 	}
+	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[62].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

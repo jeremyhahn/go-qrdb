@@ -140,7 +140,16 @@ func newIndexScanCmd() *cobra.Command {
 		Short: "Scan an index within a value range",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := client.Index().IndexScan(cmd.Context(), args[0], start, end)
+			// A flag left unset is an OPEN bound (nil); a flag explicitly set,
+			// even to "", is a bound (go-qrdb#36).
+			var startBound, endBound *string
+			if cmd.Flags().Changed("start") {
+				startBound = &start
+			}
+			if cmd.Flags().Changed("end") {
+				endBound = &end
+			}
+			resp, err := client.Index().IndexScan(cmd.Context(), args[0], startBound, endBound)
 			if err != nil {
 				return err
 			}
@@ -165,10 +174,8 @@ func newIndexScanCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&start, "start", "", "Start of value range (inclusive)")
-	_ = cmd.MarkFlagRequired("start")
-	cmd.Flags().StringVar(&end, "end", "", "End of value range (exclusive)")
-	_ = cmd.MarkFlagRequired("end")
+	cmd.Flags().StringVar(&start, "start", "", "Start of value range (inclusive); omit for an open lower bound")
+	cmd.Flags().StringVar(&end, "end", "", "End of value range (exclusive); omit for an open upper bound")
 
 	return cmd
 }

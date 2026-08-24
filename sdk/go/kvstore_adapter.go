@@ -182,23 +182,12 @@ func (a *kvStoreAdapter) QueryIndex(ctx context.Context, indexName string, value
 // half-open interval [start, end). Returns a map of field values to the
 // entity keys that share that value.
 //
-// An OPEN bound is refused with kvstore.ErrIndexUnsupported.
-// transport.IndexClient.IndexScan takes plain strings, so there is no way to
-// express "unbounded" over it — a nil bound would arrive as "", which every
-// index implementation reads as an explicit empty bound rather than an open
-// one, and REST rejects it as a missing parameter outright.
-//
-// That matters because the planner leaves one side nil for every one-sided
-// range: Team >= "beta" would become ["beta", "") and return an empty result
-// with a nil error over an index holding matches. Refusing makes pkg/dao's
-// caller see the incapability instead of a wrong answer. Carrying optional
-// bounds through the transport contract is the real fix and is tracked as
-// go-qrdb#36.
+// A nil start or end is an OPEN bound on that side and is threaded through the
+// transport as a nil *string, so a one-sided range (the planner leaves one
+// side nil for Team >= "beta") returns its matches instead of an empty result
+// (go-qrdb#36, which removed the earlier refusal here).
 func (a *kvStoreAdapter) ScanIndex(ctx context.Context, indexName string, start, end []byte) (map[string][][]byte, error) {
-	if start == nil || end == nil {
-		return nil, kvstore.ErrIndexUnsupported
-	}
-	resp, err := a.index.IndexScan(ctx, indexName, string(start), string(end))
+	resp, err := a.index.IndexScan(ctx, indexName, transport.OptionalString(start), transport.OptionalString(end))
 	if err != nil {
 		return nil, err
 	}

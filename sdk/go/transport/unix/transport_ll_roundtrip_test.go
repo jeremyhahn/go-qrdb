@@ -397,7 +397,7 @@ func TestUnixRT_IndexScan(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithIndex(svc))
 	defer cleanup()
 
-	got, err := tr.IndexScan(context.Background(), "idx1", "a", "z")
+	got, err := tr.IndexScan(context.Background(), "idx1", spIdx("a"), spIdx("z"))
 	if err != nil {
 		t.Fatalf("IndexScan: %v", err)
 	}

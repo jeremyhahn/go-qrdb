@@ -50,6 +50,31 @@ type IndexScanEntry struct {
 	Keys  []string `json:"keys"`
 }
 
+// OptionalBytes renders an optional string bound as the []byte a proto or
+// service call carries. A nil pointer becomes a nil slice — an OPEN bound —
+// while a non-nil pointer always becomes a non-nil slice, so an explicit empty
+// bound survives as a present-but-empty value rather than collapsing to open
+// (go-qrdb#36).
+func OptionalBytes(p *string) []byte {
+	if p == nil {
+		return nil
+	}
+	b := make([]byte, len(*p))
+	copy(b, *p)
+	return b
+}
+
+// OptionalString is the inverse of OptionalBytes: a nil slice is an open bound
+// (nil pointer), a non-nil slice is a present bound. It lets a store adapter
+// that speaks []byte thread open bounds through the *string transport contract.
+func OptionalString(b []byte) *string {
+	if b == nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
 // IndexScanResponse is the response from an index scan operation.
 type IndexScanResponse struct {
 	Entries []IndexScanEntry `json:"entries"`

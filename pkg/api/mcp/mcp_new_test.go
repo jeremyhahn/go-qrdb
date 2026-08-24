@@ -2106,8 +2106,17 @@ func TestHandleIndexScan_MissingIndexName(t *testing.T) {
 	}
 }
 
-func TestHandleIndexScan_MissingStart(t *testing.T) {
-	svc := &mockIndexService{}
+func TestHandleIndexScan_OpenLowerBound(t *testing.T) {
+	// An omitted start is now an OPEN lower bound (go-qrdb#36): the tool must
+	// scan (no error result) and thread nil through to the service.
+	var gotStart, gotEnd []byte
+	var seen bool
+	svc := &mockIndexService{
+		scanFn: func(_ context.Context, _ string, start, end []byte) (map[string][][]byte, error) {
+			gotStart, gotEnd, seen = start, end, true
+			return map[string][][]byte{"beta": {[]byte("1")}}, nil
+		},
+	}
 	handler := handleIndexScan(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
@@ -2117,13 +2126,29 @@ func TestHandleIndexScan_MissingStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected error result for missing start")
+	if result.IsError {
+		t.Fatalf("an open lower bound must not be an error result: %+v", result)
+	}
+	if !seen {
+		t.Fatal("service Scan was not reached")
+	}
+	if gotStart != nil {
+		t.Errorf("start = %q; an omitted start must be a nil (open) bound", gotStart)
+	}
+	if string(gotEnd) != "z" {
+		t.Errorf("end = %q; want %q", gotEnd, "z")
 	}
 }
 
-func TestHandleIndexScan_MissingEnd(t *testing.T) {
-	svc := &mockIndexService{}
+func TestHandleIndexScan_OpenUpperBound(t *testing.T) {
+	var gotStart, gotEnd []byte
+	var seen bool
+	svc := &mockIndexService{
+		scanFn: func(_ context.Context, _ string, start, end []byte) (map[string][][]byte, error) {
+			gotStart, gotEnd, seen = start, end, true
+			return map[string][][]byte{"beta": {[]byte("1")}}, nil
+		},
+	}
 	handler := handleIndexScan(svc)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
@@ -2133,8 +2158,17 @@ func TestHandleIndexScan_MissingEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.IsError {
-		t.Error("expected error result for missing end")
+	if result.IsError {
+		t.Fatalf("an open upper bound must not be an error result: %+v", result)
+	}
+	if !seen {
+		t.Fatal("service Scan was not reached")
+	}
+	if string(gotStart) != "a" {
+		t.Errorf("start = %q; want %q", gotStart, "a")
+	}
+	if gotEnd != nil {
+		t.Errorf("end = %q; an omitted end must be a nil (open) bound", gotEnd)
 	}
 }
 
