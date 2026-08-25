@@ -369,6 +369,23 @@ func (s *qrdbServiceServer) CompareAndDelete(ctx context.Context, req *pb.Compar
 	return &pb.CompareAndDeleteResponse{Deleted: deleted}, nil
 }
 
+// CompareAndSwap replaces the key's value only when its stored value still
+// equals the expected value, delegating to the KV service's guarded swap — the
+// edit half of the guarded set (go-qrdb#121). An absent key is left absent, so
+// swapped=false covers both "another writer changed it" and "it is not there",
+// exactly as the service layer defines it.
+func (s *qrdbServiceServer) CompareAndSwap(ctx context.Context, req *pb.CompareAndSwapRequest) (*pb.CompareAndSwapResponse, error) {
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
+	}
+	swapped, err := kvSvc.CompareAndSwap(ctx, req.GetKey(), req.GetExpected(), req.GetNext())
+	if err != nil {
+		return nil, mapServiceError(err)
+	}
+	return &pb.CompareAndSwapResponse{Swapped: swapped}, nil
+}
+
 // Get retrieves a value by key using a linearizable read.
 func (s *qrdbServiceServer) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
 	kvSvc, svcErr := s.kvSvcFor(ctx)

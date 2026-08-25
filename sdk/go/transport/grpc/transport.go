@@ -297,6 +297,23 @@ func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected [
 	return resp.GetDeleted(), nil
 }
 
+// CompareAndSwap atomically replaces key's value with next only when its
+// stored value still equals expected, forwarding to the server's guarded RPC —
+// the edit half of the guarded set (go-qrdb#121). The comparison happens in the
+// state machine, never on this side of the wire: emulating it with a Get and a
+// Put would reopen the window the verb exists to close, and would do so across
+// a network round trip.
+func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	resp, err := t.client.CompareAndSwap(ctx, &pb.CompareAndSwapRequest{Key: key, Expected: expected, Next: next})
+	if err != nil {
+		return false, mapGRPCError("CompareAndSwap", err)
+	}
+	return resp.GetSwapped(), nil
+}
+
 // List returns sorted keys matching the given prefix. An empty prefix
 // returns all keys.
 func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {

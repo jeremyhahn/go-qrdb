@@ -1168,7 +1168,23 @@ func TestExists_AfterDelete(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap applies the guard for real, against the same map the other
+// verbs use. It returned an unconditional (false, nil) until go-qrdb#121 gave
+// the transports this verb, and a canned answer is worse than no double here:
+// (false, nil) is precisely what a LOST swap looks like, so a transport that
+// never called the service, or called it with the wrong arguments, would have
+// produced an identical result and the test could not have failed.
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[key]
+	if !ok {
+		// An absent key is left absent: a swap is not a create.
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }

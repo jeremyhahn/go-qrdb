@@ -39,6 +39,7 @@ const (
 	QRDBService_Delete_FullMethodName                            = "/qrdb.v1.QRDBService/Delete"
 	QRDBService_PutIfAbsent_FullMethodName                       = "/qrdb.v1.QRDBService/PutIfAbsent"
 	QRDBService_CompareAndDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CompareAndDelete"
+	QRDBService_CompareAndSwap_FullMethodName                    = "/qrdb.v1.QRDBService/CompareAndSwap"
 	QRDBService_List_FullMethodName                              = "/qrdb.v1.QRDBService/List"
 	QRDBService_Scan_FullMethodName                              = "/qrdb.v1.QRDBService/Scan"
 	QRDBService_PutWithLease_FullMethodName                      = "/qrdb.v1.QRDBService/PutWithLease"
@@ -249,6 +250,12 @@ type QRDBServiceClient interface {
 	// still equals the expected value. It is the release half of PutIfAbsent
 	// (go-qrdb#119); a guarded delete is still a delete.
 	CompareAndDelete(ctx context.Context, in *CompareAndDeleteRequest, opts ...grpc.CallOption) (*CompareAndDeleteResponse, error)
+	// CompareAndSwap atomically replaces a key's value only when its stored
+	// value still equals the expected value. It is the edit half of the
+	// guarded set PutIfAbsent and CompareAndDelete began (go-qrdb#121); an
+	// absent key is left absent, so a swap can never create. A guarded swap
+	// is still a put.
+	CompareAndSwap(ctx context.Context, in *CompareAndSwapRequest, opts ...grpc.CallOption) (*CompareAndSwapResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(ctx context.Context, in *ListRequest, opts ...grpc.CallOption) (*ListResponse, error)
 	// Scan returns key-value pairs matching a prefix.
@@ -725,6 +732,16 @@ func (c *qRDBServiceClient) CompareAndDelete(ctx context.Context, in *CompareAnd
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CompareAndDeleteResponse)
 	err := c.cc.Invoke(ctx, QRDBService_CompareAndDelete_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CompareAndSwap(ctx context.Context, in *CompareAndSwapRequest, opts ...grpc.CallOption) (*CompareAndSwapResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompareAndSwapResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CompareAndSwap_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2622,6 +2639,12 @@ type QRDBServiceServer interface {
 	// still equals the expected value. It is the release half of PutIfAbsent
 	// (go-qrdb#119); a guarded delete is still a delete.
 	CompareAndDelete(context.Context, *CompareAndDeleteRequest) (*CompareAndDeleteResponse, error)
+	// CompareAndSwap atomically replaces a key's value only when its stored
+	// value still equals the expected value. It is the edit half of the
+	// guarded set PutIfAbsent and CompareAndDelete began (go-qrdb#121); an
+	// absent key is left absent, so a swap can never create. A guarded swap
+	// is still a put.
+	CompareAndSwap(context.Context, *CompareAndSwapRequest) (*CompareAndSwapResponse, error)
 	// List returns sorted keys matching a prefix.
 	List(context.Context, *ListRequest) (*ListResponse, error)
 	// Scan returns key-value pairs matching a prefix.
@@ -3068,6 +3091,9 @@ func (UnimplementedQRDBServiceServer) PutIfAbsent(context.Context, *PutIfAbsentR
 }
 func (UnimplementedQRDBServiceServer) CompareAndDelete(context.Context, *CompareAndDeleteRequest) (*CompareAndDeleteResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CompareAndDelete not implemented")
+}
+func (UnimplementedQRDBServiceServer) CompareAndSwap(context.Context, *CompareAndSwapRequest) (*CompareAndSwapResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CompareAndSwap not implemented")
 }
 func (UnimplementedQRDBServiceServer) List(context.Context, *ListRequest) (*ListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method List not implemented")
@@ -3734,6 +3760,24 @@ func _QRDBService_CompareAndDelete_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).CompareAndDelete(ctx, req.(*CompareAndDeleteRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CompareAndSwap_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompareAndSwapRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CompareAndSwap(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CompareAndSwap_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CompareAndSwap(ctx, req.(*CompareAndSwapRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7105,6 +7149,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CompareAndDelete",
 			Handler:    _QRDBService_CompareAndDelete_Handler,
+		},
+		{
+			MethodName: "CompareAndSwap",
+			Handler:    _QRDBService_CompareAndSwap_Handler,
 		},
 		{
 			MethodName: "List",

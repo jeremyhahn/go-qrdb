@@ -1160,6 +1160,114 @@ func (x *CompareAndDeleteResponse) GetDeleted() bool {
 	return false
 }
 
+// CompareAndSwapRequest is the request payload for CompareAndSwap.
+type CompareAndSwapRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Expected      []byte                 `protobuf:"bytes,2,opt,name=expected,proto3" json:"expected,omitempty"`
+	Next          []byte                 `protobuf:"bytes,3,opt,name=next,proto3" json:"next,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompareAndSwapRequest) Reset() {
+	*x = CompareAndSwapRequest{}
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompareAndSwapRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompareAndSwapRequest) ProtoMessage() {}
+
+func (x *CompareAndSwapRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompareAndSwapRequest.ProtoReflect.Descriptor instead.
+func (*CompareAndSwapRequest) Descriptor() ([]byte, []int) {
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CompareAndSwapRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CompareAndSwapRequest) GetExpected() []byte {
+	if x != nil {
+		return x.Expected
+	}
+	return nil
+}
+
+func (x *CompareAndSwapRequest) GetNext() []byte {
+	if x != nil {
+		return x.Next
+	}
+	return nil
+}
+
+// CompareAndSwapResponse reports whether the value was replaced: true when the
+// stored value equalled expected and next was written, false otherwise —
+// including when the key was absent, since a swap does not create.
+type CompareAndSwapResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Swapped       bool                   `protobuf:"varint,1,opt,name=swapped,proto3" json:"swapped,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompareAndSwapResponse) Reset() {
+	*x = CompareAndSwapResponse{}
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompareAndSwapResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompareAndSwapResponse) ProtoMessage() {}
+
+func (x *CompareAndSwapResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompareAndSwapResponse.ProtoReflect.Descriptor instead.
+func (*CompareAndSwapResponse) Descriptor() ([]byte, []int) {
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CompareAndSwapResponse) GetSwapped() bool {
+	if x != nil {
+		return x.Swapped
+	}
+	return false
+}
+
 // ListRequest is the request payload for List.
 type ListRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1171,7 +1279,7 @@ type ListRequest struct {
 
 func (x *ListRequest) Reset() {
 	*x = ListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[10]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1183,7 +1291,7 @@ func (x *ListRequest) String() string {
 func (*ListRequest) ProtoMessage() {}
 
 func (x *ListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[10]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1196,7 +1304,7 @@ func (x *ListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRequest.ProtoReflect.Descriptor instead.
 func (*ListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{10}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListRequest) GetPrefix() string {
@@ -1223,7 +1331,7 @@ type ListResponse struct {
 
 func (x *ListResponse) Reset() {
 	*x = ListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[11]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1235,7 +1343,7 @@ func (x *ListResponse) String() string {
 func (*ListResponse) ProtoMessage() {}
 
 func (x *ListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[11]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1248,7 +1356,7 @@ func (x *ListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResponse.ProtoReflect.Descriptor instead.
 func (*ListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{11}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListResponse) GetKeys() []string {
@@ -1269,7 +1377,7 @@ type ScanRequest struct {
 
 func (x *ScanRequest) Reset() {
 	*x = ScanRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[12]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1281,7 +1389,7 @@ func (x *ScanRequest) String() string {
 func (*ScanRequest) ProtoMessage() {}
 
 func (x *ScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[12]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1294,7 +1402,7 @@ func (x *ScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
 func (*ScanRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{12}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ScanRequest) GetPrefix() string {
@@ -1321,7 +1429,7 @@ type ScanResponse struct {
 
 func (x *ScanResponse) Reset() {
 	*x = ScanResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[13]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1333,7 +1441,7 @@ func (x *ScanResponse) String() string {
 func (*ScanResponse) ProtoMessage() {}
 
 func (x *ScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[13]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1346,7 +1454,7 @@ func (x *ScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanResponse.ProtoReflect.Descriptor instead.
 func (*ScanResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{13}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ScanResponse) GetPairs() map[string][]byte {
@@ -1371,7 +1479,7 @@ type KeyValue struct {
 
 func (x *KeyValue) Reset() {
 	*x = KeyValue{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[14]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1383,7 +1491,7 @@ func (x *KeyValue) String() string {
 func (*KeyValue) ProtoMessage() {}
 
 func (x *KeyValue) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[14]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1396,7 +1504,7 @@ func (x *KeyValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyValue.ProtoReflect.Descriptor instead.
 func (*KeyValue) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{14}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *KeyValue) GetKey() []byte {
@@ -1454,7 +1562,7 @@ type PutWithLeaseRequest struct {
 
 func (x *PutWithLeaseRequest) Reset() {
 	*x = PutWithLeaseRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[15]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1466,7 +1574,7 @@ func (x *PutWithLeaseRequest) String() string {
 func (*PutWithLeaseRequest) ProtoMessage() {}
 
 func (x *PutWithLeaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[15]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1479,7 +1587,7 @@ func (x *PutWithLeaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutWithLeaseRequest.ProtoReflect.Descriptor instead.
 func (*PutWithLeaseRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{15}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PutWithLeaseRequest) GetKey() string {
@@ -1520,7 +1628,7 @@ type PutWithLeaseResponse struct {
 
 func (x *PutWithLeaseResponse) Reset() {
 	*x = PutWithLeaseResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[16]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1532,7 +1640,7 @@ func (x *PutWithLeaseResponse) String() string {
 func (*PutWithLeaseResponse) ProtoMessage() {}
 
 func (x *PutWithLeaseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[16]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1545,7 +1653,7 @@ func (x *PutWithLeaseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutWithLeaseResponse.ProtoReflect.Descriptor instead.
 func (*PutWithLeaseResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{16}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *PutWithLeaseResponse) GetKv() *KeyValue {
@@ -1566,7 +1674,7 @@ type GetRevisionRequest struct {
 
 func (x *GetRevisionRequest) Reset() {
 	*x = GetRevisionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[17]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1578,7 +1686,7 @@ func (x *GetRevisionRequest) String() string {
 func (*GetRevisionRequest) ProtoMessage() {}
 
 func (x *GetRevisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[17]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1591,7 +1699,7 @@ func (x *GetRevisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRevisionRequest.ProtoReflect.Descriptor instead.
 func (*GetRevisionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{17}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetRevisionRequest) GetKey() string {
@@ -1618,7 +1726,7 @@ type GetRevisionResponse struct {
 
 func (x *GetRevisionResponse) Reset() {
 	*x = GetRevisionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[18]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1630,7 +1738,7 @@ func (x *GetRevisionResponse) String() string {
 func (*GetRevisionResponse) ProtoMessage() {}
 
 func (x *GetRevisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[18]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1643,7 +1751,7 @@ func (x *GetRevisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRevisionResponse.ProtoReflect.Descriptor instead.
 func (*GetRevisionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{18}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetRevisionResponse) GetKv() *KeyValue {
@@ -1665,7 +1773,7 @@ type GetAtRevisionRequest struct {
 
 func (x *GetAtRevisionRequest) Reset() {
 	*x = GetAtRevisionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[19]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1677,7 +1785,7 @@ func (x *GetAtRevisionRequest) String() string {
 func (*GetAtRevisionRequest) ProtoMessage() {}
 
 func (x *GetAtRevisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[19]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1690,7 +1798,7 @@ func (x *GetAtRevisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAtRevisionRequest.ProtoReflect.Descriptor instead.
 func (*GetAtRevisionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{19}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetAtRevisionRequest) GetKey() string {
@@ -1724,7 +1832,7 @@ type GetAtRevisionResponse struct {
 
 func (x *GetAtRevisionResponse) Reset() {
 	*x = GetAtRevisionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[20]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1736,7 +1844,7 @@ func (x *GetAtRevisionResponse) String() string {
 func (*GetAtRevisionResponse) ProtoMessage() {}
 
 func (x *GetAtRevisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[20]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1749,7 +1857,7 @@ func (x *GetAtRevisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAtRevisionResponse.ProtoReflect.Descriptor instead.
 func (*GetAtRevisionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{20}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetAtRevisionResponse) GetKv() *KeyValue {
@@ -1777,7 +1885,7 @@ type RangeRequest struct {
 
 func (x *RangeRequest) Reset() {
 	*x = RangeRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[21]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1789,7 +1897,7 @@ func (x *RangeRequest) String() string {
 func (*RangeRequest) ProtoMessage() {}
 
 func (x *RangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[21]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1802,7 +1910,7 @@ func (x *RangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RangeRequest.ProtoReflect.Descriptor instead.
 func (*RangeRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{21}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *RangeRequest) GetStart() []byte {
@@ -1881,7 +1989,7 @@ type RangeResponse struct {
 
 func (x *RangeResponse) Reset() {
 	*x = RangeResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[22]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1893,7 +2001,7 @@ func (x *RangeResponse) String() string {
 func (*RangeResponse) ProtoMessage() {}
 
 func (x *RangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[22]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1906,7 +2014,7 @@ func (x *RangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RangeResponse.ProtoReflect.Descriptor instead.
 func (*RangeResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{22}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *RangeResponse) GetKvs() []*KeyValue {
@@ -1940,7 +2048,7 @@ type CompactRequest struct {
 
 func (x *CompactRequest) Reset() {
 	*x = CompactRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[23]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1952,7 +2060,7 @@ func (x *CompactRequest) String() string {
 func (*CompactRequest) ProtoMessage() {}
 
 func (x *CompactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[23]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1965,7 +2073,7 @@ func (x *CompactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactRequest.ProtoReflect.Descriptor instead.
 func (*CompactRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{23}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CompactRequest) GetRevision() int64 {
@@ -1985,7 +2093,7 @@ type CurrentRevisionResponse struct {
 
 func (x *CurrentRevisionResponse) Reset() {
 	*x = CurrentRevisionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[24]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1997,7 +2105,7 @@ func (x *CurrentRevisionResponse) String() string {
 func (*CurrentRevisionResponse) ProtoMessage() {}
 
 func (x *CurrentRevisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[24]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2010,7 +2118,7 @@ func (x *CurrentRevisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CurrentRevisionResponse.ProtoReflect.Descriptor instead.
 func (*CurrentRevisionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{24}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CurrentRevisionResponse) GetRevision() int64 {
@@ -2045,7 +2153,7 @@ type RestoreRevisionRequest struct {
 
 func (x *RestoreRevisionRequest) Reset() {
 	*x = RestoreRevisionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[25]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2057,7 +2165,7 @@ func (x *RestoreRevisionRequest) String() string {
 func (*RestoreRevisionRequest) ProtoMessage() {}
 
 func (x *RestoreRevisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[25]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2070,7 +2178,7 @@ func (x *RestoreRevisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreRevisionRequest.ProtoReflect.Descriptor instead.
 func (*RestoreRevisionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{25}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *RestoreRevisionRequest) GetRevision() int64 {
@@ -2125,7 +2233,7 @@ type RestoreKeyChange struct {
 
 func (x *RestoreKeyChange) Reset() {
 	*x = RestoreKeyChange{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[26]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2137,7 +2245,7 @@ func (x *RestoreKeyChange) String() string {
 func (*RestoreKeyChange) ProtoMessage() {}
 
 func (x *RestoreKeyChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[26]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2150,7 +2258,7 @@ func (x *RestoreKeyChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreKeyChange.ProtoReflect.Descriptor instead.
 func (*RestoreKeyChange) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{26}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *RestoreKeyChange) GetKey() []byte {
@@ -2204,7 +2312,7 @@ type RestoreRevisionResponse struct {
 
 func (x *RestoreRevisionResponse) Reset() {
 	*x = RestoreRevisionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[27]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2216,7 +2324,7 @@ func (x *RestoreRevisionResponse) String() string {
 func (*RestoreRevisionResponse) ProtoMessage() {}
 
 func (x *RestoreRevisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[27]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2229,7 +2337,7 @@ func (x *RestoreRevisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreRevisionResponse.ProtoReflect.Descriptor instead.
 func (*RestoreRevisionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{27}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *RestoreRevisionResponse) GetRevision() int64 {
@@ -2302,7 +2410,7 @@ type Compare struct {
 
 func (x *Compare) Reset() {
 	*x = Compare{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[28]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2314,7 +2422,7 @@ func (x *Compare) String() string {
 func (*Compare) ProtoMessage() {}
 
 func (x *Compare) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[28]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2327,7 +2435,7 @@ func (x *Compare) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Compare.ProtoReflect.Descriptor instead.
 func (*Compare) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{28}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Compare) GetKey() []byte {
@@ -2436,7 +2544,7 @@ type Op struct {
 
 func (x *Op) Reset() {
 	*x = Op{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[29]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2448,7 +2556,7 @@ func (x *Op) String() string {
 func (*Op) ProtoMessage() {}
 
 func (x *Op) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[29]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2461,7 +2569,7 @@ func (x *Op) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Op.ProtoReflect.Descriptor instead.
 func (*Op) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{29}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Op) GetType() OpType {
@@ -2511,7 +2619,7 @@ type OpResponse struct {
 
 func (x *OpResponse) Reset() {
 	*x = OpResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[30]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2523,7 +2631,7 @@ func (x *OpResponse) String() string {
 func (*OpResponse) ProtoMessage() {}
 
 func (x *OpResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[30]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2536,7 +2644,7 @@ func (x *OpResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpResponse.ProtoReflect.Descriptor instead.
 func (*OpResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{30}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *OpResponse) GetKvs() []*KeyValue {
@@ -2572,7 +2680,7 @@ type TransactionRequest struct {
 
 func (x *TransactionRequest) Reset() {
 	*x = TransactionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[31]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2584,7 +2692,7 @@ func (x *TransactionRequest) String() string {
 func (*TransactionRequest) ProtoMessage() {}
 
 func (x *TransactionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[31]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2597,7 +2705,7 @@ func (x *TransactionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransactionRequest.ProtoReflect.Descriptor instead.
 func (*TransactionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{31}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *TransactionRequest) GetCompares() []*Compare {
@@ -2633,7 +2741,7 @@ type TransactionResponse struct {
 
 func (x *TransactionResponse) Reset() {
 	*x = TransactionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[32]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2645,7 +2753,7 @@ func (x *TransactionResponse) String() string {
 func (*TransactionResponse) ProtoMessage() {}
 
 func (x *TransactionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[32]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2658,7 +2766,7 @@ func (x *TransactionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransactionResponse.ProtoReflect.Descriptor instead.
 func (*TransactionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{32}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TransactionResponse) GetSucceeded() bool {
@@ -2692,7 +2800,7 @@ type BatchRequest struct {
 
 func (x *BatchRequest) Reset() {
 	*x = BatchRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[33]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2704,7 +2812,7 @@ func (x *BatchRequest) String() string {
 func (*BatchRequest) ProtoMessage() {}
 
 func (x *BatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[33]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2717,7 +2825,7 @@ func (x *BatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchRequest.ProtoReflect.Descriptor instead.
 func (*BatchRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{33}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *BatchRequest) GetOps() []*Op {
@@ -2737,7 +2845,7 @@ type BatchResponse struct {
 
 func (x *BatchResponse) Reset() {
 	*x = BatchResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[34]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2749,7 +2857,7 @@ func (x *BatchResponse) String() string {
 func (*BatchResponse) ProtoMessage() {}
 
 func (x *BatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[34]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2762,7 +2870,7 @@ func (x *BatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchResponse.ProtoReflect.Descriptor instead.
 func (*BatchResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{34}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *BatchResponse) GetResponses() []*OpResponse {
@@ -2792,7 +2900,7 @@ type BatchImportRequest struct {
 
 func (x *BatchImportRequest) Reset() {
 	*x = BatchImportRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[35]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2804,7 +2912,7 @@ func (x *BatchImportRequest) String() string {
 func (*BatchImportRequest) ProtoMessage() {}
 
 func (x *BatchImportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[35]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2817,7 +2925,7 @@ func (x *BatchImportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchImportRequest.ProtoReflect.Descriptor instead.
 func (*BatchImportRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{35}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *BatchImportRequest) GetFile() []byte {
@@ -2888,7 +2996,7 @@ type BatchImportError struct {
 
 func (x *BatchImportError) Reset() {
 	*x = BatchImportError{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[36]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2900,7 +3008,7 @@ func (x *BatchImportError) String() string {
 func (*BatchImportError) ProtoMessage() {}
 
 func (x *BatchImportError) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[36]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2913,7 +3021,7 @@ func (x *BatchImportError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchImportError.ProtoReflect.Descriptor instead.
 func (*BatchImportError) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{36}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *BatchImportError) GetRow() int32 {
@@ -2950,7 +3058,7 @@ type BatchImportResponse struct {
 
 func (x *BatchImportResponse) Reset() {
 	*x = BatchImportResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[37]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2962,7 +3070,7 @@ func (x *BatchImportResponse) String() string {
 func (*BatchImportResponse) ProtoMessage() {}
 
 func (x *BatchImportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[37]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2975,7 +3083,7 @@ func (x *BatchImportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchImportResponse.ProtoReflect.Descriptor instead.
 func (*BatchImportResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{37}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *BatchImportResponse) GetTotal() int32 {
@@ -3018,7 +3126,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[38]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3030,7 +3138,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[38]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3043,7 +3151,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{38}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Event) GetType() EventType {
@@ -3081,7 +3189,7 @@ type WatchRequest struct {
 
 func (x *WatchRequest) Reset() {
 	*x = WatchRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[39]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3093,7 +3201,7 @@ func (x *WatchRequest) String() string {
 func (*WatchRequest) ProtoMessage() {}
 
 func (x *WatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[39]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3106,7 +3214,7 @@ func (x *WatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchRequest.ProtoReflect.Descriptor instead.
 func (*WatchRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{39}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WatchRequest) GetKey() []byte {
@@ -3158,7 +3266,7 @@ type WatchResponse struct {
 
 func (x *WatchResponse) Reset() {
 	*x = WatchResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[40]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3170,7 +3278,7 @@ func (x *WatchResponse) String() string {
 func (*WatchResponse) ProtoMessage() {}
 
 func (x *WatchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[40]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3183,7 +3291,7 @@ func (x *WatchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchResponse.ProtoReflect.Descriptor instead.
 func (*WatchResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{40}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *WatchResponse) GetWatchId() int64 {
@@ -3235,7 +3343,7 @@ type Lease struct {
 
 func (x *Lease) Reset() {
 	*x = Lease{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[41]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3355,7 @@ func (x *Lease) String() string {
 func (*Lease) ProtoMessage() {}
 
 func (x *Lease) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[41]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3368,7 @@ func (x *Lease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Lease.ProtoReflect.Descriptor instead.
 func (*Lease) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{41}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *Lease) GetId() int64 {
@@ -3308,7 +3416,7 @@ type LeaseGrantRequest struct {
 
 func (x *LeaseGrantRequest) Reset() {
 	*x = LeaseGrantRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[42]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3320,7 +3428,7 @@ func (x *LeaseGrantRequest) String() string {
 func (*LeaseGrantRequest) ProtoMessage() {}
 
 func (x *LeaseGrantRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[42]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3333,7 +3441,7 @@ func (x *LeaseGrantRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseGrantRequest.ProtoReflect.Descriptor instead.
 func (*LeaseGrantRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{42}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *LeaseGrantRequest) GetTtl() int64 {
@@ -3353,7 +3461,7 @@ type LeaseGrantResponse struct {
 
 func (x *LeaseGrantResponse) Reset() {
 	*x = LeaseGrantResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[43]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3365,7 +3473,7 @@ func (x *LeaseGrantResponse) String() string {
 func (*LeaseGrantResponse) ProtoMessage() {}
 
 func (x *LeaseGrantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[43]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3378,7 +3486,7 @@ func (x *LeaseGrantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseGrantResponse.ProtoReflect.Descriptor instead.
 func (*LeaseGrantResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{43}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *LeaseGrantResponse) GetLease() *Lease {
@@ -3398,7 +3506,7 @@ type LeaseRevokeRequest struct {
 
 func (x *LeaseRevokeRequest) Reset() {
 	*x = LeaseRevokeRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[44]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3410,7 +3518,7 @@ func (x *LeaseRevokeRequest) String() string {
 func (*LeaseRevokeRequest) ProtoMessage() {}
 
 func (x *LeaseRevokeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[44]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3423,7 +3531,7 @@ func (x *LeaseRevokeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseRevokeRequest.ProtoReflect.Descriptor instead.
 func (*LeaseRevokeRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{44}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *LeaseRevokeRequest) GetLeaseId() int64 {
@@ -3443,7 +3551,7 @@ type LeaseKeepAliveRequest struct {
 
 func (x *LeaseKeepAliveRequest) Reset() {
 	*x = LeaseKeepAliveRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[45]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3455,7 +3563,7 @@ func (x *LeaseKeepAliveRequest) String() string {
 func (*LeaseKeepAliveRequest) ProtoMessage() {}
 
 func (x *LeaseKeepAliveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[45]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3468,7 +3576,7 @@ func (x *LeaseKeepAliveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseKeepAliveRequest.ProtoReflect.Descriptor instead.
 func (*LeaseKeepAliveRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{45}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *LeaseKeepAliveRequest) GetLeaseId() int64 {
@@ -3488,7 +3596,7 @@ type LeaseKeepAliveResponse struct {
 
 func (x *LeaseKeepAliveResponse) Reset() {
 	*x = LeaseKeepAliveResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[46]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3500,7 +3608,7 @@ func (x *LeaseKeepAliveResponse) String() string {
 func (*LeaseKeepAliveResponse) ProtoMessage() {}
 
 func (x *LeaseKeepAliveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[46]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3513,7 +3621,7 @@ func (x *LeaseKeepAliveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseKeepAliveResponse.ProtoReflect.Descriptor instead.
 func (*LeaseKeepAliveResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{46}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *LeaseKeepAliveResponse) GetLease() *Lease {
@@ -3533,7 +3641,7 @@ type LeaseTimeToLiveRequest struct {
 
 func (x *LeaseTimeToLiveRequest) Reset() {
 	*x = LeaseTimeToLiveRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[47]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3545,7 +3653,7 @@ func (x *LeaseTimeToLiveRequest) String() string {
 func (*LeaseTimeToLiveRequest) ProtoMessage() {}
 
 func (x *LeaseTimeToLiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[47]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3558,7 +3666,7 @@ func (x *LeaseTimeToLiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseTimeToLiveRequest.ProtoReflect.Descriptor instead.
 func (*LeaseTimeToLiveRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{47}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *LeaseTimeToLiveRequest) GetLeaseId() int64 {
@@ -3578,7 +3686,7 @@ type LeaseTimeToLiveResponse struct {
 
 func (x *LeaseTimeToLiveResponse) Reset() {
 	*x = LeaseTimeToLiveResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[48]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3590,7 +3698,7 @@ func (x *LeaseTimeToLiveResponse) String() string {
 func (*LeaseTimeToLiveResponse) ProtoMessage() {}
 
 func (x *LeaseTimeToLiveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[48]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3603,7 +3711,7 @@ func (x *LeaseTimeToLiveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseTimeToLiveResponse.ProtoReflect.Descriptor instead.
 func (*LeaseTimeToLiveResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{48}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *LeaseTimeToLiveResponse) GetLease() *Lease {
@@ -3623,7 +3731,7 @@ type LeaseListResponse struct {
 
 func (x *LeaseListResponse) Reset() {
 	*x = LeaseListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[49]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3635,7 +3743,7 @@ func (x *LeaseListResponse) String() string {
 func (*LeaseListResponse) ProtoMessage() {}
 
 func (x *LeaseListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[49]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3648,7 +3756,7 @@ func (x *LeaseListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaseListResponse.ProtoReflect.Descriptor instead.
 func (*LeaseListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{49}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *LeaseListResponse) GetLeases() []*Lease {
@@ -3675,7 +3783,7 @@ type LockInfo struct {
 
 func (x *LockInfo) Reset() {
 	*x = LockInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[50]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3687,7 +3795,7 @@ func (x *LockInfo) String() string {
 func (*LockInfo) ProtoMessage() {}
 
 func (x *LockInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[50]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3700,7 +3808,7 @@ func (x *LockInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockInfo.ProtoReflect.Descriptor instead.
 func (*LockInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{50}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *LockInfo) GetKey() string {
@@ -3772,7 +3880,7 @@ type LockAcquireRequest struct {
 
 func (x *LockAcquireRequest) Reset() {
 	*x = LockAcquireRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[51]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3784,7 +3892,7 @@ func (x *LockAcquireRequest) String() string {
 func (*LockAcquireRequest) ProtoMessage() {}
 
 func (x *LockAcquireRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[51]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3797,7 +3905,7 @@ func (x *LockAcquireRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockAcquireRequest.ProtoReflect.Descriptor instead.
 func (*LockAcquireRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{51}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *LockAcquireRequest) GetKey() string {
@@ -3838,7 +3946,7 @@ type LockAcquireResponse struct {
 
 func (x *LockAcquireResponse) Reset() {
 	*x = LockAcquireResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[52]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3850,7 +3958,7 @@ func (x *LockAcquireResponse) String() string {
 func (*LockAcquireResponse) ProtoMessage() {}
 
 func (x *LockAcquireResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[52]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3863,7 +3971,7 @@ func (x *LockAcquireResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockAcquireResponse.ProtoReflect.Descriptor instead.
 func (*LockAcquireResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{52}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *LockAcquireResponse) GetLock() *LockInfo {
@@ -3886,7 +3994,7 @@ type LockTryLockRequest struct {
 
 func (x *LockTryLockRequest) Reset() {
 	*x = LockTryLockRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[53]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3898,7 +4006,7 @@ func (x *LockTryLockRequest) String() string {
 func (*LockTryLockRequest) ProtoMessage() {}
 
 func (x *LockTryLockRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[53]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3911,7 +4019,7 @@ func (x *LockTryLockRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockTryLockRequest.ProtoReflect.Descriptor instead.
 func (*LockTryLockRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{53}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *LockTryLockRequest) GetKey() string {
@@ -3952,7 +4060,7 @@ type LockTryLockResponse struct {
 
 func (x *LockTryLockResponse) Reset() {
 	*x = LockTryLockResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[54]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3964,7 +4072,7 @@ func (x *LockTryLockResponse) String() string {
 func (*LockTryLockResponse) ProtoMessage() {}
 
 func (x *LockTryLockResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[54]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3977,7 +4085,7 @@ func (x *LockTryLockResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockTryLockResponse.ProtoReflect.Descriptor instead.
 func (*LockTryLockResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{54}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *LockTryLockResponse) GetLock() *LockInfo {
@@ -3998,7 +4106,7 @@ type LockReleaseRequest struct {
 
 func (x *LockReleaseRequest) Reset() {
 	*x = LockReleaseRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[55]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4010,7 +4118,7 @@ func (x *LockReleaseRequest) String() string {
 func (*LockReleaseRequest) ProtoMessage() {}
 
 func (x *LockReleaseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[55]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4023,7 +4131,7 @@ func (x *LockReleaseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockReleaseRequest.ProtoReflect.Descriptor instead.
 func (*LockReleaseRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{55}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *LockReleaseRequest) GetKey() string {
@@ -4051,7 +4159,7 @@ type LockExtendRequest struct {
 
 func (x *LockExtendRequest) Reset() {
 	*x = LockExtendRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[56]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4063,7 +4171,7 @@ func (x *LockExtendRequest) String() string {
 func (*LockExtendRequest) ProtoMessage() {}
 
 func (x *LockExtendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[56]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4076,7 +4184,7 @@ func (x *LockExtendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockExtendRequest.ProtoReflect.Descriptor instead.
 func (*LockExtendRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{56}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *LockExtendRequest) GetKey() string {
@@ -4103,7 +4211,7 @@ type LockExtendResponse struct {
 
 func (x *LockExtendResponse) Reset() {
 	*x = LockExtendResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[57]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4115,7 +4223,7 @@ func (x *LockExtendResponse) String() string {
 func (*LockExtendResponse) ProtoMessage() {}
 
 func (x *LockExtendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[57]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4128,7 +4236,7 @@ func (x *LockExtendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockExtendResponse.ProtoReflect.Descriptor instead.
 func (*LockExtendResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{57}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *LockExtendResponse) GetLock() *LockInfo {
@@ -4148,7 +4256,7 @@ type LockStatusRequest struct {
 
 func (x *LockStatusRequest) Reset() {
 	*x = LockStatusRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[58]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4160,7 +4268,7 @@ func (x *LockStatusRequest) String() string {
 func (*LockStatusRequest) ProtoMessage() {}
 
 func (x *LockStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[58]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4173,7 +4281,7 @@ func (x *LockStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockStatusRequest.ProtoReflect.Descriptor instead.
 func (*LockStatusRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{58}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *LockStatusRequest) GetKey() string {
@@ -4193,7 +4301,7 @@ type LockStatusResponse struct {
 
 func (x *LockStatusResponse) Reset() {
 	*x = LockStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[59]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4205,7 +4313,7 @@ func (x *LockStatusResponse) String() string {
 func (*LockStatusResponse) ProtoMessage() {}
 
 func (x *LockStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[59]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4218,7 +4326,7 @@ func (x *LockStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockStatusResponse.ProtoReflect.Descriptor instead.
 func (*LockStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{59}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *LockStatusResponse) GetLock() *LockInfo {
@@ -4238,7 +4346,7 @@ type LockListRequest struct {
 
 func (x *LockListRequest) Reset() {
 	*x = LockListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[60]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4250,7 +4358,7 @@ func (x *LockListRequest) String() string {
 func (*LockListRequest) ProtoMessage() {}
 
 func (x *LockListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[60]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4263,7 +4371,7 @@ func (x *LockListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockListRequest.ProtoReflect.Descriptor instead.
 func (*LockListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{60}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *LockListRequest) GetPrefix() string {
@@ -4283,7 +4391,7 @@ type LockListResponse struct {
 
 func (x *LockListResponse) Reset() {
 	*x = LockListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[61]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4295,7 +4403,7 @@ func (x *LockListResponse) String() string {
 func (*LockListResponse) ProtoMessage() {}
 
 func (x *LockListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[61]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4308,7 +4416,7 @@ func (x *LockListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockListResponse.ProtoReflect.Descriptor instead.
 func (*LockListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{61}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *LockListResponse) GetLocks() []*LockInfo {
@@ -4340,7 +4448,7 @@ type IndexCreateRequest struct {
 
 func (x *IndexCreateRequest) Reset() {
 	*x = IndexCreateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[62]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4352,7 +4460,7 @@ func (x *IndexCreateRequest) String() string {
 func (*IndexCreateRequest) ProtoMessage() {}
 
 func (x *IndexCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[62]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4365,7 +4473,7 @@ func (x *IndexCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexCreateRequest.ProtoReflect.Descriptor instead.
 func (*IndexCreateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{62}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *IndexCreateRequest) GetName() string {
@@ -4420,7 +4528,7 @@ type IndexDropRequest struct {
 
 func (x *IndexDropRequest) Reset() {
 	*x = IndexDropRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[63]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4432,7 +4540,7 @@ func (x *IndexDropRequest) String() string {
 func (*IndexDropRequest) ProtoMessage() {}
 
 func (x *IndexDropRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[63]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4445,7 +4553,7 @@ func (x *IndexDropRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexDropRequest.ProtoReflect.Descriptor instead.
 func (*IndexDropRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{63}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *IndexDropRequest) GetName() string {
@@ -4466,7 +4574,7 @@ type IndexQueryRequest struct {
 
 func (x *IndexQueryRequest) Reset() {
 	*x = IndexQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[64]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4478,7 +4586,7 @@ func (x *IndexQueryRequest) String() string {
 func (*IndexQueryRequest) ProtoMessage() {}
 
 func (x *IndexQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[64]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4491,7 +4599,7 @@ func (x *IndexQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexQueryRequest.ProtoReflect.Descriptor instead.
 func (*IndexQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{64}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *IndexQueryRequest) GetIndexName() string {
@@ -4518,7 +4626,7 @@ type IndexQueryResponse struct {
 
 func (x *IndexQueryResponse) Reset() {
 	*x = IndexQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[65]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4530,7 +4638,7 @@ func (x *IndexQueryResponse) String() string {
 func (*IndexQueryResponse) ProtoMessage() {}
 
 func (x *IndexQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[65]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4543,7 +4651,7 @@ func (x *IndexQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexQueryResponse.ProtoReflect.Descriptor instead.
 func (*IndexQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{65}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *IndexQueryResponse) GetKeys() [][]byte {
@@ -4568,7 +4676,7 @@ type IndexScanRequest struct {
 
 func (x *IndexScanRequest) Reset() {
 	*x = IndexScanRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[66]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4580,7 +4688,7 @@ func (x *IndexScanRequest) String() string {
 func (*IndexScanRequest) ProtoMessage() {}
 
 func (x *IndexScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[66]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4593,7 +4701,7 @@ func (x *IndexScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexScanRequest.ProtoReflect.Descriptor instead.
 func (*IndexScanRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{66}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *IndexScanRequest) GetIndexName() string {
@@ -4628,7 +4736,7 @@ type IndexScanEntry struct {
 
 func (x *IndexScanEntry) Reset() {
 	*x = IndexScanEntry{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[67]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4640,7 +4748,7 @@ func (x *IndexScanEntry) String() string {
 func (*IndexScanEntry) ProtoMessage() {}
 
 func (x *IndexScanEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[67]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4653,7 +4761,7 @@ func (x *IndexScanEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexScanEntry.ProtoReflect.Descriptor instead.
 func (*IndexScanEntry) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{67}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *IndexScanEntry) GetValue() string {
@@ -4680,7 +4788,7 @@ type IndexScanResponse struct {
 
 func (x *IndexScanResponse) Reset() {
 	*x = IndexScanResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[68]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4692,7 +4800,7 @@ func (x *IndexScanResponse) String() string {
 func (*IndexScanResponse) ProtoMessage() {}
 
 func (x *IndexScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[68]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4705,7 +4813,7 @@ func (x *IndexScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexScanResponse.ProtoReflect.Descriptor instead.
 func (*IndexScanResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{68}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *IndexScanResponse) GetEntries() []*IndexScanEntry {
@@ -4725,7 +4833,7 @@ type IndexListResponse struct {
 
 func (x *IndexListResponse) Reset() {
 	*x = IndexListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[69]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4737,7 +4845,7 @@ func (x *IndexListResponse) String() string {
 func (*IndexListResponse) ProtoMessage() {}
 
 func (x *IndexListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[69]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4750,7 +4858,7 @@ func (x *IndexListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexListResponse.ProtoReflect.Descriptor instead.
 func (*IndexListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{69}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *IndexListResponse) GetNames() []string {
@@ -4771,7 +4879,7 @@ type TSTag struct {
 
 func (x *TSTag) Reset() {
 	*x = TSTag{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[70]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4783,7 +4891,7 @@ func (x *TSTag) String() string {
 func (*TSTag) ProtoMessage() {}
 
 func (x *TSTag) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[70]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4796,7 +4904,7 @@ func (x *TSTag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSTag.ProtoReflect.Descriptor instead.
 func (*TSTag) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{70}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *TSTag) GetKey() string {
@@ -4826,7 +4934,7 @@ type TSDataPoint struct {
 
 func (x *TSDataPoint) Reset() {
 	*x = TSDataPoint{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[71]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4838,7 +4946,7 @@ func (x *TSDataPoint) String() string {
 func (*TSDataPoint) ProtoMessage() {}
 
 func (x *TSDataPoint) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[71]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4851,7 +4959,7 @@ func (x *TSDataPoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSDataPoint.ProtoReflect.Descriptor instead.
 func (*TSDataPoint) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{71}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *TSDataPoint) GetMetric() string {
@@ -4892,7 +5000,7 @@ type TSWriteRequest struct {
 
 func (x *TSWriteRequest) Reset() {
 	*x = TSWriteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[72]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4904,7 +5012,7 @@ func (x *TSWriteRequest) String() string {
 func (*TSWriteRequest) ProtoMessage() {}
 
 func (x *TSWriteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[72]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4917,7 +5025,7 @@ func (x *TSWriteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSWriteRequest.ProtoReflect.Descriptor instead.
 func (*TSWriteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{72}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *TSWriteRequest) GetPoint() *TSDataPoint {
@@ -4937,7 +5045,7 @@ type TSWriteBatchRequest struct {
 
 func (x *TSWriteBatchRequest) Reset() {
 	*x = TSWriteBatchRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[73]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4949,7 +5057,7 @@ func (x *TSWriteBatchRequest) String() string {
 func (*TSWriteBatchRequest) ProtoMessage() {}
 
 func (x *TSWriteBatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[73]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4962,7 +5070,7 @@ func (x *TSWriteBatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSWriteBatchRequest.ProtoReflect.Descriptor instead.
 func (*TSWriteBatchRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{73}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *TSWriteBatchRequest) GetPoints() []*TSDataPoint {
@@ -4988,7 +5096,7 @@ type TSQueryRequest struct {
 
 func (x *TSQueryRequest) Reset() {
 	*x = TSQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[74]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5000,7 +5108,7 @@ func (x *TSQueryRequest) String() string {
 func (*TSQueryRequest) ProtoMessage() {}
 
 func (x *TSQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[74]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5013,7 +5121,7 @@ func (x *TSQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSQueryRequest.ProtoReflect.Descriptor instead.
 func (*TSQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{74}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *TSQueryRequest) GetMetric() string {
@@ -5075,7 +5183,7 @@ type TSQueryResponse struct {
 
 func (x *TSQueryResponse) Reset() {
 	*x = TSQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[75]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5087,7 +5195,7 @@ func (x *TSQueryResponse) String() string {
 func (*TSQueryResponse) ProtoMessage() {}
 
 func (x *TSQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[75]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5100,7 +5208,7 @@ func (x *TSQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSQueryResponse.ProtoReflect.Descriptor instead.
 func (*TSQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{75}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *TSQueryResponse) GetPoints() []*TSDataPoint {
@@ -5125,7 +5233,7 @@ type TSAggregateRequest struct {
 
 func (x *TSAggregateRequest) Reset() {
 	*x = TSAggregateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[76]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5137,7 +5245,7 @@ func (x *TSAggregateRequest) String() string {
 func (*TSAggregateRequest) ProtoMessage() {}
 
 func (x *TSAggregateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[76]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5150,7 +5258,7 @@ func (x *TSAggregateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSAggregateRequest.ProtoReflect.Descriptor instead.
 func (*TSAggregateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{76}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *TSAggregateRequest) GetMetric() string {
@@ -5207,7 +5315,7 @@ type TSAggResult struct {
 
 func (x *TSAggResult) Reset() {
 	*x = TSAggResult{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[77]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5219,7 +5327,7 @@ func (x *TSAggResult) String() string {
 func (*TSAggResult) ProtoMessage() {}
 
 func (x *TSAggResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[77]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5232,7 +5340,7 @@ func (x *TSAggResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSAggResult.ProtoReflect.Descriptor instead.
 func (*TSAggResult) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{77}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *TSAggResult) GetTimestampNs() int64 {
@@ -5266,7 +5374,7 @@ type TSAggregateResponse struct {
 
 func (x *TSAggregateResponse) Reset() {
 	*x = TSAggregateResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[78]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5278,7 +5386,7 @@ func (x *TSAggregateResponse) String() string {
 func (*TSAggregateResponse) ProtoMessage() {}
 
 func (x *TSAggregateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[78]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5291,7 +5399,7 @@ func (x *TSAggregateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSAggregateResponse.ProtoReflect.Descriptor instead.
 func (*TSAggregateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{78}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *TSAggregateResponse) GetResults() []*TSAggResult {
@@ -5320,7 +5428,7 @@ type TSRichQueryRequest struct {
 
 func (x *TSRichQueryRequest) Reset() {
 	*x = TSRichQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[79]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5332,7 +5440,7 @@ func (x *TSRichQueryRequest) String() string {
 func (*TSRichQueryRequest) ProtoMessage() {}
 
 func (x *TSRichQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[79]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5345,7 +5453,7 @@ func (x *TSRichQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSRichQueryRequest.ProtoReflect.Descriptor instead.
 func (*TSRichQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{79}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *TSRichQueryRequest) GetMetric() string {
@@ -5433,7 +5541,7 @@ type TSRichQueryResponse struct {
 
 func (x *TSRichQueryResponse) Reset() {
 	*x = TSRichQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[80]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5445,7 +5553,7 @@ func (x *TSRichQueryResponse) String() string {
 func (*TSRichQueryResponse) ProtoMessage() {}
 
 func (x *TSRichQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[80]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5458,7 +5566,7 @@ func (x *TSRichQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSRichQueryResponse.ProtoReflect.Descriptor instead.
 func (*TSRichQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{80}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *TSRichQueryResponse) GetMetric() string {
@@ -5516,7 +5624,7 @@ type TSGroupedResult struct {
 
 func (x *TSGroupedResult) Reset() {
 	*x = TSGroupedResult{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[81]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5528,7 +5636,7 @@ func (x *TSGroupedResult) String() string {
 func (*TSGroupedResult) ProtoMessage() {}
 
 func (x *TSGroupedResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[81]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5541,7 +5649,7 @@ func (x *TSGroupedResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSGroupedResult.ProtoReflect.Descriptor instead.
 func (*TSGroupedResult) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{81}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *TSGroupedResult) GetTags() []*TSTag {
@@ -5585,7 +5693,7 @@ type TSDeleteSeriesRequest struct {
 
 func (x *TSDeleteSeriesRequest) Reset() {
 	*x = TSDeleteSeriesRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[82]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5597,7 +5705,7 @@ func (x *TSDeleteSeriesRequest) String() string {
 func (*TSDeleteSeriesRequest) ProtoMessage() {}
 
 func (x *TSDeleteSeriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[82]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5610,7 +5718,7 @@ func (x *TSDeleteSeriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSDeleteSeriesRequest.ProtoReflect.Descriptor instead.
 func (*TSDeleteSeriesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{82}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *TSDeleteSeriesRequest) GetMetric() string {
@@ -5651,7 +5759,7 @@ type TSGetRetentionRequest struct {
 
 func (x *TSGetRetentionRequest) Reset() {
 	*x = TSGetRetentionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[83]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5663,7 +5771,7 @@ func (x *TSGetRetentionRequest) String() string {
 func (*TSGetRetentionRequest) ProtoMessage() {}
 
 func (x *TSGetRetentionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[83]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5676,7 +5784,7 @@ func (x *TSGetRetentionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSGetRetentionRequest.ProtoReflect.Descriptor instead.
 func (*TSGetRetentionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{83}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *TSGetRetentionRequest) GetMetric() string {
@@ -5698,7 +5806,7 @@ type TSRetentionPolicyResponse struct {
 
 func (x *TSRetentionPolicyResponse) Reset() {
 	*x = TSRetentionPolicyResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[84]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5710,7 +5818,7 @@ func (x *TSRetentionPolicyResponse) String() string {
 func (*TSRetentionPolicyResponse) ProtoMessage() {}
 
 func (x *TSRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[84]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5723,7 +5831,7 @@ func (x *TSRetentionPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSRetentionPolicyResponse.ProtoReflect.Descriptor instead.
 func (*TSRetentionPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{84}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *TSRetentionPolicyResponse) GetDurationNs() int64 {
@@ -5760,7 +5868,7 @@ type TSSetRetentionRequest struct {
 
 func (x *TSSetRetentionRequest) Reset() {
 	*x = TSSetRetentionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[85]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5772,7 +5880,7 @@ func (x *TSSetRetentionRequest) String() string {
 func (*TSSetRetentionRequest) ProtoMessage() {}
 
 func (x *TSSetRetentionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[85]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5785,7 +5893,7 @@ func (x *TSSetRetentionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSSetRetentionRequest.ProtoReflect.Descriptor instead.
 func (*TSSetRetentionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{85}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *TSSetRetentionRequest) GetMetric() string {
@@ -5828,7 +5936,7 @@ type TSListMetricsRequest struct {
 
 func (x *TSListMetricsRequest) Reset() {
 	*x = TSListMetricsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[86]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5840,7 +5948,7 @@ func (x *TSListMetricsRequest) String() string {
 func (*TSListMetricsRequest) ProtoMessage() {}
 
 func (x *TSListMetricsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[86]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5853,7 +5961,7 @@ func (x *TSListMetricsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSListMetricsRequest.ProtoReflect.Descriptor instead.
 func (*TSListMetricsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{86}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *TSListMetricsRequest) GetPrefix() string {
@@ -5887,7 +5995,7 @@ type TSListMetricsResponse struct {
 
 func (x *TSListMetricsResponse) Reset() {
 	*x = TSListMetricsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[87]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5899,7 +6007,7 @@ func (x *TSListMetricsResponse) String() string {
 func (*TSListMetricsResponse) ProtoMessage() {}
 
 func (x *TSListMetricsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[87]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5912,7 +6020,7 @@ func (x *TSListMetricsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TSListMetricsResponse.ProtoReflect.Descriptor instead.
 func (*TSListMetricsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{87}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *TSListMetricsResponse) GetMetrics() []string {
@@ -5933,7 +6041,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[88]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5945,7 +6053,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[88]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5958,7 +6066,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{88}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *HealthResponse) GetStatus() string {
@@ -5990,7 +6098,7 @@ type StatusResponse struct {
 
 func (x *StatusResponse) Reset() {
 	*x = StatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[89]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6002,7 +6110,7 @@ func (x *StatusResponse) String() string {
 func (*StatusResponse) ProtoMessage() {}
 
 func (x *StatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[89]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6015,7 +6123,7 @@ func (x *StatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusResponse.ProtoReflect.Descriptor instead.
 func (*StatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{89}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *StatusResponse) GetNodeId() string {
@@ -6070,7 +6178,7 @@ type PeersResponse struct {
 
 func (x *PeersResponse) Reset() {
 	*x = PeersResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[90]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6082,7 +6190,7 @@ func (x *PeersResponse) String() string {
 func (*PeersResponse) ProtoMessage() {}
 
 func (x *PeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[90]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6095,7 +6203,7 @@ func (x *PeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeersResponse.ProtoReflect.Descriptor instead.
 func (*PeersResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{90}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *PeersResponse) GetShards() []*ShardPeers {
@@ -6117,7 +6225,7 @@ type ShardPeers struct {
 
 func (x *ShardPeers) Reset() {
 	*x = ShardPeers{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[91]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6129,7 +6237,7 @@ func (x *ShardPeers) String() string {
 func (*ShardPeers) ProtoMessage() {}
 
 func (x *ShardPeers) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[91]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6142,7 +6250,7 @@ func (x *ShardPeers) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardPeers.ProtoReflect.Descriptor instead.
 func (*ShardPeers) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{91}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *ShardPeers) GetShardId() uint64 {
@@ -6178,7 +6286,7 @@ type PeerInfo struct {
 
 func (x *PeerInfo) Reset() {
 	*x = PeerInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[92]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6190,7 +6298,7 @@ func (x *PeerInfo) String() string {
 func (*PeerInfo) ProtoMessage() {}
 
 func (x *PeerInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[92]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6203,7 +6311,7 @@ func (x *PeerInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerInfo.ProtoReflect.Descriptor instead.
 func (*PeerInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{92}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *PeerInfo) GetReplicaId() uint64 {
@@ -6239,7 +6347,7 @@ type AddMemberRequest struct {
 
 func (x *AddMemberRequest) Reset() {
 	*x = AddMemberRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[93]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6251,7 +6359,7 @@ func (x *AddMemberRequest) String() string {
 func (*AddMemberRequest) ProtoMessage() {}
 
 func (x *AddMemberRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[93]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6264,7 +6372,7 @@ func (x *AddMemberRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMemberRequest.ProtoReflect.Descriptor instead.
 func (*AddMemberRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{93}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *AddMemberRequest) GetShardId() uint64 {
@@ -6299,7 +6407,7 @@ type RemoveMemberRequest struct {
 
 func (x *RemoveMemberRequest) Reset() {
 	*x = RemoveMemberRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[94]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6311,7 +6419,7 @@ func (x *RemoveMemberRequest) String() string {
 func (*RemoveMemberRequest) ProtoMessage() {}
 
 func (x *RemoveMemberRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[94]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6324,7 +6432,7 @@ func (x *RemoveMemberRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMemberRequest.ProtoReflect.Descriptor instead.
 func (*RemoveMemberRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{94}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *RemoveMemberRequest) GetShardId() uint64 {
@@ -6351,7 +6459,7 @@ type RequestSnapshotMessage struct {
 
 func (x *RequestSnapshotMessage) Reset() {
 	*x = RequestSnapshotMessage{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[95]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6363,7 +6471,7 @@ func (x *RequestSnapshotMessage) String() string {
 func (*RequestSnapshotMessage) ProtoMessage() {}
 
 func (x *RequestSnapshotMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[95]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6376,7 +6484,7 @@ func (x *RequestSnapshotMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestSnapshotMessage.ProtoReflect.Descriptor instead.
 func (*RequestSnapshotMessage) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{95}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *RequestSnapshotMessage) GetShardId() uint64 {
@@ -6395,7 +6503,7 @@ type CapabilitiesRequest struct {
 
 func (x *CapabilitiesRequest) Reset() {
 	*x = CapabilitiesRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[96]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6407,7 +6515,7 @@ func (x *CapabilitiesRequest) String() string {
 func (*CapabilitiesRequest) ProtoMessage() {}
 
 func (x *CapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[96]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6420,7 +6528,7 @@ func (x *CapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*CapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{96}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{98}
 }
 
 // CapabilitiesResponse describes the effective feature set of the node:
@@ -6454,7 +6562,7 @@ type CapabilitiesResponse struct {
 
 func (x *CapabilitiesResponse) Reset() {
 	*x = CapabilitiesResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[97]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6466,7 +6574,7 @@ func (x *CapabilitiesResponse) String() string {
 func (*CapabilitiesResponse) ProtoMessage() {}
 
 func (x *CapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[97]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6479,7 +6587,7 @@ func (x *CapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*CapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{97}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *CapabilitiesResponse) GetKv() bool {
@@ -6628,7 +6736,7 @@ type StartShardRequest struct {
 
 func (x *StartShardRequest) Reset() {
 	*x = StartShardRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[98]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6640,7 +6748,7 @@ func (x *StartShardRequest) String() string {
 func (*StartShardRequest) ProtoMessage() {}
 
 func (x *StartShardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[98]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6653,7 +6761,7 @@ func (x *StartShardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartShardRequest.ProtoReflect.Descriptor instead.
 func (*StartShardRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{98}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *StartShardRequest) GetShardId() uint64 {
@@ -6694,7 +6802,7 @@ type StopShardRequest struct {
 
 func (x *StopShardRequest) Reset() {
 	*x = StopShardRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[99]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6706,7 +6814,7 @@ func (x *StopShardRequest) String() string {
 func (*StopShardRequest) ProtoMessage() {}
 
 func (x *StopShardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[99]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6719,7 +6827,7 @@ func (x *StopShardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopShardRequest.ProtoReflect.Descriptor instead.
 func (*StopShardRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{99}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *StopShardRequest) GetShardId() uint64 {
@@ -6739,7 +6847,7 @@ type GetShardStateRequest struct {
 
 func (x *GetShardStateRequest) Reset() {
 	*x = GetShardStateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[100]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6751,7 +6859,7 @@ func (x *GetShardStateRequest) String() string {
 func (*GetShardStateRequest) ProtoMessage() {}
 
 func (x *GetShardStateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[100]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6764,7 +6872,7 @@ func (x *GetShardStateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetShardStateRequest.ProtoReflect.Descriptor instead.
 func (*GetShardStateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{100}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *GetShardStateRequest) GetShardId() uint64 {
@@ -6788,7 +6896,7 @@ type ShardStateResponse struct {
 
 func (x *ShardStateResponse) Reset() {
 	*x = ShardStateResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[101]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6800,7 +6908,7 @@ func (x *ShardStateResponse) String() string {
 func (*ShardStateResponse) ProtoMessage() {}
 
 func (x *ShardStateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[101]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6813,7 +6921,7 @@ func (x *ShardStateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardStateResponse.ProtoReflect.Descriptor instead.
 func (*ShardStateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{101}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *ShardStateResponse) GetShardId() uint64 {
@@ -6864,7 +6972,7 @@ type TopologyResponse struct {
 
 func (x *TopologyResponse) Reset() {
 	*x = TopologyResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[102]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6876,7 +6984,7 @@ func (x *TopologyResponse) String() string {
 func (*TopologyResponse) ProtoMessage() {}
 
 func (x *TopologyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[102]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6889,7 +6997,7 @@ func (x *TopologyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopologyResponse.ProtoReflect.Descriptor instead.
 func (*TopologyResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{102}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *TopologyResponse) GetNodeId() string {
@@ -6934,7 +7042,7 @@ type ShardInfoProto struct {
 
 func (x *ShardInfoProto) Reset() {
 	*x = ShardInfoProto{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[103]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6946,7 +7054,7 @@ func (x *ShardInfoProto) String() string {
 func (*ShardInfoProto) ProtoMessage() {}
 
 func (x *ShardInfoProto) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[103]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6959,7 +7067,7 @@ func (x *ShardInfoProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardInfoProto.ProtoReflect.Descriptor instead.
 func (*ShardInfoProto) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{103}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *ShardInfoProto) GetShardId() uint64 {
@@ -7012,7 +7120,7 @@ type VectorCreateNamespaceRequest struct {
 
 func (x *VectorCreateNamespaceRequest) Reset() {
 	*x = VectorCreateNamespaceRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[104]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7024,7 +7132,7 @@ func (x *VectorCreateNamespaceRequest) String() string {
 func (*VectorCreateNamespaceRequest) ProtoMessage() {}
 
 func (x *VectorCreateNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[104]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7037,7 +7145,7 @@ func (x *VectorCreateNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorCreateNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*VectorCreateNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{104}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *VectorCreateNamespaceRequest) GetNamespace() string {
@@ -7093,7 +7201,7 @@ type VectorCreateNamespaceResponse struct {
 
 func (x *VectorCreateNamespaceResponse) Reset() {
 	*x = VectorCreateNamespaceResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[105]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7105,7 +7213,7 @@ func (x *VectorCreateNamespaceResponse) String() string {
 func (*VectorCreateNamespaceResponse) ProtoMessage() {}
 
 func (x *VectorCreateNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[105]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7118,7 +7226,7 @@ func (x *VectorCreateNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorCreateNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*VectorCreateNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{105}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *VectorCreateNamespaceResponse) GetCreated() bool {
@@ -7146,7 +7254,7 @@ type VectorDeleteNamespaceRequest struct {
 
 func (x *VectorDeleteNamespaceRequest) Reset() {
 	*x = VectorDeleteNamespaceRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[106]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7158,7 +7266,7 @@ func (x *VectorDeleteNamespaceRequest) String() string {
 func (*VectorDeleteNamespaceRequest) ProtoMessage() {}
 
 func (x *VectorDeleteNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[106]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7171,7 +7279,7 @@ func (x *VectorDeleteNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorDeleteNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*VectorDeleteNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{106}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *VectorDeleteNamespaceRequest) GetNamespace() string {
@@ -7198,7 +7306,7 @@ type VectorListNamespacesRequest struct {
 
 func (x *VectorListNamespacesRequest) Reset() {
 	*x = VectorListNamespacesRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[107]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7210,7 +7318,7 @@ func (x *VectorListNamespacesRequest) String() string {
 func (*VectorListNamespacesRequest) ProtoMessage() {}
 
 func (x *VectorListNamespacesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[107]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7223,7 +7331,7 @@ func (x *VectorListNamespacesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorListNamespacesRequest.ProtoReflect.Descriptor instead.
 func (*VectorListNamespacesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{107}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *VectorListNamespacesRequest) GetShardId() uint64 {
@@ -7243,7 +7351,7 @@ type VectorListNamespacesResponse struct {
 
 func (x *VectorListNamespacesResponse) Reset() {
 	*x = VectorListNamespacesResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[108]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7255,7 +7363,7 @@ func (x *VectorListNamespacesResponse) String() string {
 func (*VectorListNamespacesResponse) ProtoMessage() {}
 
 func (x *VectorListNamespacesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[108]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7268,7 +7376,7 @@ func (x *VectorListNamespacesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorListNamespacesResponse.ProtoReflect.Descriptor instead.
 func (*VectorListNamespacesResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{108}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *VectorListNamespacesResponse) GetNamespaces() []string {
@@ -7289,7 +7397,7 @@ type VectorGetNamespaceInfoRequest struct {
 
 func (x *VectorGetNamespaceInfoRequest) Reset() {
 	*x = VectorGetNamespaceInfoRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[109]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7301,7 +7409,7 @@ func (x *VectorGetNamespaceInfoRequest) String() string {
 func (*VectorGetNamespaceInfoRequest) ProtoMessage() {}
 
 func (x *VectorGetNamespaceInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[109]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7314,7 +7422,7 @@ func (x *VectorGetNamespaceInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorGetNamespaceInfoRequest.ProtoReflect.Descriptor instead.
 func (*VectorGetNamespaceInfoRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{109}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *VectorGetNamespaceInfoRequest) GetNamespace() string {
@@ -7347,7 +7455,7 @@ type VectorNamespaceInfo struct {
 
 func (x *VectorNamespaceInfo) Reset() {
 	*x = VectorNamespaceInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[110]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7359,7 +7467,7 @@ func (x *VectorNamespaceInfo) String() string {
 func (*VectorNamespaceInfo) ProtoMessage() {}
 
 func (x *VectorNamespaceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[110]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7372,7 +7480,7 @@ func (x *VectorNamespaceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorNamespaceInfo.ProtoReflect.Descriptor instead.
 func (*VectorNamespaceInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{110}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *VectorNamespaceInfo) GetNamespace() string {
@@ -7439,7 +7547,7 @@ type VectorDataProto struct {
 
 func (x *VectorDataProto) Reset() {
 	*x = VectorDataProto{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[111]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7451,7 +7559,7 @@ func (x *VectorDataProto) String() string {
 func (*VectorDataProto) ProtoMessage() {}
 
 func (x *VectorDataProto) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[111]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7464,7 +7572,7 @@ func (x *VectorDataProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorDataProto.ProtoReflect.Descriptor instead.
 func (*VectorDataProto) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{111}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *VectorDataProto) GetId() string {
@@ -7523,7 +7631,7 @@ type VectorUpsertRequest struct {
 
 func (x *VectorUpsertRequest) Reset() {
 	*x = VectorUpsertRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[112]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7535,7 +7643,7 @@ func (x *VectorUpsertRequest) String() string {
 func (*VectorUpsertRequest) ProtoMessage() {}
 
 func (x *VectorUpsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[112]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7548,7 +7656,7 @@ func (x *VectorUpsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorUpsertRequest.ProtoReflect.Descriptor instead.
 func (*VectorUpsertRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{112}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *VectorUpsertRequest) GetNamespace() string {
@@ -7598,7 +7706,7 @@ type VectorUpsertResponse struct {
 
 func (x *VectorUpsertResponse) Reset() {
 	*x = VectorUpsertResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[113]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7610,7 +7718,7 @@ func (x *VectorUpsertResponse) String() string {
 func (*VectorUpsertResponse) ProtoMessage() {}
 
 func (x *VectorUpsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[113]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7623,7 +7731,7 @@ func (x *VectorUpsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorUpsertResponse.ProtoReflect.Descriptor instead.
 func (*VectorUpsertResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{113}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *VectorUpsertResponse) GetVersion() int64 {
@@ -7660,7 +7768,7 @@ type VectorGetRequest struct {
 
 func (x *VectorGetRequest) Reset() {
 	*x = VectorGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[114]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7672,7 +7780,7 @@ func (x *VectorGetRequest) String() string {
 func (*VectorGetRequest) ProtoMessage() {}
 
 func (x *VectorGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[114]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7685,7 +7793,7 @@ func (x *VectorGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorGetRequest.ProtoReflect.Descriptor instead.
 func (*VectorGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{114}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *VectorGetRequest) GetNamespace() string {
@@ -7728,7 +7836,7 @@ type VectorDeleteRequest struct {
 
 func (x *VectorDeleteRequest) Reset() {
 	*x = VectorDeleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[115]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7740,7 +7848,7 @@ func (x *VectorDeleteRequest) String() string {
 func (*VectorDeleteRequest) ProtoMessage() {}
 
 func (x *VectorDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[115]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7753,7 +7861,7 @@ func (x *VectorDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorDeleteRequest.ProtoReflect.Descriptor instead.
 func (*VectorDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{115}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *VectorDeleteRequest) GetNamespace() string {
@@ -7788,7 +7896,7 @@ type VectorBatchError struct {
 
 func (x *VectorBatchError) Reset() {
 	*x = VectorBatchError{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[116]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7800,7 +7908,7 @@ func (x *VectorBatchError) String() string {
 func (*VectorBatchError) ProtoMessage() {}
 
 func (x *VectorBatchError) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[116]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7813,7 +7921,7 @@ func (x *VectorBatchError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorBatchError.ProtoReflect.Descriptor instead.
 func (*VectorBatchError) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{116}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *VectorBatchError) GetId() string {
@@ -7842,7 +7950,7 @@ type VectorBatchUpsertRequest struct {
 
 func (x *VectorBatchUpsertRequest) Reset() {
 	*x = VectorBatchUpsertRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[117]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7854,7 +7962,7 @@ func (x *VectorBatchUpsertRequest) String() string {
 func (*VectorBatchUpsertRequest) ProtoMessage() {}
 
 func (x *VectorBatchUpsertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[117]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7867,7 +7975,7 @@ func (x *VectorBatchUpsertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorBatchUpsertRequest.ProtoReflect.Descriptor instead.
 func (*VectorBatchUpsertRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{117}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *VectorBatchUpsertRequest) GetNamespace() string {
@@ -7903,7 +8011,7 @@ type VectorBatchUpsertResponse struct {
 
 func (x *VectorBatchUpsertResponse) Reset() {
 	*x = VectorBatchUpsertResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[118]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7915,7 +8023,7 @@ func (x *VectorBatchUpsertResponse) String() string {
 func (*VectorBatchUpsertResponse) ProtoMessage() {}
 
 func (x *VectorBatchUpsertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[118]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7928,7 +8036,7 @@ func (x *VectorBatchUpsertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorBatchUpsertResponse.ProtoReflect.Descriptor instead.
 func (*VectorBatchUpsertResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{118}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *VectorBatchUpsertResponse) GetSucceeded() int32 {
@@ -7964,7 +8072,7 @@ type VectorBatchDeleteRequest struct {
 
 func (x *VectorBatchDeleteRequest) Reset() {
 	*x = VectorBatchDeleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[119]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7976,7 +8084,7 @@ func (x *VectorBatchDeleteRequest) String() string {
 func (*VectorBatchDeleteRequest) ProtoMessage() {}
 
 func (x *VectorBatchDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[119]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7989,7 +8097,7 @@ func (x *VectorBatchDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorBatchDeleteRequest.ProtoReflect.Descriptor instead.
 func (*VectorBatchDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{119}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *VectorBatchDeleteRequest) GetNamespace() string {
@@ -8025,7 +8133,7 @@ type VectorBatchDeleteResponse struct {
 
 func (x *VectorBatchDeleteResponse) Reset() {
 	*x = VectorBatchDeleteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[120]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8037,7 +8145,7 @@ func (x *VectorBatchDeleteResponse) String() string {
 func (*VectorBatchDeleteResponse) ProtoMessage() {}
 
 func (x *VectorBatchDeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[120]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8050,7 +8158,7 @@ func (x *VectorBatchDeleteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorBatchDeleteResponse.ProtoReflect.Descriptor instead.
 func (*VectorBatchDeleteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{120}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *VectorBatchDeleteResponse) GetDeleted() int32 {
@@ -8088,7 +8196,7 @@ type VectorListRequest struct {
 
 func (x *VectorListRequest) Reset() {
 	*x = VectorListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[121]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8100,7 +8208,7 @@ func (x *VectorListRequest) String() string {
 func (*VectorListRequest) ProtoMessage() {}
 
 func (x *VectorListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[121]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8113,7 +8221,7 @@ func (x *VectorListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorListRequest.ProtoReflect.Descriptor instead.
 func (*VectorListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{121}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *VectorListRequest) GetNamespace() string {
@@ -8163,7 +8271,7 @@ type VectorListResponse struct {
 
 func (x *VectorListResponse) Reset() {
 	*x = VectorListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[122]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8175,7 +8283,7 @@ func (x *VectorListResponse) String() string {
 func (*VectorListResponse) ProtoMessage() {}
 
 func (x *VectorListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[122]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8188,7 +8296,7 @@ func (x *VectorListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorListResponse.ProtoReflect.Descriptor instead.
 func (*VectorListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{122}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *VectorListResponse) GetVectors() []*VectorDataProto {
@@ -8225,7 +8333,7 @@ type VectorUpdateMetadataRequest struct {
 
 func (x *VectorUpdateMetadataRequest) Reset() {
 	*x = VectorUpdateMetadataRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[123]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8237,7 +8345,7 @@ func (x *VectorUpdateMetadataRequest) String() string {
 func (*VectorUpdateMetadataRequest) ProtoMessage() {}
 
 func (x *VectorUpdateMetadataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[123]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8250,7 +8358,7 @@ func (x *VectorUpdateMetadataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorUpdateMetadataRequest.ProtoReflect.Descriptor instead.
 func (*VectorUpdateMetadataRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{123}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *VectorUpdateMetadataRequest) GetNamespace() string {
@@ -8294,7 +8402,7 @@ type VectorSearchResultProto struct {
 
 func (x *VectorSearchResultProto) Reset() {
 	*x = VectorSearchResultProto{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[124]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8306,7 +8414,7 @@ func (x *VectorSearchResultProto) String() string {
 func (*VectorSearchResultProto) ProtoMessage() {}
 
 func (x *VectorSearchResultProto) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[124]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8319,7 +8427,7 @@ func (x *VectorSearchResultProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchResultProto.ProtoReflect.Descriptor instead.
 func (*VectorSearchResultProto) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{124}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *VectorSearchResultProto) GetId() string {
@@ -8366,7 +8474,7 @@ type VectorSearchSimilarRequest struct {
 
 func (x *VectorSearchSimilarRequest) Reset() {
 	*x = VectorSearchSimilarRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[125]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8378,7 +8486,7 @@ func (x *VectorSearchSimilarRequest) String() string {
 func (*VectorSearchSimilarRequest) ProtoMessage() {}
 
 func (x *VectorSearchSimilarRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[125]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8391,7 +8499,7 @@ func (x *VectorSearchSimilarRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchSimilarRequest.ProtoReflect.Descriptor instead.
 func (*VectorSearchSimilarRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{125}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *VectorSearchSimilarRequest) GetNamespace() string {
@@ -8454,7 +8562,7 @@ type VectorSearchSimilarResponse struct {
 
 func (x *VectorSearchSimilarResponse) Reset() {
 	*x = VectorSearchSimilarResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[126]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8466,7 +8574,7 @@ func (x *VectorSearchSimilarResponse) String() string {
 func (*VectorSearchSimilarResponse) ProtoMessage() {}
 
 func (x *VectorSearchSimilarResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[126]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8479,7 +8587,7 @@ func (x *VectorSearchSimilarResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchSimilarResponse.ProtoReflect.Descriptor instead.
 func (*VectorSearchSimilarResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{126}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *VectorSearchSimilarResponse) GetResults() []*VectorSearchResultProto {
@@ -8511,7 +8619,7 @@ type VectorSearchByMetadataRequest struct {
 
 func (x *VectorSearchByMetadataRequest) Reset() {
 	*x = VectorSearchByMetadataRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[127]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8523,7 +8631,7 @@ func (x *VectorSearchByMetadataRequest) String() string {
 func (*VectorSearchByMetadataRequest) ProtoMessage() {}
 
 func (x *VectorSearchByMetadataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[127]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8536,7 +8644,7 @@ func (x *VectorSearchByMetadataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchByMetadataRequest.ProtoReflect.Descriptor instead.
 func (*VectorSearchByMetadataRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{127}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *VectorSearchByMetadataRequest) GetNamespace() string {
@@ -8592,7 +8700,7 @@ type VectorSearchByMetadataResponse struct {
 
 func (x *VectorSearchByMetadataResponse) Reset() {
 	*x = VectorSearchByMetadataResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[128]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8604,7 +8712,7 @@ func (x *VectorSearchByMetadataResponse) String() string {
 func (*VectorSearchByMetadataResponse) ProtoMessage() {}
 
 func (x *VectorSearchByMetadataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[128]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8617,7 +8725,7 @@ func (x *VectorSearchByMetadataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchByMetadataResponse.ProtoReflect.Descriptor instead.
 func (*VectorSearchByMetadataResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{128}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *VectorSearchByMetadataResponse) GetResults() []*VectorDataProto {
@@ -8651,7 +8759,7 @@ type VectorHybridSearchRequest struct {
 
 func (x *VectorHybridSearchRequest) Reset() {
 	*x = VectorHybridSearchRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[129]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8663,7 +8771,7 @@ func (x *VectorHybridSearchRequest) String() string {
 func (*VectorHybridSearchRequest) ProtoMessage() {}
 
 func (x *VectorHybridSearchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[129]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8676,7 +8784,7 @@ func (x *VectorHybridSearchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorHybridSearchRequest.ProtoReflect.Descriptor instead.
 func (*VectorHybridSearchRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{129}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *VectorHybridSearchRequest) GetNamespace() string {
@@ -8746,7 +8854,7 @@ type VectorHybridSearchResponse struct {
 
 func (x *VectorHybridSearchResponse) Reset() {
 	*x = VectorHybridSearchResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[130]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8758,7 +8866,7 @@ func (x *VectorHybridSearchResponse) String() string {
 func (*VectorHybridSearchResponse) ProtoMessage() {}
 
 func (x *VectorHybridSearchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[130]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8771,7 +8879,7 @@ func (x *VectorHybridSearchResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorHybridSearchResponse.ProtoReflect.Descriptor instead.
 func (*VectorHybridSearchResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{130}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *VectorHybridSearchResponse) GetResults() []*VectorSearchResultProto {
@@ -8802,7 +8910,7 @@ type VectorSearchByIDRequest struct {
 
 func (x *VectorSearchByIDRequest) Reset() {
 	*x = VectorSearchByIDRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[131]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8814,7 +8922,7 @@ func (x *VectorSearchByIDRequest) String() string {
 func (*VectorSearchByIDRequest) ProtoMessage() {}
 
 func (x *VectorSearchByIDRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[131]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8827,7 +8935,7 @@ func (x *VectorSearchByIDRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorSearchByIDRequest.ProtoReflect.Descriptor instead.
 func (*VectorSearchByIDRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{131}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *VectorSearchByIDRequest) GetNamespace() string {
@@ -8876,7 +8984,7 @@ type VectorRebuildIndexRequest struct {
 
 func (x *VectorRebuildIndexRequest) Reset() {
 	*x = VectorRebuildIndexRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[132]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8888,7 +8996,7 @@ func (x *VectorRebuildIndexRequest) String() string {
 func (*VectorRebuildIndexRequest) ProtoMessage() {}
 
 func (x *VectorRebuildIndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[132]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8901,7 +9009,7 @@ func (x *VectorRebuildIndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorRebuildIndexRequest.ProtoReflect.Descriptor instead.
 func (*VectorRebuildIndexRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{132}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *VectorRebuildIndexRequest) GetNamespace() string {
@@ -8930,7 +9038,7 @@ type VectorRebuildIndexResponse struct {
 
 func (x *VectorRebuildIndexResponse) Reset() {
 	*x = VectorRebuildIndexResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[133]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8942,7 +9050,7 @@ func (x *VectorRebuildIndexResponse) String() string {
 func (*VectorRebuildIndexResponse) ProtoMessage() {}
 
 func (x *VectorRebuildIndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[133]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8955,7 +9063,7 @@ func (x *VectorRebuildIndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorRebuildIndexResponse.ProtoReflect.Descriptor instead.
 func (*VectorRebuildIndexResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{133}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *VectorRebuildIndexResponse) GetJobId() string {
@@ -8991,7 +9099,7 @@ type VectorGetRebuildProgressRequest struct {
 
 func (x *VectorGetRebuildProgressRequest) Reset() {
 	*x = VectorGetRebuildProgressRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[134]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9003,7 +9111,7 @@ func (x *VectorGetRebuildProgressRequest) String() string {
 func (*VectorGetRebuildProgressRequest) ProtoMessage() {}
 
 func (x *VectorGetRebuildProgressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[134]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9016,7 +9124,7 @@ func (x *VectorGetRebuildProgressRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorGetRebuildProgressRequest.ProtoReflect.Descriptor instead.
 func (*VectorGetRebuildProgressRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{134}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *VectorGetRebuildProgressRequest) GetNamespace() string {
@@ -9055,7 +9163,7 @@ type VectorRebuildProgress struct {
 
 func (x *VectorRebuildProgress) Reset() {
 	*x = VectorRebuildProgress{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[135]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9067,7 +9175,7 @@ func (x *VectorRebuildProgress) String() string {
 func (*VectorRebuildProgress) ProtoMessage() {}
 
 func (x *VectorRebuildProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[135]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9080,7 +9188,7 @@ func (x *VectorRebuildProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorRebuildProgress.ProtoReflect.Descriptor instead.
 func (*VectorRebuildProgress) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{135}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *VectorRebuildProgress) GetJobId() string {
@@ -9136,7 +9244,7 @@ type VectorGetIndexStatsRequest struct {
 
 func (x *VectorGetIndexStatsRequest) Reset() {
 	*x = VectorGetIndexStatsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[136]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9148,7 +9256,7 @@ func (x *VectorGetIndexStatsRequest) String() string {
 func (*VectorGetIndexStatsRequest) ProtoMessage() {}
 
 func (x *VectorGetIndexStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[136]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9161,7 +9269,7 @@ func (x *VectorGetIndexStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorGetIndexStatsRequest.ProtoReflect.Descriptor instead.
 func (*VectorGetIndexStatsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{136}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *VectorGetIndexStatsRequest) GetNamespace() string {
@@ -9193,7 +9301,7 @@ type VectorIndexStats struct {
 
 func (x *VectorIndexStats) Reset() {
 	*x = VectorIndexStats{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[137]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9205,7 +9313,7 @@ func (x *VectorIndexStats) String() string {
 func (*VectorIndexStats) ProtoMessage() {}
 
 func (x *VectorIndexStats) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[137]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9218,7 +9326,7 @@ func (x *VectorIndexStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorIndexStats.ProtoReflect.Descriptor instead.
 func (*VectorIndexStats) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{137}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *VectorIndexStats) GetVectorCount() int64 {
@@ -9274,7 +9382,7 @@ type VectorCompactNamespaceRequest struct {
 
 func (x *VectorCompactNamespaceRequest) Reset() {
 	*x = VectorCompactNamespaceRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[138]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9286,7 +9394,7 @@ func (x *VectorCompactNamespaceRequest) String() string {
 func (*VectorCompactNamespaceRequest) ProtoMessage() {}
 
 func (x *VectorCompactNamespaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[138]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9299,7 +9407,7 @@ func (x *VectorCompactNamespaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorCompactNamespaceRequest.ProtoReflect.Descriptor instead.
 func (*VectorCompactNamespaceRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{138}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *VectorCompactNamespaceRequest) GetNamespace() string {
@@ -9327,7 +9435,7 @@ type VectorCompactNamespaceResponse struct {
 
 func (x *VectorCompactNamespaceResponse) Reset() {
 	*x = VectorCompactNamespaceResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[139]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9339,7 +9447,7 @@ func (x *VectorCompactNamespaceResponse) String() string {
 func (*VectorCompactNamespaceResponse) ProtoMessage() {}
 
 func (x *VectorCompactNamespaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[139]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9352,7 +9460,7 @@ func (x *VectorCompactNamespaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorCompactNamespaceResponse.ProtoReflect.Descriptor instead.
 func (*VectorCompactNamespaceResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{139}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *VectorCompactNamespaceResponse) GetJobId() string {
@@ -9381,7 +9489,7 @@ type VectorGetCompactionProgressRequest struct {
 
 func (x *VectorGetCompactionProgressRequest) Reset() {
 	*x = VectorGetCompactionProgressRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[140]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9393,7 +9501,7 @@ func (x *VectorGetCompactionProgressRequest) String() string {
 func (*VectorGetCompactionProgressRequest) ProtoMessage() {}
 
 func (x *VectorGetCompactionProgressRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[140]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9406,7 +9514,7 @@ func (x *VectorGetCompactionProgressRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use VectorGetCompactionProgressRequest.ProtoReflect.Descriptor instead.
 func (*VectorGetCompactionProgressRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{140}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *VectorGetCompactionProgressRequest) GetNamespace() string {
@@ -9445,7 +9553,7 @@ type VectorCompactionProgress struct {
 
 func (x *VectorCompactionProgress) Reset() {
 	*x = VectorCompactionProgress{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[141]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9457,7 +9565,7 @@ func (x *VectorCompactionProgress) String() string {
 func (*VectorCompactionProgress) ProtoMessage() {}
 
 func (x *VectorCompactionProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[141]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9470,7 +9578,7 @@ func (x *VectorCompactionProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VectorCompactionProgress.ProtoReflect.Descriptor instead.
 func (*VectorCompactionProgress) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{141}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *VectorCompactionProgress) GetJobId() string {
@@ -9527,7 +9635,7 @@ type CreateUserRequest struct {
 
 func (x *CreateUserRequest) Reset() {
 	*x = CreateUserRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[142]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9539,7 +9647,7 @@ func (x *CreateUserRequest) String() string {
 func (*CreateUserRequest) ProtoMessage() {}
 
 func (x *CreateUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[142]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9552,7 +9660,7 @@ func (x *CreateUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateUserRequest.ProtoReflect.Descriptor instead.
 func (*CreateUserRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{142}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *CreateUserRequest) GetTenantId() string {
@@ -9586,7 +9694,7 @@ type GetUserRequest struct {
 
 func (x *GetUserRequest) Reset() {
 	*x = GetUserRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[143]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9598,7 +9706,7 @@ func (x *GetUserRequest) String() string {
 func (*GetUserRequest) ProtoMessage() {}
 
 func (x *GetUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[143]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9611,7 +9719,7 @@ func (x *GetUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserRequest.ProtoReflect.Descriptor instead.
 func (*GetUserRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{143}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *GetUserRequest) GetId() uint64 {
@@ -9632,7 +9740,7 @@ type GetUserByUsernameRequest struct {
 
 func (x *GetUserByUsernameRequest) Reset() {
 	*x = GetUserByUsernameRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[144]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9644,7 +9752,7 @@ func (x *GetUserByUsernameRequest) String() string {
 func (*GetUserByUsernameRequest) ProtoMessage() {}
 
 func (x *GetUserByUsernameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[144]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9657,7 +9765,7 @@ func (x *GetUserByUsernameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserByUsernameRequest.ProtoReflect.Descriptor instead.
 func (*GetUserByUsernameRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{144}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *GetUserByUsernameRequest) GetTenantId() string {
@@ -9685,7 +9793,7 @@ type GetUserByCertThumbprintRequest struct {
 
 func (x *GetUserByCertThumbprintRequest) Reset() {
 	*x = GetUserByCertThumbprintRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[145]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9697,7 +9805,7 @@ func (x *GetUserByCertThumbprintRequest) String() string {
 func (*GetUserByCertThumbprintRequest) ProtoMessage() {}
 
 func (x *GetUserByCertThumbprintRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[145]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9710,7 +9818,7 @@ func (x *GetUserByCertThumbprintRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetUserByCertThumbprintRequest.ProtoReflect.Descriptor instead.
 func (*GetUserByCertThumbprintRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{145}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *GetUserByCertThumbprintRequest) GetThumbprint() string {
@@ -9733,7 +9841,7 @@ type AddCertBindingRequest struct {
 
 func (x *AddCertBindingRequest) Reset() {
 	*x = AddCertBindingRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[146]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9745,7 +9853,7 @@ func (x *AddCertBindingRequest) String() string {
 func (*AddCertBindingRequest) ProtoMessage() {}
 
 func (x *AddCertBindingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[146]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9758,7 +9866,7 @@ func (x *AddCertBindingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddCertBindingRequest.ProtoReflect.Descriptor instead.
 func (*AddCertBindingRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{146}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *AddCertBindingRequest) GetUserId() uint64 {
@@ -9795,7 +9903,7 @@ type UpdateUserProtoRequest struct {
 
 func (x *UpdateUserProtoRequest) Reset() {
 	*x = UpdateUserProtoRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[147]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9807,7 +9915,7 @@ func (x *UpdateUserProtoRequest) String() string {
 func (*UpdateUserProtoRequest) ProtoMessage() {}
 
 func (x *UpdateUserProtoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[147]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9820,7 +9928,7 @@ func (x *UpdateUserProtoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateUserProtoRequest.ProtoReflect.Descriptor instead.
 func (*UpdateUserProtoRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{147}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *UpdateUserProtoRequest) GetId() uint64 {
@@ -9854,7 +9962,7 @@ type DeleteUserRequest struct {
 
 func (x *DeleteUserRequest) Reset() {
 	*x = DeleteUserRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[148]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9866,7 +9974,7 @@ func (x *DeleteUserRequest) String() string {
 func (*DeleteUserRequest) ProtoMessage() {}
 
 func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[148]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9879,7 +9987,7 @@ func (x *DeleteUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteUserRequest.ProtoReflect.Descriptor instead.
 func (*DeleteUserRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{148}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *DeleteUserRequest) GetId() uint64 {
@@ -9901,7 +10009,7 @@ type ListUsersRequest struct {
 
 func (x *ListUsersRequest) Reset() {
 	*x = ListUsersRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[149]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9913,7 +10021,7 @@ func (x *ListUsersRequest) String() string {
 func (*ListUsersRequest) ProtoMessage() {}
 
 func (x *ListUsersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[149]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9926,7 +10034,7 @@ func (x *ListUsersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUsersRequest.ProtoReflect.Descriptor instead.
 func (*ListUsersRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{149}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *ListUsersRequest) GetTenantId() string {
@@ -9962,7 +10070,7 @@ type ListUsersResponse struct {
 
 func (x *ListUsersResponse) Reset() {
 	*x = ListUsersResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[150]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9974,7 +10082,7 @@ func (x *ListUsersResponse) String() string {
 func (*ListUsersResponse) ProtoMessage() {}
 
 func (x *ListUsersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[150]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9987,7 +10095,7 @@ func (x *ListUsersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListUsersResponse.ProtoReflect.Descriptor instead.
 func (*ListUsersResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{150}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *ListUsersResponse) GetUsers() []*UserResponse {
@@ -10021,7 +10129,7 @@ type EnableUserRequest struct {
 
 func (x *EnableUserRequest) Reset() {
 	*x = EnableUserRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[151]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10033,7 +10141,7 @@ func (x *EnableUserRequest) String() string {
 func (*EnableUserRequest) ProtoMessage() {}
 
 func (x *EnableUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[151]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10046,7 +10154,7 @@ func (x *EnableUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnableUserRequest.ProtoReflect.Descriptor instead.
 func (*EnableUserRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{151}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *EnableUserRequest) GetId() uint64 {
@@ -10066,7 +10174,7 @@ type DisableUserRequest struct {
 
 func (x *DisableUserRequest) Reset() {
 	*x = DisableUserRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[152]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10078,7 +10186,7 @@ func (x *DisableUserRequest) String() string {
 func (*DisableUserRequest) ProtoMessage() {}
 
 func (x *DisableUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[152]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10091,7 +10199,7 @@ func (x *DisableUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DisableUserRequest.ProtoReflect.Descriptor instead.
 func (*DisableUserRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{152}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *DisableUserRequest) GetId() uint64 {
@@ -10118,7 +10226,7 @@ type UserResponse struct {
 
 func (x *UserResponse) Reset() {
 	*x = UserResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[153]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10130,7 +10238,7 @@ func (x *UserResponse) String() string {
 func (*UserResponse) ProtoMessage() {}
 
 func (x *UserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[153]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10143,7 +10251,7 @@ func (x *UserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserResponse.ProtoReflect.Descriptor instead.
 func (*UserResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{153}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *UserResponse) GetId() uint64 {
@@ -10217,7 +10325,7 @@ type CreateRoleRequest struct {
 
 func (x *CreateRoleRequest) Reset() {
 	*x = CreateRoleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[154]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10229,7 +10337,7 @@ func (x *CreateRoleRequest) String() string {
 func (*CreateRoleRequest) ProtoMessage() {}
 
 func (x *CreateRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[154]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10242,7 +10350,7 @@ func (x *CreateRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoleRequest.ProtoReflect.Descriptor instead.
 func (*CreateRoleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{154}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *CreateRoleRequest) GetTenantId() string {
@@ -10283,7 +10391,7 @@ type GetRoleRequest struct {
 
 func (x *GetRoleRequest) Reset() {
 	*x = GetRoleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[155]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10295,7 +10403,7 @@ func (x *GetRoleRequest) String() string {
 func (*GetRoleRequest) ProtoMessage() {}
 
 func (x *GetRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[155]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10308,7 +10416,7 @@ func (x *GetRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleRequest.ProtoReflect.Descriptor instead.
 func (*GetRoleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{155}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *GetRoleRequest) GetId() string {
@@ -10328,7 +10436,7 @@ type GetRoleByNameRequest struct {
 
 func (x *GetRoleByNameRequest) Reset() {
 	*x = GetRoleByNameRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[156]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10340,7 +10448,7 @@ func (x *GetRoleByNameRequest) String() string {
 func (*GetRoleByNameRequest) ProtoMessage() {}
 
 func (x *GetRoleByNameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[156]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10353,7 +10461,7 @@ func (x *GetRoleByNameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRoleByNameRequest.ProtoReflect.Descriptor instead.
 func (*GetRoleByNameRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{156}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *GetRoleByNameRequest) GetTenantId() string {
@@ -10379,7 +10487,7 @@ type ResolveRolePermissionsRequest struct {
 
 func (x *ResolveRolePermissionsRequest) Reset() {
 	*x = ResolveRolePermissionsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[157]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10391,7 +10499,7 @@ func (x *ResolveRolePermissionsRequest) String() string {
 func (*ResolveRolePermissionsRequest) ProtoMessage() {}
 
 func (x *ResolveRolePermissionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[157]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10404,7 +10512,7 @@ func (x *ResolveRolePermissionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveRolePermissionsRequest.ProtoReflect.Descriptor instead.
 func (*ResolveRolePermissionsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{157}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *ResolveRolePermissionsRequest) GetRoleIds() []string {
@@ -10423,7 +10531,7 @@ type ResolveRolePermissionsResponse struct {
 
 func (x *ResolveRolePermissionsResponse) Reset() {
 	*x = ResolveRolePermissionsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[158]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10435,7 +10543,7 @@ func (x *ResolveRolePermissionsResponse) String() string {
 func (*ResolveRolePermissionsResponse) ProtoMessage() {}
 
 func (x *ResolveRolePermissionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[158]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10448,7 +10556,7 @@ func (x *ResolveRolePermissionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveRolePermissionsResponse.ProtoReflect.Descriptor instead.
 func (*ResolveRolePermissionsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{158}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *ResolveRolePermissionsResponse) GetPermissions() []string {
@@ -10471,7 +10579,7 @@ type UpdateRoleProtoRequest struct {
 
 func (x *UpdateRoleProtoRequest) Reset() {
 	*x = UpdateRoleProtoRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[159]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10483,7 +10591,7 @@ func (x *UpdateRoleProtoRequest) String() string {
 func (*UpdateRoleProtoRequest) ProtoMessage() {}
 
 func (x *UpdateRoleProtoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[159]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10496,7 +10604,7 @@ func (x *UpdateRoleProtoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateRoleProtoRequest.ProtoReflect.Descriptor instead.
 func (*UpdateRoleProtoRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{159}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *UpdateRoleProtoRequest) GetId() string {
@@ -10530,7 +10638,7 @@ type DeleteRoleRequest struct {
 
 func (x *DeleteRoleRequest) Reset() {
 	*x = DeleteRoleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[160]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10542,7 +10650,7 @@ func (x *DeleteRoleRequest) String() string {
 func (*DeleteRoleRequest) ProtoMessage() {}
 
 func (x *DeleteRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[160]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10555,7 +10663,7 @@ func (x *DeleteRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteRoleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteRoleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{160}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *DeleteRoleRequest) GetId() string {
@@ -10577,7 +10685,7 @@ type ListRolesRequest struct {
 
 func (x *ListRolesRequest) Reset() {
 	*x = ListRolesRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[161]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10589,7 +10697,7 @@ func (x *ListRolesRequest) String() string {
 func (*ListRolesRequest) ProtoMessage() {}
 
 func (x *ListRolesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[161]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10602,7 +10710,7 @@ func (x *ListRolesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRolesRequest.ProtoReflect.Descriptor instead.
 func (*ListRolesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{161}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *ListRolesRequest) GetTenantId() string {
@@ -10638,7 +10746,7 @@ type ListRolesResponse struct {
 
 func (x *ListRolesResponse) Reset() {
 	*x = ListRolesResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[162]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10650,7 +10758,7 @@ func (x *ListRolesResponse) String() string {
 func (*ListRolesResponse) ProtoMessage() {}
 
 func (x *ListRolesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[162]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10663,7 +10771,7 @@ func (x *ListRolesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRolesResponse.ProtoReflect.Descriptor instead.
 func (*ListRolesResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{162}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *ListRolesResponse) GetRoles() []*RoleResponse {
@@ -10698,7 +10806,7 @@ type AssignRoleRequest struct {
 
 func (x *AssignRoleRequest) Reset() {
 	*x = AssignRoleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[163]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10710,7 +10818,7 @@ func (x *AssignRoleRequest) String() string {
 func (*AssignRoleRequest) ProtoMessage() {}
 
 func (x *AssignRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[163]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10723,7 +10831,7 @@ func (x *AssignRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AssignRoleRequest.ProtoReflect.Descriptor instead.
 func (*AssignRoleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{163}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *AssignRoleRequest) GetUserId() uint64 {
@@ -10751,7 +10859,7 @@ type UnassignRoleRequest struct {
 
 func (x *UnassignRoleRequest) Reset() {
 	*x = UnassignRoleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[164]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10763,7 +10871,7 @@ func (x *UnassignRoleRequest) String() string {
 func (*UnassignRoleRequest) ProtoMessage() {}
 
 func (x *UnassignRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[164]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10776,7 +10884,7 @@ func (x *UnassignRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnassignRoleRequest.ProtoReflect.Descriptor instead.
 func (*UnassignRoleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{164}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *UnassignRoleRequest) GetUserId() uint64 {
@@ -10809,7 +10917,7 @@ type RoleResponse struct {
 
 func (x *RoleResponse) Reset() {
 	*x = RoleResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[165]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10821,7 +10929,7 @@ func (x *RoleResponse) String() string {
 func (*RoleResponse) ProtoMessage() {}
 
 func (x *RoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[165]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10834,7 +10942,7 @@ func (x *RoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoleResponse.ProtoReflect.Descriptor instead.
 func (*RoleResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{165}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *RoleResponse) GetId() string {
@@ -10898,7 +11006,7 @@ type PermissionCategory struct {
 
 func (x *PermissionCategory) Reset() {
 	*x = PermissionCategory{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[166]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10910,7 +11018,7 @@ func (x *PermissionCategory) String() string {
 func (*PermissionCategory) ProtoMessage() {}
 
 func (x *PermissionCategory) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[166]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10923,7 +11031,7 @@ func (x *PermissionCategory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermissionCategory.ProtoReflect.Descriptor instead.
 func (*PermissionCategory) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{166}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *PermissionCategory) GetName() string {
@@ -10957,7 +11065,7 @@ type ListPermissionsResponse struct {
 
 func (x *ListPermissionsResponse) Reset() {
 	*x = ListPermissionsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[167]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10969,7 +11077,7 @@ func (x *ListPermissionsResponse) String() string {
 func (*ListPermissionsResponse) ProtoMessage() {}
 
 func (x *ListPermissionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[167]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10982,7 +11090,7 @@ func (x *ListPermissionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPermissionsResponse.ProtoReflect.Descriptor instead.
 func (*ListPermissionsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{167}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *ListPermissionsResponse) GetCategories() []*PermissionCategory {
@@ -11004,7 +11112,7 @@ type GenerateCertRequest struct {
 
 func (x *GenerateCertRequest) Reset() {
 	*x = GenerateCertRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[168]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11016,7 +11124,7 @@ func (x *GenerateCertRequest) String() string {
 func (*GenerateCertRequest) ProtoMessage() {}
 
 func (x *GenerateCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[168]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11029,7 +11137,7 @@ func (x *GenerateCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateCertRequest.ProtoReflect.Descriptor instead.
 func (*GenerateCertRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{168}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *GenerateCertRequest) GetUsername() string {
@@ -11065,7 +11173,7 @@ type CertBundleResponse struct {
 
 func (x *CertBundleResponse) Reset() {
 	*x = CertBundleResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[169]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11077,7 +11185,7 @@ func (x *CertBundleResponse) String() string {
 func (*CertBundleResponse) ProtoMessage() {}
 
 func (x *CertBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[169]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11090,7 +11198,7 @@ func (x *CertBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertBundleResponse.ProtoReflect.Descriptor instead.
 func (*CertBundleResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{169}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *CertBundleResponse) GetCertPem() string {
@@ -11126,7 +11234,7 @@ type ExportCertRequest struct {
 
 func (x *ExportCertRequest) Reset() {
 	*x = ExportCertRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[170]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11138,7 +11246,7 @@ func (x *ExportCertRequest) String() string {
 func (*ExportCertRequest) ProtoMessage() {}
 
 func (x *ExportCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[170]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11151,7 +11259,7 @@ func (x *ExportCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportCertRequest.ProtoReflect.Descriptor instead.
 func (*ExportCertRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{170}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *ExportCertRequest) GetCertPem() string {
@@ -11185,7 +11293,7 @@ type ExportCertResponse struct {
 
 func (x *ExportCertResponse) Reset() {
 	*x = ExportCertResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[171]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11197,7 +11305,7 @@ func (x *ExportCertResponse) String() string {
 func (*ExportCertResponse) ProtoMessage() {}
 
 func (x *ExportCertResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[171]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11210,7 +11318,7 @@ func (x *ExportCertResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExportCertResponse.ProtoReflect.Descriptor instead.
 func (*ExportCertResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{171}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *ExportCertResponse) GetPkcs12() string {
@@ -11230,7 +11338,7 @@ type RevokeCertRequest struct {
 
 func (x *RevokeCertRequest) Reset() {
 	*x = RevokeCertRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[172]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11242,7 +11350,7 @@ func (x *RevokeCertRequest) String() string {
 func (*RevokeCertRequest) ProtoMessage() {}
 
 func (x *RevokeCertRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[172]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11255,7 +11363,7 @@ func (x *RevokeCertRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCertRequest.ProtoReflect.Descriptor instead.
 func (*RevokeCertRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{172}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *RevokeCertRequest) GetSerial() string {
@@ -11275,7 +11383,7 @@ type ListCertsRequest struct {
 
 func (x *ListCertsRequest) Reset() {
 	*x = ListCertsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[173]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11287,7 +11395,7 @@ func (x *ListCertsRequest) String() string {
 func (*ListCertsRequest) ProtoMessage() {}
 
 func (x *ListCertsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[173]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11300,7 +11408,7 @@ func (x *ListCertsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCertsRequest.ProtoReflect.Descriptor instead.
 func (*ListCertsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{173}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *ListCertsRequest) GetTenantId() string {
@@ -11325,7 +11433,7 @@ type CertRecord struct {
 
 func (x *CertRecord) Reset() {
 	*x = CertRecord{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[174]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11337,7 +11445,7 @@ func (x *CertRecord) String() string {
 func (*CertRecord) ProtoMessage() {}
 
 func (x *CertRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[174]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11350,7 +11458,7 @@ func (x *CertRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertRecord.ProtoReflect.Descriptor instead.
 func (*CertRecord) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{174}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *CertRecord) GetSerial() string {
@@ -11405,7 +11513,7 @@ type ListCertsResponse struct {
 
 func (x *ListCertsResponse) Reset() {
 	*x = ListCertsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[175]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11417,7 +11525,7 @@ func (x *ListCertsResponse) String() string {
 func (*ListCertsResponse) ProtoMessage() {}
 
 func (x *ListCertsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[175]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11430,7 +11538,7 @@ func (x *ListCertsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCertsResponse.ProtoReflect.Descriptor instead.
 func (*ListCertsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{175}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *ListCertsResponse) GetCerts() []*CertRecord {
@@ -11453,7 +11561,7 @@ type CreateCollectionRequest struct {
 
 func (x *CreateCollectionRequest) Reset() {
 	*x = CreateCollectionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[176]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11465,7 +11573,7 @@ func (x *CreateCollectionRequest) String() string {
 func (*CreateCollectionRequest) ProtoMessage() {}
 
 func (x *CreateCollectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[176]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11478,7 +11586,7 @@ func (x *CreateCollectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateCollectionRequest.ProtoReflect.Descriptor instead.
 func (*CreateCollectionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{176}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *CreateCollectionRequest) GetDatabase() string {
@@ -11520,7 +11628,7 @@ type GetCollectionInfoRequest struct {
 
 func (x *GetCollectionInfoRequest) Reset() {
 	*x = GetCollectionInfoRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[177]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11532,7 +11640,7 @@ func (x *GetCollectionInfoRequest) String() string {
 func (*GetCollectionInfoRequest) ProtoMessage() {}
 
 func (x *GetCollectionInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[177]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11545,7 +11653,7 @@ func (x *GetCollectionInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCollectionInfoRequest.ProtoReflect.Descriptor instead.
 func (*GetCollectionInfoRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{177}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *GetCollectionInfoRequest) GetDatabase() string {
@@ -11572,7 +11680,7 @@ type ListCollectionsRequest struct {
 
 func (x *ListCollectionsRequest) Reset() {
 	*x = ListCollectionsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[178]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11584,7 +11692,7 @@ func (x *ListCollectionsRequest) String() string {
 func (*ListCollectionsRequest) ProtoMessage() {}
 
 func (x *ListCollectionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[178]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11597,7 +11705,7 @@ func (x *ListCollectionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollectionsRequest.ProtoReflect.Descriptor instead.
 func (*ListCollectionsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{178}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *ListCollectionsRequest) GetDatabase() string {
@@ -11618,7 +11726,7 @@ type DropCollectionRequest struct {
 
 func (x *DropCollectionRequest) Reset() {
 	*x = DropCollectionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[179]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11630,7 +11738,7 @@ func (x *DropCollectionRequest) String() string {
 func (*DropCollectionRequest) ProtoMessage() {}
 
 func (x *DropCollectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[179]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11643,7 +11751,7 @@ func (x *DropCollectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DropCollectionRequest.ProtoReflect.Descriptor instead.
 func (*DropCollectionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{179}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *DropCollectionRequest) GetDatabase() string {
@@ -11676,7 +11784,7 @@ type CollectionInfoResponse struct {
 
 func (x *CollectionInfoResponse) Reset() {
 	*x = CollectionInfoResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[180]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11688,7 +11796,7 @@ func (x *CollectionInfoResponse) String() string {
 func (*CollectionInfoResponse) ProtoMessage() {}
 
 func (x *CollectionInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[180]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11701,7 +11809,7 @@ func (x *CollectionInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CollectionInfoResponse.ProtoReflect.Descriptor instead.
 func (*CollectionInfoResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{180}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *CollectionInfoResponse) GetName() string {
@@ -11763,7 +11871,7 @@ type ListCollectionsResponse struct {
 
 func (x *ListCollectionsResponse) Reset() {
 	*x = ListCollectionsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[181]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11775,7 +11883,7 @@ func (x *ListCollectionsResponse) String() string {
 func (*ListCollectionsResponse) ProtoMessage() {}
 
 func (x *ListCollectionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[181]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11788,7 +11896,7 @@ func (x *ListCollectionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCollectionsResponse.ProtoReflect.Descriptor instead.
 func (*ListCollectionsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{181}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *ListCollectionsResponse) GetCollections() []*CollectionInfoResponse {
@@ -11810,7 +11918,7 @@ type InsertDocumentRequest struct {
 
 func (x *InsertDocumentRequest) Reset() {
 	*x = InsertDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[182]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11822,7 +11930,7 @@ func (x *InsertDocumentRequest) String() string {
 func (*InsertDocumentRequest) ProtoMessage() {}
 
 func (x *InsertDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[182]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11835,7 +11943,7 @@ func (x *InsertDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertDocumentRequest.ProtoReflect.Descriptor instead.
 func (*InsertDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{182}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *InsertDocumentRequest) GetDatabase() string {
@@ -11869,7 +11977,7 @@ type InsertDocumentResponse struct {
 
 func (x *InsertDocumentResponse) Reset() {
 	*x = InsertDocumentResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[183]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11881,7 +11989,7 @@ func (x *InsertDocumentResponse) String() string {
 func (*InsertDocumentResponse) ProtoMessage() {}
 
 func (x *InsertDocumentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[183]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11894,7 +12002,7 @@ func (x *InsertDocumentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InsertDocumentResponse.ProtoReflect.Descriptor instead.
 func (*InsertDocumentResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{183}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *InsertDocumentResponse) GetId() uint64 {
@@ -11916,7 +12024,7 @@ type GetDocumentRequest struct {
 
 func (x *GetDocumentRequest) Reset() {
 	*x = GetDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[184]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11928,7 +12036,7 @@ func (x *GetDocumentRequest) String() string {
 func (*GetDocumentRequest) ProtoMessage() {}
 
 func (x *GetDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[184]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11941,7 +12049,7 @@ func (x *GetDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDocumentRequest.ProtoReflect.Descriptor instead.
 func (*GetDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{184}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *GetDocumentRequest) GetDatabase() string {
@@ -11976,7 +12084,7 @@ type DocumentResponse struct {
 
 func (x *DocumentResponse) Reset() {
 	*x = DocumentResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[185]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11988,7 +12096,7 @@ func (x *DocumentResponse) String() string {
 func (*DocumentResponse) ProtoMessage() {}
 
 func (x *DocumentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[185]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12001,7 +12109,7 @@ func (x *DocumentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DocumentResponse.ProtoReflect.Descriptor instead.
 func (*DocumentResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{185}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *DocumentResponse) GetId() uint64 {
@@ -12031,7 +12139,7 @@ type UpdateDocumentRequest struct {
 
 func (x *UpdateDocumentRequest) Reset() {
 	*x = UpdateDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[186]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12043,7 +12151,7 @@ func (x *UpdateDocumentRequest) String() string {
 func (*UpdateDocumentRequest) ProtoMessage() {}
 
 func (x *UpdateDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[186]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12056,7 +12164,7 @@ func (x *UpdateDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateDocumentRequest.ProtoReflect.Descriptor instead.
 func (*UpdateDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{186}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *UpdateDocumentRequest) GetDatabase() string {
@@ -12099,7 +12207,7 @@ type DeleteDocumentRequest struct {
 
 func (x *DeleteDocumentRequest) Reset() {
 	*x = DeleteDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[187]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12111,7 +12219,7 @@ func (x *DeleteDocumentRequest) String() string {
 func (*DeleteDocumentRequest) ProtoMessage() {}
 
 func (x *DeleteDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[187]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12124,7 +12232,7 @@ func (x *DeleteDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDocumentRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{187}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *DeleteDocumentRequest) GetDatabase() string {
@@ -12161,7 +12269,7 @@ type ListDocumentsRequest struct {
 
 func (x *ListDocumentsRequest) Reset() {
 	*x = ListDocumentsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[188]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12173,7 +12281,7 @@ func (x *ListDocumentsRequest) String() string {
 func (*ListDocumentsRequest) ProtoMessage() {}
 
 func (x *ListDocumentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[188]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12186,7 +12294,7 @@ func (x *ListDocumentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDocumentsRequest.ProtoReflect.Descriptor instead.
 func (*ListDocumentsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{188}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{190}
 }
 
 func (x *ListDocumentsRequest) GetDatabase() string {
@@ -12229,7 +12337,7 @@ type ListDocumentsResponse struct {
 
 func (x *ListDocumentsResponse) Reset() {
 	*x = ListDocumentsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[189]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12241,7 +12349,7 @@ func (x *ListDocumentsResponse) String() string {
 func (*ListDocumentsResponse) ProtoMessage() {}
 
 func (x *ListDocumentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[189]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12254,7 +12362,7 @@ func (x *ListDocumentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListDocumentsResponse.ProtoReflect.Descriptor instead.
 func (*ListDocumentsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{189}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{191}
 }
 
 func (x *ListDocumentsResponse) GetDocuments() []*DocumentResponse {
@@ -12301,7 +12409,7 @@ type DatabaseCreateRequest struct {
 
 func (x *DatabaseCreateRequest) Reset() {
 	*x = DatabaseCreateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[190]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12313,7 +12421,7 @@ func (x *DatabaseCreateRequest) String() string {
 func (*DatabaseCreateRequest) ProtoMessage() {}
 
 func (x *DatabaseCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[190]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12326,7 +12434,7 @@ func (x *DatabaseCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseCreateRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseCreateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{190}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *DatabaseCreateRequest) GetName() string {
@@ -12395,7 +12503,7 @@ type DatabaseGetRequest struct {
 
 func (x *DatabaseGetRequest) Reset() {
 	*x = DatabaseGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[191]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12407,7 +12515,7 @@ func (x *DatabaseGetRequest) String() string {
 func (*DatabaseGetRequest) ProtoMessage() {}
 
 func (x *DatabaseGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[191]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12420,7 +12528,7 @@ func (x *DatabaseGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseGetRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{191}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *DatabaseGetRequest) GetName() string {
@@ -12440,7 +12548,7 @@ type DatabaseDropRequest struct {
 
 func (x *DatabaseDropRequest) Reset() {
 	*x = DatabaseDropRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[192]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12452,7 +12560,7 @@ func (x *DatabaseDropRequest) String() string {
 func (*DatabaseDropRequest) ProtoMessage() {}
 
 func (x *DatabaseDropRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[192]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12465,7 +12573,7 @@ func (x *DatabaseDropRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseDropRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseDropRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{192}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *DatabaseDropRequest) GetName() string {
@@ -12485,7 +12593,7 @@ type DatabaseListResponse struct {
 
 func (x *DatabaseListResponse) Reset() {
 	*x = DatabaseListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[193]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12497,7 +12605,7 @@ func (x *DatabaseListResponse) String() string {
 func (*DatabaseListResponse) ProtoMessage() {}
 
 func (x *DatabaseListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[193]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12510,7 +12618,7 @@ func (x *DatabaseListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseListResponse.ProtoReflect.Descriptor instead.
 func (*DatabaseListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{193}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *DatabaseListResponse) GetDatabases() []*DatabaseInfoResponse {
@@ -12544,7 +12652,7 @@ type DatabaseInfoResponse struct {
 
 func (x *DatabaseInfoResponse) Reset() {
 	*x = DatabaseInfoResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[194]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12556,7 +12664,7 @@ func (x *DatabaseInfoResponse) String() string {
 func (*DatabaseInfoResponse) ProtoMessage() {}
 
 func (x *DatabaseInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[194]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12569,7 +12677,7 @@ func (x *DatabaseInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseInfoResponse.ProtoReflect.Descriptor instead.
 func (*DatabaseInfoResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{194}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{196}
 }
 
 func (x *DatabaseInfoResponse) GetName() string {
@@ -12675,7 +12783,7 @@ type DatabaseProtocolConfig struct {
 
 func (x *DatabaseProtocolConfig) Reset() {
 	*x = DatabaseProtocolConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[195]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12687,7 +12795,7 @@ func (x *DatabaseProtocolConfig) String() string {
 func (*DatabaseProtocolConfig) ProtoMessage() {}
 
 func (x *DatabaseProtocolConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[195]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12700,7 +12808,7 @@ func (x *DatabaseProtocolConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseProtocolConfig.ProtoReflect.Descriptor instead.
 func (*DatabaseProtocolConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{195}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *DatabaseProtocolConfig) GetMysql() bool {
@@ -12736,7 +12844,7 @@ type DatabaseEtcdConfig struct {
 
 func (x *DatabaseEtcdConfig) Reset() {
 	*x = DatabaseEtcdConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[196]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12748,7 +12856,7 @@ func (x *DatabaseEtcdConfig) String() string {
 func (*DatabaseEtcdConfig) ProtoMessage() {}
 
 func (x *DatabaseEtcdConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[196]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12761,7 +12869,7 @@ func (x *DatabaseEtcdConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseEtcdConfig.ProtoReflect.Descriptor instead.
 func (*DatabaseEtcdConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{196}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *DatabaseEtcdConfig) GetEnabled() bool {
@@ -12805,7 +12913,7 @@ type DatabaseRaftConfig struct {
 
 func (x *DatabaseRaftConfig) Reset() {
 	*x = DatabaseRaftConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[197]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12817,7 +12925,7 @@ func (x *DatabaseRaftConfig) String() string {
 func (*DatabaseRaftConfig) ProtoMessage() {}
 
 func (x *DatabaseRaftConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[197]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12830,7 +12938,7 @@ func (x *DatabaseRaftConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseRaftConfig.ProtoReflect.Descriptor instead.
 func (*DatabaseRaftConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{197}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *DatabaseRaftConfig) GetClusterMode() string {
@@ -12921,7 +13029,7 @@ type DatabaseStaticDiscovery struct {
 
 func (x *DatabaseStaticDiscovery) Reset() {
 	*x = DatabaseStaticDiscovery{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[198]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12933,7 +13041,7 @@ func (x *DatabaseStaticDiscovery) String() string {
 func (*DatabaseStaticDiscovery) ProtoMessage() {}
 
 func (x *DatabaseStaticDiscovery) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[198]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12946,7 +13054,7 @@ func (x *DatabaseStaticDiscovery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseStaticDiscovery.ProtoReflect.Descriptor instead.
 func (*DatabaseStaticDiscovery) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{198}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{200}
 }
 
 func (x *DatabaseStaticDiscovery) GetPeers() []string {
@@ -12978,7 +13086,7 @@ type DatabaseMulticastDiscovery struct {
 
 func (x *DatabaseMulticastDiscovery) Reset() {
 	*x = DatabaseMulticastDiscovery{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[199]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12990,7 +13098,7 @@ func (x *DatabaseMulticastDiscovery) String() string {
 func (*DatabaseMulticastDiscovery) ProtoMessage() {}
 
 func (x *DatabaseMulticastDiscovery) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[199]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13003,7 +13111,7 @@ func (x *DatabaseMulticastDiscovery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseMulticastDiscovery.ProtoReflect.Descriptor instead.
 func (*DatabaseMulticastDiscovery) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{199}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *DatabaseMulticastDiscovery) GetSharedSecret() string {
@@ -13061,7 +13169,7 @@ type DatabaseDNSDiscovery struct {
 
 func (x *DatabaseDNSDiscovery) Reset() {
 	*x = DatabaseDNSDiscovery{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[200]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13073,7 +13181,7 @@ func (x *DatabaseDNSDiscovery) String() string {
 func (*DatabaseDNSDiscovery) ProtoMessage() {}
 
 func (x *DatabaseDNSDiscovery) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[200]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13086,7 +13194,7 @@ func (x *DatabaseDNSDiscovery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseDNSDiscovery.ProtoReflect.Descriptor instead.
 func (*DatabaseDNSDiscovery) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{200}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *DatabaseDNSDiscovery) GetService() string {
@@ -13130,7 +13238,7 @@ type DatabaseTokenDiscovery struct {
 
 func (x *DatabaseTokenDiscovery) Reset() {
 	*x = DatabaseTokenDiscovery{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[201]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13142,7 +13250,7 @@ func (x *DatabaseTokenDiscovery) String() string {
 func (*DatabaseTokenDiscovery) ProtoMessage() {}
 
 func (x *DatabaseTokenDiscovery) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[201]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13155,7 +13263,7 @@ func (x *DatabaseTokenDiscovery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseTokenDiscovery.ProtoReflect.Descriptor instead.
 func (*DatabaseTokenDiscovery) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{201}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *DatabaseTokenDiscovery) GetEndpoint() string {
@@ -13210,7 +13318,7 @@ type DatabaseBarrierConfig struct {
 
 func (x *DatabaseBarrierConfig) Reset() {
 	*x = DatabaseBarrierConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[202]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13222,7 +13330,7 @@ func (x *DatabaseBarrierConfig) String() string {
 func (*DatabaseBarrierConfig) ProtoMessage() {}
 
 func (x *DatabaseBarrierConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[202]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13235,7 +13343,7 @@ func (x *DatabaseBarrierConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseBarrierConfig.ProtoReflect.Descriptor instead.
 func (*DatabaseBarrierConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{202}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *DatabaseBarrierConfig) GetEnabled() bool {
@@ -13288,7 +13396,7 @@ type DatabaseConnectionConfig struct {
 
 func (x *DatabaseConnectionConfig) Reset() {
 	*x = DatabaseConnectionConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[203]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13300,7 +13408,7 @@ func (x *DatabaseConnectionConfig) String() string {
 func (*DatabaseConnectionConfig) ProtoMessage() {}
 
 func (x *DatabaseConnectionConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[203]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13313,7 +13421,7 @@ func (x *DatabaseConnectionConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseConnectionConfig.ProtoReflect.Descriptor instead.
 func (*DatabaseConnectionConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{203}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{205}
 }
 
 func (x *DatabaseConnectionConfig) GetRemoteAddress() string {
@@ -13370,7 +13478,7 @@ type DatabaseUpdateProtocolRequest struct {
 
 func (x *DatabaseUpdateProtocolRequest) Reset() {
 	*x = DatabaseUpdateProtocolRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[204]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13382,7 +13490,7 @@ func (x *DatabaseUpdateProtocolRequest) String() string {
 func (*DatabaseUpdateProtocolRequest) ProtoMessage() {}
 
 func (x *DatabaseUpdateProtocolRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[204]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13395,7 +13503,7 @@ func (x *DatabaseUpdateProtocolRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUpdateProtocolRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUpdateProtocolRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{204}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *DatabaseUpdateProtocolRequest) GetName() string {
@@ -13432,7 +13540,7 @@ type DatabaseUpdateEtcdRequest struct {
 
 func (x *DatabaseUpdateEtcdRequest) Reset() {
 	*x = DatabaseUpdateEtcdRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[205]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13444,7 +13552,7 @@ func (x *DatabaseUpdateEtcdRequest) String() string {
 func (*DatabaseUpdateEtcdRequest) ProtoMessage() {}
 
 func (x *DatabaseUpdateEtcdRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[205]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13457,7 +13565,7 @@ func (x *DatabaseUpdateEtcdRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUpdateEtcdRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUpdateEtcdRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{205}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *DatabaseUpdateEtcdRequest) GetName() string {
@@ -13499,7 +13607,7 @@ type DatabaseUpdateRaftRequest struct {
 
 func (x *DatabaseUpdateRaftRequest) Reset() {
 	*x = DatabaseUpdateRaftRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[206]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13511,7 +13619,7 @@ func (x *DatabaseUpdateRaftRequest) String() string {
 func (*DatabaseUpdateRaftRequest) ProtoMessage() {}
 
 func (x *DatabaseUpdateRaftRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[206]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13524,7 +13632,7 @@ func (x *DatabaseUpdateRaftRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUpdateRaftRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUpdateRaftRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{206}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *DatabaseUpdateRaftRequest) GetName() string {
@@ -13553,7 +13661,7 @@ type DatabaseScaleRequest struct {
 
 func (x *DatabaseScaleRequest) Reset() {
 	*x = DatabaseScaleRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[207]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13565,7 +13673,7 @@ func (x *DatabaseScaleRequest) String() string {
 func (*DatabaseScaleRequest) ProtoMessage() {}
 
 func (x *DatabaseScaleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[207]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13578,7 +13686,7 @@ func (x *DatabaseScaleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseScaleRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseScaleRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{207}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *DatabaseScaleRequest) GetName() string {
@@ -13606,7 +13714,7 @@ type DatabaseUpdateBarrierRequest struct {
 
 func (x *DatabaseUpdateBarrierRequest) Reset() {
 	*x = DatabaseUpdateBarrierRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[208]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13618,7 +13726,7 @@ func (x *DatabaseUpdateBarrierRequest) String() string {
 func (*DatabaseUpdateBarrierRequest) ProtoMessage() {}
 
 func (x *DatabaseUpdateBarrierRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[208]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13631,7 +13739,7 @@ func (x *DatabaseUpdateBarrierRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUpdateBarrierRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUpdateBarrierRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{208}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *DatabaseUpdateBarrierRequest) GetName() string {
@@ -13659,7 +13767,7 @@ type DatabaseUpdateConnectionRequest struct {
 
 func (x *DatabaseUpdateConnectionRequest) Reset() {
 	*x = DatabaseUpdateConnectionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[209]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13671,7 +13779,7 @@ func (x *DatabaseUpdateConnectionRequest) String() string {
 func (*DatabaseUpdateConnectionRequest) ProtoMessage() {}
 
 func (x *DatabaseUpdateConnectionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[209]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13684,7 +13792,7 @@ func (x *DatabaseUpdateConnectionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUpdateConnectionRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUpdateConnectionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{209}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *DatabaseUpdateConnectionRequest) GetName() string {
@@ -13719,7 +13827,7 @@ type BarrierInitializeRequest struct {
 
 func (x *BarrierInitializeRequest) Reset() {
 	*x = BarrierInitializeRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[210]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13731,7 +13839,7 @@ func (x *BarrierInitializeRequest) String() string {
 func (*BarrierInitializeRequest) ProtoMessage() {}
 
 func (x *BarrierInitializeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[210]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13744,7 +13852,7 @@ func (x *BarrierInitializeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierInitializeRequest.ProtoReflect.Descriptor instead.
 func (*BarrierInitializeRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{210}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *BarrierInitializeRequest) GetSecret() string {
@@ -13778,7 +13886,7 @@ type BarrierUnsealRequest struct {
 
 func (x *BarrierUnsealRequest) Reset() {
 	*x = BarrierUnsealRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[211]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13790,7 +13898,7 @@ func (x *BarrierUnsealRequest) String() string {
 func (*BarrierUnsealRequest) ProtoMessage() {}
 
 func (x *BarrierUnsealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[211]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13803,7 +13911,7 @@ func (x *BarrierUnsealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierUnsealRequest.ProtoReflect.Descriptor instead.
 func (*BarrierUnsealRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{211}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{213}
 }
 
 func (x *BarrierUnsealRequest) GetSecret() string {
@@ -13830,7 +13938,7 @@ type BarrierStatusResponse struct {
 
 func (x *BarrierStatusResponse) Reset() {
 	*x = BarrierStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[212]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13842,7 +13950,7 @@ func (x *BarrierStatusResponse) String() string {
 func (*BarrierStatusResponse) ProtoMessage() {}
 
 func (x *BarrierStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[212]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13855,7 +13963,7 @@ func (x *BarrierStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierStatusResponse.ProtoReflect.Descriptor instead.
 func (*BarrierStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{212}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *BarrierStatusResponse) GetSealed() bool {
@@ -13918,7 +14026,7 @@ type BarrierEnableEncryptionRequest struct {
 
 func (x *BarrierEnableEncryptionRequest) Reset() {
 	*x = BarrierEnableEncryptionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[213]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13930,7 +14038,7 @@ func (x *BarrierEnableEncryptionRequest) String() string {
 func (*BarrierEnableEncryptionRequest) ProtoMessage() {}
 
 func (x *BarrierEnableEncryptionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[213]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13943,7 +14051,7 @@ func (x *BarrierEnableEncryptionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierEnableEncryptionRequest.ProtoReflect.Descriptor instead.
 func (*BarrierEnableEncryptionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{213}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{215}
 }
 
 func (x *BarrierEnableEncryptionRequest) GetTenantId() string {
@@ -14006,7 +14114,7 @@ type BarrierEnableEncryptionResponse struct {
 
 func (x *BarrierEnableEncryptionResponse) Reset() {
 	*x = BarrierEnableEncryptionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[214]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14018,7 +14126,7 @@ func (x *BarrierEnableEncryptionResponse) String() string {
 func (*BarrierEnableEncryptionResponse) ProtoMessage() {}
 
 func (x *BarrierEnableEncryptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[214]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14031,7 +14139,7 @@ func (x *BarrierEnableEncryptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierEnableEncryptionResponse.ProtoReflect.Descriptor instead.
 func (*BarrierEnableEncryptionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{214}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *BarrierEnableEncryptionResponse) GetStatus() string {
@@ -14065,7 +14173,7 @@ type BarrierShamirInitializeRequest struct {
 
 func (x *BarrierShamirInitializeRequest) Reset() {
 	*x = BarrierShamirInitializeRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[215]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14077,7 +14185,7 @@ func (x *BarrierShamirInitializeRequest) String() string {
 func (*BarrierShamirInitializeRequest) ProtoMessage() {}
 
 func (x *BarrierShamirInitializeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[215]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14090,7 +14198,7 @@ func (x *BarrierShamirInitializeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirInitializeRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShamirInitializeRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{215}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *BarrierShamirInitializeRequest) GetSecret() string {
@@ -14142,7 +14250,7 @@ type BarrierShamirOperationResponse struct {
 
 func (x *BarrierShamirOperationResponse) Reset() {
 	*x = BarrierShamirOperationResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[216]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14154,7 +14262,7 @@ func (x *BarrierShamirOperationResponse) String() string {
 func (*BarrierShamirOperationResponse) ProtoMessage() {}
 
 func (x *BarrierShamirOperationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[216]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14167,7 +14275,7 @@ func (x *BarrierShamirOperationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirOperationResponse.ProtoReflect.Descriptor instead.
 func (*BarrierShamirOperationResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{216}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *BarrierShamirOperationResponse) GetThreshold() int32 {
@@ -14201,7 +14309,7 @@ type BarrierShamirUnsealShareRequest struct {
 
 func (x *BarrierShamirUnsealShareRequest) Reset() {
 	*x = BarrierShamirUnsealShareRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[217]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14213,7 +14321,7 @@ func (x *BarrierShamirUnsealShareRequest) String() string {
 func (*BarrierShamirUnsealShareRequest) ProtoMessage() {}
 
 func (x *BarrierShamirUnsealShareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[217]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14226,7 +14334,7 @@ func (x *BarrierShamirUnsealShareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirUnsealShareRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShamirUnsealShareRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{217}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *BarrierShamirUnsealShareRequest) GetShare() string {
@@ -14248,7 +14356,7 @@ type BarrierShamirUnsealShareResponse struct {
 
 func (x *BarrierShamirUnsealShareResponse) Reset() {
 	*x = BarrierShamirUnsealShareResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[218]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14260,7 +14368,7 @@ func (x *BarrierShamirUnsealShareResponse) String() string {
 func (*BarrierShamirUnsealShareResponse) ProtoMessage() {}
 
 func (x *BarrierShamirUnsealShareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[218]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14273,7 +14381,7 @@ func (x *BarrierShamirUnsealShareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirUnsealShareResponse.ProtoReflect.Descriptor instead.
 func (*BarrierShamirUnsealShareResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{218}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *BarrierShamirUnsealShareResponse) GetRequired() int32 {
@@ -14307,7 +14415,7 @@ type BarrierShamirUnsealSharesRequest struct {
 
 func (x *BarrierShamirUnsealSharesRequest) Reset() {
 	*x = BarrierShamirUnsealSharesRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[219]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14319,7 +14427,7 @@ func (x *BarrierShamirUnsealSharesRequest) String() string {
 func (*BarrierShamirUnsealSharesRequest) ProtoMessage() {}
 
 func (x *BarrierShamirUnsealSharesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[219]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14332,7 +14440,7 @@ func (x *BarrierShamirUnsealSharesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirUnsealSharesRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShamirUnsealSharesRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{219}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *BarrierShamirUnsealSharesRequest) GetShares() []string {
@@ -14362,7 +14470,7 @@ type BarrierRekeyRequest struct {
 
 func (x *BarrierRekeyRequest) Reset() {
 	*x = BarrierRekeyRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[220]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14374,7 +14482,7 @@ func (x *BarrierRekeyRequest) String() string {
 func (*BarrierRekeyRequest) ProtoMessage() {}
 
 func (x *BarrierRekeyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[220]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14387,7 +14495,7 @@ func (x *BarrierRekeyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRekeyRequest.ProtoReflect.Descriptor instead.
 func (*BarrierRekeyRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{220}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *BarrierRekeyRequest) GetThreshold() int32 {
@@ -14427,7 +14535,7 @@ type BarrierRecoveryGenerateRequest struct {
 
 func (x *BarrierRecoveryGenerateRequest) Reset() {
 	*x = BarrierRecoveryGenerateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[221]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14439,7 +14547,7 @@ func (x *BarrierRecoveryGenerateRequest) String() string {
 func (*BarrierRecoveryGenerateRequest) ProtoMessage() {}
 
 func (x *BarrierRecoveryGenerateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[221]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14452,7 +14560,7 @@ func (x *BarrierRecoveryGenerateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRecoveryGenerateRequest.ProtoReflect.Descriptor instead.
 func (*BarrierRecoveryGenerateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{221}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *BarrierRecoveryGenerateRequest) GetThreshold() int32 {
@@ -14490,7 +14598,7 @@ type BarrierRecoveryKeysResponse struct {
 
 func (x *BarrierRecoveryKeysResponse) Reset() {
 	*x = BarrierRecoveryKeysResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[222]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14502,7 +14610,7 @@ func (x *BarrierRecoveryKeysResponse) String() string {
 func (*BarrierRecoveryKeysResponse) ProtoMessage() {}
 
 func (x *BarrierRecoveryKeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[222]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14515,7 +14623,7 @@ func (x *BarrierRecoveryKeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRecoveryKeysResponse.ProtoReflect.Descriptor instead.
 func (*BarrierRecoveryKeysResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{222}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *BarrierRecoveryKeysResponse) GetThreshold() int32 {
@@ -14553,7 +14661,7 @@ type BarrierOfficerRegisterRequest struct {
 
 func (x *BarrierOfficerRegisterRequest) Reset() {
 	*x = BarrierOfficerRegisterRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[223]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14565,7 +14673,7 @@ func (x *BarrierOfficerRegisterRequest) String() string {
 func (*BarrierOfficerRegisterRequest) ProtoMessage() {}
 
 func (x *BarrierOfficerRegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[223]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14578,7 +14686,7 @@ func (x *BarrierOfficerRegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierOfficerRegisterRequest.ProtoReflect.Descriptor instead.
 func (*BarrierOfficerRegisterRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{223}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *BarrierOfficerRegisterRequest) GetUsername() string {
@@ -14621,7 +14729,7 @@ type BarrierOfficerRegisterResponse struct {
 
 func (x *BarrierOfficerRegisterResponse) Reset() {
 	*x = BarrierOfficerRegisterResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[224]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14633,7 +14741,7 @@ func (x *BarrierOfficerRegisterResponse) String() string {
 func (*BarrierOfficerRegisterResponse) ProtoMessage() {}
 
 func (x *BarrierOfficerRegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[224]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14646,7 +14754,7 @@ func (x *BarrierOfficerRegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierOfficerRegisterResponse.ProtoReflect.Descriptor instead.
 func (*BarrierOfficerRegisterResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{224}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *BarrierOfficerRegisterResponse) GetCertPem() []byte {
@@ -14674,7 +14782,7 @@ type BarrierOfficerListResponse struct {
 
 func (x *BarrierOfficerListResponse) Reset() {
 	*x = BarrierOfficerListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[225]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14686,7 +14794,7 @@ func (x *BarrierOfficerListResponse) String() string {
 func (*BarrierOfficerListResponse) ProtoMessage() {}
 
 func (x *BarrierOfficerListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[225]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14699,7 +14807,7 @@ func (x *BarrierOfficerListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierOfficerListResponse.ProtoReflect.Descriptor instead.
 func (*BarrierOfficerListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{225}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *BarrierOfficerListResponse) GetOfficers() []*OfficerStatus {
@@ -14726,7 +14834,7 @@ type OfficerStatus struct {
 
 func (x *OfficerStatus) Reset() {
 	*x = OfficerStatus{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[226]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14738,7 +14846,7 @@ func (x *OfficerStatus) String() string {
 func (*OfficerStatus) ProtoMessage() {}
 
 func (x *OfficerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[226]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14751,7 +14859,7 @@ func (x *OfficerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OfficerStatus.ProtoReflect.Descriptor instead.
 func (*OfficerStatus) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{226}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *OfficerStatus) GetUsername() string {
@@ -14814,7 +14922,7 @@ type BarrierShareClaimBeginRequest struct {
 
 func (x *BarrierShareClaimBeginRequest) Reset() {
 	*x = BarrierShareClaimBeginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[227]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14826,7 +14934,7 @@ func (x *BarrierShareClaimBeginRequest) String() string {
 func (*BarrierShareClaimBeginRequest) ProtoMessage() {}
 
 func (x *BarrierShareClaimBeginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[227]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14839,7 +14947,7 @@ func (x *BarrierShareClaimBeginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShareClaimBeginRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShareClaimBeginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{227}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *BarrierShareClaimBeginRequest) GetUsername() string {
@@ -14860,7 +14968,7 @@ type BarrierShareClaimBeginResponse struct {
 
 func (x *BarrierShareClaimBeginResponse) Reset() {
 	*x = BarrierShareClaimBeginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[228]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14872,7 +14980,7 @@ func (x *BarrierShareClaimBeginResponse) String() string {
 func (*BarrierShareClaimBeginResponse) ProtoMessage() {}
 
 func (x *BarrierShareClaimBeginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[228]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14885,7 +14993,7 @@ func (x *BarrierShareClaimBeginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShareClaimBeginResponse.ProtoReflect.Descriptor instead.
 func (*BarrierShareClaimBeginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{228}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *BarrierShareClaimBeginResponse) GetNonceHex() string {
@@ -14915,7 +15023,7 @@ type BarrierShareClaimCompleteRequest struct {
 
 func (x *BarrierShareClaimCompleteRequest) Reset() {
 	*x = BarrierShareClaimCompleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[229]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14927,7 +15035,7 @@ func (x *BarrierShareClaimCompleteRequest) String() string {
 func (*BarrierShareClaimCompleteRequest) ProtoMessage() {}
 
 func (x *BarrierShareClaimCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[229]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14940,7 +15048,7 @@ func (x *BarrierShareClaimCompleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShareClaimCompleteRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShareClaimCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{229}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *BarrierShareClaimCompleteRequest) GetUsername() string {
@@ -14976,7 +15084,7 @@ type BarrierShareClaimCompleteResponse struct {
 
 func (x *BarrierShareClaimCompleteResponse) Reset() {
 	*x = BarrierShareClaimCompleteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[230]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14988,7 +15096,7 @@ func (x *BarrierShareClaimCompleteResponse) String() string {
 func (*BarrierShareClaimCompleteResponse) ProtoMessage() {}
 
 func (x *BarrierShareClaimCompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[230]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15001,7 +15109,7 @@ func (x *BarrierShareClaimCompleteResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use BarrierShareClaimCompleteResponse.ProtoReflect.Descriptor instead.
 func (*BarrierShareClaimCompleteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{230}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *BarrierShareClaimCompleteResponse) GetShareIndex() int32 {
@@ -15028,7 +15136,7 @@ type BarrierShamirSealVoteRequest struct {
 
 func (x *BarrierShamirSealVoteRequest) Reset() {
 	*x = BarrierShamirSealVoteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[231]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15040,7 +15148,7 @@ func (x *BarrierShamirSealVoteRequest) String() string {
 func (*BarrierShamirSealVoteRequest) ProtoMessage() {}
 
 func (x *BarrierShamirSealVoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[231]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15053,7 +15161,7 @@ func (x *BarrierShamirSealVoteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirSealVoteRequest.ProtoReflect.Descriptor instead.
 func (*BarrierShamirSealVoteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{231}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *BarrierShamirSealVoteRequest) GetShare() string {
@@ -15075,7 +15183,7 @@ type BarrierShamirSealVoteResponse struct {
 
 func (x *BarrierShamirSealVoteResponse) Reset() {
 	*x = BarrierShamirSealVoteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[232]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15087,7 +15195,7 @@ func (x *BarrierShamirSealVoteResponse) String() string {
 func (*BarrierShamirSealVoteResponse) ProtoMessage() {}
 
 func (x *BarrierShamirSealVoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[232]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15100,7 +15208,7 @@ func (x *BarrierShamirSealVoteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierShamirSealVoteResponse.ProtoReflect.Descriptor instead.
 func (*BarrierShamirSealVoteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{232}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *BarrierShamirSealVoteResponse) GetRequired() int32 {
@@ -15135,7 +15243,7 @@ type BarrierOfficerClaimStatusResponse struct {
 
 func (x *BarrierOfficerClaimStatusResponse) Reset() {
 	*x = BarrierOfficerClaimStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[233]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15147,7 +15255,7 @@ func (x *BarrierOfficerClaimStatusResponse) String() string {
 func (*BarrierOfficerClaimStatusResponse) ProtoMessage() {}
 
 func (x *BarrierOfficerClaimStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[233]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15160,7 +15268,7 @@ func (x *BarrierOfficerClaimStatusResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use BarrierOfficerClaimStatusResponse.ProtoReflect.Descriptor instead.
 func (*BarrierOfficerClaimStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{233}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *BarrierOfficerClaimStatusResponse) GetOfficers() []*OfficerStatus {
@@ -15180,7 +15288,7 @@ type BarrierRecoveryRecoverRequest struct {
 
 func (x *BarrierRecoveryRecoverRequest) Reset() {
 	*x = BarrierRecoveryRecoverRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[234]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15192,7 +15300,7 @@ func (x *BarrierRecoveryRecoverRequest) String() string {
 func (*BarrierRecoveryRecoverRequest) ProtoMessage() {}
 
 func (x *BarrierRecoveryRecoverRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[234]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15205,7 +15313,7 @@ func (x *BarrierRecoveryRecoverRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRecoveryRecoverRequest.ProtoReflect.Descriptor instead.
 func (*BarrierRecoveryRecoverRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{234}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *BarrierRecoveryRecoverRequest) GetKeys() []string {
@@ -15225,7 +15333,7 @@ type BarrierRecoveryStatusResponse struct {
 
 func (x *BarrierRecoveryStatusResponse) Reset() {
 	*x = BarrierRecoveryStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[235]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15237,7 +15345,7 @@ func (x *BarrierRecoveryStatusResponse) String() string {
 func (*BarrierRecoveryStatusResponse) ProtoMessage() {}
 
 func (x *BarrierRecoveryStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[235]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15250,7 +15358,7 @@ func (x *BarrierRecoveryStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRecoveryStatusResponse.ProtoReflect.Descriptor instead.
 func (*BarrierRecoveryStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{235}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{237}
 }
 
 func (x *BarrierRecoveryStatusResponse) GetHasRecoveryKeys() bool {
@@ -15270,7 +15378,7 @@ type BarrierRootTokenRequest struct {
 
 func (x *BarrierRootTokenRequest) Reset() {
 	*x = BarrierRootTokenRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[236]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15282,7 +15390,7 @@ func (x *BarrierRootTokenRequest) String() string {
 func (*BarrierRootTokenRequest) ProtoMessage() {}
 
 func (x *BarrierRootTokenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[236]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15295,7 +15403,7 @@ func (x *BarrierRootTokenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRootTokenRequest.ProtoReflect.Descriptor instead.
 func (*BarrierRootTokenRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{236}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *BarrierRootTokenRequest) GetShares() []string {
@@ -15316,7 +15424,7 @@ type BarrierRootTokenResponse struct {
 
 func (x *BarrierRootTokenResponse) Reset() {
 	*x = BarrierRootTokenResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[237]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15328,7 +15436,7 @@ func (x *BarrierRootTokenResponse) String() string {
 func (*BarrierRootTokenResponse) ProtoMessage() {}
 
 func (x *BarrierRootTokenResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[237]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15341,7 +15449,7 @@ func (x *BarrierRootTokenResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarrierRootTokenResponse.ProtoReflect.Descriptor instead.
 func (*BarrierRootTokenResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{237}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *BarrierRootTokenResponse) GetToken() string {
@@ -15369,7 +15477,7 @@ type CeremonyOfficer struct {
 
 func (x *CeremonyOfficer) Reset() {
 	*x = CeremonyOfficer{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[238]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15381,7 +15489,7 @@ func (x *CeremonyOfficer) String() string {
 func (*CeremonyOfficer) ProtoMessage() {}
 
 func (x *CeremonyOfficer) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[238]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15394,7 +15502,7 @@ func (x *CeremonyOfficer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyOfficer.ProtoReflect.Descriptor instead.
 func (*CeremonyOfficer) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{238}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *CeremonyOfficer) GetUsername() string {
@@ -15427,7 +15535,7 @@ type CeremonyInitializeRequest struct {
 
 func (x *CeremonyInitializeRequest) Reset() {
 	*x = CeremonyInitializeRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[239]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15439,7 +15547,7 @@ func (x *CeremonyInitializeRequest) String() string {
 func (*CeremonyInitializeRequest) ProtoMessage() {}
 
 func (x *CeremonyInitializeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[239]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15452,7 +15560,7 @@ func (x *CeremonyInitializeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyInitializeRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyInitializeRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{239}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *CeremonyInitializeRequest) GetSoPin() string {
@@ -15518,7 +15626,7 @@ type CeremonyInitializeResponse struct {
 
 func (x *CeremonyInitializeResponse) Reset() {
 	*x = CeremonyInitializeResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[240]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15530,7 +15638,7 @@ func (x *CeremonyInitializeResponse) String() string {
 func (*CeremonyInitializeResponse) ProtoMessage() {}
 
 func (x *CeremonyInitializeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[240]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15543,7 +15651,7 @@ func (x *CeremonyInitializeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyInitializeResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyInitializeResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{240}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *CeremonyInitializeResponse) GetSpkiPin() string {
@@ -15592,7 +15700,7 @@ type CeremonyStatusResponse struct {
 
 func (x *CeremonyStatusResponse) Reset() {
 	*x = CeremonyStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[241]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15604,7 +15712,7 @@ func (x *CeremonyStatusResponse) String() string {
 func (*CeremonyStatusResponse) ProtoMessage() {}
 
 func (x *CeremonyStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[241]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15617,7 +15725,7 @@ func (x *CeremonyStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyStatusResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{241}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{243}
 }
 
 func (x *CeremonyStatusResponse) GetState() string {
@@ -15644,7 +15752,7 @@ type CeremonyClaimCertBeginRequest struct {
 
 func (x *CeremonyClaimCertBeginRequest) Reset() {
 	*x = CeremonyClaimCertBeginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[242]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15656,7 +15764,7 @@ func (x *CeremonyClaimCertBeginRequest) String() string {
 func (*CeremonyClaimCertBeginRequest) ProtoMessage() {}
 
 func (x *CeremonyClaimCertBeginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[242]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15669,7 +15777,7 @@ func (x *CeremonyClaimCertBeginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyClaimCertBeginRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimCertBeginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{242}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *CeremonyClaimCertBeginRequest) GetUsername() string {
@@ -15690,7 +15798,7 @@ type CeremonyClaimCertBeginResponse struct {
 
 func (x *CeremonyClaimCertBeginResponse) Reset() {
 	*x = CeremonyClaimCertBeginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[243]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15702,7 +15810,7 @@ func (x *CeremonyClaimCertBeginResponse) String() string {
 func (*CeremonyClaimCertBeginResponse) ProtoMessage() {}
 
 func (x *CeremonyClaimCertBeginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[243]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15715,7 +15823,7 @@ func (x *CeremonyClaimCertBeginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyClaimCertBeginResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimCertBeginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{243}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{245}
 }
 
 func (x *CeremonyClaimCertBeginResponse) GetNonceHex() string {
@@ -15744,7 +15852,7 @@ type CeremonyClaimCertCompleteRequest struct {
 
 func (x *CeremonyClaimCertCompleteRequest) Reset() {
 	*x = CeremonyClaimCertCompleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[244]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15756,7 +15864,7 @@ func (x *CeremonyClaimCertCompleteRequest) String() string {
 func (*CeremonyClaimCertCompleteRequest) ProtoMessage() {}
 
 func (x *CeremonyClaimCertCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[244]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15769,7 +15877,7 @@ func (x *CeremonyClaimCertCompleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyClaimCertCompleteRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimCertCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{244}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *CeremonyClaimCertCompleteRequest) GetUsername() string {
@@ -15804,7 +15912,7 @@ type CeremonyClaimCertCompleteResponse struct {
 
 func (x *CeremonyClaimCertCompleteResponse) Reset() {
 	*x = CeremonyClaimCertCompleteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[245]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15816,7 +15924,7 @@ func (x *CeremonyClaimCertCompleteResponse) String() string {
 func (*CeremonyClaimCertCompleteResponse) ProtoMessage() {}
 
 func (x *CeremonyClaimCertCompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[245]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15829,7 +15937,7 @@ func (x *CeremonyClaimCertCompleteResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CeremonyClaimCertCompleteResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimCertCompleteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{245}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *CeremonyClaimCertCompleteResponse) GetCertPem() string {
@@ -15858,7 +15966,7 @@ type CeremonyBeginClaimShareRequest struct {
 
 func (x *CeremonyBeginClaimShareRequest) Reset() {
 	*x = CeremonyBeginClaimShareRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[246]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15870,7 +15978,7 @@ func (x *CeremonyBeginClaimShareRequest) String() string {
 func (*CeremonyBeginClaimShareRequest) ProtoMessage() {}
 
 func (x *CeremonyBeginClaimShareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[246]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15883,7 +15991,7 @@ func (x *CeremonyBeginClaimShareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyBeginClaimShareRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyBeginClaimShareRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{246}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *CeremonyBeginClaimShareRequest) GetUsername() string {
@@ -15905,7 +16013,7 @@ type CeremonyBeginClaimShareResponse struct {
 
 func (x *CeremonyBeginClaimShareResponse) Reset() {
 	*x = CeremonyBeginClaimShareResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[247]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15917,7 +16025,7 @@ func (x *CeremonyBeginClaimShareResponse) String() string {
 func (*CeremonyBeginClaimShareResponse) ProtoMessage() {}
 
 func (x *CeremonyBeginClaimShareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[247]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15930,7 +16038,7 @@ func (x *CeremonyBeginClaimShareResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyBeginClaimShareResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyBeginClaimShareResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{247}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *CeremonyBeginClaimShareResponse) GetNonceHex() string {
@@ -15960,7 +16068,7 @@ type CeremonyCompleteClaimShareRequest struct {
 
 func (x *CeremonyCompleteClaimShareRequest) Reset() {
 	*x = CeremonyCompleteClaimShareRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[248]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15972,7 +16080,7 @@ func (x *CeremonyCompleteClaimShareRequest) String() string {
 func (*CeremonyCompleteClaimShareRequest) ProtoMessage() {}
 
 func (x *CeremonyCompleteClaimShareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[248]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15985,7 +16093,7 @@ func (x *CeremonyCompleteClaimShareRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CeremonyCompleteClaimShareRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyCompleteClaimShareRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{248}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{250}
 }
 
 func (x *CeremonyCompleteClaimShareRequest) GetUsername() string {
@@ -16021,7 +16129,7 @@ type CeremonyCompleteClaimShareResponse struct {
 
 func (x *CeremonyCompleteClaimShareResponse) Reset() {
 	*x = CeremonyCompleteClaimShareResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[249]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16033,7 +16141,7 @@ func (x *CeremonyCompleteClaimShareResponse) String() string {
 func (*CeremonyCompleteClaimShareResponse) ProtoMessage() {}
 
 func (x *CeremonyCompleteClaimShareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[249]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16046,7 +16154,7 @@ func (x *CeremonyCompleteClaimShareResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use CeremonyCompleteClaimShareResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyCompleteClaimShareResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{249}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{251}
 }
 
 func (x *CeremonyCompleteClaimShareResponse) GetShareIndex() int32 {
@@ -16076,7 +16184,7 @@ type CeremonySignCSRRequest struct {
 
 func (x *CeremonySignCSRRequest) Reset() {
 	*x = CeremonySignCSRRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[250]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16088,7 +16196,7 @@ func (x *CeremonySignCSRRequest) String() string {
 func (*CeremonySignCSRRequest) ProtoMessage() {}
 
 func (x *CeremonySignCSRRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[250]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16101,7 +16209,7 @@ func (x *CeremonySignCSRRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonySignCSRRequest.ProtoReflect.Descriptor instead.
 func (*CeremonySignCSRRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{250}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *CeremonySignCSRRequest) GetUsername() string {
@@ -16142,7 +16250,7 @@ type CeremonySignCSRResponse struct {
 
 func (x *CeremonySignCSRResponse) Reset() {
 	*x = CeremonySignCSRResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[251]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16154,7 +16262,7 @@ func (x *CeremonySignCSRResponse) String() string {
 func (*CeremonySignCSRResponse) ProtoMessage() {}
 
 func (x *CeremonySignCSRResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[251]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16167,7 +16275,7 @@ func (x *CeremonySignCSRResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonySignCSRResponse.ProtoReflect.Descriptor instead.
 func (*CeremonySignCSRResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{251}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *CeremonySignCSRResponse) GetCertPem() string {
@@ -16193,7 +16301,7 @@ type CeremonyEnrollExternalOfficerRequest struct {
 
 func (x *CeremonyEnrollExternalOfficerRequest) Reset() {
 	*x = CeremonyEnrollExternalOfficerRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[252]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16205,7 +16313,7 @@ func (x *CeremonyEnrollExternalOfficerRequest) String() string {
 func (*CeremonyEnrollExternalOfficerRequest) ProtoMessage() {}
 
 func (x *CeremonyEnrollExternalOfficerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[252]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16218,7 +16326,7 @@ func (x *CeremonyEnrollExternalOfficerRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use CeremonyEnrollExternalOfficerRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyEnrollExternalOfficerRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{252}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *CeremonyEnrollExternalOfficerRequest) GetUsername() string {
@@ -16273,7 +16381,7 @@ type CeremonyEnrollExternalOfficerResponse struct {
 
 func (x *CeremonyEnrollExternalOfficerResponse) Reset() {
 	*x = CeremonyEnrollExternalOfficerResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[253]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16285,7 +16393,7 @@ func (x *CeremonyEnrollExternalOfficerResponse) String() string {
 func (*CeremonyEnrollExternalOfficerResponse) ProtoMessage() {}
 
 func (x *CeremonyEnrollExternalOfficerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[253]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16298,7 +16406,7 @@ func (x *CeremonyEnrollExternalOfficerResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use CeremonyEnrollExternalOfficerResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyEnrollExternalOfficerResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{253}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *CeremonyEnrollExternalOfficerResponse) GetSealedShare() string {
@@ -16341,7 +16449,7 @@ type TenantQuotas struct {
 
 func (x *TenantQuotas) Reset() {
 	*x = TenantQuotas{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[254]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16353,7 +16461,7 @@ func (x *TenantQuotas) String() string {
 func (*TenantQuotas) ProtoMessage() {}
 
 func (x *TenantQuotas) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[254]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16366,7 +16474,7 @@ func (x *TenantQuotas) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantQuotas.ProtoReflect.Descriptor instead.
 func (*TenantQuotas) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{254}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *TenantQuotas) GetMaxDatabases() int64 {
@@ -16503,7 +16611,7 @@ type TenantEntitlements struct {
 
 func (x *TenantEntitlements) Reset() {
 	*x = TenantEntitlements{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[255]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16515,7 +16623,7 @@ func (x *TenantEntitlements) String() string {
 func (*TenantEntitlements) ProtoMessage() {}
 
 func (x *TenantEntitlements) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[255]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16528,7 +16636,7 @@ func (x *TenantEntitlements) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantEntitlements.ProtoReflect.Descriptor instead.
 func (*TenantEntitlements) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{255}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *TenantEntitlements) GetAllowedIsolationModes() []string {
@@ -16593,7 +16701,7 @@ type TenantResponse struct {
 
 func (x *TenantResponse) Reset() {
 	*x = TenantResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[256]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[258]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16605,7 +16713,7 @@ func (x *TenantResponse) String() string {
 func (*TenantResponse) ProtoMessage() {}
 
 func (x *TenantResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[256]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[258]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16618,7 +16726,7 @@ func (x *TenantResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantResponse.ProtoReflect.Descriptor instead.
 func (*TenantResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{256}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{258}
 }
 
 func (x *TenantResponse) GetId() string {
@@ -16698,7 +16806,7 @@ type TenantCreateRequest struct {
 
 func (x *TenantCreateRequest) Reset() {
 	*x = TenantCreateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[257]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[259]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16710,7 +16818,7 @@ func (x *TenantCreateRequest) String() string {
 func (*TenantCreateRequest) ProtoMessage() {}
 
 func (x *TenantCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[257]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[259]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16723,7 +16831,7 @@ func (x *TenantCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantCreateRequest.ProtoReflect.Descriptor instead.
 func (*TenantCreateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{257}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{259}
 }
 
 func (x *TenantCreateRequest) GetId() string {
@@ -16771,7 +16879,7 @@ type TenantGetRequest struct {
 
 func (x *TenantGetRequest) Reset() {
 	*x = TenantGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[258]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[260]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16783,7 +16891,7 @@ func (x *TenantGetRequest) String() string {
 func (*TenantGetRequest) ProtoMessage() {}
 
 func (x *TenantGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[258]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[260]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16796,7 +16904,7 @@ func (x *TenantGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantGetRequest.ProtoReflect.Descriptor instead.
 func (*TenantGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{258}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{260}
 }
 
 func (x *TenantGetRequest) GetId() string {
@@ -16816,7 +16924,7 @@ type TenantListResponse struct {
 
 func (x *TenantListResponse) Reset() {
 	*x = TenantListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[259]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[261]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16828,7 +16936,7 @@ func (x *TenantListResponse) String() string {
 func (*TenantListResponse) ProtoMessage() {}
 
 func (x *TenantListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[259]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[261]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16841,7 +16949,7 @@ func (x *TenantListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantListResponse.ProtoReflect.Descriptor instead.
 func (*TenantListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{259}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{261}
 }
 
 func (x *TenantListResponse) GetTenants() []*TenantResponse {
@@ -16863,7 +16971,7 @@ type TenantUpdateRequest struct {
 
 func (x *TenantUpdateRequest) Reset() {
 	*x = TenantUpdateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[260]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[262]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16875,7 +16983,7 @@ func (x *TenantUpdateRequest) String() string {
 func (*TenantUpdateRequest) ProtoMessage() {}
 
 func (x *TenantUpdateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[260]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[262]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16888,7 +16996,7 @@ func (x *TenantUpdateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantUpdateRequest.ProtoReflect.Descriptor instead.
 func (*TenantUpdateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{260}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{262}
 }
 
 func (x *TenantUpdateRequest) GetId() string {
@@ -16922,7 +17030,7 @@ type TenantDeleteRequest struct {
 
 func (x *TenantDeleteRequest) Reset() {
 	*x = TenantDeleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[261]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[263]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16934,7 +17042,7 @@ func (x *TenantDeleteRequest) String() string {
 func (*TenantDeleteRequest) ProtoMessage() {}
 
 func (x *TenantDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[261]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[263]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16947,7 +17055,7 @@ func (x *TenantDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantDeleteRequest.ProtoReflect.Descriptor instead.
 func (*TenantDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{261}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{263}
 }
 
 func (x *TenantDeleteRequest) GetId() string {
@@ -16968,7 +17076,7 @@ type TenantUpdateQuotasRequest struct {
 
 func (x *TenantUpdateQuotasRequest) Reset() {
 	*x = TenantUpdateQuotasRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[262]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[264]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16980,7 +17088,7 @@ func (x *TenantUpdateQuotasRequest) String() string {
 func (*TenantUpdateQuotasRequest) ProtoMessage() {}
 
 func (x *TenantUpdateQuotasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[262]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[264]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16993,7 +17101,7 @@ func (x *TenantUpdateQuotasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantUpdateQuotasRequest.ProtoReflect.Descriptor instead.
 func (*TenantUpdateQuotasRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{262}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{264}
 }
 
 func (x *TenantUpdateQuotasRequest) GetId() string {
@@ -17021,7 +17129,7 @@ type TenantUpdateEntitlementsRequest struct {
 
 func (x *TenantUpdateEntitlementsRequest) Reset() {
 	*x = TenantUpdateEntitlementsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[263]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[265]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17033,7 +17141,7 @@ func (x *TenantUpdateEntitlementsRequest) String() string {
 func (*TenantUpdateEntitlementsRequest) ProtoMessage() {}
 
 func (x *TenantUpdateEntitlementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[263]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[265]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17046,7 +17154,7 @@ func (x *TenantUpdateEntitlementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantUpdateEntitlementsRequest.ProtoReflect.Descriptor instead.
 func (*TenantUpdateEntitlementsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{263}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{265}
 }
 
 func (x *TenantUpdateEntitlementsRequest) GetId() string {
@@ -17077,7 +17185,7 @@ type CredentialSubmitRequest struct {
 
 func (x *CredentialSubmitRequest) Reset() {
 	*x = CredentialSubmitRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[264]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[266]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17089,7 +17197,7 @@ func (x *CredentialSubmitRequest) String() string {
 func (*CredentialSubmitRequest) ProtoMessage() {}
 
 func (x *CredentialSubmitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[264]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[266]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17102,7 +17210,7 @@ func (x *CredentialSubmitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialSubmitRequest.ProtoReflect.Descriptor instead.
 func (*CredentialSubmitRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{264}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{266}
 }
 
 func (x *CredentialSubmitRequest) GetName() string {
@@ -17131,7 +17239,7 @@ type CredentialStoreRequest struct {
 
 func (x *CredentialStoreRequest) Reset() {
 	*x = CredentialStoreRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[265]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[267]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17143,7 +17251,7 @@ func (x *CredentialStoreRequest) String() string {
 func (*CredentialStoreRequest) ProtoMessage() {}
 
 func (x *CredentialStoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[265]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[267]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17156,7 +17264,7 @@ func (x *CredentialStoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialStoreRequest.ProtoReflect.Descriptor instead.
 func (*CredentialStoreRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{265}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{267}
 }
 
 func (x *CredentialStoreRequest) GetName() string {
@@ -17183,7 +17291,7 @@ type CredentialRetrieveRequest struct {
 
 func (x *CredentialRetrieveRequest) Reset() {
 	*x = CredentialRetrieveRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[266]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[268]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17195,7 +17303,7 @@ func (x *CredentialRetrieveRequest) String() string {
 func (*CredentialRetrieveRequest) ProtoMessage() {}
 
 func (x *CredentialRetrieveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[266]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[268]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17208,7 +17316,7 @@ func (x *CredentialRetrieveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialRetrieveRequest.ProtoReflect.Descriptor instead.
 func (*CredentialRetrieveRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{266}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{268}
 }
 
 func (x *CredentialRetrieveRequest) GetName() string {
@@ -17229,7 +17337,7 @@ type CredentialRetrieveResponse struct {
 
 func (x *CredentialRetrieveResponse) Reset() {
 	*x = CredentialRetrieveResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[267]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[269]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17241,7 +17349,7 @@ func (x *CredentialRetrieveResponse) String() string {
 func (*CredentialRetrieveResponse) ProtoMessage() {}
 
 func (x *CredentialRetrieveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[267]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[269]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17254,7 +17362,7 @@ func (x *CredentialRetrieveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialRetrieveResponse.ProtoReflect.Descriptor instead.
 func (*CredentialRetrieveResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{267}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{269}
 }
 
 func (x *CredentialRetrieveResponse) GetValue() []byte {
@@ -17275,7 +17383,7 @@ type CredentialStrategyResponse struct {
 
 func (x *CredentialStrategyResponse) Reset() {
 	*x = CredentialStrategyResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[268]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[270]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17287,7 +17395,7 @@ func (x *CredentialStrategyResponse) String() string {
 func (*CredentialStrategyResponse) ProtoMessage() {}
 
 func (x *CredentialStrategyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[268]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[270]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17300,7 +17408,7 @@ func (x *CredentialStrategyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialStrategyResponse.ProtoReflect.Descriptor instead.
 func (*CredentialStrategyResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{268}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{270}
 }
 
 func (x *CredentialStrategyResponse) GetStrategy() string {
@@ -17320,7 +17428,7 @@ type CredentialDeleteRequest struct {
 
 func (x *CredentialDeleteRequest) Reset() {
 	*x = CredentialDeleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[269]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[271]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17332,7 +17440,7 @@ func (x *CredentialDeleteRequest) String() string {
 func (*CredentialDeleteRequest) ProtoMessage() {}
 
 func (x *CredentialDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[269]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[271]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17345,7 +17453,7 @@ func (x *CredentialDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialDeleteRequest.ProtoReflect.Descriptor instead.
 func (*CredentialDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{269}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{271}
 }
 
 func (x *CredentialDeleteRequest) GetName() string {
@@ -17365,7 +17473,7 @@ type CredentialListRequest struct {
 
 func (x *CredentialListRequest) Reset() {
 	*x = CredentialListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[270]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[272]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17377,7 +17485,7 @@ func (x *CredentialListRequest) String() string {
 func (*CredentialListRequest) ProtoMessage() {}
 
 func (x *CredentialListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[270]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[272]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17390,7 +17498,7 @@ func (x *CredentialListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialListRequest.ProtoReflect.Descriptor instead.
 func (*CredentialListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{270}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{272}
 }
 
 // CredentialListResponse returns the sorted list of credential names.
@@ -17403,7 +17511,7 @@ type CredentialListResponse struct {
 
 func (x *CredentialListResponse) Reset() {
 	*x = CredentialListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[271]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[273]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17415,7 +17523,7 @@ func (x *CredentialListResponse) String() string {
 func (*CredentialListResponse) ProtoMessage() {}
 
 func (x *CredentialListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[271]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[273]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17428,7 +17536,7 @@ func (x *CredentialListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialListResponse.ProtoReflect.Descriptor instead.
 func (*CredentialListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{271}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{273}
 }
 
 func (x *CredentialListResponse) GetNames() []string {
@@ -17452,7 +17560,7 @@ type CredentialRotateRequest struct {
 
 func (x *CredentialRotateRequest) Reset() {
 	*x = CredentialRotateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[272]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[274]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17464,7 +17572,7 @@ func (x *CredentialRotateRequest) String() string {
 func (*CredentialRotateRequest) ProtoMessage() {}
 
 func (x *CredentialRotateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[272]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[274]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17477,7 +17585,7 @@ func (x *CredentialRotateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialRotateRequest.ProtoReflect.Descriptor instead.
 func (*CredentialRotateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{272}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{274}
 }
 
 func (x *CredentialRotateRequest) GetName() string {
@@ -17516,7 +17624,7 @@ type CredentialRotateResponse struct {
 
 func (x *CredentialRotateResponse) Reset() {
 	*x = CredentialRotateResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[273]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[275]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17528,7 +17636,7 @@ func (x *CredentialRotateResponse) String() string {
 func (*CredentialRotateResponse) ProtoMessage() {}
 
 func (x *CredentialRotateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[273]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[275]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17541,7 +17649,7 @@ func (x *CredentialRotateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialRotateResponse.ProtoReflect.Descriptor instead.
 func (*CredentialRotateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{273}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{275}
 }
 
 func (x *CredentialRotateResponse) GetName() string {
@@ -17584,7 +17692,7 @@ type CredentialRetrieveVersionRequest struct {
 
 func (x *CredentialRetrieveVersionRequest) Reset() {
 	*x = CredentialRetrieveVersionRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[274]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[276]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17596,7 +17704,7 @@ func (x *CredentialRetrieveVersionRequest) String() string {
 func (*CredentialRetrieveVersionRequest) ProtoMessage() {}
 
 func (x *CredentialRetrieveVersionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[274]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[276]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17609,7 +17717,7 @@ func (x *CredentialRetrieveVersionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialRetrieveVersionRequest.ProtoReflect.Descriptor instead.
 func (*CredentialRetrieveVersionRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{274}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{276}
 }
 
 func (x *CredentialRetrieveVersionRequest) GetName() string {
@@ -17637,7 +17745,7 @@ type CredentialRetrieveVersionResponse struct {
 
 func (x *CredentialRetrieveVersionResponse) Reset() {
 	*x = CredentialRetrieveVersionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[275]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[277]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17649,7 +17757,7 @@ func (x *CredentialRetrieveVersionResponse) String() string {
 func (*CredentialRetrieveVersionResponse) ProtoMessage() {}
 
 func (x *CredentialRetrieveVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[275]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[277]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17662,7 +17770,7 @@ func (x *CredentialRetrieveVersionResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CredentialRetrieveVersionResponse.ProtoReflect.Descriptor instead.
 func (*CredentialRetrieveVersionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{275}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{277}
 }
 
 func (x *CredentialRetrieveVersionResponse) GetValue() []byte {
@@ -17683,7 +17791,7 @@ type CredentialListVersionsRequest struct {
 
 func (x *CredentialListVersionsRequest) Reset() {
 	*x = CredentialListVersionsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[276]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[278]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17695,7 +17803,7 @@ func (x *CredentialListVersionsRequest) String() string {
 func (*CredentialListVersionsRequest) ProtoMessage() {}
 
 func (x *CredentialListVersionsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[276]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[278]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17708,7 +17816,7 @@ func (x *CredentialListVersionsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialListVersionsRequest.ProtoReflect.Descriptor instead.
 func (*CredentialListVersionsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{276}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{278}
 }
 
 func (x *CredentialListVersionsRequest) GetName() string {
@@ -17733,7 +17841,7 @@ type CredentialVersionInfo struct {
 
 func (x *CredentialVersionInfo) Reset() {
 	*x = CredentialVersionInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[277]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[279]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17745,7 +17853,7 @@ func (x *CredentialVersionInfo) String() string {
 func (*CredentialVersionInfo) ProtoMessage() {}
 
 func (x *CredentialVersionInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[277]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[279]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17758,7 +17866,7 @@ func (x *CredentialVersionInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialVersionInfo.ProtoReflect.Descriptor instead.
 func (*CredentialVersionInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{277}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{279}
 }
 
 func (x *CredentialVersionInfo) GetVersion() uint64 {
@@ -17801,7 +17909,7 @@ type CredentialListVersionsResponse struct {
 
 func (x *CredentialListVersionsResponse) Reset() {
 	*x = CredentialListVersionsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[278]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[280]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17813,7 +17921,7 @@ func (x *CredentialListVersionsResponse) String() string {
 func (*CredentialListVersionsResponse) ProtoMessage() {}
 
 func (x *CredentialListVersionsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[278]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[280]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17826,7 +17934,7 @@ func (x *CredentialListVersionsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialListVersionsResponse.ProtoReflect.Descriptor instead.
 func (*CredentialListVersionsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{278}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{280}
 }
 
 func (x *CredentialListVersionsResponse) GetName() string {
@@ -17854,7 +17962,7 @@ type CredentialGCRequest struct {
 
 func (x *CredentialGCRequest) Reset() {
 	*x = CredentialGCRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[279]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[281]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17866,7 +17974,7 @@ func (x *CredentialGCRequest) String() string {
 func (*CredentialGCRequest) ProtoMessage() {}
 
 func (x *CredentialGCRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[279]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[281]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17879,7 +17987,7 @@ func (x *CredentialGCRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialGCRequest.ProtoReflect.Descriptor instead.
 func (*CredentialGCRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{279}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{281}
 }
 
 func (x *CredentialGCRequest) GetName() string {
@@ -17899,7 +18007,7 @@ type CredentialGCResponse struct {
 
 func (x *CredentialGCResponse) Reset() {
 	*x = CredentialGCResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[280]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[282]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17911,7 +18019,7 @@ func (x *CredentialGCResponse) String() string {
 func (*CredentialGCResponse) ProtoMessage() {}
 
 func (x *CredentialGCResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[280]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[282]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17924,7 +18032,7 @@ func (x *CredentialGCResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CredentialGCResponse.ProtoReflect.Descriptor instead.
 func (*CredentialGCResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{280}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{282}
 }
 
 func (x *CredentialGCResponse) GetReaped() int32 {
@@ -17950,7 +18058,7 @@ type BackupCreateRequest struct {
 
 func (x *BackupCreateRequest) Reset() {
 	*x = BackupCreateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[281]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[283]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17962,7 +18070,7 @@ func (x *BackupCreateRequest) String() string {
 func (*BackupCreateRequest) ProtoMessage() {}
 
 func (x *BackupCreateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[281]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[283]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17975,7 +18083,7 @@ func (x *BackupCreateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupCreateRequest.ProtoReflect.Descriptor instead.
 func (*BackupCreateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{281}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{283}
 }
 
 func (x *BackupCreateRequest) GetDestination() string {
@@ -18041,7 +18149,7 @@ type BackupInfo struct {
 
 func (x *BackupInfo) Reset() {
 	*x = BackupInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[282]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[284]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18053,7 +18161,7 @@ func (x *BackupInfo) String() string {
 func (*BackupInfo) ProtoMessage() {}
 
 func (x *BackupInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[282]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[284]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18066,7 +18174,7 @@ func (x *BackupInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupInfo.ProtoReflect.Descriptor instead.
 func (*BackupInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{282}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{284}
 }
 
 func (x *BackupInfo) GetId() string {
@@ -18164,7 +18272,7 @@ type BackupListResponse struct {
 
 func (x *BackupListResponse) Reset() {
 	*x = BackupListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[283]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[285]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18176,7 +18284,7 @@ func (x *BackupListResponse) String() string {
 func (*BackupListResponse) ProtoMessage() {}
 
 func (x *BackupListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[283]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[285]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18189,7 +18297,7 @@ func (x *BackupListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupListResponse.ProtoReflect.Descriptor instead.
 func (*BackupListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{283}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{285}
 }
 
 func (x *BackupListResponse) GetBackups() []*BackupInfo {
@@ -18209,7 +18317,7 @@ type BackupGetRequest struct {
 
 func (x *BackupGetRequest) Reset() {
 	*x = BackupGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[284]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[286]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18221,7 +18329,7 @@ func (x *BackupGetRequest) String() string {
 func (*BackupGetRequest) ProtoMessage() {}
 
 func (x *BackupGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[284]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[286]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18234,7 +18342,7 @@ func (x *BackupGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupGetRequest.ProtoReflect.Descriptor instead.
 func (*BackupGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{284}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{286}
 }
 
 func (x *BackupGetRequest) GetId() string {
@@ -18254,7 +18362,7 @@ type BackupDeleteRequest struct {
 
 func (x *BackupDeleteRequest) Reset() {
 	*x = BackupDeleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[285]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[287]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18266,7 +18374,7 @@ func (x *BackupDeleteRequest) String() string {
 func (*BackupDeleteRequest) ProtoMessage() {}
 
 func (x *BackupDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[285]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[287]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18279,7 +18387,7 @@ func (x *BackupDeleteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupDeleteRequest.ProtoReflect.Descriptor instead.
 func (*BackupDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{285}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{287}
 }
 
 func (x *BackupDeleteRequest) GetId() string {
@@ -18303,7 +18411,7 @@ type BackupRestoreRequest struct {
 
 func (x *BackupRestoreRequest) Reset() {
 	*x = BackupRestoreRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[286]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[288]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18315,7 +18423,7 @@ func (x *BackupRestoreRequest) String() string {
 func (*BackupRestoreRequest) ProtoMessage() {}
 
 func (x *BackupRestoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[286]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[288]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18328,7 +18436,7 @@ func (x *BackupRestoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRestoreRequest.ProtoReflect.Descriptor instead.
 func (*BackupRestoreRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{286}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{288}
 }
 
 func (x *BackupRestoreRequest) GetBackupId() string {
@@ -18370,7 +18478,7 @@ type ShardError struct {
 
 func (x *ShardError) Reset() {
 	*x = ShardError{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[287]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[289]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18382,7 +18490,7 @@ func (x *ShardError) String() string {
 func (*ShardError) ProtoMessage() {}
 
 func (x *ShardError) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[287]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[289]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18395,7 +18503,7 @@ func (x *ShardError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardError.ProtoReflect.Descriptor instead.
 func (*ShardError) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{287}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{289}
 }
 
 func (x *ShardError) GetShardId() uint64 {
@@ -18425,7 +18533,7 @@ type BackupRestoreResponse struct {
 
 func (x *BackupRestoreResponse) Reset() {
 	*x = BackupRestoreResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[288]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[290]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18437,7 +18545,7 @@ func (x *BackupRestoreResponse) String() string {
 func (*BackupRestoreResponse) ProtoMessage() {}
 
 func (x *BackupRestoreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[288]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[290]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18450,7 +18558,7 @@ func (x *BackupRestoreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRestoreResponse.ProtoReflect.Descriptor instead.
 func (*BackupRestoreResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{288}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{290}
 }
 
 func (x *BackupRestoreResponse) GetBackupId() string {
@@ -18491,7 +18599,7 @@ type BackupVerifyRequest struct {
 
 func (x *BackupVerifyRequest) Reset() {
 	*x = BackupVerifyRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[289]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[291]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18503,7 +18611,7 @@ func (x *BackupVerifyRequest) String() string {
 func (*BackupVerifyRequest) ProtoMessage() {}
 
 func (x *BackupVerifyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[289]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[291]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18516,7 +18624,7 @@ func (x *BackupVerifyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupVerifyRequest.ProtoReflect.Descriptor instead.
 func (*BackupVerifyRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{289}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{291}
 }
 
 func (x *BackupVerifyRequest) GetId() string {
@@ -18540,7 +18648,7 @@ type BackupVerifyResponse struct {
 
 func (x *BackupVerifyResponse) Reset() {
 	*x = BackupVerifyResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[290]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[292]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18552,7 +18660,7 @@ func (x *BackupVerifyResponse) String() string {
 func (*BackupVerifyResponse) ProtoMessage() {}
 
 func (x *BackupVerifyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[290]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[292]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18565,7 +18673,7 @@ func (x *BackupVerifyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupVerifyResponse.ProtoReflect.Descriptor instead.
 func (*BackupVerifyResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{290}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{292}
 }
 
 func (x *BackupVerifyResponse) GetValid() bool {
@@ -18613,7 +18721,7 @@ type RebalanceShardStatsRequest struct {
 
 func (x *RebalanceShardStatsRequest) Reset() {
 	*x = RebalanceShardStatsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[291]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[293]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18625,7 +18733,7 @@ func (x *RebalanceShardStatsRequest) String() string {
 func (*RebalanceShardStatsRequest) ProtoMessage() {}
 
 func (x *RebalanceShardStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[291]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[293]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18638,7 +18746,7 @@ func (x *RebalanceShardStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalanceShardStatsRequest.ProtoReflect.Descriptor instead.
 func (*RebalanceShardStatsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{291}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{293}
 }
 
 func (x *RebalanceShardStatsRequest) GetShardId() uint64 {
@@ -18662,7 +18770,7 @@ type ShardStats struct {
 
 func (x *ShardStats) Reset() {
 	*x = ShardStats{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[292]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[294]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18674,7 +18782,7 @@ func (x *ShardStats) String() string {
 func (*ShardStats) ProtoMessage() {}
 
 func (x *ShardStats) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[292]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[294]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18687,7 +18795,7 @@ func (x *ShardStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShardStats.ProtoReflect.Descriptor instead.
 func (*ShardStats) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{292}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{294}
 }
 
 func (x *ShardStats) GetShardId() uint64 {
@@ -18738,7 +18846,7 @@ type RebalancePlanRequest struct {
 
 func (x *RebalancePlanRequest) Reset() {
 	*x = RebalancePlanRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[293]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[295]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18750,7 +18858,7 @@ func (x *RebalancePlanRequest) String() string {
 func (*RebalancePlanRequest) ProtoMessage() {}
 
 func (x *RebalancePlanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[293]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[295]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18763,7 +18871,7 @@ func (x *RebalancePlanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalancePlanRequest.ProtoReflect.Descriptor instead.
 func (*RebalancePlanRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{293}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{295}
 }
 
 func (x *RebalancePlanRequest) GetMaxMoves() int32 {
@@ -18800,7 +18908,7 @@ type RebalanceMove struct {
 
 func (x *RebalanceMove) Reset() {
 	*x = RebalanceMove{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[294]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[296]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18812,7 +18920,7 @@ func (x *RebalanceMove) String() string {
 func (*RebalanceMove) ProtoMessage() {}
 
 func (x *RebalanceMove) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[294]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[296]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18825,7 +18933,7 @@ func (x *RebalanceMove) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalanceMove.ProtoReflect.Descriptor instead.
 func (*RebalanceMove) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{294}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{296}
 }
 
 func (x *RebalanceMove) GetShardId() uint64 {
@@ -18869,7 +18977,7 @@ type RebalancePlan struct {
 
 func (x *RebalancePlan) Reset() {
 	*x = RebalancePlan{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[295]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[297]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18881,7 +18989,7 @@ func (x *RebalancePlan) String() string {
 func (*RebalancePlan) ProtoMessage() {}
 
 func (x *RebalancePlan) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[295]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[297]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18894,7 +19002,7 @@ func (x *RebalancePlan) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalancePlan.ProtoReflect.Descriptor instead.
 func (*RebalancePlan) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{295}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{297}
 }
 
 func (x *RebalancePlan) GetMoves() []*RebalanceMove {
@@ -18931,7 +19039,7 @@ type RebalanceExecutionResponse struct {
 
 func (x *RebalanceExecutionResponse) Reset() {
 	*x = RebalanceExecutionResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[296]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[298]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18943,7 +19051,7 @@ func (x *RebalanceExecutionResponse) String() string {
 func (*RebalanceExecutionResponse) ProtoMessage() {}
 
 func (x *RebalanceExecutionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[296]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[298]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18956,7 +19064,7 @@ func (x *RebalanceExecutionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebalanceExecutionResponse.ProtoReflect.Descriptor instead.
 func (*RebalanceExecutionResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{296}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{298}
 }
 
 func (x *RebalanceExecutionResponse) GetMovesCompleted() int32 {
@@ -19002,7 +19110,7 @@ type NodeLoad struct {
 
 func (x *NodeLoad) Reset() {
 	*x = NodeLoad{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[297]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[299]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19014,7 +19122,7 @@ func (x *NodeLoad) String() string {
 func (*NodeLoad) ProtoMessage() {}
 
 func (x *NodeLoad) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[297]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[299]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19027,7 +19135,7 @@ func (x *NodeLoad) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeLoad.ProtoReflect.Descriptor instead.
 func (*NodeLoad) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{297}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{299}
 }
 
 func (x *NodeLoad) GetNodeId() string {
@@ -19084,7 +19192,7 @@ type ImbalanceReport struct {
 
 func (x *ImbalanceReport) Reset() {
 	*x = ImbalanceReport{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[298]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[300]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19096,7 +19204,7 @@ func (x *ImbalanceReport) String() string {
 func (*ImbalanceReport) ProtoMessage() {}
 
 func (x *ImbalanceReport) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[298]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[300]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19109,7 +19217,7 @@ func (x *ImbalanceReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImbalanceReport.ProtoReflect.Descriptor instead.
 func (*ImbalanceReport) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{298}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{300}
 }
 
 func (x *ImbalanceReport) GetNodes() []*NodeLoad {
@@ -19144,7 +19252,7 @@ type EmbeddingVector struct {
 
 func (x *EmbeddingVector) Reset() {
 	*x = EmbeddingVector{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[299]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[301]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19156,7 +19264,7 @@ func (x *EmbeddingVector) String() string {
 func (*EmbeddingVector) ProtoMessage() {}
 
 func (x *EmbeddingVector) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[299]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[301]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19169,7 +19277,7 @@ func (x *EmbeddingVector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingVector.ProtoReflect.Descriptor instead.
 func (*EmbeddingVector) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{299}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{301}
 }
 
 func (x *EmbeddingVector) GetValues() []float32 {
@@ -19190,7 +19298,7 @@ type EmbeddingUsage struct {
 
 func (x *EmbeddingUsage) Reset() {
 	*x = EmbeddingUsage{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[300]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[302]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19202,7 +19310,7 @@ func (x *EmbeddingUsage) String() string {
 func (*EmbeddingUsage) ProtoMessage() {}
 
 func (x *EmbeddingUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[300]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[302]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19215,7 +19323,7 @@ func (x *EmbeddingUsage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingUsage.ProtoReflect.Descriptor instead.
 func (*EmbeddingUsage) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{300}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{302}
 }
 
 func (x *EmbeddingUsage) GetPromptTokens() int32 {
@@ -19244,7 +19352,7 @@ type EmbeddingModelInfo struct {
 
 func (x *EmbeddingModelInfo) Reset() {
 	*x = EmbeddingModelInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[301]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[303]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19256,7 +19364,7 @@ func (x *EmbeddingModelInfo) String() string {
 func (*EmbeddingModelInfo) ProtoMessage() {}
 
 func (x *EmbeddingModelInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[301]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[303]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19269,7 +19377,7 @@ func (x *EmbeddingModelInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbeddingModelInfo.ProtoReflect.Descriptor instead.
 func (*EmbeddingModelInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{301}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{303}
 }
 
 func (x *EmbeddingModelInfo) GetName() string {
@@ -19306,7 +19414,7 @@ type EmbedRequest struct {
 
 func (x *EmbedRequest) Reset() {
 	*x = EmbedRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[302]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[304]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19318,7 +19426,7 @@ func (x *EmbedRequest) String() string {
 func (*EmbedRequest) ProtoMessage() {}
 
 func (x *EmbedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[302]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[304]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19331,7 +19439,7 @@ func (x *EmbedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbedRequest.ProtoReflect.Descriptor instead.
 func (*EmbedRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{302}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{304}
 }
 
 func (x *EmbedRequest) GetTexts() []string {
@@ -19368,7 +19476,7 @@ type EmbedResponse struct {
 
 func (x *EmbedResponse) Reset() {
 	*x = EmbedResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[303]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[305]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19380,7 +19488,7 @@ func (x *EmbedResponse) String() string {
 func (*EmbedResponse) ProtoMessage() {}
 
 func (x *EmbedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[303]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[305]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19393,7 +19501,7 @@ func (x *EmbedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmbedResponse.ProtoReflect.Descriptor instead.
 func (*EmbedResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{303}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{305}
 }
 
 func (x *EmbedResponse) GetEmbeddings() []*EmbeddingVector {
@@ -19438,7 +19546,7 @@ type BatchEmbedRequest struct {
 
 func (x *BatchEmbedRequest) Reset() {
 	*x = BatchEmbedRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[304]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[306]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19450,7 +19558,7 @@ func (x *BatchEmbedRequest) String() string {
 func (*BatchEmbedRequest) ProtoMessage() {}
 
 func (x *BatchEmbedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[304]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[306]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19463,7 +19571,7 @@ func (x *BatchEmbedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEmbedRequest.ProtoReflect.Descriptor instead.
 func (*BatchEmbedRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{304}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{306}
 }
 
 func (x *BatchEmbedRequest) GetTexts() []string {
@@ -19506,7 +19614,7 @@ type BatchEmbedResponse struct {
 
 func (x *BatchEmbedResponse) Reset() {
 	*x = BatchEmbedResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[305]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[307]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19518,7 +19626,7 @@ func (x *BatchEmbedResponse) String() string {
 func (*BatchEmbedResponse) ProtoMessage() {}
 
 func (x *BatchEmbedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[305]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[307]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19531,7 +19639,7 @@ func (x *BatchEmbedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEmbedResponse.ProtoReflect.Descriptor instead.
 func (*BatchEmbedResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{305}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{307}
 }
 
 func (x *BatchEmbedResponse) GetEmbeddings() []*EmbeddingVector {
@@ -19565,7 +19673,7 @@ type ListEmbeddingModelsRequest struct {
 
 func (x *ListEmbeddingModelsRequest) Reset() {
 	*x = ListEmbeddingModelsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[306]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[308]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19577,7 +19685,7 @@ func (x *ListEmbeddingModelsRequest) String() string {
 func (*ListEmbeddingModelsRequest) ProtoMessage() {}
 
 func (x *ListEmbeddingModelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[306]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[308]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19590,7 +19698,7 @@ func (x *ListEmbeddingModelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEmbeddingModelsRequest.ProtoReflect.Descriptor instead.
 func (*ListEmbeddingModelsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{306}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{308}
 }
 
 func (x *ListEmbeddingModelsRequest) GetProvider() string {
@@ -19610,7 +19718,7 @@ type ListEmbeddingModelsResponse struct {
 
 func (x *ListEmbeddingModelsResponse) Reset() {
 	*x = ListEmbeddingModelsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[307]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[309]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19622,7 +19730,7 @@ func (x *ListEmbeddingModelsResponse) String() string {
 func (*ListEmbeddingModelsResponse) ProtoMessage() {}
 
 func (x *ListEmbeddingModelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[307]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[309]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19635,7 +19743,7 @@ func (x *ListEmbeddingModelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEmbeddingModelsResponse.ProtoReflect.Descriptor instead.
 func (*ListEmbeddingModelsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{307}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{309}
 }
 
 func (x *ListEmbeddingModelsResponse) GetModels() []*EmbeddingModelInfo {
@@ -19658,7 +19766,7 @@ type ChunkConfig struct {
 
 func (x *ChunkConfig) Reset() {
 	*x = ChunkConfig{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[308]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[310]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19670,7 +19778,7 @@ func (x *ChunkConfig) String() string {
 func (*ChunkConfig) ProtoMessage() {}
 
 func (x *ChunkConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[308]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[310]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19683,7 +19791,7 @@ func (x *ChunkConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChunkConfig.ProtoReflect.Descriptor instead.
 func (*ChunkConfig) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{308}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{310}
 }
 
 func (x *ChunkConfig) GetStrategy() string {
@@ -19730,7 +19838,7 @@ type RAGIngestDocumentRequest struct {
 
 func (x *RAGIngestDocumentRequest) Reset() {
 	*x = RAGIngestDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[309]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[311]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19742,7 +19850,7 @@ func (x *RAGIngestDocumentRequest) String() string {
 func (*RAGIngestDocumentRequest) ProtoMessage() {}
 
 func (x *RAGIngestDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[309]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[311]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19755,7 +19863,7 @@ func (x *RAGIngestDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGIngestDocumentRequest.ProtoReflect.Descriptor instead.
 func (*RAGIngestDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{309}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{311}
 }
 
 func (x *RAGIngestDocumentRequest) GetDocumentId() string {
@@ -19819,7 +19927,7 @@ type RAGIngestDocumentResponse struct {
 
 func (x *RAGIngestDocumentResponse) Reset() {
 	*x = RAGIngestDocumentResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[310]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[312]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19831,7 +19939,7 @@ func (x *RAGIngestDocumentResponse) String() string {
 func (*RAGIngestDocumentResponse) ProtoMessage() {}
 
 func (x *RAGIngestDocumentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[310]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[312]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19844,7 +19952,7 @@ func (x *RAGIngestDocumentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGIngestDocumentResponse.ProtoReflect.Descriptor instead.
 func (*RAGIngestDocumentResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{310}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{312}
 }
 
 func (x *RAGIngestDocumentResponse) GetDocumentId() string {
@@ -19883,7 +19991,7 @@ type RAGQueryRequest struct {
 
 func (x *RAGQueryRequest) Reset() {
 	*x = RAGQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[311]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[313]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19895,7 +20003,7 @@ func (x *RAGQueryRequest) String() string {
 func (*RAGQueryRequest) ProtoMessage() {}
 
 func (x *RAGQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[311]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[313]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19908,7 +20016,7 @@ func (x *RAGQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGQueryRequest.ProtoReflect.Descriptor instead.
 func (*RAGQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{311}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{313}
 }
 
 func (x *RAGQueryRequest) GetQuery() string {
@@ -19967,7 +20075,7 @@ type RAGQueryResult struct {
 
 func (x *RAGQueryResult) Reset() {
 	*x = RAGQueryResult{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[312]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[314]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19979,7 +20087,7 @@ func (x *RAGQueryResult) String() string {
 func (*RAGQueryResult) ProtoMessage() {}
 
 func (x *RAGQueryResult) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[312]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[314]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19992,7 +20100,7 @@ func (x *RAGQueryResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGQueryResult.ProtoReflect.Descriptor instead.
 func (*RAGQueryResult) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{312}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{314}
 }
 
 func (x *RAGQueryResult) GetChunkText() string {
@@ -20040,7 +20148,7 @@ type RAGQueryResponse struct {
 
 func (x *RAGQueryResponse) Reset() {
 	*x = RAGQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[313]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[315]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20052,7 +20160,7 @@ func (x *RAGQueryResponse) String() string {
 func (*RAGQueryResponse) ProtoMessage() {}
 
 func (x *RAGQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[313]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[315]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20065,7 +20173,7 @@ func (x *RAGQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGQueryResponse.ProtoReflect.Descriptor instead.
 func (*RAGQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{313}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{315}
 }
 
 func (x *RAGQueryResponse) GetResults() []*RAGQueryResult {
@@ -20086,7 +20194,7 @@ type RAGDeleteDocumentRequest struct {
 
 func (x *RAGDeleteDocumentRequest) Reset() {
 	*x = RAGDeleteDocumentRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[314]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[316]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20098,7 +20206,7 @@ func (x *RAGDeleteDocumentRequest) String() string {
 func (*RAGDeleteDocumentRequest) ProtoMessage() {}
 
 func (x *RAGDeleteDocumentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[314]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[316]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20111,7 +20219,7 @@ func (x *RAGDeleteDocumentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGDeleteDocumentRequest.ProtoReflect.Descriptor instead.
 func (*RAGDeleteDocumentRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{314}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{316}
 }
 
 func (x *RAGDeleteDocumentRequest) GetDocumentId() string {
@@ -20139,7 +20247,7 @@ type RAGDeleteDocumentResponse struct {
 
 func (x *RAGDeleteDocumentResponse) Reset() {
 	*x = RAGDeleteDocumentResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[315]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[317]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20151,7 +20259,7 @@ func (x *RAGDeleteDocumentResponse) String() string {
 func (*RAGDeleteDocumentResponse) ProtoMessage() {}
 
 func (x *RAGDeleteDocumentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[315]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[317]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20164,7 +20272,7 @@ func (x *RAGDeleteDocumentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGDeleteDocumentResponse.ProtoReflect.Descriptor instead.
 func (*RAGDeleteDocumentResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{315}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{317}
 }
 
 func (x *RAGDeleteDocumentResponse) GetDocumentId() string {
@@ -20194,7 +20302,7 @@ type RAGListDocumentsRequest struct {
 
 func (x *RAGListDocumentsRequest) Reset() {
 	*x = RAGListDocumentsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[316]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[318]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20206,7 +20314,7 @@ func (x *RAGListDocumentsRequest) String() string {
 func (*RAGListDocumentsRequest) ProtoMessage() {}
 
 func (x *RAGListDocumentsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[316]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[318]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20219,7 +20327,7 @@ func (x *RAGListDocumentsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGListDocumentsRequest.ProtoReflect.Descriptor instead.
 func (*RAGListDocumentsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{316}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{318}
 }
 
 func (x *RAGListDocumentsRequest) GetNamespace() string {
@@ -20256,7 +20364,7 @@ type RAGDocumentInfo struct {
 
 func (x *RAGDocumentInfo) Reset() {
 	*x = RAGDocumentInfo{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[317]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[319]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20268,7 +20376,7 @@ func (x *RAGDocumentInfo) String() string {
 func (*RAGDocumentInfo) ProtoMessage() {}
 
 func (x *RAGDocumentInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[317]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[319]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20281,7 +20389,7 @@ func (x *RAGDocumentInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGDocumentInfo.ProtoReflect.Descriptor instead.
 func (*RAGDocumentInfo) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{317}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{319}
 }
 
 func (x *RAGDocumentInfo) GetId() string {
@@ -20323,7 +20431,7 @@ type RAGListDocumentsResponse struct {
 
 func (x *RAGListDocumentsResponse) Reset() {
 	*x = RAGListDocumentsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[318]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[320]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20335,7 +20443,7 @@ func (x *RAGListDocumentsResponse) String() string {
 func (*RAGListDocumentsResponse) ProtoMessage() {}
 
 func (x *RAGListDocumentsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[318]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[320]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20348,7 +20456,7 @@ func (x *RAGListDocumentsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RAGListDocumentsResponse.ProtoReflect.Descriptor instead.
 func (*RAGListDocumentsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{318}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{320}
 }
 
 func (x *RAGListDocumentsResponse) GetDocuments() []*RAGDocumentInfo {
@@ -20375,7 +20483,7 @@ type DatabaseSealRequest struct {
 
 func (x *DatabaseSealRequest) Reset() {
 	*x = DatabaseSealRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[319]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[321]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20387,7 +20495,7 @@ func (x *DatabaseSealRequest) String() string {
 func (*DatabaseSealRequest) ProtoMessage() {}
 
 func (x *DatabaseSealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[319]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[321]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20400,7 +20508,7 @@ func (x *DatabaseSealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseSealRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseSealRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{319}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{321}
 }
 
 func (x *DatabaseSealRequest) GetName() string {
@@ -20421,7 +20529,7 @@ type DatabaseUnsealRequest struct {
 
 func (x *DatabaseUnsealRequest) Reset() {
 	*x = DatabaseUnsealRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[320]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[322]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20433,7 +20541,7 @@ func (x *DatabaseUnsealRequest) String() string {
 func (*DatabaseUnsealRequest) ProtoMessage() {}
 
 func (x *DatabaseUnsealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[320]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[322]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20446,7 +20554,7 @@ func (x *DatabaseUnsealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseUnsealRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseUnsealRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{320}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{322}
 }
 
 func (x *DatabaseUnsealRequest) GetName() string {
@@ -20473,7 +20581,7 @@ type DatabaseBarrierStatusRequest struct {
 
 func (x *DatabaseBarrierStatusRequest) Reset() {
 	*x = DatabaseBarrierStatusRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[321]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[323]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20485,7 +20593,7 @@ func (x *DatabaseBarrierStatusRequest) String() string {
 func (*DatabaseBarrierStatusRequest) ProtoMessage() {}
 
 func (x *DatabaseBarrierStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[321]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[323]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20498,7 +20606,7 @@ func (x *DatabaseBarrierStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseBarrierStatusRequest.ProtoReflect.Descriptor instead.
 func (*DatabaseBarrierStatusRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{321}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{323}
 }
 
 func (x *DatabaseBarrierStatusRequest) GetName() string {
@@ -20522,7 +20630,7 @@ type DatabaseBarrierStatusResponse struct {
 
 func (x *DatabaseBarrierStatusResponse) Reset() {
 	*x = DatabaseBarrierStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[322]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[324]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20534,7 +20642,7 @@ func (x *DatabaseBarrierStatusResponse) String() string {
 func (*DatabaseBarrierStatusResponse) ProtoMessage() {}
 
 func (x *DatabaseBarrierStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[322]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[324]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20547,7 +20655,7 @@ func (x *DatabaseBarrierStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DatabaseBarrierStatusResponse.ProtoReflect.Descriptor instead.
 func (*DatabaseBarrierStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{322}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{324}
 }
 
 func (x *DatabaseBarrierStatusResponse) GetSealed() bool {
@@ -20592,7 +20700,7 @@ type SQLQueryRequest struct {
 
 func (x *SQLQueryRequest) Reset() {
 	*x = SQLQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[323]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[325]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20604,7 +20712,7 @@ func (x *SQLQueryRequest) String() string {
 func (*SQLQueryRequest) ProtoMessage() {}
 
 func (x *SQLQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[323]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[325]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20617,7 +20725,7 @@ func (x *SQLQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SQLQueryRequest.ProtoReflect.Descriptor instead.
 func (*SQLQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{323}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{325}
 }
 
 func (x *SQLQueryRequest) GetQuery() string {
@@ -20652,7 +20760,7 @@ type SQLRow struct {
 
 func (x *SQLRow) Reset() {
 	*x = SQLRow{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[324]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[326]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20664,7 +20772,7 @@ func (x *SQLRow) String() string {
 func (*SQLRow) ProtoMessage() {}
 
 func (x *SQLRow) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[324]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[326]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20677,7 +20785,7 @@ func (x *SQLRow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SQLRow.ProtoReflect.Descriptor instead.
 func (*SQLRow) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{324}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{326}
 }
 
 func (x *SQLRow) GetValues() map[string]string {
@@ -20701,7 +20809,7 @@ type SQLQueryResponse struct {
 
 func (x *SQLQueryResponse) Reset() {
 	*x = SQLQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[325]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[327]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20713,7 +20821,7 @@ func (x *SQLQueryResponse) String() string {
 func (*SQLQueryResponse) ProtoMessage() {}
 
 func (x *SQLQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[325]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[327]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20726,7 +20834,7 @@ func (x *SQLQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SQLQueryResponse.ProtoReflect.Descriptor instead.
 func (*SQLQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{325}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{327}
 }
 
 func (x *SQLQueryResponse) GetColumns() []string {
@@ -20767,7 +20875,7 @@ type CeremonyClaimShareBeginRequest struct {
 
 func (x *CeremonyClaimShareBeginRequest) Reset() {
 	*x = CeremonyClaimShareBeginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[326]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[328]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20779,7 +20887,7 @@ func (x *CeremonyClaimShareBeginRequest) String() string {
 func (*CeremonyClaimShareBeginRequest) ProtoMessage() {}
 
 func (x *CeremonyClaimShareBeginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[326]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[328]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20792,7 +20900,7 @@ func (x *CeremonyClaimShareBeginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyClaimShareBeginRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimShareBeginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{326}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{328}
 }
 
 func (x *CeremonyClaimShareBeginRequest) GetCustodianId() string {
@@ -20815,7 +20923,7 @@ type CeremonyClaimShareBeginResponse struct {
 
 func (x *CeremonyClaimShareBeginResponse) Reset() {
 	*x = CeremonyClaimShareBeginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[327]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[329]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20827,7 +20935,7 @@ func (x *CeremonyClaimShareBeginResponse) String() string {
 func (*CeremonyClaimShareBeginResponse) ProtoMessage() {}
 
 func (x *CeremonyClaimShareBeginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[327]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[329]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20840,7 +20948,7 @@ func (x *CeremonyClaimShareBeginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyClaimShareBeginResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimShareBeginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{327}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{329}
 }
 
 func (x *CeremonyClaimShareBeginResponse) GetCustodianId() string {
@@ -20876,7 +20984,7 @@ type CeremonyClaimShareCompleteRequest struct {
 
 func (x *CeremonyClaimShareCompleteRequest) Reset() {
 	*x = CeremonyClaimShareCompleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[328]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[330]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20888,7 +20996,7 @@ func (x *CeremonyClaimShareCompleteRequest) String() string {
 func (*CeremonyClaimShareCompleteRequest) ProtoMessage() {}
 
 func (x *CeremonyClaimShareCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[328]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[330]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20901,7 +21009,7 @@ func (x *CeremonyClaimShareCompleteRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CeremonyClaimShareCompleteRequest.ProtoReflect.Descriptor instead.
 func (*CeremonyClaimShareCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{328}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{330}
 }
 
 func (x *CeremonyClaimShareCompleteRequest) GetCustodianId() string {
@@ -20946,7 +21054,7 @@ type CeremonyCustodianResponse struct {
 
 func (x *CeremonyCustodianResponse) Reset() {
 	*x = CeremonyCustodianResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[329]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[331]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20958,7 +21066,7 @@ func (x *CeremonyCustodianResponse) String() string {
 func (*CeremonyCustodianResponse) ProtoMessage() {}
 
 func (x *CeremonyCustodianResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[329]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[331]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20971,7 +21079,7 @@ func (x *CeremonyCustodianResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonyCustodianResponse.ProtoReflect.Descriptor instead.
 func (*CeremonyCustodianResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{329}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{331}
 }
 
 func (x *CeremonyCustodianResponse) GetId() string {
@@ -21065,7 +21173,7 @@ type CeremonySubmitUnsealShareRequest struct {
 
 func (x *CeremonySubmitUnsealShareRequest) Reset() {
 	*x = CeremonySubmitUnsealShareRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[330]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[332]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21077,7 +21185,7 @@ func (x *CeremonySubmitUnsealShareRequest) String() string {
 func (*CeremonySubmitUnsealShareRequest) ProtoMessage() {}
 
 func (x *CeremonySubmitUnsealShareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[330]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[332]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21090,7 +21198,7 @@ func (x *CeremonySubmitUnsealShareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CeremonySubmitUnsealShareRequest.ProtoReflect.Descriptor instead.
 func (*CeremonySubmitUnsealShareRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{330}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{332}
 }
 
 func (x *CeremonySubmitUnsealShareRequest) GetCustodianId() string {
@@ -21133,7 +21241,7 @@ type CeremonySubmitUnsealShareResponse struct {
 
 func (x *CeremonySubmitUnsealShareResponse) Reset() {
 	*x = CeremonySubmitUnsealShareResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[331]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[333]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21145,7 +21253,7 @@ func (x *CeremonySubmitUnsealShareResponse) String() string {
 func (*CeremonySubmitUnsealShareResponse) ProtoMessage() {}
 
 func (x *CeremonySubmitUnsealShareResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[331]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[333]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21158,7 +21266,7 @@ func (x *CeremonySubmitUnsealShareResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use CeremonySubmitUnsealShareResponse.ProtoReflect.Descriptor instead.
 func (*CeremonySubmitUnsealShareResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{331}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{333}
 }
 
 func (x *CeremonySubmitUnsealShareResponse) GetSubmitted() int32 {
@@ -21196,7 +21304,7 @@ type TenantBarrierInitRequest struct {
 
 func (x *TenantBarrierInitRequest) Reset() {
 	*x = TenantBarrierInitRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[332]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[334]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21208,7 +21316,7 @@ func (x *TenantBarrierInitRequest) String() string {
 func (*TenantBarrierInitRequest) ProtoMessage() {}
 
 func (x *TenantBarrierInitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[332]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[334]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21221,7 +21329,7 @@ func (x *TenantBarrierInitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierInitRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierInitRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{332}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{334}
 }
 
 func (x *TenantBarrierInitRequest) GetTenantId() string {
@@ -21275,7 +21383,7 @@ type TenantBarrierInitResponse struct {
 
 func (x *TenantBarrierInitResponse) Reset() {
 	*x = TenantBarrierInitResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[333]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[335]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21287,7 +21395,7 @@ func (x *TenantBarrierInitResponse) String() string {
 func (*TenantBarrierInitResponse) ProtoMessage() {}
 
 func (x *TenantBarrierInitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[333]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[335]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21300,7 +21408,7 @@ func (x *TenantBarrierInitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierInitResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierInitResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{333}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{335}
 }
 
 func (x *TenantBarrierInitResponse) GetTenantId() string {
@@ -21349,7 +21457,7 @@ type TenantBarrierUnsealRequest struct {
 
 func (x *TenantBarrierUnsealRequest) Reset() {
 	*x = TenantBarrierUnsealRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[334]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[336]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21361,7 +21469,7 @@ func (x *TenantBarrierUnsealRequest) String() string {
 func (*TenantBarrierUnsealRequest) ProtoMessage() {}
 
 func (x *TenantBarrierUnsealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[334]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[336]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21374,7 +21482,7 @@ func (x *TenantBarrierUnsealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierUnsealRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierUnsealRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{334}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{336}
 }
 
 func (x *TenantBarrierUnsealRequest) GetTenantId() string {
@@ -21402,7 +21510,7 @@ type TenantBarrierUnsealShareRequest struct {
 
 func (x *TenantBarrierUnsealShareRequest) Reset() {
 	*x = TenantBarrierUnsealShareRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[335]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[337]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21414,7 +21522,7 @@ func (x *TenantBarrierUnsealShareRequest) String() string {
 func (*TenantBarrierUnsealShareRequest) ProtoMessage() {}
 
 func (x *TenantBarrierUnsealShareRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[335]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[337]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21427,7 +21535,7 @@ func (x *TenantBarrierUnsealShareRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierUnsealShareRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierUnsealShareRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{335}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{337}
 }
 
 func (x *TenantBarrierUnsealShareRequest) GetTenantId() string {
@@ -21458,7 +21566,7 @@ type TenantBarrierUnsealProgress struct {
 
 func (x *TenantBarrierUnsealProgress) Reset() {
 	*x = TenantBarrierUnsealProgress{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[336]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[338]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21470,7 +21578,7 @@ func (x *TenantBarrierUnsealProgress) String() string {
 func (*TenantBarrierUnsealProgress) ProtoMessage() {}
 
 func (x *TenantBarrierUnsealProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[336]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[338]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21483,7 +21591,7 @@ func (x *TenantBarrierUnsealProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierUnsealProgress.ProtoReflect.Descriptor instead.
 func (*TenantBarrierUnsealProgress) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{336}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{338}
 }
 
 func (x *TenantBarrierUnsealProgress) GetTenantId() string {
@@ -21531,7 +21639,7 @@ type TenantBarrierSealRequest struct {
 
 func (x *TenantBarrierSealRequest) Reset() {
 	*x = TenantBarrierSealRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[337]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[339]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21543,7 +21651,7 @@ func (x *TenantBarrierSealRequest) String() string {
 func (*TenantBarrierSealRequest) ProtoMessage() {}
 
 func (x *TenantBarrierSealRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[337]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[339]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21556,7 +21664,7 @@ func (x *TenantBarrierSealRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierSealRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierSealRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{337}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{339}
 }
 
 func (x *TenantBarrierSealRequest) GetTenantId() string {
@@ -21576,7 +21684,7 @@ type TenantBarrierStatusRequest struct {
 
 func (x *TenantBarrierStatusRequest) Reset() {
 	*x = TenantBarrierStatusRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[338]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[340]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21588,7 +21696,7 @@ func (x *TenantBarrierStatusRequest) String() string {
 func (*TenantBarrierStatusRequest) ProtoMessage() {}
 
 func (x *TenantBarrierStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[338]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[340]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21601,7 +21709,7 @@ func (x *TenantBarrierStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierStatusRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierStatusRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{338}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{340}
 }
 
 func (x *TenantBarrierStatusRequest) GetTenantId() string {
@@ -21627,7 +21735,7 @@ type TenantBarrierStatusResponse struct {
 
 func (x *TenantBarrierStatusResponse) Reset() {
 	*x = TenantBarrierStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[339]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[341]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21639,7 +21747,7 @@ func (x *TenantBarrierStatusResponse) String() string {
 func (*TenantBarrierStatusResponse) ProtoMessage() {}
 
 func (x *TenantBarrierStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[339]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[341]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21652,7 +21760,7 @@ func (x *TenantBarrierStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierStatusResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{339}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{341}
 }
 
 func (x *TenantBarrierStatusResponse) GetTenantId() string {
@@ -21718,7 +21826,7 @@ type TenantBarrierOfficerRegisterRequest struct {
 
 func (x *TenantBarrierOfficerRegisterRequest) Reset() {
 	*x = TenantBarrierOfficerRegisterRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[340]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[342]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21730,7 +21838,7 @@ func (x *TenantBarrierOfficerRegisterRequest) String() string {
 func (*TenantBarrierOfficerRegisterRequest) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerRegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[340]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[342]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21743,7 +21851,7 @@ func (x *TenantBarrierOfficerRegisterRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use TenantBarrierOfficerRegisterRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerRegisterRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{340}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{342}
 }
 
 func (x *TenantBarrierOfficerRegisterRequest) GetTenantId() string {
@@ -21786,7 +21894,7 @@ type TenantBarrierOfficerRegisterResponse struct {
 
 func (x *TenantBarrierOfficerRegisterResponse) Reset() {
 	*x = TenantBarrierOfficerRegisterResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[341]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[343]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21798,7 +21906,7 @@ func (x *TenantBarrierOfficerRegisterResponse) String() string {
 func (*TenantBarrierOfficerRegisterResponse) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerRegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[341]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[343]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21811,7 +21919,7 @@ func (x *TenantBarrierOfficerRegisterResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use TenantBarrierOfficerRegisterResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerRegisterResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{341}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{343}
 }
 
 func (x *TenantBarrierOfficerRegisterResponse) GetCertPem() []byte {
@@ -21838,7 +21946,7 @@ type TenantBarrierOfficerListRequest struct {
 
 func (x *TenantBarrierOfficerListRequest) Reset() {
 	*x = TenantBarrierOfficerListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[342]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[344]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21850,7 +21958,7 @@ func (x *TenantBarrierOfficerListRequest) String() string {
 func (*TenantBarrierOfficerListRequest) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[342]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[344]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21863,7 +21971,7 @@ func (x *TenantBarrierOfficerListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierOfficerListRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{342}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{344}
 }
 
 func (x *TenantBarrierOfficerListRequest) GetTenantId() string {
@@ -21883,7 +21991,7 @@ type TenantBarrierOfficerListResponse struct {
 
 func (x *TenantBarrierOfficerListResponse) Reset() {
 	*x = TenantBarrierOfficerListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[343]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[345]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21895,7 +22003,7 @@ func (x *TenantBarrierOfficerListResponse) String() string {
 func (*TenantBarrierOfficerListResponse) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[343]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[345]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21908,7 +22016,7 @@ func (x *TenantBarrierOfficerListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantBarrierOfficerListResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{343}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{345}
 }
 
 func (x *TenantBarrierOfficerListResponse) GetOfficers() []*OfficerStatus {
@@ -21931,7 +22039,7 @@ type TenantBarrierShareClaimBeginRequest struct {
 
 func (x *TenantBarrierShareClaimBeginRequest) Reset() {
 	*x = TenantBarrierShareClaimBeginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[344]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[346]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -21943,7 +22051,7 @@ func (x *TenantBarrierShareClaimBeginRequest) String() string {
 func (*TenantBarrierShareClaimBeginRequest) ProtoMessage() {}
 
 func (x *TenantBarrierShareClaimBeginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[344]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[346]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -21956,7 +22064,7 @@ func (x *TenantBarrierShareClaimBeginRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use TenantBarrierShareClaimBeginRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShareClaimBeginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{344}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{346}
 }
 
 func (x *TenantBarrierShareClaimBeginRequest) GetTenantId() string {
@@ -21991,7 +22099,7 @@ type TenantBarrierShareClaimBeginResponse struct {
 
 func (x *TenantBarrierShareClaimBeginResponse) Reset() {
 	*x = TenantBarrierShareClaimBeginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[345]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[347]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22003,7 +22111,7 @@ func (x *TenantBarrierShareClaimBeginResponse) String() string {
 func (*TenantBarrierShareClaimBeginResponse) ProtoMessage() {}
 
 func (x *TenantBarrierShareClaimBeginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[345]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[347]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22016,7 +22124,7 @@ func (x *TenantBarrierShareClaimBeginResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use TenantBarrierShareClaimBeginResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShareClaimBeginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{345}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{347}
 }
 
 func (x *TenantBarrierShareClaimBeginResponse) GetNonceHex() string {
@@ -22048,7 +22156,7 @@ type TenantBarrierShareClaimCompleteRequest struct {
 
 func (x *TenantBarrierShareClaimCompleteRequest) Reset() {
 	*x = TenantBarrierShareClaimCompleteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[346]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[348]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22060,7 +22168,7 @@ func (x *TenantBarrierShareClaimCompleteRequest) String() string {
 func (*TenantBarrierShareClaimCompleteRequest) ProtoMessage() {}
 
 func (x *TenantBarrierShareClaimCompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[346]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[348]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22073,7 +22181,7 @@ func (x *TenantBarrierShareClaimCompleteRequest) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use TenantBarrierShareClaimCompleteRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShareClaimCompleteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{346}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{348}
 }
 
 func (x *TenantBarrierShareClaimCompleteRequest) GetTenantId() string {
@@ -22122,7 +22230,7 @@ type TenantBarrierShareClaimCompleteResponse struct {
 
 func (x *TenantBarrierShareClaimCompleteResponse) Reset() {
 	*x = TenantBarrierShareClaimCompleteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[347]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[349]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22134,7 +22242,7 @@ func (x *TenantBarrierShareClaimCompleteResponse) String() string {
 func (*TenantBarrierShareClaimCompleteResponse) ProtoMessage() {}
 
 func (x *TenantBarrierShareClaimCompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[347]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[349]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22147,7 +22255,7 @@ func (x *TenantBarrierShareClaimCompleteResponse) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use TenantBarrierShareClaimCompleteResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShareClaimCompleteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{347}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{349}
 }
 
 func (x *TenantBarrierShareClaimCompleteResponse) GetShareBytes() []byte {
@@ -22168,7 +22276,7 @@ type TenantBarrierOfficerClaimStatusRequest struct {
 
 func (x *TenantBarrierOfficerClaimStatusRequest) Reset() {
 	*x = TenantBarrierOfficerClaimStatusRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[348]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[350]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22180,7 +22288,7 @@ func (x *TenantBarrierOfficerClaimStatusRequest) String() string {
 func (*TenantBarrierOfficerClaimStatusRequest) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerClaimStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[348]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[350]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22193,7 +22301,7 @@ func (x *TenantBarrierOfficerClaimStatusRequest) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use TenantBarrierOfficerClaimStatusRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerClaimStatusRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{348}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{350}
 }
 
 func (x *TenantBarrierOfficerClaimStatusRequest) GetTenantId() string {
@@ -22214,7 +22322,7 @@ type TenantBarrierOfficerClaimStatusResponse struct {
 
 func (x *TenantBarrierOfficerClaimStatusResponse) Reset() {
 	*x = TenantBarrierOfficerClaimStatusResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[349]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[351]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22226,7 +22334,7 @@ func (x *TenantBarrierOfficerClaimStatusResponse) String() string {
 func (*TenantBarrierOfficerClaimStatusResponse) ProtoMessage() {}
 
 func (x *TenantBarrierOfficerClaimStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[349]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[351]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22239,7 +22347,7 @@ func (x *TenantBarrierOfficerClaimStatusResponse) ProtoReflect() protoreflect.Me
 
 // Deprecated: Use TenantBarrierOfficerClaimStatusResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierOfficerClaimStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{349}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{351}
 }
 
 func (x *TenantBarrierOfficerClaimStatusResponse) GetOfficers() []*OfficerStatus {
@@ -22261,7 +22369,7 @@ type TenantBarrierShamirSealVoteRequest struct {
 
 func (x *TenantBarrierShamirSealVoteRequest) Reset() {
 	*x = TenantBarrierShamirSealVoteRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[350]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[352]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22273,7 +22381,7 @@ func (x *TenantBarrierShamirSealVoteRequest) String() string {
 func (*TenantBarrierShamirSealVoteRequest) ProtoMessage() {}
 
 func (x *TenantBarrierShamirSealVoteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[350]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[352]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22286,7 +22394,7 @@ func (x *TenantBarrierShamirSealVoteRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use TenantBarrierShamirSealVoteRequest.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShamirSealVoteRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{350}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{352}
 }
 
 func (x *TenantBarrierShamirSealVoteRequest) GetTenantId() string {
@@ -22315,7 +22423,7 @@ type TenantBarrierShamirSealVoteResponse struct {
 
 func (x *TenantBarrierShamirSealVoteResponse) Reset() {
 	*x = TenantBarrierShamirSealVoteResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[351]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[353]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22327,7 +22435,7 @@ func (x *TenantBarrierShamirSealVoteResponse) String() string {
 func (*TenantBarrierShamirSealVoteResponse) ProtoMessage() {}
 
 func (x *TenantBarrierShamirSealVoteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[351]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[353]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22340,7 +22448,7 @@ func (x *TenantBarrierShamirSealVoteResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use TenantBarrierShamirSealVoteResponse.ProtoReflect.Descriptor instead.
 func (*TenantBarrierShamirSealVoteResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{351}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{353}
 }
 
 func (x *TenantBarrierShamirSealVoteResponse) GetRequired() int32 {
@@ -22390,7 +22498,7 @@ type AuditQueryRequest struct {
 
 func (x *AuditQueryRequest) Reset() {
 	*x = AuditQueryRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[352]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[354]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22402,7 +22510,7 @@ func (x *AuditQueryRequest) String() string {
 func (*AuditQueryRequest) ProtoMessage() {}
 
 func (x *AuditQueryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[352]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[354]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22415,7 +22523,7 @@ func (x *AuditQueryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditQueryRequest.ProtoReflect.Descriptor instead.
 func (*AuditQueryRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{352}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{354}
 }
 
 func (x *AuditQueryRequest) GetFromRfc3339() string {
@@ -22496,7 +22604,7 @@ type AuditQueryResponse struct {
 
 func (x *AuditQueryResponse) Reset() {
 	*x = AuditQueryResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[353]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[355]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22508,7 +22616,7 @@ func (x *AuditQueryResponse) String() string {
 func (*AuditQueryResponse) ProtoMessage() {}
 
 func (x *AuditQueryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[353]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[355]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22521,7 +22629,7 @@ func (x *AuditQueryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditQueryResponse.ProtoReflect.Descriptor instead.
 func (*AuditQueryResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{353}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{355}
 }
 
 func (x *AuditQueryResponse) GetEvents() []*AuditEvent {
@@ -22566,7 +22674,7 @@ type AuditEvent struct {
 
 func (x *AuditEvent) Reset() {
 	*x = AuditEvent{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[354]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[356]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22578,7 +22686,7 @@ func (x *AuditEvent) String() string {
 func (*AuditEvent) ProtoMessage() {}
 
 func (x *AuditEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[354]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[356]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22591,7 +22699,7 @@ func (x *AuditEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
 func (*AuditEvent) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{354}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{356}
 }
 
 func (x *AuditEvent) GetTimestampRfc3339() string {
@@ -22684,7 +22792,7 @@ type EnrollFactorRequest struct {
 
 func (x *EnrollFactorRequest) Reset() {
 	*x = EnrollFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[355]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[357]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22696,7 +22804,7 @@ func (x *EnrollFactorRequest) String() string {
 func (*EnrollFactorRequest) ProtoMessage() {}
 
 func (x *EnrollFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[355]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[357]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22709,7 +22817,7 @@ func (x *EnrollFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollFactorRequest.ProtoReflect.Descriptor instead.
 func (*EnrollFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{355}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{357}
 }
 
 func (x *EnrollFactorRequest) GetFactorName() string {
@@ -22756,7 +22864,7 @@ type EnrollFactorResponse struct {
 
 func (x *EnrollFactorResponse) Reset() {
 	*x = EnrollFactorResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[356]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[358]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22768,7 +22876,7 @@ func (x *EnrollFactorResponse) String() string {
 func (*EnrollFactorResponse) ProtoMessage() {}
 
 func (x *EnrollFactorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[356]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[358]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22781,7 +22889,7 @@ func (x *EnrollFactorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollFactorResponse.ProtoReflect.Descriptor instead.
 func (*EnrollFactorResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{356}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{358}
 }
 
 func (x *EnrollFactorResponse) GetEnrollmentId() string {
@@ -22836,7 +22944,7 @@ type ChallengeFactorRequest struct {
 
 func (x *ChallengeFactorRequest) Reset() {
 	*x = ChallengeFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[357]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[359]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22848,7 +22956,7 @@ func (x *ChallengeFactorRequest) String() string {
 func (*ChallengeFactorRequest) ProtoMessage() {}
 
 func (x *ChallengeFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[357]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[359]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22861,7 +22969,7 @@ func (x *ChallengeFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeFactorRequest.ProtoReflect.Descriptor instead.
 func (*ChallengeFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{357}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{359}
 }
 
 func (x *ChallengeFactorRequest) GetEnrollmentId() string {
@@ -22887,7 +22995,7 @@ type ChallengeFactorResponse struct {
 
 func (x *ChallengeFactorResponse) Reset() {
 	*x = ChallengeFactorResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[358]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[360]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22899,7 +23007,7 @@ func (x *ChallengeFactorResponse) String() string {
 func (*ChallengeFactorResponse) ProtoMessage() {}
 
 func (x *ChallengeFactorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[358]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[360]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22912,7 +23020,7 @@ func (x *ChallengeFactorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChallengeFactorResponse.ProtoReflect.Descriptor instead.
 func (*ChallengeFactorResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{358}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{360}
 }
 
 func (x *ChallengeFactorResponse) GetChallengeId() string {
@@ -22963,7 +23071,7 @@ type VerifyFactorRequest struct {
 
 func (x *VerifyFactorRequest) Reset() {
 	*x = VerifyFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[359]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[361]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -22975,7 +23083,7 @@ func (x *VerifyFactorRequest) String() string {
 func (*VerifyFactorRequest) ProtoMessage() {}
 
 func (x *VerifyFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[359]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[361]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -22988,7 +23096,7 @@ func (x *VerifyFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyFactorRequest.ProtoReflect.Descriptor instead.
 func (*VerifyFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{359}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{361}
 }
 
 func (x *VerifyFactorRequest) GetFactorName() string {
@@ -23029,7 +23137,7 @@ type ListFactorsRequest struct {
 
 func (x *ListFactorsRequest) Reset() {
 	*x = ListFactorsRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[360]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[362]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23041,7 +23149,7 @@ func (x *ListFactorsRequest) String() string {
 func (*ListFactorsRequest) ProtoMessage() {}
 
 func (x *ListFactorsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[360]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[362]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23054,7 +23162,7 @@ func (x *ListFactorsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFactorsRequest.ProtoReflect.Descriptor instead.
 func (*ListFactorsRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{360}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{362}
 }
 
 func (x *ListFactorsRequest) GetSubject() string {
@@ -23081,7 +23189,7 @@ type EnrollmentEntry struct {
 
 func (x *EnrollmentEntry) Reset() {
 	*x = EnrollmentEntry{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[361]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[363]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23093,7 +23201,7 @@ func (x *EnrollmentEntry) String() string {
 func (*EnrollmentEntry) ProtoMessage() {}
 
 func (x *EnrollmentEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[361]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[363]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23106,7 +23214,7 @@ func (x *EnrollmentEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollmentEntry.ProtoReflect.Descriptor instead.
 func (*EnrollmentEntry) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{361}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{363}
 }
 
 func (x *EnrollmentEntry) GetEnrollmentId() string {
@@ -23169,7 +23277,7 @@ type ListFactorsResponse struct {
 
 func (x *ListFactorsResponse) Reset() {
 	*x = ListFactorsResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[362]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[364]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23181,7 +23289,7 @@ func (x *ListFactorsResponse) String() string {
 func (*ListFactorsResponse) ProtoMessage() {}
 
 func (x *ListFactorsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[362]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[364]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23194,7 +23302,7 @@ func (x *ListFactorsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFactorsResponse.ProtoReflect.Descriptor instead.
 func (*ListFactorsResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{362}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{364}
 }
 
 func (x *ListFactorsResponse) GetEnrollments() []*EnrollmentEntry {
@@ -23221,7 +23329,7 @@ type RevokeFactorRequest struct {
 
 func (x *RevokeFactorRequest) Reset() {
 	*x = RevokeFactorRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[363]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[365]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23233,7 +23341,7 @@ func (x *RevokeFactorRequest) String() string {
 func (*RevokeFactorRequest) ProtoMessage() {}
 
 func (x *RevokeFactorRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[363]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[365]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23246,7 +23354,7 @@ func (x *RevokeFactorRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeFactorRequest.ProtoReflect.Descriptor instead.
 func (*RevokeFactorRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{363}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{365}
 }
 
 func (x *RevokeFactorRequest) GetEnrollmentId() string {
@@ -23280,7 +23388,7 @@ type UserAuthFactorRecord struct {
 
 func (x *UserAuthFactorRecord) Reset() {
 	*x = UserAuthFactorRecord{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[364]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[366]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23292,7 +23400,7 @@ func (x *UserAuthFactorRecord) String() string {
 func (*UserAuthFactorRecord) ProtoMessage() {}
 
 func (x *UserAuthFactorRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[364]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[366]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23305,7 +23413,7 @@ func (x *UserAuthFactorRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRecord.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRecord) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{364}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{366}
 }
 
 func (x *UserAuthFactorRecord) GetId() string {
@@ -23402,7 +23510,7 @@ type UserAuthFactorAddRequest struct {
 
 func (x *UserAuthFactorAddRequest) Reset() {
 	*x = UserAuthFactorAddRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[365]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[367]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23414,7 +23522,7 @@ func (x *UserAuthFactorAddRequest) String() string {
 func (*UserAuthFactorAddRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[365]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[367]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23427,7 +23535,7 @@ func (x *UserAuthFactorAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorAddRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorAddRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{365}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{367}
 }
 
 func (x *UserAuthFactorAddRequest) GetUserId() uint64 {
@@ -23489,7 +23597,7 @@ type UserAuthFactorAddResponse struct {
 
 func (x *UserAuthFactorAddResponse) Reset() {
 	*x = UserAuthFactorAddResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[366]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[368]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23501,7 +23609,7 @@ func (x *UserAuthFactorAddResponse) String() string {
 func (*UserAuthFactorAddResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorAddResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[366]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[368]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23514,7 +23622,7 @@ func (x *UserAuthFactorAddResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorAddResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorAddResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{366}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{368}
 }
 
 func (x *UserAuthFactorAddResponse) GetFactor() *UserAuthFactorRecord {
@@ -23534,7 +23642,7 @@ type UserAuthFactorListRequest struct {
 
 func (x *UserAuthFactorListRequest) Reset() {
 	*x = UserAuthFactorListRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[367]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[369]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23546,7 +23654,7 @@ func (x *UserAuthFactorListRequest) String() string {
 func (*UserAuthFactorListRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[367]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[369]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23559,7 +23667,7 @@ func (x *UserAuthFactorListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorListRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorListRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{367}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{369}
 }
 
 func (x *UserAuthFactorListRequest) GetUserId() uint64 {
@@ -23580,7 +23688,7 @@ type UserAuthFactorListResponse struct {
 
 func (x *UserAuthFactorListResponse) Reset() {
 	*x = UserAuthFactorListResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[368]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[370]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23592,7 +23700,7 @@ func (x *UserAuthFactorListResponse) String() string {
 func (*UserAuthFactorListResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[368]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[370]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23605,7 +23713,7 @@ func (x *UserAuthFactorListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorListResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorListResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{368}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{370}
 }
 
 func (x *UserAuthFactorListResponse) GetFactors() []*UserAuthFactorRecord {
@@ -23632,7 +23740,7 @@ type UserAuthFactorGetRequest struct {
 
 func (x *UserAuthFactorGetRequest) Reset() {
 	*x = UserAuthFactorGetRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[369]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[371]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23644,7 +23752,7 @@ func (x *UserAuthFactorGetRequest) String() string {
 func (*UserAuthFactorGetRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[369]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[371]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23657,7 +23765,7 @@ func (x *UserAuthFactorGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorGetRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorGetRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{369}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{371}
 }
 
 func (x *UserAuthFactorGetRequest) GetFactorId() string {
@@ -23677,7 +23785,7 @@ type UserAuthFactorGetResponse struct {
 
 func (x *UserAuthFactorGetResponse) Reset() {
 	*x = UserAuthFactorGetResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[370]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[372]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23689,7 +23797,7 @@ func (x *UserAuthFactorGetResponse) String() string {
 func (*UserAuthFactorGetResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[370]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[372]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23702,7 +23810,7 @@ func (x *UserAuthFactorGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorGetResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorGetResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{370}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{372}
 }
 
 func (x *UserAuthFactorGetResponse) GetFactor() *UserAuthFactorRecord {
@@ -23723,7 +23831,7 @@ type UserAuthFactorRemoveRequest struct {
 
 func (x *UserAuthFactorRemoveRequest) Reset() {
 	*x = UserAuthFactorRemoveRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[371]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[373]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23735,7 +23843,7 @@ func (x *UserAuthFactorRemoveRequest) String() string {
 func (*UserAuthFactorRemoveRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRemoveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[371]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[373]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23748,7 +23856,7 @@ func (x *UserAuthFactorRemoveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRemoveRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRemoveRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{371}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{373}
 }
 
 func (x *UserAuthFactorRemoveRequest) GetFactorId() string {
@@ -23775,7 +23883,7 @@ type UserAuthFactorRemoveResponse struct {
 
 func (x *UserAuthFactorRemoveResponse) Reset() {
 	*x = UserAuthFactorRemoveResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[372]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[374]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23787,7 +23895,7 @@ func (x *UserAuthFactorRemoveResponse) String() string {
 func (*UserAuthFactorRemoveResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRemoveResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[372]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[374]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23800,7 +23908,7 @@ func (x *UserAuthFactorRemoveResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRemoveResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRemoveResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{372}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{374}
 }
 
 func (x *UserAuthFactorRemoveResponse) GetStatus() string {
@@ -23827,7 +23935,7 @@ type UserAuthFactorNewFactor struct {
 
 func (x *UserAuthFactorNewFactor) Reset() {
 	*x = UserAuthFactorNewFactor{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[373]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[375]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23839,7 +23947,7 @@ func (x *UserAuthFactorNewFactor) String() string {
 func (*UserAuthFactorNewFactor) ProtoMessage() {}
 
 func (x *UserAuthFactorNewFactor) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[373]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[375]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23852,7 +23960,7 @@ func (x *UserAuthFactorNewFactor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorNewFactor.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorNewFactor) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{373}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{375}
 }
 
 func (x *UserAuthFactorNewFactor) GetUserId() uint64 {
@@ -23915,7 +24023,7 @@ type UserAuthFactorRotateRequest struct {
 
 func (x *UserAuthFactorRotateRequest) Reset() {
 	*x = UserAuthFactorRotateRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[374]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23927,7 +24035,7 @@ func (x *UserAuthFactorRotateRequest) String() string {
 func (*UserAuthFactorRotateRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRotateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[374]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23940,7 +24048,7 @@ func (x *UserAuthFactorRotateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRotateRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRotateRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{374}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{376}
 }
 
 func (x *UserAuthFactorRotateRequest) GetOldFactorId() string {
@@ -23967,7 +24075,7 @@ type UserAuthFactorRotateResponse struct {
 
 func (x *UserAuthFactorRotateResponse) Reset() {
 	*x = UserAuthFactorRotateResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[375]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -23979,7 +24087,7 @@ func (x *UserAuthFactorRotateResponse) String() string {
 func (*UserAuthFactorRotateResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRotateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[375]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -23992,7 +24100,7 @@ func (x *UserAuthFactorRotateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRotateResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRotateResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{375}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{377}
 }
 
 func (x *UserAuthFactorRotateResponse) GetNewFactor() *UserAuthFactorRecord {
@@ -24013,7 +24121,7 @@ type UserAuthFactorRelabelRequest struct {
 
 func (x *UserAuthFactorRelabelRequest) Reset() {
 	*x = UserAuthFactorRelabelRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24025,7 +24133,7 @@ func (x *UserAuthFactorRelabelRequest) String() string {
 func (*UserAuthFactorRelabelRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorRelabelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[376]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24038,7 +24146,7 @@ func (x *UserAuthFactorRelabelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRelabelRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRelabelRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{376}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{378}
 }
 
 func (x *UserAuthFactorRelabelRequest) GetFactorId() string {
@@ -24065,7 +24173,7 @@ type UserAuthFactorRelabelResponse struct {
 
 func (x *UserAuthFactorRelabelResponse) Reset() {
 	*x = UserAuthFactorRelabelResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24077,7 +24185,7 @@ func (x *UserAuthFactorRelabelResponse) String() string {
 func (*UserAuthFactorRelabelResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorRelabelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[377]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24090,7 +24198,7 @@ func (x *UserAuthFactorRelabelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorRelabelResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorRelabelResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{377}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{379}
 }
 
 func (x *UserAuthFactorRelabelResponse) GetFactor() *UserAuthFactorRecord {
@@ -24111,7 +24219,7 @@ type UserAuthFactorLoginRequest struct {
 
 func (x *UserAuthFactorLoginRequest) Reset() {
 	*x = UserAuthFactorLoginRequest{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24123,7 +24231,7 @@ func (x *UserAuthFactorLoginRequest) String() string {
 func (*UserAuthFactorLoginRequest) ProtoMessage() {}
 
 func (x *UserAuthFactorLoginRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[378]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[380]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24136,7 +24244,7 @@ func (x *UserAuthFactorLoginRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorLoginRequest.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorLoginRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{378}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{380}
 }
 
 func (x *UserAuthFactorLoginRequest) GetType() string {
@@ -24169,7 +24277,7 @@ type UserAuthFactorLoginResponse struct {
 
 func (x *UserAuthFactorLoginResponse) Reset() {
 	*x = UserAuthFactorLoginResponse{}
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -24181,7 +24289,7 @@ func (x *UserAuthFactorLoginResponse) String() string {
 func (*UserAuthFactorLoginResponse) ProtoMessage() {}
 
 func (x *UserAuthFactorLoginResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[379]
+	mi := &file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[381]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -24194,7 +24302,7 @@ func (x *UserAuthFactorLoginResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserAuthFactorLoginResponse.ProtoReflect.Descriptor instead.
 func (*UserAuthFactorLoginResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{379}
+	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{381}
 }
 
 func (x *UserAuthFactorLoginResponse) GetUserId() uint64 {
@@ -24278,7 +24386,13 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1a\n" +
 	"\bexpected\x18\x02 \x01(\fR\bexpected\"4\n" +
 	"\x18CompareAndDeleteResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\bR\adeleted\"b\n" +
+	"\adeleted\x18\x01 \x01(\bR\adeleted\"Y\n" +
+	"\x15CompareAndSwapRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x1a\n" +
+	"\bexpected\x18\x02 \x01(\fR\bexpected\x12\x12\n" +
+	"\x04next\x18\x03 \x01(\fR\x04next\"2\n" +
+	"\x16CompareAndSwapResponse\x12\x18\n" +
+	"\aswapped\x18\x01 \x01(\bR\aswapped\"b\n" +
 	"\vListRequest\x12\x16\n" +
 	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12;\n" +
 	"\vconsistency\x18\x02 \x01(\x0e2\x19.qrdb.v1.ConsistencyLevelR\vconsistency\"\"\n" +
@@ -26126,7 +26240,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"INDEX_HNSW\x10\x00\x12\x0e\n" +
 	"\n" +
 	"INDEX_FLAT\x10\x01\x12\x12\n" +
-	"\x0eINDEX_IVF_FLAT\x10\x022ޘ\x01\n" +
+	"\x0eINDEX_IVF_FLAT\x10\x022\xbd\x99\x01\n" +
 	"\vQRDBService\x12<\n" +
 	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\"\n" +
 	"\xc2\xf3\x18\x06kv:put\x12<\n" +
@@ -26135,7 +26249,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x06Delete\x12\x16.qrdb.v1.DeleteRequest\x1a\x17.qrdb.v1.DeleteResponse\"\r\xc2\xf3\x18\tkv:delete\x12T\n" +
 	"\vPutIfAbsent\x12\x1b.qrdb.v1.PutIfAbsentRequest\x1a\x1c.qrdb.v1.PutIfAbsentResponse\"\n" +
 	"\xc2\xf3\x18\x06kv:put\x12f\n" +
-	"\x10CompareAndDelete\x12 .qrdb.v1.CompareAndDeleteRequest\x1a!.qrdb.v1.CompareAndDeleteResponse\"\r\xc2\xf3\x18\tkv:delete\x12@\n" +
+	"\x10CompareAndDelete\x12 .qrdb.v1.CompareAndDeleteRequest\x1a!.qrdb.v1.CompareAndDeleteResponse\"\r\xc2\xf3\x18\tkv:delete\x12]\n" +
+	"\x0eCompareAndSwap\x12\x1e.qrdb.v1.CompareAndSwapRequest\x1a\x1f.qrdb.v1.CompareAndSwapResponse\"\n" +
+	"\xc2\xf3\x18\x06kv:put\x12@\n" +
 	"\x04List\x12\x14.qrdb.v1.ListRequest\x1a\x15.qrdb.v1.ListResponse\"\v\xc2\xf3\x18\akv:list\x12A\n" +
 	"\x04Scan\x12\x14.qrdb.v1.ScanRequest\x1a\x15.qrdb.v1.ScanResponse\"\f\xc2\xf3\x18\bkv:range\x12d\n" +
 	"\fPutWithLease\x12\x1c.qrdb.v1.PutWithLeaseRequest\x1a\x1d.qrdb.v1.PutWithLeaseResponse\"\x17\xc2\xf3\x18\x13mvcc:put_with_lease\x12_\n" +
@@ -26400,7 +26516,7 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP() []byte {
 }
 
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_enumTypes = make([]protoimpl.EnumInfo, 12)
-var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes = make([]protoimpl.MessageInfo, 400)
+var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes = make([]protoimpl.MessageInfo, 402)
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_goTypes = []any{
 	(SortOrder)(0),                                  // 0: qrdb.v1.SortOrder
 	(SortTarget)(0),                                 // 1: qrdb.v1.SortTarget
@@ -26424,397 +26540,399 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_goTypes = []any{
 	(*PutIfAbsentResponse)(nil),                     // 19: qrdb.v1.PutIfAbsentResponse
 	(*CompareAndDeleteRequest)(nil),                 // 20: qrdb.v1.CompareAndDeleteRequest
 	(*CompareAndDeleteResponse)(nil),                // 21: qrdb.v1.CompareAndDeleteResponse
-	(*ListRequest)(nil),                             // 22: qrdb.v1.ListRequest
-	(*ListResponse)(nil),                            // 23: qrdb.v1.ListResponse
-	(*ScanRequest)(nil),                             // 24: qrdb.v1.ScanRequest
-	(*ScanResponse)(nil),                            // 25: qrdb.v1.ScanResponse
-	(*KeyValue)(nil),                                // 26: qrdb.v1.KeyValue
-	(*PutWithLeaseRequest)(nil),                     // 27: qrdb.v1.PutWithLeaseRequest
-	(*PutWithLeaseResponse)(nil),                    // 28: qrdb.v1.PutWithLeaseResponse
-	(*GetRevisionRequest)(nil),                      // 29: qrdb.v1.GetRevisionRequest
-	(*GetRevisionResponse)(nil),                     // 30: qrdb.v1.GetRevisionResponse
-	(*GetAtRevisionRequest)(nil),                    // 31: qrdb.v1.GetAtRevisionRequest
-	(*GetAtRevisionResponse)(nil),                   // 32: qrdb.v1.GetAtRevisionResponse
-	(*RangeRequest)(nil),                            // 33: qrdb.v1.RangeRequest
-	(*RangeResponse)(nil),                           // 34: qrdb.v1.RangeResponse
-	(*CompactRequest)(nil),                          // 35: qrdb.v1.CompactRequest
-	(*CurrentRevisionResponse)(nil),                 // 36: qrdb.v1.CurrentRevisionResponse
-	(*RestoreRevisionRequest)(nil),                  // 37: qrdb.v1.RestoreRevisionRequest
-	(*RestoreKeyChange)(nil),                        // 38: qrdb.v1.RestoreKeyChange
-	(*RestoreRevisionResponse)(nil),                 // 39: qrdb.v1.RestoreRevisionResponse
-	(*Compare)(nil),                                 // 40: qrdb.v1.Compare
-	(*Op)(nil),                                      // 41: qrdb.v1.Op
-	(*OpResponse)(nil),                              // 42: qrdb.v1.OpResponse
-	(*TransactionRequest)(nil),                      // 43: qrdb.v1.TransactionRequest
-	(*TransactionResponse)(nil),                     // 44: qrdb.v1.TransactionResponse
-	(*BatchRequest)(nil),                            // 45: qrdb.v1.BatchRequest
-	(*BatchResponse)(nil),                           // 46: qrdb.v1.BatchResponse
-	(*BatchImportRequest)(nil),                      // 47: qrdb.v1.BatchImportRequest
-	(*BatchImportError)(nil),                        // 48: qrdb.v1.BatchImportError
-	(*BatchImportResponse)(nil),                     // 49: qrdb.v1.BatchImportResponse
-	(*Event)(nil),                                   // 50: qrdb.v1.Event
-	(*WatchRequest)(nil),                            // 51: qrdb.v1.WatchRequest
-	(*WatchResponse)(nil),                           // 52: qrdb.v1.WatchResponse
-	(*Lease)(nil),                                   // 53: qrdb.v1.Lease
-	(*LeaseGrantRequest)(nil),                       // 54: qrdb.v1.LeaseGrantRequest
-	(*LeaseGrantResponse)(nil),                      // 55: qrdb.v1.LeaseGrantResponse
-	(*LeaseRevokeRequest)(nil),                      // 56: qrdb.v1.LeaseRevokeRequest
-	(*LeaseKeepAliveRequest)(nil),                   // 57: qrdb.v1.LeaseKeepAliveRequest
-	(*LeaseKeepAliveResponse)(nil),                  // 58: qrdb.v1.LeaseKeepAliveResponse
-	(*LeaseTimeToLiveRequest)(nil),                  // 59: qrdb.v1.LeaseTimeToLiveRequest
-	(*LeaseTimeToLiveResponse)(nil),                 // 60: qrdb.v1.LeaseTimeToLiveResponse
-	(*LeaseListResponse)(nil),                       // 61: qrdb.v1.LeaseListResponse
-	(*LockInfo)(nil),                                // 62: qrdb.v1.LockInfo
-	(*LockAcquireRequest)(nil),                      // 63: qrdb.v1.LockAcquireRequest
-	(*LockAcquireResponse)(nil),                     // 64: qrdb.v1.LockAcquireResponse
-	(*LockTryLockRequest)(nil),                      // 65: qrdb.v1.LockTryLockRequest
-	(*LockTryLockResponse)(nil),                     // 66: qrdb.v1.LockTryLockResponse
-	(*LockReleaseRequest)(nil),                      // 67: qrdb.v1.LockReleaseRequest
-	(*LockExtendRequest)(nil),                       // 68: qrdb.v1.LockExtendRequest
-	(*LockExtendResponse)(nil),                      // 69: qrdb.v1.LockExtendResponse
-	(*LockStatusRequest)(nil),                       // 70: qrdb.v1.LockStatusRequest
-	(*LockStatusResponse)(nil),                      // 71: qrdb.v1.LockStatusResponse
-	(*LockListRequest)(nil),                         // 72: qrdb.v1.LockListRequest
-	(*LockListResponse)(nil),                        // 73: qrdb.v1.LockListResponse
-	(*IndexCreateRequest)(nil),                      // 74: qrdb.v1.IndexCreateRequest
-	(*IndexDropRequest)(nil),                        // 75: qrdb.v1.IndexDropRequest
-	(*IndexQueryRequest)(nil),                       // 76: qrdb.v1.IndexQueryRequest
-	(*IndexQueryResponse)(nil),                      // 77: qrdb.v1.IndexQueryResponse
-	(*IndexScanRequest)(nil),                        // 78: qrdb.v1.IndexScanRequest
-	(*IndexScanEntry)(nil),                          // 79: qrdb.v1.IndexScanEntry
-	(*IndexScanResponse)(nil),                       // 80: qrdb.v1.IndexScanResponse
-	(*IndexListResponse)(nil),                       // 81: qrdb.v1.IndexListResponse
-	(*TSTag)(nil),                                   // 82: qrdb.v1.TSTag
-	(*TSDataPoint)(nil),                             // 83: qrdb.v1.TSDataPoint
-	(*TSWriteRequest)(nil),                          // 84: qrdb.v1.TSWriteRequest
-	(*TSWriteBatchRequest)(nil),                     // 85: qrdb.v1.TSWriteBatchRequest
-	(*TSQueryRequest)(nil),                          // 86: qrdb.v1.TSQueryRequest
-	(*TSQueryResponse)(nil),                         // 87: qrdb.v1.TSQueryResponse
-	(*TSAggregateRequest)(nil),                      // 88: qrdb.v1.TSAggregateRequest
-	(*TSAggResult)(nil),                             // 89: qrdb.v1.TSAggResult
-	(*TSAggregateResponse)(nil),                     // 90: qrdb.v1.TSAggregateResponse
-	(*TSRichQueryRequest)(nil),                      // 91: qrdb.v1.TSRichQueryRequest
-	(*TSRichQueryResponse)(nil),                     // 92: qrdb.v1.TSRichQueryResponse
-	(*TSGroupedResult)(nil),                         // 93: qrdb.v1.TSGroupedResult
-	(*TSDeleteSeriesRequest)(nil),                   // 94: qrdb.v1.TSDeleteSeriesRequest
-	(*TSGetRetentionRequest)(nil),                   // 95: qrdb.v1.TSGetRetentionRequest
-	(*TSRetentionPolicyResponse)(nil),               // 96: qrdb.v1.TSRetentionPolicyResponse
-	(*TSSetRetentionRequest)(nil),                   // 97: qrdb.v1.TSSetRetentionRequest
-	(*TSListMetricsRequest)(nil),                    // 98: qrdb.v1.TSListMetricsRequest
-	(*TSListMetricsResponse)(nil),                   // 99: qrdb.v1.TSListMetricsResponse
-	(*HealthResponse)(nil),                          // 100: qrdb.v1.HealthResponse
-	(*StatusResponse)(nil),                          // 101: qrdb.v1.StatusResponse
-	(*PeersResponse)(nil),                           // 102: qrdb.v1.PeersResponse
-	(*ShardPeers)(nil),                              // 103: qrdb.v1.ShardPeers
-	(*PeerInfo)(nil),                                // 104: qrdb.v1.PeerInfo
-	(*AddMemberRequest)(nil),                        // 105: qrdb.v1.AddMemberRequest
-	(*RemoveMemberRequest)(nil),                     // 106: qrdb.v1.RemoveMemberRequest
-	(*RequestSnapshotMessage)(nil),                  // 107: qrdb.v1.RequestSnapshotMessage
-	(*CapabilitiesRequest)(nil),                     // 108: qrdb.v1.CapabilitiesRequest
-	(*CapabilitiesResponse)(nil),                    // 109: qrdb.v1.CapabilitiesResponse
-	(*StartShardRequest)(nil),                       // 110: qrdb.v1.StartShardRequest
-	(*StopShardRequest)(nil),                        // 111: qrdb.v1.StopShardRequest
-	(*GetShardStateRequest)(nil),                    // 112: qrdb.v1.GetShardStateRequest
-	(*ShardStateResponse)(nil),                      // 113: qrdb.v1.ShardStateResponse
-	(*TopologyResponse)(nil),                        // 114: qrdb.v1.TopologyResponse
-	(*ShardInfoProto)(nil),                          // 115: qrdb.v1.ShardInfoProto
-	(*VectorCreateNamespaceRequest)(nil),            // 116: qrdb.v1.VectorCreateNamespaceRequest
-	(*VectorCreateNamespaceResponse)(nil),           // 117: qrdb.v1.VectorCreateNamespaceResponse
-	(*VectorDeleteNamespaceRequest)(nil),            // 118: qrdb.v1.VectorDeleteNamespaceRequest
-	(*VectorListNamespacesRequest)(nil),             // 119: qrdb.v1.VectorListNamespacesRequest
-	(*VectorListNamespacesResponse)(nil),            // 120: qrdb.v1.VectorListNamespacesResponse
-	(*VectorGetNamespaceInfoRequest)(nil),           // 121: qrdb.v1.VectorGetNamespaceInfoRequest
-	(*VectorNamespaceInfo)(nil),                     // 122: qrdb.v1.VectorNamespaceInfo
-	(*VectorDataProto)(nil),                         // 123: qrdb.v1.VectorDataProto
-	(*VectorUpsertRequest)(nil),                     // 124: qrdb.v1.VectorUpsertRequest
-	(*VectorUpsertResponse)(nil),                    // 125: qrdb.v1.VectorUpsertResponse
-	(*VectorGetRequest)(nil),                        // 126: qrdb.v1.VectorGetRequest
-	(*VectorDeleteRequest)(nil),                     // 127: qrdb.v1.VectorDeleteRequest
-	(*VectorBatchError)(nil),                        // 128: qrdb.v1.VectorBatchError
-	(*VectorBatchUpsertRequest)(nil),                // 129: qrdb.v1.VectorBatchUpsertRequest
-	(*VectorBatchUpsertResponse)(nil),               // 130: qrdb.v1.VectorBatchUpsertResponse
-	(*VectorBatchDeleteRequest)(nil),                // 131: qrdb.v1.VectorBatchDeleteRequest
-	(*VectorBatchDeleteResponse)(nil),               // 132: qrdb.v1.VectorBatchDeleteResponse
-	(*VectorListRequest)(nil),                       // 133: qrdb.v1.VectorListRequest
-	(*VectorListResponse)(nil),                      // 134: qrdb.v1.VectorListResponse
-	(*VectorUpdateMetadataRequest)(nil),             // 135: qrdb.v1.VectorUpdateMetadataRequest
-	(*VectorSearchResultProto)(nil),                 // 136: qrdb.v1.VectorSearchResultProto
-	(*VectorSearchSimilarRequest)(nil),              // 137: qrdb.v1.VectorSearchSimilarRequest
-	(*VectorSearchSimilarResponse)(nil),             // 138: qrdb.v1.VectorSearchSimilarResponse
-	(*VectorSearchByMetadataRequest)(nil),           // 139: qrdb.v1.VectorSearchByMetadataRequest
-	(*VectorSearchByMetadataResponse)(nil),          // 140: qrdb.v1.VectorSearchByMetadataResponse
-	(*VectorHybridSearchRequest)(nil),               // 141: qrdb.v1.VectorHybridSearchRequest
-	(*VectorHybridSearchResponse)(nil),              // 142: qrdb.v1.VectorHybridSearchResponse
-	(*VectorSearchByIDRequest)(nil),                 // 143: qrdb.v1.VectorSearchByIDRequest
-	(*VectorRebuildIndexRequest)(nil),               // 144: qrdb.v1.VectorRebuildIndexRequest
-	(*VectorRebuildIndexResponse)(nil),              // 145: qrdb.v1.VectorRebuildIndexResponse
-	(*VectorGetRebuildProgressRequest)(nil),         // 146: qrdb.v1.VectorGetRebuildProgressRequest
-	(*VectorRebuildProgress)(nil),                   // 147: qrdb.v1.VectorRebuildProgress
-	(*VectorGetIndexStatsRequest)(nil),              // 148: qrdb.v1.VectorGetIndexStatsRequest
-	(*VectorIndexStats)(nil),                        // 149: qrdb.v1.VectorIndexStats
-	(*VectorCompactNamespaceRequest)(nil),           // 150: qrdb.v1.VectorCompactNamespaceRequest
-	(*VectorCompactNamespaceResponse)(nil),          // 151: qrdb.v1.VectorCompactNamespaceResponse
-	(*VectorGetCompactionProgressRequest)(nil),      // 152: qrdb.v1.VectorGetCompactionProgressRequest
-	(*VectorCompactionProgress)(nil),                // 153: qrdb.v1.VectorCompactionProgress
-	(*CreateUserRequest)(nil),                       // 154: qrdb.v1.CreateUserRequest
-	(*GetUserRequest)(nil),                          // 155: qrdb.v1.GetUserRequest
-	(*GetUserByUsernameRequest)(nil),                // 156: qrdb.v1.GetUserByUsernameRequest
-	(*GetUserByCertThumbprintRequest)(nil),          // 157: qrdb.v1.GetUserByCertThumbprintRequest
-	(*AddCertBindingRequest)(nil),                   // 158: qrdb.v1.AddCertBindingRequest
-	(*UpdateUserProtoRequest)(nil),                  // 159: qrdb.v1.UpdateUserProtoRequest
-	(*DeleteUserRequest)(nil),                       // 160: qrdb.v1.DeleteUserRequest
-	(*ListUsersRequest)(nil),                        // 161: qrdb.v1.ListUsersRequest
-	(*ListUsersResponse)(nil),                       // 162: qrdb.v1.ListUsersResponse
-	(*EnableUserRequest)(nil),                       // 163: qrdb.v1.EnableUserRequest
-	(*DisableUserRequest)(nil),                      // 164: qrdb.v1.DisableUserRequest
-	(*UserResponse)(nil),                            // 165: qrdb.v1.UserResponse
-	(*CreateRoleRequest)(nil),                       // 166: qrdb.v1.CreateRoleRequest
-	(*GetRoleRequest)(nil),                          // 167: qrdb.v1.GetRoleRequest
-	(*GetRoleByNameRequest)(nil),                    // 168: qrdb.v1.GetRoleByNameRequest
-	(*ResolveRolePermissionsRequest)(nil),           // 169: qrdb.v1.ResolveRolePermissionsRequest
-	(*ResolveRolePermissionsResponse)(nil),          // 170: qrdb.v1.ResolveRolePermissionsResponse
-	(*UpdateRoleProtoRequest)(nil),                  // 171: qrdb.v1.UpdateRoleProtoRequest
-	(*DeleteRoleRequest)(nil),                       // 172: qrdb.v1.DeleteRoleRequest
-	(*ListRolesRequest)(nil),                        // 173: qrdb.v1.ListRolesRequest
-	(*ListRolesResponse)(nil),                       // 174: qrdb.v1.ListRolesResponse
-	(*AssignRoleRequest)(nil),                       // 175: qrdb.v1.AssignRoleRequest
-	(*UnassignRoleRequest)(nil),                     // 176: qrdb.v1.UnassignRoleRequest
-	(*RoleResponse)(nil),                            // 177: qrdb.v1.RoleResponse
-	(*PermissionCategory)(nil),                      // 178: qrdb.v1.PermissionCategory
-	(*ListPermissionsResponse)(nil),                 // 179: qrdb.v1.ListPermissionsResponse
-	(*GenerateCertRequest)(nil),                     // 180: qrdb.v1.GenerateCertRequest
-	(*CertBundleResponse)(nil),                      // 181: qrdb.v1.CertBundleResponse
-	(*ExportCertRequest)(nil),                       // 182: qrdb.v1.ExportCertRequest
-	(*ExportCertResponse)(nil),                      // 183: qrdb.v1.ExportCertResponse
-	(*RevokeCertRequest)(nil),                       // 184: qrdb.v1.RevokeCertRequest
-	(*ListCertsRequest)(nil),                        // 185: qrdb.v1.ListCertsRequest
-	(*CertRecord)(nil),                              // 186: qrdb.v1.CertRecord
-	(*ListCertsResponse)(nil),                       // 187: qrdb.v1.ListCertsResponse
-	(*CreateCollectionRequest)(nil),                 // 188: qrdb.v1.CreateCollectionRequest
-	(*GetCollectionInfoRequest)(nil),                // 189: qrdb.v1.GetCollectionInfoRequest
-	(*ListCollectionsRequest)(nil),                  // 190: qrdb.v1.ListCollectionsRequest
-	(*DropCollectionRequest)(nil),                   // 191: qrdb.v1.DropCollectionRequest
-	(*CollectionInfoResponse)(nil),                  // 192: qrdb.v1.CollectionInfoResponse
-	(*ListCollectionsResponse)(nil),                 // 193: qrdb.v1.ListCollectionsResponse
-	(*InsertDocumentRequest)(nil),                   // 194: qrdb.v1.InsertDocumentRequest
-	(*InsertDocumentResponse)(nil),                  // 195: qrdb.v1.InsertDocumentResponse
-	(*GetDocumentRequest)(nil),                      // 196: qrdb.v1.GetDocumentRequest
-	(*DocumentResponse)(nil),                        // 197: qrdb.v1.DocumentResponse
-	(*UpdateDocumentRequest)(nil),                   // 198: qrdb.v1.UpdateDocumentRequest
-	(*DeleteDocumentRequest)(nil),                   // 199: qrdb.v1.DeleteDocumentRequest
-	(*ListDocumentsRequest)(nil),                    // 200: qrdb.v1.ListDocumentsRequest
-	(*ListDocumentsResponse)(nil),                   // 201: qrdb.v1.ListDocumentsResponse
-	(*DatabaseCreateRequest)(nil),                   // 202: qrdb.v1.DatabaseCreateRequest
-	(*DatabaseGetRequest)(nil),                      // 203: qrdb.v1.DatabaseGetRequest
-	(*DatabaseDropRequest)(nil),                     // 204: qrdb.v1.DatabaseDropRequest
-	(*DatabaseListResponse)(nil),                    // 205: qrdb.v1.DatabaseListResponse
-	(*DatabaseInfoResponse)(nil),                    // 206: qrdb.v1.DatabaseInfoResponse
-	(*DatabaseProtocolConfig)(nil),                  // 207: qrdb.v1.DatabaseProtocolConfig
-	(*DatabaseEtcdConfig)(nil),                      // 208: qrdb.v1.DatabaseEtcdConfig
-	(*DatabaseRaftConfig)(nil),                      // 209: qrdb.v1.DatabaseRaftConfig
-	(*DatabaseStaticDiscovery)(nil),                 // 210: qrdb.v1.DatabaseStaticDiscovery
-	(*DatabaseMulticastDiscovery)(nil),              // 211: qrdb.v1.DatabaseMulticastDiscovery
-	(*DatabaseDNSDiscovery)(nil),                    // 212: qrdb.v1.DatabaseDNSDiscovery
-	(*DatabaseTokenDiscovery)(nil),                  // 213: qrdb.v1.DatabaseTokenDiscovery
-	(*DatabaseBarrierConfig)(nil),                   // 214: qrdb.v1.DatabaseBarrierConfig
-	(*DatabaseConnectionConfig)(nil),                // 215: qrdb.v1.DatabaseConnectionConfig
-	(*DatabaseUpdateProtocolRequest)(nil),           // 216: qrdb.v1.DatabaseUpdateProtocolRequest
-	(*DatabaseUpdateEtcdRequest)(nil),               // 217: qrdb.v1.DatabaseUpdateEtcdRequest
-	(*DatabaseUpdateRaftRequest)(nil),               // 218: qrdb.v1.DatabaseUpdateRaftRequest
-	(*DatabaseScaleRequest)(nil),                    // 219: qrdb.v1.DatabaseScaleRequest
-	(*DatabaseUpdateBarrierRequest)(nil),            // 220: qrdb.v1.DatabaseUpdateBarrierRequest
-	(*DatabaseUpdateConnectionRequest)(nil),         // 221: qrdb.v1.DatabaseUpdateConnectionRequest
-	(*BarrierInitializeRequest)(nil),                // 222: qrdb.v1.BarrierInitializeRequest
-	(*BarrierUnsealRequest)(nil),                    // 223: qrdb.v1.BarrierUnsealRequest
-	(*BarrierStatusResponse)(nil),                   // 224: qrdb.v1.BarrierStatusResponse
-	(*BarrierEnableEncryptionRequest)(nil),          // 225: qrdb.v1.BarrierEnableEncryptionRequest
-	(*BarrierEnableEncryptionResponse)(nil),         // 226: qrdb.v1.BarrierEnableEncryptionResponse
-	(*BarrierShamirInitializeRequest)(nil),          // 227: qrdb.v1.BarrierShamirInitializeRequest
-	(*BarrierShamirOperationResponse)(nil),          // 228: qrdb.v1.BarrierShamirOperationResponse
-	(*BarrierShamirUnsealShareRequest)(nil),         // 229: qrdb.v1.BarrierShamirUnsealShareRequest
-	(*BarrierShamirUnsealShareResponse)(nil),        // 230: qrdb.v1.BarrierShamirUnsealShareResponse
-	(*BarrierShamirUnsealSharesRequest)(nil),        // 231: qrdb.v1.BarrierShamirUnsealSharesRequest
-	(*BarrierRekeyRequest)(nil),                     // 232: qrdb.v1.BarrierRekeyRequest
-	(*BarrierRecoveryGenerateRequest)(nil),          // 233: qrdb.v1.BarrierRecoveryGenerateRequest
-	(*BarrierRecoveryKeysResponse)(nil),             // 234: qrdb.v1.BarrierRecoveryKeysResponse
-	(*BarrierOfficerRegisterRequest)(nil),           // 235: qrdb.v1.BarrierOfficerRegisterRequest
-	(*BarrierOfficerRegisterResponse)(nil),          // 236: qrdb.v1.BarrierOfficerRegisterResponse
-	(*BarrierOfficerListResponse)(nil),              // 237: qrdb.v1.BarrierOfficerListResponse
-	(*OfficerStatus)(nil),                           // 238: qrdb.v1.OfficerStatus
-	(*BarrierShareClaimBeginRequest)(nil),           // 239: qrdb.v1.BarrierShareClaimBeginRequest
-	(*BarrierShareClaimBeginResponse)(nil),          // 240: qrdb.v1.BarrierShareClaimBeginResponse
-	(*BarrierShareClaimCompleteRequest)(nil),        // 241: qrdb.v1.BarrierShareClaimCompleteRequest
-	(*BarrierShareClaimCompleteResponse)(nil),       // 242: qrdb.v1.BarrierShareClaimCompleteResponse
-	(*BarrierShamirSealVoteRequest)(nil),            // 243: qrdb.v1.BarrierShamirSealVoteRequest
-	(*BarrierShamirSealVoteResponse)(nil),           // 244: qrdb.v1.BarrierShamirSealVoteResponse
-	(*BarrierOfficerClaimStatusResponse)(nil),       // 245: qrdb.v1.BarrierOfficerClaimStatusResponse
-	(*BarrierRecoveryRecoverRequest)(nil),           // 246: qrdb.v1.BarrierRecoveryRecoverRequest
-	(*BarrierRecoveryStatusResponse)(nil),           // 247: qrdb.v1.BarrierRecoveryStatusResponse
-	(*BarrierRootTokenRequest)(nil),                 // 248: qrdb.v1.BarrierRootTokenRequest
-	(*BarrierRootTokenResponse)(nil),                // 249: qrdb.v1.BarrierRootTokenResponse
-	(*CeremonyOfficer)(nil),                         // 250: qrdb.v1.CeremonyOfficer
-	(*CeremonyInitializeRequest)(nil),               // 251: qrdb.v1.CeremonyInitializeRequest
-	(*CeremonyInitializeResponse)(nil),              // 252: qrdb.v1.CeremonyInitializeResponse
-	(*CeremonyStatusResponse)(nil),                  // 253: qrdb.v1.CeremonyStatusResponse
-	(*CeremonyClaimCertBeginRequest)(nil),           // 254: qrdb.v1.CeremonyClaimCertBeginRequest
-	(*CeremonyClaimCertBeginResponse)(nil),          // 255: qrdb.v1.CeremonyClaimCertBeginResponse
-	(*CeremonyClaimCertCompleteRequest)(nil),        // 256: qrdb.v1.CeremonyClaimCertCompleteRequest
-	(*CeremonyClaimCertCompleteResponse)(nil),       // 257: qrdb.v1.CeremonyClaimCertCompleteResponse
-	(*CeremonyBeginClaimShareRequest)(nil),          // 258: qrdb.v1.CeremonyBeginClaimShareRequest
-	(*CeremonyBeginClaimShareResponse)(nil),         // 259: qrdb.v1.CeremonyBeginClaimShareResponse
-	(*CeremonyCompleteClaimShareRequest)(nil),       // 260: qrdb.v1.CeremonyCompleteClaimShareRequest
-	(*CeremonyCompleteClaimShareResponse)(nil),      // 261: qrdb.v1.CeremonyCompleteClaimShareResponse
-	(*CeremonySignCSRRequest)(nil),                  // 262: qrdb.v1.CeremonySignCSRRequest
-	(*CeremonySignCSRResponse)(nil),                 // 263: qrdb.v1.CeremonySignCSRResponse
-	(*CeremonyEnrollExternalOfficerRequest)(nil),    // 264: qrdb.v1.CeremonyEnrollExternalOfficerRequest
-	(*CeremonyEnrollExternalOfficerResponse)(nil),   // 265: qrdb.v1.CeremonyEnrollExternalOfficerResponse
-	(*TenantQuotas)(nil),                            // 266: qrdb.v1.TenantQuotas
-	(*TenantEntitlements)(nil),                      // 267: qrdb.v1.TenantEntitlements
-	(*TenantResponse)(nil),                          // 268: qrdb.v1.TenantResponse
-	(*TenantCreateRequest)(nil),                     // 269: qrdb.v1.TenantCreateRequest
-	(*TenantGetRequest)(nil),                        // 270: qrdb.v1.TenantGetRequest
-	(*TenantListResponse)(nil),                      // 271: qrdb.v1.TenantListResponse
-	(*TenantUpdateRequest)(nil),                     // 272: qrdb.v1.TenantUpdateRequest
-	(*TenantDeleteRequest)(nil),                     // 273: qrdb.v1.TenantDeleteRequest
-	(*TenantUpdateQuotasRequest)(nil),               // 274: qrdb.v1.TenantUpdateQuotasRequest
-	(*TenantUpdateEntitlementsRequest)(nil),         // 275: qrdb.v1.TenantUpdateEntitlementsRequest
-	(*CredentialSubmitRequest)(nil),                 // 276: qrdb.v1.CredentialSubmitRequest
-	(*CredentialStoreRequest)(nil),                  // 277: qrdb.v1.CredentialStoreRequest
-	(*CredentialRetrieveRequest)(nil),               // 278: qrdb.v1.CredentialRetrieveRequest
-	(*CredentialRetrieveResponse)(nil),              // 279: qrdb.v1.CredentialRetrieveResponse
-	(*CredentialStrategyResponse)(nil),              // 280: qrdb.v1.CredentialStrategyResponse
-	(*CredentialDeleteRequest)(nil),                 // 281: qrdb.v1.CredentialDeleteRequest
-	(*CredentialListRequest)(nil),                   // 282: qrdb.v1.CredentialListRequest
-	(*CredentialListResponse)(nil),                  // 283: qrdb.v1.CredentialListResponse
-	(*CredentialRotateRequest)(nil),                 // 284: qrdb.v1.CredentialRotateRequest
-	(*CredentialRotateResponse)(nil),                // 285: qrdb.v1.CredentialRotateResponse
-	(*CredentialRetrieveVersionRequest)(nil),        // 286: qrdb.v1.CredentialRetrieveVersionRequest
-	(*CredentialRetrieveVersionResponse)(nil),       // 287: qrdb.v1.CredentialRetrieveVersionResponse
-	(*CredentialListVersionsRequest)(nil),           // 288: qrdb.v1.CredentialListVersionsRequest
-	(*CredentialVersionInfo)(nil),                   // 289: qrdb.v1.CredentialVersionInfo
-	(*CredentialListVersionsResponse)(nil),          // 290: qrdb.v1.CredentialListVersionsResponse
-	(*CredentialGCRequest)(nil),                     // 291: qrdb.v1.CredentialGCRequest
-	(*CredentialGCResponse)(nil),                    // 292: qrdb.v1.CredentialGCResponse
-	(*BackupCreateRequest)(nil),                     // 293: qrdb.v1.BackupCreateRequest
-	(*BackupInfo)(nil),                              // 294: qrdb.v1.BackupInfo
-	(*BackupListResponse)(nil),                      // 295: qrdb.v1.BackupListResponse
-	(*BackupGetRequest)(nil),                        // 296: qrdb.v1.BackupGetRequest
-	(*BackupDeleteRequest)(nil),                     // 297: qrdb.v1.BackupDeleteRequest
-	(*BackupRestoreRequest)(nil),                    // 298: qrdb.v1.BackupRestoreRequest
-	(*ShardError)(nil),                              // 299: qrdb.v1.ShardError
-	(*BackupRestoreResponse)(nil),                   // 300: qrdb.v1.BackupRestoreResponse
-	(*BackupVerifyRequest)(nil),                     // 301: qrdb.v1.BackupVerifyRequest
-	(*BackupVerifyResponse)(nil),                    // 302: qrdb.v1.BackupVerifyResponse
-	(*RebalanceShardStatsRequest)(nil),              // 303: qrdb.v1.RebalanceShardStatsRequest
-	(*ShardStats)(nil),                              // 304: qrdb.v1.ShardStats
-	(*RebalancePlanRequest)(nil),                    // 305: qrdb.v1.RebalancePlanRequest
-	(*RebalanceMove)(nil),                           // 306: qrdb.v1.RebalanceMove
-	(*RebalancePlan)(nil),                           // 307: qrdb.v1.RebalancePlan
-	(*RebalanceExecutionResponse)(nil),              // 308: qrdb.v1.RebalanceExecutionResponse
-	(*NodeLoad)(nil),                                // 309: qrdb.v1.NodeLoad
-	(*ImbalanceReport)(nil),                         // 310: qrdb.v1.ImbalanceReport
-	(*EmbeddingVector)(nil),                         // 311: qrdb.v1.EmbeddingVector
-	(*EmbeddingUsage)(nil),                          // 312: qrdb.v1.EmbeddingUsage
-	(*EmbeddingModelInfo)(nil),                      // 313: qrdb.v1.EmbeddingModelInfo
-	(*EmbedRequest)(nil),                            // 314: qrdb.v1.EmbedRequest
-	(*EmbedResponse)(nil),                           // 315: qrdb.v1.EmbedResponse
-	(*BatchEmbedRequest)(nil),                       // 316: qrdb.v1.BatchEmbedRequest
-	(*BatchEmbedResponse)(nil),                      // 317: qrdb.v1.BatchEmbedResponse
-	(*ListEmbeddingModelsRequest)(nil),              // 318: qrdb.v1.ListEmbeddingModelsRequest
-	(*ListEmbeddingModelsResponse)(nil),             // 319: qrdb.v1.ListEmbeddingModelsResponse
-	(*ChunkConfig)(nil),                             // 320: qrdb.v1.ChunkConfig
-	(*RAGIngestDocumentRequest)(nil),                // 321: qrdb.v1.RAGIngestDocumentRequest
-	(*RAGIngestDocumentResponse)(nil),               // 322: qrdb.v1.RAGIngestDocumentResponse
-	(*RAGQueryRequest)(nil),                         // 323: qrdb.v1.RAGQueryRequest
-	(*RAGQueryResult)(nil),                          // 324: qrdb.v1.RAGQueryResult
-	(*RAGQueryResponse)(nil),                        // 325: qrdb.v1.RAGQueryResponse
-	(*RAGDeleteDocumentRequest)(nil),                // 326: qrdb.v1.RAGDeleteDocumentRequest
-	(*RAGDeleteDocumentResponse)(nil),               // 327: qrdb.v1.RAGDeleteDocumentResponse
-	(*RAGListDocumentsRequest)(nil),                 // 328: qrdb.v1.RAGListDocumentsRequest
-	(*RAGDocumentInfo)(nil),                         // 329: qrdb.v1.RAGDocumentInfo
-	(*RAGListDocumentsResponse)(nil),                // 330: qrdb.v1.RAGListDocumentsResponse
-	(*DatabaseSealRequest)(nil),                     // 331: qrdb.v1.DatabaseSealRequest
-	(*DatabaseUnsealRequest)(nil),                   // 332: qrdb.v1.DatabaseUnsealRequest
-	(*DatabaseBarrierStatusRequest)(nil),            // 333: qrdb.v1.DatabaseBarrierStatusRequest
-	(*DatabaseBarrierStatusResponse)(nil),           // 334: qrdb.v1.DatabaseBarrierStatusResponse
-	(*SQLQueryRequest)(nil),                         // 335: qrdb.v1.SQLQueryRequest
-	(*SQLRow)(nil),                                  // 336: qrdb.v1.SQLRow
-	(*SQLQueryResponse)(nil),                        // 337: qrdb.v1.SQLQueryResponse
-	(*CeremonyClaimShareBeginRequest)(nil),          // 338: qrdb.v1.CeremonyClaimShareBeginRequest
-	(*CeremonyClaimShareBeginResponse)(nil),         // 339: qrdb.v1.CeremonyClaimShareBeginResponse
-	(*CeremonyClaimShareCompleteRequest)(nil),       // 340: qrdb.v1.CeremonyClaimShareCompleteRequest
-	(*CeremonyCustodianResponse)(nil),               // 341: qrdb.v1.CeremonyCustodianResponse
-	(*CeremonySubmitUnsealShareRequest)(nil),        // 342: qrdb.v1.CeremonySubmitUnsealShareRequest
-	(*CeremonySubmitUnsealShareResponse)(nil),       // 343: qrdb.v1.CeremonySubmitUnsealShareResponse
-	(*TenantBarrierInitRequest)(nil),                // 344: qrdb.v1.TenantBarrierInitRequest
-	(*TenantBarrierInitResponse)(nil),               // 345: qrdb.v1.TenantBarrierInitResponse
-	(*TenantBarrierUnsealRequest)(nil),              // 346: qrdb.v1.TenantBarrierUnsealRequest
-	(*TenantBarrierUnsealShareRequest)(nil),         // 347: qrdb.v1.TenantBarrierUnsealShareRequest
-	(*TenantBarrierUnsealProgress)(nil),             // 348: qrdb.v1.TenantBarrierUnsealProgress
-	(*TenantBarrierSealRequest)(nil),                // 349: qrdb.v1.TenantBarrierSealRequest
-	(*TenantBarrierStatusRequest)(nil),              // 350: qrdb.v1.TenantBarrierStatusRequest
-	(*TenantBarrierStatusResponse)(nil),             // 351: qrdb.v1.TenantBarrierStatusResponse
-	(*TenantBarrierOfficerRegisterRequest)(nil),     // 352: qrdb.v1.TenantBarrierOfficerRegisterRequest
-	(*TenantBarrierOfficerRegisterResponse)(nil),    // 353: qrdb.v1.TenantBarrierOfficerRegisterResponse
-	(*TenantBarrierOfficerListRequest)(nil),         // 354: qrdb.v1.TenantBarrierOfficerListRequest
-	(*TenantBarrierOfficerListResponse)(nil),        // 355: qrdb.v1.TenantBarrierOfficerListResponse
-	(*TenantBarrierShareClaimBeginRequest)(nil),     // 356: qrdb.v1.TenantBarrierShareClaimBeginRequest
-	(*TenantBarrierShareClaimBeginResponse)(nil),    // 357: qrdb.v1.TenantBarrierShareClaimBeginResponse
-	(*TenantBarrierShareClaimCompleteRequest)(nil),  // 358: qrdb.v1.TenantBarrierShareClaimCompleteRequest
-	(*TenantBarrierShareClaimCompleteResponse)(nil), // 359: qrdb.v1.TenantBarrierShareClaimCompleteResponse
-	(*TenantBarrierOfficerClaimStatusRequest)(nil),  // 360: qrdb.v1.TenantBarrierOfficerClaimStatusRequest
-	(*TenantBarrierOfficerClaimStatusResponse)(nil), // 361: qrdb.v1.TenantBarrierOfficerClaimStatusResponse
-	(*TenantBarrierShamirSealVoteRequest)(nil),      // 362: qrdb.v1.TenantBarrierShamirSealVoteRequest
-	(*TenantBarrierShamirSealVoteResponse)(nil),     // 363: qrdb.v1.TenantBarrierShamirSealVoteResponse
-	(*AuditQueryRequest)(nil),                       // 364: qrdb.v1.AuditQueryRequest
-	(*AuditQueryResponse)(nil),                      // 365: qrdb.v1.AuditQueryResponse
-	(*AuditEvent)(nil),                              // 366: qrdb.v1.AuditEvent
-	(*EnrollFactorRequest)(nil),                     // 367: qrdb.v1.EnrollFactorRequest
-	(*EnrollFactorResponse)(nil),                    // 368: qrdb.v1.EnrollFactorResponse
-	(*ChallengeFactorRequest)(nil),                  // 369: qrdb.v1.ChallengeFactorRequest
-	(*ChallengeFactorResponse)(nil),                 // 370: qrdb.v1.ChallengeFactorResponse
-	(*VerifyFactorRequest)(nil),                     // 371: qrdb.v1.VerifyFactorRequest
-	(*ListFactorsRequest)(nil),                      // 372: qrdb.v1.ListFactorsRequest
-	(*EnrollmentEntry)(nil),                         // 373: qrdb.v1.EnrollmentEntry
-	(*ListFactorsResponse)(nil),                     // 374: qrdb.v1.ListFactorsResponse
-	(*RevokeFactorRequest)(nil),                     // 375: qrdb.v1.RevokeFactorRequest
-	(*UserAuthFactorRecord)(nil),                    // 376: qrdb.v1.UserAuthFactorRecord
-	(*UserAuthFactorAddRequest)(nil),                // 377: qrdb.v1.UserAuthFactorAddRequest
-	(*UserAuthFactorAddResponse)(nil),               // 378: qrdb.v1.UserAuthFactorAddResponse
-	(*UserAuthFactorListRequest)(nil),               // 379: qrdb.v1.UserAuthFactorListRequest
-	(*UserAuthFactorListResponse)(nil),              // 380: qrdb.v1.UserAuthFactorListResponse
-	(*UserAuthFactorGetRequest)(nil),                // 381: qrdb.v1.UserAuthFactorGetRequest
-	(*UserAuthFactorGetResponse)(nil),               // 382: qrdb.v1.UserAuthFactorGetResponse
-	(*UserAuthFactorRemoveRequest)(nil),             // 383: qrdb.v1.UserAuthFactorRemoveRequest
-	(*UserAuthFactorRemoveResponse)(nil),            // 384: qrdb.v1.UserAuthFactorRemoveResponse
-	(*UserAuthFactorNewFactor)(nil),                 // 385: qrdb.v1.UserAuthFactorNewFactor
-	(*UserAuthFactorRotateRequest)(nil),             // 386: qrdb.v1.UserAuthFactorRotateRequest
-	(*UserAuthFactorRotateResponse)(nil),            // 387: qrdb.v1.UserAuthFactorRotateResponse
-	(*UserAuthFactorRelabelRequest)(nil),            // 388: qrdb.v1.UserAuthFactorRelabelRequest
-	(*UserAuthFactorRelabelResponse)(nil),           // 389: qrdb.v1.UserAuthFactorRelabelResponse
-	(*UserAuthFactorLoginRequest)(nil),              // 390: qrdb.v1.UserAuthFactorLoginRequest
-	(*UserAuthFactorLoginResponse)(nil),             // 391: qrdb.v1.UserAuthFactorLoginResponse
-	nil,                                             // 392: qrdb.v1.ScanResponse.PairsEntry
-	nil,                                             // 393: qrdb.v1.StartShardRequest.MembersEntry
-	nil,                                             // 394: qrdb.v1.ShardInfoProto.NodesEntry
-	nil,                                             // 395: qrdb.v1.CollectionInfoResponse.SchemaEntry
-	nil,                                             // 396: qrdb.v1.BackupCreateRequest.MetadataEntry
-	nil,                                             // 397: qrdb.v1.BackupInfo.MetadataEntry
-	nil,                                             // 398: qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
-	nil,                                             // 399: qrdb.v1.RAGQueryRequest.FilterEntry
-	nil,                                             // 400: qrdb.v1.RAGQueryResult.MetadataEntry
-	nil,                                             // 401: qrdb.v1.RAGDocumentInfo.MetadataEntry
-	nil,                                             // 402: qrdb.v1.SQLRow.ValuesEntry
-	nil,                                             // 403: qrdb.v1.AuditEvent.AttributesEntry
-	nil,                                             // 404: qrdb.v1.EnrollFactorRequest.MethodParamsEntry
-	nil,                                             // 405: qrdb.v1.EnrollFactorResponse.MetadataEntry
-	nil,                                             // 406: qrdb.v1.ChallengeFactorResponse.MethodDataEntry
-	nil,                                             // 407: qrdb.v1.VerifyFactorRequest.MetadataEntry
-	nil,                                             // 408: qrdb.v1.EnrollmentEntry.MetadataEntry
-	nil,                                             // 409: qrdb.v1.UserAuthFactorRecord.MetadataEntry
-	nil,                                             // 410: qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
-	nil,                                             // 411: qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
-	(*emptypb.Empty)(nil),                           // 412: google.protobuf.Empty
+	(*CompareAndSwapRequest)(nil),                   // 22: qrdb.v1.CompareAndSwapRequest
+	(*CompareAndSwapResponse)(nil),                  // 23: qrdb.v1.CompareAndSwapResponse
+	(*ListRequest)(nil),                             // 24: qrdb.v1.ListRequest
+	(*ListResponse)(nil),                            // 25: qrdb.v1.ListResponse
+	(*ScanRequest)(nil),                             // 26: qrdb.v1.ScanRequest
+	(*ScanResponse)(nil),                            // 27: qrdb.v1.ScanResponse
+	(*KeyValue)(nil),                                // 28: qrdb.v1.KeyValue
+	(*PutWithLeaseRequest)(nil),                     // 29: qrdb.v1.PutWithLeaseRequest
+	(*PutWithLeaseResponse)(nil),                    // 30: qrdb.v1.PutWithLeaseResponse
+	(*GetRevisionRequest)(nil),                      // 31: qrdb.v1.GetRevisionRequest
+	(*GetRevisionResponse)(nil),                     // 32: qrdb.v1.GetRevisionResponse
+	(*GetAtRevisionRequest)(nil),                    // 33: qrdb.v1.GetAtRevisionRequest
+	(*GetAtRevisionResponse)(nil),                   // 34: qrdb.v1.GetAtRevisionResponse
+	(*RangeRequest)(nil),                            // 35: qrdb.v1.RangeRequest
+	(*RangeResponse)(nil),                           // 36: qrdb.v1.RangeResponse
+	(*CompactRequest)(nil),                          // 37: qrdb.v1.CompactRequest
+	(*CurrentRevisionResponse)(nil),                 // 38: qrdb.v1.CurrentRevisionResponse
+	(*RestoreRevisionRequest)(nil),                  // 39: qrdb.v1.RestoreRevisionRequest
+	(*RestoreKeyChange)(nil),                        // 40: qrdb.v1.RestoreKeyChange
+	(*RestoreRevisionResponse)(nil),                 // 41: qrdb.v1.RestoreRevisionResponse
+	(*Compare)(nil),                                 // 42: qrdb.v1.Compare
+	(*Op)(nil),                                      // 43: qrdb.v1.Op
+	(*OpResponse)(nil),                              // 44: qrdb.v1.OpResponse
+	(*TransactionRequest)(nil),                      // 45: qrdb.v1.TransactionRequest
+	(*TransactionResponse)(nil),                     // 46: qrdb.v1.TransactionResponse
+	(*BatchRequest)(nil),                            // 47: qrdb.v1.BatchRequest
+	(*BatchResponse)(nil),                           // 48: qrdb.v1.BatchResponse
+	(*BatchImportRequest)(nil),                      // 49: qrdb.v1.BatchImportRequest
+	(*BatchImportError)(nil),                        // 50: qrdb.v1.BatchImportError
+	(*BatchImportResponse)(nil),                     // 51: qrdb.v1.BatchImportResponse
+	(*Event)(nil),                                   // 52: qrdb.v1.Event
+	(*WatchRequest)(nil),                            // 53: qrdb.v1.WatchRequest
+	(*WatchResponse)(nil),                           // 54: qrdb.v1.WatchResponse
+	(*Lease)(nil),                                   // 55: qrdb.v1.Lease
+	(*LeaseGrantRequest)(nil),                       // 56: qrdb.v1.LeaseGrantRequest
+	(*LeaseGrantResponse)(nil),                      // 57: qrdb.v1.LeaseGrantResponse
+	(*LeaseRevokeRequest)(nil),                      // 58: qrdb.v1.LeaseRevokeRequest
+	(*LeaseKeepAliveRequest)(nil),                   // 59: qrdb.v1.LeaseKeepAliveRequest
+	(*LeaseKeepAliveResponse)(nil),                  // 60: qrdb.v1.LeaseKeepAliveResponse
+	(*LeaseTimeToLiveRequest)(nil),                  // 61: qrdb.v1.LeaseTimeToLiveRequest
+	(*LeaseTimeToLiveResponse)(nil),                 // 62: qrdb.v1.LeaseTimeToLiveResponse
+	(*LeaseListResponse)(nil),                       // 63: qrdb.v1.LeaseListResponse
+	(*LockInfo)(nil),                                // 64: qrdb.v1.LockInfo
+	(*LockAcquireRequest)(nil),                      // 65: qrdb.v1.LockAcquireRequest
+	(*LockAcquireResponse)(nil),                     // 66: qrdb.v1.LockAcquireResponse
+	(*LockTryLockRequest)(nil),                      // 67: qrdb.v1.LockTryLockRequest
+	(*LockTryLockResponse)(nil),                     // 68: qrdb.v1.LockTryLockResponse
+	(*LockReleaseRequest)(nil),                      // 69: qrdb.v1.LockReleaseRequest
+	(*LockExtendRequest)(nil),                       // 70: qrdb.v1.LockExtendRequest
+	(*LockExtendResponse)(nil),                      // 71: qrdb.v1.LockExtendResponse
+	(*LockStatusRequest)(nil),                       // 72: qrdb.v1.LockStatusRequest
+	(*LockStatusResponse)(nil),                      // 73: qrdb.v1.LockStatusResponse
+	(*LockListRequest)(nil),                         // 74: qrdb.v1.LockListRequest
+	(*LockListResponse)(nil),                        // 75: qrdb.v1.LockListResponse
+	(*IndexCreateRequest)(nil),                      // 76: qrdb.v1.IndexCreateRequest
+	(*IndexDropRequest)(nil),                        // 77: qrdb.v1.IndexDropRequest
+	(*IndexQueryRequest)(nil),                       // 78: qrdb.v1.IndexQueryRequest
+	(*IndexQueryResponse)(nil),                      // 79: qrdb.v1.IndexQueryResponse
+	(*IndexScanRequest)(nil),                        // 80: qrdb.v1.IndexScanRequest
+	(*IndexScanEntry)(nil),                          // 81: qrdb.v1.IndexScanEntry
+	(*IndexScanResponse)(nil),                       // 82: qrdb.v1.IndexScanResponse
+	(*IndexListResponse)(nil),                       // 83: qrdb.v1.IndexListResponse
+	(*TSTag)(nil),                                   // 84: qrdb.v1.TSTag
+	(*TSDataPoint)(nil),                             // 85: qrdb.v1.TSDataPoint
+	(*TSWriteRequest)(nil),                          // 86: qrdb.v1.TSWriteRequest
+	(*TSWriteBatchRequest)(nil),                     // 87: qrdb.v1.TSWriteBatchRequest
+	(*TSQueryRequest)(nil),                          // 88: qrdb.v1.TSQueryRequest
+	(*TSQueryResponse)(nil),                         // 89: qrdb.v1.TSQueryResponse
+	(*TSAggregateRequest)(nil),                      // 90: qrdb.v1.TSAggregateRequest
+	(*TSAggResult)(nil),                             // 91: qrdb.v1.TSAggResult
+	(*TSAggregateResponse)(nil),                     // 92: qrdb.v1.TSAggregateResponse
+	(*TSRichQueryRequest)(nil),                      // 93: qrdb.v1.TSRichQueryRequest
+	(*TSRichQueryResponse)(nil),                     // 94: qrdb.v1.TSRichQueryResponse
+	(*TSGroupedResult)(nil),                         // 95: qrdb.v1.TSGroupedResult
+	(*TSDeleteSeriesRequest)(nil),                   // 96: qrdb.v1.TSDeleteSeriesRequest
+	(*TSGetRetentionRequest)(nil),                   // 97: qrdb.v1.TSGetRetentionRequest
+	(*TSRetentionPolicyResponse)(nil),               // 98: qrdb.v1.TSRetentionPolicyResponse
+	(*TSSetRetentionRequest)(nil),                   // 99: qrdb.v1.TSSetRetentionRequest
+	(*TSListMetricsRequest)(nil),                    // 100: qrdb.v1.TSListMetricsRequest
+	(*TSListMetricsResponse)(nil),                   // 101: qrdb.v1.TSListMetricsResponse
+	(*HealthResponse)(nil),                          // 102: qrdb.v1.HealthResponse
+	(*StatusResponse)(nil),                          // 103: qrdb.v1.StatusResponse
+	(*PeersResponse)(nil),                           // 104: qrdb.v1.PeersResponse
+	(*ShardPeers)(nil),                              // 105: qrdb.v1.ShardPeers
+	(*PeerInfo)(nil),                                // 106: qrdb.v1.PeerInfo
+	(*AddMemberRequest)(nil),                        // 107: qrdb.v1.AddMemberRequest
+	(*RemoveMemberRequest)(nil),                     // 108: qrdb.v1.RemoveMemberRequest
+	(*RequestSnapshotMessage)(nil),                  // 109: qrdb.v1.RequestSnapshotMessage
+	(*CapabilitiesRequest)(nil),                     // 110: qrdb.v1.CapabilitiesRequest
+	(*CapabilitiesResponse)(nil),                    // 111: qrdb.v1.CapabilitiesResponse
+	(*StartShardRequest)(nil),                       // 112: qrdb.v1.StartShardRequest
+	(*StopShardRequest)(nil),                        // 113: qrdb.v1.StopShardRequest
+	(*GetShardStateRequest)(nil),                    // 114: qrdb.v1.GetShardStateRequest
+	(*ShardStateResponse)(nil),                      // 115: qrdb.v1.ShardStateResponse
+	(*TopologyResponse)(nil),                        // 116: qrdb.v1.TopologyResponse
+	(*ShardInfoProto)(nil),                          // 117: qrdb.v1.ShardInfoProto
+	(*VectorCreateNamespaceRequest)(nil),            // 118: qrdb.v1.VectorCreateNamespaceRequest
+	(*VectorCreateNamespaceResponse)(nil),           // 119: qrdb.v1.VectorCreateNamespaceResponse
+	(*VectorDeleteNamespaceRequest)(nil),            // 120: qrdb.v1.VectorDeleteNamespaceRequest
+	(*VectorListNamespacesRequest)(nil),             // 121: qrdb.v1.VectorListNamespacesRequest
+	(*VectorListNamespacesResponse)(nil),            // 122: qrdb.v1.VectorListNamespacesResponse
+	(*VectorGetNamespaceInfoRequest)(nil),           // 123: qrdb.v1.VectorGetNamespaceInfoRequest
+	(*VectorNamespaceInfo)(nil),                     // 124: qrdb.v1.VectorNamespaceInfo
+	(*VectorDataProto)(nil),                         // 125: qrdb.v1.VectorDataProto
+	(*VectorUpsertRequest)(nil),                     // 126: qrdb.v1.VectorUpsertRequest
+	(*VectorUpsertResponse)(nil),                    // 127: qrdb.v1.VectorUpsertResponse
+	(*VectorGetRequest)(nil),                        // 128: qrdb.v1.VectorGetRequest
+	(*VectorDeleteRequest)(nil),                     // 129: qrdb.v1.VectorDeleteRequest
+	(*VectorBatchError)(nil),                        // 130: qrdb.v1.VectorBatchError
+	(*VectorBatchUpsertRequest)(nil),                // 131: qrdb.v1.VectorBatchUpsertRequest
+	(*VectorBatchUpsertResponse)(nil),               // 132: qrdb.v1.VectorBatchUpsertResponse
+	(*VectorBatchDeleteRequest)(nil),                // 133: qrdb.v1.VectorBatchDeleteRequest
+	(*VectorBatchDeleteResponse)(nil),               // 134: qrdb.v1.VectorBatchDeleteResponse
+	(*VectorListRequest)(nil),                       // 135: qrdb.v1.VectorListRequest
+	(*VectorListResponse)(nil),                      // 136: qrdb.v1.VectorListResponse
+	(*VectorUpdateMetadataRequest)(nil),             // 137: qrdb.v1.VectorUpdateMetadataRequest
+	(*VectorSearchResultProto)(nil),                 // 138: qrdb.v1.VectorSearchResultProto
+	(*VectorSearchSimilarRequest)(nil),              // 139: qrdb.v1.VectorSearchSimilarRequest
+	(*VectorSearchSimilarResponse)(nil),             // 140: qrdb.v1.VectorSearchSimilarResponse
+	(*VectorSearchByMetadataRequest)(nil),           // 141: qrdb.v1.VectorSearchByMetadataRequest
+	(*VectorSearchByMetadataResponse)(nil),          // 142: qrdb.v1.VectorSearchByMetadataResponse
+	(*VectorHybridSearchRequest)(nil),               // 143: qrdb.v1.VectorHybridSearchRequest
+	(*VectorHybridSearchResponse)(nil),              // 144: qrdb.v1.VectorHybridSearchResponse
+	(*VectorSearchByIDRequest)(nil),                 // 145: qrdb.v1.VectorSearchByIDRequest
+	(*VectorRebuildIndexRequest)(nil),               // 146: qrdb.v1.VectorRebuildIndexRequest
+	(*VectorRebuildIndexResponse)(nil),              // 147: qrdb.v1.VectorRebuildIndexResponse
+	(*VectorGetRebuildProgressRequest)(nil),         // 148: qrdb.v1.VectorGetRebuildProgressRequest
+	(*VectorRebuildProgress)(nil),                   // 149: qrdb.v1.VectorRebuildProgress
+	(*VectorGetIndexStatsRequest)(nil),              // 150: qrdb.v1.VectorGetIndexStatsRequest
+	(*VectorIndexStats)(nil),                        // 151: qrdb.v1.VectorIndexStats
+	(*VectorCompactNamespaceRequest)(nil),           // 152: qrdb.v1.VectorCompactNamespaceRequest
+	(*VectorCompactNamespaceResponse)(nil),          // 153: qrdb.v1.VectorCompactNamespaceResponse
+	(*VectorGetCompactionProgressRequest)(nil),      // 154: qrdb.v1.VectorGetCompactionProgressRequest
+	(*VectorCompactionProgress)(nil),                // 155: qrdb.v1.VectorCompactionProgress
+	(*CreateUserRequest)(nil),                       // 156: qrdb.v1.CreateUserRequest
+	(*GetUserRequest)(nil),                          // 157: qrdb.v1.GetUserRequest
+	(*GetUserByUsernameRequest)(nil),                // 158: qrdb.v1.GetUserByUsernameRequest
+	(*GetUserByCertThumbprintRequest)(nil),          // 159: qrdb.v1.GetUserByCertThumbprintRequest
+	(*AddCertBindingRequest)(nil),                   // 160: qrdb.v1.AddCertBindingRequest
+	(*UpdateUserProtoRequest)(nil),                  // 161: qrdb.v1.UpdateUserProtoRequest
+	(*DeleteUserRequest)(nil),                       // 162: qrdb.v1.DeleteUserRequest
+	(*ListUsersRequest)(nil),                        // 163: qrdb.v1.ListUsersRequest
+	(*ListUsersResponse)(nil),                       // 164: qrdb.v1.ListUsersResponse
+	(*EnableUserRequest)(nil),                       // 165: qrdb.v1.EnableUserRequest
+	(*DisableUserRequest)(nil),                      // 166: qrdb.v1.DisableUserRequest
+	(*UserResponse)(nil),                            // 167: qrdb.v1.UserResponse
+	(*CreateRoleRequest)(nil),                       // 168: qrdb.v1.CreateRoleRequest
+	(*GetRoleRequest)(nil),                          // 169: qrdb.v1.GetRoleRequest
+	(*GetRoleByNameRequest)(nil),                    // 170: qrdb.v1.GetRoleByNameRequest
+	(*ResolveRolePermissionsRequest)(nil),           // 171: qrdb.v1.ResolveRolePermissionsRequest
+	(*ResolveRolePermissionsResponse)(nil),          // 172: qrdb.v1.ResolveRolePermissionsResponse
+	(*UpdateRoleProtoRequest)(nil),                  // 173: qrdb.v1.UpdateRoleProtoRequest
+	(*DeleteRoleRequest)(nil),                       // 174: qrdb.v1.DeleteRoleRequest
+	(*ListRolesRequest)(nil),                        // 175: qrdb.v1.ListRolesRequest
+	(*ListRolesResponse)(nil),                       // 176: qrdb.v1.ListRolesResponse
+	(*AssignRoleRequest)(nil),                       // 177: qrdb.v1.AssignRoleRequest
+	(*UnassignRoleRequest)(nil),                     // 178: qrdb.v1.UnassignRoleRequest
+	(*RoleResponse)(nil),                            // 179: qrdb.v1.RoleResponse
+	(*PermissionCategory)(nil),                      // 180: qrdb.v1.PermissionCategory
+	(*ListPermissionsResponse)(nil),                 // 181: qrdb.v1.ListPermissionsResponse
+	(*GenerateCertRequest)(nil),                     // 182: qrdb.v1.GenerateCertRequest
+	(*CertBundleResponse)(nil),                      // 183: qrdb.v1.CertBundleResponse
+	(*ExportCertRequest)(nil),                       // 184: qrdb.v1.ExportCertRequest
+	(*ExportCertResponse)(nil),                      // 185: qrdb.v1.ExportCertResponse
+	(*RevokeCertRequest)(nil),                       // 186: qrdb.v1.RevokeCertRequest
+	(*ListCertsRequest)(nil),                        // 187: qrdb.v1.ListCertsRequest
+	(*CertRecord)(nil),                              // 188: qrdb.v1.CertRecord
+	(*ListCertsResponse)(nil),                       // 189: qrdb.v1.ListCertsResponse
+	(*CreateCollectionRequest)(nil),                 // 190: qrdb.v1.CreateCollectionRequest
+	(*GetCollectionInfoRequest)(nil),                // 191: qrdb.v1.GetCollectionInfoRequest
+	(*ListCollectionsRequest)(nil),                  // 192: qrdb.v1.ListCollectionsRequest
+	(*DropCollectionRequest)(nil),                   // 193: qrdb.v1.DropCollectionRequest
+	(*CollectionInfoResponse)(nil),                  // 194: qrdb.v1.CollectionInfoResponse
+	(*ListCollectionsResponse)(nil),                 // 195: qrdb.v1.ListCollectionsResponse
+	(*InsertDocumentRequest)(nil),                   // 196: qrdb.v1.InsertDocumentRequest
+	(*InsertDocumentResponse)(nil),                  // 197: qrdb.v1.InsertDocumentResponse
+	(*GetDocumentRequest)(nil),                      // 198: qrdb.v1.GetDocumentRequest
+	(*DocumentResponse)(nil),                        // 199: qrdb.v1.DocumentResponse
+	(*UpdateDocumentRequest)(nil),                   // 200: qrdb.v1.UpdateDocumentRequest
+	(*DeleteDocumentRequest)(nil),                   // 201: qrdb.v1.DeleteDocumentRequest
+	(*ListDocumentsRequest)(nil),                    // 202: qrdb.v1.ListDocumentsRequest
+	(*ListDocumentsResponse)(nil),                   // 203: qrdb.v1.ListDocumentsResponse
+	(*DatabaseCreateRequest)(nil),                   // 204: qrdb.v1.DatabaseCreateRequest
+	(*DatabaseGetRequest)(nil),                      // 205: qrdb.v1.DatabaseGetRequest
+	(*DatabaseDropRequest)(nil),                     // 206: qrdb.v1.DatabaseDropRequest
+	(*DatabaseListResponse)(nil),                    // 207: qrdb.v1.DatabaseListResponse
+	(*DatabaseInfoResponse)(nil),                    // 208: qrdb.v1.DatabaseInfoResponse
+	(*DatabaseProtocolConfig)(nil),                  // 209: qrdb.v1.DatabaseProtocolConfig
+	(*DatabaseEtcdConfig)(nil),                      // 210: qrdb.v1.DatabaseEtcdConfig
+	(*DatabaseRaftConfig)(nil),                      // 211: qrdb.v1.DatabaseRaftConfig
+	(*DatabaseStaticDiscovery)(nil),                 // 212: qrdb.v1.DatabaseStaticDiscovery
+	(*DatabaseMulticastDiscovery)(nil),              // 213: qrdb.v1.DatabaseMulticastDiscovery
+	(*DatabaseDNSDiscovery)(nil),                    // 214: qrdb.v1.DatabaseDNSDiscovery
+	(*DatabaseTokenDiscovery)(nil),                  // 215: qrdb.v1.DatabaseTokenDiscovery
+	(*DatabaseBarrierConfig)(nil),                   // 216: qrdb.v1.DatabaseBarrierConfig
+	(*DatabaseConnectionConfig)(nil),                // 217: qrdb.v1.DatabaseConnectionConfig
+	(*DatabaseUpdateProtocolRequest)(nil),           // 218: qrdb.v1.DatabaseUpdateProtocolRequest
+	(*DatabaseUpdateEtcdRequest)(nil),               // 219: qrdb.v1.DatabaseUpdateEtcdRequest
+	(*DatabaseUpdateRaftRequest)(nil),               // 220: qrdb.v1.DatabaseUpdateRaftRequest
+	(*DatabaseScaleRequest)(nil),                    // 221: qrdb.v1.DatabaseScaleRequest
+	(*DatabaseUpdateBarrierRequest)(nil),            // 222: qrdb.v1.DatabaseUpdateBarrierRequest
+	(*DatabaseUpdateConnectionRequest)(nil),         // 223: qrdb.v1.DatabaseUpdateConnectionRequest
+	(*BarrierInitializeRequest)(nil),                // 224: qrdb.v1.BarrierInitializeRequest
+	(*BarrierUnsealRequest)(nil),                    // 225: qrdb.v1.BarrierUnsealRequest
+	(*BarrierStatusResponse)(nil),                   // 226: qrdb.v1.BarrierStatusResponse
+	(*BarrierEnableEncryptionRequest)(nil),          // 227: qrdb.v1.BarrierEnableEncryptionRequest
+	(*BarrierEnableEncryptionResponse)(nil),         // 228: qrdb.v1.BarrierEnableEncryptionResponse
+	(*BarrierShamirInitializeRequest)(nil),          // 229: qrdb.v1.BarrierShamirInitializeRequest
+	(*BarrierShamirOperationResponse)(nil),          // 230: qrdb.v1.BarrierShamirOperationResponse
+	(*BarrierShamirUnsealShareRequest)(nil),         // 231: qrdb.v1.BarrierShamirUnsealShareRequest
+	(*BarrierShamirUnsealShareResponse)(nil),        // 232: qrdb.v1.BarrierShamirUnsealShareResponse
+	(*BarrierShamirUnsealSharesRequest)(nil),        // 233: qrdb.v1.BarrierShamirUnsealSharesRequest
+	(*BarrierRekeyRequest)(nil),                     // 234: qrdb.v1.BarrierRekeyRequest
+	(*BarrierRecoveryGenerateRequest)(nil),          // 235: qrdb.v1.BarrierRecoveryGenerateRequest
+	(*BarrierRecoveryKeysResponse)(nil),             // 236: qrdb.v1.BarrierRecoveryKeysResponse
+	(*BarrierOfficerRegisterRequest)(nil),           // 237: qrdb.v1.BarrierOfficerRegisterRequest
+	(*BarrierOfficerRegisterResponse)(nil),          // 238: qrdb.v1.BarrierOfficerRegisterResponse
+	(*BarrierOfficerListResponse)(nil),              // 239: qrdb.v1.BarrierOfficerListResponse
+	(*OfficerStatus)(nil),                           // 240: qrdb.v1.OfficerStatus
+	(*BarrierShareClaimBeginRequest)(nil),           // 241: qrdb.v1.BarrierShareClaimBeginRequest
+	(*BarrierShareClaimBeginResponse)(nil),          // 242: qrdb.v1.BarrierShareClaimBeginResponse
+	(*BarrierShareClaimCompleteRequest)(nil),        // 243: qrdb.v1.BarrierShareClaimCompleteRequest
+	(*BarrierShareClaimCompleteResponse)(nil),       // 244: qrdb.v1.BarrierShareClaimCompleteResponse
+	(*BarrierShamirSealVoteRequest)(nil),            // 245: qrdb.v1.BarrierShamirSealVoteRequest
+	(*BarrierShamirSealVoteResponse)(nil),           // 246: qrdb.v1.BarrierShamirSealVoteResponse
+	(*BarrierOfficerClaimStatusResponse)(nil),       // 247: qrdb.v1.BarrierOfficerClaimStatusResponse
+	(*BarrierRecoveryRecoverRequest)(nil),           // 248: qrdb.v1.BarrierRecoveryRecoverRequest
+	(*BarrierRecoveryStatusResponse)(nil),           // 249: qrdb.v1.BarrierRecoveryStatusResponse
+	(*BarrierRootTokenRequest)(nil),                 // 250: qrdb.v1.BarrierRootTokenRequest
+	(*BarrierRootTokenResponse)(nil),                // 251: qrdb.v1.BarrierRootTokenResponse
+	(*CeremonyOfficer)(nil),                         // 252: qrdb.v1.CeremonyOfficer
+	(*CeremonyInitializeRequest)(nil),               // 253: qrdb.v1.CeremonyInitializeRequest
+	(*CeremonyInitializeResponse)(nil),              // 254: qrdb.v1.CeremonyInitializeResponse
+	(*CeremonyStatusResponse)(nil),                  // 255: qrdb.v1.CeremonyStatusResponse
+	(*CeremonyClaimCertBeginRequest)(nil),           // 256: qrdb.v1.CeremonyClaimCertBeginRequest
+	(*CeremonyClaimCertBeginResponse)(nil),          // 257: qrdb.v1.CeremonyClaimCertBeginResponse
+	(*CeremonyClaimCertCompleteRequest)(nil),        // 258: qrdb.v1.CeremonyClaimCertCompleteRequest
+	(*CeremonyClaimCertCompleteResponse)(nil),       // 259: qrdb.v1.CeremonyClaimCertCompleteResponse
+	(*CeremonyBeginClaimShareRequest)(nil),          // 260: qrdb.v1.CeremonyBeginClaimShareRequest
+	(*CeremonyBeginClaimShareResponse)(nil),         // 261: qrdb.v1.CeremonyBeginClaimShareResponse
+	(*CeremonyCompleteClaimShareRequest)(nil),       // 262: qrdb.v1.CeremonyCompleteClaimShareRequest
+	(*CeremonyCompleteClaimShareResponse)(nil),      // 263: qrdb.v1.CeremonyCompleteClaimShareResponse
+	(*CeremonySignCSRRequest)(nil),                  // 264: qrdb.v1.CeremonySignCSRRequest
+	(*CeremonySignCSRResponse)(nil),                 // 265: qrdb.v1.CeremonySignCSRResponse
+	(*CeremonyEnrollExternalOfficerRequest)(nil),    // 266: qrdb.v1.CeremonyEnrollExternalOfficerRequest
+	(*CeremonyEnrollExternalOfficerResponse)(nil),   // 267: qrdb.v1.CeremonyEnrollExternalOfficerResponse
+	(*TenantQuotas)(nil),                            // 268: qrdb.v1.TenantQuotas
+	(*TenantEntitlements)(nil),                      // 269: qrdb.v1.TenantEntitlements
+	(*TenantResponse)(nil),                          // 270: qrdb.v1.TenantResponse
+	(*TenantCreateRequest)(nil),                     // 271: qrdb.v1.TenantCreateRequest
+	(*TenantGetRequest)(nil),                        // 272: qrdb.v1.TenantGetRequest
+	(*TenantListResponse)(nil),                      // 273: qrdb.v1.TenantListResponse
+	(*TenantUpdateRequest)(nil),                     // 274: qrdb.v1.TenantUpdateRequest
+	(*TenantDeleteRequest)(nil),                     // 275: qrdb.v1.TenantDeleteRequest
+	(*TenantUpdateQuotasRequest)(nil),               // 276: qrdb.v1.TenantUpdateQuotasRequest
+	(*TenantUpdateEntitlementsRequest)(nil),         // 277: qrdb.v1.TenantUpdateEntitlementsRequest
+	(*CredentialSubmitRequest)(nil),                 // 278: qrdb.v1.CredentialSubmitRequest
+	(*CredentialStoreRequest)(nil),                  // 279: qrdb.v1.CredentialStoreRequest
+	(*CredentialRetrieveRequest)(nil),               // 280: qrdb.v1.CredentialRetrieveRequest
+	(*CredentialRetrieveResponse)(nil),              // 281: qrdb.v1.CredentialRetrieveResponse
+	(*CredentialStrategyResponse)(nil),              // 282: qrdb.v1.CredentialStrategyResponse
+	(*CredentialDeleteRequest)(nil),                 // 283: qrdb.v1.CredentialDeleteRequest
+	(*CredentialListRequest)(nil),                   // 284: qrdb.v1.CredentialListRequest
+	(*CredentialListResponse)(nil),                  // 285: qrdb.v1.CredentialListResponse
+	(*CredentialRotateRequest)(nil),                 // 286: qrdb.v1.CredentialRotateRequest
+	(*CredentialRotateResponse)(nil),                // 287: qrdb.v1.CredentialRotateResponse
+	(*CredentialRetrieveVersionRequest)(nil),        // 288: qrdb.v1.CredentialRetrieveVersionRequest
+	(*CredentialRetrieveVersionResponse)(nil),       // 289: qrdb.v1.CredentialRetrieveVersionResponse
+	(*CredentialListVersionsRequest)(nil),           // 290: qrdb.v1.CredentialListVersionsRequest
+	(*CredentialVersionInfo)(nil),                   // 291: qrdb.v1.CredentialVersionInfo
+	(*CredentialListVersionsResponse)(nil),          // 292: qrdb.v1.CredentialListVersionsResponse
+	(*CredentialGCRequest)(nil),                     // 293: qrdb.v1.CredentialGCRequest
+	(*CredentialGCResponse)(nil),                    // 294: qrdb.v1.CredentialGCResponse
+	(*BackupCreateRequest)(nil),                     // 295: qrdb.v1.BackupCreateRequest
+	(*BackupInfo)(nil),                              // 296: qrdb.v1.BackupInfo
+	(*BackupListResponse)(nil),                      // 297: qrdb.v1.BackupListResponse
+	(*BackupGetRequest)(nil),                        // 298: qrdb.v1.BackupGetRequest
+	(*BackupDeleteRequest)(nil),                     // 299: qrdb.v1.BackupDeleteRequest
+	(*BackupRestoreRequest)(nil),                    // 300: qrdb.v1.BackupRestoreRequest
+	(*ShardError)(nil),                              // 301: qrdb.v1.ShardError
+	(*BackupRestoreResponse)(nil),                   // 302: qrdb.v1.BackupRestoreResponse
+	(*BackupVerifyRequest)(nil),                     // 303: qrdb.v1.BackupVerifyRequest
+	(*BackupVerifyResponse)(nil),                    // 304: qrdb.v1.BackupVerifyResponse
+	(*RebalanceShardStatsRequest)(nil),              // 305: qrdb.v1.RebalanceShardStatsRequest
+	(*ShardStats)(nil),                              // 306: qrdb.v1.ShardStats
+	(*RebalancePlanRequest)(nil),                    // 307: qrdb.v1.RebalancePlanRequest
+	(*RebalanceMove)(nil),                           // 308: qrdb.v1.RebalanceMove
+	(*RebalancePlan)(nil),                           // 309: qrdb.v1.RebalancePlan
+	(*RebalanceExecutionResponse)(nil),              // 310: qrdb.v1.RebalanceExecutionResponse
+	(*NodeLoad)(nil),                                // 311: qrdb.v1.NodeLoad
+	(*ImbalanceReport)(nil),                         // 312: qrdb.v1.ImbalanceReport
+	(*EmbeddingVector)(nil),                         // 313: qrdb.v1.EmbeddingVector
+	(*EmbeddingUsage)(nil),                          // 314: qrdb.v1.EmbeddingUsage
+	(*EmbeddingModelInfo)(nil),                      // 315: qrdb.v1.EmbeddingModelInfo
+	(*EmbedRequest)(nil),                            // 316: qrdb.v1.EmbedRequest
+	(*EmbedResponse)(nil),                           // 317: qrdb.v1.EmbedResponse
+	(*BatchEmbedRequest)(nil),                       // 318: qrdb.v1.BatchEmbedRequest
+	(*BatchEmbedResponse)(nil),                      // 319: qrdb.v1.BatchEmbedResponse
+	(*ListEmbeddingModelsRequest)(nil),              // 320: qrdb.v1.ListEmbeddingModelsRequest
+	(*ListEmbeddingModelsResponse)(nil),             // 321: qrdb.v1.ListEmbeddingModelsResponse
+	(*ChunkConfig)(nil),                             // 322: qrdb.v1.ChunkConfig
+	(*RAGIngestDocumentRequest)(nil),                // 323: qrdb.v1.RAGIngestDocumentRequest
+	(*RAGIngestDocumentResponse)(nil),               // 324: qrdb.v1.RAGIngestDocumentResponse
+	(*RAGQueryRequest)(nil),                         // 325: qrdb.v1.RAGQueryRequest
+	(*RAGQueryResult)(nil),                          // 326: qrdb.v1.RAGQueryResult
+	(*RAGQueryResponse)(nil),                        // 327: qrdb.v1.RAGQueryResponse
+	(*RAGDeleteDocumentRequest)(nil),                // 328: qrdb.v1.RAGDeleteDocumentRequest
+	(*RAGDeleteDocumentResponse)(nil),               // 329: qrdb.v1.RAGDeleteDocumentResponse
+	(*RAGListDocumentsRequest)(nil),                 // 330: qrdb.v1.RAGListDocumentsRequest
+	(*RAGDocumentInfo)(nil),                         // 331: qrdb.v1.RAGDocumentInfo
+	(*RAGListDocumentsResponse)(nil),                // 332: qrdb.v1.RAGListDocumentsResponse
+	(*DatabaseSealRequest)(nil),                     // 333: qrdb.v1.DatabaseSealRequest
+	(*DatabaseUnsealRequest)(nil),                   // 334: qrdb.v1.DatabaseUnsealRequest
+	(*DatabaseBarrierStatusRequest)(nil),            // 335: qrdb.v1.DatabaseBarrierStatusRequest
+	(*DatabaseBarrierStatusResponse)(nil),           // 336: qrdb.v1.DatabaseBarrierStatusResponse
+	(*SQLQueryRequest)(nil),                         // 337: qrdb.v1.SQLQueryRequest
+	(*SQLRow)(nil),                                  // 338: qrdb.v1.SQLRow
+	(*SQLQueryResponse)(nil),                        // 339: qrdb.v1.SQLQueryResponse
+	(*CeremonyClaimShareBeginRequest)(nil),          // 340: qrdb.v1.CeremonyClaimShareBeginRequest
+	(*CeremonyClaimShareBeginResponse)(nil),         // 341: qrdb.v1.CeremonyClaimShareBeginResponse
+	(*CeremonyClaimShareCompleteRequest)(nil),       // 342: qrdb.v1.CeremonyClaimShareCompleteRequest
+	(*CeremonyCustodianResponse)(nil),               // 343: qrdb.v1.CeremonyCustodianResponse
+	(*CeremonySubmitUnsealShareRequest)(nil),        // 344: qrdb.v1.CeremonySubmitUnsealShareRequest
+	(*CeremonySubmitUnsealShareResponse)(nil),       // 345: qrdb.v1.CeremonySubmitUnsealShareResponse
+	(*TenantBarrierInitRequest)(nil),                // 346: qrdb.v1.TenantBarrierInitRequest
+	(*TenantBarrierInitResponse)(nil),               // 347: qrdb.v1.TenantBarrierInitResponse
+	(*TenantBarrierUnsealRequest)(nil),              // 348: qrdb.v1.TenantBarrierUnsealRequest
+	(*TenantBarrierUnsealShareRequest)(nil),         // 349: qrdb.v1.TenantBarrierUnsealShareRequest
+	(*TenantBarrierUnsealProgress)(nil),             // 350: qrdb.v1.TenantBarrierUnsealProgress
+	(*TenantBarrierSealRequest)(nil),                // 351: qrdb.v1.TenantBarrierSealRequest
+	(*TenantBarrierStatusRequest)(nil),              // 352: qrdb.v1.TenantBarrierStatusRequest
+	(*TenantBarrierStatusResponse)(nil),             // 353: qrdb.v1.TenantBarrierStatusResponse
+	(*TenantBarrierOfficerRegisterRequest)(nil),     // 354: qrdb.v1.TenantBarrierOfficerRegisterRequest
+	(*TenantBarrierOfficerRegisterResponse)(nil),    // 355: qrdb.v1.TenantBarrierOfficerRegisterResponse
+	(*TenantBarrierOfficerListRequest)(nil),         // 356: qrdb.v1.TenantBarrierOfficerListRequest
+	(*TenantBarrierOfficerListResponse)(nil),        // 357: qrdb.v1.TenantBarrierOfficerListResponse
+	(*TenantBarrierShareClaimBeginRequest)(nil),     // 358: qrdb.v1.TenantBarrierShareClaimBeginRequest
+	(*TenantBarrierShareClaimBeginResponse)(nil),    // 359: qrdb.v1.TenantBarrierShareClaimBeginResponse
+	(*TenantBarrierShareClaimCompleteRequest)(nil),  // 360: qrdb.v1.TenantBarrierShareClaimCompleteRequest
+	(*TenantBarrierShareClaimCompleteResponse)(nil), // 361: qrdb.v1.TenantBarrierShareClaimCompleteResponse
+	(*TenantBarrierOfficerClaimStatusRequest)(nil),  // 362: qrdb.v1.TenantBarrierOfficerClaimStatusRequest
+	(*TenantBarrierOfficerClaimStatusResponse)(nil), // 363: qrdb.v1.TenantBarrierOfficerClaimStatusResponse
+	(*TenantBarrierShamirSealVoteRequest)(nil),      // 364: qrdb.v1.TenantBarrierShamirSealVoteRequest
+	(*TenantBarrierShamirSealVoteResponse)(nil),     // 365: qrdb.v1.TenantBarrierShamirSealVoteResponse
+	(*AuditQueryRequest)(nil),                       // 366: qrdb.v1.AuditQueryRequest
+	(*AuditQueryResponse)(nil),                      // 367: qrdb.v1.AuditQueryResponse
+	(*AuditEvent)(nil),                              // 368: qrdb.v1.AuditEvent
+	(*EnrollFactorRequest)(nil),                     // 369: qrdb.v1.EnrollFactorRequest
+	(*EnrollFactorResponse)(nil),                    // 370: qrdb.v1.EnrollFactorResponse
+	(*ChallengeFactorRequest)(nil),                  // 371: qrdb.v1.ChallengeFactorRequest
+	(*ChallengeFactorResponse)(nil),                 // 372: qrdb.v1.ChallengeFactorResponse
+	(*VerifyFactorRequest)(nil),                     // 373: qrdb.v1.VerifyFactorRequest
+	(*ListFactorsRequest)(nil),                      // 374: qrdb.v1.ListFactorsRequest
+	(*EnrollmentEntry)(nil),                         // 375: qrdb.v1.EnrollmentEntry
+	(*ListFactorsResponse)(nil),                     // 376: qrdb.v1.ListFactorsResponse
+	(*RevokeFactorRequest)(nil),                     // 377: qrdb.v1.RevokeFactorRequest
+	(*UserAuthFactorRecord)(nil),                    // 378: qrdb.v1.UserAuthFactorRecord
+	(*UserAuthFactorAddRequest)(nil),                // 379: qrdb.v1.UserAuthFactorAddRequest
+	(*UserAuthFactorAddResponse)(nil),               // 380: qrdb.v1.UserAuthFactorAddResponse
+	(*UserAuthFactorListRequest)(nil),               // 381: qrdb.v1.UserAuthFactorListRequest
+	(*UserAuthFactorListResponse)(nil),              // 382: qrdb.v1.UserAuthFactorListResponse
+	(*UserAuthFactorGetRequest)(nil),                // 383: qrdb.v1.UserAuthFactorGetRequest
+	(*UserAuthFactorGetResponse)(nil),               // 384: qrdb.v1.UserAuthFactorGetResponse
+	(*UserAuthFactorRemoveRequest)(nil),             // 385: qrdb.v1.UserAuthFactorRemoveRequest
+	(*UserAuthFactorRemoveResponse)(nil),            // 386: qrdb.v1.UserAuthFactorRemoveResponse
+	(*UserAuthFactorNewFactor)(nil),                 // 387: qrdb.v1.UserAuthFactorNewFactor
+	(*UserAuthFactorRotateRequest)(nil),             // 388: qrdb.v1.UserAuthFactorRotateRequest
+	(*UserAuthFactorRotateResponse)(nil),            // 389: qrdb.v1.UserAuthFactorRotateResponse
+	(*UserAuthFactorRelabelRequest)(nil),            // 390: qrdb.v1.UserAuthFactorRelabelRequest
+	(*UserAuthFactorRelabelResponse)(nil),           // 391: qrdb.v1.UserAuthFactorRelabelResponse
+	(*UserAuthFactorLoginRequest)(nil),              // 392: qrdb.v1.UserAuthFactorLoginRequest
+	(*UserAuthFactorLoginResponse)(nil),             // 393: qrdb.v1.UserAuthFactorLoginResponse
+	nil,                                             // 394: qrdb.v1.ScanResponse.PairsEntry
+	nil,                                             // 395: qrdb.v1.StartShardRequest.MembersEntry
+	nil,                                             // 396: qrdb.v1.ShardInfoProto.NodesEntry
+	nil,                                             // 397: qrdb.v1.CollectionInfoResponse.SchemaEntry
+	nil,                                             // 398: qrdb.v1.BackupCreateRequest.MetadataEntry
+	nil,                                             // 399: qrdb.v1.BackupInfo.MetadataEntry
+	nil,                                             // 400: qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
+	nil,                                             // 401: qrdb.v1.RAGQueryRequest.FilterEntry
+	nil,                                             // 402: qrdb.v1.RAGQueryResult.MetadataEntry
+	nil,                                             // 403: qrdb.v1.RAGDocumentInfo.MetadataEntry
+	nil,                                             // 404: qrdb.v1.SQLRow.ValuesEntry
+	nil,                                             // 405: qrdb.v1.AuditEvent.AttributesEntry
+	nil,                                             // 406: qrdb.v1.EnrollFactorRequest.MethodParamsEntry
+	nil,                                             // 407: qrdb.v1.EnrollFactorResponse.MetadataEntry
+	nil,                                             // 408: qrdb.v1.ChallengeFactorResponse.MethodDataEntry
+	nil,                                             // 409: qrdb.v1.VerifyFactorRequest.MetadataEntry
+	nil,                                             // 410: qrdb.v1.EnrollmentEntry.MetadataEntry
+	nil,                                             // 411: qrdb.v1.UserAuthFactorRecord.MetadataEntry
+	nil,                                             // 412: qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
+	nil,                                             // 413: qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
+	(*emptypb.Empty)(nil),                           // 414: google.protobuf.Empty
 }
 var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	3,   // 0: qrdb.v1.PutRequest.write_mode:type_name -> qrdb.v1.WriteMode
@@ -26822,593 +26940,595 @@ var file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_depIdxs = []int32{
 	3,   // 2: qrdb.v1.DeleteRequest.write_mode:type_name -> qrdb.v1.WriteMode
 	2,   // 3: qrdb.v1.ListRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
 	2,   // 4: qrdb.v1.ScanRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	392, // 5: qrdb.v1.ScanResponse.pairs:type_name -> qrdb.v1.ScanResponse.PairsEntry
+	394, // 5: qrdb.v1.ScanResponse.pairs:type_name -> qrdb.v1.ScanResponse.PairsEntry
 	3,   // 6: qrdb.v1.PutWithLeaseRequest.write_mode:type_name -> qrdb.v1.WriteMode
-	26,  // 7: qrdb.v1.PutWithLeaseResponse.kv:type_name -> qrdb.v1.KeyValue
+	28,  // 7: qrdb.v1.PutWithLeaseResponse.kv:type_name -> qrdb.v1.KeyValue
 	2,   // 8: qrdb.v1.GetRevisionRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	26,  // 9: qrdb.v1.GetRevisionResponse.kv:type_name -> qrdb.v1.KeyValue
+	28,  // 9: qrdb.v1.GetRevisionResponse.kv:type_name -> qrdb.v1.KeyValue
 	2,   // 10: qrdb.v1.GetAtRevisionRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	26,  // 11: qrdb.v1.GetAtRevisionResponse.kv:type_name -> qrdb.v1.KeyValue
+	28,  // 11: qrdb.v1.GetAtRevisionResponse.kv:type_name -> qrdb.v1.KeyValue
 	0,   // 12: qrdb.v1.RangeRequest.sort_order:type_name -> qrdb.v1.SortOrder
 	1,   // 13: qrdb.v1.RangeRequest.sort_target:type_name -> qrdb.v1.SortTarget
 	2,   // 14: qrdb.v1.RangeRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	26,  // 15: qrdb.v1.RangeResponse.kvs:type_name -> qrdb.v1.KeyValue
+	28,  // 15: qrdb.v1.RangeResponse.kvs:type_name -> qrdb.v1.KeyValue
 	4,   // 16: qrdb.v1.RestoreKeyChange.action:type_name -> qrdb.v1.RestoreAction
-	38,  // 17: qrdb.v1.RestoreRevisionResponse.changes:type_name -> qrdb.v1.RestoreKeyChange
-	38,  // 18: qrdb.v1.RestoreRevisionResponse.conflicts:type_name -> qrdb.v1.RestoreKeyChange
+	40,  // 17: qrdb.v1.RestoreRevisionResponse.changes:type_name -> qrdb.v1.RestoreKeyChange
+	40,  // 18: qrdb.v1.RestoreRevisionResponse.conflicts:type_name -> qrdb.v1.RestoreKeyChange
 	5,   // 19: qrdb.v1.Compare.target:type_name -> qrdb.v1.CompareTarget
 	6,   // 20: qrdb.v1.Compare.result:type_name -> qrdb.v1.CompareResult
 	7,   // 21: qrdb.v1.Op.type:type_name -> qrdb.v1.OpType
-	26,  // 22: qrdb.v1.OpResponse.kvs:type_name -> qrdb.v1.KeyValue
-	40,  // 23: qrdb.v1.TransactionRequest.compares:type_name -> qrdb.v1.Compare
-	41,  // 24: qrdb.v1.TransactionRequest.success_ops:type_name -> qrdb.v1.Op
-	41,  // 25: qrdb.v1.TransactionRequest.failure_ops:type_name -> qrdb.v1.Op
-	42,  // 26: qrdb.v1.TransactionResponse.responses:type_name -> qrdb.v1.OpResponse
-	41,  // 27: qrdb.v1.BatchRequest.ops:type_name -> qrdb.v1.Op
-	42,  // 28: qrdb.v1.BatchResponse.responses:type_name -> qrdb.v1.OpResponse
-	48,  // 29: qrdb.v1.BatchImportResponse.errors:type_name -> qrdb.v1.BatchImportError
+	28,  // 22: qrdb.v1.OpResponse.kvs:type_name -> qrdb.v1.KeyValue
+	42,  // 23: qrdb.v1.TransactionRequest.compares:type_name -> qrdb.v1.Compare
+	43,  // 24: qrdb.v1.TransactionRequest.success_ops:type_name -> qrdb.v1.Op
+	43,  // 25: qrdb.v1.TransactionRequest.failure_ops:type_name -> qrdb.v1.Op
+	44,  // 26: qrdb.v1.TransactionResponse.responses:type_name -> qrdb.v1.OpResponse
+	43,  // 27: qrdb.v1.BatchRequest.ops:type_name -> qrdb.v1.Op
+	44,  // 28: qrdb.v1.BatchResponse.responses:type_name -> qrdb.v1.OpResponse
+	50,  // 29: qrdb.v1.BatchImportResponse.errors:type_name -> qrdb.v1.BatchImportError
 	8,   // 30: qrdb.v1.Event.type:type_name -> qrdb.v1.EventType
-	26,  // 31: qrdb.v1.Event.kv:type_name -> qrdb.v1.KeyValue
-	26,  // 32: qrdb.v1.Event.prev_kv:type_name -> qrdb.v1.KeyValue
-	50,  // 33: qrdb.v1.WatchResponse.events:type_name -> qrdb.v1.Event
-	53,  // 34: qrdb.v1.LeaseGrantResponse.lease:type_name -> qrdb.v1.Lease
-	53,  // 35: qrdb.v1.LeaseKeepAliveResponse.lease:type_name -> qrdb.v1.Lease
-	53,  // 36: qrdb.v1.LeaseTimeToLiveResponse.lease:type_name -> qrdb.v1.Lease
-	53,  // 37: qrdb.v1.LeaseListResponse.leases:type_name -> qrdb.v1.Lease
-	62,  // 38: qrdb.v1.LockAcquireResponse.lock:type_name -> qrdb.v1.LockInfo
-	62,  // 39: qrdb.v1.LockTryLockResponse.lock:type_name -> qrdb.v1.LockInfo
-	62,  // 40: qrdb.v1.LockExtendResponse.lock:type_name -> qrdb.v1.LockInfo
-	62,  // 41: qrdb.v1.LockStatusResponse.lock:type_name -> qrdb.v1.LockInfo
-	62,  // 42: qrdb.v1.LockListResponse.locks:type_name -> qrdb.v1.LockInfo
-	79,  // 43: qrdb.v1.IndexScanResponse.entries:type_name -> qrdb.v1.IndexScanEntry
-	82,  // 44: qrdb.v1.TSDataPoint.tags:type_name -> qrdb.v1.TSTag
-	83,  // 45: qrdb.v1.TSWriteRequest.point:type_name -> qrdb.v1.TSDataPoint
-	83,  // 46: qrdb.v1.TSWriteBatchRequest.points:type_name -> qrdb.v1.TSDataPoint
-	82,  // 47: qrdb.v1.TSQueryRequest.tags:type_name -> qrdb.v1.TSTag
+	28,  // 31: qrdb.v1.Event.kv:type_name -> qrdb.v1.KeyValue
+	28,  // 32: qrdb.v1.Event.prev_kv:type_name -> qrdb.v1.KeyValue
+	52,  // 33: qrdb.v1.WatchResponse.events:type_name -> qrdb.v1.Event
+	55,  // 34: qrdb.v1.LeaseGrantResponse.lease:type_name -> qrdb.v1.Lease
+	55,  // 35: qrdb.v1.LeaseKeepAliveResponse.lease:type_name -> qrdb.v1.Lease
+	55,  // 36: qrdb.v1.LeaseTimeToLiveResponse.lease:type_name -> qrdb.v1.Lease
+	55,  // 37: qrdb.v1.LeaseListResponse.leases:type_name -> qrdb.v1.Lease
+	64,  // 38: qrdb.v1.LockAcquireResponse.lock:type_name -> qrdb.v1.LockInfo
+	64,  // 39: qrdb.v1.LockTryLockResponse.lock:type_name -> qrdb.v1.LockInfo
+	64,  // 40: qrdb.v1.LockExtendResponse.lock:type_name -> qrdb.v1.LockInfo
+	64,  // 41: qrdb.v1.LockStatusResponse.lock:type_name -> qrdb.v1.LockInfo
+	64,  // 42: qrdb.v1.LockListResponse.locks:type_name -> qrdb.v1.LockInfo
+	81,  // 43: qrdb.v1.IndexScanResponse.entries:type_name -> qrdb.v1.IndexScanEntry
+	84,  // 44: qrdb.v1.TSDataPoint.tags:type_name -> qrdb.v1.TSTag
+	85,  // 45: qrdb.v1.TSWriteRequest.point:type_name -> qrdb.v1.TSDataPoint
+	85,  // 46: qrdb.v1.TSWriteBatchRequest.points:type_name -> qrdb.v1.TSDataPoint
+	84,  // 47: qrdb.v1.TSQueryRequest.tags:type_name -> qrdb.v1.TSTag
 	2,   // 48: qrdb.v1.TSQueryRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	83,  // 49: qrdb.v1.TSQueryResponse.points:type_name -> qrdb.v1.TSDataPoint
+	85,  // 49: qrdb.v1.TSQueryResponse.points:type_name -> qrdb.v1.TSDataPoint
 	9,   // 50: qrdb.v1.TSAggregateRequest.function:type_name -> qrdb.v1.AggFunc
 	2,   // 51: qrdb.v1.TSAggregateRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	89,  // 52: qrdb.v1.TSAggregateResponse.results:type_name -> qrdb.v1.TSAggResult
-	82,  // 53: qrdb.v1.TSRichQueryRequest.tags:type_name -> qrdb.v1.TSTag
+	91,  // 52: qrdb.v1.TSAggregateResponse.results:type_name -> qrdb.v1.TSAggResult
+	84,  // 53: qrdb.v1.TSRichQueryRequest.tags:type_name -> qrdb.v1.TSTag
 	9,   // 54: qrdb.v1.TSRichQueryRequest.aggregation:type_name -> qrdb.v1.AggFunc
 	2,   // 55: qrdb.v1.TSRichQueryRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	82,  // 56: qrdb.v1.TSRichQueryResponse.tags:type_name -> qrdb.v1.TSTag
-	83,  // 57: qrdb.v1.TSRichQueryResponse.points:type_name -> qrdb.v1.TSDataPoint
-	93,  // 58: qrdb.v1.TSRichQueryResponse.grouped_results:type_name -> qrdb.v1.TSGroupedResult
-	82,  // 59: qrdb.v1.TSGroupedResult.tags:type_name -> qrdb.v1.TSTag
-	83,  // 60: qrdb.v1.TSGroupedResult.points:type_name -> qrdb.v1.TSDataPoint
-	82,  // 61: qrdb.v1.TSDeleteSeriesRequest.tags:type_name -> qrdb.v1.TSTag
+	84,  // 56: qrdb.v1.TSRichQueryResponse.tags:type_name -> qrdb.v1.TSTag
+	85,  // 57: qrdb.v1.TSRichQueryResponse.points:type_name -> qrdb.v1.TSDataPoint
+	95,  // 58: qrdb.v1.TSRichQueryResponse.grouped_results:type_name -> qrdb.v1.TSGroupedResult
+	84,  // 59: qrdb.v1.TSGroupedResult.tags:type_name -> qrdb.v1.TSTag
+	85,  // 60: qrdb.v1.TSGroupedResult.points:type_name -> qrdb.v1.TSDataPoint
+	84,  // 61: qrdb.v1.TSDeleteSeriesRequest.tags:type_name -> qrdb.v1.TSTag
 	9,   // 62: qrdb.v1.TSRetentionPolicyResponse.aggregation:type_name -> qrdb.v1.AggFunc
 	9,   // 63: qrdb.v1.TSSetRetentionRequest.aggregation:type_name -> qrdb.v1.AggFunc
 	2,   // 64: qrdb.v1.TSListMetricsRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	103, // 65: qrdb.v1.PeersResponse.shards:type_name -> qrdb.v1.ShardPeers
-	104, // 66: qrdb.v1.ShardPeers.peers:type_name -> qrdb.v1.PeerInfo
-	393, // 67: qrdb.v1.StartShardRequest.members:type_name -> qrdb.v1.StartShardRequest.MembersEntry
-	115, // 68: qrdb.v1.TopologyResponse.shards:type_name -> qrdb.v1.ShardInfoProto
-	394, // 69: qrdb.v1.ShardInfoProto.nodes:type_name -> qrdb.v1.ShardInfoProto.NodesEntry
+	105, // 65: qrdb.v1.PeersResponse.shards:type_name -> qrdb.v1.ShardPeers
+	106, // 66: qrdb.v1.ShardPeers.peers:type_name -> qrdb.v1.PeerInfo
+	395, // 67: qrdb.v1.StartShardRequest.members:type_name -> qrdb.v1.StartShardRequest.MembersEntry
+	117, // 68: qrdb.v1.TopologyResponse.shards:type_name -> qrdb.v1.ShardInfoProto
+	396, // 69: qrdb.v1.ShardInfoProto.nodes:type_name -> qrdb.v1.ShardInfoProto.NodesEntry
 	10,  // 70: qrdb.v1.VectorCreateNamespaceRequest.distance_metric:type_name -> qrdb.v1.DistanceMetric
 	11,  // 71: qrdb.v1.VectorCreateNamespaceRequest.index_type:type_name -> qrdb.v1.VectorIndexType
 	10,  // 72: qrdb.v1.VectorNamespaceInfo.distance_metric:type_name -> qrdb.v1.DistanceMetric
 	11,  // 73: qrdb.v1.VectorNamespaceInfo.index_type:type_name -> qrdb.v1.VectorIndexType
 	2,   // 74: qrdb.v1.VectorGetRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	123, // 75: qrdb.v1.VectorBatchUpsertRequest.vectors:type_name -> qrdb.v1.VectorDataProto
-	128, // 76: qrdb.v1.VectorBatchUpsertResponse.errors:type_name -> qrdb.v1.VectorBatchError
-	128, // 77: qrdb.v1.VectorBatchDeleteResponse.errors:type_name -> qrdb.v1.VectorBatchError
-	123, // 78: qrdb.v1.VectorListResponse.vectors:type_name -> qrdb.v1.VectorDataProto
+	125, // 75: qrdb.v1.VectorBatchUpsertRequest.vectors:type_name -> qrdb.v1.VectorDataProto
+	130, // 76: qrdb.v1.VectorBatchUpsertResponse.errors:type_name -> qrdb.v1.VectorBatchError
+	130, // 77: qrdb.v1.VectorBatchDeleteResponse.errors:type_name -> qrdb.v1.VectorBatchError
+	125, // 78: qrdb.v1.VectorListResponse.vectors:type_name -> qrdb.v1.VectorDataProto
 	2,   // 79: qrdb.v1.VectorSearchSimilarRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	136, // 80: qrdb.v1.VectorSearchSimilarResponse.results:type_name -> qrdb.v1.VectorSearchResultProto
+	138, // 80: qrdb.v1.VectorSearchSimilarResponse.results:type_name -> qrdb.v1.VectorSearchResultProto
 	2,   // 81: qrdb.v1.VectorSearchByMetadataRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	123, // 82: qrdb.v1.VectorSearchByMetadataResponse.results:type_name -> qrdb.v1.VectorDataProto
+	125, // 82: qrdb.v1.VectorSearchByMetadataResponse.results:type_name -> qrdb.v1.VectorDataProto
 	2,   // 83: qrdb.v1.VectorHybridSearchRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
-	136, // 84: qrdb.v1.VectorHybridSearchResponse.results:type_name -> qrdb.v1.VectorSearchResultProto
+	138, // 84: qrdb.v1.VectorHybridSearchResponse.results:type_name -> qrdb.v1.VectorSearchResultProto
 	2,   // 85: qrdb.v1.VectorSearchByIDRequest.consistency:type_name -> qrdb.v1.ConsistencyLevel
 	10,  // 86: qrdb.v1.VectorIndexStats.distance_metric:type_name -> qrdb.v1.DistanceMetric
 	11,  // 87: qrdb.v1.VectorIndexStats.index_type:type_name -> qrdb.v1.VectorIndexType
-	165, // 88: qrdb.v1.ListUsersResponse.users:type_name -> qrdb.v1.UserResponse
-	177, // 89: qrdb.v1.ListRolesResponse.roles:type_name -> qrdb.v1.RoleResponse
-	178, // 90: qrdb.v1.ListPermissionsResponse.categories:type_name -> qrdb.v1.PermissionCategory
-	186, // 91: qrdb.v1.ListCertsResponse.certs:type_name -> qrdb.v1.CertRecord
-	395, // 92: qrdb.v1.CollectionInfoResponse.schema:type_name -> qrdb.v1.CollectionInfoResponse.SchemaEntry
-	192, // 93: qrdb.v1.ListCollectionsResponse.collections:type_name -> qrdb.v1.CollectionInfoResponse
-	197, // 94: qrdb.v1.ListDocumentsResponse.documents:type_name -> qrdb.v1.DocumentResponse
-	207, // 95: qrdb.v1.DatabaseCreateRequest.protocol:type_name -> qrdb.v1.DatabaseProtocolConfig
-	209, // 96: qrdb.v1.DatabaseCreateRequest.raft:type_name -> qrdb.v1.DatabaseRaftConfig
-	214, // 97: qrdb.v1.DatabaseCreateRequest.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
-	206, // 98: qrdb.v1.DatabaseListResponse.databases:type_name -> qrdb.v1.DatabaseInfoResponse
-	207, // 99: qrdb.v1.DatabaseInfoResponse.protocol:type_name -> qrdb.v1.DatabaseProtocolConfig
-	209, // 100: qrdb.v1.DatabaseInfoResponse.raft:type_name -> qrdb.v1.DatabaseRaftConfig
-	214, // 101: qrdb.v1.DatabaseInfoResponse.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
-	215, // 102: qrdb.v1.DatabaseInfoResponse.connection:type_name -> qrdb.v1.DatabaseConnectionConfig
-	208, // 103: qrdb.v1.DatabaseProtocolConfig.etcd:type_name -> qrdb.v1.DatabaseEtcdConfig
-	210, // 104: qrdb.v1.DatabaseRaftConfig.static:type_name -> qrdb.v1.DatabaseStaticDiscovery
-	211, // 105: qrdb.v1.DatabaseRaftConfig.multicast:type_name -> qrdb.v1.DatabaseMulticastDiscovery
-	212, // 106: qrdb.v1.DatabaseRaftConfig.dns:type_name -> qrdb.v1.DatabaseDNSDiscovery
-	213, // 107: qrdb.v1.DatabaseRaftConfig.token:type_name -> qrdb.v1.DatabaseTokenDiscovery
-	209, // 108: qrdb.v1.DatabaseUpdateRaftRequest.raft:type_name -> qrdb.v1.DatabaseRaftConfig
-	214, // 109: qrdb.v1.DatabaseUpdateBarrierRequest.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
-	215, // 110: qrdb.v1.DatabaseUpdateConnectionRequest.connection:type_name -> qrdb.v1.DatabaseConnectionConfig
-	238, // 111: qrdb.v1.BarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	238, // 112: qrdb.v1.BarrierOfficerClaimStatusResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	250, // 113: qrdb.v1.CeremonyInitializeRequest.officers:type_name -> qrdb.v1.CeremonyOfficer
-	266, // 114: qrdb.v1.TenantResponse.quotas:type_name -> qrdb.v1.TenantQuotas
-	267, // 115: qrdb.v1.TenantResponse.entitlements:type_name -> qrdb.v1.TenantEntitlements
-	268, // 116: qrdb.v1.TenantListResponse.tenants:type_name -> qrdb.v1.TenantResponse
-	266, // 117: qrdb.v1.TenantUpdateQuotasRequest.quotas:type_name -> qrdb.v1.TenantQuotas
-	267, // 118: qrdb.v1.TenantUpdateEntitlementsRequest.entitlements:type_name -> qrdb.v1.TenantEntitlements
-	289, // 119: qrdb.v1.CredentialListVersionsResponse.versions:type_name -> qrdb.v1.CredentialVersionInfo
-	396, // 120: qrdb.v1.BackupCreateRequest.metadata:type_name -> qrdb.v1.BackupCreateRequest.MetadataEntry
-	397, // 121: qrdb.v1.BackupInfo.metadata:type_name -> qrdb.v1.BackupInfo.MetadataEntry
-	294, // 122: qrdb.v1.BackupListResponse.backups:type_name -> qrdb.v1.BackupInfo
-	299, // 123: qrdb.v1.BackupRestoreResponse.errors:type_name -> qrdb.v1.ShardError
-	306, // 124: qrdb.v1.RebalancePlan.moves:type_name -> qrdb.v1.RebalanceMove
-	309, // 125: qrdb.v1.ImbalanceReport.nodes:type_name -> qrdb.v1.NodeLoad
-	311, // 126: qrdb.v1.EmbedResponse.embeddings:type_name -> qrdb.v1.EmbeddingVector
-	312, // 127: qrdb.v1.EmbedResponse.usage:type_name -> qrdb.v1.EmbeddingUsage
-	311, // 128: qrdb.v1.BatchEmbedResponse.embeddings:type_name -> qrdb.v1.EmbeddingVector
-	312, // 129: qrdb.v1.BatchEmbedResponse.total_usage:type_name -> qrdb.v1.EmbeddingUsage
-	313, // 130: qrdb.v1.ListEmbeddingModelsResponse.models:type_name -> qrdb.v1.EmbeddingModelInfo
-	320, // 131: qrdb.v1.RAGIngestDocumentRequest.chunk_config:type_name -> qrdb.v1.ChunkConfig
-	398, // 132: qrdb.v1.RAGIngestDocumentRequest.metadata:type_name -> qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
-	399, // 133: qrdb.v1.RAGQueryRequest.filter:type_name -> qrdb.v1.RAGQueryRequest.FilterEntry
-	400, // 134: qrdb.v1.RAGQueryResult.metadata:type_name -> qrdb.v1.RAGQueryResult.MetadataEntry
-	324, // 135: qrdb.v1.RAGQueryResponse.results:type_name -> qrdb.v1.RAGQueryResult
-	401, // 136: qrdb.v1.RAGDocumentInfo.metadata:type_name -> qrdb.v1.RAGDocumentInfo.MetadataEntry
-	329, // 137: qrdb.v1.RAGListDocumentsResponse.documents:type_name -> qrdb.v1.RAGDocumentInfo
-	402, // 138: qrdb.v1.SQLRow.values:type_name -> qrdb.v1.SQLRow.ValuesEntry
-	336, // 139: qrdb.v1.SQLQueryResponse.rows:type_name -> qrdb.v1.SQLRow
-	238, // 140: qrdb.v1.TenantBarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	238, // 141: qrdb.v1.TenantBarrierOfficerClaimStatusResponse.officers:type_name -> qrdb.v1.OfficerStatus
-	366, // 142: qrdb.v1.AuditQueryResponse.events:type_name -> qrdb.v1.AuditEvent
-	403, // 143: qrdb.v1.AuditEvent.attributes:type_name -> qrdb.v1.AuditEvent.AttributesEntry
-	404, // 144: qrdb.v1.EnrollFactorRequest.method_params:type_name -> qrdb.v1.EnrollFactorRequest.MethodParamsEntry
-	405, // 145: qrdb.v1.EnrollFactorResponse.metadata:type_name -> qrdb.v1.EnrollFactorResponse.MetadataEntry
-	406, // 146: qrdb.v1.ChallengeFactorResponse.method_data:type_name -> qrdb.v1.ChallengeFactorResponse.MethodDataEntry
-	407, // 147: qrdb.v1.VerifyFactorRequest.metadata:type_name -> qrdb.v1.VerifyFactorRequest.MetadataEntry
-	408, // 148: qrdb.v1.EnrollmentEntry.metadata:type_name -> qrdb.v1.EnrollmentEntry.MetadataEntry
-	373, // 149: qrdb.v1.ListFactorsResponse.enrollments:type_name -> qrdb.v1.EnrollmentEntry
-	409, // 150: qrdb.v1.UserAuthFactorRecord.metadata:type_name -> qrdb.v1.UserAuthFactorRecord.MetadataEntry
-	410, // 151: qrdb.v1.UserAuthFactorAddRequest.metadata:type_name -> qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
-	376, // 152: qrdb.v1.UserAuthFactorAddResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	376, // 153: qrdb.v1.UserAuthFactorListResponse.factors:type_name -> qrdb.v1.UserAuthFactorRecord
-	376, // 154: qrdb.v1.UserAuthFactorGetResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	411, // 155: qrdb.v1.UserAuthFactorNewFactor.metadata:type_name -> qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
-	385, // 156: qrdb.v1.UserAuthFactorRotateRequest.new_factor:type_name -> qrdb.v1.UserAuthFactorNewFactor
-	376, // 157: qrdb.v1.UserAuthFactorRotateResponse.new_factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	376, // 158: qrdb.v1.UserAuthFactorRelabelResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
-	376, // 159: qrdb.v1.UserAuthFactorLoginResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	167, // 88: qrdb.v1.ListUsersResponse.users:type_name -> qrdb.v1.UserResponse
+	179, // 89: qrdb.v1.ListRolesResponse.roles:type_name -> qrdb.v1.RoleResponse
+	180, // 90: qrdb.v1.ListPermissionsResponse.categories:type_name -> qrdb.v1.PermissionCategory
+	188, // 91: qrdb.v1.ListCertsResponse.certs:type_name -> qrdb.v1.CertRecord
+	397, // 92: qrdb.v1.CollectionInfoResponse.schema:type_name -> qrdb.v1.CollectionInfoResponse.SchemaEntry
+	194, // 93: qrdb.v1.ListCollectionsResponse.collections:type_name -> qrdb.v1.CollectionInfoResponse
+	199, // 94: qrdb.v1.ListDocumentsResponse.documents:type_name -> qrdb.v1.DocumentResponse
+	209, // 95: qrdb.v1.DatabaseCreateRequest.protocol:type_name -> qrdb.v1.DatabaseProtocolConfig
+	211, // 96: qrdb.v1.DatabaseCreateRequest.raft:type_name -> qrdb.v1.DatabaseRaftConfig
+	216, // 97: qrdb.v1.DatabaseCreateRequest.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
+	208, // 98: qrdb.v1.DatabaseListResponse.databases:type_name -> qrdb.v1.DatabaseInfoResponse
+	209, // 99: qrdb.v1.DatabaseInfoResponse.protocol:type_name -> qrdb.v1.DatabaseProtocolConfig
+	211, // 100: qrdb.v1.DatabaseInfoResponse.raft:type_name -> qrdb.v1.DatabaseRaftConfig
+	216, // 101: qrdb.v1.DatabaseInfoResponse.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
+	217, // 102: qrdb.v1.DatabaseInfoResponse.connection:type_name -> qrdb.v1.DatabaseConnectionConfig
+	210, // 103: qrdb.v1.DatabaseProtocolConfig.etcd:type_name -> qrdb.v1.DatabaseEtcdConfig
+	212, // 104: qrdb.v1.DatabaseRaftConfig.static:type_name -> qrdb.v1.DatabaseStaticDiscovery
+	213, // 105: qrdb.v1.DatabaseRaftConfig.multicast:type_name -> qrdb.v1.DatabaseMulticastDiscovery
+	214, // 106: qrdb.v1.DatabaseRaftConfig.dns:type_name -> qrdb.v1.DatabaseDNSDiscovery
+	215, // 107: qrdb.v1.DatabaseRaftConfig.token:type_name -> qrdb.v1.DatabaseTokenDiscovery
+	211, // 108: qrdb.v1.DatabaseUpdateRaftRequest.raft:type_name -> qrdb.v1.DatabaseRaftConfig
+	216, // 109: qrdb.v1.DatabaseUpdateBarrierRequest.barrier:type_name -> qrdb.v1.DatabaseBarrierConfig
+	217, // 110: qrdb.v1.DatabaseUpdateConnectionRequest.connection:type_name -> qrdb.v1.DatabaseConnectionConfig
+	240, // 111: qrdb.v1.BarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
+	240, // 112: qrdb.v1.BarrierOfficerClaimStatusResponse.officers:type_name -> qrdb.v1.OfficerStatus
+	252, // 113: qrdb.v1.CeremonyInitializeRequest.officers:type_name -> qrdb.v1.CeremonyOfficer
+	268, // 114: qrdb.v1.TenantResponse.quotas:type_name -> qrdb.v1.TenantQuotas
+	269, // 115: qrdb.v1.TenantResponse.entitlements:type_name -> qrdb.v1.TenantEntitlements
+	270, // 116: qrdb.v1.TenantListResponse.tenants:type_name -> qrdb.v1.TenantResponse
+	268, // 117: qrdb.v1.TenantUpdateQuotasRequest.quotas:type_name -> qrdb.v1.TenantQuotas
+	269, // 118: qrdb.v1.TenantUpdateEntitlementsRequest.entitlements:type_name -> qrdb.v1.TenantEntitlements
+	291, // 119: qrdb.v1.CredentialListVersionsResponse.versions:type_name -> qrdb.v1.CredentialVersionInfo
+	398, // 120: qrdb.v1.BackupCreateRequest.metadata:type_name -> qrdb.v1.BackupCreateRequest.MetadataEntry
+	399, // 121: qrdb.v1.BackupInfo.metadata:type_name -> qrdb.v1.BackupInfo.MetadataEntry
+	296, // 122: qrdb.v1.BackupListResponse.backups:type_name -> qrdb.v1.BackupInfo
+	301, // 123: qrdb.v1.BackupRestoreResponse.errors:type_name -> qrdb.v1.ShardError
+	308, // 124: qrdb.v1.RebalancePlan.moves:type_name -> qrdb.v1.RebalanceMove
+	311, // 125: qrdb.v1.ImbalanceReport.nodes:type_name -> qrdb.v1.NodeLoad
+	313, // 126: qrdb.v1.EmbedResponse.embeddings:type_name -> qrdb.v1.EmbeddingVector
+	314, // 127: qrdb.v1.EmbedResponse.usage:type_name -> qrdb.v1.EmbeddingUsage
+	313, // 128: qrdb.v1.BatchEmbedResponse.embeddings:type_name -> qrdb.v1.EmbeddingVector
+	314, // 129: qrdb.v1.BatchEmbedResponse.total_usage:type_name -> qrdb.v1.EmbeddingUsage
+	315, // 130: qrdb.v1.ListEmbeddingModelsResponse.models:type_name -> qrdb.v1.EmbeddingModelInfo
+	322, // 131: qrdb.v1.RAGIngestDocumentRequest.chunk_config:type_name -> qrdb.v1.ChunkConfig
+	400, // 132: qrdb.v1.RAGIngestDocumentRequest.metadata:type_name -> qrdb.v1.RAGIngestDocumentRequest.MetadataEntry
+	401, // 133: qrdb.v1.RAGQueryRequest.filter:type_name -> qrdb.v1.RAGQueryRequest.FilterEntry
+	402, // 134: qrdb.v1.RAGQueryResult.metadata:type_name -> qrdb.v1.RAGQueryResult.MetadataEntry
+	326, // 135: qrdb.v1.RAGQueryResponse.results:type_name -> qrdb.v1.RAGQueryResult
+	403, // 136: qrdb.v1.RAGDocumentInfo.metadata:type_name -> qrdb.v1.RAGDocumentInfo.MetadataEntry
+	331, // 137: qrdb.v1.RAGListDocumentsResponse.documents:type_name -> qrdb.v1.RAGDocumentInfo
+	404, // 138: qrdb.v1.SQLRow.values:type_name -> qrdb.v1.SQLRow.ValuesEntry
+	338, // 139: qrdb.v1.SQLQueryResponse.rows:type_name -> qrdb.v1.SQLRow
+	240, // 140: qrdb.v1.TenantBarrierOfficerListResponse.officers:type_name -> qrdb.v1.OfficerStatus
+	240, // 141: qrdb.v1.TenantBarrierOfficerClaimStatusResponse.officers:type_name -> qrdb.v1.OfficerStatus
+	368, // 142: qrdb.v1.AuditQueryResponse.events:type_name -> qrdb.v1.AuditEvent
+	405, // 143: qrdb.v1.AuditEvent.attributes:type_name -> qrdb.v1.AuditEvent.AttributesEntry
+	406, // 144: qrdb.v1.EnrollFactorRequest.method_params:type_name -> qrdb.v1.EnrollFactorRequest.MethodParamsEntry
+	407, // 145: qrdb.v1.EnrollFactorResponse.metadata:type_name -> qrdb.v1.EnrollFactorResponse.MetadataEntry
+	408, // 146: qrdb.v1.ChallengeFactorResponse.method_data:type_name -> qrdb.v1.ChallengeFactorResponse.MethodDataEntry
+	409, // 147: qrdb.v1.VerifyFactorRequest.metadata:type_name -> qrdb.v1.VerifyFactorRequest.MetadataEntry
+	410, // 148: qrdb.v1.EnrollmentEntry.metadata:type_name -> qrdb.v1.EnrollmentEntry.MetadataEntry
+	375, // 149: qrdb.v1.ListFactorsResponse.enrollments:type_name -> qrdb.v1.EnrollmentEntry
+	411, // 150: qrdb.v1.UserAuthFactorRecord.metadata:type_name -> qrdb.v1.UserAuthFactorRecord.MetadataEntry
+	412, // 151: qrdb.v1.UserAuthFactorAddRequest.metadata:type_name -> qrdb.v1.UserAuthFactorAddRequest.MetadataEntry
+	378, // 152: qrdb.v1.UserAuthFactorAddResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	378, // 153: qrdb.v1.UserAuthFactorListResponse.factors:type_name -> qrdb.v1.UserAuthFactorRecord
+	378, // 154: qrdb.v1.UserAuthFactorGetResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	413, // 155: qrdb.v1.UserAuthFactorNewFactor.metadata:type_name -> qrdb.v1.UserAuthFactorNewFactor.MetadataEntry
+	387, // 156: qrdb.v1.UserAuthFactorRotateRequest.new_factor:type_name -> qrdb.v1.UserAuthFactorNewFactor
+	378, // 157: qrdb.v1.UserAuthFactorRotateResponse.new_factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	378, // 158: qrdb.v1.UserAuthFactorRelabelResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
+	378, // 159: qrdb.v1.UserAuthFactorLoginResponse.factor:type_name -> qrdb.v1.UserAuthFactorRecord
 	12,  // 160: qrdb.v1.QRDBService.Put:input_type -> qrdb.v1.PutRequest
 	14,  // 161: qrdb.v1.QRDBService.Get:input_type -> qrdb.v1.GetRequest
 	16,  // 162: qrdb.v1.QRDBService.Delete:input_type -> qrdb.v1.DeleteRequest
 	18,  // 163: qrdb.v1.QRDBService.PutIfAbsent:input_type -> qrdb.v1.PutIfAbsentRequest
 	20,  // 164: qrdb.v1.QRDBService.CompareAndDelete:input_type -> qrdb.v1.CompareAndDeleteRequest
-	22,  // 165: qrdb.v1.QRDBService.List:input_type -> qrdb.v1.ListRequest
-	24,  // 166: qrdb.v1.QRDBService.Scan:input_type -> qrdb.v1.ScanRequest
-	27,  // 167: qrdb.v1.QRDBService.PutWithLease:input_type -> qrdb.v1.PutWithLeaseRequest
-	29,  // 168: qrdb.v1.QRDBService.GetRevision:input_type -> qrdb.v1.GetRevisionRequest
-	31,  // 169: qrdb.v1.QRDBService.GetAtRevision:input_type -> qrdb.v1.GetAtRevisionRequest
-	33,  // 170: qrdb.v1.QRDBService.Range:input_type -> qrdb.v1.RangeRequest
-	35,  // 171: qrdb.v1.QRDBService.Compact:input_type -> qrdb.v1.CompactRequest
-	412, // 172: qrdb.v1.QRDBService.CurrentRevision:input_type -> google.protobuf.Empty
-	37,  // 173: qrdb.v1.QRDBService.RestoreToRevision:input_type -> qrdb.v1.RestoreRevisionRequest
-	43,  // 174: qrdb.v1.QRDBService.Transaction:input_type -> qrdb.v1.TransactionRequest
-	45,  // 175: qrdb.v1.QRDBService.Batch:input_type -> qrdb.v1.BatchRequest
-	47,  // 176: qrdb.v1.QRDBService.BatchImport:input_type -> qrdb.v1.BatchImportRequest
-	51,  // 177: qrdb.v1.QRDBService.Watch:input_type -> qrdb.v1.WatchRequest
-	54,  // 178: qrdb.v1.QRDBService.LeaseGrant:input_type -> qrdb.v1.LeaseGrantRequest
-	56,  // 179: qrdb.v1.QRDBService.LeaseRevoke:input_type -> qrdb.v1.LeaseRevokeRequest
-	57,  // 180: qrdb.v1.QRDBService.LeaseKeepAlive:input_type -> qrdb.v1.LeaseKeepAliveRequest
-	59,  // 181: qrdb.v1.QRDBService.LeaseTimeToLive:input_type -> qrdb.v1.LeaseTimeToLiveRequest
-	412, // 182: qrdb.v1.QRDBService.LeaseList:input_type -> google.protobuf.Empty
-	63,  // 183: qrdb.v1.QRDBService.LockAcquire:input_type -> qrdb.v1.LockAcquireRequest
-	65,  // 184: qrdb.v1.QRDBService.LockTryLock:input_type -> qrdb.v1.LockTryLockRequest
-	67,  // 185: qrdb.v1.QRDBService.LockRelease:input_type -> qrdb.v1.LockReleaseRequest
-	68,  // 186: qrdb.v1.QRDBService.LockExtend:input_type -> qrdb.v1.LockExtendRequest
-	70,  // 187: qrdb.v1.QRDBService.LockStatus:input_type -> qrdb.v1.LockStatusRequest
-	72,  // 188: qrdb.v1.QRDBService.LockList:input_type -> qrdb.v1.LockListRequest
-	74,  // 189: qrdb.v1.QRDBService.IndexCreate:input_type -> qrdb.v1.IndexCreateRequest
-	75,  // 190: qrdb.v1.QRDBService.IndexDrop:input_type -> qrdb.v1.IndexDropRequest
-	76,  // 191: qrdb.v1.QRDBService.IndexQuery:input_type -> qrdb.v1.IndexQueryRequest
-	78,  // 192: qrdb.v1.QRDBService.IndexScan:input_type -> qrdb.v1.IndexScanRequest
-	412, // 193: qrdb.v1.QRDBService.IndexList:input_type -> google.protobuf.Empty
-	84,  // 194: qrdb.v1.QRDBService.TSWrite:input_type -> qrdb.v1.TSWriteRequest
-	85,  // 195: qrdb.v1.QRDBService.TSWriteBatch:input_type -> qrdb.v1.TSWriteBatchRequest
-	86,  // 196: qrdb.v1.QRDBService.TSQuery:input_type -> qrdb.v1.TSQueryRequest
-	88,  // 197: qrdb.v1.QRDBService.TSAggregate:input_type -> qrdb.v1.TSAggregateRequest
-	84,  // 198: qrdb.v1.QRDBService.TSWritePoint:input_type -> qrdb.v1.TSWriteRequest
-	91,  // 199: qrdb.v1.QRDBService.TSRichQuery:input_type -> qrdb.v1.TSRichQueryRequest
-	94,  // 200: qrdb.v1.QRDBService.TSDeleteSeries:input_type -> qrdb.v1.TSDeleteSeriesRequest
-	95,  // 201: qrdb.v1.QRDBService.TSGetRetention:input_type -> qrdb.v1.TSGetRetentionRequest
-	97,  // 202: qrdb.v1.QRDBService.TSSetRetention:input_type -> qrdb.v1.TSSetRetentionRequest
-	98,  // 203: qrdb.v1.QRDBService.TSListMetrics:input_type -> qrdb.v1.TSListMetricsRequest
-	116, // 204: qrdb.v1.QRDBService.VectorCreateNamespace:input_type -> qrdb.v1.VectorCreateNamespaceRequest
-	118, // 205: qrdb.v1.QRDBService.VectorDeleteNamespace:input_type -> qrdb.v1.VectorDeleteNamespaceRequest
-	119, // 206: qrdb.v1.QRDBService.VectorListNamespaces:input_type -> qrdb.v1.VectorListNamespacesRequest
-	121, // 207: qrdb.v1.QRDBService.VectorGetNamespaceInfo:input_type -> qrdb.v1.VectorGetNamespaceInfoRequest
-	124, // 208: qrdb.v1.QRDBService.VectorUpsert:input_type -> qrdb.v1.VectorUpsertRequest
-	126, // 209: qrdb.v1.QRDBService.VectorGet:input_type -> qrdb.v1.VectorGetRequest
-	127, // 210: qrdb.v1.QRDBService.VectorDelete:input_type -> qrdb.v1.VectorDeleteRequest
-	129, // 211: qrdb.v1.QRDBService.VectorBatchUpsert:input_type -> qrdb.v1.VectorBatchUpsertRequest
-	131, // 212: qrdb.v1.QRDBService.VectorBatchDelete:input_type -> qrdb.v1.VectorBatchDeleteRequest
-	133, // 213: qrdb.v1.QRDBService.VectorList:input_type -> qrdb.v1.VectorListRequest
-	135, // 214: qrdb.v1.QRDBService.VectorUpdateMetadata:input_type -> qrdb.v1.VectorUpdateMetadataRequest
-	137, // 215: qrdb.v1.QRDBService.VectorSearchSimilar:input_type -> qrdb.v1.VectorSearchSimilarRequest
-	139, // 216: qrdb.v1.QRDBService.VectorSearchByMetadata:input_type -> qrdb.v1.VectorSearchByMetadataRequest
-	141, // 217: qrdb.v1.QRDBService.VectorHybridSearch:input_type -> qrdb.v1.VectorHybridSearchRequest
-	143, // 218: qrdb.v1.QRDBService.VectorSearchByID:input_type -> qrdb.v1.VectorSearchByIDRequest
-	144, // 219: qrdb.v1.QRDBService.VectorRebuildIndex:input_type -> qrdb.v1.VectorRebuildIndexRequest
-	146, // 220: qrdb.v1.QRDBService.VectorGetRebuildProgress:input_type -> qrdb.v1.VectorGetRebuildProgressRequest
-	148, // 221: qrdb.v1.QRDBService.VectorGetIndexStats:input_type -> qrdb.v1.VectorGetIndexStatsRequest
-	150, // 222: qrdb.v1.QRDBService.VectorCompactNamespace:input_type -> qrdb.v1.VectorCompactNamespaceRequest
-	152, // 223: qrdb.v1.QRDBService.VectorGetCompactionProgress:input_type -> qrdb.v1.VectorGetCompactionProgressRequest
-	412, // 224: qrdb.v1.QRDBService.Health:input_type -> google.protobuf.Empty
-	412, // 225: qrdb.v1.QRDBService.Status:input_type -> google.protobuf.Empty
-	412, // 226: qrdb.v1.QRDBService.Peers:input_type -> google.protobuf.Empty
-	105, // 227: qrdb.v1.QRDBService.AddMember:input_type -> qrdb.v1.AddMemberRequest
-	106, // 228: qrdb.v1.QRDBService.RemoveMember:input_type -> qrdb.v1.RemoveMemberRequest
-	107, // 229: qrdb.v1.QRDBService.RequestSnapshot:input_type -> qrdb.v1.RequestSnapshotMessage
-	412, // 230: qrdb.v1.QRDBService.Drain:input_type -> google.protobuf.Empty
-	108, // 231: qrdb.v1.QRDBService.Capabilities:input_type -> qrdb.v1.CapabilitiesRequest
-	110, // 232: qrdb.v1.QRDBService.StartShard:input_type -> qrdb.v1.StartShardRequest
-	111, // 233: qrdb.v1.QRDBService.StopShard:input_type -> qrdb.v1.StopShardRequest
-	112, // 234: qrdb.v1.QRDBService.GetShardState:input_type -> qrdb.v1.GetShardStateRequest
-	412, // 235: qrdb.v1.QRDBService.GetTopology:input_type -> google.protobuf.Empty
-	154, // 236: qrdb.v1.QRDBService.CreateUser:input_type -> qrdb.v1.CreateUserRequest
-	155, // 237: qrdb.v1.QRDBService.GetUser:input_type -> qrdb.v1.GetUserRequest
-	156, // 238: qrdb.v1.QRDBService.GetUserByUsername:input_type -> qrdb.v1.GetUserByUsernameRequest
-	157, // 239: qrdb.v1.QRDBService.GetUserByCertThumbprint:input_type -> qrdb.v1.GetUserByCertThumbprintRequest
-	158, // 240: qrdb.v1.QRDBService.AddCertBinding:input_type -> qrdb.v1.AddCertBindingRequest
-	159, // 241: qrdb.v1.QRDBService.UpdateUser:input_type -> qrdb.v1.UpdateUserProtoRequest
-	160, // 242: qrdb.v1.QRDBService.DeleteUser:input_type -> qrdb.v1.DeleteUserRequest
-	161, // 243: qrdb.v1.QRDBService.ListUsers:input_type -> qrdb.v1.ListUsersRequest
-	163, // 244: qrdb.v1.QRDBService.EnableUser:input_type -> qrdb.v1.EnableUserRequest
-	164, // 245: qrdb.v1.QRDBService.DisableUser:input_type -> qrdb.v1.DisableUserRequest
-	166, // 246: qrdb.v1.QRDBService.CreateRole:input_type -> qrdb.v1.CreateRoleRequest
-	167, // 247: qrdb.v1.QRDBService.GetRole:input_type -> qrdb.v1.GetRoleRequest
-	168, // 248: qrdb.v1.QRDBService.GetRoleByName:input_type -> qrdb.v1.GetRoleByNameRequest
-	171, // 249: qrdb.v1.QRDBService.UpdateRole:input_type -> qrdb.v1.UpdateRoleProtoRequest
-	172, // 250: qrdb.v1.QRDBService.DeleteRole:input_type -> qrdb.v1.DeleteRoleRequest
-	173, // 251: qrdb.v1.QRDBService.ListRoles:input_type -> qrdb.v1.ListRolesRequest
-	175, // 252: qrdb.v1.QRDBService.AssignRole:input_type -> qrdb.v1.AssignRoleRequest
-	176, // 253: qrdb.v1.QRDBService.UnassignRole:input_type -> qrdb.v1.UnassignRoleRequest
-	412, // 254: qrdb.v1.QRDBService.ListPermissions:input_type -> google.protobuf.Empty
-	169, // 255: qrdb.v1.QRDBService.ResolveRolePermissions:input_type -> qrdb.v1.ResolveRolePermissionsRequest
-	180, // 256: qrdb.v1.QRDBService.GenerateCert:input_type -> qrdb.v1.GenerateCertRequest
-	182, // 257: qrdb.v1.QRDBService.ExportCert:input_type -> qrdb.v1.ExportCertRequest
-	184, // 258: qrdb.v1.QRDBService.RevokeCert:input_type -> qrdb.v1.RevokeCertRequest
-	185, // 259: qrdb.v1.QRDBService.ListCerts:input_type -> qrdb.v1.ListCertsRequest
-	188, // 260: qrdb.v1.QRDBService.CreateCollection:input_type -> qrdb.v1.CreateCollectionRequest
-	189, // 261: qrdb.v1.QRDBService.GetCollectionInfo:input_type -> qrdb.v1.GetCollectionInfoRequest
-	190, // 262: qrdb.v1.QRDBService.ListCollections:input_type -> qrdb.v1.ListCollectionsRequest
-	191, // 263: qrdb.v1.QRDBService.DropCollection:input_type -> qrdb.v1.DropCollectionRequest
-	194, // 264: qrdb.v1.QRDBService.InsertDocument:input_type -> qrdb.v1.InsertDocumentRequest
-	196, // 265: qrdb.v1.QRDBService.GetDocument:input_type -> qrdb.v1.GetDocumentRequest
-	198, // 266: qrdb.v1.QRDBService.UpdateDocument:input_type -> qrdb.v1.UpdateDocumentRequest
-	199, // 267: qrdb.v1.QRDBService.DeleteDocument:input_type -> qrdb.v1.DeleteDocumentRequest
-	200, // 268: qrdb.v1.QRDBService.ListDocuments:input_type -> qrdb.v1.ListDocumentsRequest
-	202, // 269: qrdb.v1.QRDBService.DatabaseCreate:input_type -> qrdb.v1.DatabaseCreateRequest
-	203, // 270: qrdb.v1.QRDBService.DatabaseGet:input_type -> qrdb.v1.DatabaseGetRequest
-	412, // 271: qrdb.v1.QRDBService.DatabaseList:input_type -> google.protobuf.Empty
-	204, // 272: qrdb.v1.QRDBService.DatabaseDrop:input_type -> qrdb.v1.DatabaseDropRequest
-	216, // 273: qrdb.v1.QRDBService.DatabaseUpdateProtocol:input_type -> qrdb.v1.DatabaseUpdateProtocolRequest
-	217, // 274: qrdb.v1.QRDBService.DatabaseUpdateEtcd:input_type -> qrdb.v1.DatabaseUpdateEtcdRequest
-	218, // 275: qrdb.v1.QRDBService.DatabaseUpdateRaft:input_type -> qrdb.v1.DatabaseUpdateRaftRequest
-	219, // 276: qrdb.v1.QRDBService.DatabaseScale:input_type -> qrdb.v1.DatabaseScaleRequest
-	220, // 277: qrdb.v1.QRDBService.DatabaseUpdateBarrier:input_type -> qrdb.v1.DatabaseUpdateBarrierRequest
-	221, // 278: qrdb.v1.QRDBService.DatabaseUpdateConnection:input_type -> qrdb.v1.DatabaseUpdateConnectionRequest
-	222, // 279: qrdb.v1.QRDBService.BarrierInitialize:input_type -> qrdb.v1.BarrierInitializeRequest
-	223, // 280: qrdb.v1.QRDBService.BarrierUnseal:input_type -> qrdb.v1.BarrierUnsealRequest
-	412, // 281: qrdb.v1.QRDBService.BarrierSeal:input_type -> google.protobuf.Empty
-	412, // 282: qrdb.v1.QRDBService.BarrierStatus:input_type -> google.protobuf.Empty
-	227, // 283: qrdb.v1.QRDBService.BarrierShamirInitialize:input_type -> qrdb.v1.BarrierShamirInitializeRequest
-	229, // 284: qrdb.v1.QRDBService.BarrierShamirUnsealShare:input_type -> qrdb.v1.BarrierShamirUnsealShareRequest
-	231, // 285: qrdb.v1.QRDBService.BarrierShamirUnsealShares:input_type -> qrdb.v1.BarrierShamirUnsealSharesRequest
-	232, // 286: qrdb.v1.QRDBService.BarrierRekey:input_type -> qrdb.v1.BarrierRekeyRequest
-	225, // 287: qrdb.v1.QRDBService.BarrierEnableEncryption:input_type -> qrdb.v1.BarrierEnableEncryptionRequest
-	235, // 288: qrdb.v1.QRDBService.BarrierOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
-	412, // 289: qrdb.v1.QRDBService.BarrierOfficerList:input_type -> google.protobuf.Empty
-	239, // 290: qrdb.v1.QRDBService.BarrierShareClaimBegin:input_type -> qrdb.v1.BarrierShareClaimBeginRequest
-	241, // 291: qrdb.v1.QRDBService.BarrierShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
-	412, // 292: qrdb.v1.QRDBService.BarrierOfficerClaimStatus:input_type -> google.protobuf.Empty
-	243, // 293: qrdb.v1.QRDBService.BarrierShamirSealVote:input_type -> qrdb.v1.BarrierShamirSealVoteRequest
-	235, // 294: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
-	239, // 295: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:input_type -> qrdb.v1.BarrierShareClaimBeginRequest
-	241, // 296: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
-	233, // 297: qrdb.v1.QRDBService.BarrierRecoveryGenerate:input_type -> qrdb.v1.BarrierRecoveryGenerateRequest
-	246, // 298: qrdb.v1.QRDBService.BarrierRecoveryRecover:input_type -> qrdb.v1.BarrierRecoveryRecoverRequest
-	412, // 299: qrdb.v1.QRDBService.BarrierRecoveryDelete:input_type -> google.protobuf.Empty
-	412, // 300: qrdb.v1.QRDBService.BarrierRecoveryStatus:input_type -> google.protobuf.Empty
-	248, // 301: qrdb.v1.QRDBService.BarrierRootToken:input_type -> qrdb.v1.BarrierRootTokenRequest
-	251, // 302: qrdb.v1.QRDBService.CeremonyInitialize:input_type -> qrdb.v1.CeremonyInitializeRequest
-	412, // 303: qrdb.v1.QRDBService.CeremonyStatus:input_type -> google.protobuf.Empty
-	254, // 304: qrdb.v1.QRDBService.CeremonyClaimCertBegin:input_type -> qrdb.v1.CeremonyClaimCertBeginRequest
-	256, // 305: qrdb.v1.QRDBService.CeremonyClaimCertComplete:input_type -> qrdb.v1.CeremonyClaimCertCompleteRequest
-	258, // 306: qrdb.v1.QRDBService.CeremonyBeginClaimShare:input_type -> qrdb.v1.CeremonyBeginClaimShareRequest
-	260, // 307: qrdb.v1.QRDBService.CeremonyCompleteClaimShare:input_type -> qrdb.v1.CeremonyCompleteClaimShareRequest
-	262, // 308: qrdb.v1.QRDBService.CeremonySignCSR:input_type -> qrdb.v1.CeremonySignCSRRequest
-	264, // 309: qrdb.v1.QRDBService.CeremonyEnrollExternalOfficer:input_type -> qrdb.v1.CeremonyEnrollExternalOfficerRequest
-	338, // 310: qrdb.v1.QRDBService.CeremonyClaimShareBegin:input_type -> qrdb.v1.CeremonyClaimShareBeginRequest
-	340, // 311: qrdb.v1.QRDBService.CeremonyClaimShareComplete:input_type -> qrdb.v1.CeremonyClaimShareCompleteRequest
-	342, // 312: qrdb.v1.QRDBService.CeremonySubmitUnsealShare:input_type -> qrdb.v1.CeremonySubmitUnsealShareRequest
-	269, // 313: qrdb.v1.QRDBService.TenantCreate:input_type -> qrdb.v1.TenantCreateRequest
-	270, // 314: qrdb.v1.QRDBService.TenantGet:input_type -> qrdb.v1.TenantGetRequest
-	412, // 315: qrdb.v1.QRDBService.TenantList:input_type -> google.protobuf.Empty
-	272, // 316: qrdb.v1.QRDBService.TenantUpdate:input_type -> qrdb.v1.TenantUpdateRequest
-	273, // 317: qrdb.v1.QRDBService.TenantDelete:input_type -> qrdb.v1.TenantDeleteRequest
-	274, // 318: qrdb.v1.QRDBService.TenantUpdateQuotas:input_type -> qrdb.v1.TenantUpdateQuotasRequest
-	275, // 319: qrdb.v1.QRDBService.TenantUpdateEntitlements:input_type -> qrdb.v1.TenantUpdateEntitlementsRequest
-	276, // 320: qrdb.v1.QRDBService.CredentialSubmit:input_type -> qrdb.v1.CredentialSubmitRequest
-	412, // 321: qrdb.v1.QRDBService.CredentialStrategy:input_type -> google.protobuf.Empty
-	281, // 322: qrdb.v1.QRDBService.CredentialDelete:input_type -> qrdb.v1.CredentialDeleteRequest
-	282, // 323: qrdb.v1.QRDBService.CredentialList:input_type -> qrdb.v1.CredentialListRequest
-	284, // 324: qrdb.v1.QRDBService.CredentialRotate:input_type -> qrdb.v1.CredentialRotateRequest
-	286, // 325: qrdb.v1.QRDBService.CredentialRetrieveVersion:input_type -> qrdb.v1.CredentialRetrieveVersionRequest
-	288, // 326: qrdb.v1.QRDBService.CredentialListVersions:input_type -> qrdb.v1.CredentialListVersionsRequest
-	291, // 327: qrdb.v1.QRDBService.CredentialGCExpired:input_type -> qrdb.v1.CredentialGCRequest
-	277, // 328: qrdb.v1.QRDBService.CredentialStore:input_type -> qrdb.v1.CredentialStoreRequest
-	278, // 329: qrdb.v1.QRDBService.CredentialRetrieve:input_type -> qrdb.v1.CredentialRetrieveRequest
-	293, // 330: qrdb.v1.QRDBService.BackupCreate:input_type -> qrdb.v1.BackupCreateRequest
-	412, // 331: qrdb.v1.QRDBService.BackupList:input_type -> google.protobuf.Empty
-	296, // 332: qrdb.v1.QRDBService.BackupGet:input_type -> qrdb.v1.BackupGetRequest
-	297, // 333: qrdb.v1.QRDBService.BackupDelete:input_type -> qrdb.v1.BackupDeleteRequest
-	298, // 334: qrdb.v1.QRDBService.BackupRestore:input_type -> qrdb.v1.BackupRestoreRequest
-	301, // 335: qrdb.v1.QRDBService.BackupVerify:input_type -> qrdb.v1.BackupVerifyRequest
-	303, // 336: qrdb.v1.QRDBService.RebalanceGetShardStats:input_type -> qrdb.v1.RebalanceShardStatsRequest
-	305, // 337: qrdb.v1.QRDBService.RebalanceCreatePlan:input_type -> qrdb.v1.RebalancePlanRequest
-	307, // 338: qrdb.v1.QRDBService.RebalanceExecute:input_type -> qrdb.v1.RebalancePlan
-	412, // 339: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:input_type -> google.protobuf.Empty
-	314, // 340: qrdb.v1.QRDBService.Embed:input_type -> qrdb.v1.EmbedRequest
-	316, // 341: qrdb.v1.QRDBService.BatchEmbed:input_type -> qrdb.v1.BatchEmbedRequest
-	318, // 342: qrdb.v1.QRDBService.ListEmbeddingModels:input_type -> qrdb.v1.ListEmbeddingModelsRequest
-	321, // 343: qrdb.v1.QRDBService.RAGIngestDocument:input_type -> qrdb.v1.RAGIngestDocumentRequest
-	323, // 344: qrdb.v1.QRDBService.RAGQuery:input_type -> qrdb.v1.RAGQueryRequest
-	326, // 345: qrdb.v1.QRDBService.RAGDeleteDocument:input_type -> qrdb.v1.RAGDeleteDocumentRequest
-	328, // 346: qrdb.v1.QRDBService.RAGListDocuments:input_type -> qrdb.v1.RAGListDocumentsRequest
-	331, // 347: qrdb.v1.QRDBService.DatabaseSeal:input_type -> qrdb.v1.DatabaseSealRequest
-	332, // 348: qrdb.v1.QRDBService.DatabaseUnseal:input_type -> qrdb.v1.DatabaseUnsealRequest
-	333, // 349: qrdb.v1.QRDBService.DatabaseBarrierStatus:input_type -> qrdb.v1.DatabaseBarrierStatusRequest
-	335, // 350: qrdb.v1.QRDBService.SQLQuery:input_type -> qrdb.v1.SQLQueryRequest
-	344, // 351: qrdb.v1.TenantBarrierService.Init:input_type -> qrdb.v1.TenantBarrierInitRequest
-	346, // 352: qrdb.v1.TenantBarrierService.Unseal:input_type -> qrdb.v1.TenantBarrierUnsealRequest
-	347, // 353: qrdb.v1.TenantBarrierService.UnsealShare:input_type -> qrdb.v1.TenantBarrierUnsealShareRequest
-	349, // 354: qrdb.v1.TenantBarrierService.Seal:input_type -> qrdb.v1.TenantBarrierSealRequest
-	350, // 355: qrdb.v1.TenantBarrierService.Status:input_type -> qrdb.v1.TenantBarrierStatusRequest
-	352, // 356: qrdb.v1.TenantBarrierService.OfficerRegister:input_type -> qrdb.v1.TenantBarrierOfficerRegisterRequest
-	354, // 357: qrdb.v1.TenantBarrierService.OfficerList:input_type -> qrdb.v1.TenantBarrierOfficerListRequest
-	356, // 358: qrdb.v1.TenantBarrierService.ShareClaimBegin:input_type -> qrdb.v1.TenantBarrierShareClaimBeginRequest
-	358, // 359: qrdb.v1.TenantBarrierService.ShareClaimComplete:input_type -> qrdb.v1.TenantBarrierShareClaimCompleteRequest
-	360, // 360: qrdb.v1.TenantBarrierService.OfficerClaimStatus:input_type -> qrdb.v1.TenantBarrierOfficerClaimStatusRequest
-	362, // 361: qrdb.v1.TenantBarrierService.ShamirSealVote:input_type -> qrdb.v1.TenantBarrierShamirSealVoteRequest
-	364, // 362: qrdb.v1.AuditService.Query:input_type -> qrdb.v1.AuditQueryRequest
-	367, // 363: qrdb.v1.AuthFactorService.EnrollFactor:input_type -> qrdb.v1.EnrollFactorRequest
-	369, // 364: qrdb.v1.AuthFactorService.ChallengeFactor:input_type -> qrdb.v1.ChallengeFactorRequest
-	371, // 365: qrdb.v1.AuthFactorService.VerifyFactor:input_type -> qrdb.v1.VerifyFactorRequest
-	372, // 366: qrdb.v1.AuthFactorService.ListFactors:input_type -> qrdb.v1.ListFactorsRequest
-	375, // 367: qrdb.v1.AuthFactorService.RevokeFactor:input_type -> qrdb.v1.RevokeFactorRequest
-	377, // 368: qrdb.v1.UserAuthFactorService.Add:input_type -> qrdb.v1.UserAuthFactorAddRequest
-	379, // 369: qrdb.v1.UserAuthFactorService.List:input_type -> qrdb.v1.UserAuthFactorListRequest
-	381, // 370: qrdb.v1.UserAuthFactorService.Get:input_type -> qrdb.v1.UserAuthFactorGetRequest
-	383, // 371: qrdb.v1.UserAuthFactorService.Remove:input_type -> qrdb.v1.UserAuthFactorRemoveRequest
-	386, // 372: qrdb.v1.UserAuthFactorService.Rotate:input_type -> qrdb.v1.UserAuthFactorRotateRequest
-	388, // 373: qrdb.v1.UserAuthFactorService.Relabel:input_type -> qrdb.v1.UserAuthFactorRelabelRequest
-	390, // 374: qrdb.v1.UserAuthFactorService.Login:input_type -> qrdb.v1.UserAuthFactorLoginRequest
-	13,  // 375: qrdb.v1.QRDBService.Put:output_type -> qrdb.v1.PutResponse
-	15,  // 376: qrdb.v1.QRDBService.Get:output_type -> qrdb.v1.GetResponse
-	17,  // 377: qrdb.v1.QRDBService.Delete:output_type -> qrdb.v1.DeleteResponse
-	19,  // 378: qrdb.v1.QRDBService.PutIfAbsent:output_type -> qrdb.v1.PutIfAbsentResponse
-	21,  // 379: qrdb.v1.QRDBService.CompareAndDelete:output_type -> qrdb.v1.CompareAndDeleteResponse
-	23,  // 380: qrdb.v1.QRDBService.List:output_type -> qrdb.v1.ListResponse
-	25,  // 381: qrdb.v1.QRDBService.Scan:output_type -> qrdb.v1.ScanResponse
-	28,  // 382: qrdb.v1.QRDBService.PutWithLease:output_type -> qrdb.v1.PutWithLeaseResponse
-	30,  // 383: qrdb.v1.QRDBService.GetRevision:output_type -> qrdb.v1.GetRevisionResponse
-	32,  // 384: qrdb.v1.QRDBService.GetAtRevision:output_type -> qrdb.v1.GetAtRevisionResponse
-	34,  // 385: qrdb.v1.QRDBService.Range:output_type -> qrdb.v1.RangeResponse
-	412, // 386: qrdb.v1.QRDBService.Compact:output_type -> google.protobuf.Empty
-	36,  // 387: qrdb.v1.QRDBService.CurrentRevision:output_type -> qrdb.v1.CurrentRevisionResponse
-	39,  // 388: qrdb.v1.QRDBService.RestoreToRevision:output_type -> qrdb.v1.RestoreRevisionResponse
-	44,  // 389: qrdb.v1.QRDBService.Transaction:output_type -> qrdb.v1.TransactionResponse
-	46,  // 390: qrdb.v1.QRDBService.Batch:output_type -> qrdb.v1.BatchResponse
-	49,  // 391: qrdb.v1.QRDBService.BatchImport:output_type -> qrdb.v1.BatchImportResponse
-	52,  // 392: qrdb.v1.QRDBService.Watch:output_type -> qrdb.v1.WatchResponse
-	55,  // 393: qrdb.v1.QRDBService.LeaseGrant:output_type -> qrdb.v1.LeaseGrantResponse
-	412, // 394: qrdb.v1.QRDBService.LeaseRevoke:output_type -> google.protobuf.Empty
-	58,  // 395: qrdb.v1.QRDBService.LeaseKeepAlive:output_type -> qrdb.v1.LeaseKeepAliveResponse
-	60,  // 396: qrdb.v1.QRDBService.LeaseTimeToLive:output_type -> qrdb.v1.LeaseTimeToLiveResponse
-	61,  // 397: qrdb.v1.QRDBService.LeaseList:output_type -> qrdb.v1.LeaseListResponse
-	64,  // 398: qrdb.v1.QRDBService.LockAcquire:output_type -> qrdb.v1.LockAcquireResponse
-	66,  // 399: qrdb.v1.QRDBService.LockTryLock:output_type -> qrdb.v1.LockTryLockResponse
-	412, // 400: qrdb.v1.QRDBService.LockRelease:output_type -> google.protobuf.Empty
-	69,  // 401: qrdb.v1.QRDBService.LockExtend:output_type -> qrdb.v1.LockExtendResponse
-	71,  // 402: qrdb.v1.QRDBService.LockStatus:output_type -> qrdb.v1.LockStatusResponse
-	73,  // 403: qrdb.v1.QRDBService.LockList:output_type -> qrdb.v1.LockListResponse
-	412, // 404: qrdb.v1.QRDBService.IndexCreate:output_type -> google.protobuf.Empty
-	412, // 405: qrdb.v1.QRDBService.IndexDrop:output_type -> google.protobuf.Empty
-	77,  // 406: qrdb.v1.QRDBService.IndexQuery:output_type -> qrdb.v1.IndexQueryResponse
-	80,  // 407: qrdb.v1.QRDBService.IndexScan:output_type -> qrdb.v1.IndexScanResponse
-	81,  // 408: qrdb.v1.QRDBService.IndexList:output_type -> qrdb.v1.IndexListResponse
-	412, // 409: qrdb.v1.QRDBService.TSWrite:output_type -> google.protobuf.Empty
-	412, // 410: qrdb.v1.QRDBService.TSWriteBatch:output_type -> google.protobuf.Empty
-	87,  // 411: qrdb.v1.QRDBService.TSQuery:output_type -> qrdb.v1.TSQueryResponse
-	90,  // 412: qrdb.v1.QRDBService.TSAggregate:output_type -> qrdb.v1.TSAggregateResponse
-	412, // 413: qrdb.v1.QRDBService.TSWritePoint:output_type -> google.protobuf.Empty
-	92,  // 414: qrdb.v1.QRDBService.TSRichQuery:output_type -> qrdb.v1.TSRichQueryResponse
-	412, // 415: qrdb.v1.QRDBService.TSDeleteSeries:output_type -> google.protobuf.Empty
-	96,  // 416: qrdb.v1.QRDBService.TSGetRetention:output_type -> qrdb.v1.TSRetentionPolicyResponse
-	412, // 417: qrdb.v1.QRDBService.TSSetRetention:output_type -> google.protobuf.Empty
-	99,  // 418: qrdb.v1.QRDBService.TSListMetrics:output_type -> qrdb.v1.TSListMetricsResponse
-	117, // 419: qrdb.v1.QRDBService.VectorCreateNamespace:output_type -> qrdb.v1.VectorCreateNamespaceResponse
-	412, // 420: qrdb.v1.QRDBService.VectorDeleteNamespace:output_type -> google.protobuf.Empty
-	120, // 421: qrdb.v1.QRDBService.VectorListNamespaces:output_type -> qrdb.v1.VectorListNamespacesResponse
-	122, // 422: qrdb.v1.QRDBService.VectorGetNamespaceInfo:output_type -> qrdb.v1.VectorNamespaceInfo
-	125, // 423: qrdb.v1.QRDBService.VectorUpsert:output_type -> qrdb.v1.VectorUpsertResponse
-	123, // 424: qrdb.v1.QRDBService.VectorGet:output_type -> qrdb.v1.VectorDataProto
-	412, // 425: qrdb.v1.QRDBService.VectorDelete:output_type -> google.protobuf.Empty
-	130, // 426: qrdb.v1.QRDBService.VectorBatchUpsert:output_type -> qrdb.v1.VectorBatchUpsertResponse
-	132, // 427: qrdb.v1.QRDBService.VectorBatchDelete:output_type -> qrdb.v1.VectorBatchDeleteResponse
-	134, // 428: qrdb.v1.QRDBService.VectorList:output_type -> qrdb.v1.VectorListResponse
-	412, // 429: qrdb.v1.QRDBService.VectorUpdateMetadata:output_type -> google.protobuf.Empty
-	138, // 430: qrdb.v1.QRDBService.VectorSearchSimilar:output_type -> qrdb.v1.VectorSearchSimilarResponse
-	140, // 431: qrdb.v1.QRDBService.VectorSearchByMetadata:output_type -> qrdb.v1.VectorSearchByMetadataResponse
-	142, // 432: qrdb.v1.QRDBService.VectorHybridSearch:output_type -> qrdb.v1.VectorHybridSearchResponse
-	138, // 433: qrdb.v1.QRDBService.VectorSearchByID:output_type -> qrdb.v1.VectorSearchSimilarResponse
-	145, // 434: qrdb.v1.QRDBService.VectorRebuildIndex:output_type -> qrdb.v1.VectorRebuildIndexResponse
-	147, // 435: qrdb.v1.QRDBService.VectorGetRebuildProgress:output_type -> qrdb.v1.VectorRebuildProgress
-	149, // 436: qrdb.v1.QRDBService.VectorGetIndexStats:output_type -> qrdb.v1.VectorIndexStats
-	151, // 437: qrdb.v1.QRDBService.VectorCompactNamespace:output_type -> qrdb.v1.VectorCompactNamespaceResponse
-	153, // 438: qrdb.v1.QRDBService.VectorGetCompactionProgress:output_type -> qrdb.v1.VectorCompactionProgress
-	100, // 439: qrdb.v1.QRDBService.Health:output_type -> qrdb.v1.HealthResponse
-	101, // 440: qrdb.v1.QRDBService.Status:output_type -> qrdb.v1.StatusResponse
-	102, // 441: qrdb.v1.QRDBService.Peers:output_type -> qrdb.v1.PeersResponse
-	412, // 442: qrdb.v1.QRDBService.AddMember:output_type -> google.protobuf.Empty
-	412, // 443: qrdb.v1.QRDBService.RemoveMember:output_type -> google.protobuf.Empty
-	412, // 444: qrdb.v1.QRDBService.RequestSnapshot:output_type -> google.protobuf.Empty
-	412, // 445: qrdb.v1.QRDBService.Drain:output_type -> google.protobuf.Empty
-	109, // 446: qrdb.v1.QRDBService.Capabilities:output_type -> qrdb.v1.CapabilitiesResponse
-	412, // 447: qrdb.v1.QRDBService.StartShard:output_type -> google.protobuf.Empty
-	412, // 448: qrdb.v1.QRDBService.StopShard:output_type -> google.protobuf.Empty
-	113, // 449: qrdb.v1.QRDBService.GetShardState:output_type -> qrdb.v1.ShardStateResponse
-	114, // 450: qrdb.v1.QRDBService.GetTopology:output_type -> qrdb.v1.TopologyResponse
-	165, // 451: qrdb.v1.QRDBService.CreateUser:output_type -> qrdb.v1.UserResponse
-	165, // 452: qrdb.v1.QRDBService.GetUser:output_type -> qrdb.v1.UserResponse
-	165, // 453: qrdb.v1.QRDBService.GetUserByUsername:output_type -> qrdb.v1.UserResponse
-	165, // 454: qrdb.v1.QRDBService.GetUserByCertThumbprint:output_type -> qrdb.v1.UserResponse
-	165, // 455: qrdb.v1.QRDBService.AddCertBinding:output_type -> qrdb.v1.UserResponse
-	165, // 456: qrdb.v1.QRDBService.UpdateUser:output_type -> qrdb.v1.UserResponse
-	412, // 457: qrdb.v1.QRDBService.DeleteUser:output_type -> google.protobuf.Empty
-	162, // 458: qrdb.v1.QRDBService.ListUsers:output_type -> qrdb.v1.ListUsersResponse
-	412, // 459: qrdb.v1.QRDBService.EnableUser:output_type -> google.protobuf.Empty
-	412, // 460: qrdb.v1.QRDBService.DisableUser:output_type -> google.protobuf.Empty
-	177, // 461: qrdb.v1.QRDBService.CreateRole:output_type -> qrdb.v1.RoleResponse
-	177, // 462: qrdb.v1.QRDBService.GetRole:output_type -> qrdb.v1.RoleResponse
-	177, // 463: qrdb.v1.QRDBService.GetRoleByName:output_type -> qrdb.v1.RoleResponse
-	177, // 464: qrdb.v1.QRDBService.UpdateRole:output_type -> qrdb.v1.RoleResponse
-	412, // 465: qrdb.v1.QRDBService.DeleteRole:output_type -> google.protobuf.Empty
-	174, // 466: qrdb.v1.QRDBService.ListRoles:output_type -> qrdb.v1.ListRolesResponse
-	412, // 467: qrdb.v1.QRDBService.AssignRole:output_type -> google.protobuf.Empty
-	412, // 468: qrdb.v1.QRDBService.UnassignRole:output_type -> google.protobuf.Empty
-	179, // 469: qrdb.v1.QRDBService.ListPermissions:output_type -> qrdb.v1.ListPermissionsResponse
-	170, // 470: qrdb.v1.QRDBService.ResolveRolePermissions:output_type -> qrdb.v1.ResolveRolePermissionsResponse
-	181, // 471: qrdb.v1.QRDBService.GenerateCert:output_type -> qrdb.v1.CertBundleResponse
-	183, // 472: qrdb.v1.QRDBService.ExportCert:output_type -> qrdb.v1.ExportCertResponse
-	412, // 473: qrdb.v1.QRDBService.RevokeCert:output_type -> google.protobuf.Empty
-	187, // 474: qrdb.v1.QRDBService.ListCerts:output_type -> qrdb.v1.ListCertsResponse
-	192, // 475: qrdb.v1.QRDBService.CreateCollection:output_type -> qrdb.v1.CollectionInfoResponse
-	192, // 476: qrdb.v1.QRDBService.GetCollectionInfo:output_type -> qrdb.v1.CollectionInfoResponse
-	193, // 477: qrdb.v1.QRDBService.ListCollections:output_type -> qrdb.v1.ListCollectionsResponse
-	412, // 478: qrdb.v1.QRDBService.DropCollection:output_type -> google.protobuf.Empty
-	195, // 479: qrdb.v1.QRDBService.InsertDocument:output_type -> qrdb.v1.InsertDocumentResponse
-	197, // 480: qrdb.v1.QRDBService.GetDocument:output_type -> qrdb.v1.DocumentResponse
-	412, // 481: qrdb.v1.QRDBService.UpdateDocument:output_type -> google.protobuf.Empty
-	412, // 482: qrdb.v1.QRDBService.DeleteDocument:output_type -> google.protobuf.Empty
-	201, // 483: qrdb.v1.QRDBService.ListDocuments:output_type -> qrdb.v1.ListDocumentsResponse
-	206, // 484: qrdb.v1.QRDBService.DatabaseCreate:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 485: qrdb.v1.QRDBService.DatabaseGet:output_type -> qrdb.v1.DatabaseInfoResponse
-	205, // 486: qrdb.v1.QRDBService.DatabaseList:output_type -> qrdb.v1.DatabaseListResponse
-	412, // 487: qrdb.v1.QRDBService.DatabaseDrop:output_type -> google.protobuf.Empty
-	206, // 488: qrdb.v1.QRDBService.DatabaseUpdateProtocol:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 489: qrdb.v1.QRDBService.DatabaseUpdateEtcd:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 490: qrdb.v1.QRDBService.DatabaseUpdateRaft:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 491: qrdb.v1.QRDBService.DatabaseScale:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 492: qrdb.v1.QRDBService.DatabaseUpdateBarrier:output_type -> qrdb.v1.DatabaseInfoResponse
-	206, // 493: qrdb.v1.QRDBService.DatabaseUpdateConnection:output_type -> qrdb.v1.DatabaseInfoResponse
-	412, // 494: qrdb.v1.QRDBService.BarrierInitialize:output_type -> google.protobuf.Empty
-	412, // 495: qrdb.v1.QRDBService.BarrierUnseal:output_type -> google.protobuf.Empty
-	412, // 496: qrdb.v1.QRDBService.BarrierSeal:output_type -> google.protobuf.Empty
-	224, // 497: qrdb.v1.QRDBService.BarrierStatus:output_type -> qrdb.v1.BarrierStatusResponse
-	228, // 498: qrdb.v1.QRDBService.BarrierShamirInitialize:output_type -> qrdb.v1.BarrierShamirOperationResponse
-	230, // 499: qrdb.v1.QRDBService.BarrierShamirUnsealShare:output_type -> qrdb.v1.BarrierShamirUnsealShareResponse
-	412, // 500: qrdb.v1.QRDBService.BarrierShamirUnsealShares:output_type -> google.protobuf.Empty
-	228, // 501: qrdb.v1.QRDBService.BarrierRekey:output_type -> qrdb.v1.BarrierShamirOperationResponse
-	226, // 502: qrdb.v1.QRDBService.BarrierEnableEncryption:output_type -> qrdb.v1.BarrierEnableEncryptionResponse
-	236, // 503: qrdb.v1.QRDBService.BarrierOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
-	237, // 504: qrdb.v1.QRDBService.BarrierOfficerList:output_type -> qrdb.v1.BarrierOfficerListResponse
-	240, // 505: qrdb.v1.QRDBService.BarrierShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
-	242, // 506: qrdb.v1.QRDBService.BarrierShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
-	245, // 507: qrdb.v1.QRDBService.BarrierOfficerClaimStatus:output_type -> qrdb.v1.BarrierOfficerClaimStatusResponse
-	244, // 508: qrdb.v1.QRDBService.BarrierShamirSealVote:output_type -> qrdb.v1.BarrierShamirSealVoteResponse
-	236, // 509: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
-	240, // 510: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
-	242, // 511: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
-	234, // 512: qrdb.v1.QRDBService.BarrierRecoveryGenerate:output_type -> qrdb.v1.BarrierRecoveryKeysResponse
-	412, // 513: qrdb.v1.QRDBService.BarrierRecoveryRecover:output_type -> google.protobuf.Empty
-	412, // 514: qrdb.v1.QRDBService.BarrierRecoveryDelete:output_type -> google.protobuf.Empty
-	247, // 515: qrdb.v1.QRDBService.BarrierRecoveryStatus:output_type -> qrdb.v1.BarrierRecoveryStatusResponse
-	249, // 516: qrdb.v1.QRDBService.BarrierRootToken:output_type -> qrdb.v1.BarrierRootTokenResponse
-	252, // 517: qrdb.v1.QRDBService.CeremonyInitialize:output_type -> qrdb.v1.CeremonyInitializeResponse
-	253, // 518: qrdb.v1.QRDBService.CeremonyStatus:output_type -> qrdb.v1.CeremonyStatusResponse
-	255, // 519: qrdb.v1.QRDBService.CeremonyClaimCertBegin:output_type -> qrdb.v1.CeremonyClaimCertBeginResponse
-	257, // 520: qrdb.v1.QRDBService.CeremonyClaimCertComplete:output_type -> qrdb.v1.CeremonyClaimCertCompleteResponse
-	259, // 521: qrdb.v1.QRDBService.CeremonyBeginClaimShare:output_type -> qrdb.v1.CeremonyBeginClaimShareResponse
-	261, // 522: qrdb.v1.QRDBService.CeremonyCompleteClaimShare:output_type -> qrdb.v1.CeremonyCompleteClaimShareResponse
-	263, // 523: qrdb.v1.QRDBService.CeremonySignCSR:output_type -> qrdb.v1.CeremonySignCSRResponse
-	265, // 524: qrdb.v1.QRDBService.CeremonyEnrollExternalOfficer:output_type -> qrdb.v1.CeremonyEnrollExternalOfficerResponse
-	339, // 525: qrdb.v1.QRDBService.CeremonyClaimShareBegin:output_type -> qrdb.v1.CeremonyClaimShareBeginResponse
-	341, // 526: qrdb.v1.QRDBService.CeremonyClaimShareComplete:output_type -> qrdb.v1.CeremonyCustodianResponse
-	343, // 527: qrdb.v1.QRDBService.CeremonySubmitUnsealShare:output_type -> qrdb.v1.CeremonySubmitUnsealShareResponse
-	268, // 528: qrdb.v1.QRDBService.TenantCreate:output_type -> qrdb.v1.TenantResponse
-	268, // 529: qrdb.v1.QRDBService.TenantGet:output_type -> qrdb.v1.TenantResponse
-	271, // 530: qrdb.v1.QRDBService.TenantList:output_type -> qrdb.v1.TenantListResponse
-	268, // 531: qrdb.v1.QRDBService.TenantUpdate:output_type -> qrdb.v1.TenantResponse
-	412, // 532: qrdb.v1.QRDBService.TenantDelete:output_type -> google.protobuf.Empty
-	268, // 533: qrdb.v1.QRDBService.TenantUpdateQuotas:output_type -> qrdb.v1.TenantResponse
-	268, // 534: qrdb.v1.QRDBService.TenantUpdateEntitlements:output_type -> qrdb.v1.TenantResponse
-	412, // 535: qrdb.v1.QRDBService.CredentialSubmit:output_type -> google.protobuf.Empty
-	280, // 536: qrdb.v1.QRDBService.CredentialStrategy:output_type -> qrdb.v1.CredentialStrategyResponse
-	412, // 537: qrdb.v1.QRDBService.CredentialDelete:output_type -> google.protobuf.Empty
-	283, // 538: qrdb.v1.QRDBService.CredentialList:output_type -> qrdb.v1.CredentialListResponse
-	285, // 539: qrdb.v1.QRDBService.CredentialRotate:output_type -> qrdb.v1.CredentialRotateResponse
-	287, // 540: qrdb.v1.QRDBService.CredentialRetrieveVersion:output_type -> qrdb.v1.CredentialRetrieveVersionResponse
-	290, // 541: qrdb.v1.QRDBService.CredentialListVersions:output_type -> qrdb.v1.CredentialListVersionsResponse
-	292, // 542: qrdb.v1.QRDBService.CredentialGCExpired:output_type -> qrdb.v1.CredentialGCResponse
-	412, // 543: qrdb.v1.QRDBService.CredentialStore:output_type -> google.protobuf.Empty
-	279, // 544: qrdb.v1.QRDBService.CredentialRetrieve:output_type -> qrdb.v1.CredentialRetrieveResponse
-	294, // 545: qrdb.v1.QRDBService.BackupCreate:output_type -> qrdb.v1.BackupInfo
-	295, // 546: qrdb.v1.QRDBService.BackupList:output_type -> qrdb.v1.BackupListResponse
-	294, // 547: qrdb.v1.QRDBService.BackupGet:output_type -> qrdb.v1.BackupInfo
-	412, // 548: qrdb.v1.QRDBService.BackupDelete:output_type -> google.protobuf.Empty
-	300, // 549: qrdb.v1.QRDBService.BackupRestore:output_type -> qrdb.v1.BackupRestoreResponse
-	302, // 550: qrdb.v1.QRDBService.BackupVerify:output_type -> qrdb.v1.BackupVerifyResponse
-	304, // 551: qrdb.v1.QRDBService.RebalanceGetShardStats:output_type -> qrdb.v1.ShardStats
-	307, // 552: qrdb.v1.QRDBService.RebalanceCreatePlan:output_type -> qrdb.v1.RebalancePlan
-	308, // 553: qrdb.v1.QRDBService.RebalanceExecute:output_type -> qrdb.v1.RebalanceExecutionResponse
-	310, // 554: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:output_type -> qrdb.v1.ImbalanceReport
-	315, // 555: qrdb.v1.QRDBService.Embed:output_type -> qrdb.v1.EmbedResponse
-	317, // 556: qrdb.v1.QRDBService.BatchEmbed:output_type -> qrdb.v1.BatchEmbedResponse
-	319, // 557: qrdb.v1.QRDBService.ListEmbeddingModels:output_type -> qrdb.v1.ListEmbeddingModelsResponse
-	322, // 558: qrdb.v1.QRDBService.RAGIngestDocument:output_type -> qrdb.v1.RAGIngestDocumentResponse
-	325, // 559: qrdb.v1.QRDBService.RAGQuery:output_type -> qrdb.v1.RAGQueryResponse
-	327, // 560: qrdb.v1.QRDBService.RAGDeleteDocument:output_type -> qrdb.v1.RAGDeleteDocumentResponse
-	330, // 561: qrdb.v1.QRDBService.RAGListDocuments:output_type -> qrdb.v1.RAGListDocumentsResponse
-	412, // 562: qrdb.v1.QRDBService.DatabaseSeal:output_type -> google.protobuf.Empty
-	412, // 563: qrdb.v1.QRDBService.DatabaseUnseal:output_type -> google.protobuf.Empty
-	334, // 564: qrdb.v1.QRDBService.DatabaseBarrierStatus:output_type -> qrdb.v1.DatabaseBarrierStatusResponse
-	337, // 565: qrdb.v1.QRDBService.SQLQuery:output_type -> qrdb.v1.SQLQueryResponse
-	345, // 566: qrdb.v1.TenantBarrierService.Init:output_type -> qrdb.v1.TenantBarrierInitResponse
-	412, // 567: qrdb.v1.TenantBarrierService.Unseal:output_type -> google.protobuf.Empty
-	348, // 568: qrdb.v1.TenantBarrierService.UnsealShare:output_type -> qrdb.v1.TenantBarrierUnsealProgress
-	412, // 569: qrdb.v1.TenantBarrierService.Seal:output_type -> google.protobuf.Empty
-	351, // 570: qrdb.v1.TenantBarrierService.Status:output_type -> qrdb.v1.TenantBarrierStatusResponse
-	353, // 571: qrdb.v1.TenantBarrierService.OfficerRegister:output_type -> qrdb.v1.TenantBarrierOfficerRegisterResponse
-	355, // 572: qrdb.v1.TenantBarrierService.OfficerList:output_type -> qrdb.v1.TenantBarrierOfficerListResponse
-	357, // 573: qrdb.v1.TenantBarrierService.ShareClaimBegin:output_type -> qrdb.v1.TenantBarrierShareClaimBeginResponse
-	359, // 574: qrdb.v1.TenantBarrierService.ShareClaimComplete:output_type -> qrdb.v1.TenantBarrierShareClaimCompleteResponse
-	361, // 575: qrdb.v1.TenantBarrierService.OfficerClaimStatus:output_type -> qrdb.v1.TenantBarrierOfficerClaimStatusResponse
-	363, // 576: qrdb.v1.TenantBarrierService.ShamirSealVote:output_type -> qrdb.v1.TenantBarrierShamirSealVoteResponse
-	365, // 577: qrdb.v1.AuditService.Query:output_type -> qrdb.v1.AuditQueryResponse
-	368, // 578: qrdb.v1.AuthFactorService.EnrollFactor:output_type -> qrdb.v1.EnrollFactorResponse
-	370, // 579: qrdb.v1.AuthFactorService.ChallengeFactor:output_type -> qrdb.v1.ChallengeFactorResponse
-	412, // 580: qrdb.v1.AuthFactorService.VerifyFactor:output_type -> google.protobuf.Empty
-	374, // 581: qrdb.v1.AuthFactorService.ListFactors:output_type -> qrdb.v1.ListFactorsResponse
-	412, // 582: qrdb.v1.AuthFactorService.RevokeFactor:output_type -> google.protobuf.Empty
-	378, // 583: qrdb.v1.UserAuthFactorService.Add:output_type -> qrdb.v1.UserAuthFactorAddResponse
-	380, // 584: qrdb.v1.UserAuthFactorService.List:output_type -> qrdb.v1.UserAuthFactorListResponse
-	382, // 585: qrdb.v1.UserAuthFactorService.Get:output_type -> qrdb.v1.UserAuthFactorGetResponse
-	384, // 586: qrdb.v1.UserAuthFactorService.Remove:output_type -> qrdb.v1.UserAuthFactorRemoveResponse
-	387, // 587: qrdb.v1.UserAuthFactorService.Rotate:output_type -> qrdb.v1.UserAuthFactorRotateResponse
-	389, // 588: qrdb.v1.UserAuthFactorService.Relabel:output_type -> qrdb.v1.UserAuthFactorRelabelResponse
-	391, // 589: qrdb.v1.UserAuthFactorService.Login:output_type -> qrdb.v1.UserAuthFactorLoginResponse
-	375, // [375:590] is the sub-list for method output_type
-	160, // [160:375] is the sub-list for method input_type
+	22,  // 165: qrdb.v1.QRDBService.CompareAndSwap:input_type -> qrdb.v1.CompareAndSwapRequest
+	24,  // 166: qrdb.v1.QRDBService.List:input_type -> qrdb.v1.ListRequest
+	26,  // 167: qrdb.v1.QRDBService.Scan:input_type -> qrdb.v1.ScanRequest
+	29,  // 168: qrdb.v1.QRDBService.PutWithLease:input_type -> qrdb.v1.PutWithLeaseRequest
+	31,  // 169: qrdb.v1.QRDBService.GetRevision:input_type -> qrdb.v1.GetRevisionRequest
+	33,  // 170: qrdb.v1.QRDBService.GetAtRevision:input_type -> qrdb.v1.GetAtRevisionRequest
+	35,  // 171: qrdb.v1.QRDBService.Range:input_type -> qrdb.v1.RangeRequest
+	37,  // 172: qrdb.v1.QRDBService.Compact:input_type -> qrdb.v1.CompactRequest
+	414, // 173: qrdb.v1.QRDBService.CurrentRevision:input_type -> google.protobuf.Empty
+	39,  // 174: qrdb.v1.QRDBService.RestoreToRevision:input_type -> qrdb.v1.RestoreRevisionRequest
+	45,  // 175: qrdb.v1.QRDBService.Transaction:input_type -> qrdb.v1.TransactionRequest
+	47,  // 176: qrdb.v1.QRDBService.Batch:input_type -> qrdb.v1.BatchRequest
+	49,  // 177: qrdb.v1.QRDBService.BatchImport:input_type -> qrdb.v1.BatchImportRequest
+	53,  // 178: qrdb.v1.QRDBService.Watch:input_type -> qrdb.v1.WatchRequest
+	56,  // 179: qrdb.v1.QRDBService.LeaseGrant:input_type -> qrdb.v1.LeaseGrantRequest
+	58,  // 180: qrdb.v1.QRDBService.LeaseRevoke:input_type -> qrdb.v1.LeaseRevokeRequest
+	59,  // 181: qrdb.v1.QRDBService.LeaseKeepAlive:input_type -> qrdb.v1.LeaseKeepAliveRequest
+	61,  // 182: qrdb.v1.QRDBService.LeaseTimeToLive:input_type -> qrdb.v1.LeaseTimeToLiveRequest
+	414, // 183: qrdb.v1.QRDBService.LeaseList:input_type -> google.protobuf.Empty
+	65,  // 184: qrdb.v1.QRDBService.LockAcquire:input_type -> qrdb.v1.LockAcquireRequest
+	67,  // 185: qrdb.v1.QRDBService.LockTryLock:input_type -> qrdb.v1.LockTryLockRequest
+	69,  // 186: qrdb.v1.QRDBService.LockRelease:input_type -> qrdb.v1.LockReleaseRequest
+	70,  // 187: qrdb.v1.QRDBService.LockExtend:input_type -> qrdb.v1.LockExtendRequest
+	72,  // 188: qrdb.v1.QRDBService.LockStatus:input_type -> qrdb.v1.LockStatusRequest
+	74,  // 189: qrdb.v1.QRDBService.LockList:input_type -> qrdb.v1.LockListRequest
+	76,  // 190: qrdb.v1.QRDBService.IndexCreate:input_type -> qrdb.v1.IndexCreateRequest
+	77,  // 191: qrdb.v1.QRDBService.IndexDrop:input_type -> qrdb.v1.IndexDropRequest
+	78,  // 192: qrdb.v1.QRDBService.IndexQuery:input_type -> qrdb.v1.IndexQueryRequest
+	80,  // 193: qrdb.v1.QRDBService.IndexScan:input_type -> qrdb.v1.IndexScanRequest
+	414, // 194: qrdb.v1.QRDBService.IndexList:input_type -> google.protobuf.Empty
+	86,  // 195: qrdb.v1.QRDBService.TSWrite:input_type -> qrdb.v1.TSWriteRequest
+	87,  // 196: qrdb.v1.QRDBService.TSWriteBatch:input_type -> qrdb.v1.TSWriteBatchRequest
+	88,  // 197: qrdb.v1.QRDBService.TSQuery:input_type -> qrdb.v1.TSQueryRequest
+	90,  // 198: qrdb.v1.QRDBService.TSAggregate:input_type -> qrdb.v1.TSAggregateRequest
+	86,  // 199: qrdb.v1.QRDBService.TSWritePoint:input_type -> qrdb.v1.TSWriteRequest
+	93,  // 200: qrdb.v1.QRDBService.TSRichQuery:input_type -> qrdb.v1.TSRichQueryRequest
+	96,  // 201: qrdb.v1.QRDBService.TSDeleteSeries:input_type -> qrdb.v1.TSDeleteSeriesRequest
+	97,  // 202: qrdb.v1.QRDBService.TSGetRetention:input_type -> qrdb.v1.TSGetRetentionRequest
+	99,  // 203: qrdb.v1.QRDBService.TSSetRetention:input_type -> qrdb.v1.TSSetRetentionRequest
+	100, // 204: qrdb.v1.QRDBService.TSListMetrics:input_type -> qrdb.v1.TSListMetricsRequest
+	118, // 205: qrdb.v1.QRDBService.VectorCreateNamespace:input_type -> qrdb.v1.VectorCreateNamespaceRequest
+	120, // 206: qrdb.v1.QRDBService.VectorDeleteNamespace:input_type -> qrdb.v1.VectorDeleteNamespaceRequest
+	121, // 207: qrdb.v1.QRDBService.VectorListNamespaces:input_type -> qrdb.v1.VectorListNamespacesRequest
+	123, // 208: qrdb.v1.QRDBService.VectorGetNamespaceInfo:input_type -> qrdb.v1.VectorGetNamespaceInfoRequest
+	126, // 209: qrdb.v1.QRDBService.VectorUpsert:input_type -> qrdb.v1.VectorUpsertRequest
+	128, // 210: qrdb.v1.QRDBService.VectorGet:input_type -> qrdb.v1.VectorGetRequest
+	129, // 211: qrdb.v1.QRDBService.VectorDelete:input_type -> qrdb.v1.VectorDeleteRequest
+	131, // 212: qrdb.v1.QRDBService.VectorBatchUpsert:input_type -> qrdb.v1.VectorBatchUpsertRequest
+	133, // 213: qrdb.v1.QRDBService.VectorBatchDelete:input_type -> qrdb.v1.VectorBatchDeleteRequest
+	135, // 214: qrdb.v1.QRDBService.VectorList:input_type -> qrdb.v1.VectorListRequest
+	137, // 215: qrdb.v1.QRDBService.VectorUpdateMetadata:input_type -> qrdb.v1.VectorUpdateMetadataRequest
+	139, // 216: qrdb.v1.QRDBService.VectorSearchSimilar:input_type -> qrdb.v1.VectorSearchSimilarRequest
+	141, // 217: qrdb.v1.QRDBService.VectorSearchByMetadata:input_type -> qrdb.v1.VectorSearchByMetadataRequest
+	143, // 218: qrdb.v1.QRDBService.VectorHybridSearch:input_type -> qrdb.v1.VectorHybridSearchRequest
+	145, // 219: qrdb.v1.QRDBService.VectorSearchByID:input_type -> qrdb.v1.VectorSearchByIDRequest
+	146, // 220: qrdb.v1.QRDBService.VectorRebuildIndex:input_type -> qrdb.v1.VectorRebuildIndexRequest
+	148, // 221: qrdb.v1.QRDBService.VectorGetRebuildProgress:input_type -> qrdb.v1.VectorGetRebuildProgressRequest
+	150, // 222: qrdb.v1.QRDBService.VectorGetIndexStats:input_type -> qrdb.v1.VectorGetIndexStatsRequest
+	152, // 223: qrdb.v1.QRDBService.VectorCompactNamespace:input_type -> qrdb.v1.VectorCompactNamespaceRequest
+	154, // 224: qrdb.v1.QRDBService.VectorGetCompactionProgress:input_type -> qrdb.v1.VectorGetCompactionProgressRequest
+	414, // 225: qrdb.v1.QRDBService.Health:input_type -> google.protobuf.Empty
+	414, // 226: qrdb.v1.QRDBService.Status:input_type -> google.protobuf.Empty
+	414, // 227: qrdb.v1.QRDBService.Peers:input_type -> google.protobuf.Empty
+	107, // 228: qrdb.v1.QRDBService.AddMember:input_type -> qrdb.v1.AddMemberRequest
+	108, // 229: qrdb.v1.QRDBService.RemoveMember:input_type -> qrdb.v1.RemoveMemberRequest
+	109, // 230: qrdb.v1.QRDBService.RequestSnapshot:input_type -> qrdb.v1.RequestSnapshotMessage
+	414, // 231: qrdb.v1.QRDBService.Drain:input_type -> google.protobuf.Empty
+	110, // 232: qrdb.v1.QRDBService.Capabilities:input_type -> qrdb.v1.CapabilitiesRequest
+	112, // 233: qrdb.v1.QRDBService.StartShard:input_type -> qrdb.v1.StartShardRequest
+	113, // 234: qrdb.v1.QRDBService.StopShard:input_type -> qrdb.v1.StopShardRequest
+	114, // 235: qrdb.v1.QRDBService.GetShardState:input_type -> qrdb.v1.GetShardStateRequest
+	414, // 236: qrdb.v1.QRDBService.GetTopology:input_type -> google.protobuf.Empty
+	156, // 237: qrdb.v1.QRDBService.CreateUser:input_type -> qrdb.v1.CreateUserRequest
+	157, // 238: qrdb.v1.QRDBService.GetUser:input_type -> qrdb.v1.GetUserRequest
+	158, // 239: qrdb.v1.QRDBService.GetUserByUsername:input_type -> qrdb.v1.GetUserByUsernameRequest
+	159, // 240: qrdb.v1.QRDBService.GetUserByCertThumbprint:input_type -> qrdb.v1.GetUserByCertThumbprintRequest
+	160, // 241: qrdb.v1.QRDBService.AddCertBinding:input_type -> qrdb.v1.AddCertBindingRequest
+	161, // 242: qrdb.v1.QRDBService.UpdateUser:input_type -> qrdb.v1.UpdateUserProtoRequest
+	162, // 243: qrdb.v1.QRDBService.DeleteUser:input_type -> qrdb.v1.DeleteUserRequest
+	163, // 244: qrdb.v1.QRDBService.ListUsers:input_type -> qrdb.v1.ListUsersRequest
+	165, // 245: qrdb.v1.QRDBService.EnableUser:input_type -> qrdb.v1.EnableUserRequest
+	166, // 246: qrdb.v1.QRDBService.DisableUser:input_type -> qrdb.v1.DisableUserRequest
+	168, // 247: qrdb.v1.QRDBService.CreateRole:input_type -> qrdb.v1.CreateRoleRequest
+	169, // 248: qrdb.v1.QRDBService.GetRole:input_type -> qrdb.v1.GetRoleRequest
+	170, // 249: qrdb.v1.QRDBService.GetRoleByName:input_type -> qrdb.v1.GetRoleByNameRequest
+	173, // 250: qrdb.v1.QRDBService.UpdateRole:input_type -> qrdb.v1.UpdateRoleProtoRequest
+	174, // 251: qrdb.v1.QRDBService.DeleteRole:input_type -> qrdb.v1.DeleteRoleRequest
+	175, // 252: qrdb.v1.QRDBService.ListRoles:input_type -> qrdb.v1.ListRolesRequest
+	177, // 253: qrdb.v1.QRDBService.AssignRole:input_type -> qrdb.v1.AssignRoleRequest
+	178, // 254: qrdb.v1.QRDBService.UnassignRole:input_type -> qrdb.v1.UnassignRoleRequest
+	414, // 255: qrdb.v1.QRDBService.ListPermissions:input_type -> google.protobuf.Empty
+	171, // 256: qrdb.v1.QRDBService.ResolveRolePermissions:input_type -> qrdb.v1.ResolveRolePermissionsRequest
+	182, // 257: qrdb.v1.QRDBService.GenerateCert:input_type -> qrdb.v1.GenerateCertRequest
+	184, // 258: qrdb.v1.QRDBService.ExportCert:input_type -> qrdb.v1.ExportCertRequest
+	186, // 259: qrdb.v1.QRDBService.RevokeCert:input_type -> qrdb.v1.RevokeCertRequest
+	187, // 260: qrdb.v1.QRDBService.ListCerts:input_type -> qrdb.v1.ListCertsRequest
+	190, // 261: qrdb.v1.QRDBService.CreateCollection:input_type -> qrdb.v1.CreateCollectionRequest
+	191, // 262: qrdb.v1.QRDBService.GetCollectionInfo:input_type -> qrdb.v1.GetCollectionInfoRequest
+	192, // 263: qrdb.v1.QRDBService.ListCollections:input_type -> qrdb.v1.ListCollectionsRequest
+	193, // 264: qrdb.v1.QRDBService.DropCollection:input_type -> qrdb.v1.DropCollectionRequest
+	196, // 265: qrdb.v1.QRDBService.InsertDocument:input_type -> qrdb.v1.InsertDocumentRequest
+	198, // 266: qrdb.v1.QRDBService.GetDocument:input_type -> qrdb.v1.GetDocumentRequest
+	200, // 267: qrdb.v1.QRDBService.UpdateDocument:input_type -> qrdb.v1.UpdateDocumentRequest
+	201, // 268: qrdb.v1.QRDBService.DeleteDocument:input_type -> qrdb.v1.DeleteDocumentRequest
+	202, // 269: qrdb.v1.QRDBService.ListDocuments:input_type -> qrdb.v1.ListDocumentsRequest
+	204, // 270: qrdb.v1.QRDBService.DatabaseCreate:input_type -> qrdb.v1.DatabaseCreateRequest
+	205, // 271: qrdb.v1.QRDBService.DatabaseGet:input_type -> qrdb.v1.DatabaseGetRequest
+	414, // 272: qrdb.v1.QRDBService.DatabaseList:input_type -> google.protobuf.Empty
+	206, // 273: qrdb.v1.QRDBService.DatabaseDrop:input_type -> qrdb.v1.DatabaseDropRequest
+	218, // 274: qrdb.v1.QRDBService.DatabaseUpdateProtocol:input_type -> qrdb.v1.DatabaseUpdateProtocolRequest
+	219, // 275: qrdb.v1.QRDBService.DatabaseUpdateEtcd:input_type -> qrdb.v1.DatabaseUpdateEtcdRequest
+	220, // 276: qrdb.v1.QRDBService.DatabaseUpdateRaft:input_type -> qrdb.v1.DatabaseUpdateRaftRequest
+	221, // 277: qrdb.v1.QRDBService.DatabaseScale:input_type -> qrdb.v1.DatabaseScaleRequest
+	222, // 278: qrdb.v1.QRDBService.DatabaseUpdateBarrier:input_type -> qrdb.v1.DatabaseUpdateBarrierRequest
+	223, // 279: qrdb.v1.QRDBService.DatabaseUpdateConnection:input_type -> qrdb.v1.DatabaseUpdateConnectionRequest
+	224, // 280: qrdb.v1.QRDBService.BarrierInitialize:input_type -> qrdb.v1.BarrierInitializeRequest
+	225, // 281: qrdb.v1.QRDBService.BarrierUnseal:input_type -> qrdb.v1.BarrierUnsealRequest
+	414, // 282: qrdb.v1.QRDBService.BarrierSeal:input_type -> google.protobuf.Empty
+	414, // 283: qrdb.v1.QRDBService.BarrierStatus:input_type -> google.protobuf.Empty
+	229, // 284: qrdb.v1.QRDBService.BarrierShamirInitialize:input_type -> qrdb.v1.BarrierShamirInitializeRequest
+	231, // 285: qrdb.v1.QRDBService.BarrierShamirUnsealShare:input_type -> qrdb.v1.BarrierShamirUnsealShareRequest
+	233, // 286: qrdb.v1.QRDBService.BarrierShamirUnsealShares:input_type -> qrdb.v1.BarrierShamirUnsealSharesRequest
+	234, // 287: qrdb.v1.QRDBService.BarrierRekey:input_type -> qrdb.v1.BarrierRekeyRequest
+	227, // 288: qrdb.v1.QRDBService.BarrierEnableEncryption:input_type -> qrdb.v1.BarrierEnableEncryptionRequest
+	237, // 289: qrdb.v1.QRDBService.BarrierOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
+	414, // 290: qrdb.v1.QRDBService.BarrierOfficerList:input_type -> google.protobuf.Empty
+	241, // 291: qrdb.v1.QRDBService.BarrierShareClaimBegin:input_type -> qrdb.v1.BarrierShareClaimBeginRequest
+	243, // 292: qrdb.v1.QRDBService.BarrierShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
+	414, // 293: qrdb.v1.QRDBService.BarrierOfficerClaimStatus:input_type -> google.protobuf.Empty
+	245, // 294: qrdb.v1.QRDBService.BarrierShamirSealVote:input_type -> qrdb.v1.BarrierShamirSealVoteRequest
+	237, // 295: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:input_type -> qrdb.v1.BarrierOfficerRegisterRequest
+	241, // 296: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:input_type -> qrdb.v1.BarrierShareClaimBeginRequest
+	243, // 297: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:input_type -> qrdb.v1.BarrierShareClaimCompleteRequest
+	235, // 298: qrdb.v1.QRDBService.BarrierRecoveryGenerate:input_type -> qrdb.v1.BarrierRecoveryGenerateRequest
+	248, // 299: qrdb.v1.QRDBService.BarrierRecoveryRecover:input_type -> qrdb.v1.BarrierRecoveryRecoverRequest
+	414, // 300: qrdb.v1.QRDBService.BarrierRecoveryDelete:input_type -> google.protobuf.Empty
+	414, // 301: qrdb.v1.QRDBService.BarrierRecoveryStatus:input_type -> google.protobuf.Empty
+	250, // 302: qrdb.v1.QRDBService.BarrierRootToken:input_type -> qrdb.v1.BarrierRootTokenRequest
+	253, // 303: qrdb.v1.QRDBService.CeremonyInitialize:input_type -> qrdb.v1.CeremonyInitializeRequest
+	414, // 304: qrdb.v1.QRDBService.CeremonyStatus:input_type -> google.protobuf.Empty
+	256, // 305: qrdb.v1.QRDBService.CeremonyClaimCertBegin:input_type -> qrdb.v1.CeremonyClaimCertBeginRequest
+	258, // 306: qrdb.v1.QRDBService.CeremonyClaimCertComplete:input_type -> qrdb.v1.CeremonyClaimCertCompleteRequest
+	260, // 307: qrdb.v1.QRDBService.CeremonyBeginClaimShare:input_type -> qrdb.v1.CeremonyBeginClaimShareRequest
+	262, // 308: qrdb.v1.QRDBService.CeremonyCompleteClaimShare:input_type -> qrdb.v1.CeremonyCompleteClaimShareRequest
+	264, // 309: qrdb.v1.QRDBService.CeremonySignCSR:input_type -> qrdb.v1.CeremonySignCSRRequest
+	266, // 310: qrdb.v1.QRDBService.CeremonyEnrollExternalOfficer:input_type -> qrdb.v1.CeremonyEnrollExternalOfficerRequest
+	340, // 311: qrdb.v1.QRDBService.CeremonyClaimShareBegin:input_type -> qrdb.v1.CeremonyClaimShareBeginRequest
+	342, // 312: qrdb.v1.QRDBService.CeremonyClaimShareComplete:input_type -> qrdb.v1.CeremonyClaimShareCompleteRequest
+	344, // 313: qrdb.v1.QRDBService.CeremonySubmitUnsealShare:input_type -> qrdb.v1.CeremonySubmitUnsealShareRequest
+	271, // 314: qrdb.v1.QRDBService.TenantCreate:input_type -> qrdb.v1.TenantCreateRequest
+	272, // 315: qrdb.v1.QRDBService.TenantGet:input_type -> qrdb.v1.TenantGetRequest
+	414, // 316: qrdb.v1.QRDBService.TenantList:input_type -> google.protobuf.Empty
+	274, // 317: qrdb.v1.QRDBService.TenantUpdate:input_type -> qrdb.v1.TenantUpdateRequest
+	275, // 318: qrdb.v1.QRDBService.TenantDelete:input_type -> qrdb.v1.TenantDeleteRequest
+	276, // 319: qrdb.v1.QRDBService.TenantUpdateQuotas:input_type -> qrdb.v1.TenantUpdateQuotasRequest
+	277, // 320: qrdb.v1.QRDBService.TenantUpdateEntitlements:input_type -> qrdb.v1.TenantUpdateEntitlementsRequest
+	278, // 321: qrdb.v1.QRDBService.CredentialSubmit:input_type -> qrdb.v1.CredentialSubmitRequest
+	414, // 322: qrdb.v1.QRDBService.CredentialStrategy:input_type -> google.protobuf.Empty
+	283, // 323: qrdb.v1.QRDBService.CredentialDelete:input_type -> qrdb.v1.CredentialDeleteRequest
+	284, // 324: qrdb.v1.QRDBService.CredentialList:input_type -> qrdb.v1.CredentialListRequest
+	286, // 325: qrdb.v1.QRDBService.CredentialRotate:input_type -> qrdb.v1.CredentialRotateRequest
+	288, // 326: qrdb.v1.QRDBService.CredentialRetrieveVersion:input_type -> qrdb.v1.CredentialRetrieveVersionRequest
+	290, // 327: qrdb.v1.QRDBService.CredentialListVersions:input_type -> qrdb.v1.CredentialListVersionsRequest
+	293, // 328: qrdb.v1.QRDBService.CredentialGCExpired:input_type -> qrdb.v1.CredentialGCRequest
+	279, // 329: qrdb.v1.QRDBService.CredentialStore:input_type -> qrdb.v1.CredentialStoreRequest
+	280, // 330: qrdb.v1.QRDBService.CredentialRetrieve:input_type -> qrdb.v1.CredentialRetrieveRequest
+	295, // 331: qrdb.v1.QRDBService.BackupCreate:input_type -> qrdb.v1.BackupCreateRequest
+	414, // 332: qrdb.v1.QRDBService.BackupList:input_type -> google.protobuf.Empty
+	298, // 333: qrdb.v1.QRDBService.BackupGet:input_type -> qrdb.v1.BackupGetRequest
+	299, // 334: qrdb.v1.QRDBService.BackupDelete:input_type -> qrdb.v1.BackupDeleteRequest
+	300, // 335: qrdb.v1.QRDBService.BackupRestore:input_type -> qrdb.v1.BackupRestoreRequest
+	303, // 336: qrdb.v1.QRDBService.BackupVerify:input_type -> qrdb.v1.BackupVerifyRequest
+	305, // 337: qrdb.v1.QRDBService.RebalanceGetShardStats:input_type -> qrdb.v1.RebalanceShardStatsRequest
+	307, // 338: qrdb.v1.QRDBService.RebalanceCreatePlan:input_type -> qrdb.v1.RebalancePlanRequest
+	309, // 339: qrdb.v1.QRDBService.RebalanceExecute:input_type -> qrdb.v1.RebalancePlan
+	414, // 340: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:input_type -> google.protobuf.Empty
+	316, // 341: qrdb.v1.QRDBService.Embed:input_type -> qrdb.v1.EmbedRequest
+	318, // 342: qrdb.v1.QRDBService.BatchEmbed:input_type -> qrdb.v1.BatchEmbedRequest
+	320, // 343: qrdb.v1.QRDBService.ListEmbeddingModels:input_type -> qrdb.v1.ListEmbeddingModelsRequest
+	323, // 344: qrdb.v1.QRDBService.RAGIngestDocument:input_type -> qrdb.v1.RAGIngestDocumentRequest
+	325, // 345: qrdb.v1.QRDBService.RAGQuery:input_type -> qrdb.v1.RAGQueryRequest
+	328, // 346: qrdb.v1.QRDBService.RAGDeleteDocument:input_type -> qrdb.v1.RAGDeleteDocumentRequest
+	330, // 347: qrdb.v1.QRDBService.RAGListDocuments:input_type -> qrdb.v1.RAGListDocumentsRequest
+	333, // 348: qrdb.v1.QRDBService.DatabaseSeal:input_type -> qrdb.v1.DatabaseSealRequest
+	334, // 349: qrdb.v1.QRDBService.DatabaseUnseal:input_type -> qrdb.v1.DatabaseUnsealRequest
+	335, // 350: qrdb.v1.QRDBService.DatabaseBarrierStatus:input_type -> qrdb.v1.DatabaseBarrierStatusRequest
+	337, // 351: qrdb.v1.QRDBService.SQLQuery:input_type -> qrdb.v1.SQLQueryRequest
+	346, // 352: qrdb.v1.TenantBarrierService.Init:input_type -> qrdb.v1.TenantBarrierInitRequest
+	348, // 353: qrdb.v1.TenantBarrierService.Unseal:input_type -> qrdb.v1.TenantBarrierUnsealRequest
+	349, // 354: qrdb.v1.TenantBarrierService.UnsealShare:input_type -> qrdb.v1.TenantBarrierUnsealShareRequest
+	351, // 355: qrdb.v1.TenantBarrierService.Seal:input_type -> qrdb.v1.TenantBarrierSealRequest
+	352, // 356: qrdb.v1.TenantBarrierService.Status:input_type -> qrdb.v1.TenantBarrierStatusRequest
+	354, // 357: qrdb.v1.TenantBarrierService.OfficerRegister:input_type -> qrdb.v1.TenantBarrierOfficerRegisterRequest
+	356, // 358: qrdb.v1.TenantBarrierService.OfficerList:input_type -> qrdb.v1.TenantBarrierOfficerListRequest
+	358, // 359: qrdb.v1.TenantBarrierService.ShareClaimBegin:input_type -> qrdb.v1.TenantBarrierShareClaimBeginRequest
+	360, // 360: qrdb.v1.TenantBarrierService.ShareClaimComplete:input_type -> qrdb.v1.TenantBarrierShareClaimCompleteRequest
+	362, // 361: qrdb.v1.TenantBarrierService.OfficerClaimStatus:input_type -> qrdb.v1.TenantBarrierOfficerClaimStatusRequest
+	364, // 362: qrdb.v1.TenantBarrierService.ShamirSealVote:input_type -> qrdb.v1.TenantBarrierShamirSealVoteRequest
+	366, // 363: qrdb.v1.AuditService.Query:input_type -> qrdb.v1.AuditQueryRequest
+	369, // 364: qrdb.v1.AuthFactorService.EnrollFactor:input_type -> qrdb.v1.EnrollFactorRequest
+	371, // 365: qrdb.v1.AuthFactorService.ChallengeFactor:input_type -> qrdb.v1.ChallengeFactorRequest
+	373, // 366: qrdb.v1.AuthFactorService.VerifyFactor:input_type -> qrdb.v1.VerifyFactorRequest
+	374, // 367: qrdb.v1.AuthFactorService.ListFactors:input_type -> qrdb.v1.ListFactorsRequest
+	377, // 368: qrdb.v1.AuthFactorService.RevokeFactor:input_type -> qrdb.v1.RevokeFactorRequest
+	379, // 369: qrdb.v1.UserAuthFactorService.Add:input_type -> qrdb.v1.UserAuthFactorAddRequest
+	381, // 370: qrdb.v1.UserAuthFactorService.List:input_type -> qrdb.v1.UserAuthFactorListRequest
+	383, // 371: qrdb.v1.UserAuthFactorService.Get:input_type -> qrdb.v1.UserAuthFactorGetRequest
+	385, // 372: qrdb.v1.UserAuthFactorService.Remove:input_type -> qrdb.v1.UserAuthFactorRemoveRequest
+	388, // 373: qrdb.v1.UserAuthFactorService.Rotate:input_type -> qrdb.v1.UserAuthFactorRotateRequest
+	390, // 374: qrdb.v1.UserAuthFactorService.Relabel:input_type -> qrdb.v1.UserAuthFactorRelabelRequest
+	392, // 375: qrdb.v1.UserAuthFactorService.Login:input_type -> qrdb.v1.UserAuthFactorLoginRequest
+	13,  // 376: qrdb.v1.QRDBService.Put:output_type -> qrdb.v1.PutResponse
+	15,  // 377: qrdb.v1.QRDBService.Get:output_type -> qrdb.v1.GetResponse
+	17,  // 378: qrdb.v1.QRDBService.Delete:output_type -> qrdb.v1.DeleteResponse
+	19,  // 379: qrdb.v1.QRDBService.PutIfAbsent:output_type -> qrdb.v1.PutIfAbsentResponse
+	21,  // 380: qrdb.v1.QRDBService.CompareAndDelete:output_type -> qrdb.v1.CompareAndDeleteResponse
+	23,  // 381: qrdb.v1.QRDBService.CompareAndSwap:output_type -> qrdb.v1.CompareAndSwapResponse
+	25,  // 382: qrdb.v1.QRDBService.List:output_type -> qrdb.v1.ListResponse
+	27,  // 383: qrdb.v1.QRDBService.Scan:output_type -> qrdb.v1.ScanResponse
+	30,  // 384: qrdb.v1.QRDBService.PutWithLease:output_type -> qrdb.v1.PutWithLeaseResponse
+	32,  // 385: qrdb.v1.QRDBService.GetRevision:output_type -> qrdb.v1.GetRevisionResponse
+	34,  // 386: qrdb.v1.QRDBService.GetAtRevision:output_type -> qrdb.v1.GetAtRevisionResponse
+	36,  // 387: qrdb.v1.QRDBService.Range:output_type -> qrdb.v1.RangeResponse
+	414, // 388: qrdb.v1.QRDBService.Compact:output_type -> google.protobuf.Empty
+	38,  // 389: qrdb.v1.QRDBService.CurrentRevision:output_type -> qrdb.v1.CurrentRevisionResponse
+	41,  // 390: qrdb.v1.QRDBService.RestoreToRevision:output_type -> qrdb.v1.RestoreRevisionResponse
+	46,  // 391: qrdb.v1.QRDBService.Transaction:output_type -> qrdb.v1.TransactionResponse
+	48,  // 392: qrdb.v1.QRDBService.Batch:output_type -> qrdb.v1.BatchResponse
+	51,  // 393: qrdb.v1.QRDBService.BatchImport:output_type -> qrdb.v1.BatchImportResponse
+	54,  // 394: qrdb.v1.QRDBService.Watch:output_type -> qrdb.v1.WatchResponse
+	57,  // 395: qrdb.v1.QRDBService.LeaseGrant:output_type -> qrdb.v1.LeaseGrantResponse
+	414, // 396: qrdb.v1.QRDBService.LeaseRevoke:output_type -> google.protobuf.Empty
+	60,  // 397: qrdb.v1.QRDBService.LeaseKeepAlive:output_type -> qrdb.v1.LeaseKeepAliveResponse
+	62,  // 398: qrdb.v1.QRDBService.LeaseTimeToLive:output_type -> qrdb.v1.LeaseTimeToLiveResponse
+	63,  // 399: qrdb.v1.QRDBService.LeaseList:output_type -> qrdb.v1.LeaseListResponse
+	66,  // 400: qrdb.v1.QRDBService.LockAcquire:output_type -> qrdb.v1.LockAcquireResponse
+	68,  // 401: qrdb.v1.QRDBService.LockTryLock:output_type -> qrdb.v1.LockTryLockResponse
+	414, // 402: qrdb.v1.QRDBService.LockRelease:output_type -> google.protobuf.Empty
+	71,  // 403: qrdb.v1.QRDBService.LockExtend:output_type -> qrdb.v1.LockExtendResponse
+	73,  // 404: qrdb.v1.QRDBService.LockStatus:output_type -> qrdb.v1.LockStatusResponse
+	75,  // 405: qrdb.v1.QRDBService.LockList:output_type -> qrdb.v1.LockListResponse
+	414, // 406: qrdb.v1.QRDBService.IndexCreate:output_type -> google.protobuf.Empty
+	414, // 407: qrdb.v1.QRDBService.IndexDrop:output_type -> google.protobuf.Empty
+	79,  // 408: qrdb.v1.QRDBService.IndexQuery:output_type -> qrdb.v1.IndexQueryResponse
+	82,  // 409: qrdb.v1.QRDBService.IndexScan:output_type -> qrdb.v1.IndexScanResponse
+	83,  // 410: qrdb.v1.QRDBService.IndexList:output_type -> qrdb.v1.IndexListResponse
+	414, // 411: qrdb.v1.QRDBService.TSWrite:output_type -> google.protobuf.Empty
+	414, // 412: qrdb.v1.QRDBService.TSWriteBatch:output_type -> google.protobuf.Empty
+	89,  // 413: qrdb.v1.QRDBService.TSQuery:output_type -> qrdb.v1.TSQueryResponse
+	92,  // 414: qrdb.v1.QRDBService.TSAggregate:output_type -> qrdb.v1.TSAggregateResponse
+	414, // 415: qrdb.v1.QRDBService.TSWritePoint:output_type -> google.protobuf.Empty
+	94,  // 416: qrdb.v1.QRDBService.TSRichQuery:output_type -> qrdb.v1.TSRichQueryResponse
+	414, // 417: qrdb.v1.QRDBService.TSDeleteSeries:output_type -> google.protobuf.Empty
+	98,  // 418: qrdb.v1.QRDBService.TSGetRetention:output_type -> qrdb.v1.TSRetentionPolicyResponse
+	414, // 419: qrdb.v1.QRDBService.TSSetRetention:output_type -> google.protobuf.Empty
+	101, // 420: qrdb.v1.QRDBService.TSListMetrics:output_type -> qrdb.v1.TSListMetricsResponse
+	119, // 421: qrdb.v1.QRDBService.VectorCreateNamespace:output_type -> qrdb.v1.VectorCreateNamespaceResponse
+	414, // 422: qrdb.v1.QRDBService.VectorDeleteNamespace:output_type -> google.protobuf.Empty
+	122, // 423: qrdb.v1.QRDBService.VectorListNamespaces:output_type -> qrdb.v1.VectorListNamespacesResponse
+	124, // 424: qrdb.v1.QRDBService.VectorGetNamespaceInfo:output_type -> qrdb.v1.VectorNamespaceInfo
+	127, // 425: qrdb.v1.QRDBService.VectorUpsert:output_type -> qrdb.v1.VectorUpsertResponse
+	125, // 426: qrdb.v1.QRDBService.VectorGet:output_type -> qrdb.v1.VectorDataProto
+	414, // 427: qrdb.v1.QRDBService.VectorDelete:output_type -> google.protobuf.Empty
+	132, // 428: qrdb.v1.QRDBService.VectorBatchUpsert:output_type -> qrdb.v1.VectorBatchUpsertResponse
+	134, // 429: qrdb.v1.QRDBService.VectorBatchDelete:output_type -> qrdb.v1.VectorBatchDeleteResponse
+	136, // 430: qrdb.v1.QRDBService.VectorList:output_type -> qrdb.v1.VectorListResponse
+	414, // 431: qrdb.v1.QRDBService.VectorUpdateMetadata:output_type -> google.protobuf.Empty
+	140, // 432: qrdb.v1.QRDBService.VectorSearchSimilar:output_type -> qrdb.v1.VectorSearchSimilarResponse
+	142, // 433: qrdb.v1.QRDBService.VectorSearchByMetadata:output_type -> qrdb.v1.VectorSearchByMetadataResponse
+	144, // 434: qrdb.v1.QRDBService.VectorHybridSearch:output_type -> qrdb.v1.VectorHybridSearchResponse
+	140, // 435: qrdb.v1.QRDBService.VectorSearchByID:output_type -> qrdb.v1.VectorSearchSimilarResponse
+	147, // 436: qrdb.v1.QRDBService.VectorRebuildIndex:output_type -> qrdb.v1.VectorRebuildIndexResponse
+	149, // 437: qrdb.v1.QRDBService.VectorGetRebuildProgress:output_type -> qrdb.v1.VectorRebuildProgress
+	151, // 438: qrdb.v1.QRDBService.VectorGetIndexStats:output_type -> qrdb.v1.VectorIndexStats
+	153, // 439: qrdb.v1.QRDBService.VectorCompactNamespace:output_type -> qrdb.v1.VectorCompactNamespaceResponse
+	155, // 440: qrdb.v1.QRDBService.VectorGetCompactionProgress:output_type -> qrdb.v1.VectorCompactionProgress
+	102, // 441: qrdb.v1.QRDBService.Health:output_type -> qrdb.v1.HealthResponse
+	103, // 442: qrdb.v1.QRDBService.Status:output_type -> qrdb.v1.StatusResponse
+	104, // 443: qrdb.v1.QRDBService.Peers:output_type -> qrdb.v1.PeersResponse
+	414, // 444: qrdb.v1.QRDBService.AddMember:output_type -> google.protobuf.Empty
+	414, // 445: qrdb.v1.QRDBService.RemoveMember:output_type -> google.protobuf.Empty
+	414, // 446: qrdb.v1.QRDBService.RequestSnapshot:output_type -> google.protobuf.Empty
+	414, // 447: qrdb.v1.QRDBService.Drain:output_type -> google.protobuf.Empty
+	111, // 448: qrdb.v1.QRDBService.Capabilities:output_type -> qrdb.v1.CapabilitiesResponse
+	414, // 449: qrdb.v1.QRDBService.StartShard:output_type -> google.protobuf.Empty
+	414, // 450: qrdb.v1.QRDBService.StopShard:output_type -> google.protobuf.Empty
+	115, // 451: qrdb.v1.QRDBService.GetShardState:output_type -> qrdb.v1.ShardStateResponse
+	116, // 452: qrdb.v1.QRDBService.GetTopology:output_type -> qrdb.v1.TopologyResponse
+	167, // 453: qrdb.v1.QRDBService.CreateUser:output_type -> qrdb.v1.UserResponse
+	167, // 454: qrdb.v1.QRDBService.GetUser:output_type -> qrdb.v1.UserResponse
+	167, // 455: qrdb.v1.QRDBService.GetUserByUsername:output_type -> qrdb.v1.UserResponse
+	167, // 456: qrdb.v1.QRDBService.GetUserByCertThumbprint:output_type -> qrdb.v1.UserResponse
+	167, // 457: qrdb.v1.QRDBService.AddCertBinding:output_type -> qrdb.v1.UserResponse
+	167, // 458: qrdb.v1.QRDBService.UpdateUser:output_type -> qrdb.v1.UserResponse
+	414, // 459: qrdb.v1.QRDBService.DeleteUser:output_type -> google.protobuf.Empty
+	164, // 460: qrdb.v1.QRDBService.ListUsers:output_type -> qrdb.v1.ListUsersResponse
+	414, // 461: qrdb.v1.QRDBService.EnableUser:output_type -> google.protobuf.Empty
+	414, // 462: qrdb.v1.QRDBService.DisableUser:output_type -> google.protobuf.Empty
+	179, // 463: qrdb.v1.QRDBService.CreateRole:output_type -> qrdb.v1.RoleResponse
+	179, // 464: qrdb.v1.QRDBService.GetRole:output_type -> qrdb.v1.RoleResponse
+	179, // 465: qrdb.v1.QRDBService.GetRoleByName:output_type -> qrdb.v1.RoleResponse
+	179, // 466: qrdb.v1.QRDBService.UpdateRole:output_type -> qrdb.v1.RoleResponse
+	414, // 467: qrdb.v1.QRDBService.DeleteRole:output_type -> google.protobuf.Empty
+	176, // 468: qrdb.v1.QRDBService.ListRoles:output_type -> qrdb.v1.ListRolesResponse
+	414, // 469: qrdb.v1.QRDBService.AssignRole:output_type -> google.protobuf.Empty
+	414, // 470: qrdb.v1.QRDBService.UnassignRole:output_type -> google.protobuf.Empty
+	181, // 471: qrdb.v1.QRDBService.ListPermissions:output_type -> qrdb.v1.ListPermissionsResponse
+	172, // 472: qrdb.v1.QRDBService.ResolveRolePermissions:output_type -> qrdb.v1.ResolveRolePermissionsResponse
+	183, // 473: qrdb.v1.QRDBService.GenerateCert:output_type -> qrdb.v1.CertBundleResponse
+	185, // 474: qrdb.v1.QRDBService.ExportCert:output_type -> qrdb.v1.ExportCertResponse
+	414, // 475: qrdb.v1.QRDBService.RevokeCert:output_type -> google.protobuf.Empty
+	189, // 476: qrdb.v1.QRDBService.ListCerts:output_type -> qrdb.v1.ListCertsResponse
+	194, // 477: qrdb.v1.QRDBService.CreateCollection:output_type -> qrdb.v1.CollectionInfoResponse
+	194, // 478: qrdb.v1.QRDBService.GetCollectionInfo:output_type -> qrdb.v1.CollectionInfoResponse
+	195, // 479: qrdb.v1.QRDBService.ListCollections:output_type -> qrdb.v1.ListCollectionsResponse
+	414, // 480: qrdb.v1.QRDBService.DropCollection:output_type -> google.protobuf.Empty
+	197, // 481: qrdb.v1.QRDBService.InsertDocument:output_type -> qrdb.v1.InsertDocumentResponse
+	199, // 482: qrdb.v1.QRDBService.GetDocument:output_type -> qrdb.v1.DocumentResponse
+	414, // 483: qrdb.v1.QRDBService.UpdateDocument:output_type -> google.protobuf.Empty
+	414, // 484: qrdb.v1.QRDBService.DeleteDocument:output_type -> google.protobuf.Empty
+	203, // 485: qrdb.v1.QRDBService.ListDocuments:output_type -> qrdb.v1.ListDocumentsResponse
+	208, // 486: qrdb.v1.QRDBService.DatabaseCreate:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 487: qrdb.v1.QRDBService.DatabaseGet:output_type -> qrdb.v1.DatabaseInfoResponse
+	207, // 488: qrdb.v1.QRDBService.DatabaseList:output_type -> qrdb.v1.DatabaseListResponse
+	414, // 489: qrdb.v1.QRDBService.DatabaseDrop:output_type -> google.protobuf.Empty
+	208, // 490: qrdb.v1.QRDBService.DatabaseUpdateProtocol:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 491: qrdb.v1.QRDBService.DatabaseUpdateEtcd:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 492: qrdb.v1.QRDBService.DatabaseUpdateRaft:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 493: qrdb.v1.QRDBService.DatabaseScale:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 494: qrdb.v1.QRDBService.DatabaseUpdateBarrier:output_type -> qrdb.v1.DatabaseInfoResponse
+	208, // 495: qrdb.v1.QRDBService.DatabaseUpdateConnection:output_type -> qrdb.v1.DatabaseInfoResponse
+	414, // 496: qrdb.v1.QRDBService.BarrierInitialize:output_type -> google.protobuf.Empty
+	414, // 497: qrdb.v1.QRDBService.BarrierUnseal:output_type -> google.protobuf.Empty
+	414, // 498: qrdb.v1.QRDBService.BarrierSeal:output_type -> google.protobuf.Empty
+	226, // 499: qrdb.v1.QRDBService.BarrierStatus:output_type -> qrdb.v1.BarrierStatusResponse
+	230, // 500: qrdb.v1.QRDBService.BarrierShamirInitialize:output_type -> qrdb.v1.BarrierShamirOperationResponse
+	232, // 501: qrdb.v1.QRDBService.BarrierShamirUnsealShare:output_type -> qrdb.v1.BarrierShamirUnsealShareResponse
+	414, // 502: qrdb.v1.QRDBService.BarrierShamirUnsealShares:output_type -> google.protobuf.Empty
+	230, // 503: qrdb.v1.QRDBService.BarrierRekey:output_type -> qrdb.v1.BarrierShamirOperationResponse
+	228, // 504: qrdb.v1.QRDBService.BarrierEnableEncryption:output_type -> qrdb.v1.BarrierEnableEncryptionResponse
+	238, // 505: qrdb.v1.QRDBService.BarrierOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
+	239, // 506: qrdb.v1.QRDBService.BarrierOfficerList:output_type -> qrdb.v1.BarrierOfficerListResponse
+	242, // 507: qrdb.v1.QRDBService.BarrierShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
+	244, // 508: qrdb.v1.QRDBService.BarrierShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
+	247, // 509: qrdb.v1.QRDBService.BarrierOfficerClaimStatus:output_type -> qrdb.v1.BarrierOfficerClaimStatusResponse
+	246, // 510: qrdb.v1.QRDBService.BarrierShamirSealVote:output_type -> qrdb.v1.BarrierShamirSealVoteResponse
+	238, // 511: qrdb.v1.QRDBService.BarrierRecoveryOfficerRegister:output_type -> qrdb.v1.BarrierOfficerRegisterResponse
+	242, // 512: qrdb.v1.QRDBService.BarrierRecoveryShareClaimBegin:output_type -> qrdb.v1.BarrierShareClaimBeginResponse
+	244, // 513: qrdb.v1.QRDBService.BarrierRecoveryShareClaimComplete:output_type -> qrdb.v1.BarrierShareClaimCompleteResponse
+	236, // 514: qrdb.v1.QRDBService.BarrierRecoveryGenerate:output_type -> qrdb.v1.BarrierRecoveryKeysResponse
+	414, // 515: qrdb.v1.QRDBService.BarrierRecoveryRecover:output_type -> google.protobuf.Empty
+	414, // 516: qrdb.v1.QRDBService.BarrierRecoveryDelete:output_type -> google.protobuf.Empty
+	249, // 517: qrdb.v1.QRDBService.BarrierRecoveryStatus:output_type -> qrdb.v1.BarrierRecoveryStatusResponse
+	251, // 518: qrdb.v1.QRDBService.BarrierRootToken:output_type -> qrdb.v1.BarrierRootTokenResponse
+	254, // 519: qrdb.v1.QRDBService.CeremonyInitialize:output_type -> qrdb.v1.CeremonyInitializeResponse
+	255, // 520: qrdb.v1.QRDBService.CeremonyStatus:output_type -> qrdb.v1.CeremonyStatusResponse
+	257, // 521: qrdb.v1.QRDBService.CeremonyClaimCertBegin:output_type -> qrdb.v1.CeremonyClaimCertBeginResponse
+	259, // 522: qrdb.v1.QRDBService.CeremonyClaimCertComplete:output_type -> qrdb.v1.CeremonyClaimCertCompleteResponse
+	261, // 523: qrdb.v1.QRDBService.CeremonyBeginClaimShare:output_type -> qrdb.v1.CeremonyBeginClaimShareResponse
+	263, // 524: qrdb.v1.QRDBService.CeremonyCompleteClaimShare:output_type -> qrdb.v1.CeremonyCompleteClaimShareResponse
+	265, // 525: qrdb.v1.QRDBService.CeremonySignCSR:output_type -> qrdb.v1.CeremonySignCSRResponse
+	267, // 526: qrdb.v1.QRDBService.CeremonyEnrollExternalOfficer:output_type -> qrdb.v1.CeremonyEnrollExternalOfficerResponse
+	341, // 527: qrdb.v1.QRDBService.CeremonyClaimShareBegin:output_type -> qrdb.v1.CeremonyClaimShareBeginResponse
+	343, // 528: qrdb.v1.QRDBService.CeremonyClaimShareComplete:output_type -> qrdb.v1.CeremonyCustodianResponse
+	345, // 529: qrdb.v1.QRDBService.CeremonySubmitUnsealShare:output_type -> qrdb.v1.CeremonySubmitUnsealShareResponse
+	270, // 530: qrdb.v1.QRDBService.TenantCreate:output_type -> qrdb.v1.TenantResponse
+	270, // 531: qrdb.v1.QRDBService.TenantGet:output_type -> qrdb.v1.TenantResponse
+	273, // 532: qrdb.v1.QRDBService.TenantList:output_type -> qrdb.v1.TenantListResponse
+	270, // 533: qrdb.v1.QRDBService.TenantUpdate:output_type -> qrdb.v1.TenantResponse
+	414, // 534: qrdb.v1.QRDBService.TenantDelete:output_type -> google.protobuf.Empty
+	270, // 535: qrdb.v1.QRDBService.TenantUpdateQuotas:output_type -> qrdb.v1.TenantResponse
+	270, // 536: qrdb.v1.QRDBService.TenantUpdateEntitlements:output_type -> qrdb.v1.TenantResponse
+	414, // 537: qrdb.v1.QRDBService.CredentialSubmit:output_type -> google.protobuf.Empty
+	282, // 538: qrdb.v1.QRDBService.CredentialStrategy:output_type -> qrdb.v1.CredentialStrategyResponse
+	414, // 539: qrdb.v1.QRDBService.CredentialDelete:output_type -> google.protobuf.Empty
+	285, // 540: qrdb.v1.QRDBService.CredentialList:output_type -> qrdb.v1.CredentialListResponse
+	287, // 541: qrdb.v1.QRDBService.CredentialRotate:output_type -> qrdb.v1.CredentialRotateResponse
+	289, // 542: qrdb.v1.QRDBService.CredentialRetrieveVersion:output_type -> qrdb.v1.CredentialRetrieveVersionResponse
+	292, // 543: qrdb.v1.QRDBService.CredentialListVersions:output_type -> qrdb.v1.CredentialListVersionsResponse
+	294, // 544: qrdb.v1.QRDBService.CredentialGCExpired:output_type -> qrdb.v1.CredentialGCResponse
+	414, // 545: qrdb.v1.QRDBService.CredentialStore:output_type -> google.protobuf.Empty
+	281, // 546: qrdb.v1.QRDBService.CredentialRetrieve:output_type -> qrdb.v1.CredentialRetrieveResponse
+	296, // 547: qrdb.v1.QRDBService.BackupCreate:output_type -> qrdb.v1.BackupInfo
+	297, // 548: qrdb.v1.QRDBService.BackupList:output_type -> qrdb.v1.BackupListResponse
+	296, // 549: qrdb.v1.QRDBService.BackupGet:output_type -> qrdb.v1.BackupInfo
+	414, // 550: qrdb.v1.QRDBService.BackupDelete:output_type -> google.protobuf.Empty
+	302, // 551: qrdb.v1.QRDBService.BackupRestore:output_type -> qrdb.v1.BackupRestoreResponse
+	304, // 552: qrdb.v1.QRDBService.BackupVerify:output_type -> qrdb.v1.BackupVerifyResponse
+	306, // 553: qrdb.v1.QRDBService.RebalanceGetShardStats:output_type -> qrdb.v1.ShardStats
+	309, // 554: qrdb.v1.QRDBService.RebalanceCreatePlan:output_type -> qrdb.v1.RebalancePlan
+	310, // 555: qrdb.v1.QRDBService.RebalanceExecute:output_type -> qrdb.v1.RebalanceExecutionResponse
+	312, // 556: qrdb.v1.QRDBService.RebalanceGetImbalanceReport:output_type -> qrdb.v1.ImbalanceReport
+	317, // 557: qrdb.v1.QRDBService.Embed:output_type -> qrdb.v1.EmbedResponse
+	319, // 558: qrdb.v1.QRDBService.BatchEmbed:output_type -> qrdb.v1.BatchEmbedResponse
+	321, // 559: qrdb.v1.QRDBService.ListEmbeddingModels:output_type -> qrdb.v1.ListEmbeddingModelsResponse
+	324, // 560: qrdb.v1.QRDBService.RAGIngestDocument:output_type -> qrdb.v1.RAGIngestDocumentResponse
+	327, // 561: qrdb.v1.QRDBService.RAGQuery:output_type -> qrdb.v1.RAGQueryResponse
+	329, // 562: qrdb.v1.QRDBService.RAGDeleteDocument:output_type -> qrdb.v1.RAGDeleteDocumentResponse
+	332, // 563: qrdb.v1.QRDBService.RAGListDocuments:output_type -> qrdb.v1.RAGListDocumentsResponse
+	414, // 564: qrdb.v1.QRDBService.DatabaseSeal:output_type -> google.protobuf.Empty
+	414, // 565: qrdb.v1.QRDBService.DatabaseUnseal:output_type -> google.protobuf.Empty
+	336, // 566: qrdb.v1.QRDBService.DatabaseBarrierStatus:output_type -> qrdb.v1.DatabaseBarrierStatusResponse
+	339, // 567: qrdb.v1.QRDBService.SQLQuery:output_type -> qrdb.v1.SQLQueryResponse
+	347, // 568: qrdb.v1.TenantBarrierService.Init:output_type -> qrdb.v1.TenantBarrierInitResponse
+	414, // 569: qrdb.v1.TenantBarrierService.Unseal:output_type -> google.protobuf.Empty
+	350, // 570: qrdb.v1.TenantBarrierService.UnsealShare:output_type -> qrdb.v1.TenantBarrierUnsealProgress
+	414, // 571: qrdb.v1.TenantBarrierService.Seal:output_type -> google.protobuf.Empty
+	353, // 572: qrdb.v1.TenantBarrierService.Status:output_type -> qrdb.v1.TenantBarrierStatusResponse
+	355, // 573: qrdb.v1.TenantBarrierService.OfficerRegister:output_type -> qrdb.v1.TenantBarrierOfficerRegisterResponse
+	357, // 574: qrdb.v1.TenantBarrierService.OfficerList:output_type -> qrdb.v1.TenantBarrierOfficerListResponse
+	359, // 575: qrdb.v1.TenantBarrierService.ShareClaimBegin:output_type -> qrdb.v1.TenantBarrierShareClaimBeginResponse
+	361, // 576: qrdb.v1.TenantBarrierService.ShareClaimComplete:output_type -> qrdb.v1.TenantBarrierShareClaimCompleteResponse
+	363, // 577: qrdb.v1.TenantBarrierService.OfficerClaimStatus:output_type -> qrdb.v1.TenantBarrierOfficerClaimStatusResponse
+	365, // 578: qrdb.v1.TenantBarrierService.ShamirSealVote:output_type -> qrdb.v1.TenantBarrierShamirSealVoteResponse
+	367, // 579: qrdb.v1.AuditService.Query:output_type -> qrdb.v1.AuditQueryResponse
+	370, // 580: qrdb.v1.AuthFactorService.EnrollFactor:output_type -> qrdb.v1.EnrollFactorResponse
+	372, // 581: qrdb.v1.AuthFactorService.ChallengeFactor:output_type -> qrdb.v1.ChallengeFactorResponse
+	414, // 582: qrdb.v1.AuthFactorService.VerifyFactor:output_type -> google.protobuf.Empty
+	376, // 583: qrdb.v1.AuthFactorService.ListFactors:output_type -> qrdb.v1.ListFactorsResponse
+	414, // 584: qrdb.v1.AuthFactorService.RevokeFactor:output_type -> google.protobuf.Empty
+	380, // 585: qrdb.v1.UserAuthFactorService.Add:output_type -> qrdb.v1.UserAuthFactorAddResponse
+	382, // 586: qrdb.v1.UserAuthFactorService.List:output_type -> qrdb.v1.UserAuthFactorListResponse
+	384, // 587: qrdb.v1.UserAuthFactorService.Get:output_type -> qrdb.v1.UserAuthFactorGetResponse
+	386, // 588: qrdb.v1.UserAuthFactorService.Remove:output_type -> qrdb.v1.UserAuthFactorRemoveResponse
+	389, // 589: qrdb.v1.UserAuthFactorService.Rotate:output_type -> qrdb.v1.UserAuthFactorRotateResponse
+	391, // 590: qrdb.v1.UserAuthFactorService.Relabel:output_type -> qrdb.v1.UserAuthFactorRelabelResponse
+	393, // 591: qrdb.v1.UserAuthFactorService.Login:output_type -> qrdb.v1.UserAuthFactorLoginResponse
+	376, // [376:592] is the sub-list for method output_type
+	160, // [160:376] is the sub-list for method input_type
 	160, // [160:160] is the sub-list for extension type_name
 	160, // [160:160] is the sub-list for extension extendee
 	0,   // [0:160] is the sub-list for field type_name
@@ -27420,20 +27540,20 @@ func file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_init() {
 		return
 	}
 	file_pkg_api_grpc_proto_qrdbv1_authz_proto_init()
-	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[28].OneofWrappers = []any{
+	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[30].OneofWrappers = []any{
 		(*Compare_Version)(nil),
 		(*Compare_CreateRevision)(nil),
 		(*Compare_ModRevision)(nil),
 		(*Compare_Value)(nil),
 	}
-	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[66].OneofWrappers = []any{}
+	file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_msgTypes[68].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc), len(file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc)),
 			NumEnums:      12,
-			NumMessages:   400,
+			NumMessages:   402,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

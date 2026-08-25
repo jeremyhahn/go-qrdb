@@ -591,6 +591,18 @@ func (t *Transport) CompareAndDelete(ctx context.Context, key string, expected [
 	return deleted, translateError(err)
 }
 
+// CompareAndSwap atomically replaces key's value with next only when its
+// stored value still equals expected, delegating to the KV service's guarded
+// swap. It is the edit half of the guarded set; an absent key is left absent,
+// because a swap is not a create.
+func (t *Transport) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if t.closed.Load() {
+		return false, &transport.ClosedError{}
+	}
+	swapped, err := t.kvSvc.CompareAndSwap(ctx, key, expected, next)
+	return swapped, translateError(err)
+}
+
 // List returns sorted keys matching the given prefix through the
 // embedded KV service. Optional ReadOption controls the consistency level.
 func (t *Transport) List(ctx context.Context, prefix string, opts ...transport.ReadOption) ([]string, error) {

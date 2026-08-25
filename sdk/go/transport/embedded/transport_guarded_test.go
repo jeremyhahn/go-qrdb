@@ -131,3 +131,69 @@ func TestEmbedded_GuardedVerbs_ClosedTransport(t *testing.T) {
 		t.Error("CompareAndDelete on a closed transport should error")
 	}
 }
+
+// CompareAndSwap is the edit half of the guarded set. go-qrdb#119 gave the
+// capability interface only the create and release halves, so a consumer that
+// held it still had to read-then-write to EDIT a guarded value — reopening
+// exactly the window the capability exists to close. go-qrdb#121 completes the
+// set, and these tests drive the transport against a service that applies the
+// guard for real.
+func TestEmbedded_CompareAndSwap_Guards(t *testing.T) {
+	tr, err := New(newMockKVService(), &mockAdminService{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := tr.PutIfAbsent(ctx, "k", []byte("v1")); err != nil {
+		t.Fatalf("seed PutIfAbsent: %v", err)
+	}
+
+	// A stale expectation must lose, and must leave the winner's value intact.
+	// Without this half the test would pass against a swap that ignored its
+	// precondition entirely.
+	swapped, err := tr.CompareAndSwap(ctx, "k", []byte("WRONG"), []byte("v2"))
+	if err != nil {
+		t.Fatalf("CompareAndSwap(wrong): %v", err)
+	}
+	if swapped {
+		t.Error("CompareAndSwap with a non-matching expected must not swap")
+	}
+	if got, err := tr.Get(ctx, "k"); err != nil || string(got) != "v1" {
+		t.Errorf("after a refused swap, key = %q err=%v; want %q untouched", got, err, "v1")
+	}
+
+	swapped, err = tr.CompareAndSwap(ctx, "k", []byte("v1"), []byte("v2"))
+	if err != nil {
+		t.Fatalf("CompareAndSwap(match): %v", err)
+	}
+	if !swapped {
+		t.Error("CompareAndSwap with a matching expected must swap")
+	}
+	if got, err := tr.Get(ctx, "k"); err != nil || string(got) != "v2" {
+		t.Errorf("after a successful swap, key = %q err=%v; want %q", got, err, "v2")
+	}
+}
+
+// A swap is not a create. This is the property that keeps the three verbs
+// distinct — PutIfAbsent creates, CompareAndSwap edits — and a transport that
+// forwarded a swap to an unguarded Put would satisfy every other assertion
+// here while silently creating the key.
+func TestEmbedded_CompareAndSwap_DoesNotCreateAnAbsentKey(t *testing.T) {
+	tr, err := New(newMockKVService(), &mockAdminService{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	swapped, err := tr.CompareAndSwap(ctx, "absent", nil, []byte("created"))
+	if err != nil {
+		t.Fatalf("CompareAndSwap(absent): %v", err)
+	}
+	if swapped {
+		t.Error("CompareAndSwap reported a swap on an absent key")
+	}
+	if exists, err := tr.Exists(ctx, "absent"); err != nil || exists {
+		t.Errorf("CompareAndSwap CREATED an absent key (exists=%v err=%v); a swap must not create", exists, err)
+	}
+}

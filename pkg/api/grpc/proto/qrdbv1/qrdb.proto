@@ -58,6 +58,15 @@ service QRDBService {
         option (qrdb.v1.permission) = "kv:delete";
     }
 
+    // CompareAndSwap atomically replaces a key's value only when its stored
+    // value still equals the expected value. It is the edit half of the
+    // guarded set PutIfAbsent and CompareAndDelete began (go-qrdb#121); an
+    // absent key is left absent, so a swap can never create. A guarded swap
+    // is still a put.
+    rpc CompareAndSwap(CompareAndSwapRequest) returns (CompareAndSwapResponse) {
+        option (qrdb.v1.permission) = "kv:put";
+    }
+
     // List returns sorted keys matching a prefix.
     rpc List(ListRequest) returns (ListResponse) {
         option (qrdb.v1.permission) = "kv:list";
@@ -1200,6 +1209,20 @@ message CompareAndDeleteRequest {
 // stored value equalled expected and the key was removed, false otherwise.
 message CompareAndDeleteResponse {
     bool deleted = 1;
+}
+
+// CompareAndSwapRequest is the request payload for CompareAndSwap.
+message CompareAndSwapRequest {
+    string key = 1;
+    bytes expected = 2;
+    bytes next = 3;
+}
+
+// CompareAndSwapResponse reports whether the value was replaced: true when the
+// stored value equalled expected and next was written, false otherwise —
+// including when the key was absent, since a swap does not create.
+message CompareAndSwapResponse {
+    bool swapped = 1;
 }
 
 // ListRequest is the request payload for List.

@@ -85,6 +85,20 @@ type GuardedKVClient interface {
 	// PutIfAbsent: an unguarded delete could un-decide what the guarded put
 	// decided. Synchronous for the same reason as PutIfAbsent.
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
+
+	// CompareAndSwap atomically replaces key's value with next only when its
+	// stored value still equals expected, returning whether it replaced. An
+	// absent key is left absent — a swap is not a create, which is what keeps
+	// the three verbs distinct: PutIfAbsent creates, CompareAndSwap edits,
+	// CompareAndDelete removes.
+	//
+	// It completes the guarded set at the transport boundary. service.KVServicer
+	// has carried all three since go-qrdb#56, but only two reached this
+	// interface in go-qrdb#119, so a consumer holding the capability could
+	// arbitrate a create and a release and had to fall back to read-then-write
+	// for the edit — reintroducing exactly the window the capability exists to
+	// close. Synchronous for the same reason as the other two.
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
 }
 
 // ---------------------------------------------------------------------------
