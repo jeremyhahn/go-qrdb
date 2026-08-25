@@ -209,14 +209,8 @@ func TestKVStateMachine_InvalidOpcode(t *testing.T) {
 	k := newTestKVSM()
 	entries := []sm.Entry{{Index: 1, Cmd: []byte{0xFF}}}
 	results := make([]sm.Result, 1)
-	err := k.Update(entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid opcode")
-	}
-	var opcodeErr *InvalidOpcodeError
-	if !errors.As(err, &opcodeErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
+	assertOpcodeRefused(t, k.Update(entries, results), results[0])
+	assertRefusalNamesOpcode(t, results[0], 0xFF)
 }
 
 func TestKVStateMachine_PutInvalidPayload(t *testing.T) {

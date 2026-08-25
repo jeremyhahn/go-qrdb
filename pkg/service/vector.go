@@ -27,6 +27,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	api "github.com/jeremyhahn/go-qrdb/pkg/api"
 	qrdbErrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
@@ -519,11 +521,47 @@ func (v *vectorService) proposeToRaft(ctx context.Context, cmd *statemachine.Vec
 		}
 	}
 
-	if _, err := v.raftNode.SyncPropose(ctx, v.shardID, cmdBytes); err != nil {
+	result, err := v.raftNode.SyncPropose(ctx, v.shardID, cmdBytes)
+	if err != nil {
 		return &qrdbErrors.QRDBError{
 			Code: qrdbErrors.ErrRaft,
 			Op:   "vector.proposeToRaft",
 			Err:  &api.OperationFailedError{Operation: "raft proposal", Cause: err},
+		}
+	}
+
+	// A proposal that Raft accepted can still have been REFUSED by the state
+	// machine. Since go-qrdb#129, an operation the state machine does not
+	// implement is reported in Result.Data instead of being returned as an
+	// Apply error — returning it tripped the shard's circuit breaker and cost
+	// the cluster the shard. That fix means a discarded Result is now a
+	// fail-open: the refusal would be read as a successful write, and the
+	// caller would go on believing a vector was stored that never was. Every
+	// other propose path in this package already checks.
+	// interfaces.RaftNode types the result as interface{}, so the concrete
+	// sm.Result has to be recovered before the refusal can be decoded.
+	//
+	// A value of any other dynamic type is refused rather than skipped. Passing
+	// it through would mean reporting a stored vector on the strength of a
+	// result this code could not read — the same fail-open in a new place, and
+	// a harder one to see, since it would depend on which RaftNode
+	// implementation happened to be wired in. Not being able to check an
+	// outcome is not evidence that the outcome was good.
+	smResult, ok := result.(sm.Result)
+	if !ok {
+		return &qrdbErrors.QRDBError{
+			Code: qrdbErrors.ErrInternal,
+			Op:   "vector.proposeToRaft",
+			Err: &api.OperationFailedError{
+				Operation: fmt.Sprintf("raft proposal returned %T, which carries no readable state-machine outcome", result),
+			},
+		}
+	}
+	if resultErr := checkResultError(smResult); resultErr != nil {
+		return &qrdbErrors.QRDBError{
+			Code: qrdbErrors.ErrInternal,
+			Op:   "vector.proposeToRaft",
+			Err:  &api.OperationFailedError{Operation: "vector state machine refused the command", Cause: resultErr},
 		}
 	}
 

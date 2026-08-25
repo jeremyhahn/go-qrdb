@@ -15,7 +15,6 @@
 package statemachine
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -504,9 +503,5 @@ func TestKVDispatch_Batch_InvalidOpcode(t *testing.T) {
 	entries := []sm.Entry{{Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := k.Update(entries, results)
-	var opcodeErr *InvalidOpcodeError
-	if !errors.As(err, &opcodeErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
+	assertOpcodeRefused(t, k.Update(entries, results), results[0])
 }

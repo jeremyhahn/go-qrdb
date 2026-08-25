@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // =============================================================================
@@ -23,13 +25,32 @@ import (
 // =============================================================================
 
 // mockRaftNode implements interfaces.RaftNode for testing.
+//
+// It returns a real sm.Result rather than the nil it used to return. A real
+// state machine always answers with one, and the caller now READS that answer
+// to find an encoded refusal (go-qrdb#129), so a double that returns nil no
+// longer stands in for the thing it doubles: it exercises only the
+// unreadable-result path and never the success path it was written for.
 type mockRaftNode struct {
 	syncProposeFn func(ctx context.Context, shardID uint64, data []byte) error
+
+	// result overrides what SyncPropose returns on success. Zero value means
+	// an ordinary empty sm.Result, i.e. applied with nothing to report.
+	result interface{}
+	// resultSet distinguishes "no override" from an override to a nil or
+	// otherwise zero-valued result, which is exactly what the fail-closed
+	// path has to be tested with.
+	resultSet bool
 }
 
 func (m *mockRaftNode) SyncPropose(ctx context.Context, shardID uint64, data []byte) (interface{}, error) {
 	if m.syncProposeFn != nil {
-		return nil, m.syncProposeFn(ctx, shardID, data)
+		if err := m.syncProposeFn(ctx, shardID, data); err != nil {
+			return nil, err
+		}
 	}
-	return nil, nil
+	if m.resultSet {
+		return m.result, nil
+	}
+	return sm.Result{}, nil
 }

@@ -211,13 +211,14 @@ func (f *FastStateMachine) Update(ctx context.Context, entries []sm.Entry, resul
 		}
 
 		op := cmd[0]
-		handler, ok := f.handlers[op]
-		if !ok {
-			return &InvalidOpcodeError{Op: op}
+		var result sm.Result
+		var err error
+		if handler, ok := f.handlers[op]; ok {
+			revision := f.revision.Add(1)
+			result, err = handler(cmd[1:], revision)
+		} else {
+			err = &InvalidOpcodeError{Op: op}
 		}
-
-		revision := f.revision.Add(1)
-		result, err := handler(cmd[1:], revision)
 		resolved, stop, applyErr := resolveApplyError(f.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
@@ -778,6 +779,13 @@ func (f *FastStateMachine) handleBatch(payload []byte, revision uint64) (sm.Resu
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
+	}
+
+	// Refuse the whole batch before applying any of it: the loop below mutates
+	// as it goes, so validating inside it would leave earlier operations
+	// committed and notified for a batch the caller is told was refused.
+	if opErr := validateBatchOps(ops); opErr != nil {
+		return sm.Result{}, opErr
 	}
 
 	for _, op := range ops {

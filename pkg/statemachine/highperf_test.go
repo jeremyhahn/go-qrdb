@@ -449,11 +449,8 @@ func TestHighPerfAdapter_InvalidOpcode(t *testing.T) {
 	// Unknown opcode 0xFF.
 	entries := []sm.Entry{{Cmd: []byte{0xFF, 0x01, 0x02}}}
 	results := make([]sm.Result, 1)
-	err := adapter.Update(ctx, entries, results)
-	assert.Error(t, err)
-
-	var opcodeErr *InvalidOpcodeError
-	assert.ErrorAs(t, err, &opcodeErr)
+	assertOpcodeRefused(t, adapter.Update(ctx, entries, results), results[0])
+	assertRefusalNamesOpcode(t, results[0], 0xFF)
 }
 
 func TestHighPerfAdapter_EmptyEntry(t *testing.T) {

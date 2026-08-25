@@ -183,13 +183,14 @@ func (r *RegularStateMachine) Update(_ context.Context, entries []sm.Entry, resu
 		}
 
 		op := cmd[0]
-		handler, ok := r.handlers[op]
-		if !ok {
-			return &InvalidOpcodeError{Op: op}
+		var result sm.Result
+		var err error
+		if handler, ok := r.handlers[op]; ok {
+			revision := r.revision.Add(1)
+			result, err = handler(cmd[1:], revision)
+		} else {
+			err = &InvalidOpcodeError{Op: op}
 		}
-
-		revision := r.revision.Add(1)
-		result, err := handler(cmd[1:], revision)
 		resolved, stop, applyErr := resolveApplyError(r.logger, entries[i].Index, result, err)
 		if stop {
 			return applyErr
@@ -517,6 +518,14 @@ func (r *RegularStateMachine) handleBatch(payload []byte, revision uint64) (sm.R
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
+	}
+
+	// Refuse the whole batch before applying any of it: the loop below mutates
+	// as it goes, so validating inside it would leave earlier operations
+	// committed and notified for a batch the caller is told was refused.
+	// Checked before the lock is taken — it reads only the decoded ops.
+	if opErr := validateBatchOps(ops); opErr != nil {
+		return sm.Result{}, opErr
 	}
 
 	r.mu.Lock()

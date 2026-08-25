@@ -16,7 +16,6 @@ package statemachine
 
 import (
 	"encoding/binary"
-	"errors"
 	"log/slog"
 	"sync/atomic"
 
@@ -103,16 +102,19 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 // dispatching each entry through the handler map.
 //
 // Raft correctness contract: Update must never return an error for
-// application-level conditions (e.g. a subsystem not being wired into
-// this SM instance). Returning a non-nil error prevents the RSM layer
-// from advancing lastApplied, causing all subsequent linearizable reads
-// to block indefinitely. Only unrecoverable infrastructure errors (disk
-// full, corrupt storage) may be returned.
+// application-level conditions — a subsystem not wired into this SM
+// instance, or an opcode this SM does not implement at all. Returning a
+// non-nil error prevents the RSM layer from advancing lastApplied,
+// causing all subsequent linearizable reads to block indefinitely. Only
+// unrecoverable infrastructure errors (disk full, corrupt storage) may
+// be returned.
 //
-// When a handler returns ServiceNotConfiguredError, the entry is encoded
-// as a result with a non-nil Data field carrying the error message, and
-// processing continues. The proposer receives this result and may inspect
-// result.Data to surface the error to the caller without poisoning Raft.
+// resolveApplyError is the single place that draws that line, shared with
+// the regular, fast and concurrent state machines, so the rule is stated
+// once rather than re-derived in four dispatch loops. An application-level
+// condition becomes a result whose Data carries the encoded error and
+// processing continues; the proposer inspects Data (via checkResultError)
+// and surfaces a typed refusal without poisoning Raft.
 func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 	for i := range entries {
 		cmd := entries[i].Cmd
@@ -122,32 +124,19 @@ func (k *KVStateMachine) Update(entries []sm.Entry, results []sm.Result) error {
 		}
 
 		op := cmd[0]
-		handler, ok := k.handlers[op]
-		if !ok {
-			return &InvalidOpcodeError{Op: op}
+		var result sm.Result
+		var err error
+		if handler, ok := k.handlers[op]; ok {
+			revision := k.revision.Add(1)
+			result, err = handler(cmd[1:], revision)
+		} else {
+			err = &InvalidOpcodeError{Op: op}
 		}
-
-		revision := k.revision.Add(1)
-		result, err := handler(cmd[1:], revision)
-		if err != nil {
-			var sncErr *ServiceNotConfiguredError
-			if errors.As(err, &sncErr) {
-				// Application-level error: the subsystem is not configured on
-				// this SM instance. Encode the error in Data so the proposer
-				// can surface it, but do NOT return the error to Raft — that
-				// would prevent lastApplied from advancing and stall all reads.
-				k.logger.Error("statemachine: subsystem not configured, encoding as result",
-					slog.String("service", sncErr.Service),
-					slog.Uint64("entry_index", entries[i].Index))
-				// Prefixed, so checkResultError decodes it — see the same
-				// encoding in resolveApplyError and go-qrdb#62 for what an
-				// unprefixed payload is read as instead.
-				results[i] = sm.Result{Data: protocol.EncodeAppError(err.Error())}
-				continue
-			}
-			return err
+		resolved, stop, applyErr := resolveApplyError(k.logger, entries[i].Index, result, err)
+		if stop {
+			return applyErr
 		}
-		results[i] = result
+		results[i] = resolved
 	}
 	return nil
 }
@@ -207,6 +196,13 @@ func (k *KVStateMachine) handleBatch(payload []byte, revision uint64) (sm.Result
 	ops, err := protocol.DecodeBatch(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "batch: " + err.Error()}
+	}
+
+	// Refuse the whole batch before applying any of it: the loop below mutates
+	// as it goes, so validating inside it would leave earlier operations
+	// committed and notified for a batch the caller is told was refused.
+	if opErr := validateBatchOps(ops); opErr != nil {
+		return sm.Result{}, opErr
 	}
 
 	for _, op := range ops {

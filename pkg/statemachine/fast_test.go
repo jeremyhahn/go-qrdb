@@ -691,18 +691,8 @@ func TestFastStateMachine_Update_UnknownOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
-	if opErr.Op != 0xFF {
-		t.Fatalf("expected op 0xFF, got 0x%02X", opErr.Op)
-	}
+	assertOpcodeRefused(t, fsm.Update(context.Background(), entries, results), results[0])
+	assertRefusalNamesOpcode(t, results[0], 0xFF)
 }
 
 func TestFastStateMachine_WatchNotification(t *testing.T) {
@@ -1031,15 +1021,7 @@ func TestFastStateMachine_Batch_UnknownOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := fsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op in batch")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
+	assertOpcodeRefused(t, fsm.Update(context.Background(), entries, results), results[0])
 }
 
 func TestFastStateMachine_WatchNotification_Batch(t *testing.T) {

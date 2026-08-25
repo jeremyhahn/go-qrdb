@@ -439,15 +439,7 @@ func TestRegularStateMachine_Batch_InvalidOpcodeInBatch(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for invalid opcode in batch")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
+	assertOpcodeRefused(t, rsm.Update(context.Background(), entries, results), results[0])
 }
 
 // ---------------------------------------------------------------------------
@@ -768,18 +760,8 @@ func TestRegularStateMachine_Update_UnknownOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := rsm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
-	if opErr.Op != 0xFF {
-		t.Fatalf("expected op 0xFF, got 0x%02X", opErr.Op)
-	}
+	assertOpcodeRefused(t, rsm.Update(context.Background(), entries, results), results[0])
+	assertRefusalNamesOpcode(t, results[0], 0xFF)
 }
 
 func TestRegularStateMachine_Update_MultipleEntries(t *testing.T) {

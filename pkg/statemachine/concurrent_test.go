@@ -274,15 +274,7 @@ func TestConcurrentStateMachine_Batch_UnknownOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := csm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op in batch")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
+	assertOpcodeRefused(t, csm.Update(context.Background(), entries, results), results[0])
 }
 
 func TestConcurrentStateMachine_Batch_InvalidPayload(t *testing.T) {
@@ -619,18 +611,8 @@ func TestConcurrentStateMachine_Update_UnknownOp(t *testing.T) {
 	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
 	results := make([]sm.Result, 1)
 
-	err := csm.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for unknown op")
-	}
-
-	var opErr *InvalidOpcodeError
-	if !errors.As(err, &opErr) {
-		t.Fatalf("expected InvalidOpcodeError, got %T: %v", err, err)
-	}
-	if opErr.Op != 0xFF {
-		t.Fatalf("expected op 0xFF, got 0x%02X", opErr.Op)
-	}
+	assertOpcodeRefused(t, csm.Update(context.Background(), entries, results), results[0])
+	assertRefusalNamesOpcode(t, results[0], 0xFF)
 }
 
 func TestConcurrentStateMachine_Put_InvalidPayload(t *testing.T) {
