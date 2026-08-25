@@ -53,6 +53,88 @@ func newKVServiceAdapter(svc service.KVServicer, registerer kvstore.EntityRegist
 	}
 }
 
+// newGuardedKVServiceAdapter is newKVServiceAdapter plus the transaction plane,
+// which is what lets the returned store satisfy kvstore.GuardedBatchKVStore.
+//
+// Separate constructor rather than a fourth argument on the existing one: every
+// other call site builds a store that has no use for multi-key guarding, and a
+// nil transaction servicer threaded through them all would be a capability that
+// looks present at the type level and is absent at run time.
+func newGuardedKVServiceAdapter(svc service.KVServicer, txSvc service.TransactionServicer, registerer kvstore.EntityRegisterer, lookup kvstore.LookupFunc) kvstore.KVStore {
+	if txSvc == nil {
+		// Fail CLOSED at construction: without a transaction plane this store
+		// cannot honour the multi-key guarantee, so it must not advertise it.
+		// Returning the plain adapter makes the capability assertion answer
+		// honestly, and a caller that requires the guarantee — the custodian
+		// service does — refuses at startup rather than discovering the gap at
+		// the first enrolment.
+		return newKVServiceAdapter(svc, registerer, lookup)
+	}
+	return &guardedKVServiceAdapter{
+		kvServiceAdapter: &kvServiceAdapter{
+			svc:        svc,
+			registerer: registerer,
+			lookup:     lookup,
+		},
+		txSvc: txSvc,
+	}
+}
+
+// guardedKVServiceAdapter is the plain adapter plus the transaction plane.
+//
+// It is a DISTINCT type, and that is the whole point: PutAllIfUnchanged lives
+// here rather than on kvServiceAdapter, so a store built without a transaction
+// servicer does not satisfy kvstore.GuardedBatchKVStore at all. Hanging the
+// method on the shared type would make every adapter answer the capability
+// assertion truthfully at compile time and falsely at run time — a capability
+// that is present in the method set and absent in fact, which is exactly the
+// failure the assertion exists to prevent.
+type guardedKVServiceAdapter struct {
+	*kvServiceAdapter
+	txSvc service.TransactionServicer
+}
+
+// PutAllIfUnchanged applies every write atomically, and only while guardKey
+// still holds guardValue, by proposing ONE transaction: a value compare on the
+// guard key, with the writes as its success operations.
+//
+// The compare and the writes are evaluated together inside the state machine,
+// in a single revision, which is the whole point. A caller doing this with the
+// single-key verbs — check ownership, write, check, write — still loses if the
+// guard changes between one check and its write: the write lands anyway, on
+// top of whoever now owns the key (go-qrdb#21).
+//
+// A transaction whose compare fails is a RESULT, not an error: the guard did
+// not hold, nothing was written, and applied=false says so.
+func (a *guardedKVServiceAdapter) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	if a.txSvc == nil {
+		// Only reachable if someone constructs this type with a nil servicer.
+		// A store that cannot honour the guarantee must say so rather than
+		// panic or, worse, appear to have applied the write.
+		return false, &service.SMNotConfiguredError{Message: "transaction service not configured"}
+	}
+
+	ops := make([]service.Op, 0, len(writes))
+	for _, w := range writes {
+		ops = append(ops, service.Op{
+			Type:  service.OpPut,
+			Key:   []byte(w.Key),
+			Value: w.Value,
+		})
+	}
+
+	resp, err := a.txSvc.Execute(ctx, []service.Compare{{
+		Key:    []byte(guardKey),
+		Target: service.CompareValue,
+		Result: service.CompareEqual,
+		Value:  guardValue,
+	}}, ops, nil)
+	if err != nil {
+		return false, err
+	}
+	return resp.Succeeded, nil
+}
+
 // Put stores a key-value pair through the Raft-replicated KV service.
 func (a *kvServiceAdapter) Put(ctx context.Context, key string, value []byte) error {
 	return a.svc.Put(ctx, key, value)
@@ -222,3 +304,6 @@ func (a *kvServiceAdapter) QueryCompoundIndex(_ context.Context, _ string, _ [][
 func (a *kvServiceAdapter) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, _ []byte) (map[string][][]byte, error) {
 	return nil, kvstore.ErrIndexUnsupported
 }
+
+// Only the guarded adapter carries the multi-key capability.
+var _ kvstore.GuardedBatchKVStore = (*guardedKVServiceAdapter)(nil)

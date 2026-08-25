@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var (
@@ -83,6 +84,16 @@ var (
 	// with an envelope for material the store no longer describes. Emulating
 	// the guarantee would hide that; refusing states it.
 	ErrAtomicWriteUnsupported = errors.New("custodian: kv store does not support atomic conditional writes")
+
+	// ErrGuardedBatchUnsupported is returned when the KV store cannot apply an
+	// enrolment's three keys as one write fenced on the username claim.
+	//
+	// Enrolment needs the whole record to land or none of it, conditional on
+	// the registration still owning the claim. Writing the keys one at a time
+	// and re-checking ownership between them narrows the window in which an
+	// expired-claim takeover can be overwritten; it does not close it, and
+	// what slips through is a lost update with no signal (go-qrdb#21).
+	ErrGuardedBatchUnsupported = errors.New("custodian: kv store does not support guarded multi-key writes")
 )
 
 // StoreError wraps a KV store operation failure.
@@ -150,6 +161,36 @@ func (e *OrphanedEnrolmentError) Error() string {
 // Unwrap returns the write failure that triggered the rollback.
 func (e *OrphanedEnrolmentError) Unwrap() error { return e.Cause }
 
+// ClaimLostError is returned when a registration finds that the username claim
+// it acquired is no longer its own.
+//
+// Claims EXPIRE (go-qrdb#21), so holding one is not a fact that stays true. A
+// registration that stalls past the TTL — a slow seal, a slow store, a context
+// with no deadline, clock skew between nodes — has its claim taken over by
+// another caller, which may already have committed the enrolment.
+//
+// The registration abandons rather than compensating. Its own earlier writes
+// share keys with the winner's, so deleting them could remove the winner's
+// enrolment; the winner's commit supersedes them instead. Nothing is leaked by
+// abandoning: the sealed envelope this call produced is returned to nobody,
+// and the share plaintext was already zeroed by SealShareTo.
+//
+// The remedy is to retry. The winner holds the identity, so a retry reports
+// ErrCustodianAlreadyExists if that enrolment is the intended one, or succeeds
+// once it is revoked.
+type ClaimLostError struct {
+	// ID is the identifier this registration would have taken.
+	ID string
+	// Key is the username index key whose claim was lost.
+	Key string
+}
+
+// Error returns a human-readable description of the lost claim.
+func (e *ClaimLostError) Error() string {
+	return "custodian: the username claim at " + e.Key + " was taken over by another " +
+		"registration before this enrolment of " + e.ID + " could commit; retry"
+}
+
 // IncompleteEnrolmentError is returned when a tenant's username index still
 // holds a registration's claim token rather than a custodian identifier.
 //
@@ -171,10 +212,22 @@ type IncompleteEnrolmentError struct {
 	ID string
 	// Key is the claimed username index key.
 	Key string
+	// ExpiresAt is when the claim stops being authoritative and another
+	// registration may take it over. Meaningful only when Readable is true.
+	ExpiresAt time.Time
+	// Readable reports whether the claim carried an expiry this build could
+	// parse. A claim written before expiries existed, or a corrupt one, is
+	// treated as never expiring and needs an operator to clear it — see
+	// docs/seal/custodians.md.
+	Readable bool
 }
 
 // Error returns a human-readable description of the incomplete enrolment.
 func (e *IncompleteEnrolmentError) Error() string {
-	return fmt.Sprintf("custodian: %s is claimed by an uncommitted registration of %s; retry, and remove %s if it persists",
-		e.Key, e.ID, e.Key)
+	if !e.Readable {
+		return fmt.Sprintf("custodian: %s is claimed by an uncommitted registration of %s, and the claim carries no readable expiry; remove %s to release it",
+			e.Key, e.ID, e.Key)
+	}
+	return fmt.Sprintf("custodian: %s is claimed by an uncommitted registration of %s; retry after %s, when the claim expires and is taken over automatically",
+		e.Key, e.ID, e.ExpiresAt.UTC().Format(time.RFC3339))
 }

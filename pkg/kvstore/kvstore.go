@@ -204,6 +204,48 @@ type KVStore interface {
 	ScanCompoundIndex(ctx context.Context, indexName string, prefixValues [][]byte, rangeStart, rangeEnd []byte) (map[string][][]byte, error)
 }
 
+// KV is one key-value pair in a guarded multi-key write.
+type KV struct {
+	Key   string
+	Value []byte
+}
+
+// GuardedBatchKVStore is a KVStore that can apply several writes atomically,
+// conditional on one key still holding an expected value.
+//
+// It is a CAPABILITY interface, detected by type assertion exactly as
+// AtomicKVStore is, because only a store backed by a transaction plane can
+// honour it: every engine resolves the compare and the writes inside its state
+// machine, in one revision, so replicas cannot diverge and no other writer can
+// interleave between the compare and the last write.
+//
+// The single-key guarded verbs are not a substitute, and the difference is not
+// theoretical. A caller that owns a claim and writes three keys one at a time,
+// checking ownership before each, still has a window between each check and its
+// write: lose the claim inside one of those windows and the write lands anyway,
+// on top of the winner's. For an enrolment that means the winner's published
+// index pointing at the loser's record — a lost update with no signal
+// (go-qrdb#21, and the Codex finding on PR #111). Checking more often narrows
+// the window; only evaluating the guard and the writes together closes it.
+//
+// The guard is deliberately ONE key rather than a general compare set. Every
+// caller in this repository fences a multi-key write on a single ownership
+// token, and a narrow capability is one every backend can implement without
+// exposing a transaction API through the storage abstraction.
+type GuardedBatchKVStore interface {
+	KVStore
+
+	// PutAllIfUnchanged applies every write atomically, and only while
+	// guardKey still holds guardValue. It reports applied=true when the writes
+	// were made, and applied=false with a nil error when the guard did not
+	// hold — in which case the store is unchanged. A non-nil error means the
+	// outcome is unknown and the caller must not assume either way.
+	//
+	// An empty writes slice is applied as a no-op that still reports whether
+	// the guard held, which is a cheap ownership test with the same atomicity.
+	PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []KV) (applied bool, err error)
+}
+
 // AtomicKVStore is the optional capability of performing a write whose outcome
 // is defined under concurrency.
 //

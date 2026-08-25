@@ -74,9 +74,11 @@ the two holders with an envelope the store no longer describes, so registration
 takes that key with an atomic conditional write (`PutIfAbsent`) *before* it
 seals anything:
 
-1. **Claim** — `PutIfAbsent` writes a token unique to this attempt. Exactly one
-   of two concurrent registrations for a username can create the key; the other
-   is refused with `ErrCustodianAlreadyExists`.
+1. **Claim** — `PutIfAbsent` writes a token unique to this attempt, together
+   with an expiry. Exactly one of two concurrent registrations for a username
+   can create the key; the other is refused. The value is
+   `claim:<unix seconds>:<token>`; a Custodian ID is a bare 36-character UUID,
+   so the two are never confused.
 2. **Seal and write** — the share is sealed and the record and tenant index are
    written.
 3. **Commit** — the last write replaces the claim token with the Custodian ID,
@@ -88,6 +90,31 @@ guards is gone. Compensation runs only while the claim still carries this
 attempt's token (or, for an ambiguous commit, while the record still carries
 this attempt's bytes) — a registration that has lost the identity deletes
 nothing.
+
+### Expiring Claims
+
+A claim is authoritative for **five minutes** (`claimTTL`). Past that, another
+registration takes it over with a compare-and-swap on the exact stale bytes and
+proceeds normally.
+
+The expiry bounds a *crash*, not a slow caller. The work done while holding a
+claim is one ECDH seal and three KV writes — milliseconds on a Raft-backed
+store — so the margin is enormous on purpose. Expiring a claim whose
+registration is still running would admit the concurrent duplicate the claim
+exists to prevent; waiting five minutes to recover a username a crash stranded
+is much the cheaper mistake.
+
+The take-over is a compare-and-swap, not a delete followed by a create. Two
+registrations meeting one expired claim would otherwise both remove it and both
+create their own, each believing it owned the identity — the window between the
+read and the write being exactly what a guarded write closes. The loser
+compares against bytes that are no longer there and is refused.
+
+A claim whose expiry cannot be parsed — one written before expiries existed, or
+a corrupt value — is treated as **never expiring**. It might belong to a
+registration that is still running, and there is no expiry to say otherwise, so
+it is left for an operator (see [Operator recovery](#operator-recovery-for-a-stranded-claim)).
+`IncompleteEnrolmentError` reports which case it is.
 
 Because the claim is required, the KV store backing the custodian service must
 implement `kvstore.AtomicKVStore`. `custodian.NewService` refuses a store
@@ -371,13 +398,50 @@ If the daemon restarts during enrollment or unseal:
 **Unseal restart**: Accumulated shares are lost. Custodians must resubmit shares from the beginning. No state pollution or race conditions because accumulator is in-memory only.
 
 **Interrupted registration**: a process that dies between the username claim
-and the commit leaves the claim behind. The username cannot enroll until it is
-cleared, and registration says so — `IncompleteEnrolmentError` names the key,
-distinguishing it from an existing Custodian. Nothing is lost with it: the
-claim is taken before the share is sealed, so an enrollment interrupted in this
-window never produced envelope material. Retry first — the same state is also
-what an in-flight registration on another caller looks like — and remove the
-named key only if it persists.
+and the commit leaves the claim behind. Nothing is lost with it — the claim is
+taken before the share is sealed, so an enrollment interrupted in this window
+never produced envelope material — and **it now clears itself**: the claim
+carries an expiry, and the next registration after it lapses takes it over.
+Registration reports the state as `IncompleteEnrolmentError`, which names the
+key and the instant the claim releases, distinguishing it both from an existing
+Custodian and from an in-flight registration on another caller.
+
+**The remedy is therefore to retry after the stated expiry.** No operator
+action is needed for the ordinary case.
+
+#### Operator recovery for a stranded claim
+
+One case still needs a human: a claim whose expiry this build **cannot parse**.
+`IncompleteEnrolmentError` says so explicitly — "the claim carries no readable
+expiry; remove `<key>` to release it" — rather than naming a retry time it
+cannot compute. Such a value is treated as never expiring, deliberately: it
+might belong to a registration that is still running, and taking it over on the
+strength of an unrecognised value would admit a duplicate enrollment.
+
+To clear one:
+
+1. **Confirm no registration is in flight** for that tenant and username. The
+   claim is only debris if nothing is running; there is no expiry to prove it,
+   which is why this step is manual.
+2. **Read the key** and check it still carries the claim:
+
+   ```
+   qrdb kv get '__sys:custodian-idx/username/<tenant>/<username>'
+   ```
+
+   A value beginning `claim:` is an uncommitted registration. A bare
+   36-character UUID is a **committed Custodian** — do not delete it; that
+   would orphan a real enrollment's index.
+3. **Delete the key**:
+
+   ```
+   qrdb kv delete '__sys:custodian-idx/username/<tenant>/<username>'
+   ```
+
+4. **Re-run the enrollment.** No other key needs touching: the claim precedes
+   the seal, so an enrollment interrupted here wrote nothing else. If
+   registration had got further, it would have compensated its own writes, or
+   reported `OrphanedEnrolmentError` naming exactly which keys survived.
 
 ### All Custodians Unavailable
 

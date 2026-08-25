@@ -46,6 +46,10 @@ func newMemKV() *memKV { return &memKV{data: make(map[string][]byte)} }
 // conditional write, so the fake must carry it.
 var _ kvstore.AtomicKVStore = (*memKV)(nil)
 
+// The service also refuses a store that cannot apply an enrolment's keys as one
+// guarded write, so the fake must carry that too.
+var _ kvstore.GuardedBatchKVStore = (*memKV)(nil)
+
 func (m *memKV) Put(_ context.Context, key string, value []byte) error {
 	m.mu.Lock()
 	m.data[key] = append([]byte(nil), value...)
@@ -596,6 +600,46 @@ func (m *errMemKV) Put(ctx context.Context, key string, value []byte) error {
 	return m.memKV.Put(ctx, key, value)
 }
 
+// PutAllIfUnchanged counts toward putFailAfter as well, and fails the WHOLE
+// batch when it would cross the threshold.
+//
+// Same reasoning as CompareAndSwap below, one step further along: a new
+// enrolment's three writes became a single guarded transaction when the fence
+// moved from per-key checks to one multi-key compare-and-swap (go-qrdb#21). A
+// fixture that counted only Put would stop intercepting registration entirely,
+// and a test written to fail one of its writes would silently exercise nothing.
+//
+// Failing the batch whole, and counting nothing when it fails, is what keeps
+// the double honest: the real capability applies every write or none, so a
+// fixture that failed partway would let a test pass against a store that can
+// tear an enrolment — the exact defect this fence exists to prevent.
+func (m *errMemKV) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	if m.putFailAfter > 0 && m.putCount+len(writes) > m.putFailAfter {
+		return false, errTestStore
+	}
+	applied, err := m.memKV.PutAllIfUnchanged(ctx, guardKey, guardValue, writes)
+	if applied {
+		m.putCount += len(writes)
+	}
+	return applied, err
+}
+
+// CompareAndSwap counts toward putFailAfter as well.
+//
+// The registration's COMMIT — the write that replaces the claim token on the
+// username index with the custodian identifier — became a compare-and-swap
+// when claims gained an expiry (go-qrdb#21): it is the single point at which
+// exactly one registration wins. A fixture that counted only Put would stop
+// intercepting the commit, and a test written to fail the third write would
+// silently exercise nothing.
+func (m *errMemKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	m.putCount++
+	if m.putFailAfter > 0 && m.putCount > m.putFailAfter {
+		return false, errTestStore
+	}
+	return m.memKV.CompareAndSwap(ctx, key, expected, next)
+}
+
 func (m *errMemKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if m.getErrKey != "" && key == m.getErrKey {
 		return nil, errTestStore
@@ -799,7 +843,49 @@ func TestRegisterCustodian_DeterministicID(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*memKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap replaces the value under key only when it still equals
+// expected, serialising the compare and the write under the same lock — the
+// guarantee kvstore.AtomicKVStore requires and every production engine
+// provides natively.
+//
+// It was a stub returning (false, nil) while nothing in this package used it
+// (go-qrdb#56 added it only to satisfy the interface). That is worse than no
+// double: the compile-time assertion passed while the behaviour was absent, so
+// the first caller to depend on it — the expired-claim take-over of
+// go-qrdb#21 — saw every swap fail and every take-over refuse, in a way that
+// read as a bug in the take-over.
+// PutAllIfUnchanged applies every write under one lock, and only while guardKey
+// still holds guardValue.
+//
+// The lock is what makes this fake FAITHFUL rather than convenient: it is the
+// single-process equivalent of the guarantee a replicated store gets by
+// evaluating the compare and the writes inside its state machine. A version
+// that checked the guard, released, and then wrote would reproduce in the
+// double exactly the window the real capability closes, and every test resting
+// on it would pass against a store that cannot actually fence an enrolment.
+func (m *memKV) PutAllIfUnchanged(_ context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[guardKey]
+	if !ok || !bytes.Equal(current, guardValue) {
+		return false, nil
+	}
+	for _, w := range writes {
+		m.data[w.Key] = append([]byte(nil), w.Value...)
+	}
+	return true, nil
+}
+
+func (m *memKV) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.data[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.data[key] = append([]byte(nil), next...)
+	return true, nil
 }

@@ -63,6 +63,24 @@ func (t *tornKV) Delete(ctx context.Context, key string) error {
 	return t.memKV.Delete(ctx, key)
 }
 
+// CompareAndSwap fails on the same prefixes Put does.
+//
+// The registration's COMMIT is a compare-and-swap since claims gained an
+// expiry (go-qrdb#21). A fixture that tore only Put would leave the commit
+// untearable, and every test aimed at a torn username-index write would pass
+// while writing nothing.
+func (t *tornKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	t.mu.Lock()
+	prefixes := append([]string(nil), t.failPrefix...)
+	t.mu.Unlock()
+	for _, p := range prefixes {
+		if strings.HasPrefix(key, p) {
+			return false, errors.New("simulated write failure for " + key)
+		}
+	}
+	return t.memKV.CompareAndSwap(ctx, key, expected, next)
+}
+
 func (t *tornKV) Put(ctx context.Context, key string, value []byte) error {
 	t.mu.Lock()
 	prefixes := append([]string(nil), t.failPrefix...)
@@ -113,119 +131,6 @@ func enrolmentOfKV(t *testing.T, store *memKV, id string) custodian.Custodian {
 		t.Fatalf("unmarshal custodian: %v", err)
 	}
 	return c
-}
-
-func TestRegisterCustodian_TornUsernameIndex_LeavesNothingBehindAndRetryEnrols(t *testing.T) {
-	// persist writes the primary record first and the username index last. If
-	// that last write fails, the registration has produced a sealed envelope
-	// it never returns — envelopes are handed to the caller, never stored —
-	// so a surviving primary record would be an enrolment whose share nobody
-	// has, and the duplicate check would honour it forever. Compensate: the
-	// failed registration leaves the store as it found it, and a retry
-	// enrols normally with fresh material.
-	ctx := context.Background()
-	store := newTornKV("__sys:custodian-idx/username/")
-	svc := newTornService(t, store)
-
-	req, _ := testRegisterRequest(t)
-	req.EnrollmentID = "enroll-original"
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("expected the torn username-index write to fail registration")
-	}
-
-	// Nothing survived: no primary record, and neither index.
-	for _, prefix := range []string{
-		"__sys:custodian/",
-		"__sys:custodian-idx/tenant/",
-		"__sys:custodian-idx/username/",
-	} {
-		keys, err := store.List(ctx, prefix)
-		if err != nil {
-			t.Fatalf("List(%s): %v", prefix, err)
-		}
-		if len(keys) != 0 {
-			t.Errorf("%s holds %v after a failed registration, want nothing", prefix, keys)
-		}
-	}
-
-	// The retry is a normal enrolment and yields a usable envelope.
-	store.heal()
-	retry, _ := testRegisterRequest(t)
-	retry.EnrollmentID = "enroll-retry"
-	resp, err := svc.RegisterCustodian(ctx, retry)
-	if err != nil {
-		t.Fatalf("retry after a rolled-back registration: %v", err)
-	}
-	if resp.SealedEnvelope == nil || len(resp.SealedEnvelope.Ciphertext) == 0 {
-		t.Fatal("retry returned no sealed envelope")
-	}
-	if got := enrolmentOf(t, store, resp.Custodian.ID); got.EnrollmentID != "enroll-retry" {
-		t.Errorf("EnrollmentID = %q, want enroll-retry", got.EnrollmentID)
-	}
-}
-
-func TestRegisterCustodian_TornTenantIndex_LeavesNothingBehind(t *testing.T) {
-	// The middle write fails, so only the primary record was written. It must
-	// be compensated for the same reason.
-	ctx := context.Background()
-	store := newTornKV("__sys:custodian-idx/")
-	svc := newTornService(t, store)
-
-	req, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("expected the torn index write to fail registration")
-	}
-
-	keys, err := store.List(ctx, "__sys:custodian/")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(keys) != 0 {
-		t.Errorf("primary records %v survived a failed registration", keys)
-	}
-
-	store.heal()
-	retry, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, retry); err != nil {
-		t.Fatalf("retry after a rolled-back registration: %v", err)
-	}
-}
-
-func TestRegisterCustodian_RollbackFailure_ReportsTheStrandedKeysAndStillRefusesARetry(t *testing.T) {
-	// The compensation is best-effort: a store that fails the deletes too
-	// strands what was written. That case must be named — an operator has
-	// keys to remove — and the surviving record must still be treated as an
-	// enrolment, because nothing can distinguish it from a completed one and
-	// overwriting it would destroy a share holder's record.
-	ctx := context.Background()
-	store := newTornKV("__sys:custodian-idx/").failDeletes("__sys:custodian/")
-	svc := newTornService(t, store)
-
-	req, _ := testRegisterRequest(t)
-	req.EnrollmentID = "enroll-original"
-	_, err := svc.RegisterCustodian(ctx, req)
-	var orphaned *custodian.OrphanedEnrolmentError
-	if !errors.As(err, &orphaned) {
-		t.Fatalf("err = %v (%T), want *custodian.OrphanedEnrolmentError", err, err)
-	}
-	if len(orphaned.Keys) != 1 || !strings.HasPrefix(orphaned.Keys[0], "__sys:custodian/") {
-		t.Fatalf("stranded keys = %v, want the single primary record", orphaned.Keys)
-	}
-	if !strings.Contains(orphaned.Error(), orphaned.Keys[0]) {
-		t.Errorf("Error() = %q, want it to name the stranded key", orphaned.Error())
-	}
-
-	// The stranded record is a duplicate, not something to overwrite.
-	store.heal()
-	retry, _ := testRegisterRequest(t)
-	retry.EnrollmentID = "enroll-retry"
-	if _, err := svc.RegisterCustodian(ctx, retry); !errors.Is(err, custodian.ErrCustodianAlreadyExists) {
-		t.Fatalf("err = %v, want ErrCustodianAlreadyExists", err)
-	}
-	id := strings.TrimPrefix(orphaned.Keys[0], "__sys:custodian/")
-	if after := enrolmentOf(t, store, id); after.EnrollmentID != "enroll-original" {
-		t.Errorf("EnrollmentID = %q, want the stranded enroll-original left untouched", after.EnrollmentID)
-	}
 }
 
 func TestRegisterCustodian_LegacyRecordWithTornUsernameIndex_IsStillADuplicate(t *testing.T) {

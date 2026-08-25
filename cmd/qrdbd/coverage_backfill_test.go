@@ -198,7 +198,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 
 	dataDir := t.TempDir()
 	authResult, err := bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, dataDir, node,
+		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
 		audit.NewNoopLogger(),
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
@@ -231,7 +231,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 	dataDir := t.TempDir()
 	// nil complianceAudit → custodian.NewService returns ErrNilAuditLogger.
 	_, err = bootstrapAuthEnforcement(
-		context.Background(), mgmt, mock, dataDir, node,
+		context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node,
 		nil, // nil complianceAudit
 		false, "",
 		qrdbconfig.AuthABACConfig{},

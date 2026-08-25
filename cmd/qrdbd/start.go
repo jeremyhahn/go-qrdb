@@ -1553,7 +1553,7 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3007,12 +3007,18 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
 	// Create a runtime KV adapter for the custodian service store.
-	runtimeStore := newKVServiceAdapter(runtimeKVSvc, nil, nil)
+	// The GUARDED adapter: the custodian service writes an enrolment's three
+	// keys as one transaction fenced on the username claim, and refuses to
+	// construct without that capability (go-qrdb#21). Handing it the plain
+	// adapter would fail the daemon at startup, which is the intended failure
+	// mode for a store that cannot fence an enrolment — but here the
+	// capability exists and simply has to be wired.
+	runtimeStore := newGuardedKVServiceAdapter(runtimeKVSvc, runtimeTxSvc, nil, nil)
 
 	// Per-decision audit rides the SAME tamper-evident chained event log as
 	// every other audited operation, via the decision bridge — one audit

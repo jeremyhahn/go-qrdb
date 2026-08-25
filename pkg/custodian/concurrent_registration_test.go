@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/custodian"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // hookKV interposes on Put and PutIfAbsent so a test can interleave two
@@ -36,6 +37,8 @@ type hookKV struct {
 	onPut         atomic.Pointer[func(key string, value []byte) error]
 	onPutIfAbsent atomic.Pointer[func(key string, value []byte) error]
 	onGet         atomic.Pointer[func(key string) error]
+	onDelete      atomic.Pointer[func(key string) error]
+	onCAS         atomic.Pointer[func(key string, expected, next []byte) error]
 }
 
 func newHookKV() *hookKV { return &hookKV{memKV: newMemKV()} }
@@ -61,6 +64,46 @@ func (h *hookKV) hookGet(fn func(key string) error) {
 	h.onGet.Store(&fn)
 }
 
+// hookDelete observes every Delete. It exists so a test can assert an
+// operation NEVER deletes a key -- an absence that is otherwise invisible,
+// because a delete followed by a create leaves the store looking identical to
+// a compare-and-swap once both have run (go-qrdb#21).
+func (h *hookKV) hookDelete(fn func(key string) error) {
+	h.onDelete.Store(&fn)
+}
+
+func (h *hookKV) Delete(ctx context.Context, key string) error {
+	if fn := h.onDelete.Load(); fn != nil {
+		if err := (*fn)(key); err != nil {
+			return err
+		}
+	}
+	return h.memKV.Delete(ctx, key)
+}
+
+// PutAllIfUnchanged fires the Put hook for each write BEFORE applying any of
+// them, then delegates to the atomic implementation.
+//
+// The hook has to run outside the store's lock. Its whole purpose is to let a
+// test park one caller mid-enrolment while another proceeds, and a hook invoked
+// while holding the lock would block the second caller on the mutex instead of
+// on the claim — turning a test about claim ownership into a test about lock
+// contention, and deadlocking the ones that park indefinitely.
+//
+// Firing per write keeps the seam the tests were written against: enrolment
+// still writes the same three keys, it just commits them together now
+// (go-qrdb#21).
+func (h *hookKV) PutAllIfUnchanged(ctx context.Context, guardKey string, guardValue []byte, writes []kvstore.KV) (bool, error) {
+	if fn := h.onPut.Load(); fn != nil {
+		for _, w := range writes {
+			if err := (*fn)(w.Key, w.Value); err != nil {
+				return false, err
+			}
+		}
+	}
+	return h.memKV.PutAllIfUnchanged(ctx, guardKey, guardValue, writes)
+}
+
 func (h *hookKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if fn := h.onGet.Load(); fn != nil {
 		if err := (*fn)(key); err != nil {
@@ -79,14 +122,34 @@ func (h *hookKV) PutIfAbsent(ctx context.Context, key string, value []byte) (boo
 	return h.memKV.PutIfAbsent(ctx, key, value)
 }
 
-// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
-// it removes the key only when the stored value still equals expected.
+// The guarded writes DELEGATE to the embedded memKV rather than returning a
+// fixed (false, nil).
+//
+// They were stubs, added only to satisfy kvstore.AtomicKVStore. A double that
+// refuses what production performs is worse than no double: the compile-time
+// assertion passes while the behaviour is absent, so the first caller to
+// depend on it -- the expired-claim take-over of go-qrdb#21 -- saw every swap
+// fail, in a way that read as a bug in the take-over rather than in the fake.
+// This type overrides the operations it exists to interfere with; these are
+// not among them.
 func (h *hookKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	return false, nil
+	return h.memKV.CompareAndDelete(ctx, key, expected)
+}
+
+// hookCAS interposes on CompareAndSwap. It exists because the registration's
+// COMMIT became one when claims gained an expiry (go-qrdb#21): a test that
+// interposed only on Put would no longer reach the commit at all.
+func (h *hookKV) hookCAS(fn func(key string, expected, next []byte) error) {
+	h.onCAS.Store(&fn)
 }
 
 func (h *hookKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	if fn := h.onCAS.Load(); fn != nil {
+		if err := (*fn)(key, expected, next); err != nil {
+			return false, err
+		}
+	}
+	return h.memKV.CompareAndSwap(ctx, key, expected, next)
 }
 
 func newHookService(t *testing.T, store *hookKV) custodian.Servicer {
@@ -304,130 +367,6 @@ func TestRegisterCustodian_UncommittedClaim_IsRefusedAsIncomplete(t *testing.T) 
 	}
 }
 
-// TestRegisterCustodian_CompensationSparesAnotherRegistrationsEnrolment is the
-// ownership rule under the one condition that can hand this identity to someone
-// else mid-flight: the claim is removed out from under a registration, and a
-// second one then takes it and completes.
-//
-// Both registrations derive the SAME identifier and write the SAME keys, so a
-// rollback that trusted the keys alone would delete a completed enrolment. The
-// claim token is per-attempt, so the loser can tell that what is in the store is
-// no longer its own.
-func TestRegisterCustodian_CompensationSparesAnotherRegistrationsEnrolment(t *testing.T) {
-	ctx := context.Background()
-	store := newHookKV()
-	svc := newHookService(t, store)
-
-	var (
-		aAtTenantIndex = make(chan struct{})
-		aMayFail       = make(chan struct{})
-		aAtFailedWrite atomic.Bool
-	)
-
-	store.hook(func(key string, _ []byte) error {
-		if strings.HasPrefix(key, "__sys:custodian-idx/tenant/") && !aAtFailedWrite.Swap(true) {
-			close(aAtTenantIndex)
-			<-aMayFail
-			return errors.New("simulated tenant-index write failure")
-		}
-		return nil
-	})
-
-	aResult := make(chan registerResult, 1)
-	go func() {
-		req, _ := testRegisterRequest(t)
-		req.EnrollmentID = "enroll-A"
-		resp, err := svc.RegisterCustodian(ctx, req)
-		aResult <- registerResult{resp, err}
-	}()
-
-	<-aAtTenantIndex
-
-	// An operator clears what looks like stuck debris — the claim and the
-	// record it names — so the identity is free while A is still holding a
-	// half-written registration.
-	reqB, _ := testRegisterRequest(t)
-	for _, key := range []string{
-		"__sys:custodian-idx/username/" + reqB.TenantID + "/" + reqB.Username,
-		"__sys:custodian/" + custodianIDOf(t, store.memKV, reqB.TenantID),
-	} {
-		if err := store.Delete(ctx, key); err != nil {
-			t.Fatalf("Delete(%s): %v", key, err)
-		}
-	}
-
-	reqB.EnrollmentID = "enroll-B"
-	b, err := svc.RegisterCustodian(ctx, reqB)
-	if err != nil {
-		t.Fatalf("B could not enrol once the claim was cleared: %v", err)
-	}
-
-	close(aMayFail)
-	a := <-aResult
-	if a.err == nil {
-		t.Fatal("A's failed write did not fail the registration")
-	}
-
-	// B reported success, so B's enrolment must be intact and addressable.
-	got := enrolmentOfKV(t, store.memKV, b.Custodian.ID)
-	if got.EnrollmentID != "enroll-B" {
-		t.Errorf("EnrollmentID = %q, want enroll-B — A's rollback destroyed the winner", got.EnrollmentID)
-	}
-	assertEnrolmentIsWhole(ctx, t, store, got.TenantID, got.Username, got.ID)
-	if _, err := svc.GetCustodian(ctx, b.Custodian.ID); err != nil {
-		t.Errorf("GetCustodian after the race: %v", err)
-	}
-}
-
-// TestRegisterCustodian_CompensationRunsWhenTheClaimIsStillOurs is the other
-// half of the ownership rule: with no competitor, the failed registration must
-// clean up after itself — record, indexes and the claim — rather than becoming
-// conservative and stranding the username.
-func TestRegisterCustodian_CompensationRunsWhenTheClaimIsStillOurs(t *testing.T) {
-	ctx := context.Background()
-	store := newHookKV()
-	svc := newHookService(t, store)
-
-	var failWrites atomic.Bool
-	failWrites.Store(true)
-	store.hook(func(key string, _ []byte) error {
-		if failWrites.Load() && strings.HasPrefix(key, "__sys:custodian-idx/tenant/") {
-			return errors.New("simulated tenant-index write failure")
-		}
-		return nil
-	})
-
-	req, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("expected the failing write to fail registration")
-	}
-
-	for _, prefix := range []string{
-		"__sys:custodian/",
-		"__sys:custodian-idx/tenant/",
-		"__sys:custodian-idx/username/",
-	} {
-		keys, err := store.List(ctx, prefix)
-		if err != nil {
-			t.Fatalf("List(%s): %v", prefix, err)
-		}
-		if len(keys) != 0 {
-			t.Errorf("%v survived under %s, want the registration compensated", keys, prefix)
-		}
-	}
-
-	// The username is free again, so the custodian can enrol on a retry.
-	failWrites.Store(false)
-	retry, _ := testRegisterRequest(t)
-	resp, err := svc.RegisterCustodian(ctx, retry)
-	if err != nil {
-		t.Fatalf("retry after a compensated registration: %v", err)
-	}
-	if resp.SealedEnvelope == nil {
-		t.Error("retry produced no sealed envelope")
-	}
-}
-
 // assertEnrolmentIsWhole checks that a committed enrolment occupies all three
 // of its keys and that the username index names the custodian rather than a
 // leftover claim token.
@@ -473,105 +412,6 @@ func custodianIDOf(t *testing.T, store *memKV, tenantID string) string {
 		t.Fatalf("%d primary records for tenant %s, want 1", len(keys), tenantID)
 	}
 	return strings.TrimPrefix(keys[0], "__sys:custodian/")
-}
-
-// TestRegisterCustodian_AmbiguousCommit_IsRolledBackWhenTheRecordIsStillOurs
-// covers the one write whose failure does not mean it was not applied. The
-// commit replaces the claim token with the custodian identifier, so a store
-// that applies it and still reports an error leaves the claim reading as a
-// value any registration for this identity would write. Ownership is then
-// established from the primary record, which carries this call's bytes and no
-// one else's — and the registration must still clean up after itself.
-func TestRegisterCustodian_AmbiguousCommit_IsRolledBackWhenTheRecordIsStillOurs(t *testing.T) {
-	ctx := context.Background()
-	store := newHookKV()
-	svc := newHookService(t, store)
-
-	var applied atomic.Bool
-	store.hook(func(key string, value []byte) error {
-		if strings.HasPrefix(key, "__sys:custodian-idx/username/") && !applied.Swap(true) {
-			// Applied by the store, reported as a failure to the caller.
-			if err := store.memKV.Put(ctx, key, value); err != nil {
-				return err
-			}
-			return errors.New("simulated ambiguous commit")
-		}
-		return nil
-	})
-
-	req, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("an ambiguous commit did not fail the registration")
-	}
-
-	for _, prefix := range []string{
-		"__sys:custodian/",
-		"__sys:custodian-idx/tenant/",
-		"__sys:custodian-idx/username/",
-	} {
-		keys, err := store.List(ctx, prefix)
-		if err != nil {
-			t.Fatalf("List(%s): %v", prefix, err)
-		}
-		if len(keys) != 0 {
-			t.Errorf("%v survived under %s; the applied commit was not rolled back", keys, prefix)
-		}
-	}
-
-	// And the identity is free, so the custodian can enrol on a retry.
-	retry, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, retry); err != nil {
-		t.Fatalf("retry after an ambiguous commit: %v", err)
-	}
-}
-
-// TestRegisterCustodian_AmbiguousCommit_SparesARecordThatIsNoLongerOurs is the
-// refusal half of the same rule: when the commit may have applied AND the
-// primary record no longer carries this call's bytes, the claim's value proves
-// nothing — every registration for this identity commits the same one — so
-// nothing is deleted.
-func TestRegisterCustodian_AmbiguousCommit_SparesARecordThatIsNoLongerOurs(t *testing.T) {
-	ctx := context.Background()
-	store := newHookKV()
-	svc := newHookService(t, store)
-
-	req, _ := testRegisterRequest(t)
-	foreign := []byte(`{"id":"someone-elses","username":"` + req.Username + `"}`)
-
-	var applied atomic.Bool
-	store.hook(func(key string, value []byte) error {
-		if strings.HasPrefix(key, "__sys:custodian-idx/username/") && !applied.Swap(true) {
-			if err := store.memKV.Put(ctx, key, value); err != nil {
-				return err
-			}
-			// Another enrolment now holds the primary record.
-			primary := "__sys:custodian/" + string(value)
-			if err := store.memKV.Put(ctx, primary, foreign); err != nil {
-				return err
-			}
-			return errors.New("simulated ambiguous commit")
-		}
-		return nil
-	})
-
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("an ambiguous commit did not fail the registration")
-	}
-
-	keys, err := store.List(ctx, "__sys:custodian/")
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(keys) != 1 {
-		t.Fatalf("%d primary records survived, want the other enrolment's 1", len(keys))
-	}
-	got, err := store.Get(ctx, keys[0])
-	if err != nil {
-		t.Fatalf("Get(%s): %v", keys[0], err)
-	}
-	if string(got) != string(foreign) {
-		t.Errorf("%s = %q, want the other enrolment's record — rollback deleted or replaced it", keys[0], got)
-	}
 }
 
 // TestRegisterCustodian_SealFailure_ReleasesTheClaim covers the window between
@@ -626,14 +466,22 @@ func (u *unreadableClaimKV) PutIfAbsent(ctx context.Context, key string, value [
 	return stored, err
 }
 
-// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
-// it removes the key only when the stored value still equals expected.
+// The guarded writes DELEGATE to the embedded memKV rather than returning a
+// fixed (false, nil).
+//
+// They were stubs, added only to satisfy kvstore.AtomicKVStore. A double that
+// refuses what production performs is worse than no double: the compile-time
+// assertion passes while the behaviour is absent, so the first caller to
+// depend on it -- the expired-claim take-over of go-qrdb#21 -- saw every swap
+// fail, in a way that read as a bug in the take-over rather than in the fake.
+// This type overrides the operations it exists to interfere with; these are
+// not among them.
 func (u *unreadableClaimKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	return false, nil
+	return u.memKV.CompareAndDelete(ctx, key, expected)
 }
 
 func (u *unreadableClaimKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	return u.memKV.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (u *unreadableClaimKV) Get(ctx context.Context, key string) ([]byte, error) {
@@ -650,65 +498,31 @@ func (u *unreadableClaimKV) Put(ctx context.Context, key string, value []byte) e
 	return u.memKV.Put(ctx, key, value)
 }
 
-// TestRegisterCustodian_UnreadableClaim_ReportsEverythingAsStranded pins the
-// conservative answer when ownership cannot be established at all: nothing is
-// deleted on a guess, and every key the registration wrote — the claim
-// included — is named so an operator knows what to look at.
-func TestRegisterCustodian_UnreadableClaim_ReportsEverythingAsStranded(t *testing.T) {
-	ctx := context.Background()
-	store := &unreadableClaimKV{memKV: newMemKV()}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	svc, err := custodian.NewService(store, &noopAudit{}, logger)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
-
-	req, _ := testRegisterRequest(t)
-	_, err = svc.RegisterCustodian(ctx, req)
-
-	var orphaned *custodian.OrphanedEnrolmentError
-	if !errors.As(err, &orphaned) {
-		t.Fatalf("err = %v (%T), want *custodian.OrphanedEnrolmentError", err, err)
-	}
-	claimKey := "__sys:custodian-idx/username/" + req.TenantID + "/" + req.Username
-	var namesClaim, namesPrimary bool
-	for _, key := range orphaned.Keys {
-		switch {
-		case key == claimKey:
-			namesClaim = true
-		case strings.HasPrefix(key, "__sys:custodian/"):
-			namesPrimary = true
-		}
-	}
-	if !namesClaim {
-		t.Errorf("stranded keys %v do not name the claim an operator must clear", orphaned.Keys)
-	}
-	if !namesPrimary {
-		t.Errorf("stranded keys %v do not name the primary record", orphaned.Keys)
-	}
-
-	// Nothing was deleted on a guess: what the registration wrote is still there.
-	store.armed.Store(false)
-	for _, key := range orphaned.Keys {
-		v, getErr := store.Get(ctx, key)
-		if getErr != nil {
-			t.Fatalf("Get(%s): %v", key, getErr)
-		}
-		if v == nil {
-			t.Errorf("%s was reported stranded but is gone", key)
-		}
-	}
-}
-
 // claimReleaseKV lets a test decide what the username index reports, and
 // whether it can be deleted, from the moment a claim is taken — so the
 // fail-safe branches of releasing a claim can be driven directly.
 type claimReleaseKV struct {
 	*memKV
-	armed     atomic.Bool
-	getErr    atomic.Bool
-	getValue  atomic.Pointer[[]byte]
-	deleteErr atomic.Bool
+	armed          atomic.Bool
+	casDeleteErr   atomic.Bool
+	overwriteClaim atomic.Pointer[[]byte]
+}
+
+// CompareAndDelete is where claim release now happens, so it is where these
+// branches are injected.
+func (c *claimReleaseKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if c.casDeleteErr.Load() {
+		return false, errTestStore
+	}
+	if v := c.overwriteClaim.Load(); v != nil && c.armed.Load() {
+		// Stand in for a successor having taken the claim over: the stored
+		// value is no longer the one this registration compares against, so the
+		// guarded delete declines and the successor's claim survives.
+		if err := c.memKV.Put(ctx, key, *v); err != nil {
+			return false, err
+		}
+	}
+	return c.memKV.CompareAndDelete(ctx, key, expected)
 }
 
 func (c *claimReleaseKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
@@ -719,43 +533,40 @@ func (c *claimReleaseKV) PutIfAbsent(ctx context.Context, key string, value []by
 	return stored, err
 }
 
-// CompareAndDelete mirrors PutIfAbsent's guard on the release side:
-// it removes the key only when the stored value still equals expected.
-func (c *claimReleaseKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	return false, nil
-}
-
+// The guarded writes DELEGATE to the embedded memKV rather than returning a
+// fixed (false, nil).
+//
+// They were stubs, added only to satisfy kvstore.AtomicKVStore. A double that
+// refuses what production performs is worse than no double: the compile-time
+// assertion passes while the behaviour is absent, so the first caller to
+// depend on it -- the expired-claim take-over of go-qrdb#21 -- saw every swap
+// fail, in a way that read as a bug in the take-over rather than in the fake.
+// This type overrides the operations it exists to interfere with; these are
+// not among them.
 func (c *claimReleaseKV) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	return c.memKV.CompareAndSwap(ctx, key, expected, next)
 }
 
 func (c *claimReleaseKV) isClaim(key string) bool {
 	return c.armed.Load() && strings.HasPrefix(key, "__sys:custodian-idx/username/")
 }
 
-func (c *claimReleaseKV) Get(ctx context.Context, key string) ([]byte, error) {
-	if c.isClaim(key) {
-		if c.getErr.Load() {
-			return nil, errors.New("simulated claim read failure")
-		}
-		if v := c.getValue.Load(); v != nil {
-			return *v, nil
-		}
-	}
-	return c.memKV.Get(ctx, key)
-}
-
-func (c *claimReleaseKV) Delete(ctx context.Context, key string) error {
-	if c.isClaim(key) && c.deleteErr.Load() {
-		return errors.New("simulated claim delete failure")
-	}
-	return c.memKV.Delete(ctx, key)
-}
-
 // TestRegisterCustodian_ClaimRelease_FailSafeBranches drives releasing a claim
 // when the store will not cooperate. None of these may delete a key on a
 // guess, and none may turn the caller's sealing failure into a different
 // error: the release is best-effort cleanup, not part of the answer.
+//
+// The release became a single CompareAndDelete on the exact claim token
+// (go-qrdb#21): with claims expiring, a read followed by an unconditional
+// delete could remove a SUCCESSOR's claim in the window between the two. So
+// these branches are driven through that verb now rather than through Get and
+// Delete.
+//
+// One case disappeared with the read, and its absence is the improvement: there
+// is no longer a state in which ownership "cannot be established" separately
+// from the delete, because the guard and the delete are one operation. What is
+// left is the store failing, and the claim belonging to someone else — and the
+// claim must survive both.
 func TestRegisterCustodian_ClaimRelease_FailSafeBranches(t *testing.T) {
 	badPEM := "-----BEGIN PUBLIC KEY-----\nnot-a-key\n-----END PUBLIC KEY-----\n"
 	foreign := []byte("claim:another-registrations-token")
@@ -767,25 +578,24 @@ func TestRegisterCustodian_ClaimRelease_FailSafeBranches(t *testing.T) {
 		survives func(*claimReleaseKV) bool
 	}{
 		{
-			name:  "ownership unreadable",
-			setup: func(kv *claimReleaseKV) { kv.getErr.Store(true) },
+			name:  "the guarded delete fails",
+			setup: func(kv *claimReleaseKV) { kv.casDeleteErr.Store(true) },
 			survives: func(kv *claimReleaseKV) bool {
-				kv.getErr.Store(false)
+				kv.casDeleteErr.Store(false)
 				return true
 			},
 		},
 		{
-			name:  "claim is another registration's",
-			setup: func(kv *claimReleaseKV) { kv.getValue.Store(&foreign) },
+			name: "the claim is another registration's",
+			setup: func(kv *claimReleaseKV) {
+				// A foreign value under the claim key: the compare fails, so
+				// the delete does not happen and the successor keeps its claim.
+				kv.overwriteClaim.Store(&foreign)
+			},
 			survives: func(kv *claimReleaseKV) bool {
-				kv.getValue.Store(nil)
+				kv.overwriteClaim.Store(nil)
 				return true
 			},
-		},
-		{
-			name:     "release fails",
-			setup:    func(kv *claimReleaseKV) { kv.deleteErr.Store(true) },
-			survives: func(*claimReleaseKV) bool { return true },
 		},
 	}
 
@@ -825,48 +635,5 @@ func TestRegisterCustodian_ClaimRelease_FailSafeBranches(t *testing.T) {
 				t.Errorf("primary records %v exist after a sealing failure", keys)
 			}
 		})
-	}
-}
-
-// TestRegisterCustodian_AmbiguousCommit_WithheldWhenTheRecordCannotBeRead is
-// the unreadable case of the same rule. A store that cannot say whether the
-// primary record is still this call's gives no proof, so the claim reads as
-// unowned and nothing is deleted — the answer that cannot destroy an enrolment.
-func TestRegisterCustodian_AmbiguousCommit_WithheldWhenTheRecordCannotBeRead(t *testing.T) {
-	ctx := context.Background()
-	store := newHookKV()
-	svc := newHookService(t, store)
-
-	var applied atomic.Bool
-	store.hook(func(key string, value []byte) error {
-		if strings.HasPrefix(key, "__sys:custodian-idx/username/") && !applied.Swap(true) {
-			if err := store.memKV.Put(ctx, key, value); err != nil {
-				return err
-			}
-			return errors.New("simulated ambiguous commit")
-		}
-		return nil
-	})
-	store.hookGet(func(key string) error {
-		if applied.Load() && strings.HasPrefix(key, "__sys:custodian/") {
-			return errors.New("simulated record read failure")
-		}
-		return nil
-	})
-
-	req, _ := testRegisterRequest(t)
-	if _, err := svc.RegisterCustodian(ctx, req); err == nil {
-		t.Fatal("an ambiguous commit did not fail the registration")
-	}
-
-	// Nothing was removed on a guess.
-	for _, prefix := range []string{"__sys:custodian/", "__sys:custodian-idx/"} {
-		keys, err := store.memKV.List(ctx, prefix)
-		if err != nil {
-			t.Fatalf("List(%s): %v", prefix, err)
-		}
-		if len(keys) == 0 {
-			t.Errorf("nothing survives under %s; rollback deleted without establishing ownership", prefix)
-		}
 	}
 }
