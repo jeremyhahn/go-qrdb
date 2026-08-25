@@ -261,11 +261,14 @@ func newDefaultRegistry() *Registry {
 		Description: "Pure in-memory KV state machine with no persistence",
 		Persistence: PersistenceMemory,
 		Kind:        SMKindRegular,
-		Capabilities: []Capability{
-			CapabilityKV, CapabilityBatch, CapabilityMVCC,
-			CapabilityTransaction, CapabilityLease,
-			CapabilityIndex, CapabilityTimeSeries,
-		},
+		// KV and batch only. These factories construct their state machine
+		// with no options, so the MVCC store, lease manager, index manager and
+		// time-series store are all nil and every operation in those families
+		// refuses with ServiceNotConfiguredError. The five capabilities that
+		// used to be listed here were never implemented on this state machine
+		// (go-qrdb#135); adding one back requires wiring it AND a test that
+		// exercises it, per go-qrdb#136.
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	}
 	r.RegisterWithDescriptor("memory", standardFactory, standardDesc)
 	r.RegisterWithDescriptor("standard", standardFactory, standardDesc)
@@ -278,11 +281,14 @@ func newDefaultRegistry() *Registry {
 		Description: "Sharded in-memory KV SM with concurrent reads",
 		Persistence: PersistenceMemory,
 		Kind:        SMKindConcurrent,
-		Capabilities: []Capability{
-			CapabilityKV, CapabilityBatch, CapabilityMVCC,
-			CapabilityTransaction, CapabilityLease,
-			CapabilityIndex, CapabilityTimeSeries,
-		},
+		// KV and batch only. These factories construct their state machine
+		// with no options, so the MVCC store, lease manager, index manager and
+		// time-series store are all nil and every operation in those families
+		// refuses with ServiceNotConfiguredError. The five capabilities that
+		// used to be listed here were never implemented on this state machine
+		// (go-qrdb#135); adding one back requires wiring it AND a test that
+		// exercises it, per go-qrdb#136.
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	})
 
 	// "fast" is the high-performance 256-shard cache SM with async
@@ -293,11 +299,14 @@ func newDefaultRegistry() *Registry {
 		Description: "High-performance 256-shard cache SM with PebbleDB write-through",
 		Persistence: PersistenceHybrid,
 		Kind:        SMKindRegular,
-		Capabilities: []Capability{
-			CapabilityKV, CapabilityBatch, CapabilityMVCC,
-			CapabilityTransaction, CapabilityLease,
-			CapabilityIndex, CapabilityTimeSeries,
-		},
+		// KV and batch only. These factories construct their state machine
+		// with no options, so the MVCC store, lease manager, index manager and
+		// time-series store are all nil and every operation in those families
+		// refuses with ServiceNotConfiguredError. The five capabilities that
+		// used to be listed here were never implemented on this state machine
+		// (go-qrdb#135); adding one back requires wiring it AND a test that
+		// exercises it, per go-qrdb#136.
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	})
 
 	// "disk" is a synchronous disk-backed KV state machine using
@@ -308,11 +317,14 @@ func newDefaultRegistry() *Registry {
 		Description: "Synchronous disk-backed KV SM with direct PebbleDB I/O",
 		Persistence: PersistenceDisk,
 		Kind:        SMKindDisk,
-		Capabilities: []Capability{
-			CapabilityKV, CapabilityBatch, CapabilityMVCC,
-			CapabilityTransaction, CapabilityLease,
-			CapabilityIndex, CapabilityTimeSeries,
-		},
+		// KV and batch only. These factories construct their state machine
+		// with no options, so the MVCC store, lease manager, index manager and
+		// time-series store are all nil and every operation in those families
+		// refuses with ServiceNotConfiguredError. The five capabilities that
+		// used to be listed here were never implemented on this state machine
+		// (go-qrdb#135); adding one back requires wiring it AND a test that
+		// exercises it, per go-qrdb#136.
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	})
 
 	// "highperf" is a high-performance in-memory concurrent SM with
@@ -324,11 +336,14 @@ func newDefaultRegistry() *Registry {
 		Description: "High-performance in-memory concurrent state machine with configurable sharding",
 		Persistence: PersistenceMemory,
 		Kind:        SMKindConcurrent,
-		Capabilities: []Capability{
-			CapabilityKV, CapabilityBatch, CapabilityMVCC,
-			CapabilityTransaction, CapabilityLease,
-			CapabilityIndex, CapabilityTimeSeries,
-		},
+		// KV and batch only. These factories construct their state machine
+		// with no options, so the MVCC store, lease manager, index manager and
+		// time-series store are all nil and every operation in those families
+		// refuses with ServiceNotConfiguredError. The five capabilities that
+		// used to be listed here were never implemented on this state machine
+		// (go-qrdb#135); adding one back requires wiring it AND a test that
+		// exercises it, per go-qrdb#136.
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	})
 
 	// ---------------------------------------------------------------
@@ -339,10 +354,12 @@ func newDefaultRegistry() *Registry {
 	r.RegisterWithDescriptor("regular", func() sm.CreateFunc {
 		return NewRegularCreateFunc()
 	}, Descriptor{
-		Description:  "Legacy pure in-memory state machine (prefer 'standard')",
-		Persistence:  PersistenceMemory,
-		Kind:         SMKindRegular,
-		Capabilities: []Capability{CapabilityKV},
+		Description: "Legacy pure in-memory state machine (prefer 'standard')",
+		Persistence: PersistenceMemory,
+		Kind:        SMKindRegular,
+		// Batch is real here: RegularStateMachine dispatches protocol.OpBatch
+		// against its own map, so it was UNDER-declared (go-qrdb#135).
+		Capabilities: []Capability{CapabilityKV, CapabilityBatch},
 	})
 
 	return r
