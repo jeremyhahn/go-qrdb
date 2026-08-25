@@ -27,22 +27,50 @@ import (
 
 // captureIndexCreateRequest drives the QUIC client's IndexCreate with config
 // and returns the protobuf message it actually put on the wire.
+//
+// The message is decoded from the server's recorded payload rather than
+// unmarshalled inside the responder. The responder runs on the server's
+// per-stream goroutine, so a message it wrote into and this goroutine read was
+// a data race with nothing ordering the two: IndexCreate returning means the
+// CLIENT is done, not that the stream handler has finished writing
+// (go-qrdb#131, reproduced by the race detector on 2 of 5 runs).
+//
+// The recording path is already safe and already correctly ordered:
+// handleStream appends a defensive copy of the payload under recordMu BEFORE
+// dispatching to the responder, LastRequest reads under the same mutex, and
+// the responder's return is what releases the response the client is waiting
+// on. So by the time IndexCreate returns, the payload is recorded, and the
+// mutex supplies the happens-before edge. Decoding here also keeps the
+// protobuf message owned by a single goroutine for its whole life.
 func captureIndexCreateRequest(t *testing.T, config transport.IndexConfig) *pb.IndexCreateRequest {
 	t.Helper()
 	srv, tr := startE2EServer(t)
 
-	got := &pb.IndexCreateRequest{}
-	srv.SetResponder("index.Create", func(payload []byte) (uint16, []byte) {
-		if err := proto.Unmarshal(payload, got); err != nil {
-			t.Errorf("unmarshal IndexCreateRequest: %v", err)
-		}
+	srv.SetResponder("index.Create", func([]byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
 
 	if err := tr.IndexCreate(context.Background(), "by_email", "email", config); err != nil {
 		t.Fatalf("IndexCreate: %v", err)
 	}
-	return got
+
+	// Never return a zero-valued message for a request that was not captured.
+	// Every flag on this wire is a positive claim, so an empty message passes
+	// the zero-config polarity assertion below for entirely the wrong reason —
+	// which is the same way a torn read of a message mid-proto.Reset used to
+	// pass it.
+	rec := srv.LastRequest("index.Create")
+	if rec == nil {
+		t.Fatal("the server recorded no index.Create request; IndexCreate returned without " +
+			"putting one on the wire, and an empty message would silently satisfy the " +
+			"zero-config assertion")
+	}
+
+	var got pb.IndexCreateRequest
+	if err := proto.Unmarshal(rec.Payload, &got); err != nil {
+		t.Fatalf("unmarshal IndexCreateRequest: %v", err)
+	}
+	return &got
 }
 
 // TestE2E_IndexCreate_EveryConfigFieldReachesTheWire covers go-qrdb#34 on the
@@ -78,6 +106,17 @@ func TestE2E_IndexCreate_EveryConfigFieldReachesTheWire(t *testing.T) {
 // leave all of them unset — an ordinary index, case-SENSITIVE, string-ordered.
 func TestE2E_IndexCreate_ZeroConfigSendsNoClaims(t *testing.T) {
 	got := captureIndexCreateRequest(t, transport.IndexConfig{})
+
+	// Identify the request before judging its flags. Every assertion below is
+	// an absence, and absences are exactly what an empty or half-decoded
+	// message satisfies — so this test needs positive evidence that it is
+	// looking at the request the client actually sent before "no claims set"
+	// means anything.
+	if got.GetName() != "by_email" || got.GetFieldName() != "email" {
+		t.Fatalf("captured name/field = %q/%q; want by_email/email — the assertions below "+
+			"cannot be trusted against a message this test did not identify",
+			got.GetName(), got.GetFieldName())
+	}
 
 	if got.GetUnique() || got.GetSparse() || got.GetNumeric() || got.GetCaseInsensitive() {
 		t.Errorf("a zero config sent %+v; want no claims set", got)
