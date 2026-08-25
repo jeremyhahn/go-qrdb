@@ -128,6 +128,43 @@ jobs:
       - name: Unit tests (race)
         run: make test
 
+  test-sdk:
+    name: Test (sdk/go module)
+    runs-on: ubuntu-latest
+    # `sdk/go` is a SEPARATE Go module, so `./pkg/... ./cmd/...` in the `test`
+    # job above never reaches it and this repository shipped the SDK untested by
+    # CI: `build` compiled it, nothing ran it (go-qrdb#132). The whole guarded-
+    # verb transport plane v0.12 rests on — the GuardedKVClient capability and
+    # its embedded implementation (#119/#122) and the gRPC one (#123) — merged
+    # on green CI that never executed a line of its tests. This is the standing
+    # multi-module hazard exactly as written: a nested module's tests that CI
+    # never runs can stop compiling, or start racing, without turning anything
+    # red. Running the suite once by hand immediately turned up a data race
+    # (#131).
+    #
+    # A separate job rather than another step in `test`: `test` already runs the
+    # whole root module under -race and is the long pole, so appending this
+    # would serialise them, and a distinct job makes the gate say WHICH module
+    # broke.
+    needs: [lint, build]
+    # sdk/go/node boots real nodes, including single-replica raft groups whose
+    # leader election alone costs ~2.4s per shard and more under -race. This is
+    # not a pure unit suite and must not inherit a timeout tuned for one.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # `make test-sdk` = `cd sdk/go && go test -race -count=1 -v -timeout=30m
+      # -tags "$(BUILD_TAGS)" ./...`. The tags are the same set the root `test`
+      # job uses and matter for the same reason: without them the codec registry
+      # is empty and several packages fail to build outright.
+      - name: Unit tests (race, sdk/go module)
+        run: make test-sdk
+
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
@@ -302,13 +339,14 @@ jobs:
     # fail-open gate; a job that is required and cannot pass freezes the
     # repository without closing a single finding. Neither is acceptable, which
     # is why the two halves must move together.
-    needs: [lint, build, test, integration-standalone, security]
+    needs: [lint, build, test, test-sdk, integration-standalone, security]
     steps:
       - name: Verify every job succeeded
         env:
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_TEST: ${{ needs.test.result }}
+          RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_SECURITY: ${{ needs.security.result }}
         run: |
@@ -331,6 +369,7 @@ jobs:
           check lint "$RESULT_LINT"
           check build "$RESULT_BUILD"
           check test "$RESULT_TEST"
+          check test-sdk "$RESULT_TEST_SDK"
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE"
           check security "$RESULT_SECURITY"
           exit $status
