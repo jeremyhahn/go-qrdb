@@ -2172,17 +2172,36 @@ func buildServerOpts(svcNode *lifecycle.Node, callerOpts []server.ServerOption, 
 		server.WithDatabaseService(svcNode.Database),
 		server.WithVector(svcNode.Vector),
 	}
-	// The raft-only API surface (ratified run-modes split): composed only
-	// on the raft path; the standalone composition refuses these families
+	// The transaction/CAS family is composed in BOTH modes. A standalone node
+	// is engine-direct and single-process, so a compare-and-swap there is
+	// already linearizable — consensus is what makes one linearizable across
+	// REPLICAS, and a standalone node has none (owner ruling 2026-08-23,
+	// go-qrdb#62). server.WithStandaloneMode deliberately does not gate this
+	// family, and its doc comment names the hazard of omitting it here:
+	// serving transactions on the in-process transport while the network
+	// transports refuse them puts #62's contradiction back one seam over.
+	//
+	// It was omitted, and go-qrdb#121's conformance matrix measured the
+	// result: transactions worked on standalone over the embedded transport
+	// and failed over gRPC with "transaction service is not configured",
+	// because s.opts.txSvc was nil so grpcapi.WithTransaction was never
+	// applied. That is exactly the engine/mode/transport non-uniformity
+	// go-qrdb#117 forbids — "CAS must NOT be reachable only via the embedded
+	// server".
+	opts = append(opts, server.WithTransaction(svcNode.Transaction))
+
+	// The genuinely raft-only API surface (ratified run-modes split): composed
+	// only on the raft path; the standalone composition refuses these families
 	// with a typed "requires mode: raft" error via nil singletons plus the
-	// gated per-database registry (server.WithStandaloneMode). The engine
-	// still serves MVCC/transaction operations internally for the SQL
-	// catalog and collections.
+	// gated per-database registry (server.WithStandaloneMode). These are about
+	// observing and coordinating state ACROSS replicas, which is what a
+	// standalone node genuinely cannot do — unlike a compare-and-swap. The
+	// engine still serves MVCC operations internally for the SQL catalog and
+	// collections.
 	if standalone {
 		opts = append(opts, server.WithStandaloneMode())
 	} else {
 		opts = append(opts,
-			server.WithTransaction(svcNode.Transaction),
 			server.WithMVCC(svcNode.MVCC),
 			server.WithLease(svcNode.Lease),
 			server.WithWatch(svcNode.Watch),
