@@ -1112,6 +1112,7 @@ func mapHTTPError(err error) int {
 	var bse *BarrierSealedError
 	var ibu *IsolationBackendUnavailableError
 	var smnc *service.SMNotConfiguredError
+	var cue *service.CapabilityUnsupportedError
 	var qee *quota.ExceededError
 	var qent *quota.EntitlementError
 	var sqleq *service.SQLEmptyQueryError
@@ -1278,9 +1279,17 @@ func mapHTTPError(err error) int {
 	case errors.As(err, &qent):
 		// Feature entitlement denied — surface as 403 Forbidden.
 		return http.StatusForbidden
-	case errors.As(err, &smnc):
-		// SM subsystem not configured — surface as 501 Not Implemented so
-		// clients know the operation is not supported by this server instance.
+	case errors.As(err, &smnc), errors.As(err, &cue):
+		// SM subsystem not configured, or a capability this state machine was
+		// not built with — surface as 501 Not Implemented so clients know the
+		// operation is not supported by this server instance.
+		//
+		// Both types are listed because go-qrdb#141 split them: capability
+		// refusals moved to CapabilityUnsupportedError so gRPC could answer
+		// Unimplemented instead of Internal. Mapping only the old type here
+		// would have quietly demoted every REST capability refusal from 501 to
+		// 500 — reintroducing on REST exactly the healthy-node-as-server-fault
+		// behaviour that split was made to remove.
 		return http.StatusNotImplemented
 	case errors.As(err, &sqleq), errors.As(err, &sqled), errors.As(err, &sqlex):
 		// SQL validation and engine failures are client errors — the

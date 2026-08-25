@@ -107,6 +107,14 @@ func translateError(err error) error {
 		return &transport.LeaseExpiredError{LeaseID: le.LeaseID}
 	}
 
+	// A capability refusal keeps its identity across the seam. Without this
+	// case it falls through to a generic RequestError and the caller is left
+	// matching message text (go-qrdb#141).
+	var cue *service.CapabilityUnsupportedError
+	if errors.As(err, &cue) {
+		return &transport.CapabilityUnsupportedError{Message: cue.Message}
+	}
+
 	var wce *service.WatchCanceledError
 	if errors.As(err, &wce) {
 		return &transport.WatchCanceledError{Reason: wce.Reason}

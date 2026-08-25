@@ -58,6 +58,10 @@ func TestClassifyRefusal(t *testing.T) {
 		{"gRPC Unavailable", wrapped(codes.Unavailable, "connection refused")},
 		{"gRPC DeadlineExceeded", wrapped(codes.DeadlineExceeded, "too slow")},
 		{"an unrelated internal fault", errors.New("service: propose failed: disk full")},
+		{"an UNTYPED Internal that merely mentions an opcode — the pre-#141 shape",
+			wrapped(codes.Internal, "service: statemachine: unknown opcode: 67")},
+		{"a typed refusal that names nothing",
+			&transport.CapabilityUnsupportedError{Message: "something went wrong"}},
 		{"a storage error that names nothing", errors.New("service: read failed")},
 	}
 	for _, tc := range rejected {
@@ -70,25 +74,23 @@ func TestClassifyRefusal(t *testing.T) {
 		})
 	}
 
-	// The accepted set is taken from what the state machines actually produce,
-	// captured from a matrix run — not invented. Embedded surfaces the refusal
-	// through a generic RequestError and gRPC maps it to codes.Internal, so the
-	// message is the only contract either transport currently offers
-	// (go-qrdb#141).
+	// Since go-qrdb#141 a refusal is typed on both transports, so the accepted
+	// set is built from that type rather than from prose. The gRPC entries are
+	// constructed the way mapGRPCError builds them from a codes.Unimplemented
+	// status, so this stays honest about what actually crosses the wire.
 	accepted := []struct {
 		name string
 		err  error
 	}{
-		{"embedded, absent CompareAndDelete opcode",
-			errors.New("transport: request embedded failed: service: statemachine: unknown opcode: 66")},
-		{"embedded, absent CompareAndSwap opcode",
-			errors.New("transport: request embedded failed: service: statemachine: unknown opcode: 67")},
-		{"embedded, no MVCC store for transactions",
-			errors.New("transport: request embedded failed: service: statemachine: mvcc not configured")},
-		{"gRPC, absent opcode mapped to Internal",
-			wrapped(codes.Internal, "service: statemachine: unknown opcode: 67")},
-		{"gRPC, no MVCC store mapped to Internal",
-			wrapped(codes.Internal, "service: statemachine: mvcc not configured")},
+		{"absent CompareAndDelete opcode",
+			&transport.CapabilityUnsupportedError{Message: "service: statemachine: unknown opcode: 66"}},
+		{"absent CompareAndSwap opcode",
+			&transport.CapabilityUnsupportedError{Message: "service: statemachine: unknown opcode: 67"}},
+		{"no MVCC store for transactions",
+			&transport.CapabilityUnsupportedError{Message: "service: statemachine: mvcc not configured"}},
+		{"wrapped by a transport, as a caller sees it",
+			fmt.Errorf("transport: request CompareAndSwap failed: %w",
+				&transport.CapabilityUnsupportedError{Message: "service: statemachine: unknown opcode: 67"})},
 	}
 	for _, tc := range accepted {
 		t.Run("accepts/"+tc.name, func(t *testing.T) {

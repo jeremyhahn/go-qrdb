@@ -121,6 +121,37 @@ func (e *ClosedError) Error() string {
 	return "transport: connection is closed"
 }
 
+// CapabilityUnsupportedError reports that the node serving this request was
+// not built to perform the operation — an opcode its state machine has no
+// handler for, or a subsystem it was constructed without.
+//
+// It exists so a caller can tell "this node cannot do that" from "this node
+// broke". Before go-qrdb#141 a capability refusal reached the client as a
+// generic RequestError over the embedded transport and as codes.Internal over
+// gRPC, so a healthy node declining a verb it does not implement was
+// indistinguishable from a server fault — and a client library that retries on
+// internal errors would retry something that can never succeed, the same shape
+// as go-qrdb#52.
+//
+// A consumer that wants to degrade gracefully — fall back from CompareAndSwap
+// to a transaction, or from a transaction to a native PutIfAbsent — detects it
+// with errors.As rather than by matching message text.
+//
+// Note it is distinct from the transport-level capability question answered by
+// a GuardedKVClient type assertion. That assertion reports whether the
+// TRANSPORT carries the verb; this error reports that the STATE MACHINE behind
+// it does not implement it. Both can be true at once, which is exactly the case
+// on a raft node running a non-default sm_type.
+type CapabilityUnsupportedError struct {
+	// Message is the server's account of what is missing.
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *CapabilityUnsupportedError) Error() string {
+	return "transport: unsupported capability: " + e.Message
+}
+
 // RevisionCompactedError is returned when a requested revision has
 // been compacted and is no longer available.
 type RevisionCompactedError struct {

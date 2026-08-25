@@ -643,6 +643,14 @@ func mapGRPCError(method string, err error) error {
 	switch st.Code() {
 	case codes.NotFound:
 		return &transport.KeyNotFoundError{Key: st.Message()}
+	case codes.Unimplemented:
+		// The unix transport is gRPC over a domain socket, talking to the same
+		// pkg/api/grpc server as the TCP transport, so it receives the same
+		// Unimplemented a capability refusal is mapped to (go-qrdb#141).
+		// Without this case it would fall through to a generic RequestError and
+		// a unix client would lose the graceful degradation its TCP twin gets,
+		// against the identical server-side condition.
+		return &transport.CapabilityUnsupportedError{Message: st.Message()}
 	default:
 		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err}
 	}

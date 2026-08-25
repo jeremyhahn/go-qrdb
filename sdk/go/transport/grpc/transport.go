@@ -734,6 +734,12 @@ func mapGRPCError(method string, err error) error {
 	switch st.Code() {
 	case codes.NotFound:
 		return &transport.KeyNotFoundError{Key: st.Message()}
+	case codes.Unimplemented:
+		// The node is healthy and does not implement this verb on its
+		// configured state machine. Reconstituting the typed error here is what
+		// lets a consumer degrade gracefully over the wire exactly as it can
+		// embedded, instead of matching message text (go-qrdb#141).
+		return &transport.CapabilityUnsupportedError{Message: st.Message()}
 	case codes.Unavailable:
 		return &transport.RequestError{Method: method, StatusCode: int(st.Code()), Err: err}
 	default:

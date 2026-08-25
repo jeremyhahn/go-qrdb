@@ -36,6 +36,23 @@ import "bytes"
 // which is a one-byte 0x00/0x01).
 var appErrorPrefix = []byte("\x00qrdb.apperr\x00")
 
+// capabilityMarker distinguishes the subset of application errors that mean
+// "this state machine was not built to do that" from the rest, which mean
+// "your request was understood and refused on its merits" — a unique-index
+// violation, an invalid lease TTL, a closed engine.
+//
+// The distinction has to be carried, not inferred. Both kinds arrive as the
+// same encoded message, so without a marker the only way to tell a capability
+// refusal from a constraint violation is to match on message text, and callers
+// end up doing that (go-qrdb#141). It sits AFTER appErrorPrefix rather than
+// replacing it so every existing DecodeAppError caller keeps working and keeps
+// seeing the same message.
+//
+// sm.Result.Data never crosses a node boundary — each replica decodes the
+// result its own state machine produced — so extending this encoding is
+// internal, not a wire change.
+var capabilityMarker = []byte("\x00cap\x00")
+
 // EncodeAppError encodes an application-level error message into a state-machine
 // result payload. The returned bytes are placed in sm.Result.Data with a nil
 // Go error so consensus continues to advance; the service layer decodes them
@@ -47,13 +64,40 @@ func EncodeAppError(msg string) []byte {
 	return out
 }
 
+// EncodeCapabilityError encodes an application error that specifically reports
+// an ABSENT CAPABILITY: an opcode this state machine has no handler for, or a
+// subsystem it was not constructed with. The service layer turns it into a
+// distinct typed error so a caller can tell "this node cannot do that" from
+// "this node broke", which the generic encoding cannot express.
+func EncodeCapabilityError(msg string) []byte {
+	out := make([]byte, 0, len(appErrorPrefix)+len(capabilityMarker)+len(msg))
+	out = append(out, appErrorPrefix...)
+	out = append(out, capabilityMarker...)
+	out = append(out, msg...)
+	return out
+}
+
 // DecodeAppError reports whether data carries an encoded application error and,
 // if so, returns the error message. Ordinary result payloads (including the
 // one-byte transaction success flag) do not carry the prefix and return ok
 // false.
+//
+// The capability marker is stripped, so a caller that only wants the message
+// reads the same text whichever encoder produced it.
 func DecodeAppError(data []byte) (msg string, ok bool) {
+	msg, _, ok = DecodeAppErrorKind(data)
+	return msg, ok
+}
+
+// DecodeAppErrorKind decodes an application error and additionally reports
+// whether it is a capability refusal.
+func DecodeAppErrorKind(data []byte) (msg string, capability bool, ok bool) {
 	if !bytes.HasPrefix(data, appErrorPrefix) {
-		return "", false
+		return "", false, false
 	}
-	return string(data[len(appErrorPrefix):]), true
+	body := data[len(appErrorPrefix):]
+	if bytes.HasPrefix(body, capabilityMarker) {
+		return string(body[len(capabilityMarker):]), true, true
+	}
+	return string(body), false, true
 }

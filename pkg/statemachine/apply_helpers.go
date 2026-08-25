@@ -125,5 +125,13 @@ func resolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 	// having won the race, and the caller goes on to read a key that was
 	// never written (go-qrdb#62). Every other producer in the tree already
 	// encodes through this function.
-	return sm.Result{Data: protocol.EncodeAppError(handlerErr.Error())}, false, nil
+	// EncodeCapabilityError, not the generic encoder: both branches above are
+	// specifically "this state machine was not built to do that", and carrying
+	// that distinction is what lets the service layer hand the caller a typed
+	// CapabilityUnsupportedError instead of something indistinguishable from a
+	// unique-index violation (go-qrdb#141). Every other application error in
+	// the tree — constraint violations, invalid TTLs, a closed engine — stays
+	// on EncodeAppError, because those were understood and refused on their
+	// merits.
+	return sm.Result{Data: protocol.EncodeCapabilityError(handlerErr.Error())}, false, nil
 }

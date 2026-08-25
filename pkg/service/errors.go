@@ -57,10 +57,42 @@ func (e *SMNotConfiguredError) Is(target error) bool {
 // are never misread as errors. Returns a non-nil SMNotConfiguredError only when
 // the payload carries the application-error prefix.
 func checkResultError(result sm.Result) error {
-	if msg, ok := protocol.DecodeAppError(result.Data); ok {
-		return &SMNotConfiguredError{Message: msg}
+	msg, capability, ok := protocol.DecodeAppErrorKind(result.Data)
+	if !ok {
+		return nil
 	}
-	return nil
+	if capability {
+		return &CapabilityUnsupportedError{Message: msg}
+	}
+	return &SMNotConfiguredError{Message: msg}
+}
+
+// CapabilityUnsupportedError reports that the state machine serving this
+// request was not built to perform the operation: an opcode it has no handler
+// for, or a subsystem it was constructed without.
+//
+// It is deliberately distinct from SMNotConfiguredError, which also covers
+// outcomes that were understood and refused on their merits — a unique-index
+// violation, an invalid lease TTL. Those are client errors about the REQUEST;
+// this one is about the NODE, and a caller wanting to fall back to a different
+// verb needs to tell them apart without reading message text (go-qrdb#141).
+//
+// It embeds SMNotConfiguredError's marker semantics: the entry committed and
+// changed nothing.
+type CapabilityUnsupportedError struct {
+	// Message is the error string the state machine encoded into result.Data.
+	Message string
+}
+
+// Error returns a human-readable description.
+func (e *CapabilityUnsupportedError) Error() string {
+	return "service: " + e.Message
+}
+
+// Is reports the ErrNotStored marker, for the same reason
+// SMNotConfiguredError does: the command reached consensus and stored nothing.
+func (e *CapabilityUnsupportedError) Is(target error) bool {
+	return target == ErrNotStored
 }
 
 // KeyNotFoundError is returned when a KV lookup finds no matching key.

@@ -527,14 +527,28 @@ func classifyRefusal(err error) error {
 		}
 	}
 
-	// What remains must actually name the missing capability. The state machine
-	// reports one of two things: an opcode it has no handler for, or a
-	// subsystem that is not wired.
-	msg := err.Error()
-	if !strings.Contains(msg, "not configured") && !strings.Contains(msg, "unknown opcode") {
-		return fmt.Errorf("%w does not identify a missing capability; only a refusal naming "+
-			"the absent opcode or subsystem proves this cell lacks the verb rather than "+
-			"having hit an unrelated fault", err)
+	// What remains must be a CAPABILITY refusal, asserted by type.
+	//
+	// This used to be a message-substring match, because until go-qrdb#141 a
+	// refusal had no type on any transport and arrived as codes.Internal over
+	// gRPC. It now carries transport.CapabilityUnsupportedError on both
+	// transports, so the gate asserts identity rather than prose — which also
+	// means a refusal that changes its wording no longer silently stops being
+	// recognised.
+	var unsupported *transport.CapabilityUnsupportedError
+	if !errors.As(err, &unsupported) {
+		return fmt.Errorf("%w is not a transport.CapabilityUnsupportedError; only a typed "+
+			"capability refusal proves this cell lacks the verb rather than having hit an "+
+			"unrelated fault", err)
+	}
+
+	// The message still has to say what is absent. A typed refusal carrying no
+	// account of WHICH capability is missing is not much better than an
+	// untyped one for whoever has to act on it.
+	if !strings.Contains(unsupported.Message, "not configured") &&
+		!strings.Contains(unsupported.Message, "unknown opcode") {
+		return fmt.Errorf("capability refusal %q names neither an absent opcode nor an "+
+			"unwired subsystem, so it does not say what is missing", unsupported.Message)
 	}
 	return nil
 }

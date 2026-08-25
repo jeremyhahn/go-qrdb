@@ -37,6 +37,15 @@ func mapServiceError(err error) error {
 		return nil
 	}
 
+	// Unimplemented, not Internal. The node is healthy; it simply was not
+	// built with this verb on the configured state machine. Internal means
+	// "the server broke", which makes a client library alert and retry an
+	// operation that can never succeed (go-qrdb#141, the go-qrdb#52 pattern).
+	var cue *service.CapabilityUnsupportedError
+	if errors.As(err, &cue) {
+		return status.Error(codes.Unimplemented, err.Error())
+	}
+
 	var knf *service.KeyNotFoundError
 	if errors.As(err, &knf) {
 		return status.Error(codes.NotFound, err.Error())
