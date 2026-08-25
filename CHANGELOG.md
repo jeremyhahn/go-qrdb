@@ -11,6 +11,133 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.12.0-alpha] - 2026-08-25
+
+The guarded-verb plane: the conditional writes that arbitrate a cross-process
+race are now reachable on every engine, in both deployment modes, and over the
+remote transports — not only through the embedded server. A 12-cell conformance
+matrix is the gate that says so, and it found two real defects on its way in.
+
+### Added
+
+- **`CompareAndSwap` on the transport boundary** (#121). `service.KVServicer`
+  has carried all three guarded verbs since #56, but only `PutIfAbsent` and
+  `CompareAndDelete` reached `transport.GuardedKVClient` in #119. A consumer
+  holding the capability could arbitrate a create and a release and still had to
+  read-then-write to *edit* — reopening the window the capability exists to
+  close, over a network round trip on a remote transport. Implemented on the
+  embedded and gRPC transports; QUIC, unix, REST and MCP are tracked as
+  #124–#127.
+- **The guarded verbs over gRPC** (#119, #123): `PutIfAbsent` and
+  `CompareAndDelete` as RPCs, delegating to the service layer's atomic
+  primitives with no client-side emulation.
+- **`transport.GuardedKVClient`** (#119) — a capability sub-interface detected
+  by type assertion, so a transport that cannot honour the verbs does not
+  promise them.
+- **`CompareAndSwap` and transactions on the file KV engine** (#117, #120), at
+  proven parity with the MVCC engine.
+- **A 12-cell conformance matrix** (#121): `{file, memory, pebble}` ×
+  `{standalone, raft}` × `{embedded, remote-gRPC}`, asserting identical guarded
+  semantics on every cell. It runs in-process in the ordinary test pass rather
+  than forking the daemon, so a regression turns something red the same day.
+- **`kvstore.GuardedBatchKVStore`** (#21) — a capability sub-interface for
+  applying several writes atomically, conditional on one key still holding an
+  expected value. Detected by type assertion, like `AtomicKVStore`; a store
+  without a transaction plane does not advertise it.
+- **A typed capability refusal** (#141). `transport.CapabilityUnsupportedError`,
+  produced on every transport, so a consumer can detect "this node was not built
+  to do that" with `errors.As` and degrade gracefully instead of parsing an
+  error string.
+
+### Changed
+
+- **A capability refusal answers `Unimplemented` over gRPC, not `Internal`**
+  (#141). `Internal` means the server broke; a client library alerts on it and
+  retries an operation that can never succeed. REST answers 501 for the same
+  condition, as it did before. **Consumers keying on `codes.Internal` for this
+  condition must update.**
+- **Registry capability descriptors now describe what the state machines can
+  actually do** (#135). The `memory`, `standard`, `concurrent`, `fast`, `disk`
+  and `highperf` state machines declared `mvcc`, `transaction`, `lease`, `index`
+  and `timeseries` and could perform none of them — every registry factory
+  constructs with zero options, so those subsystems are nil. Those flags are
+  removed, and `regular` gains the `batch` capability it always had.
+  **`sdk.SMDescriptor` consumers will see different `Capabilities` values.**
+  Nothing in the database gates an operation on these flags; they are
+  informational, and they were misinforming.
+
+### Fixed
+
+- **An unimplemented opcode no longer wedges the raft shard** (#129).
+  `KVStateMachine.Update` returned `InvalidOpcodeError` to Raft, which treats a
+  non-nil `Update` error as a fatal apply failure and trips the shard's circuit
+  breaker. Measured: one ordinary authorized `CompareAndDelete` — an opcode no
+  state machine in the package implements — permanently removed the shard from
+  service. Every later proposal failed, including plain `Put`, and a
+  linearizable read never returned at all. Reachable through the SDK's own
+  guarded verbs with nothing more than `kv:delete`. Such an operation is now
+  refused with a typed error and the shard keeps serving.
+- **A batch naming an unimplemented operation is refused whole** (#129). The
+  batch handlers applied operations in turn and only refused on *reaching* the
+  unknown one, committing the earlier writes and their watch notifications while
+  reporting the batch refused. Opcodes are now validated before anything is
+  applied.
+- **Transactions are served over the remote transports in standalone mode**
+  (#121). `sdk/go/node` composed the transaction service only on the raft path,
+  so `ExecuteTransaction` worked over the embedded transport and returned
+  "transaction service is not configured" over gRPC on the same node — the
+  engine/mode/transport non-uniformity #117 rules out.
+- **A custodian enrolment is written as one guarded transaction** (#21). Its
+  three keys — the primary record, the tenant index, and the username-index
+  commit — are applied atomically, conditional on the registration still owning
+  the username claim. Claims expire, so a registration that stalled past the TTL
+  could previously lose its claim between an ownership check and its write, land
+  that write on top of the winner's, and leave the winner's published index
+  pointing at the loser's record: two callers returning success with different
+  sealed envelopes, one record surviving, nothing reporting it.
+- **A claim is released with a compare-and-delete** (#21), so seal-failure
+  cleanup can no longer remove a claim another registration has legitimately
+  taken over in the meantime.
+- **Shamir share and secret custody moved into protected memory** (#76).
+- **A data race in the QUIC e2e index-flags test harness** (#131), which could
+  also make its polarity assertion pass for the wrong reason.
+
+### Changed — BREAKING (sdk/go)
+
+- **`IndexScan` expresses an open bound** (#115), so a one-sided range returns
+  its matches. A consumer building index scans must update its bound
+  construction.
+
+### Scope of the guarded plane in this release
+
+Stated explicitly, because "identical on every cell" has a boundary:
+
+- **Standalone** — all three backends serve the full guarded plane on both the
+  embedded and gRPC transports.
+- **Raft, default `sm_type`** (`""`, `pebble`, `mvcc`) — full guarded plane.
+- **Raft, non-default `sm_type`** (`memory`, `standard`, `concurrent`, `fast`,
+  `disk`, `highperf`) — `PutIfAbsent` works and is genuinely atomic, being a
+  native KV opcode. `CompareAndSwap`, `CompareAndDelete` and transactions
+  **refuse with a typed error and the node keeps serving**. Those state machines
+  never had a working MVCC store, and they are refused outright when the seal
+  barrier is enabled. Giving them one is tracked as #136; when it lands, those
+  matrix cells flip from refusal to full passage.
+- **The file engine refuses `create_revision`/`mod_revision` transaction
+  compares.** This is designed behaviour, not a limitation to be worked around:
+  the engine keeps no MVCC revisions, so a revision compare would read 0, two
+  concurrent writers would both compare equal and both commit, and one update
+  would be lost with no signal. The native `PutIfAbsent` verb works there, so no
+  capability is unreachable — only the etcd revision idiom.
+- **Remote transports** — embedded and gRPC. QUIC, unix, REST and MCP do not
+  carry the guarded verbs yet (#124–#127); their `GuardedKVClient` assertion
+  correctly reports false until they do.
+
+### Internal
+
+- CI now runs the `sdk/go` module's tests and requires them in the gate (#132).
+  They had never been executed by CI, so the entire guarded-verb transport plane
+  this release is built on had merged on green runs that never exercised it.
+
 ## [0.11.0-alpha] - 2026-08-24
 
 ### Added
