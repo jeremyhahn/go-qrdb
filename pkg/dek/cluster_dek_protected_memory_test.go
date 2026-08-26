@@ -13,8 +13,11 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -398,4 +401,302 @@ func TestClusterDEKEncapsulation(t *testing.T) {
 		}
 		assert.Equal(t, before, copyLiveDEK(t, mgr))
 	})
+}
+
+// withCurrentDEK holds the purge coordination for the WHOLE callback, not just
+// the slice-header read.
+//
+// That is the entire point of go-qrdb#74. Before it, Bytes() returned a slice
+// the caller used after the call returned with no lock held, so a memguard
+// failure anywhere in the process could unmap those pages while WrapKey was
+// still reading them. The borrow is observable from inside fn: a purge-class
+// operation cannot take purgeMu while the callback runs.
+//
+// Asserted with TryLock rather than by attempting a real allocation, because a
+// real one would not fail — it would HANG, and a hung test reports no name and
+// no diagnosis.
+func TestClusterDEKManager_WithCurrentDEK_HoldsTheBorrowAcrossTheCallback(t *testing.T) {
+	ctx := context.Background()
+	mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = mgr.Close() }()
+	require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+
+	// WrapKey runs its AES-GCM inside withCurrentDEK's borrow.
+	wrapped, err := mgr.WrapKey([]byte("tenant-key-material"))
+	require.NoError(t, err)
+	require.NotEmpty(t, wrapped)
+
+	unwrapped, err := mgr.UnwrapKey(wrapped)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("tenant-key-material"), unwrapped)
+
+	// And the borrow really is held: a purge-class allocation started while the
+	// callback runs must not complete until the callback has returned.
+	//
+	// Asserted by ORDER, not by a timeout. The first version of this test
+	// waited 150ms and concluded "still blocked, therefore coordinated", which
+	// reports a false pass on any machine slow enough that the allocation had
+	// not finished yet regardless (found in review of go-qrdb#74).
+	//
+	// The probe deliberately does NOT allocate protected memory to detect the
+	// parked writer: doing that from inside the borrow is itself the
+	// self-deadlock this whole package exists to prevent, which is what the
+	// first attempt at this helper did. Ordering alone is enough, and the
+	// mutation check proves it: with the coordination removed, the allocation
+	// completes first and this fails.
+	var order atomic.Int32
+	var borrowExit, allocExit int32
+	allocDone := make(chan struct{})
+	started := make(chan struct{})
+
+	require.NoError(t, mgr.withCurrentDEK("test", func(dek []byte) error {
+		require.Len(t, dek, 32)
+		go func() {
+			defer close(allocDone)
+			close(started)
+			// A purge-class operation from an unrelated component: this is the
+			// real hazard, since memguard's failure path purges process-wide.
+			if b, berr := secure.NewBuffer(16); berr == nil {
+				b.Destroy()
+			}
+			allocExit = order.Add(1)
+		}()
+		<-started
+		// Give the allocator every chance to run to completion if nothing is
+		// stopping it. Yielding rather than sleeping keeps this a scheduling
+		// concession, not a duration the assertion depends on.
+		for i := 0; i < 1000; i++ {
+			runtime.Gosched()
+		}
+		borrowExit = order.Add(1)
+		return nil
+	}))
+
+	<-allocDone
+	assert.Equal(t, int32(1), borrowExit, "the borrow must finish first")
+	assert.Equal(t, int32(2), allocExit, "the allocation must complete only after the borrow released")
+}
+
+// A destroyed DEK still reports NotInitializedError, not the borrow's own
+// NilBufferError.
+//
+// The translation matters because callers switch on this error: leaking
+// *secure.NilBufferError through a public path would change the contract for
+// every consumer that distinguishes "never initialized" from "internal fault".
+func TestClusterDEKManager_WithCurrentDEK_TranslatesADestroyedBuffer(t *testing.T) {
+	ctx := context.Background()
+	mgr, err := NewClusterDEKManager(newMockEncryptionBarrier(), discardLogger())
+	require.NoError(t, err)
+	require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+
+	// Destroy the DEK behind the manager's back, leaving it "initialized" with
+	// an unusable buffer — the state Close would otherwise reach.
+	livePlaintext(mgr).Destroy()
+
+	err = mgr.withCurrentDEK("test", func([]byte) error {
+		t.Error("the callback must not run against a destroyed buffer")
+		return nil
+	})
+	var notInit *NotInitializedError
+	require.ErrorAs(t, err, &notInit,
+		"a destroyed DEK must report NotInitializedError, not the borrow's NilBufferError")
+}
+
+// aliasCapturingBarrier records the slice header it was handed, so a test can
+// prove the plaintext the manager encrypted WAS its mlocked buffer rather than
+// a heap copy of it.
+//
+// Retaining the slice past the call breaks the borrow contract, which is why
+// only a test may do it: the comparison is of element addresses, made while
+// the buffer is still live, and the contents are never read.
+type aliasCapturingBarrier struct {
+	mu   sync.Mutex
+	seen [][]byte
+}
+
+func (b *aliasCapturingBarrier) Encrypt(plaintext []byte) ([]byte, error) {
+	b.mu.Lock()
+	b.seen = append(b.seen, plaintext)
+	b.mu.Unlock()
+
+	out := make([]byte, len(plaintext)+4)
+	copy(out, []byte("ENC:"))
+	copy(out[4:], plaintext)
+	return out, nil
+}
+
+func (b *aliasCapturingBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) < 4 {
+		return nil, &CiphertextTooShortError{Op: "aliasCapturingBarrier.Decrypt"}
+	}
+	return append([]byte(nil), ciphertext[4:]...), nil
+}
+
+func (b *aliasCapturingBarrier) IsSealed() bool { return false }
+
+// assertEncryptedFromProtectedMemory checks that call number idx to the
+// barrier was handed the manager's live protected buffer itself.
+func assertEncryptedFromProtectedMemory(t *testing.T, barrier *aliasCapturingBarrier, mgr *ClusterDEKManager, idx int, op string) {
+	t.Helper()
+
+	barrier.mu.Lock()
+	require.Greater(t, len(barrier.seen), idx, "%s did not reach the barrier", op)
+	got := barrier.seen[idx]
+	barrier.mu.Unlock()
+
+	mgr.mu.RLock()
+	require.NotNil(t, mgr.dekPlaintext)
+	live := mgr.dekPlaintext.Bytes()
+	mgr.mu.RUnlock()
+
+	require.NotEmpty(t, got, "%s handed the barrier an empty plaintext", op)
+	require.NotEmpty(t, live, "%s left no live DEK to compare against", op)
+	require.Equal(t, len(live), len(got))
+
+	assert.True(t, &got[0] == &live[0],
+		"%s handed the barrier a COPY of the cluster DEK. The plaintext must be "+
+			"the mlocked buffer itself: a copy lives on the swappable, "+
+			"core-dumpable Go heap, where secure.Wipe cannot reach compiler or "+
+			"runtime copies (go-qrdb#74, #145)", op)
+}
+
+// The cluster DEK reaches the barrier as the mlocked buffer, never as a heap
+// copy of it.
+//
+// This pins behaviour Initialize and Rotate already have; it is here because
+// that behaviour was nearly traded away and nothing would have noticed. A
+// revision of PR #82 answered a deadlock finding by materialising `plain :=
+// make([]byte, len(dek))` and encrypting that — swapping a liveness fault for
+// a live cluster KEK on the swappable, core-dumpable Go heap, which is the
+// wrong direction for a key-encryption key. Every existing test passed.
+//
+// Mutation-verified 2/2: reinstating the heap copy in either Initialize or
+// Rotate fails this with "handed the barrier a COPY of the cluster DEK",
+// naming the site.
+func TestClusterDEKManager_EncryptsFromProtectedMemory(t *testing.T) {
+	ctx := context.Background()
+	barrier := &aliasCapturingBarrier{}
+	mgr, err := NewClusterDEKManager(barrier, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = mgr.Close() }()
+
+	require.NoError(t, mgr.Initialize(ctx, AlgorithmAES256GCM, 32))
+	assertEncryptedFromProtectedMemory(t, barrier, mgr, 0, "Initialize")
+
+	// Rotate installs a fresh buffer, so its call must alias the NEW one —
+	// checked straight after, while it is still the live DEK.
+	require.NoError(t, mgr.Rotate(ctx))
+	assertEncryptedFromProtectedMemory(t, barrier, mgr, 1, "Rotate")
+}
+
+// protectedAllocBarrier is a seal.EncryptionBarrier whose Encrypt allocates
+// PROTECTED memory — a purge-class operation.
+//
+// Nothing in the seal.EncryptionBarrier contract forbids this, so it is a
+// legal implementation a caller may inject, and NewClusterDEKManager accepts
+// any implementation. That makes it the contract the manager must actually
+// hold up against, rather than the concrete StorageBarrier that happens to be
+// wired in production (go-qrdb#74).
+type protectedAllocBarrier struct{ calls atomic.Int32 }
+
+func (b *protectedAllocBarrier) Encrypt(plaintext []byte) ([]byte, error) {
+	b.calls.Add(1)
+	// The offending act: purge-class work inside the callee. If the caller
+	// held a protected-memory borrow across this, purgeMu would be taken
+	// exclusively on a goroutine already holding it shared, and this would
+	// never return.
+	scratch, err := secure.NewBuffer(16)
+	if err != nil {
+		return nil, err
+	}
+	defer scratch.Destroy()
+
+	out := make([]byte, len(plaintext)+4)
+	copy(out, []byte("ENC:"))
+	copy(out[4:], plaintext)
+	return out, nil
+}
+
+func (b *protectedAllocBarrier) Decrypt(ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) < 4 {
+		return nil, &CiphertextTooShortError{Op: "protectedAllocBarrier.Decrypt"}
+	}
+	return append([]byte(nil), ciphertext[4:]...), nil
+}
+
+func (b *protectedAllocBarrier) IsSealed() bool { return false }
+
+// A barrier that allocates protected memory must not deadlock Initialize or
+// Rotate.
+//
+// The other half of the vice, and the reason go-qrdb#145 exists. A revision of
+// PR #82 wrapped m.barrier.Encrypt in a secure.Buffer borrow to close the
+// purge race. Traced against the concrete StorageBarrier that was safe; traced
+// against the INTERFACE the constructor actually accepts it was not, and any
+// conforming implementation like the one above hangs the daemon at boot.
+//
+// Between them these two tests fence both escapes: neither a heap copy nor a
+// borrow held across the barrier can be reintroduced without turning something
+// red. What remains unfenced — the purge race on the unborrowed read — cannot
+// be closed from this side of the interface, which is what #145 asks the owner
+// to rule on.
+//
+// The work runs on a goroutine with a bounded wait because the failure mode is
+// a permanent hang, not an error: without the bound this test would take the
+// whole package down with it and report nothing useful.
+func TestClusterDEKManager_ToleratesABarrierThatAllocatesProtectedMemory(t *testing.T) {
+	barrier := &protectedAllocBarrier{}
+	mgr, err := NewClusterDEKManager(barrier, discardLogger())
+	require.NoError(t, err)
+
+	// A step that deadlocks leaves a goroutine holding the manager's state
+	// lock forever, so Close would block on it too — and the whole package
+	// would then die on ITS timeout with no named cause, throwing away the
+	// diagnostic below. t.Fatalf ends only its own goroutine; it cannot
+	// release a lock some other goroutine is wedged on. So the cleanup is
+	// skipped once a step has hung: there is nothing left to release, and the
+	// point of the bounded wait is that the failure arrives WITH its reason.
+	//
+	// Measured: with the borrow reinstated across m.barrier.Encrypt, the
+	// unconditional Close turned this into "panic: test timed out after 1m0s"
+	// and the "did not return" line never appeared.
+	var hung atomic.Bool
+	defer func() {
+		if hung.Load() {
+			return
+		}
+		_ = mgr.Close()
+	}()
+
+	for _, step := range []struct {
+		name string
+		run  func() error
+	}{
+		{"Initialize", func() error { return mgr.Initialize(context.Background(), AlgorithmAES256GCM, 32) }},
+		{"Rotate", func() error { return mgr.Rotate(context.Background()) }},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- step.run() }()
+
+			select {
+			case runErr := <-done:
+				require.NoError(t, runErr)
+			case <-time.After(20 * time.Second):
+				hung.Store(true)
+				t.Fatalf("%s did not return: the barrier's protected-memory "+
+					"allocation deadlocked against a borrow held across it", step.name)
+			}
+		})
+	}
+
+	if hung.Load() {
+		return
+	}
+
+	if got := barrier.calls.Load(); got < 2 {
+		t.Errorf("barrier.Encrypt called %d times, want at least 2 "+
+			"(Initialize and Rotate) — the test did not exercise the path", got)
+	}
 }

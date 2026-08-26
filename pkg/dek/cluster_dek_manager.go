@@ -11,6 +11,7 @@ package dek
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -412,16 +413,27 @@ func (m *ClusterDEKManager) withCurrentDEK(op string, fn func(dek []byte) error)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Bytes reports nil for both an absent and an already-destroyed buffer.
-	plaintext := m.dekPlaintext.Bytes()
-	if plaintext == nil {
-		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "DEK plaintext"}
-	}
-
-	// Update metrics.
+	// The borrow spans fn, which is the point: Bytes() covered only the
+	// slice-header read, so a memguard failure elsewhere in the process could
+	// unmap these pages while fn was still reading them (go-qrdb#74).
+	//
+	// Safe to hold across fn because both callers are in this file and neither
+	// allocates protected memory — WrapKey and UnwrapKey run AES-GCM over
+	// ordinary heap slices. fn is unexported and must stay that way: exporting
+	// it would hand an arbitrary caller a callback that self-deadlocks the
+	// moment it constructs a secure.Buffer or secure.Secret.
+	//
+	// WithBytes reports a nil or destroyed buffer as *NilBufferError; this
+	// path's contract is NotInitializedError, so it is translated rather than
+	// propagated and the caller sees no change.
 	m.metrics.dekAccesses.Add(1)
 
-	return fn(plaintext)
+	err := m.dekPlaintext.WithBytes(fn)
+	var nilBuf *secure.NilBufferError
+	if errors.As(err, &nilBuf) {
+		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "DEK plaintext"}
+	}
+	return err
 }
 
 // GetDEKVersion returns the current DEK version number, or 0 when the cluster
