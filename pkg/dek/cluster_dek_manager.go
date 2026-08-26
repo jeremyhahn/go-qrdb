@@ -426,9 +426,18 @@ func (m *ClusterDEKManager) withCurrentDEK(op string, fn func(dek []byte) error)
 	// WithBytes reports a nil or destroyed buffer as *NilBufferError; this
 	// path's contract is NotInitializedError, so it is translated rather than
 	// propagated and the caller sees no change.
-	m.metrics.dekAccesses.Add(1)
-
-	err := m.dekPlaintext.WithBytes(fn)
+	//
+	// The access is counted INSIDE the borrow, so dek_accesses means what its
+	// name says: the DEK was actually read. Counting before the borrow — as
+	// this did between #82 and #149 — also counted every refusal against an
+	// uninitialized or destroyed buffer, where the callback never ran and no
+	// key was touched. A counter that silently means "attempts" while being
+	// published as "accesses" is the kind of drift that makes a dashboard lie
+	// later.
+	err := m.dekPlaintext.WithBytes(func(dek []byte) error {
+		m.metrics.dekAccesses.Add(1)
+		return fn(dek)
+	})
 	var nilBuf *secure.NilBufferError
 	if errors.As(err, &nilBuf) {
 		return &NotInitializedError{Op: "ClusterDEKManager." + op, Resource: "DEK plaintext"}
