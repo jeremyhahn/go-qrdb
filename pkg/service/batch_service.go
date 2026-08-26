@@ -216,6 +216,20 @@ type ImportError struct {
 type BatchService struct {
 	host    Host
 	shardID uint64
+
+	// expandedBudget is the cumulative decompressed-bytes budget a single
+	// archive import may consume. Zero means maxImportExpandedBytes, so the
+	// zero value of BatchService carries the production limit and a caller
+	// that builds the struct directly is not silently unprotected.
+	//
+	// It is a field rather than a constant read at the point of use so that
+	// tests can prove the refusal without allocating the production budget.
+	// The decision under test -- expansionLimitedReader refusing once the
+	// budget is exhausted -- is identical at any budget, but asserting it at
+	// 400 MB means materialising 400 MB through io.ReadAll under -race, which
+	// measured a 6.9 GB peak RSS and OOM-killed pkg/service on CI three times
+	// in one day (go-qrdb#148).
+	expandedBudget int64
 }
 
 // NewBatchService creates a new BatchServicer that operates on the specified
@@ -226,6 +240,16 @@ func NewBatchService(host Host, shardID uint64) BatchServicer {
 		host:    host,
 		shardID: shardID,
 	}
+}
+
+// importExpandedBudget reports the archive expansion budget in force for this
+// service, resolving a zero or negative value to the production limit so the
+// bound can never be accidentally disabled.
+func (s *BatchService) importExpandedBudget() int64 {
+	if s.expandedBudget <= 0 {
+		return maxImportExpandedBytes
+	}
+	return s.expandedBudget
 }
 
 // Execute applies the given operations atomically through Raft consensus.
@@ -552,7 +576,7 @@ func (s *BatchService) Import(ctx context.Context, file io.Reader, opts ImportOp
 	case "yaml":
 		records, err = parseYAML(data)
 	case "archive", "zip", "tar", "tar.gz":
-		records, err = parseArchive(data, opts.SkipHeader)
+		records, err = parseArchive(data, opts.SkipHeader, s.importExpandedBudget())
 	default:
 		return nil, &ImportInvalidFormatError{Format: resolvedFormat}
 	}
@@ -757,12 +781,22 @@ func convertJSONRecords(objs []map[string]interface{}) []map[string]string {
 type importExpansionLimiter struct {
 	remainingBytes int64
 	entries        int
+
+	// budget is the value remainingBytes started from. Kept so a refusal can
+	// report the limit actually applied rather than the compiled-in constant:
+	// under a test budget the two differ, and an error naming the wrong one
+	// would be a false statement about why the import was refused.
+	budget int64
 }
 
-// newImportExpansionLimiter returns a limiter with a fresh
-// maxImportExpandedBytes budget for a single archive-parse attempt.
-func newImportExpansionLimiter() *importExpansionLimiter {
-	return &importExpansionLimiter{remainingBytes: maxImportExpandedBytes}
+// newImportExpansionLimiter returns a limiter with a fresh budget for a single
+// archive-parse attempt. A non-positive budget resolves to
+// maxImportExpandedBytes so no caller can accidentally disable the bound.
+func newImportExpansionLimiter(budget int64) *importExpansionLimiter {
+	if budget <= 0 {
+		budget = maxImportExpandedBytes
+	}
+	return &importExpansionLimiter{remainingBytes: budget, budget: budget}
 }
 
 // checkEntry increments the entry counter and returns
@@ -794,7 +828,7 @@ type expansionLimitedReader struct {
 // Read implements io.Reader.
 func (er *expansionLimitedReader) Read(p []byte) (int, error) {
 	if er.limiter.remainingBytes <= 0 {
-		return 0, &ImportArchiveExpandedTooLargeError{Max: maxImportExpandedBytes}
+		return 0, &ImportArchiveExpandedTooLargeError{Max: int(er.limiter.budget)}
 	}
 	if int64(len(p)) > er.limiter.remainingBytes {
 		p = p[:er.limiter.remainingBytes]
@@ -819,23 +853,23 @@ func isImportLimitError(err error) bool {
 
 // parseArchive extracts and parses files from zip, tar, or tar.gz archives.
 // Combines all CSV/JSON files found in the archive.
-func parseArchive(data []byte, skipHeader bool) ([]map[string]string, error) {
+func parseArchive(data []byte, skipHeader bool, budget int64) ([]map[string]string, error) {
 	// Try zip first.
-	if records, err := parseZip(data, skipHeader); err == nil {
+	if records, err := parseZip(data, skipHeader, budget); err == nil {
 		return records, nil
 	} else if isImportLimitError(err) {
 		return nil, err
 	}
 
 	// Try tar.gz.
-	if records, err := parseTarGz(data, skipHeader); err == nil {
+	if records, err := parseTarGz(data, skipHeader, budget); err == nil {
 		return records, nil
 	} else if isImportLimitError(err) {
 		return nil, err
 	}
 
 	// Try plain tar.
-	if records, err := parseTar(bytes.NewReader(data), skipHeader); err == nil {
+	if records, err := parseTar(bytes.NewReader(data), skipHeader, budget); err == nil {
 		return records, nil
 	} else if isImportLimitError(err) {
 		return nil, err
@@ -847,13 +881,13 @@ func parseArchive(data []byte, skipHeader bool) ([]map[string]string, error) {
 // parseZip extracts and parses files from a zip archive. Decompressed
 // member bytes are bounded by a shared importExpansionLimiter so a
 // malicious zip cannot expand into an unbounded amount of memory.
-func parseZip(data []byte, skipHeader bool) ([]map[string]string, error) {
+func parseZip(data []byte, skipHeader bool, budget int64) ([]map[string]string, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, err
 	}
 
-	limiter := newImportExpansionLimiter()
+	limiter := newImportExpansionLimiter(budget)
 
 	var allRecords []map[string]string
 	for _, f := range reader.File {
@@ -890,22 +924,22 @@ func parseZip(data []byte, skipHeader bool) ([]map[string]string, error) {
 }
 
 // parseTarGz extracts and parses files from a gzipped tar archive.
-func parseTarGz(data []byte, skipHeader bool) ([]map[string]string, error) {
+func parseTarGz(data []byte, skipHeader bool, budget int64) ([]map[string]string, error) {
 	gzReader, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = gzReader.Close() }()
 
-	return parseTar(gzReader, skipHeader)
+	return parseTar(gzReader, skipHeader, budget)
 }
 
 // parseTar extracts and parses files from a tar archive. Member bytes are
 // bounded by a shared importExpansionLimiter so a malicious tar (or
 // gzipped tar) cannot expand into an unbounded amount of memory.
-func parseTar(r io.Reader, skipHeader bool) ([]map[string]string, error) {
+func parseTar(r io.Reader, skipHeader bool, budget int64) ([]map[string]string, error) {
 	tarReader := tar.NewReader(r)
-	limiter := newImportExpansionLimiter()
+	limiter := newImportExpansionLimiter(budget)
 
 	var allRecords []map[string]string
 	for {

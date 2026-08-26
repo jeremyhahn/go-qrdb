@@ -219,13 +219,64 @@ func TestBatchService_Import_ValueTooLarge_Transactional(t *testing.T) {
 // Import - Archive expansion (zip/tar bomb) limits
 // ---------------------------------------------------------------------------
 
+// testExpandedBudget is the expansion budget the two archive-bomb tests run
+// under. It is deliberately tiny.
+//
+// The decision under test is expansionLimitedReader refusing once the shared
+// budget is exhausted, and that decision is identical at any budget -- but
+// asserting it at the production 400 MB means parseTar/parseZip materialising
+// 400 MB through io.ReadAll, whose growth doubling peaks higher still, all
+// under -race. Measured on one box, these two tests alone: 6.9 GB peak RSS and
+// 41.0s before, 0.6 GB and 1.3s after. That 6.9 GB is what OOM-killed
+// pkg/service on CI three times in one day (go-qrdb#148, runs 6793 and 6862
+// twice), each time taking main red and costing a re-run of a ~35 minute suite.
+//
+// The production default is NOT changed by this, and
+// TestBatchService_ImportExpandedBudget_DefaultsToProductionLimit fails if it
+// ever is.
+const testExpandedBudget = 1 << 20 // 1 MB
+
+// newBudgetedBatchService returns a BatchService whose archive expansion
+// budget is testExpandedBudget rather than the production limit.
+//
+// It builds the struct directly rather than going through NewBatchService,
+// because the budget is deliberately not settable through the exported
+// constructor: nothing in production should be able to lower it.
+func newBudgetedBatchService() *BatchService {
+	return &BatchService{host: &mockHost{}, shardID: 1, expandedBudget: testExpandedBudget}
+}
+
+// The archive expansion budget resolves to the production limit unless a test
+// overrides it.
+//
+// This is the guard on the seam introduced for the two tests below. The whole
+// point of making the budget a field is that the shipped default is unchanged,
+// and a claim like that is worth nothing unless something fails when it stops
+// being true. It covers the exported constructor, the zero value (so a caller
+// building BatchService directly is not silently unprotected) and a negative
+// value (so the bound cannot be disabled by setting it to -1).
+func TestBatchService_ImportExpandedBudget_DefaultsToProductionLimit(t *testing.T) {
+	if got := NewBatchService(&mockHost{}, 1).(*BatchService).importExpandedBudget(); got != maxImportExpandedBytes {
+		t.Errorf("NewBatchService budget = %d, want the production %d", got, maxImportExpandedBytes)
+	}
+	if got := (&BatchService{}).importExpandedBudget(); got != maxImportExpandedBytes {
+		t.Errorf("zero-value BatchService budget = %d, want the production %d", got, maxImportExpandedBytes)
+	}
+	if got := (&BatchService{expandedBudget: -1}).importExpandedBudget(); got != maxImportExpandedBytes {
+		t.Errorf("negative budget = %d, want the production %d", got, maxImportExpandedBytes)
+	}
+	if l := newImportExpansionLimiter(0); l.budget != maxImportExpandedBytes {
+		t.Errorf("newImportExpansionLimiter(0) budget = %d, want the production %d", l.budget, maxImportExpandedBytes)
+	}
+}
+
 // TestBatchService_Import_Zip_ExpandedTooLarge builds a highly-compressible
-// zip member (all zero bytes) whose declared/actual decompressed size
-// exceeds maxImportExpandedBytes, simulating a zip bomb. The bounded reader
-// must stop extraction and return a typed error instead of allocating the
-// full expanded content.
+// zip member (all zero bytes) whose decompressed size exceeds the expansion
+// budget in force, simulating a zip bomb. The bounded reader must stop
+// extraction and return a typed error instead of allocating the full expanded
+// content.
 func TestBatchService_Import_Zip_ExpandedTooLarge(t *testing.T) {
-	svc := NewBatchService(&mockHost{}, 1)
+	svc := newBudgetedBatchService()
 
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -237,9 +288,9 @@ func TestBatchService_Import_Zip_ExpandedTooLarge(t *testing.T) {
 		t.Fatalf("failed to create zip entry: %v", err)
 	}
 	// Write more than the expansion budget of highly-compressible bytes.
-	chunk := bytes.Repeat([]byte{0}, 1<<20) // 1 MB of zeros per write.
+	chunk := bytes.Repeat([]byte{0}, 64<<10) // 64 KB of zeros per write.
 	written := 0
-	for written <= maxImportExpandedBytes {
+	for written <= testExpandedBudget {
 		if _, werr := fw.Write(chunk); werr != nil {
 			t.Fatalf("failed writing zip content: %v", werr)
 		}
@@ -259,21 +310,21 @@ func TestBatchService_Import_Zip_ExpandedTooLarge(t *testing.T) {
 	if !errors.As(err, &iae) {
 		t.Fatalf("expected *ImportArchiveExpandedTooLargeError, got %T: %v", err, err)
 	}
-	if iae.Max != maxImportExpandedBytes {
-		t.Fatalf("expected Max=%d, got %d", maxImportExpandedBytes, iae.Max)
+	if iae.Max != testExpandedBudget {
+		t.Fatalf("expected Max=%d (the budget actually applied), got %d", testExpandedBudget, iae.Max)
 	}
 }
 
 // TestBatchService_Import_TarGz_ExpandedTooLarge is the tar.gz analogue of
 // TestBatchService_Import_Zip_ExpandedTooLarge.
 func TestBatchService_Import_TarGz_ExpandedTooLarge(t *testing.T) {
-	svc := NewBatchService(&mockHost{}, 1)
+	svc := newBudgetedBatchService()
 
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
-	size := int64(maxImportExpandedBytes) + (1 << 20)
+	size := int64(testExpandedBudget) + (64 << 10)
 	hdr := &tar.Header{
 		Name: "bomb.csv",
 		Mode: 0600,
@@ -282,7 +333,7 @@ func TestBatchService_Import_TarGz_ExpandedTooLarge(t *testing.T) {
 	if err := tw.WriteHeader(hdr); err != nil {
 		t.Fatalf("failed to write tar header: %v", err)
 	}
-	chunk := bytes.Repeat([]byte{0}, 1<<20)
+	chunk := bytes.Repeat([]byte{0}, 64<<10)
 	var written int64
 	for written < size {
 		n := int64(len(chunk))

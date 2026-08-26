@@ -86,7 +86,7 @@ func TestParseZip_ValidCSVFile(t *testing.T) {
 		t.Fatalf("zip close: %v", err)
 	}
 
-	records, err := parseZip(buf.Bytes(), true)
+	records, err := parseZip(buf.Bytes(), true, maxImportExpandedBytes)
 	if err != nil {
 		t.Fatalf("parseZip: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestParseZip_WithDirectory(t *testing.T) {
 		t.Fatalf("zip close: %v", err)
 	}
 
-	records, err := parseZip(buf.Bytes(), false)
+	records, err := parseZip(buf.Bytes(), false, maxImportExpandedBytes)
 	if err != nil {
 		t.Fatalf("parseZip: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestParseZip_WithDirectory(t *testing.T) {
 }
 
 func TestParseZip_InvalidData(t *testing.T) {
-	_, err := parseZip([]byte("not a zip"), false)
+	_, err := parseZip([]byte("not a zip"), false, maxImportExpandedBytes)
 	if err == nil {
 		t.Fatal("expected error for invalid zip, got nil")
 	}
@@ -157,7 +157,7 @@ func TestParseTar_WithCSVFile(t *testing.T) {
 		t.Fatalf("tar close: %v", err)
 	}
 
-	records, err := parseTar(bytes.NewReader(buf.Bytes()), true)
+	records, err := parseTar(bytes.NewReader(buf.Bytes()), true, maxImportExpandedBytes)
 	if err != nil {
 		t.Fatalf("parseTar: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestParseTar_SkipsNonRegularFiles(t *testing.T) {
 		t.Fatalf("tar close: %v", err)
 	}
 
-	records, err := parseTar(bytes.NewReader(buf.Bytes()), false)
+	records, err := parseTar(bytes.NewReader(buf.Bytes()), false, maxImportExpandedBytes)
 	if err != nil {
 		t.Fatalf("parseTar: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestParseArchive_TarGz(t *testing.T) {
 		t.Fatalf("gzip close: %v", err)
 	}
 
-	records, err := parseArchive(gzBuf.Bytes(), false)
+	records, err := parseArchive(gzBuf.Bytes(), false, maxImportExpandedBytes)
 	if err != nil {
 		t.Fatalf("parseArchive tar.gz: %v", err)
 	}
