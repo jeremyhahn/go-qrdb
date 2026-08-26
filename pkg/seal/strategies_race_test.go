@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
@@ -152,7 +153,9 @@ func TestStrategiesMap_ConcurrentStatusAndChangePassword_NoRace(t *testing.T) {
 // Status() polling -- the sealed-state flag and the barrier's own state --
 // which is worth keeping. It is documented for what it is rather than renamed,
 // because the name is referenced from go-qrdb#151 and the surrounding history;
-// go-qrdb#158 tracks giving the Unseal side a mutation-proven map-race guard.
+// The map-race coverage this test's name promises now lives in
+// TestStrategiesMap_ConcurrentUnsealAndInstall_NoRace below, which puts a real
+// writer beside Unseal's lookup and is mutation-verified 10/10 (go-qrdb#158).
 func TestStrategiesMap_ConcurrentStatusAndUnseal_NoRace(t *testing.T) {
 	ctx := context.Background()
 	base := NewMemoryBackend()
@@ -191,4 +194,83 @@ func TestStrategiesMap_ConcurrentStatusAndUnseal_NoRace(t *testing.T) {
 
 	close(stop)
 	wg.Wait()
+}
+
+// Unseal's strategies-map READ is safe against a concurrent install.
+//
+// This is the coverage go-qrdb#158 was filed for. Its neighbour above spins
+// readers against a seal/unseal cycle that never writes b.strategies, so it
+// cannot fail however the map is accessed. The missing ingredient was never a
+// reader -- it was a concurrent WRITER, and this test supplies one.
+//
+// # The reader is Unseal itself
+//
+// Unseal resolves the sealing strategy through strategyByID (barrier.go), so
+// each iteration of the seal/unseal cycle below performs the real lookup. It
+// returns early only when the barrier is already unsealed, which is why the
+// cycle re-seals every time rather than hammering Unseal from many goroutines:
+// concurrent Unseals would mostly bounce off that early return without ever
+// reaching the map.
+//
+// # Why the writer uses setStrategy directly
+//
+// Every real mutator -- ChangePassword, Rekey, the Shamir install, migrate --
+// funnels through setStrategy, which barrier.go names as the mandatory write
+// accessor alongside strategyByID. Driving the accessor covers all of them at
+// once, where picking one caller would cover only that caller and drag its
+// preconditions into a test about map access (ChangePassword, for instance,
+// requires an UNSEALED barrier, which fights the cycle this reader needs).
+//
+// The install targets StrategyShamir, a different key from the one Unseal
+// resolves, so the writer never disturbs the value the reader depends on. The
+// race under test is on the map itself, not on any entry.
+//
+// Mutation-verified: deleting the RLock from strategyByID turns this red.
+func TestStrategiesMap_ConcurrentUnsealAndInstall_NoRace(t *testing.T) {
+	ctx := context.Background()
+	cfg := BarrierConfig{RootKeyPath: "test/root-key"}
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), cfg, cheapSoftwareStrategy(t, "password"))
+	require.NoError(t, err)
+	require.NoError(t, b.Initialize(ctx, Credentials{Secret: []byte("password")}))
+	require.NoError(t, b.Seal())
+
+	shamir, err := NewShamirStrategy(2, 3)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	var writes atomic.Int64
+
+	// Writer: the mandatory write accessor, under a key the reader does not
+	// resolve. This is what the neighbour test has never had.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				b.setStrategy(StrategyShamir, shamir)
+				writes.Add(1)
+			}
+		}()
+	}
+
+	// Reader: the real Unseal path, which looks the strategy up in the map on
+	// every iteration.
+	for i := 0; i < 60; i++ {
+		require.NoError(t, b.Unseal(ctx, Credentials{Secret: []byte("password")}))
+		require.NoError(t, b.Seal())
+	}
+
+	close(stop)
+	wg.Wait()
+
+	// Both sides must actually have run, or the test raced nothing -- which is
+	// precisely how its neighbour shipped.
+	require.Positive(t, writes.Load(), "the writer never ran")
+	require.True(t, b.IsSealed(), "the barrier must end sealed")
 }
