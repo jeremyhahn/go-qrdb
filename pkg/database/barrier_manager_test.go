@@ -267,6 +267,53 @@ func TestDatabaseBarrierManager_UnsealDatabase_Success(t *testing.T) {
 	}
 }
 
+// UnsealDatabase must REFUSE the wrong passphrase.
+//
+// EnsureBarrier registers a deferred strategy specifically so that every later
+// UnsealDatabase validates the caller's credentials, and the comment there says
+// a bound strategy "would make wrong-secret unseal attempts succeed for the
+// lifetime of the process". Nothing enforced that: replacing the registration
+// with seal.NewSoftwareStrategy([]byte(creds.Secret)) left the whole
+// pkg/database suite green (measured, go-qrdb#157). This test is the guard —
+// it fails against exactly that mutation.
+//
+// Its sibling above only proves the RIGHT passphrase works, which passes just
+// as happily when no passphrase is checked at all.
+func TestDatabaseBarrierManager_UnsealDatabase_WrongPassphraseRefused(t *testing.T) {
+	mgr := newTestBarrierManager(t)
+	ctx := context.Background()
+	storage := seal.NewMemoryBackend()
+
+	cfg := &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"}
+	if err := mgr.EnsureBarrier(ctx, "testdb", cfg, storage, testCreds()); err != nil {
+		t.Fatalf("EnsureBarrier: %v", err)
+	}
+	if err := mgr.SealDatabase("testdb"); err != nil {
+		t.Fatalf("SealDatabase: %v", err)
+	}
+
+	wrong := seal.Credentials{Secret: []byte("not-the-test-password")}
+	if err := mgr.UnsealDatabase(ctx, "testdb", wrong); err == nil {
+		t.Fatal("go-qrdb#157: UnsealDatabase accepted a WRONG passphrase — " +
+			"the registered strategy is not checking credentials")
+	}
+
+	// The barrier must still be sealed after the refusal, not left half-open.
+	status, err := mgr.BarrierStatus("testdb")
+	if err != nil {
+		t.Fatalf("BarrierStatus: %v", err)
+	}
+	if !status.Sealed {
+		t.Error("barrier is unsealed after a REFUSED unseal attempt")
+	}
+
+	// And the correct passphrase still works, so the guard has not simply
+	// broken unsealing outright.
+	if err := mgr.UnsealDatabase(ctx, "testdb", testCreds()); err != nil {
+		t.Fatalf("UnsealDatabase with the correct passphrase: %v", err)
+	}
+}
+
 func TestDatabaseBarrierManager_UnsealDatabase_NotFound(t *testing.T) {
 	mgr := newTestBarrierManager(t)
 	ctx := context.Background()

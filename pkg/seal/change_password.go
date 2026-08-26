@@ -57,13 +57,34 @@ func (b *StorageBarrier) ChangePassword(ctx context.Context, newCreds Credential
 	// carry it forward into the new sealed blob.
 	existing := b.barrier.SealedRootKeyData()
 
-	// Create a new SoftwareStrategy with the new password.
-	newStrat, err := NewSoftwareStrategy([]byte(newCreds.Secret))
-	if err != nil {
-		return err
-	}
+	// Create the replacement strategy as a DEFERRED one, which binds its
+	// passphrase at each Seal/Unseal from Credentials.Secret rather than at
+	// construction.
+	//
+	// This is a security fix, not a style choice (go-qrdb#157). A BOUND
+	// strategy — what NewSoftwareStrategy returns — ignores the credentials
+	// handed to UnsealRootKey entirely; go-quicraft documents it outright:
+	// "When deferPassphrase is false (default), the ctx and creds parameters
+	// are unused; the passphrase is provided at construction time."
+	//
+	// Installing a bound strategy here therefore stopped the barrier checking
+	// credentials at all from the first password change onward — measured:
+	// afterwards a WRONG passphrase, the OLD passphrase and the new one all
+	// unsealed successfully. pkg/database/barrier_manager.go registers
+	// deferred strategies precisely to avoid that, and its comment says a
+	// bound one "would make wrong-secret unseal attempts succeed for the
+	// lifetime of the process". This function was reintroducing exactly that.
+	//
+	// Always-deferred rather than preserving whichever kind was registered:
+	// the binding mode is not observable (deferPassphrase is unexported with
+	// no accessor — go-quicraft#43 asks for one), and a caller relying on
+	// credential-free unseal after a credential change is relying on the
+	// bypass. After a password change the password must be checked.
+	newStrat := NewDeferredSoftwareStrategy()
 
-	// Re-seal the root key with the new strategy.
+	// Re-seal the root key with the new strategy. The deferred path reads
+	// newCreds.Secret at this call, so the blob is wrapped under the NEW
+	// passphrase.
 	sealed, err := newStrat.SealRootKey(ctx, rootKey, newCreds)
 	if err != nil {
 		// Close the new strategy to release its enclave.
