@@ -61,7 +61,25 @@ GOVULNCHECK   := govulncheck
 #   G705: XSS taint analysis (KV GET returns application/octet-stream, not HTML)
 #   G118: context.Background in goroutine / cancel returned to caller (intentional patterns)
 #   G122: filepath.Walk TOCTOU (internal storage directories only)
-GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G704,G705
+#   G703: path-traversal taint analysis. The single site is
+#         pkg/system/openssl.go:106, and all three legs of the justification
+#         were checked against that code path before excluding (#154):
+#         (1) it is the taint analogue of G304, already excluded above for
+#             this class, alongside its siblings G704 and G705;
+#         (2) the taint source is os.Getenv("OPENSSL_CONF") -- the documented
+#             OpenSSL operator mechanism. It is never a request parameter, so
+#             setting it requires control of the process environment, which
+#             already implies code execution as that user. This holds even
+#             though LoadOpenSSLConfig is re-exported through
+#             sdk/go/types_system.go: a downstream caller still reads ITS OWN
+#             process environment, not caller-supplied input;
+#         (3) the path is only os.Stat'd here and os.Open'd read-only in
+#             parseOpenSSLConfig, then scanned. pkg/system/openssl.go contains
+#             no Create/WriteFile/OpenFile/Remove/Rename/Chmod/Mkdir and no
+#             exec.Command -- verified, not assumed.
+#         If any of those three stops being true, this entry is wrong and the
+#         finding is real: re-arm the rule rather than widening the exclusion.
+GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G703,G704,G705
 
 # Coverage
 COVER_MIN     := 91

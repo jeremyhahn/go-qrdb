@@ -249,12 +249,31 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Install gosec
+        # PINNED to v2.29.0 (devops.md §9 documented-pin clause; owner-ruled
+        # fleet-wide 2026-08-26, go-qrdb#154). gosec joins the discipline
+        # golangci-lint has carried since #42, for a reason measured today:
+        # @latest self-updated mid-day and introduced G703, which reddened the
+        # Security job on every branch — including main — on code nobody had
+        # touched since 2026-04-10. Run 6862 on main was green at 08:04Z and
+        # run 6885 red at 08:47Z with the offending file identical in both.
+        # Upgrade deliberately, one issue per bump — never by drifting.
+        #
+        # What this pin does NOT do: fix that finding. v2.29.0 still raises
+        # G703 (checked, not assumed) — the Makefile's GOSEC_EXCLUDE entry is
+        # what clears it, and it carries its own three-legged justification.
+        # The pin buys reproducibility, not a green gate.
+        #
+        # Note `gosec --version` prints "dev" whatever version is selected:
+        # `go install` builds it without the release ldflags. So the reported
+        # version is NOT evidence of which gosec ran, and this line is the
+        # only record of it — do not read "dev" in a log as "unpinned".
+        #
         # RETRIED (2026-08-20): same sum.golang.org flake class as the lint
         # install — a tool-install network failure must not fail a job that
         # never ran its analysis. Full sumdb verification kept.
         run: |
           for i in 1 2 3; do
-            go install github.com/securego/gosec/v2/cmd/gosec@latest && exit 0
+            go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0 && exit 0
             echo "install attempt $i failed; retrying"; sleep 10
           done
           echo "tool install failed after 3 attempts"; exit 1
