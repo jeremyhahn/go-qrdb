@@ -15,16 +15,36 @@ LDFLAGS       := -X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X m
 
 # Go tooling
 GO            := go
-# -timeout=30m, because go test defaults to 10m and this suite does not fit.
+# GOTEST_TIMEOUT is the PER-PACKAGE budget go test enforces, not a whole-suite
+# one, and it is a runaway guard rather than a correctness gate: the CI job
+# allows 90 minutes and the integration target sets its own 25m.
+#
+# 30m default, because go test defaults to 10m and this suite does not fit.
 # pkg/seal alone measured 589.8s on a PASSING run -- 98% of the 10m default,
 # under -race with Argon2id KDF work that is meant to be slow. Any load on a
 # shared runner tips it over, and the whole job then dies as
 # "panic: test timed out after 10m0s" naming whichever package was unlucky,
 # which reads like a hang in that package rather than a budget that was always
-# too small. That is a runaway guard, not a correctness gate: the CI job itself
-# allows 90 minutes, and the integration target already sets its own 25m.
-# Raising it removes a false red; it does not weaken any assertion.
-GOTEST        := $(GO) test -race -count=1 -v -timeout=30m
+# too small. Raising it removes a false red; it does not weaken any assertion.
+#
+# It is a variable because the FIPS leg needs a bigger one and nothing else
+# does (go-qrdb#147). Measured on one 24-core box, pkg/seal under -race:
+#
+#            GODEBUG=fips140=only     default      factor
+#   package        319.3s              121.9s       2.6x
+#
+# The KDF is the reason: pkg/seal/kdf selects PBKDF2-HMAC-SHA256 at 600,000
+# iterations in FIPS mode and Argon2id otherwise, and the barrier tests
+# re-derive on every seal/unseal/change-password. On a CI runner the same
+# package takes 516.1s WITHOUT fips (4.2x this box), so the FIPS leg lands at
+# roughly 1350s against a 1800s budget -- and on 2026-08-26, with two thirds
+# of the runner fleet offline, it went past it and the package died at 30m
+# having passed 17,787 of its tests. A margin that thin is not a budget.
+#
+# Do NOT raise the default to cover the FIPS leg. A 30m package that hangs on
+# the push path should surface in 30m.
+GOTEST_TIMEOUT ?= 30m
+GOTEST        := $(GO) test -race -count=1 -v -timeout=$(GOTEST_TIMEOUT)
 GOBUILD       := $(GO) build -ldflags "$(LDFLAGS)"
 GOVET         := $(GO) vet
 GOFMT         := gofmt

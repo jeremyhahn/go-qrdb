@@ -107,8 +107,65 @@ jobs:
       # The same target the Test job runs, with the same build tags. The scope
       # is deliberately identical: a FIPS job over a subset of the suite
       # cannot tell you the product is FIPS-clean.
+      #
+      # GOTEST_TIMEOUT is go test's PER-PACKAGE budget and is raised only here.
+      # FIPS mode swaps the KDF from Argon2id to PBKDF2-HMAC-SHA256 at 600,000
+      # iterations, which measured 2.6x on pkg/seal; against a runner already
+      # ~4x slower than a development box that leaves no margin under 30m, and
+      # on 2026-08-26 pkg/seal was killed at exactly 30m having already passed
+      # 17,787 tests (go-qrdb#147). The job ceiling above is 90 minutes, so a
+      # 60m package budget still cannot outlive the job.
+      #
+      # This raises a runaway guard. It does not skip a package, weaken an
+      # assertion, or narrow the scope -- all of which are forbidden here for
+      # the reasons in the header comment.
+      #
+      # pipefail matters: without it tee's exit status hides a failing suite.
       - name: Unit tests (race, FIPS 140-only)
-        run: make test
+        run: |
+          set -o pipefail
+          make test GOTEST_TIMEOUT=60m 2>&1 | tee fips-test.log
+
+      # A per-package timeout panic names whichever test was running when the
+      # alarm fired, NOT the test that consumed the budget -- on 2026-08-26 it
+      # accused a 3-second test while two tests holding 948s of the 1800s had
+      # already finished and were named nowhere. Anyone reading the panic alone
+      # is sent to the wrong file. This step is the antidote, and it runs on
+      # success too so the trend is visible before the cliff is reached.
+      - name: Package results and slowest tests
+        if: always()
+        run: |
+          if [ ! -f fips-test.log ]; then
+            echo "no fips-test.log: the suite never started" >&2
+            exit 0
+          fi
+          # Captured into variables rather than piped straight to stdout so the
+          # "nothing parsed" case can actually be reported. A `grep ... | sort
+          # || echo fallback` cannot do that: the pipeline's status is sort's,
+          # which is 0 on empty input, so the fallback is unreachable.
+          pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+            fips-test.log | sort -u || true)
+          slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' fips-test.log \
+            | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+            | sort -rn | head -25 || true)
+
+          echo "== package results =="
+          if [ -n "$pkgs" ]; then
+            echo "$pkgs"
+            echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+          else
+            echo "(no package result lines parsed -- the suite may have died before any package finished)"
+          fi
+
+          echo
+          echo "== 25 slowest tests that COMPLETED =="
+          echo "A timeout panic names the test holding the alarm, not the one"
+          echo "that spent the budget. These are the candidates that did."
+          if [ -n "$slow" ]; then
+            echo "$slow"
+          else
+            echo "(no completed top-level tests parsed)"
+          fi
 
   trivy:
     name: Trivy
