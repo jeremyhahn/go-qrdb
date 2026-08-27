@@ -14,7 +14,11 @@
 
 package sdk
 
-import "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+import (
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+)
 
 // TranslateMemberEventForTest exposes the unexported membership-event
 // translator to the external test package.
@@ -23,3 +27,12 @@ var TranslateMemberEventForTest = translateMemberEvent
 // TransportForTest exposes the client's underlying transport to the external
 // test package for scope-delegation assertions.
 func (c *Client) TransportForTest() transport.Transport { return c.transport }
+
+// SetLeaseCleanupTimeoutForTest shortens the detached lease-cleanup budget and
+// returns a function restoring it, so a test can prove the cleanup revoke is
+// bounded without stalling for the production budget.
+func SetLeaseCleanupTimeoutForTest(d time.Duration) func() {
+	previous := leaseCleanupTimeout
+	leaseCleanupTimeout = d
+	return func() { leaseCleanupTimeout = previous }
+}
