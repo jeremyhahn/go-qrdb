@@ -78,6 +78,12 @@ type CreateUserRequest struct {
 
 	// RoleIDs are the initial roles to assign.
 	RoleIDs []string
+
+	// Pending, when true, creates the user with Enabled=false: an account
+	// awaiting activation, such as an invited user whose first credential is
+	// bound at invitation redemption. EnableUser activates it. The zero value
+	// preserves the existing create-enabled behavior.
+	Pending bool
 }
 
 // UpdateUserRequest holds parameters for updating a user.

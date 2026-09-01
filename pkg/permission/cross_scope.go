@@ -84,6 +84,16 @@ const (
 // The self-service registration policy (enabled flag, default role,
 // approval requirement, allowed isolation modes) is platform-wide
 // configuration. Only the system tenant may read or mutate it.
+//
+// OWNERSHIP (owner ruling 2026-09-01, company doc 08 §"Registration
+// model"): the policy record itself lives in the composing host —
+// go-quicbaas's `iam.self_service_registration` config section is the one
+// canonical holder for the whole stack. qrdb deliberately implements NO
+// registration-config store or service; it owns only the permission
+// vocabulary. These permissions gate the host's registration-config
+// surface, and `tenants:approve` (above) gates the host's pending-tenant
+// approval surface — the pending-tenant queue is likewise host state, not
+// a qrdb entity.
 // ---------------------------------------------------------------------------
 
 const (

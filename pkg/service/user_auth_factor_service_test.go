@@ -742,3 +742,194 @@ func TestService_implementsFactorStore_andResolves(t *testing.T) {
 		t.Fatalf("got p=%+v f=%+v", p, f)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HasActiveFactor (fail-closed ActiveFactorChecker)
+// ---------------------------------------------------------------------------
+
+// failingGetKV wraps afMockKV and injects a Get error for chosen keys, so
+// the strict checker's fail-closed behavior under partial reads is testable.
+type failingGetKV struct {
+	*afMockKV
+	failKeys map[string]error
+}
+
+func (f *failingGetKV) Get(ctx context.Context, key string) ([]byte, error) {
+	if err, ok := f.failKeys[key]; ok {
+		return nil, err
+	}
+	return f.afMockKV.Get(ctx, key)
+}
+
+func checkerFor(t *testing.T, svc UserAuthFactorServicer) ActiveFactorChecker {
+	t.Helper()
+	c, ok := svc.(ActiveFactorChecker)
+	if !ok {
+		t.Fatal("production service does not implement ActiveFactorChecker")
+	}
+	return c
+}
+
+func TestHasActiveFactor_ActiveAndRevoked(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	ctx := context.Background()
+	c := checkerFor(t, svc)
+
+	// No factors at all.
+	has, err := c.HasActiveFactor(ctx, 7)
+	if err != nil || has {
+		t.Fatalf("empty: has=%v err=%v, want false,nil", has, err)
+	}
+
+	// One active factor.
+	if err := svc.Add(ctx, 7, fido2Factor("f1", 7, []byte("k1"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	has, err = c.HasActiveFactor(ctx, 7)
+	if err != nil || !has {
+		t.Fatalf("active: has=%v err=%v, want true,nil", has, err)
+	}
+
+	// Revoke it (force: last active factor) — revoked factors do not count.
+	if err := svc.Remove(ctx, "f1", true); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	has, err = c.HasActiveFactor(ctx, 7)
+	if err != nil || has {
+		t.Fatalf("revoked-only: has=%v err=%v, want false,nil", has, err)
+	}
+}
+
+func TestHasActiveFactor_ZeroUserIDRejected(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	if _, err := checkerFor(t, svc).HasActiveFactor(context.Background(), 0); err == nil {
+		t.Fatal("expected error for zero userID")
+	}
+}
+
+// TestHasActiveFactor_SeesOrphanedPrimary asserts the checker answers from
+// the canonical primary records, not the per-user index: Add writes the
+// primary before the index, so an enrollment whose index write failed
+// leaves an active primary no index entry names. List misses it by design;
+// the fail-closed checker must not.
+func TestHasActiveFactor_SeesOrphanedPrimary(t *testing.T) {
+	svc, kv := newUserAuthFactorService(t, nil)
+	ctx := context.Background()
+	if err := svc.Add(ctx, 7, fido2Factor("f1", 7, []byte("k1"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// Reproduce the partial-write state: primary present, user index gone.
+	delete(kv.store, userIndexKey(7, "f1"))
+
+	if got, err := svc.List(ctx, 7); err != nil || len(got) != 0 {
+		t.Fatalf("List = %v,%v — precondition broken, index removal did not orphan the primary", got, err)
+	}
+	has, err := checkerFor(t, svc).HasActiveFactor(ctx, 7)
+	if err != nil || !has {
+		t.Fatalf("orphaned primary: has=%v err=%v, want true,nil", has, err)
+	}
+}
+
+// TestHasActiveFactor_FailsClosedOnRecordReadError asserts a read failure on
+// any canonical factor record surfaces as an error — never as "no factors".
+// This is the contract List deliberately does not provide.
+func TestHasActiveFactor_FailsClosedOnRecordReadError(t *testing.T) {
+	base := newAFMockKV()
+	kv := &failingGetKV{afMockKV: base, failKeys: map[string]error{}}
+	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{KV: kv})
+	if err != nil {
+		t.Fatalf("NewUserAuthFactorService: %v", err)
+	}
+	ctx := context.Background()
+	if err := svc.Add(ctx, 7, fido2Factor("f1", 7, []byte("k1"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	kv.failKeys[primaryKey("f1")] = errors.New("transient read failure")
+
+	if _, err := checkerFor(t, svc).HasActiveFactor(ctx, 7); err == nil {
+		t.Fatal("expected error on unreadable factor record, got nil")
+	}
+}
+
+// parkingListKV parks the first List call until released, so the test can
+// hold HasActiveFactor inside its critical section while a concurrent Add
+// tries to enroll a factor.
+type parkingListKV struct {
+	*afMockKV
+	parked  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *parkingListKV) List(ctx context.Context, prefix string) ([]string, error) {
+	p.once.Do(func() { close(p.parked) })
+	<-p.release
+	return p.afMockKV.List(ctx, prefix)
+}
+
+// TestHasActiveFactor_SerializedWithAdd asserts the checker holds the
+// service mutation lock for its full scan: an Add racing the check cannot
+// land its writes mid-scan. The checker is parked inside List while an Add
+// for the same user runs concurrently; because Add serializes on the same
+// mutex, the store must still hold no factor when the parked List finally
+// executes, and the enrollment must land entirely after the answer.
+func TestHasActiveFactor_SerializedWithAdd(t *testing.T) {
+	kv := &parkingListKV{
+		afMockKV: newAFMockKV(),
+		parked:   make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{KV: kv})
+	if err != nil {
+		t.Fatalf("NewUserAuthFactorService: %v", err)
+	}
+	ctx := context.Background()
+	c := checkerFor(t, svc)
+
+	hasCh := make(chan bool, 1)
+	go func() {
+		has, herr := c.HasActiveFactor(ctx, 7)
+		if herr != nil {
+			t.Errorf("HasActiveFactor: %v", herr)
+		}
+		hasCh <- has
+	}()
+	<-kv.parked // checker holds s.mu, parked inside List
+
+	addCh := make(chan error, 1)
+	go func() { addCh <- svc.Add(ctx, 7, fido2Factor("f1", 7, []byte("k1"))) }()
+
+	// Release the scan. If Add had bypassed the mutex, its primary record
+	// could have landed during the park and the invariant below would trip.
+	close(kv.release)
+	has := <-hasCh
+	if aerr := <-addCh; aerr != nil {
+		t.Fatalf("Add: %v", aerr)
+	}
+	if has {
+		// The checker held the lock first, so the Add must have been
+		// excluded for the whole scan; seeing the factor means the write
+		// interleaved mid-scan.
+		t.Fatal("checker observed a factor written during its critical section")
+	}
+
+	// After the racing Add lands, the checker must see it.
+	has, err = c.HasActiveFactor(ctx, 7)
+	if err != nil || !has {
+		t.Fatalf("post-add: has=%v err=%v, want true,nil", has, err)
+	}
+}
+
+// TestHasActiveFactor_IgnoresOtherUsersFactors asserts another user's
+// factors — active or revoked — never count toward this user.
+func TestHasActiveFactor_IgnoresOtherUsersFactors(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	ctx := context.Background()
+	if err := svc.Add(ctx, 8, fido2Factor("f8", 8, []byte("k8"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	has, err := checkerFor(t, svc).HasActiveFactor(ctx, 7)
+	if err != nil || has {
+		t.Fatalf("cross-user: has=%v err=%v, want false,nil", has, err)
+	}
+}

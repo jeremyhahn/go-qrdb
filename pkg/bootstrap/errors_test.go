@@ -39,6 +39,11 @@ func TestErrorMessagesAndUnwrap(t *testing.T) {
 		{&EmptyTenantIDError{}, "empty tenant id"},
 		{&MissingShamirConfigError{}, "shamir"},
 		{&UnsupportedStrategyError{Strategy: "tpm2"}, "tpm2"},
+		{&InvalidAdminEnrollmentModeError{Mode: "bogus"}, "bogus"},
+		{&ConflictingAdminEnrollmentError{}, "deferred"},
+		{&SystemTenantDeferredEnrollmentError{}, "system tenant"},
+		{&MissingAdminFactorsError{}, "AdminFactors"},
+		{&PendingAdminUnresolvableError{TenantID: "acme", Username: "admin", Reason: "no lookup"}, "admin@acme"},
 	}
 	for _, tc := range sentinelOnly {
 		if !strings.Contains(tc.err.Error(), tc.want) {

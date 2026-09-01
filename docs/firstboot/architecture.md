@@ -24,15 +24,17 @@ Two bootstraps, run in order, each idempotent:
 
 Orchestration entry points live in `pkg/bootstrap`:
 
-Admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
+System-level admin enrollment is cert-based (CSR-sign or generate-and-distribute -> SPKI-thumbprint binding); there are no invite tokens at the system level. The control-plane (system) and data-plane (tenant) scopes are orchestrated through the `pkg/bootstrap` entry points:
 
 - **System bootstrap** — system barrier + system tenant + system admin + admin-mTLS.
-- **Provision tenant** — minimal control-plane tenant record + tenant-admin cert enrollment (no tenant barrier key held by the system admin).
+- **Provision tenant** — minimal control-plane tenant record + tenant-admin enrollment per `AdminEnrollmentMode` (no tenant barrier key held by the system admin): `cert` (default) enrolls the tenant-admin cert during provisioning; `deferred` creates the tenant admin PENDING with no credential bound, returning the user + role ids so the composing host (go-quicbaas) can attach a single-use invitation (`pkg/invite` `TenantInviteStore`) whose redemption binds the admin's first auth factor and activates the account (owner ruling 2026-09-01, company doc 08 §"Admin enrollment").
 - **Initialize tenant barrier** — tenant-admin self-service (authenticated): initialize THIS tenant's barrier and scope.
 
 
-**Admin enrollment is certificate-based** — CSR-sign or generate-and-distribute,
-binding an SPKI thumbprint. **There are no invite tokens.**
+**System-level admin enrollment is certificate-based** — CSR-sign or
+generate-and-distribute, binding an SPKI thumbprint. **There are no
+system-level invite tokens**; the deferred tenant-admin mode above is the one
+sanctioned invitation seam, and it applies to tenant admins only.
 
 ## Admin credential paths
 
@@ -72,8 +74,14 @@ their own credential to one role can bring it to the other.
 
 ### Alternatives rejected
 
-- **Invite tokens.** Rejected: a bearer token that grants admin is a bearer
-  token that can be replayed. Enrolment is certificate-based throughout.
+- **Invite tokens for system-level identities.** Rejected: a bearer token that
+  grants system admin (or a Shamir custodian) is a bearer token that can be
+  replayed against barrier material. System-level enrolment is
+  certificate-based, always. The initial *tenant* admin is the ruled
+  exception (2026-09-01): `ProvisionTenant`'s deferred mode defers the
+  credential to a single-use invitation redeemed through the ordinary
+  `authfactors.Factor.Enroll` seam — the same machinery as ordinary-user
+  invitations, guarding no barrier material at redemption time.
 - **Falling back to the CA when a certificate is presented.** Rejected — that
   is the reason path C is evaluated first.
 - **Treating a missing `AdminCertPool` as "trust anything".** Rejected:
@@ -158,7 +166,10 @@ performs initialization.
 ## What this feature deliberately does not do
 
 - **No barrier custody.** That is the ceremony.
-- **No invite tokens or password-based admin enrolment.**
+- **No invite tokens or password-based enrolment for system-level
+  identities.** The deferred tenant-admin mode of `ProvisionTenant` is the
+  only invitation seam, and the invitation itself (token issuance and
+  redemption) is composed by the host, not by firstboot.
 - **No unsealing.** If the barrier is sealed, unsealing is a separate,
   deliberate operator action.
 - **No role customization at bootstrap.** The six built-in roles are fixed;

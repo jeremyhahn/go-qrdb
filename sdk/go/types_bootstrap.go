@@ -31,8 +31,9 @@ import "github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 type (
 	// BootstrapDependencies carries the seams every bootstrap entry point
 	// composes: store adapters (Tenants/Users/Roles), the admin-mTLS CA seams
-	// (CA for Path A, Signer for Path B), the CertBinder store seam, the seal
-	// barrier registry, and a logger.
+	// (CA for Path A, Signer for Path B), the CertBinder store seam, the
+	// canonical auth-factor read seam (AdminFactors, required by deferred
+	// tenant-admin enrollment), the seal barrier registry, and a logger.
 	BootstrapDependencies = bootstrap.Dependencies
 
 	// BootstrapSystemConfig configures system bootstrap: the system barrier
@@ -49,8 +50,25 @@ type (
 	BootstrapTenantProvisionConfig = bootstrap.TenantProvisionConfig
 
 	// BootstrapTenantProvisionResult reports the provisioned tenant + its
-	// tenant-admin identity (and enrolled cert).
+	// tenant-admin identity (and enrolled cert, or the pending admin's
+	// user + role ids in deferred mode).
 	BootstrapTenantProvisionResult = bootstrap.TenantProvisionResult
+
+	// BootstrapAdminEnrollmentMode selects how the initial tenant admin's
+	// credential is established during ProvisionTenant.
+	BootstrapAdminEnrollmentMode = bootstrap.AdminEnrollmentMode
+)
+
+// Tenant-admin enrollment modes for ProvisionTenant.
+const (
+	// BootstrapAdminEnrollCert enrolls the tenant admin's mTLS cert during
+	// provisioning (default; empty mode selects it).
+	BootstrapAdminEnrollCert = bootstrap.AdminEnrollCert
+
+	// BootstrapAdminEnrollDeferred creates the tenant admin PENDING with no
+	// credential bound; the consumer attaches an invitation whose redemption
+	// binds the first auth factor and activates the account.
+	BootstrapAdminEnrollDeferred = bootstrap.AdminEnrollDeferred
 )
 
 // Bootstrap strategy constants. Operator-facing system/tenant barrier
@@ -73,8 +91,9 @@ const (
 var BootstrapSystem = bootstrap.BootstrapSystem
 
 // ProvisionTenant performs minimal control-plane provisioning of a new tenant
-// (tenant record + tenant-admin user + tenant-admin cert enrollment). It does
-// NOT initialize a tenant barrier. System-admin action.
+// (tenant record + tenant-admin user + tenant-admin cert enrollment, or a
+// pending invitation-ready admin in deferred mode). It does NOT initialize a
+// tenant barrier. System-admin action.
 var ProvisionTenant = bootstrap.ProvisionTenant
 
 // InitializeTenantBarrier registers and initializes a named tenant's own

@@ -653,6 +653,456 @@ func TestProvisionTenant_CSRSignPathKeepsAdminKey(t *testing.T) {
 	}
 }
 
+// TestProvisionTenant_DeferredModeCreatesPendingAdmin asserts deferred
+// enrollment provisions the control plane (tenant + seeded roles + admin
+// user) but establishes NO credential: the admin is created pending, the
+// cert seams are never invoked even though they are configured, and the
+// result carries the user + role ids a consumer needs to attach an
+// invitation.
+func TestProvisionTenant_DeferredModeCreatesPendingAdmin(t *testing.T) {
+	tenants, users, roles := &fakeTenants{}, &fakeUsers{}, &fakeRoles{}
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+	signer := &fakeSigner{cert: realCertPEM(t)}
+	binder := &fakeBinder{}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: tenants, Users: users, Roles: roles,
+		CA: ca, Signer: signer, Binder: binder,
+		AdminFactors: &fakeFactorChecker{}, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+
+	// Control plane provisioned exactly as in cert mode.
+	if len(tenants.createCalls) != 1 {
+		t.Fatalf("tenant createCalls = %d, want 1", len(tenants.createCalls))
+	}
+	if roles.createCount.Load() != int32(len(role.BuiltInRoles("acme"))) {
+		t.Errorf("roles created = %d, want %d", roles.createCount.Load(), len(role.BuiltInRoles("acme")))
+	}
+
+	// Admin user created PENDING, bound to the tenant-scoped Admin role.
+	if len(users.createCalls) != 1 {
+		t.Fatalf("user createCalls = %d, want 1", len(users.createCalls))
+	}
+	adminReq := users.createCalls[0]
+	if !adminReq.Pending {
+		t.Error("deferred admin created with Pending=false, want pending")
+	}
+	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
+	if len(adminReq.RoleIDs) != 1 || adminReq.RoleIDs[0] != wantRoleID {
+		t.Errorf("admin RoleIDs = %v, want [%q]", adminReq.RoleIDs, wantRoleID)
+	}
+
+	// No credential exists: cert seams untouched, nothing bound.
+	if ca.called.Load() != 0 || signer.called.Load() != 0 {
+		t.Errorf("cert seams invoked (ca=%d signer=%d), want none in deferred mode",
+			ca.called.Load(), signer.called.Load())
+	}
+	if binder.thumbprint != "" || binder.userID != 0 {
+		t.Errorf("cert bound (thumbprint=%q userID=%d), want no binding", binder.thumbprint, binder.userID)
+	}
+	if result.AdminCertPEM != nil || result.AdminKeyPEM != nil || result.AdminCertThumbprint != "" {
+		t.Error("result carries cert material in deferred mode, want none")
+	}
+
+	// The consumer gets what an invitation needs.
+	if !result.AdminPending {
+		t.Error("result.AdminPending = false, want true")
+	}
+	if result.AdminUserID == 0 {
+		t.Error("result.AdminUserID = 0, want the pending admin's id")
+	}
+	if result.AdminRoleID != wantRoleID {
+		t.Errorf("result.AdminRoleID = %q, want %q", result.AdminRoleID, wantRoleID)
+	}
+}
+
+// TestProvisionTenant_CertModeUnchanged asserts the default (empty) mode
+// still enrolls by certificate: the admin is created enabled and the result
+// reports a non-pending admin with the role id populated.
+func TestProvisionTenant_CertModeUnchanged(t *testing.T) {
+	users := &fakeUsers{}
+	ca := &fakeCA{cert: realCertPEM(t), key: []byte("KEY")}
+
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID: "acme",
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users, Roles: &fakeRoles{},
+		CA: ca, Binder: &fakeBinder{}, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if len(users.createCalls) != 1 || users.createCalls[0].Pending {
+		t.Error("cert-mode admin must be created non-pending")
+	}
+	if result.AdminPending {
+		t.Error("result.AdminPending = true in cert mode, want false")
+	}
+	if want := role.SystemRoleID("acme", role.RoleNameAdmin); result.AdminRoleID != want {
+		t.Errorf("result.AdminRoleID = %q, want %q", result.AdminRoleID, want)
+	}
+	if result.AdminCertThumbprint == "" {
+		t.Error("cert mode enrolled no cert")
+	}
+}
+
+// fakeFactorChecker models the canonical auth-factor query seam.
+type fakeFactorChecker struct {
+	hasActive bool
+	err       error
+}
+
+func (f *fakeFactorChecker) HasActiveFactor(_ context.Context, _ uint64) (bool, error) {
+	return f.hasActive, f.err
+}
+
+// fakeUsersWithLookup extends fakeUsers with the AdminUserLookup seam so
+// deferred re-run resolution can be exercised; plain fakeUsers deliberately
+// lacks it to model adapters without lookup.
+type fakeUsersWithLookup struct {
+	fakeUsers
+	lookupUser *user.User
+	lookupErr  error
+}
+
+func (f *fakeUsersWithLookup) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
+	return f.lookupUser, nil
+}
+
+// TestProvisionTenant_DeferredModeRejectedForSystemTenant asserts the
+// system tenant can never take the deferred path: system-level enrollment
+// is cert-only, always.
+func TestProvisionTenant_DeferredModeRejectedForSystemTenant(t *testing.T) {
+	tenants := &fakeTenants{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        tenant.SystemTenantID,
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *SystemTenantDeferredEnrollmentError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *SystemTenantDeferredEnrollmentError", err)
+	}
+	if len(tenants.createCalls) != 0 {
+		t.Error("tenant created despite rejected config; validation must precede writes")
+	}
+}
+
+// TestProvisionTenant_DeferredReRunRecoversAdminID asserts an idempotent
+// deferred re-run resolves a TRULY PENDING preexisting admin (disabled, no
+// credential bound) so the consumer still receives the user id an
+// invitation attaches to.
+func TestProvisionTenant_DeferredReRunRecoversAdminID(t *testing.T) {
+	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
+	users := &fakeUsersWithLookup{
+		fakeUsers: fakeUsers{exists: true},
+		lookupUser: &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Enabled: false,
+		},
+	}
+	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{createAlreadyErr: true}, Users: users,
+		Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("ProvisionTenant: %v", err)
+	}
+	if result.AdminUserID != 42 {
+		t.Errorf("AdminUserID = %d, want 42 (recovered by lookup)", result.AdminUserID)
+	}
+	if !result.AdminPending {
+		t.Error("AdminPending = false, want true (resolved admin is pending)")
+	}
+}
+
+// TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin asserts a
+// deferred re-run refuses to convert any non-pending preexisting admin into
+// an invitation target: activated admins, and disabled admins that still
+// hold a bound certificate or enrolled factors (e.g. disabled for incident
+// response), all fail with PendingAdminUnresolvableError.
+func TestProvisionTenant_DeferredReRunFailsClosedOnNonPendingAdmin(t *testing.T) {
+	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
+	for _, tc := range []struct {
+		name  string
+		admin *user.User
+	}{
+		{"already activated", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Enabled: true,
+		}},
+		{"disabled with bound certificate", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Enabled: false,
+			CertBindings: []user.CertBinding{{Thumbprint: "aa"}},
+		}},
+		{"disabled with enrolled factors", &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Enabled: false,
+			Factors: []user.FactorEnrollment{{FactorName: "webauthn"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			users := &fakeUsersWithLookup{
+				fakeUsers:  fakeUsers{exists: true},
+				lookupUser: tc.admin,
+			}
+			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+				TenantID:        "acme",
+				AdminEnrollment: AdminEnrollDeferred,
+			}, Dependencies{
+				Tenants: &fakeTenants{createAlreadyErr: true}, Users: users,
+				Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+				Logger: discardLogger(),
+			})
+			var want *PendingAdminUnresolvableError
+			if !errors.As(err, &want) {
+				t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+			}
+		})
+	}
+}
+
+// TestProvisionTenant_DeferredReRunWithoutLookupFails asserts a deferred
+// re-run against a Users seam without lookup fails loudly instead of
+// reporting user id 0.
+func TestProvisionTenant_DeferredReRunWithoutLookupFails(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{exists: true},
+		Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+		Logger: discardLogger(),
+	})
+	var want *PendingAdminUnresolvableError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+	}
+}
+
+// TestProvisionTenant_DeferredReRunNilLookupFails asserts a lookup adapter
+// answering (nil, nil) fails closed with a typed error instead of panicking.
+func TestProvisionTenant_DeferredReRunNilLookupFails(t *testing.T) {
+	users := &fakeUsersWithLookup{fakeUsers: fakeUsers{exists: true}}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users,
+		Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+		Logger: discardLogger(),
+	})
+	var want *PendingAdminUnresolvableError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+	}
+}
+
+// TestProvisionTenant_DeferredReRunRoleMismatchFails asserts an existing
+// user under the admin username that does NOT hold the tenant-scoped Admin
+// role is refused the invitation handoff.
+func TestProvisionTenant_DeferredReRunRoleMismatchFails(t *testing.T) {
+	users := &fakeUsersWithLookup{
+		fakeUsers: fakeUsers{exists: true},
+		lookupUser: &user.User{
+			ID: 42, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{"some-other-role"},
+		},
+	}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: users,
+		Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+		Logger: discardLogger(),
+	})
+	var want *PendingAdminUnresolvableError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+	}
+}
+
+// fakeUsersReturning models a UserCreator adapter that answers CreateUser
+// with a canned record — e.g. an IAM stack that ignored
+// CreateUserRequest.Pending.
+type fakeUsersReturning struct {
+	ret *user.User
+}
+
+func (f *fakeUsersReturning) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+	return f.ret, nil
+}
+
+// TestProvisionTenant_DeferredCreateFailsClosedOnNonPendingRecord asserts
+// the freshly created record passes the same truly-pending validation as a
+// re-run lookup: an adapter that ignores Pending (or returns a wrong or
+// credentialed record) must not yield an invitation target.
+func TestProvisionTenant_DeferredCreateFailsClosedOnNonPendingRecord(t *testing.T) {
+	wantRoleID := role.SystemRoleID("acme", role.RoleNameAdmin)
+	for _, tc := range []struct {
+		name string
+		ret  *user.User
+	}{
+		{"enabled record (Pending ignored)", &user.User{
+			ID: 7, Username: "admin", TenantID: "acme",
+			RoleIDs: []string{wantRoleID}, Enabled: true,
+		}},
+		{"zero user id", &user.User{
+			Username: "admin", TenantID: "acme", RoleIDs: []string{wantRoleID},
+		}},
+		{"wrong tenant", &user.User{
+			ID: 7, Username: "admin", TenantID: "other",
+			RoleIDs: []string{wantRoleID},
+		}},
+		{"wrong username", &user.User{
+			ID: 7, Username: "someone-else", TenantID: "acme",
+			RoleIDs: []string{wantRoleID},
+		}},
+		{"missing admin role", &user.User{
+			ID: 7, Username: "admin", TenantID: "acme",
+		}},
+		{"credentialed record", &user.User{
+			ID: 7, Username: "admin", TenantID: "acme",
+			RoleIDs:      []string{wantRoleID},
+			CertBindings: []user.CertBinding{{Thumbprint: "aa"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+				TenantID:        "acme",
+				AdminEnrollment: AdminEnrollDeferred,
+			}, Dependencies{
+				Tenants: &fakeTenants{}, Users: &fakeUsersReturning{ret: tc.ret},
+				Roles: &fakeRoles{}, AdminFactors: &fakeFactorChecker{},
+				Logger: discardLogger(),
+			})
+			var want *PendingAdminUnresolvableError
+			if !errors.As(err, &want) {
+				t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+			}
+		})
+	}
+}
+
+// TestProvisionTenant_DeferredModeRequiresFactorSeam asserts deferred mode
+// refuses to run without the canonical auth-factor store seam, before any
+// write.
+func TestProvisionTenant_DeferredModeRequiresFactorSeam(t *testing.T) {
+	tenants := &fakeTenants{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *MissingAdminFactorsError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingAdminFactorsError", err)
+	}
+	if len(tenants.createCalls) != 0 {
+		t.Error("tenant created despite rejected config; validation must precede writes")
+	}
+}
+
+// TestProvisionTenant_DeferredModeFailsClosedOnCanonicalActiveFactor asserts
+// a record that looks pending is still refused when the canonical factor
+// store reports an active factor for it (enrolled elsewhere, or a
+// redemption that bound a factor and failed before activation).
+func TestProvisionTenant_DeferredModeFailsClosedOnCanonicalActiveFactor(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		AdminFactors: &fakeFactorChecker{hasActive: true},
+		Logger:       discardLogger(),
+	})
+	var want *PendingAdminUnresolvableError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *PendingAdminUnresolvableError", err)
+	}
+}
+
+// TestProvisionTenant_DeferredModeFactorCheckErrorWrapped asserts a canonical
+// factor-store query failure is surfaced as a typed error, never treated as
+// "no factors".
+func TestProvisionTenant_DeferredModeFactorCheckErrorWrapped(t *testing.T) {
+	sentinel := errors.New("kv unavailable")
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		AdminFactors: &fakeFactorChecker{err: sentinel},
+		Logger:       discardLogger(),
+	})
+	var want *TenantAdminUserCreationError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *TenantAdminUserCreationError", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err does not unwrap to sentinel: %v", err)
+	}
+}
+
+// TestProvisionTenant_DeferredModeRejectsCSR asserts a CSR supplied alongside
+// deferred enrollment is refused rather than silently discarded.
+func TestProvisionTenant_DeferredModeRejectsCSR(t *testing.T) {
+	tenants := &fakeTenants{}
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollDeferred,
+		AdminCSRPEM:     []byte("THE-CSR"),
+	}, Dependencies{
+		Tenants: tenants, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *ConflictingAdminEnrollmentError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *ConflictingAdminEnrollmentError", err)
+	}
+	if len(tenants.createCalls) != 0 {
+		t.Error("tenant created despite rejected config; validation must precede writes")
+	}
+}
+
+// TestProvisionTenant_InvalidEnrollmentModeRejected asserts an undeclared
+// mode value is refused with the offending value named.
+func TestProvisionTenant_InvalidEnrollmentModeRejected(t *testing.T) {
+	_, err := ProvisionTenant(context.Background(), TenantProvisionConfig{
+		TenantID:        "acme",
+		AdminEnrollment: AdminEnrollmentMode("bogus"),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Logger: discardLogger(),
+	})
+	var want *InvalidAdminEnrollmentModeError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *InvalidAdminEnrollmentModeError", err)
+	}
+	if want.Mode != "bogus" {
+		t.Errorf("Mode = %q, want %q", want.Mode, "bogus")
+	}
+}
+
 func TestProvisionTenant_NoCAOrSignerSkipsCert(t *testing.T) {
 	result, err := ProvisionTenant(context.Background(), TenantProvisionConfig{TenantID: "acme"}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},

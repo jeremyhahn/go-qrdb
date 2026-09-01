@@ -146,7 +146,7 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		Username:  req.Username,
 		TenantID:  tenantID,
 		RoleIDs:   req.RoleIDs,
-		Enabled:   true,
+		Enabled:   !req.Pending,
 		System:    false,
 		CreatedAt: now,
 		UpdatedAt: now,

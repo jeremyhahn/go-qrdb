@@ -286,6 +286,15 @@ restarts through the persistent placement table and per-node replica re-attach.
 
 ## What this feature deliberately does not do
 
+- **No self-service registration store.** The platform-wide registration
+  policy (`iam.self_service_registration`) is held by the composing host
+  (go-quicbaas) — one canonical record for the whole stack (owner ruling
+  2026-09-01, company doc 08 §"Registration model"). qrdb contributes only
+  the gating permission vocabulary: `registration_config:read|update` and
+  `tenants:approve` are reserved cross-scope permissions granted to
+  Admin@system, gating the host's registration-config and pending-tenant
+  approval surfaces. The pending-tenant queue is host state, not a qrdb
+  entity.
 - **`prefix` provides no cryptographic isolation.**
 - **No in-place isolation change once data exists.**
 - **No cross-tenant queries.** Nothing joins across tenants.

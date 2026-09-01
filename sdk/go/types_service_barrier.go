@@ -123,5 +123,11 @@ type UserAuthFactorServicer = service.UserAuthFactorServicer
 // UserAuthFactorServiceConfig configures a UserAuthFactorServicer.
 type UserAuthFactorServiceConfig = service.UserAuthFactorServiceConfig
 
+// ActiveFactorChecker is the FAIL-CLOSED active-factor query the production
+// user auth-factor service implements alongside UserAuthFactorServicer;
+// deferred tenant-admin provisioning (BootstrapDependencies.AdminFactors)
+// consumes it. Assert the servicer to this interface when wiring.
+type ActiveFactorChecker = service.ActiveFactorChecker
+
 // NewUserAuthFactorService creates a new UserAuthFactorServicer.
 var NewUserAuthFactorService = service.NewUserAuthFactorService

@@ -40,6 +40,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -101,6 +102,15 @@ type Dependencies struct {
 	// Binder pins an issued certificate's SPKI thumbprint to its user record.
 	// Optional: when nil, certs are issued but not bound (caller binds).
 	Binder firstboot.CertBinder
+
+	// AdminFactors is the canonical auth-factor query seam
+	// (AdminFactorChecker, fail-closed). REQUIRED by ProvisionTenant in
+	// deferred enrollment mode, where it proves the admin holds no active
+	// credential before an invitation target is handed back; unused
+	// otherwise. qrdb's production user auth-factor service implements it
+	// (service.ActiveFactorChecker); assert the servicer to that interface
+	// when wiring.
+	AdminFactors AdminFactorChecker
 
 	// Barriers is the seal barrier registry. Required by BootstrapSystem
 	// (system barrier) and InitializeTenantBarrier (tenant barriers). Unused
@@ -250,6 +260,34 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 // ProvisionTenant
 // ---------------------------------------------------------------------------
 
+// AdminEnrollmentMode selects how the initial tenant admin's credential is
+// established during ProvisionTenant.
+//
+// This seam exists so every consumer composes tenant-admin onboarding the
+// same way (owner ruling 2026-09-01, company doc 08 §"Admin enrollment"):
+// certificate enrollment stays in qrdb, while the invitation path — issuing
+// a single-use token via pkg/invite's TenantInviteStore and binding the
+// first auth factor at redemption — is layered by the composing host
+// (go-quicbaas) on top of the deferred mode. System-level bootstrap remains
+// cert-only and has no such mode.
+type AdminEnrollmentMode string
+
+const (
+	// AdminEnrollCert enrolls the tenant admin's mTLS certificate during
+	// provisioning via the firstboot seams (Path A generate via CA, or
+	// Path B CSR-sign via Signer). This is the default; an empty
+	// AdminEnrollmentMode selects it.
+	AdminEnrollCert AdminEnrollmentMode = "cert"
+
+	// AdminEnrollDeferred creates the tenant record, seeds the tenant
+	// roles, and creates the tenant-admin user PENDING (disabled, no
+	// credential bound). The consumer attaches an invitation to the
+	// returned user; redemption binds the admin's first auth factor and
+	// activates the account. No certificate is issued and no key material
+	// exists at provisioning time.
+	AdminEnrollDeferred AdminEnrollmentMode = "deferred"
+)
+
 // TenantProvisionConfig configures minimal control-plane tenant provisioning.
 type TenantProvisionConfig struct {
 	// TenantID is the new tenant's id. Required.
@@ -269,8 +307,15 @@ type TenantProvisionConfig struct {
 	// AdminCSRPEM, when non-empty, selects the CSR-sign path (Path B) for the
 	// tenant admin: the admin's CSR is signed via the Signer seam. When empty,
 	// Path A (generate-and-distribute via CA) is used. When neither path is
-	// configured, no cert is enrolled.
+	// configured, no cert is enrolled. Only meaningful in cert mode;
+	// combining it with AdminEnrollDeferred is a
+	// ConflictingAdminEnrollmentError.
 	AdminCSRPEM []byte
+
+	// AdminEnrollment selects the tenant-admin enrollment mode. Empty
+	// defaults to AdminEnrollCert (existing behavior); any other value than
+	// the declared modes is an InvalidAdminEnrollmentModeError.
+	AdminEnrollment AdminEnrollmentMode
 }
 
 // TenantProvisionResult reports what ProvisionTenant created.
@@ -296,6 +341,18 @@ type TenantProvisionResult struct {
 	// tenant-admin certificate, bound to the admin user. Empty when no cert
 	// was issued.
 	AdminCertThumbprint string
+
+	// AdminRoleID is the tenant-scoped Admin role identifier the tenant-admin
+	// user is bound to. In deferred mode it is, with AdminUserID, what the
+	// consumer needs to attach an invitation to the pending admin.
+	AdminRoleID string
+
+	// AdminPending reports that the tenant admin awaits invitation
+	// redemption to bind its first auth factor and activate. It is true
+	// exactly when AdminEnrollDeferred succeeded: deferred provisioning
+	// resolves only a truly pending admin (disabled, no credential bound)
+	// and fails closed on any other preexisting state.
+	AdminPending bool
 }
 
 // ProvisionTenant performs MINIMAL control-plane provisioning of a new tenant:
@@ -304,13 +361,17 @@ type TenantProvisionResult struct {
 //  2. Seed the tenant-scoped built-in roles (so a tenant-scoped admin role
 //     exists for the tenant).
 //  3. Create the tenant-admin user bound to that tenant-scoped admin role.
-//  4. Enroll the tenant admin's cert via the SAME admin-mTLS seams used by
-//     first-boot (Path A generate or Path B CSR-sign) and bind the SPKI
-//     thumbprint.
+//  4. Establish the admin credential per cfg.AdminEnrollment: cert mode
+//     (default) enrolls the tenant admin's cert via the SAME admin-mTLS seams
+//     used by first-boot (Path A generate or Path B CSR-sign) and binds the
+//     SPKI thumbprint; deferred mode creates the admin PENDING (disabled,
+//     nothing issued) so the consumer can attach an invitation whose
+//     redemption binds the first auth factor and activates the account.
 //
 // It deliberately does NOT initialize a tenant barrier: the system admin holds
 // no tenant key. The tenant admin self-bootstraps their barrier later via
-// InitializeTenantBarrier.
+// InitializeTenantBarrier. Deferred mode preserves that invariant a fortiori:
+// no usable tenant credential exists at all until the invited admin redeems.
 //
 // Uses: Tenants/Users/Roles (required), Logger (required), CA/Signer/Binder
 // (optional, tenant-admin cert enrollment). Barriers is unused.
@@ -320,6 +381,34 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 	}
 	if cfg.TenantID == "" {
 		return nil, &EmptyTenantIDError{}
+	}
+	mode := cfg.AdminEnrollment
+	if mode == "" {
+		mode = AdminEnrollCert
+	}
+	switch mode {
+	case AdminEnrollCert:
+	case AdminEnrollDeferred:
+		// System-level enrollment is cert-only, always (company doc 08):
+		// a deferred, invitation-activated identity is not an acceptable
+		// bootstrap anchor for the tenant that guards barrier material.
+		if cfg.TenantID == tenant.SystemTenantID {
+			return nil, &SystemTenantDeferredEnrollmentError{}
+		}
+		// A CSR alongside deferred mode is refused rather than silently
+		// discarded: honoring the CSR would contradict the requested
+		// deferral, and dropping it would strand the admin's keypair.
+		if len(cfg.AdminCSRPEM) > 0 {
+			return nil, &ConflictingAdminEnrollmentError{}
+		}
+		// The canonical factor store is consulted before any invitation
+		// target is handed back, so the seam is required up front — before
+		// any write — rather than discovered missing mid-provisioning.
+		if deps.AdminFactors == nil {
+			return nil, &MissingAdminFactorsError{}
+		}
+	default:
+		return nil, &InvalidAdminEnrollmentModeError{Mode: string(cfg.AdminEnrollment)}
 	}
 	if deps.Tenants == nil {
 		return nil, &firstboot.MissingTenantsError{}
@@ -383,6 +472,7 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		Username: adminUsername,
 		TenantID: cfg.TenantID,
 		RoleIDs:  []string{adminRoleID},
+		Pending:  mode == AdminEnrollDeferred,
 	})
 	if err != nil {
 		var exists *user.UsernameExistsError
@@ -399,18 +489,44 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 			slog.String("role_id", adminRoleID))
 	}
 
+	// Deferred mode must hand the consumer the admin's user id even on an
+	// idempotent re-run (the invitation attaches to that id), so a
+	// preexisting admin is resolved by lookup rather than left unreported.
+	// EVERY record deferred mode returns — freshly created included, since
+	// Users is an adapter seam that may have ignored Pending — passes the
+	// same fail-closed truly-pending validation, and the canonical factor
+	// store must agree the admin holds no active credential.
+	if mode == AdminEnrollDeferred {
+		if adminUser == nil {
+			resolved, resolveErr := resolveExistingTenantAdmin(ctx, deps, cfg.TenantID, adminUsername, adminRoleID)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			adminUser = resolved
+		} else if validateErr := validatePendingAdmin(adminUser, cfg.TenantID, adminUsername, adminRoleID); validateErr != nil {
+			return nil, validateErr
+		}
+		if factorErr := ensureNoActiveFactors(ctx, deps, cfg.TenantID, adminUsername, adminUser.ID); factorErr != nil {
+			return nil, factorErr
+		}
+	}
+
 	result := &TenantProvisionResult{
 		TenantID:      cfg.TenantID,
 		AdminUsername: adminUsername,
+		AdminRoleID:   adminRoleID,
+		AdminPending:  mode == AdminEnrollDeferred,
 	}
 	if adminUser != nil {
 		result.AdminUserID = adminUser.ID
 	}
 
-	// Step 4: tenant-admin cert enrollment via the firstboot seams. Only when
-	// the admin was newly created in this run (so a re-run does not rotate the
-	// tenant admin's key material).
-	if adminUser != nil {
+	// Step 4: tenant-admin cert enrollment via the firstboot seams. Only in
+	// cert mode, and only when the admin was newly created in this run (so a
+	// re-run does not rotate the tenant admin's key material). Deferred mode
+	// issues nothing: the pending admin's first credential is bound by the
+	// consumer's invitation-redemption flow.
+	if adminUser != nil && mode == AdminEnrollCert {
 		if certErr := enrollAdminCert(ctx, deps, cfg.TenantID, adminUsername, cfg.AdminCSRPEM, adminUser, result); certErr != nil {
 			return nil, certErr
 		}
@@ -560,6 +676,115 @@ func buildTenantStrategy(strategy seal.StrategyID) (seal.SealingStrategy, error)
 	default:
 		return nil, &UnsupportedStrategyError{Strategy: string(strategy)}
 	}
+}
+
+// AdminFactorChecker is the canonical auth-factor query deferred tenant
+// provisioning consults before handing back an invitation target. The
+// canonical factor records live OUTSIDE the user record — qrdb's user
+// auth-factor service persists them under __sys:auth/... — so
+// user.User.Factors alone cannot prove an admin is credential-less.
+//
+// The contract is FAIL-CLOSED (service.ActiveFactorChecker): an
+// implementation MUST error whenever the answer cannot be computed from a
+// complete read of the user's factor records — never report false over a
+// partial factor set. The lenient List (which skips unreadable entries)
+// deliberately cannot satisfy this seam; qrdb's production user
+// auth-factor service implements it directly.
+type AdminFactorChecker interface {
+	// HasActiveFactor reports whether the user owns at least one active
+	// (non-revoked) auth factor.
+	HasActiveFactor(ctx context.Context, userID uint64) (bool, error)
+}
+
+// AdminUserLookup is the optional read seam ProvisionTenant uses to resolve
+// a preexisting tenant-admin user in deferred mode. qrdb's user.UserServicer
+// satisfies it. An adapter that implements no lookup makes a deferred re-run
+// fail with PendingAdminUnresolvableError instead of silently reporting a
+// zero user id the consumer cannot attach an invitation to.
+type AdminUserLookup interface {
+	// GetUserByUsername retrieves a user by tenant-scoped username.
+	GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error)
+}
+
+// validatePendingAdmin guards every user record deferred mode would hand
+// back as an invitation target. It fails closed unless the record is TRULY
+// the pending admin an invitation may attach to: a persisted id, the exact
+// tenant and username requested, the tenant-scoped Admin role, still
+// disabled, and no bound credential (no cert bindings, no enrolled
+// factors). Anything else — an unrelated squatter under the admin username,
+// an admin already activated, an admin disabled for incident response with
+// live credentials, or an adapter that ignored CreateUserRequest.Pending —
+// is refused rather than converted into an invitation target.
+func validatePendingAdmin(u *user.User, tenantID, username, adminRoleID string) error {
+	var reason string
+	switch {
+	case u == nil || u.ID == 0:
+		reason = "record carries no persisted user id"
+	case u.TenantID != tenantID:
+		reason = "record belongs to a different tenant"
+	case u.Username != username:
+		reason = "record names a different user"
+	case !slices.Contains(u.RoleIDs, adminRoleID):
+		reason = "record does not hold the tenant-scoped admin role"
+	case u.Enabled:
+		reason = "admin is already activated"
+	case len(u.CertBindings) > 0:
+		reason = "admin already holds a bound certificate"
+	case len(u.Factors) > 0:
+		reason = "admin already holds enrolled auth factors"
+	default:
+		return nil
+	}
+	return &PendingAdminUnresolvableError{
+		TenantID: tenantID,
+		Username: username,
+		Reason:   reason,
+	}
+}
+
+// ensureNoActiveFactors consults the canonical auth-factor store: a record
+// that looks pending can still own active factors persisted outside the
+// user record (an enrolled-then-disabled admin, or a redemption that bound
+// a factor and failed before activation). An active factor fails closed,
+// and so does any store error — the seam's fail-closed contract means an
+// error is "the answer is unknown", which is never treated as
+// credential-less. Revoked factors do not block, so re-inviting an admin
+// whose credentials were revoked remains possible.
+func ensureNoActiveFactors(ctx context.Context, deps Dependencies, tenantID, username string, userID uint64) error {
+	hasActive, err := deps.AdminFactors.HasActiveFactor(ctx, userID)
+	if err != nil {
+		return &TenantAdminUserCreationError{Cause: err}
+	}
+	if hasActive {
+		return &PendingAdminUnresolvableError{
+			TenantID: tenantID,
+			Username: username,
+			Reason:   "admin already holds an active auth factor in the canonical factor store",
+		}
+	}
+	return nil
+}
+
+// resolveExistingTenantAdmin recovers the tenant-admin user a deferred
+// re-run found already present, applying validatePendingAdmin's fail-closed
+// bar to the record the lookup returns.
+func resolveExistingTenantAdmin(ctx context.Context, deps Dependencies, tenantID, username, adminRoleID string) (*user.User, error) {
+	lookup, ok := deps.Users.(AdminUserLookup)
+	if !ok {
+		return nil, &PendingAdminUnresolvableError{
+			TenantID: tenantID,
+			Username: username,
+			Reason:   "user already exists and the Users seam supports no lookup",
+		}
+	}
+	existing, err := lookup.GetUserByUsername(ctx, tenantID, username)
+	if err != nil {
+		return nil, &TenantAdminUserCreationError{Cause: err}
+	}
+	if err := validatePendingAdmin(existing, tenantID, username, adminRoleID); err != nil {
+		return nil, err
+	}
+	return existing, nil
 }
 
 // roleResolver returns the name resolver provisioning should use: the

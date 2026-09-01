@@ -101,6 +101,65 @@ func (e *FirstBootError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *FirstBootError) Unwrap() error { return e.Cause }
 
+// InvalidAdminEnrollmentModeError reports a TenantProvisionConfig
+// AdminEnrollment value that names no declared enrollment mode.
+type InvalidAdminEnrollmentModeError struct {
+	Mode string
+}
+
+// Error implements error.
+func (e *InvalidAdminEnrollmentModeError) Error() string {
+	return "bootstrap: invalid tenant-admin enrollment mode: " + e.Mode
+}
+
+// ConflictingAdminEnrollmentError reports an AdminCSRPEM supplied alongside
+// AdminEnrollDeferred: signing the CSR would contradict the requested
+// deferral, and silently discarding it would strand the admin's keypair.
+type ConflictingAdminEnrollmentError struct{}
+
+// Error implements error.
+func (e *ConflictingAdminEnrollmentError) Error() string {
+	return "bootstrap: admin CSR conflicts with deferred tenant-admin enrollment"
+}
+
+// SystemTenantDeferredEnrollmentError reports AdminEnrollDeferred requested
+// for the system tenant. System-level enrollment is cert-only, always: an
+// invitation-activated identity is not an acceptable bootstrap anchor for
+// the tenant that guards barrier material.
+type SystemTenantDeferredEnrollmentError struct{}
+
+// Error implements error.
+func (e *SystemTenantDeferredEnrollmentError) Error() string {
+	return "bootstrap: deferred enrollment is not permitted for the system tenant (system-level enrollment is cert-only)"
+}
+
+// MissingAdminFactorsError reports deferred enrollment requested without the
+// AdminFactors seam. The canonical auth-factor store must be consultable to
+// prove the admin is credential-less before an invitation target is handed
+// back, so deferred mode refuses to run without it.
+type MissingAdminFactorsError struct{}
+
+// Error implements error.
+func (e *MissingAdminFactorsError) Error() string {
+	return "bootstrap: deferred enrollment requires the AdminFactors seam (canonical auth-factor store)"
+}
+
+// PendingAdminUnresolvableError reports that deferred provisioning could not
+// obtain a truly pending tenant-admin record for the invitation to attach
+// to — whether the username was already taken by an unresolvable or
+// non-pending record, or the creating adapter returned one that fails the
+// pending-admin validation.
+type PendingAdminUnresolvableError struct {
+	TenantID string
+	Username string
+	Reason   string
+}
+
+// Error implements error.
+func (e *PendingAdminUnresolvableError) Error() string {
+	return "bootstrap: cannot resolve pending tenant admin " + e.Username + "@" + e.TenantID + ": " + e.Reason
+}
+
 // TenantRecordCreationError wraps errors that occur while creating the tenant
 // record during ProvisionTenant.
 type TenantRecordCreationError struct {

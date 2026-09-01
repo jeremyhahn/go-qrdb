@@ -10,7 +10,8 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error)
 
 // pkg/bootstrap — orchestration entry points
 //   System bootstrap        — system barrier + system tenant + system admin + admin-mTLS
-//   Provision tenant        — control-plane tenant record + tenant-admin cert enrollment
+//   Provision tenant        — control-plane tenant record + tenant-admin enrollment
+//                             (AdminEnrollmentMode: cert [default] | deferred/pending-invite)
 //   Initialize tenant barrier — tenant-admin self-service, authenticated
 ```
 
@@ -34,7 +35,36 @@ a second, unrelated credential bound instead.
 
 ## Invariants
 
-- **Enrolment is certificate-based; there are no invite tokens.**
+- **System-level enrolment is certificate-based; there are no system-level
+  invite tokens.** The initial tenant admin may instead be provisioned via
+  `ProvisionTenant`'s `AdminEnrollDeferred` mode: the admin user is created
+  pending (`Enabled=false`, no credential bound) and the result carries
+  `AdminUserID` + `AdminRoleID` so the composing host attaches a single-use
+  invitation (`pkg/invite`) whose redemption binds the first auth factor and
+  activates the account. Supplying `AdminCSRPEM` alongside deferred mode is
+  `ConflictingAdminEnrollmentError`; an undeclared mode is
+  `InvalidAdminEnrollmentModeError`; requesting deferred mode for the system
+  tenant is `SystemTenantDeferredEnrollmentError` (system-level enrollment is
+  cert-only, always). On an idempotent re-run the preexisting admin is
+  resolved through the optional `AdminUserLookup` seam (satisfied by
+  `user.UserServicer`). EVERY record deferred mode returns — freshly created
+  included, since `Users` is an adapter seam that may ignore `Pending` —
+  must be truly pending: persisted id, exact tenant and username, the
+  tenant-scoped Admin role, still disabled, no bound certificate, no
+  enrolled factors on the record, and no ACTIVE factor in the canonical
+  auth-factor store (the required `Dependencies.AdminFactors` seam — the
+  FAIL-CLOSED `service.ActiveFactorChecker` query, implemented by the
+  production user auth-factor service over the canonical PRIMARY factor
+  records rather than the per-user index, so a partially indexed enrollment
+  or index corruption cannot hide a factor; the lenient `List`, which walks
+  the index and skips unreadable entries, structurally cannot satisfy it.
+  Deferred mode without the seam is `MissingAdminFactorsError`; a store
+  read error is an error, never "credential-less"; revoked factors do not
+  block, so re-inviting after credential revocation stays possible). Any other state (an activated
+  admin, one disabled for incident response with live credentials, or a
+  wrong record) fails closed with `PendingAdminUnresolvableError` rather
+  than becoming an invitation target. Deferred mode strengthens the
+  no-tenant-key invariant: nothing usable exists until redemption.
 - **The admin is bound by SPKI thumbprint.**
 - **`AdminCertPool` is not the platform CA.** It is an operator-supplied pool
   for a credential issued elsewhere.

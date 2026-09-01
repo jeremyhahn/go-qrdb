@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,6 +100,23 @@ type UserAuthFactorServicer interface {
 	MarkUsed(ctx context.Context, factorID string, ts time.Time) error
 }
 
+// ActiveFactorChecker is the FAIL-CLOSED active-factor query. Unlike List —
+// which serves display paths, walks only the per-user secondary index, and
+// deliberately skips entries it cannot read — an implementation MUST answer
+// from a complete, authoritative read of the canonical factor records and
+// MUST return an error whenever that read cannot be completed: any record
+// read failure is an error, never a success over a partial factor set, and
+// a factor a secondary index fails to name must still be found. Security
+// gates depend on this contract (deferred tenant-admin provisioning in
+// pkg/bootstrap consults it before handing back an invitation target). The
+// production user auth-factor service implements it alongside
+// UserAuthFactorServicer.
+type ActiveFactorChecker interface {
+	// HasActiveFactor reports whether the user owns at least one active
+	// (non-revoked) auth factor.
+	HasActiveFactor(ctx context.Context, userID uint64) (bool, error)
+}
+
 // UserStateUpdater optionally receives a callback whenever a user's last
 // active factor is force-removed, so the embedding system can mark the
 // user inactive. The interface is satisfied by any user store that
@@ -124,6 +142,11 @@ type UserAuthFactorServiceConfig struct {
 // Rotate, Remove) are atomic with respect to other mutators sharing the
 // same process. Cross-process atomicity is provided by the underlying
 // KVServicer (Raft-replicated puts).
+// The production service satisfies both the servicer and the fail-closed
+// checker; consumers holding a UserAuthFactorServicer reach the checker via
+// type assertion.
+var _ ActiveFactorChecker = (*userAuthFactorService)(nil)
+
 type userAuthFactorService struct {
 	kv      KVServicer
 	users   UserStateUpdater
@@ -241,6 +264,42 @@ func (s *userAuthFactorService) List(ctx context.Context, userID uint64) ([]*aut
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// HasActiveFactor implements ActiveFactorChecker with strict reads over the
+// canonical PRIMARY factor records, not the per-user secondary index: Add
+// writes the primary before the index, so a partially indexed enrollment
+// (index write failed) leaves an orphaned primary that no index entry
+// names, and index corruption could point at another user's factor. For a
+// fail-closed security gate the primaries are the only authoritative set.
+// Any unreadable record errors the call rather than being skipped. The
+// full-prefix scan is acceptable because this query guards rare
+// control-plane operations (tenant provisioning), never login resolution.
+func (s *userAuthFactorService) HasActiveFactor(ctx context.Context, userID uint64) (bool, error) {
+	if userID == 0 {
+		return false, &auth.InvalidFactorError{Reason: "userID must be non-zero"}
+	}
+	// Serialized with every factor mutation (Add / Remove / Rotate /
+	// Relabel / MarkUsed all hold s.mu), so the scan cannot interleave
+	// with a mid-flight enrollment's partial writes: an Add that completed
+	// before this call is always seen, and one that starts during it
+	// lands entirely after the answer is computed.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys, err := s.kv.List(ctx, userFactorPrimaryPrefix)
+	if err != nil {
+		return false, err
+	}
+	for _, k := range keys {
+		f, err := s.Get(ctx, strings.TrimPrefix(k, userFactorPrimaryPrefix))
+		if err != nil {
+			return false, err
+		}
+		if f.UserID == userID && f.IsActive() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Get loads the canonical factor by ID.

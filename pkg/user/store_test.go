@@ -279,6 +279,35 @@ func TestCreateUser_Success(t *testing.T) {
 	}
 }
 
+func TestCreateUser_PendingCreatesDisabled(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{
+		Username: "invited-admin",
+		TenantID: "acme",
+		Pending:  true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if created.Enabled {
+		t.Error("pending user created with Enabled=true, want disabled until activation")
+	}
+
+	// Activation is the ordinary EnableUser path.
+	if err := svc.EnableUser(ctx, created.ID); err != nil {
+		t.Fatalf("EnableUser: %v", err)
+	}
+	got, err := svc.GetUser(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if !got.Enabled {
+		t.Error("EnableUser did not activate the pending user")
+	}
+}
+
 func TestCreateUser_DuplicateUsername(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
