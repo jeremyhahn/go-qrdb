@@ -113,6 +113,16 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   interface (the embedded transport exposes only the legacy `AuthFactorClient`).
   `Factors()`, `Login()` and `Sessions()` likewise. **Nil-check them** — a nil
   is not an error value.
+- **Factor metadata keys under `auth.ReservedMetadataPrefix` (`attest_`) are
+  server-owned and refused on `Add` and `Rotate`.** Enforced by
+  `auth.ValidateMetadata`, called from the user auth-factor **service** so
+  every transport inherits one rule rather than each re-implementing it.
+  Refused, never stripped — a caller who set the key and got a success would
+  believe it was recorded. Matching is case-insensitive and is a **prefix**, so
+  an attestation field invented later is covered without an edit; the literal
+  boundary means `attestation_root` is not reserved. See
+  [architecture.md](architecture.md#trust-boundaries) for why this is a trust
+  boundary and not a validation nicety.
 - **qrdb never interprets `FactorEnrollment.Data`.**
 - **The qrdb CLI performs no hardware verification.** `auth login` resolves a
   `(method, lookup key)` tuple to a user through the `LoginAuthFactor` RPC.
@@ -142,6 +152,12 @@ Sentinels (`pkg/pin/errors.go`):
 | `ErrStrategyNotSet` | `Service` invoked with no backend |
 | `ErrStateCorrupted` | persisted `PINRecord` did not decode |
 | `ErrUnsupportedHashAlgorithm` | neither `argon2id` nor `pbkdf2` |
+
+Factor sentinels (`pkg/auth/factors_errors.go`), relevant here:
+
+| Sentinel | Meaning |
+|---|---|
+| `ErrReservedMetadata` | caller-supplied metadata carried a key inside the server-owned `attest_` namespace; carried by `*ReservedMetadataKeyError`, which names the key and the prefix |
 
 Typed errors carrying payload:
 

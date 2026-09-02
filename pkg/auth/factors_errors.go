@@ -14,7 +14,10 @@
 
 package auth
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Sentinel errors returned by the AuthFactor service and login resolver.
 // Callers MUST use errors.Is to compare against these values; concrete
@@ -44,6 +47,11 @@ var (
 	// ErrFactorAlreadyExists is returned by Add when the (type, credential
 	// lookup key) tuple is already bound to a different user.
 	ErrFactorAlreadyExists = errors.New("auth: factor credential already enrolled")
+
+	// ErrReservedMetadata is returned when caller-supplied factor metadata
+	// carries a key inside a namespace the server owns. See
+	// ReservedMetadataPrefix.
+	ErrReservedMetadata = errors.New("auth: factor metadata key is server-owned")
 
 	// ErrInvalidFactor is returned when a request payload is missing
 	// required fields (e.g., empty Credential, missing UserID).
@@ -159,3 +167,61 @@ func (e *InvalidFactorError) Error() string {
 
 // Unwrap returns the sentinel error so errors.Is succeeds.
 func (e *InvalidFactorError) Unwrap() error { return ErrInvalidFactor }
+
+// ReservedMetadataPrefix names the AuthFactor.Metadata namespace that only
+// the server may write. Caller-supplied metadata carrying any key with this
+// prefix is REFUSED, on Add and on Rotate, by every transport.
+//
+// The keys under it record what an enrollment ceremony actually PROVED about
+// an authenticator -- "hardware" only when a WebAuthn attestation chain or a
+// PIV slot attestation verified against operator-configured roots -- and
+// login policy reads that record to decide whether a credential may
+// authenticate an administrator. A caller who can set such a key is not
+// bypassing that control, they are supplying its input: a forged hardware
+// claim wearing the field name the policy trusts, which defeats the control
+// without touching it (go-qrdb#234, go-quicbaas#381).
+//
+// A PREFIX rather than a list of keys, deliberately. Enumerating the fields
+// that exist today ("attest_level", "attest_aaguid") is a guard exactly as
+// wide as today's field list, and the next attestation field is unprotected
+// until someone remembers to extend it. A prefix fails closed for fields that
+// do not exist yet.
+const ReservedMetadataPrefix = "attest_"
+
+// ReservedMetadataKeyError is returned when caller-supplied factor metadata
+// carries a key inside the server-owned namespace. It names both the key and
+// the prefix, so an operator who hits it can tell a forged attestation claim
+// from an ordinary naming collision.
+type ReservedMetadataKeyError struct {
+	// Key is the offending metadata key exactly as the caller supplied it.
+	Key string
+	// Prefix is the reserved namespace the key falls inside.
+	Prefix string
+}
+
+// Error implements error.
+func (e *ReservedMetadataKeyError) Error() string {
+	return "auth: factor metadata key " + e.Key + " is inside the server-owned " +
+		e.Prefix + "* namespace and cannot be set by a caller"
+}
+
+// Unwrap returns the sentinel error so errors.Is succeeds.
+func (e *ReservedMetadataKeyError) Unwrap() error { return ErrReservedMetadata }
+
+// ValidateMetadata returns a *ReservedMetadataKeyError when md carries any key
+// inside ReservedMetadataPrefix. It is the single definition of the rule; the
+// service layer calls it on Add and Rotate so every transport inherits it
+// rather than each handler re-implementing it.
+//
+// Keys are compared case-insensitively. A store that treated "Attest_Level"
+// as distinct from "attest_level" would let the same forged claim through
+// under a different spelling on any consumer that lower-cases before reading.
+func ValidateMetadata(md map[string]string) error {
+	for k := range md {
+		if len(k) >= len(ReservedMetadataPrefix) &&
+			strings.EqualFold(k[:len(ReservedMetadataPrefix)], ReservedMetadataPrefix) {
+			return &ReservedMetadataKeyError{Key: k, Prefix: ReservedMetadataPrefix}
+		}
+	}
+	return nil
+}

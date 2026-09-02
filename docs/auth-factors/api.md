@@ -82,6 +82,31 @@ Hardware verification is the caller's — go-xkms's — responsibility.
 
 Enrolment data is stored as an **opaque blob**. qrdb never parses it.
 
+### The `attest_*` metadata namespace is server-owned
+
+`metadata` is free-form with one exception: **any key beginning `attest_` is
+refused on `Add` and on `Rotate`, over every transport.**
+
+Those keys record what an enrolment ceremony actually *proved* about an
+authenticator — `hardware` only when an attestation chain verified against
+operator-configured roots — and login policy reads that record to decide
+whether a credential may authenticate an administrator. A caller who could set
+one would not be bypassing that control, they would be supplying its input: a
+forged hardware claim wearing the field name the policy trusts.
+
+It is a **prefix**, not a list of today's field names, so a future attestation
+field is covered the day it is invented rather than the day someone remembers
+to extend a list. Matching is case-insensitive: `Attest_Level` is refused too.
+
+The request is **refused, not silently stripped**. A caller who set the key and
+received a success would reasonably believe it was recorded, leaving the caller
+and the store disagreeing with no signal to either. The error names both the
+offending key and the reserved prefix, so an operator can tell a forged claim
+from an ordinary naming collision.
+
+Note the boundary is the literal prefix: `attestation_root` is *not* reserved,
+because it does not begin `attest_`.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
@@ -90,6 +115,7 @@ Enrolment data is stored as an **opaque blob**. qrdb never parses it.
 | Factor not found | 404 | `NOT_FOUND` |
 | Removing the last factor without force | 409 | `FAILED_PRECONDITION` |
 | Unknown factor type or method | 400 | `INVALID_ARGUMENT` |
+| Metadata key inside the server-owned `attest_*` namespace | 400 | `INVALID_ARGUMENT` — `ErrReservedMetadata` |
 | Login tuple resolves to no user | 401 | `UNAUTHENTICATED` |
 | PIN shorter than 6 characters | 400 | `INVALID_ARGUMENT` — `ErrPINTooShort` |
 | PIN does not verify | 403 | `PERMISSION_DENIED` — `ErrPINInvalid` |

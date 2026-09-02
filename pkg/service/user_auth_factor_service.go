@@ -190,6 +190,16 @@ func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *
 	if len(factor.Credential) == 0 {
 		return &auth.InvalidFactorError{Reason: "credential blob is empty"}
 	}
+	// The server-owned metadata namespace is refused here, at the service,
+	// rather than in each handler: REST, gRPC, MCP, QUIC, the Unix socket
+	// (which registers the gRPC servicer) and the embedded SDK transport all
+	// reach this method, so one check covers every way in and a new transport
+	// inherits it by construction. Refusing rather than stripping is the
+	// point -- a caller who sets an attestation key and receives a success
+	// would reasonably believe it was recorded (go-qrdb#234).
+	if err := auth.ValidateMetadata(factor.Metadata); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -416,6 +426,11 @@ func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFac
 	}
 	if len(newFactor.Credential) == 0 {
 		return &auth.InvalidFactorError{Reason: "credential blob is empty"}
+	}
+	// Same rule as Add: rotation is the other way a caller supplies metadata
+	// for a factor the server never verified.
+	if err := auth.ValidateMetadata(newFactor.Metadata); err != nil {
+		return err
 	}
 	if newFactor.ID == "" {
 		newFactor.ID = s.idGen()

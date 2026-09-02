@@ -98,6 +98,15 @@ can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
 - **qrdb does not perform hardware verification.** The CLI's `auth login`
   resolves a `(method, lookup key)` tuple to a user; it does not touch a device.
   End-to-end hardware login is `xkmsctl auth login` or `platformctl auth login`.
+- **A caller cannot supply an attestation claim.** Factor metadata keys under
+  `attest_` are server-owned and refused on `Add` and `Rotate`. Enforced once
+  in the user auth-factor **service**, not per handler, so REST, gRPC, MCP, the
+  native QUIC transport, the Unix socket and the in-process embedded client all
+  inherit it — and a transport added later inherits it by construction rather
+  than by someone remembering. This matters because qrdb is the *store* for a
+  claim another system's login policy trusts: qrdb performs no hardware
+  verification itself, so the only thing protecting the claim is that no wire
+  path can write it.
 - **Minimum PIN length is 6 characters**, enforced in `Service` before
   delegation, so every backend gets the same floor.
 - **Verification is constant-time** (`crypto/subtle`) and hashes are re-derived

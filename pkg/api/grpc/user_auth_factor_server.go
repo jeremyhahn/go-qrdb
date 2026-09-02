@@ -211,7 +211,12 @@ func mapUserAuthFactorGRPCError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, auth.ErrLastFactor), errors.Is(err, auth.ErrFactorAlreadyExists):
 		return status.Error(codes.AlreadyExists, err.Error())
-	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor):
+	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor),
+		errors.Is(err, auth.ErrReservedMetadata):
+		// InvalidArgument, not PermissionDenied: no caller may write the
+		// server-owned metadata namespace over any transport, so this is a
+		// malformed request rather than an authorization decision about this
+		// principal. err.Error() names the offending key and the prefix.
 		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())

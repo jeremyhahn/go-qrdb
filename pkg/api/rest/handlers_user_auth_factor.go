@@ -256,7 +256,12 @@ func mapUserAuthFactorError(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, auth.ErrFactorAlreadyExists):
 		return http.StatusConflict
-	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor):
+	case errors.Is(err, auth.ErrFactorTypeUnsupported), errors.Is(err, auth.ErrInvalidFactor),
+		errors.Is(err, auth.ErrReservedMetadata):
+		// 400 rather than 403: no caller may write the server-owned metadata
+		// namespace over any transport, so this is a malformed request rather
+		// than an authorization decision about this principal. The response
+		// body carries the offending key and the reserved prefix.
 		return http.StatusBadRequest
 	case errors.Is(err, auth.ErrUserHasNoFactors):
 		return http.StatusNotFound
