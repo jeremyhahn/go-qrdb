@@ -22,9 +22,11 @@ func TestRemainingTTL_Expired(t *testing.T) {
 		expiry: time.Now().Add(-10 * time.Second), // expired in the past
 		keys:   make(map[string]struct{}),
 	}
-	got := l.remainingTTL()
+	// remainingTTLLocked, not remainingTTL: the caller must hold l.mu, and a
+	// test holding the only reference to this lease trivially does (#174).
+	got := l.remainingTTLLocked()
 	if got != 0 {
-		t.Errorf("remainingTTL() on expired lease = %d, want 0", got)
+		t.Errorf("remainingTTLLocked() on expired lease = %d, want 0", got)
 	}
 }
 
@@ -37,9 +39,9 @@ func TestRemainingTTL_Active(t *testing.T) {
 		expiry: time.Now().Add(60 * time.Second),
 		keys:   make(map[string]struct{}),
 	}
-	got := l.remainingTTL()
+	got := l.remainingTTLLocked()
 	if got <= 0 {
-		t.Errorf("remainingTTL() on active lease = %d, want > 0", got)
+		t.Errorf("remainingTTLLocked() on active lease = %d, want > 0", got)
 	}
 }
 

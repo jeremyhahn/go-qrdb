@@ -48,6 +48,25 @@ which lease a key hangs off.
 
 ## Invariants
 
+- **The sweeper is started by the composer, and every clustered composition
+  must start it.** `Lessor.RunExpiry` is a loop, not a background service that
+  begins on its own; a composition that builds a `Lessor` and hands it to the
+  state machine has done half the wiring. All three clustered compositions run
+  it — `cmd/qrdbd`, `pkg/server`'s tenant host, and `sdk/go/node` — and a new
+  one must too. It takes a NODE-LIFETIME context, never a boot request's ctx,
+  which is cancelled as soon as `New`/`Unseal` returns.
+- **`lease.mu` guards `expiry` as well as `keys`, and every reader takes it.**
+  `KeepAlive` writes `expiry` from the Raft apply goroutine while the sweeper
+  reads it from its own; an unlocked read there is a real data race, measured
+  under `-race`. The `*Locked` helpers carry the
+  caller-holds-the-lock contract and are deliberately NOT wrapped by the
+  locking variants: `toLease` already holds `l.mu` when it needs the remaining
+  TTL, and `sync.RWMutex` is not reentrant, so a nested `RLock` deadlocks the
+  moment a writer queues between the two acquisitions. Lock ordering is
+  `Lessor.mu` then `lease.mu`, never the reverse.
+- **Assert the reap by reading the STORE, not `Lessor.Leases()`.** That getter
+  filters expired leases, so a test asserting on it passes whether or not
+  anything was reaped — which is how the embedded gap stayed invisible.
 - **Expiry is a committed Raft operation, not a local timer.** Every replica
   observes the cascade delete at the same log position. No node expires a key on
   its own clock.

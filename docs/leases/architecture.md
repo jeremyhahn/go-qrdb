@@ -42,7 +42,24 @@ operation, so every replica sees the deletions at the same point in the log.
 | Lease objects, TTL accounting, expiry sweep | `pkg/lease` | go-qrdb |
 | Key attachment and cascade delete | `pkg/service`, `pkg/mvcc` | go-qrdb |
 | Leader election that decides who sweeps | — | **go-quicraft** |
+| **Starting the sweeper** | `cmd/qrdbd`, `pkg/server`, `sdk/go/node` | go-qrdb |
 | SDK surface | `sdk/go` (`Client.Lease()`) | go-qrdb |
+
+**Owning the sweeper and starting it are different jobs, and the second is the
+composer's.** `pkg/lease.RunExpiry` is a loop somebody has to run; it does not
+start itself. Every clustered composition must start it, and there are three:
+the daemon (`cmd/qrdbd`), the tenant host (`pkg/server`), and the embedded
+clustered node (`sdk/go/node`). The third was missing for a time, so an
+embedded clustered node closed a lease's `Done` channel on time and then never
+deleted the keys bound to it.
+
+The failure is worth stating because it is quiet and it is not symmetric. The
+holder learns it lost the lease; nothing else changes. For a consumer whose HA
+design makes the bound key's existence the ownership signal, that is a control
+plane that can **fence** a dead leader and can never **elect** a replacement —
+every contender receives `LeaseHeldError` forever. A composition that grants
+leases without sweeping them is not a degraded lease service, it is a
+one-directional one.
 
 Leases are the substrate for [../distributed-locks/](../distributed-locks/): a
 lock's TTL *is* a lease, which is why a crashed lock holder's lock is released

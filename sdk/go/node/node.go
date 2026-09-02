@@ -849,6 +849,49 @@ func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvcc
 	}
 }
 
+// background returns the node-lifetime context for long-running goroutines,
+// creating it on first use. Goroutines started from a boot path must NOT use
+// the boot request's ctx: that ctx is cancelled when the caller's Unseal or
+// New returns, which would stop the goroutine moments after the node came up.
+// Node.Close cancels this one.
+func (n *Node) background() context.Context {
+	if n.bgCtx == nil {
+		n.bgCtx, n.bgCancel = context.WithCancel(context.Background())
+	}
+	return n.bgCtx
+}
+
+// startLeaseExpiry starts the leader-side lease-expiry sweeper for a clustered
+// node, mirroring the daemon's wiring in cmd/qrdbd/start.go.
+//
+// Without it a lease with a TTL expires in the Lessor -- the holder's Done
+// channel closes on time -- but NOTHING deletes the keys attached to it,
+// because the delete happens in the apply path of a revoke that no node ever
+// proposes (go-qrdb#174). For a consumer whose HA design makes the bound key's
+// existence the ownership signal, that is the difference between "the leader
+// died" and "a replacement can take over": the dead leader is fenced, every
+// contender receives LeaseHeldError, and no election ever completes.
+//
+// Only the Raft leader proposes the revoke, routed through consensus via
+// leaseSvc.Revoke; every replica applies it. The leadership gate is
+// re-evaluated on each tick, so the loop is correct across elections and is a
+// no-op on followers. It is skipped when the lease service is absent
+// (embeddable deployments built without lease support), which is the same
+// condition the daemon skips on.
+func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc service.LeaseServicer, replicaID uint64) {
+	if host == nil || lr == nil || leaseSvc == nil {
+		return
+	}
+	go lr.RunExpiry(n.background(), lease.DefaultExpiryInterval,
+		func() bool {
+			leaderID, ok, err := host.GetLeaderID(shard.ShardKV)
+			return err == nil && ok && leaderID == replicaID
+		},
+		leaseSvc.Revoke,
+		n.logger,
+	)
+}
+
 // completeClusteredBoot finishes wiring the clustered node after the barrier
 // is unsealed: creates the quicraft host, calls BuildServices, and wires the
 // server.
@@ -1005,10 +1048,24 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			// the unseal/boot request ctx is cancelled. The background context is
 			// cancelled by bgCancel in Node.Close() (and in the wireClientAndServer
 			// error branch below).
-			n.bgCtx, n.bgCancel = context.WithCancel(context.Background())
-			go ti.Reconciler.Run(n.bgCtx)
+			go ti.Reconciler.Run(n.background())
 		}
 	}
+
+	// Leader-side lease-expiry sweeper. See startLeaseExpiry: without it an
+	// expired lease's attached keys are never reaped on the embedded path
+	// (go-qrdb#174).
+	//
+	// Started HERE, after every other fallible step, rather than beside the
+	// Lessor it sweeps. Placed earlier it sits above waitSystemShardReady and
+	// BuildTenantInfra, whose error branches tear down svcNode, host and
+	// dbManager and return WITHOUT cancelling the background context -- so a
+	// failed boot would return an error while the sweeper kept ticking against
+	// closed services. Adding a cancel to each of those branches would work and
+	// would leave three places to forget; one start point with one error path
+	// below it cannot be forgotten. The sweeper needs nothing that boot
+	// produces after this line, and nothing is serving traffic yet.
+	n.startLeaseExpiry(host, lr, svcNode.Lease, pending.cfg.Raft.ReplicaID)
 
 	if err := n.wireClientAndServer(ctx, svcNode, pending.cfg, pending.serverOpts, false); err != nil {
 		// Stop the reconciler goroutine before tearing down the resources it
@@ -1501,7 +1558,17 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}
 	n.svcNode = svcNode
 
+	// Leader-side lease-expiry sweeper, as in completeClusteredBoot. The
+	// seal-disabled branch builds its host and services inline rather than
+	// through that function, so it needs the same wiring; omitting it here is
+	// how the unsealed path kept the defect after the sealed path was fixed.
+	n.startLeaseExpiry(host, lr, svcNode.Lease, cfg.Raft.ReplicaID)
+
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, false); err != nil {
+		if n.bgCancel != nil {
+			n.bgCancel()
+			n.bgCancel = nil
+		}
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
 		return nil, err

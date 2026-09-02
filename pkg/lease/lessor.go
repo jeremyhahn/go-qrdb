@@ -30,6 +30,14 @@ import (
 )
 
 // lease is the internal lease state tracked by the Lessor.
+//
+// mu guards BOTH keys and expiry. expiry is mutated by KeepAlive, which runs
+// on the Raft apply goroutine, and read by the lease-expiry sweeper on its own
+// goroutine -- so an unsynchronised read of it is a genuine data race, not a
+// benign one. It went unobserved because the only composition that ran the
+// sweeper (cmd/qrdbd) has no -race test driving a keep-alive concurrently with
+// a sweep; the race detector reported it the first time sdk/go/node started
+// the sweeper under the embedded raft lease tests (go-qrdb#174).
 type lease struct {
 	id     int64
 	ttl    int64 // granted TTL in seconds
@@ -38,8 +46,15 @@ type lease struct {
 	mu     sync.RWMutex
 }
 
-// remainingTTL returns the remaining TTL in seconds.
-func (l *lease) remainingTTL() int64 {
+// remainingTTLLocked returns the remaining TTL in seconds.
+//
+// The CALLER MUST HOLD l.mu (read or write). The locking variants below do not
+// wrap this one for a reason: toLease already holds l.mu when it needs the
+// value, and sync.RWMutex is not reentrant -- a nested RLock deadlocks the
+// moment a writer is queued between the two acquisitions. Splitting the
+// locked/unlocked pair is what keeps that from being reintroduced by someone
+// "adding the missing lock".
+func (l *lease) remainingTTLLocked() int64 {
 	remaining := time.Until(l.expiry).Seconds()
 	if remaining < 0 {
 		return 0
@@ -47,9 +62,21 @@ func (l *lease) remainingTTL() int64 {
 	return int64(remaining)
 }
 
-// isExpired returns true if the lease has passed its expiry time.
-func (l *lease) isExpired() bool {
+// isExpiredLocked reports whether the lease has passed its expiry time.
+// The CALLER MUST HOLD l.mu -- see remainingTTLLocked.
+func (l *lease) isExpiredLocked() bool {
 	return time.Now().After(l.expiry)
+}
+
+// isExpired reports whether the lease has passed its expiry time, taking
+// l.mu itself. Callers that do not already hold l.mu use this one.
+//
+// Lock ordering across this package is lr.mu then l.mu, never the reverse, so
+// calling this while holding lr.mu (as Leases and ExpiredLeaseIDs do) is safe.
+func (l *lease) isExpired() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.isExpiredLocked()
 }
 
 // Lessor manages the lifecycle of leases in memory. Lease mutations
@@ -264,7 +291,7 @@ func (lr *Lessor) toLease(l *lease) *Lease {
 		ID:           l.id,
 		TTL:          l.ttl,
 		GrantedTTL:   l.ttl,
-		RemainingTTL: l.remainingTTL(),
+		RemainingTTL: l.remainingTTLLocked(),
 		Keys:         keys,
 	}
 }
