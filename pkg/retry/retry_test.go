@@ -349,17 +349,31 @@ func TestDo_ContextCancellation(t *testing.T) {
 	assert.Equal(t, 1, callCount,
 		"no attempt may follow a cancelled context")
 
-	// The returned error carries the OPERATION's code, not ErrCanceled:
-	// errors.Wrap preserves the code of an error that is already a QRDBError
-	// and only adds the operation, so the ErrCanceled that retry.Do passes is
-	// discarded. Asserted as it behaves rather than as the call site reads --
-	// a caller therefore cannot distinguish "gave up because the context was
-	// cancelled" from "gave up after MaxAttempts" by code alone.
+	// The returned error carries ErrCanceled -- the code retry.Do passes,
+	// saying "I stopped because the context ended, not because attempts ran
+	// out" (go-qrdb#187).
+	//
+	// This block previously asserted the OPPOSITE, with a comment explaining
+	// that errors.Wrap discards the code and that "a caller therefore cannot
+	// distinguish 'gave up because the context was cancelled' from 'gave up
+	// after MaxAttempts' by code alone." That is an exact statement of the
+	// defect, pinned as a test rather than filed -- which is how it stayed
+	// live. A test written to match observed behaviour freezes it; when the
+	// behaviour is wrong, the test is what makes it permanent.
 	var qe *dberrors.QRDBError
 	require.True(t, dberrors.As(err, &qe))
 	assert.Equal(t, "retry.Do", qe.Op, "the giving-up frame must name retry.Do")
-	assert.True(t, dberrors.Is(err, dberrors.ErrTimeout),
-		"the operation's own error must survive, got %v", err)
+	assert.True(t, dberrors.Is(err, dberrors.ErrCanceled),
+		"Do must report WHY it stopped, got %v", err)
+	assert.False(t, qe.IsRetryable(),
+		"a cancellation must not be retryable, got %v", err)
+
+	// The operation's own error is not lost, only no longer what a single Is
+	// call answers about: it is still reachable through the chain.
+	var inner *dberrors.QRDBError
+	require.True(t, errors.As(qe.Unwrap(), &inner))
+	assert.Equal(t, dberrors.ErrTimeout, inner.Code,
+		"the operation's own classification must survive in the chain")
 }
 
 // A real, timer-driven DEADLINE stops the loop.
@@ -420,12 +434,24 @@ func TestDo_ContextTimeout(t *testing.T) {
 	assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded,
 		"the context must have expired by DEADLINE, not by cancellation")
 
-	// See TestDo_ContextCancellation: the wrap preserves the operation's code.
+	// See TestDo_ContextCancellation: the wrap now applies retry.Do's own code.
 	var qe *dberrors.QRDBError
 	require.True(t, dberrors.As(err, &qe))
 	assert.Equal(t, "retry.Do", qe.Op)
-	assert.True(t, dberrors.Is(err, dberrors.ErrUnavailable),
-		"the operation's own error must survive, got %v", err)
+	assert.True(t, dberrors.Is(err, dberrors.ErrCanceled),
+		"Do must report WHY it stopped, got %v", err)
+	assert.False(t, qe.IsRetryable(),
+		"a deadline-driven stop must not come back retryable, got %v", err)
+
+	// ErrUnavailable IS retryable, so this is the case that matters most: the
+	// old inheritance would have marked the whole thing retryable and invited
+	// a caller to retry a context that has already expired.
+	var inner *dberrors.QRDBError
+	require.True(t, errors.As(qe.Unwrap(), &inner))
+	assert.Equal(t, dberrors.ErrUnavailable, inner.Code,
+		"the operation's own classification must survive in the chain")
+	assert.True(t, inner.IsRetryable(),
+		"precondition: the inner error must be retryable, or this proves nothing")
 }
 
 // A context that is ALREADY done is not attempted at all.

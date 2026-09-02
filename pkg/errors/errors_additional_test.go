@@ -272,14 +272,39 @@ func TestWrap_PreservesContext(t *testing.T) {
 	assert.Equal(t, 123, val)
 }
 
-func TestWrap_PreservesRetry(t *testing.T) {
+// Retryability follows the CALLER's code, not the inner error's override
+// (go-qrdb#187). This test asserted the opposite -- that an explicit
+// WithRetry(true) on the wrapped error survives the wrap -- which is the same
+// inheritance that let retry.Do hand back a cancellation marked retryable.
+//
+// The constraint the #187 ruling attached is absolute: a cancellation must not
+// inherit Retry=true. Honouring an inner override would reintroduce it by
+// another route, since any error whose author called WithRetry(true) would
+// carry it through every reclassification above it.
+func TestWrap_RetryFollowsTheCallersCode(t *testing.T) {
 	originalErr := New(ErrNotFound, "inner", "not found")
 	_ = originalErr.WithRetry(true)
 
+	// ErrStorage is not retryable, so the wrapper is not either -- despite the
+	// inner error's explicit override.
 	wrappedErr := Wrap(originalErr, ErrStorage, "outer")
 	require.Error(t, wrappedErr)
+	assert.False(t, IsRetryable(wrappedErr),
+		"the inner error's WithRetry(true) governed the wrapper's retryability")
 
-	assert.True(t, IsRetryable(wrappedErr))
+	// The override is not destroyed, only no longer authoritative for the
+	// outer frame: it is still on the inner error, reachable through the chain.
+	var qe *QRDBError
+	require.True(t, As(wrappedErr, &qe))
+	var inner *QRDBError
+	require.True(t, errors.As(qe.Unwrap(), &inner))
+	assert.True(t, inner.Retry, "the inner error's own override must survive")
+
+	// And the derivation runs the other way too: a retryable code makes the
+	// wrapper retryable even though the inner error is not.
+	notRetryable := New(ErrNotFound, "inner", "not found")
+	require.False(t, notRetryable.IsRetryable())
+	assert.True(t, IsRetryable(Wrap(notRetryable, ErrUnavailable, "outer")))
 }
 
 func TestQRDBError_IsWithNilUnderlying(t *testing.T) {

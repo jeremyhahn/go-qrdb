@@ -297,10 +297,27 @@ func TestIs(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "wrapped error preserves original code",
+			// Wrap applies the CALLER's code (go-qrdb#187). This case
+			// previously asserted the opposite, with the comment "Wrapping
+			// preserves original error code" -- a correct description of the
+			// defect, pinned as if it were the contract.
+			name: "wrapped error reports the caller's code",
 			err:  Wrap(notFoundErr, ErrStorage, "outer"),
-			code: ErrNotFound, // Wrapping preserves original error code
+			code: ErrStorage,
 			want: true,
+		},
+		{
+			// The inner classification is no longer what Is reports. It is
+			// still REACHABLE through the chain -- see
+			// TestWrap_ReclassifiesAQRDBError -- but a single Is call answers
+			// about the outermost frame, deliberately: the alternative
+			// considered and rejected in the #187 ruling was to make Is walk
+			// the chain, which would report BOTH codes as true and make
+			// classification ambiguous.
+			name: "wrapped error no longer reports the inner code",
+			err:  Wrap(notFoundErr, ErrStorage, "outer"),
+			code: ErrNotFound,
+			want: false,
 		},
 		{
 			name: "nil error",

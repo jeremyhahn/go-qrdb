@@ -38,31 +38,67 @@ func Newf(code ErrorCode, op string, format string, args ...interface{}) *QRDBEr
 	}
 }
 
-// Wrap wraps an existing error with QRDB error context.
+// Wrap wraps err in a QRDBError carrying the CALLER's classification.
+//
+// The code passed in is the code the result reports, whether or not err
+// already contains a *QRDBError, and Retry is derived from that code. The
+// inner error stays in the chain, so errors.As still reaches it and every
+// sentinel below it still matches through Unwrap.
+//
+// THIS USED TO PRESERVE THE INNER CODE AND SILENTLY DISCARD THE ARGUMENT
+// (go-qrdb#187, owner-ruled 2026-09-02), which made every wrap intended as a
+// RECLASSIFICATION a no-op. Two consequences, and the second was the
+// dangerous one:
+//
+//   - Is(err, code) resolves the first *QRDBError via errors.As and compares
+//     its Code, so it reported the INNER classification. A caller branching on
+//     cancellation silently took the wrong branch.
+//   - Retry was inherited along with Code. retry.Do says "I stopped because
+//     the context ended" via Wrap(lastErr, ErrCanceled, "retry.Do") and handed
+//     back an error marked RETRYABLE, because the inner timeout was. A caller
+//     honouring Retry would retry an operation that was cancelled.
+//
+// The behaviour was also TYPE-DEPENDENT, which is why it survived: wrapping a
+// plain fmt.Errorf took the other branch and applied the code correctly. A
+// unit test written with a plain error passed while production -- where the
+// inner error is virtually always a QRDBError from a real operation -- did
+// not. Any new test for this function wraps a real *QRDBError.
+//
+// Wrapf never had the special case and always honoured its code argument;
+// Wrap was the inconsistent one.
 func Wrap(err error, code ErrorCode, op string) error {
 	if err == nil {
 		return nil
 	}
 
-	// If it's already a QRDBError, just update the operation
-	var de *QRDBError
-	if errors.As(err, &de) {
-		// Preserve the original error but add operation context
-		return &QRDBError{
-			Code:    de.Code,
-			Op:      op,
-			Err:     de,
-			Context: de.Context,
-			Retry:   de.Retry,
-		}
-	}
-
 	return &QRDBError{
-		Code:  code,
-		Op:    op,
-		Err:   err,
-		Retry: code.IsRetryable(),
+		Code:    code,
+		Op:      op,
+		Err:     err,
+		Context: inheritedContext(err),
+		Retry:   code.IsRetryable(),
 	}
+}
+
+// inheritedContext carries the context map of the innermost wrapped
+// *QRDBError forward onto the wrapper, so wrapping does not lose the
+// key-values a lower layer attached.
+//
+// It COPIES rather than aliasing. The previous implementation assigned
+// de.Context directly, so the wrapper and the wrapped error shared one map and
+// a WithContext call on either mutated both -- an aliasing bug that was
+// invisible because nothing wrapped-then-annotated. A copy costs one small
+// allocation on a path that is already allocating an error.
+func inheritedContext(err error) map[string]interface{} {
+	var de *QRDBError
+	if !errors.As(err, &de) || len(de.Context) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(de.Context))
+	for k, v := range de.Context {
+		out[k] = v
+	}
+	return out
 }
 
 // Wrapf wraps an error with additional formatted context.
