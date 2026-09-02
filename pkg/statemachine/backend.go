@@ -14,7 +14,10 @@
 
 package statemachine
 
-import "io"
+import (
+	"io"
+	"reflect"
+)
 
 // Backend abstracts the underlying key-value storage for state machines.
 // Implementations handle get/put/delete/list/scan operations with their
@@ -56,4 +59,71 @@ type Backend interface {
 	// Close releases all resources held by the backend. It must wait
 	// for any in-flight asynchronous operations to complete.
 	Close() error
+}
+
+// GuardedWriteBackend is the OPT-IN declaration that a Backend's Put and
+// Delete can carry what a guarded verb's result promises:
+//
+//   - a write that returns nil has taken effect and is durable, so a caller
+//     told "you won the claim" or "you released it" is not contradicted by a
+//     restart;
+//   - a write that fails RETURNS its error rather than logging it, so the
+//     guard can refuse instead of reporting a success that did not happen;
+//   - a write is ordered after every earlier write to the same key, so no
+//     pending older write can overwrite it.
+//
+// It is a separate optional interface rather than a method on Backend so that
+// adding it breaks no existing implementation — including any outside this
+// repository — and it is OPT-IN rather than opt-out for the reason that
+// matters: a backend that does not declare it is REFUSED, so a new backend
+// whose author has not thought about ordering fails closed. Getting this
+// backwards would make the next FastBackend silently unsafe instead of
+// silently unavailable.
+//
+// The third clause is the one with history. FastBackend satisfies neither the
+// first nor the third: it writes its cache synchronously and then persists on
+// an unordered background goroutine whose error it swallows. Measured
+// deterministically on that backend with ordinary writes: Put(k,"old")
+// followed by Put(k,"new") can leave storage holding "old", and Put(k,"v")
+// followed by Delete(k) can leave the key PRESENT — the value resurrected
+// after its own delete (go-qrdb#224). FastStateMachine and
+// ConcurrentStateMachine do not have this problem because they own their
+// storage and order every write through persistOrder (go-qrdb#86); the
+// Backend-based composition never received that fix.
+//
+// So FastBackend deliberately does NOT implement this interface, and the
+// guarded verbs refuse on it with a typed GuardedWriteUnsupportedError.
+// Making it capable is tracked as go-qrdb#216.
+type GuardedWriteBackend interface {
+	Backend
+
+	// SupportsGuardedWrites reports the three promises above. It is a method
+	// rather than a bare marker so a backend whose guarantee depends on how it
+	// was constructed can answer for the instance rather than for the type.
+	SupportsGuardedWrites() bool
+}
+
+// backendSupportsGuardedWrites reports whether b can carry a guarded verb's
+// result. A backend that does not implement GuardedWriteBackend answers no.
+func backendSupportsGuardedWrites(b Backend) bool {
+	gw, ok := b.(GuardedWriteBackend)
+	return ok && gw.SupportsGuardedWrites()
+}
+
+// backendName is the backend's type name without its package qualifier, for
+// naming it in a refusal an operator has to act on.
+//
+// Reflection rather than a Name() method on Backend: this is a diagnostic
+// string and nothing branches on it, so it does not justify widening the
+// interface every implementation — including any outside this repository —
+// would then have to satisfy.
+func backendName(b Backend) string {
+	if b == nil {
+		return "nil"
+	}
+	t := reflect.TypeOf(b)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Name()
 }

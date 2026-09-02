@@ -52,6 +52,8 @@ func TestGuardedVerbConformanceMatrix(t *testing.T) {
 				assertGuardedPlaneWorks(t, c, cl)
 			case typedRefusal:
 				assertGuardedPlaneRefusesSafely(t, c, cl)
+			case guardedWriteRefusal:
+				assertGuardedWritesRefuseSafely(t, c, cl)
 			}
 		})
 	}
@@ -69,6 +71,24 @@ func TestGuardedVerbConformanceMatrix(t *testing.T) {
 // branch would pass against an implementation that ignored its precondition
 // entirely, which is the one thing a guarded write exists to do.
 func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
+	t.Helper()
+
+	assertSingleKeyGuardedVerbsWork(t, cl)
+	assertTransactionsWork(t, c, cl)
+}
+
+// assertSingleKeyGuardedVerbsWork is the acquire / edit / release battery for
+// the three verbs that are decided against ONE key.
+//
+// It is shared by both outcomes, as assertPutIfAbsentWorks already was and for
+// the same reason: since go-qrdb#175 every cell of the matrix carries these
+// three. They are native opcodes dispatched against the state machine's own
+// store (kv.OpPutIfAbsent, protocol.OpCompareAndDelete, protocol.OpCompareAndSwap)
+// and need no MVCC store, so a cell without the multi-key plane still has
+// them. Writing the battery twice would let the two copies drift into two
+// different definitions of "works", which is the whole reason "identical
+// regardless of backend, mode or transport" is the ruling being tested.
+func assertSingleKeyGuardedVerbsWork(t *testing.T, cl clients) {
 	t.Helper()
 	ctx := boundedCtx(t)
 
@@ -107,9 +127,7 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 	if swapped {
 		t.Error("CompareAndSwap reported a swap on an absent key")
 	}
-	if exists, err := cl.kv.Exists(ctx, "absent-key"); err != nil || exists {
-		t.Errorf("CompareAndSwap CREATED an absent key (exists=%v err=%v)", exists, err)
-	}
+	assertKeyAbsent(t, cl, "absent-key", "CompareAndSwap CREATED an absent key")
 
 	// --- CompareAndDelete: the release half ---
 	deleted, err := cl.guarded.CompareAndDelete(ctx, "claim", []byte("WRONG"))
@@ -119,9 +137,7 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 	if deleted {
 		t.Error("CompareAndDelete must refuse a stale expected value")
 	}
-	if exists, _ := cl.kv.Exists(ctx, "claim"); !exists {
-		t.Error("a refused CompareAndDelete removed the key anyway")
-	}
+	assertKeyPresent(t, cl, "claim", "a refused CompareAndDelete removed the key anyway")
 	deleted, err = cl.guarded.CompareAndDelete(ctx, "claim", []byte("globex"))
 	if err != nil {
 		t.Fatalf("CompareAndDelete(match): %v", err)
@@ -129,11 +145,80 @@ func assertGuardedPlaneWorks(t *testing.T, c cell, cl clients) {
 	if !deleted {
 		t.Error("CompareAndDelete must delete when the expected value matches")
 	}
-	if exists, err := cl.kv.Exists(ctx, "claim"); err != nil || exists {
-		t.Errorf("key still present after a successful CompareAndDelete (exists=%v err=%v)", exists, err)
-	}
+	assertKeyAbsent(t, cl, "claim", "key still present after a successful CompareAndDelete")
+}
 
-	assertTransactionsWork(t, c, cl)
+// assertKeyAbsent and assertKeyPresent observe existence through List, not
+// through Exists or Get.
+//
+// Exists cannot answer this on every cell of the matrix. On raft/sm_type:disk
+// the adapter implements sm.NALookup, and go-quicraft's Lookup fast path boxes
+// its typed nil []byte into a NON-NIL interface{}, so service.KVService.Get
+// reports a missing key as a successful read of an empty value and Exists is
+// true for every key that was never written. Measured 2026-09-02 on
+// file/raft: Exists("never-written") = true, and Get on a deleted key returns
+// ("", nil) where the memory cells return not-found.
+//
+// That is a real conformance defect and it is filed as go-qrdb#214, with the
+// restoration of the direct Exists assertions here as its acceptance test. It
+// is NOT what this battery measures — a plain Put/Delete/Get reproduces it
+// with no guarded verb involved — so asserting through it would make these
+// cells red for someone else's bug and hide whether the guarded verbs work.
+//
+// List reads the state machine's key set rather than a boxed point-lookup
+// result, so it answers correctly on every cell and is a genuine observation
+// of the store rather than a weakened one.
+//
+// THIS IS A CONCESSION WITH AN EXPIRY, and the replacement is already written.
+// The moment go-qrdb#214 is on main, both helpers become a direct Exists check
+// corroborated by Get — Exists false AND Get returning not-found, because those
+// are the two ways a caller asks the same question and they have gone out of
+// step before. Measured on this branch with that replacement in place and #214
+// still unfixed, so the ordering is not a guess:
+//
+//	--- FAIL: .../file/raft/embedded
+//	    CompareAndSwap CREATED an absent key: Exists("absent-key") = true
+//	    key still present after a successful CompareAndDelete: Get("claim") returned ""
+//	        with no error, want not-found — an absent key read back as an empty value
+//
+// Both file/raft cells, both transports. So this swap must land AFTER #214,
+// not alongside it.
+func assertKeyAbsent(t *testing.T, cl clients, key, msg string) {
+	t.Helper()
+	if listContains(t, cl, key) {
+		t.Errorf("%s: %q is still listed", msg, key)
+	}
+}
+
+func assertKeyPresent(t *testing.T, cl clients, key, msg string) {
+	t.Helper()
+	if !listContains(t, cl, key) {
+		t.Errorf("%s: %q is not listed", msg, key)
+	}
+}
+
+// listContains lists under the KEY ITSELF as the prefix rather than over the
+// whole keyspace.
+//
+// An unprefixed List is not usable here: the shared keyspace also holds
+// internal markers whose names are not valid UTF-8 (the on-disk state machine
+// writes its last-applied index under a leading NUL), and the gRPC transport
+// refuses to marshal those into a repeated string field — "grpc: error while
+// marshaling: string field contains invalid UTF-8", measured on three cells.
+// Scoping the list to the key answers the same question and touches nothing
+// else.
+func listContains(t *testing.T, cl clients, key string) bool {
+	t.Helper()
+	keys, err := cl.kv.List(boundedCtx(t), key)
+	if err != nil {
+		t.Fatalf("List(%q): %v", key, err)
+	}
+	for _, k := range keys {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // assertTransactionsWork covers the multi-key half of the plane: the value
@@ -348,8 +433,92 @@ func assertAbsenceIsObservable(t *testing.T, cl clients) {
 // typed refusal
 // ---------------------------------------------------------------------------
 
+// assertGuardedWritesRefuseSafely is the contract for a cell that DISPATCHES
+// the guarded delete and swap but whose backend cannot carry what their result
+// promises.
+//
+// Only sm_type "fast" is in this state: it is a KVStateMachine over
+// FastBackend, whose background persist is ordered against nothing and swallows
+// its error, so an acknowledged guarded write can be reversed by an older
+// pending one. Measured with ORDINARY writes in
+// pkg/statemachine/guarded_ops_test.go — Put(k,"old") then Put(k,"new") leaves
+// "old" durable, and Put(k,"v") then Delete(k) leaves the key present
+// (go-qrdb#224). Applied to CompareAndDelete that is a released lock coming
+// back, so the verbs refuse rather than report a success the disk can undo.
+//
+// The three assertions are all load-bearing and each rules out a different
+// wrong fix:
+//
+//   - PutIfAbsent still WORKS. A blanket "refuse everything guarded on fast"
+//     would also satisfy a refusal-only check, and it would break first boot —
+//     the identity index claims identities with PutIfAbsent. That it keeps
+//     working is deliberate and is recorded on go-qrdb#216.
+//   - The delete and swap refuse with a TYPED capability error, not an
+//     absent opcode. A caller must be able to tell "this backend will not do
+//     it" from "this build has no such verb"; only the first is fixed by
+//     changing raft.sm_type.
+//   - The node still serves afterwards, which is the go-qrdb#129 regression
+//     every refusing cell pins.
+func assertGuardedWritesRefuseSafely(t *testing.T, c cell, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	if err := cl.kv.Put(ctx, "before", []byte("1")); err != nil {
+		t.Fatalf("%s: plain Put failed before any guarded verb, so this cell never "+
+			"reached the state under test: %v", c.name(), err)
+	}
+
+	// The acquire half is unaffected and must stay that way.
+	assertPutIfAbsentWorks(t, cl)
+
+	for _, r := range []struct {
+		verb string
+		call func() error
+	}{
+		{"CompareAndSwap", func() error {
+			_, err := cl.guarded.CompareAndSwap(ctx, "claim", []byte("acme"), []byte("globex"))
+			return err
+		}},
+		{"CompareAndDelete", func() error {
+			_, err := cl.guarded.CompareAndDelete(ctx, "claim", []byte("acme"))
+			return err
+		}},
+		{"ExecuteTransaction", func() error {
+			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
+				Compares:   []transport.Compare{valueEquals("before", "1")},
+				SuccessOps: []transport.Op{put("txn/x", "x")},
+			})
+			return err
+		}},
+	} {
+		// The guard REFUSED, so the expected value it named must be untouched.
+		// Asserting only that an error came back would pass against an
+		// implementation that refused after writing.
+		assertCapabilityRefusal(t, r.verb, r.call())
+	}
+
+	// The claim PutIfAbsent took is still exactly as it was: a refused swap did
+	// not edit it and a refused delete did not remove it.
+	if got, err := cl.kv.Get(ctx, "claim"); err != nil || string(got) != "acme" {
+		t.Errorf("%s: after two refused guarded verbs the claim reads %q err=%v, want %q "+
+			"untouched — a refusal that mutates is worse than one that executes",
+			c.name(), got, err, "acme")
+	}
+
+	if err := cl.kv.Put(ctx, "after", []byte("2")); err != nil {
+		t.Fatalf("%s: a plain Put FAILED after the guarded verbs were refused (%v). "+
+			"Refusing an unsupported verb must not cost the cluster its shard "+
+			"(go-qrdb#129)", c.name(), err)
+	}
+	if got, err := cl.kv.Get(ctx, "after"); err != nil || string(got) != "2" {
+		t.Fatalf("%s: a linearizable Get FAILED after the guarded verbs were refused "+
+			"(%q, %v)", c.name(), got, err)
+	}
+}
+
 // assertGuardedPlaneRefusesSafely is the contract for a cell whose state
-// machine does not carry the capability: refusing is allowed, breaking is not.
+// machine does not carry the MULTI-KEY half of the plane: refusing is allowed,
+// breaking is not.
 //
 // Both halves matter and the second is the one with history. Before
 // go-qrdb#129 these cells did not refuse — an unimplemented guarded verb
@@ -370,32 +539,32 @@ func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
 			"reached the state under test: %v", c.name(), err)
 	}
 
-	// PutIfAbsent is NOT part of the refusal set, and this suite measured that
-	// rather than assuming it. It is a native KV opcode (kv.OpPutIfAbsent)
-	// handled against the backend directly, so it is present and genuinely
-	// atomic even on a state machine with no MVCC store — unlike
-	// CompareAndSwap (opcode 67), CompareAndDelete (66) and transactions,
-	// which are absent here.
+	// The SINGLE-KEY verbs are not part of the refusal set, and this suite
+	// measures that rather than assuming it.
+	//
+	// PutIfAbsent never was: it is a native KV opcode handled against the
+	// state machine's own store, so it is present and genuinely atomic with no
+	// MVCC store behind it. go-qrdb#175 gave CompareAndDelete (opcode 66) and
+	// CompareAndSwap (67) exactly the same treatment — they were missing from
+	// these state machines' dispatch tables, not from their capabilities — so
+	// all three now belong on this side of the line and the same battery
+	// covers them.
+	//
+	// What is still absent here is the MULTI-KEY plane: ExecuteTransaction
+	// needs an MVCC store to evaluate its compares against, and these cells
+	// have none (WithKVMVCCStore has no production caller — go-qrdb#135/#136).
 	//
 	// So the capability on these cells is PARTIAL, not missing, and saying so
-	// matters: a consumer that only needs a claim (acquire, and release by
-	// re-acquiring) is fully served here, and a matrix that lumped
-	// PutIfAbsent in with the refusals would understate what works and could
-	// later be "fixed" by making a working verb refuse.
-	assertPutIfAbsentWorks(t, cl)
+	// matters: a consumer that needs a claim it can acquire, renew and release
+	// is now fully served here, and a matrix that lumped the single-key verbs
+	// in with the refusals would understate what works and could later be
+	// "fixed" by making a working verb refuse.
+	assertSingleKeyGuardedVerbsWork(t, cl)
 
 	refusals := []struct {
 		verb string
 		call func() error
 	}{
-		{"CompareAndSwap", func() error {
-			_, err := cl.guarded.CompareAndSwap(ctx, "claim", []byte("a"), []byte("b"))
-			return err
-		}},
-		{"CompareAndDelete", func() error {
-			_, err := cl.guarded.CompareAndDelete(ctx, "claim", []byte("acme"))
-			return err
-		}},
 		{"ExecuteTransaction", func() error {
 			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
 				Compares:   []transport.Compare{valueEquals("before", "1")},

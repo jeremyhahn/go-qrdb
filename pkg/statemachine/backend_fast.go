@@ -31,6 +31,27 @@ import (
 const kvFastShardCount = 256
 
 // Compile-time interface assertion.
+//
+// FastBackend deliberately does NOT implement GuardedWriteBackend, and this is
+// the one Backend in the tree that does not. Its writes land in the cache
+// synchronously and then persist on a background goroutine that is ordered
+// against nothing and whose error is swallowed, so it can satisfy none of that
+// interface's three promises. The guarded verbs therefore refuse on it with a
+// typed GuardedWriteUnsupportedError rather than reporting a success the disk
+// may contradict.
+//
+// Measured deterministically on this backend, with ORDINARY writes and no
+// guarded verb involved (go-qrdb#224):
+//
+//	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable value "old"
+//	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT with "v"
+//
+// FastStateMachine and ConcurrentStateMachine do not have this problem: they
+// own their storage and draw a persistOrder ticket under the shard lock, where
+// apply order is already established (go-qrdb#86). This backend never received
+// that fix. Giving it one is go-qrdb#216; do not paper over it here by making
+// Put synchronous, which would change the asynchronous contract this backend
+// exists to provide.
 var _ Backend = (*FastBackend)(nil)
 
 // kvFastShard is a single partition of the in-memory cache for

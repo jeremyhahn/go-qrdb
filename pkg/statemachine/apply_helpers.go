@@ -68,13 +68,21 @@ func validateBatchOps(ops []protocol.DecodedOp) error {
 // This stalls every subsequent SyncRead on the shard until the daemon
 // restarts.
 //
-// Two conditions are application-level, and they share one cause: the
+// Three conditions are application-level, and they share one cause: the
 // proposer asked for something THIS state machine was not built to do.
 //
 //   - ServiceNotConfiguredError — the verb exists but its subsystem is not
 //     wired into this instance.
 //   - InvalidOpcodeError — the verb does not exist here at all, either as the
 //     leading op byte of an entry or as a sub-operation inside a batch.
+//   - GuardedWriteUnsupportedError — the verb exists and is dispatched, but
+//     this instance's backend cannot carry what its result promises, so it is
+//     refused rather than answered with a success the disk may contradict
+//     (go-qrdb#175). Like the other two it says nothing about the health of
+//     the storage underneath: the composition was always going to refuse this
+//     verb, on every replica, deterministically. That determinism is what
+//     makes it safe to classify here — every replica applying this entry
+//     reaches the same refusal, so the group does not diverge.
 //
 // Neither says anything about the health of the storage underneath, so
 // neither may halt Apply. go-qrdb#129: the unrecognised-opcode case used to
@@ -99,6 +107,7 @@ func resolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 	}
 	var sncErr *ServiceNotConfiguredError
 	var opErr *InvalidOpcodeError
+	var guardErr *GuardedWriteUnsupportedError
 	switch {
 	case errors.As(handlerErr, &sncErr):
 		if log != nil {
@@ -110,6 +119,13 @@ func resolveApplyError(log *slog.Logger, entryIndex uint64, handlerResult sm.Res
 		if log != nil {
 			log.Error("statemachine: unrecognised opcode, encoding as result",
 				slog.Int("opcode", int(opErr.Op)),
+				slog.Uint64("entry_index", entryIndex))
+		}
+	case errors.As(handlerErr, &guardErr):
+		if log != nil {
+			log.Error("statemachine: guarded opcode unsupported on this backend, encoding as result",
+				slog.Int("opcode", int(guardErr.Op)),
+				slog.String("backend", guardErr.Backend),
 				slog.Uint64("entry_index", entryIndex))
 		}
 	default:

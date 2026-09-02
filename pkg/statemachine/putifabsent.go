@@ -160,7 +160,7 @@ func (f *FastStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (s
 	// asynchronous contract: "your write is queued" and "your claim
 	// succeeded" are different promises, and only the second is worth a disk
 	// wait on the apply path.
-	if err := f.persistClaim(s, claimed, k, ownedValue); err != nil {
+	if err := f.persistClaim(s, claimed, k, ownedValue, "put_if_absent_set"); err != nil {
 		return sm.Result{}, err
 	}
 
@@ -195,7 +195,7 @@ func (c *ConcurrentStateMachine) handlePutIfAbsent(payload []byte, revision uint
 
 	// Synchronous for the same reason as FastStateMachine's — see the comment
 	// there (owner ruling 2026-08-23, go-qrdb#94).
-	if err := c.persistClaim(s, claimed, k, ownedValue); err != nil {
+	if err := c.persistClaim(s, claimed, k, ownedValue, "put_if_absent_set"); err != nil {
 		return sm.Result{}, err
 	}
 
@@ -252,8 +252,8 @@ func setIfAbsentLocked(
 	// cache entry it would restore is still this claim's. Drawn under the same
 	// lock as the cache write, both for the ticket ordering described below
 	// and so no later write can slip between the two.
-	record := func(overTombstone bool) claim {
-		c := claim{stored: true, ticket: order.ticket(), overTombstone: overTombstone}
+	record := func(prior []byte, priorFound bool) claim {
+		c := claim{stored: true, ticket: order.ticket(), prior: prior, priorFound: priorFound}
 		claims[key] = c.ticket
 		return c
 	}
@@ -269,7 +269,7 @@ func setIfAbsentLocked(
 		// write persists AFTER the delete that tombstoned the key. Without
 		// that ordering the delete could land last and erase a write this call
 		// already reported as stored.
-		return record(true), nil
+		return record(nil, true), nil
 	}
 
 	existing, rerr := readThrough([]byte(key))
@@ -281,7 +281,7 @@ func setIfAbsentLocked(
 	}
 
 	data[key] = value
-	return record(false), nil
+	return record(nil, false), nil
 }
 
 // claim is the outcome of setIfAbsentLocked: whether the guard admitted the
@@ -296,9 +296,25 @@ type claim struct {
 	// meaningful when stored.
 	ticket uint64
 
-	// overTombstone records that the entry the claim replaced was a delete
-	// tombstone rather than a genuine absence.
-	overTombstone bool
+	// prior is the shard-cache entry this claim replaced, and priorFound
+	// whether the cache held an entry at all. Together they name ONE of the
+	// three states a key can be in, and a withdrawal must restore the exact
+	// one it found:
+	//
+	//   - no entry (priorFound false): the key had never been written by this
+	//     replica, so a reader falls through to storage. Restoring a tombstone
+	//     instead would hide a value storage still holds.
+	//   - a tombstone (priorFound true, prior nil): a delete retired the key,
+	//     and that delete is NEWER than anything storage holds. Removing the
+	//     entry instead would let the next read fall through and resurrect the
+	//     value the delete retired.
+	//   - a value (priorFound true, prior non-nil): the guarded swap or delete
+	//     that is being withdrawn replaced a live value, which must come back
+	//     verbatim. PutIfAbsent never reaches this case — it only ever claims
+	//     an absent key — which is why this field replaced the boolean that
+	//     could describe the first two states alone.
+	prior      []byte
+	priorFound bool
 }
 
 // persistClaimLocked writes a guarded claim to storage SYNCHRONOUSLY, on the
@@ -316,6 +332,13 @@ type claim struct {
 // ConcurrentStateMachine have structurally identical but distinct shard types,
 // and one implementation cannot drift from itself.
 //
+// write is the storage call this claim settles through and op names it in the
+// StorageError. They are parameters because the guarded DELETE settles through
+// storage.Delete while the guarded create and swap settle through storage.Set;
+// everything else about waiting for the shard's earlier writes, withdrawing on
+// failure and clearing the in-flight record is identical, and duplicating it
+// for the delete is how the two would drift.
+//
 // One property is worth stating because it is not removable here: between the
 // guard admitting the claim and this write completing, the claim is visible in
 // the shard cache to concurrent readers. Holding the shard's data lock across
@@ -328,23 +351,24 @@ func persistClaimLocked(
 	data map[string][]byte,
 	claims map[string]uint64,
 	order *persistOrder,
-	set func(key, value []byte) error,
+	write func(key, value []byte) error,
+	op string,
 	claimed claim,
 	key string,
 	value []byte,
 ) error {
-	var setErr error
+	var writeErr error
 	order.run(claimed.ticket, func() {
-		setErr = set([]byte(key), value)
+		writeErr = write([]byte(key), value)
 	})
-	if setErr == nil {
+	if writeErr == nil {
 		mu.Lock()
 		claimed.settle(claims, key)
 		mu.Unlock()
 		return nil
 	}
 	claimed.withdraw(mu, data, claims, key)
-	return &StorageError{Op: "put_if_absent_set", Inner: setErr}
+	return &StorageError{Op: op, Inner: writeErr}
 }
 
 // settle removes the in-flight record for a claim that reached disk. Callers
@@ -398,9 +422,10 @@ func (c claim) withdraw(mu *sync.RWMutex, data map[string][]byte, claims map[str
 	}
 	delete(claims, key)
 
-	if c.overTombstone {
-		data[key] = nil
+	if !c.priorFound {
+		delete(data, key)
 		return
 	}
-	delete(data, key)
+	// nil here is a tombstone, not an absence — see claim.prior.
+	data[key] = c.prior
 }

@@ -131,6 +131,16 @@ func NewRegularStateMachine(opts ...RegularOption) *RegularStateMachine {
 		kv.OpDelete:      r.handleDelete,
 		protocol.OpBatch: r.handleBatch,
 
+		// Guarded single-key verbs. They complete the set kv.OpPutIfAbsent
+		// opens: a guarded create with no guarded release or edit is a
+		// primitive an unguarded Delete or Put can un-decide (go-qrdb#41,
+		// #56). pkg/store and both pkg/engine engines have dispatched them
+		// since they were added; these four maps did not, so every sm_type
+		// served by this package refused them with "unknown opcode: 66"
+		// (go-qrdb#175).
+		protocol.OpCompareAndDelete: r.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   r.handleCompareAndSwap,
+
 		// MVCC
 		protocol.OpMVCCPut:     r.handleMVCCPut,
 		protocol.OpMVCCDelete:  r.handleMVCCDelete,

@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
@@ -469,6 +470,222 @@ func TestShardedStateMachines_GuardedFaultMidBatchHaltsForReplay(t *testing.T) {
 			if bv, _ := store.Get([]byte("b")); !bytes.Equal(bv, []byte("second")) {
 				t.Errorf("after replay storage[b] = %q, want %q — replay did not recover the halted write", bv, "second")
 			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The guarded single-key verbs (go-qrdb#175)
+// ---------------------------------------------------------------------------
+
+// The guarded delete and swap are durable before they acknowledge, for the
+// reason the guarded create is (owner ruling 2026-08-23, go-qrdb#94).
+//
+// protocol.ResultDeleted is the answer to "did I release the claim I was
+// holding?". Acknowledging a release that has not reached disk means the key
+// comes back after a restart, still holding a value its owner was told was
+// gone -- and the owner has already moved on and let someone else take it.
+// protocol.ResultSwapped is the same promise about a renewal.
+//
+// Backing storage is read with NO drain and NO Close: the point is that the
+// write is already there when the apply returns, not that it arrives
+// eventually. Draining first would pass against an asynchronous
+// implementation.
+func TestShardedStateMachines_GuardedVerbs_AreDurableBeforeTheyAcknowledge(t *testing.T) {
+	for name, build := range shardedPersistTargets() {
+		t.Run(name, func(t *testing.T) {
+			t.Run("CompareAndDelete", func(t *testing.T) {
+				store := newMemStorage()
+				target, _ := build(store)
+
+				// Seeded through the guarded create, which is synchronous, so
+				// the value is provably in storage before the delete runs.
+				// Seeding with Put would race its own asynchronous write.
+				if _, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("mine"))); err != nil {
+					t.Fatalf("seed PutIfAbsent: %v", err)
+				}
+
+				res, err := target.apply(t, mustEncodeCAD(t, []byte("k"), []byte("mine")))
+				if err != nil {
+					t.Fatalf("CompareAndDelete: %v", err)
+				}
+				if res.Value != protocol.ResultDeleted {
+					t.Fatalf("Result.Value = %d, want protocol.ResultDeleted (%d)",
+						res.Value, protocol.ResultDeleted)
+				}
+
+				got, gerr := store.Get([]byte("k"))
+				if gerr != nil {
+					t.Fatalf("storage.Get: %v", gerr)
+				}
+				if got != nil {
+					t.Fatalf("storage still holds %q immediately after the acknowledgement — "+
+						"the release was acknowledged before it was durable, so a restart "+
+						"here resurrects a claim its owner has already given up", got)
+				}
+			})
+
+			t.Run("CompareAndSwap", func(t *testing.T) {
+				store := newMemStorage()
+				target, _ := build(store)
+
+				if _, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("v1"))); err != nil {
+					t.Fatalf("seed PutIfAbsent: %v", err)
+				}
+
+				res, err := target.apply(t, mustEncodeCAS(t, []byte("k"), []byte("v1"), []byte("v2")))
+				if err != nil {
+					t.Fatalf("CompareAndSwap: %v", err)
+				}
+				if res.Value != protocol.ResultSwapped {
+					t.Fatalf("Result.Value = %d, want protocol.ResultSwapped (%d)",
+						res.Value, protocol.ResultSwapped)
+				}
+
+				got, gerr := store.Get([]byte("k"))
+				if gerr != nil {
+					t.Fatalf("storage.Get: %v", gerr)
+				}
+				if !bytes.Equal(got, []byte("v2")) {
+					t.Fatalf("storage holds %q immediately after the acknowledgement, want %q — "+
+						"a renewal acknowledged before it was durable reverts on restart, and "+
+						"the holder's next guarded verb is then refused", got, "v2")
+				}
+			})
+		})
+	}
+}
+
+// A guarded verb whose storage write fails REPORTS the failure rather than
+// logging it, and does not report the write as having happened.
+//
+// This is the carve-out KVStateMachine.Update's contract documents -- an
+// unrecoverable infrastructure error may be returned, unlike an
+// application-level condition. Result.Value is checked as well as the error,
+// because protocol.ResultDeleted alongside a non-nil error is still readable
+// by a caller that checks only the value.
+func TestShardedStateMachines_GuardedVerbs_ReportAFailedPersist(t *testing.T) {
+	for name, build := range shardedPersistTargets() {
+		t.Run(name, func(t *testing.T) {
+			t.Run("CompareAndDelete", func(t *testing.T) {
+				boom := stderrors.New("disk full")
+				store := newFailSetStorage(boom)
+				target, _ := build(store)
+
+				if _, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("mine"))); err != nil {
+					t.Fatalf("seed PutIfAbsent: %v", err)
+				}
+
+				store.failDelete.Store(true)
+				res, err := target.apply(t, mustEncodeCAD(t, []byte("k"), []byte("mine")))
+				if err == nil {
+					t.Fatalf("a failed persist was not reported: Result.Value = %d", res.Value)
+				}
+				if !stderrors.Is(err, boom) {
+					t.Errorf("error = %v, want it to wrap the storage fault", err)
+				}
+				if res.Value == protocol.ResultDeleted {
+					t.Error("Result.Value is protocol.ResultDeleted on a release that never reached disk")
+				}
+			})
+
+			t.Run("CompareAndSwap", func(t *testing.T) {
+				boom := stderrors.New("disk full")
+				store := newFailSetStorage(boom)
+				target, _ := build(store)
+
+				if _, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("v1"))); err != nil {
+					t.Fatalf("seed PutIfAbsent: %v", err)
+				}
+
+				store.failing.Store(true)
+				res, err := target.apply(t, mustEncodeCAS(t, []byte("k"), []byte("v1"), []byte("v2")))
+				if err == nil {
+					t.Fatalf("a failed persist was not reported: Result.Value = %d", res.Value)
+				}
+				if !stderrors.Is(err, boom) {
+					t.Errorf("error = %v, want it to wrap the storage fault", err)
+				}
+				if res.Value == protocol.ResultSwapped {
+					t.Error("Result.Value is protocol.ResultSwapped on a swap that never reached disk")
+				}
+			})
+		})
+	}
+}
+
+// A guarded verb that did not persist restores the value the cache HELD, not
+// merely the absence the conditional create restores.
+//
+// This is the case that made claim carry the prior entry instead of a boolean.
+// The conditional create only ever claims an absent or tombstoned key, so
+// withdrawing it by removing the cache entry was sufficient. The guarded
+// delete and swap replace a LIVE value, and removing the entry drops it: the
+// next read falls through to backing storage and answers with whatever is
+// there.
+//
+// Making that observable needs the cache and storage to DISAGREE, which is a
+// state a real deployment reaches on its own -- an ordinary Put persists
+// asynchronously and swallows its storage error, so a failed Set leaves the
+// cache ahead of storage with nothing reported. failKey narrows the fault to
+// the one key so the seed can still be written durably first.
+//
+// Without the prior value, the failed swap below answers "A": a value two
+// writes stale, silently restored under a caller who was told nothing changed.
+func TestShardedStateMachines_GuardedVerbs_WithdrawRestoresThePriorValue(t *testing.T) {
+	// seedDivergence leaves the shard cache holding "B" for key k while backing
+	// storage still holds "A", and returns the target.
+	seedDivergence := func(t *testing.T, build func(storage.Storage) (conformanceTarget, persistCloser), store *failSetStorage) conformanceTarget {
+		t.Helper()
+		store.failKey = []byte("k")
+		target, _ := build(store)
+
+		// The guarded create is synchronous, so "A" is provably in storage.
+		if _, err := target.apply(t, buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("A"))); err != nil {
+			t.Fatalf("seed PutIfAbsent: %v", err)
+		}
+		// Now every Set on this key fails. The Put moves the cache to "B" and
+		// its background write fails silently, so storage keeps "A".
+		store.failing.Store(true)
+		if _, err := target.apply(t, buildKVCmd(kv.OpPut, []byte("k"), []byte("B"))); err != nil {
+			t.Fatalf("diverging Put: %v", err)
+		}
+		return target
+	}
+
+	for name, build := range shardedPersistTargets() {
+		t.Run(name, func(t *testing.T) {
+			t.Run("CompareAndSwap", func(t *testing.T) {
+				store := newFailSetStorage(stderrors.New("disk full"))
+				target := seedDivergence(t, build, store)
+
+				// The guard matches the cache's "B" and the persist fails.
+				if _, err := target.apply(t, mustEncodeCAS(t, []byte("k"), []byte("B"), []byte("C"))); err == nil {
+					t.Fatal("a failed persist was not reported")
+				}
+
+				if got := target.lookup(t, []byte("k")); !bytes.Equal(got, []byte("B")) {
+					t.Fatalf("key holds %q after a withdrawn swap, want the untouched %q — "+
+						"the rollback dropped the cache entry, so the key silently reverted "+
+						"to a value backing storage still held", got, "B")
+				}
+			})
+
+			t.Run("CompareAndDelete", func(t *testing.T) {
+				store := newFailSetStorage(stderrors.New("disk full"))
+				target := seedDivergence(t, build, store)
+
+				store.failDelete.Store(true)
+				if _, err := target.apply(t, mustEncodeCAD(t, []byte("k"), []byte("B"))); err == nil {
+					t.Fatal("a failed persist was not reported")
+				}
+
+				if got := target.lookup(t, []byte("k")); !bytes.Equal(got, []byte("B")) {
+					t.Fatalf("key holds %q after a withdrawn delete, want the untouched %q — "+
+						"the rollback dropped the cache entry, so the key silently reverted "+
+						"to a value backing storage still held", got, "B")
+				}
+			})
 		})
 	}
 }

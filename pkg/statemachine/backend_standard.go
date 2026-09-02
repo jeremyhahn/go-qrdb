@@ -26,7 +26,10 @@ import (
 )
 
 // Compile-time interface assertion.
-var _ Backend = (*StandardBackend)(nil)
+var (
+	_ Backend             = (*StandardBackend)(nil)
+	_ GuardedWriteBackend = (*StandardBackend)(nil)
+)
 
 // StandardBackend is a simple in-memory key-value backend backed by a
 // single map protected by a read-write mutex. It mirrors the storage
@@ -248,3 +251,11 @@ func (b *StandardBackend) Close() error {
 	b.mu.Unlock()
 	return nil
 }
+
+// SupportsGuardedWrites reports true. This backend is a plain map under a
+// mutex: Put and Delete take effect before they return, they cannot fail, and
+// there is no asynchronous path for an earlier write to arrive late on. There
+// is no durability to promise because there is no storage — which satisfies
+// the contract rather than dodging it, since nothing can contradict the
+// acknowledgement afterwards.
+func (b *StandardBackend) SupportsGuardedWrites() bool { return true }

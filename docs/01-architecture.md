@@ -466,8 +466,25 @@ and `node.EnableEncryption()`.
   adding it everywhere in the same change; the conformance test in
   `pkg/statemachine/putifabsent_test.go` is what enforces that.
 
-  Source: `pkg/statemachine/putifabsent.go`, `pkg/store/pebble.go`,
-  `pkg/engine/`
+  The **single-key guarded verbs** — `protocol.OpCompareAndDelete` (66) and
+  `protocol.OpCompareAndSwap` (67) — carry the same contract, and repeated the
+  same defect: they were dispatched by `pkg/store` and both `pkg/engine`
+  engines and by none of the four state machines, so every `sm_type` those
+  serve refused an ordinary authorized `CompareAndDelete` with
+  `unknown opcode: 66` until go-qrdb#175. They need no MVCC store — the guard
+  is evaluated against the state machine's own store inside apply — so unlike
+  the multi-key transaction plane they are not confined to `sm_type: mvcc`.
+  They are available on every `sm_type` **except `fast`**, which refuses them
+  with a typed `GuardedWriteUnsupportedError` because its backend cannot keep
+  the durability and ordering promises a guarded result makes (below, and
+  go-qrdb#216).
+  `pkg/statemachine/guarded_ops_test.go` enforces their coverage the way
+  `putifabsent_test.go` enforces the base set, and
+  `sdk/go/conformance/matrix_test.go` walks them across every backend, mode and
+  transport.
+
+  Source: `pkg/statemachine/putifabsent.go`,
+  `pkg/statemachine/guarded_ops.go`, `pkg/store/pebble.go`, `pkg/engine/`
 
 - **The sharded state machines acknowledge a write before it is durable.**
   `FastStateMachine` and `ConcurrentStateMachine` write to their in-memory
@@ -479,11 +496,34 @@ and `node.EnableEncryption()`.
   Two consequences follow for the sharded pair, and neither is a durability
   guarantee:
 
-  1. **A failed storage write is currently only logged.** A caller can be told
-     its write succeeded — including a `PutIfAbsent` reporting
-     `kv.ResultStored`, which is the answer to "did I win this claim?" — while
-     the value is absent after a restart. Tracked as **go-qrdb#94**, pending a
-     decision on which contract these two offer.
+  1. **A failed storage write is only logged — for the UNGUARDED verbs.** An
+     ordinary `Put` or `Delete` can be reported as succeeding while the value
+     is absent after a restart; its contract is "your write is queued".
+
+     The **guarded** verbs are exempt, by the owner ruling of 2026-08-23 on
+     **go-qrdb#94**. `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete`
+     persist SYNCHRONOUSLY on the apply path and RETURN a storage failure
+     instead of logging it, because "did I win this claim?" and "is my write
+     queued?" are different promises and only the first is worth a disk wait. A
+     write that does not reach storage is withdrawn from the shard cache,
+     restoring exactly the prior state — an absence, a delete tombstone, or the
+     previous value.
+
+     That exemption reaches `FastStateMachine` and `ConcurrentStateMachine`,
+     which own their storage and order every write through `persistOrder`. It
+     does NOT reach `KVStateMachine` over `FastBackend` (`sm_type: fast`),
+     whose background persist is ordered against nothing and swallows its
+     error — so an acknowledged write there can be silently reversed by an
+     older pending one. Measured with ordinary writes: `Put(k,"old")` then
+     `Put(k,"new")` leaves `"old"` on disk, and `Put(k,"v")` then `Delete(k)`
+     leaves the key present. The guarded delete and swap therefore **refuse**
+     on that backend rather than executing (`GuardedWriteUnsupportedError`),
+     which is why `Backend` has the opt-in `GuardedWriteBackend` interface and
+     why it is opt-IN: a backend that has not thought about ordering fails
+     closed. `PutIfAbsent` still executes there, because it has been offered
+     since go-qrdb#86 and withdrawing it is the owner's call. Tracked as
+     **go-qrdb#216** (make it capable) and **go-qrdb#224** (the unordered write
+     path itself).
   2. **Writes reach storage in apply order, per shard.** They did not
      originally: each write persisted on an independent goroutine, so
      `Delete(k)` followed by `PutIfAbsent(k, v)` could leave storage with no

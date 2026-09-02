@@ -102,19 +102,43 @@ const (
 	// every other fullPassage cell.
 	fullPassage outcome = iota
 
-	// typedRefusal: this cell's state machine does not carry the capability,
-	// so every guarded verb must refuse with a typed error AND leave the node
-	// serving. Refusing safely is a real conformance promise, and it is what
-	// pins go-qrdb#129 permanently: before that fix these cells did not refuse,
-	// they killed the shard.
+	// typedRefusal: this cell's state machine carries the SINGLE-KEY guarded
+	// verbs but not the multi-key transaction plane, so the transaction must
+	// refuse with a typed error AND leave the node serving. Refusing safely is
+	// a real conformance promise, and it is what pins go-qrdb#129 permanently:
+	// before that fix these cells did not refuse, they killed the shard.
+	//
+	// The name is kept although what a cell refuses has narrowed twice —
+	// PutIfAbsent, then the guarded delete and swap in go-qrdb#175, as these
+	// state machines gained the dispatch entries they were always credited
+	// with. What the gate measures is unchanged: some verb here refuses, and
+	// refusing does not cost the shard.
 	typedRefusal
+
+	// guardedWriteRefusal: this cell dispatches the guarded delete and swap but
+	// its BACKEND cannot carry what their result promises, so they refuse where
+	// every other sm_type executes them. Only sm_type "fast" is in this state.
+	//
+	// It is a third outcome rather than a variant of typedRefusal because the
+	// two refuse for opposite reasons, and conflating them would let either
+	// regression pass as the other. typedRefusal is "this state machine was
+	// never built with the multi-key plane"; this is "the verb is built, wired
+	// and reachable, and executing it would report a success the disk can
+	// silently reverse" (go-qrdb#175 review, go-qrdb#216/#224). PutIfAbsent
+	// still WORKS here, which is what makes the distinction observable rather
+	// than a label.
+	guardedWriteRefusal
 )
 
 func (o outcome) String() string {
-	if o == fullPassage {
+	switch o {
+	case fullPassage:
 		return "full-passage"
+	case guardedWriteRefusal:
+		return "guarded-write-refusal"
+	default:
+		return "typed-refusal"
 	}
-	return "typed-refusal"
 }
 
 // cell is one square of the matrix.
@@ -134,7 +158,22 @@ type cell struct {
 	smStorage string
 }
 
+// name identifies the cell.
+//
+// A RAFT cell is named by its sm_type, not by its databases[].backend, because
+// sm_type is the axis that actually varies down the raft row — the comment on
+// matrix() has said so since go-qrdb#135, while the name said otherwise. Naming
+// them by backend also made two raft cells collide as soon as a third sm_type
+// needed covering, which is what go-qrdb#175 hit when it added the "fast" cell.
+// Standalone cells keep the backend, which IS their axis.
 func (c cell) name() string {
+	if c.mode == raft {
+		smType := c.smType
+		if smType == "" {
+			smType = "default"
+		}
+		return fmt.Sprintf("%s/%s/%s", smType, c.mode, c.transport)
+	}
 	return fmt.Sprintf("%s/%s/%s", c.backend, c.mode, c.transport)
 }
 
@@ -148,6 +187,11 @@ func (c cell) name() string {
 // promise, and giving them one is tracked post-v0.12 as go-qrdb#136. When that
 // lands, those four cells flip from typedRefusal to fullPassage, and the flip
 // is that issue's acceptance test.
+//
+// go-qrdb#175 already moved half of that flip: the four typedRefusal cells now
+// pass the whole single-key guarded battery, because the guarded delete and
+// swap needed no MVCC store — only the dispatch entries these state machines
+// were missing. What remains for #136 is the multi-key transaction plane.
 func matrix() []cell {
 	var cells []cell
 	for _, tk := range []transportKind{embeddedTransport, grpcTransport} {
@@ -161,12 +205,23 @@ func matrix() []cell {
 			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: fullPassage,
 				smType: ""},
 
-			// Raft, non-default sm_types: no MVCC store, so the guarded plane
-			// must refuse cleanly and keep serving.
+			// Raft, non-default sm_types: no MVCC store, so the multi-key
+			// transaction plane must refuse cleanly and keep serving.
 			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: typedRefusal,
 				smType: "memory"},
 			cell{backend: database.BackendFile, mode: raft, transport: tk, want: typedRefusal,
 				smType: "disk", smStorage: "file"},
+
+			// Raft, sm_type "fast": the one composition whose BACKEND cannot
+			// carry a guarded result. FastBackend persists on a goroutine
+			// ordered against nothing and swallows its error, so an
+			// acknowledged guarded write can be silently reversed by an older
+			// pending one — measured with ordinary writes in
+			// pkg/statemachine (go-qrdb#224). The verbs therefore refuse here
+			// and this cell is what pins that through the transports rather
+			// than only at the state machine.
+			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: guardedWriteRefusal,
+				smType: "fast", smStorage: "memory"},
 		)
 	}
 	return cells
@@ -546,7 +601,8 @@ func classifyRefusal(err error) error {
 	// account of WHICH capability is missing is not much better than an
 	// untyped one for whoever has to act on it.
 	if !strings.Contains(unsupported.Message, "not configured") &&
-		!strings.Contains(unsupported.Message, "unknown opcode") {
+		!strings.Contains(unsupported.Message, "unknown opcode") &&
+		!strings.Contains(unsupported.Message, "not supported") {
 		return fmt.Errorf("capability refusal %q names neither an absent opcode nor an "+
 			"unwired subsystem, so it does not say what is missing", unsupported.Message)
 	}

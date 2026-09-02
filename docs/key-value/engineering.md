@@ -147,6 +147,97 @@ library, and when a release carrying its fix is pinned here the second arm
 becomes redundant and can be removed. The code comment on `keyIsAbsent` carries
 the tracker reference.
 
+### The single-key guarded verbs — available on every state machine but `fast`
+
+`PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are one primitive:
+acquire a claim, edit it under the claim, release it under the claim. They are
+useful only together. A guarded create paired with an unguarded delete is half
+a primitive — the delete can un-decide what the create decided — and a create
+and a release with no guarded edit between them leaves the transition in the
+middle decided nowhere.
+
+- **They are not scoped to `mvcc`/`pebble`.** They are native opcodes
+  (`kv.OpPutIfAbsent`, `protocol.OpCompareAndDelete` 66,
+  `protocol.OpCompareAndSwap` 67) dispatched against the state machine's own
+  store, so they need no MVCC store behind them. This is the one part of the
+  guarded plane that is not confined to the default state machine: the
+  multi-key transaction plane still requires `sm_type: mvcc`.
+
+  Availability by `raft.sm_type`, which is the row to read before choosing one:
+
+  | `sm_type` | `PutIfAbsent` | `CompareAndDelete` / `CompareAndSwap` |
+  |---|---|---|
+  | `pebble` (default), `mvcc`, `mvcc-fast` | yes | yes |
+  | `memory`, `standard`, `concurrent`, `highperf`, `disk`, `regular` | yes | yes |
+  | `fast` | yes | **refused** — `GuardedWriteUnsupportedError`, see below |
+
+  `fast` is the single exception and it is a refusal, not a silent failure: its
+  backend cannot keep the durability and ordering promises a guarded result
+  makes, so the verbs decline rather than report a success the disk may
+  contradict. The next two bullets say why, and go-qrdb#216 tracks making it
+  capable. **Do not choose `sm_type: fast` for a workload that needs a guarded
+  delete or swap.**
+- **The comparison runs inside apply, never on the proposer.** Every replica
+  evaluates the same entry against the state it has applied up to that entry's
+  log position, so every replica reaches the same decision. Reading on the
+  proposer and then proposing a plain `Delete` or `Put` is two operations with
+  a window between them, and that window is the defect: two releasers both read
+  holder A, the first deletes, a third party legitimately claims the now-absent
+  key, and the second delete removes THEIR value.
+- **A declined guard is a successful application, not an error.** The state
+  machine reports `ResultNotStored` / `ResultNotDeleted` / `ResultNotSwapped`
+  through `Result.Value`. Returning an error would stop Raft advancing
+  `lastApplied` and stall every subsequent linearizable read on the shard.
+- **An absent key matches no expectation, including an empty one.** Neither
+  `CompareAndSwap` nor `CompareAndDelete` creates: a swap moves a record
+  between two states and a record that does not exist has no first state.
+  Creation is `PutIfAbsent`'s job. A key holding an empty value is a different
+  thing from an absent key and the guard distinguishes them.
+- **A storage read fault is propagated, never read as a mismatch.** A fault is
+  local to one replica, so folding it into "the value differs" would have that
+  replica decline an entry its peers applied — divergence from an identical
+  log.
+- **They are durable before they acknowledge, and ordered.** "Your write is
+  queued" and "your claim succeeded" are different promises, and only the
+  second is worth a disk wait, so a guarded verb persists synchronously on the
+  apply path and RETURNS a storage failure rather than logging it. A write that
+  does not reach storage is withdrawn from the cache, restoring exactly what
+  was there — an absence, a delete tombstone, or the previous value, which are
+  three distinct states and not interchangeable. No earlier write to the same
+  key can land after it.
+
+- **`sm_type: fast` cannot keep those promises, so it REFUSES the guarded
+  delete and swap** with a typed `GuardedWriteUnsupportedError`, which reaches
+  the caller as a capability refusal. It is a refusal and not a silent absence
+  on purpose: "this backend will not do it" and "this build has no such verb"
+  are different facts, and only the first is fixed by changing `raft.sm_type`.
+
+  That type is a `KVStateMachine` over `FastBackend`, which persists on a
+  background goroutine that is ordered against nothing and swallows its error.
+  Measured deterministically on that backend with **ordinary unguarded writes**,
+  no guarded verb involved: `Put(k,"old")` then `Put(k,"new")` leaves durable
+  state holding `"old"`, and `Put(k,"v")` then `Delete(k)` leaves the key
+  **present**, holding `"v"`. Applied to a guarded delete that is a released
+  lock that comes back — the failure this plane exists to prevent — so
+  advertising the verbs there would be worse than not offering them.
+
+  Every other state machine keeps the promises and executes the verbs:
+  `sm_type: disk` writes through synchronously and returns its error; `memory`,
+  `standard`, `concurrent` and `highperf` are in-memory, so a write has landed
+  when it returns; `mvcc-fast` owns its storage and orders every write through
+  `persistOrder`. Making `fast` capable is **go-qrdb#216**; the unordered write
+  path itself is **go-qrdb#224**.
+
+  `PutIfAbsent` is the exception to the exception: it still executes on
+  `sm_type: fast` despite having the same hole, because it has been offered
+  there since go-qrdb#86 and callers depend on it — the identity index claims
+  identities with it and first boot needs it. Withdrawing a capability people
+  already build on is a decision for the owner, not a side effect; it is
+  recorded on go-qrdb#216.
+- **They cannot appear inside a batch.** The batch encoding carries no expected
+  value, so a batched operation cannot express a guard. Multi-key atomicity is
+  [../transactions/](../transactions/), which does need `sm_type: mvcc`.
+
 ### Wire-field bounds — the owning contract for every plane
 
 This section owns the length-field contract for the whole extended wire
@@ -217,7 +308,7 @@ permission revocation.
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `raft.sm_type` | `pebble`, `memory`, `mvcc` | `pebble` | State-machine wrapper. Only `mvcc` supports as-of reads, watch replay and selective restore. |
+| `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Only `mvcc` supports as-of reads, watch replay and selective restore. Every value supports the single-key guarded verbs EXCEPT `fast`, which refuses `CompareAndDelete`/`CompareAndSwap` (go-qrdb#216); only `mvcc`/`pebble` support transactions. |
 | `storage.backend` | `pebble`, `file`, `memory` | `pebble` | Underlying storage engine. |
 | `mvcc.compaction_retention` | integer | — | Minimum revisions retained; sets the compaction floor. |
 

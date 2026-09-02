@@ -168,6 +168,16 @@ func NewConcurrentStateMachine(shardID, replicaID uint64, store storage.Storage,
 		kv.OpDelete:      c.handleDelete,
 		protocol.OpBatch: c.handleBatch,
 
+		// Guarded single-key verbs. They complete the set kv.OpPutIfAbsent
+		// opens: a guarded create with no guarded release or edit is a
+		// primitive an unguarded Delete or Put can un-decide (go-qrdb#41,
+		// #56). pkg/store and both pkg/engine engines have dispatched them
+		// since they were added; these four maps did not, so every sm_type
+		// served by this package refused them with "unknown opcode: 66"
+		// (go-qrdb#175).
+		protocol.OpCompareAndDelete: c.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   c.handleCompareAndSwap,
+
 		// MVCC
 		protocol.OpMVCCPut:     c.handleMVCCPut,
 		protocol.OpMVCCDelete:  c.handleMVCCDelete,
@@ -664,11 +674,28 @@ func (c *ConcurrentStateMachine) persistAsync(s *concurrentShard, ticket uint64,
 
 // persistClaim is the guarded verb's synchronous write. The decision lives in
 // persistClaimLocked, shared with the other sharded state machine; this adds
-// only the log line, which needs this replica's identity.
-func (c *ConcurrentStateMachine) persistClaim(s *concurrentShard, claimed claim, key string, value []byte) error {
-	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, c.storage.Set, claimed, key, value)
+// only the log line, which needs this replica's identity. op names the verb in
+// the StorageError so an operator reading a withdrawal knows which guard failed.
+func (c *ConcurrentStateMachine) persistClaim(s *concurrentShard, claimed claim, key string, value []byte, op string) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, c.storage.Set, op, claimed, key, value)
 	if err != nil {
 		c.logger.Error("guarded storage set failed; claim withdrawn",
+			"key", key,
+			"error", err,
+			"shard_id", c.shardID,
+			"replica_id", c.replicaID)
+	}
+	return err
+}
+
+// persistClaimDelete is the guarded DELETE's synchronous storage removal. See
+// FastStateMachine.persistClaimDelete for why it is a twin rather than a flag.
+func (c *ConcurrentStateMachine) persistClaimDelete(s *concurrentShard, claimed claim, key string) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order,
+		func(k, _ []byte) error { return c.storage.Delete(k) },
+		"compare_and_delete_delete", claimed, key, nil)
+	if err != nil {
+		c.logger.Error("guarded storage delete failed; claim withdrawn",
 			"key", key,
 			"error", err,
 			"shard_id", c.shardID,

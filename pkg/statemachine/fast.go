@@ -168,6 +168,16 @@ func NewFastStateMachine(shardID, replicaID uint64, store storage.Storage, opts 
 		kv.OpDelete:      f.handleDelete,
 		protocol.OpBatch: f.handleBatch,
 
+		// Guarded single-key verbs. They complete the set kv.OpPutIfAbsent
+		// opens: a guarded create with no guarded release or edit is a
+		// primitive an unguarded Delete or Put can un-decide (go-qrdb#41,
+		// #56). pkg/store and both pkg/engine engines have dispatched them
+		// since they were added; these four maps did not, so every sm_type
+		// served by this package refused them with "unknown opcode: 66"
+		// (go-qrdb#175).
+		protocol.OpCompareAndDelete: f.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   f.handleCompareAndSwap,
+
 		// MVCC
 		protocol.OpMVCCPut:     f.handleMVCCPut,
 		protocol.OpMVCCDelete:  f.handleMVCCDelete,
@@ -665,11 +675,34 @@ func (f *FastStateMachine) persistAsync(s *shard, ticket uint64, key string, val
 
 // persistClaim is the guarded verb's synchronous write. The decision lives in
 // persistClaimLocked, shared with the other sharded state machine; this adds
-// only the log line, which needs this replica's identity.
-func (f *FastStateMachine) persistClaim(s *shard, claimed claim, key string, value []byte) error {
-	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, f.storage.Set, claimed, key, value)
+// only the log line, which needs this replica's identity. op names the verb in
+// the StorageError so an operator reading a withdrawal knows which guard failed.
+func (f *FastStateMachine) persistClaim(s *shard, claimed claim, key string, value []byte, op string) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, f.storage.Set, op, claimed, key, value)
 	if err != nil {
 		f.logger.Error("guarded storage set failed; claim withdrawn",
+			"key", key,
+			"error", err,
+			"shard_id", f.shardID,
+			"replica_id", f.replicaID)
+	}
+	return err
+}
+
+// persistClaimDelete is the guarded DELETE's synchronous storage removal.
+//
+// It is the delete twin of persistClaim and not a flag on it, because the two
+// differ in exactly one thing — Delete rather than Set — and every other
+// property (waiting for this shard's earlier writes through the same ticket,
+// withdrawing the cache tombstone when the removal does not reach disk) must
+// stay identical. The value passed through is nil and unused: storage.Delete
+// names only a key.
+func (f *FastStateMachine) persistClaimDelete(s *shard, claimed claim, key string) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order,
+		func(k, _ []byte) error { return f.storage.Delete(k) },
+		"compare_and_delete_delete", claimed, key, nil)
+	if err != nil {
+		f.logger.Error("guarded storage delete failed; claim withdrawn",
 			"key", key,
 			"error", err,
 			"shard_id", f.shardID,

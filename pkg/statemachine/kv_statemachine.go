@@ -42,6 +42,17 @@ type KVStateMachine struct {
 	handlers map[byte]updateHandler
 	logger   *slog.Logger
 
+	// guardedWrites records whether the backend can carry what a guarded
+	// verb's result promises — see GuardedWriteBackend. Resolved ONCE at
+	// construction rather than per apply: it is a property of the composition,
+	// it cannot change while the state machine runs, and the guarded verbs are
+	// on the apply path.
+	guardedWrites bool
+
+	// backendName names the backend in a refusal, so an operator reading
+	// "not supported on the fast backend" knows which knob to turn.
+	backendName string
+
 	// Optional subsystem managers.
 	watchManager WatchManager
 	indexManager IndexManager
@@ -62,12 +73,25 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 		opt(k)
 	}
 
+	k.guardedWrites = backendSupportsGuardedWrites(backend)
+	k.backendName = backendName(backend)
+
 	k.handlers = map[byte]updateHandler{
 		// Basic KV
 		kv.OpPut:         k.handlePut,
 		kv.OpPutIfAbsent: k.handlePutIfAbsent,
 		kv.OpDelete:      k.handleDelete,
 		protocol.OpBatch: k.handleBatch,
+
+		// Guarded single-key verbs. They complete the set kv.OpPutIfAbsent
+		// opens: a guarded create with no guarded release or edit is a
+		// primitive an unguarded Delete or Put can un-decide (go-qrdb#41,
+		// #56). pkg/store and both pkg/engine engines have dispatched them
+		// since they were added; these four maps did not, so every sm_type
+		// served by this package refused them with "unknown opcode: 66"
+		// (go-qrdb#175).
+		protocol.OpCompareAndDelete: k.handleCompareAndDelete,
+		protocol.OpCompareAndSwap:   k.handleCompareAndSwap,
 
 		// MVCC
 		protocol.OpMVCCPut:     k.handleMVCCPut,

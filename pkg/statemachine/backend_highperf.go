@@ -28,7 +28,10 @@ import (
 const defaultHighPerfShardCount = 256
 
 // Compile-time interface assertion.
-var _ Backend = (*HighPerfBackend)(nil)
+var (
+	_ Backend             = (*HighPerfBackend)(nil)
+	_ GuardedWriteBackend = (*HighPerfBackend)(nil)
+)
 
 // HighPerfConfig configures a HighPerfBackend at construction time.
 type HighPerfConfig struct {
@@ -371,3 +374,8 @@ func (b *HighPerfBackend) BytesLookupInto(key, dst []byte) ([]byte, error) {
 	copy(dst, val)
 	return dst, nil
 }
+
+// SupportsGuardedWrites reports true, for the same reason StandardBackend does:
+// this backend is in-memory only, so a write has landed by the time Put or
+// Delete returns and nothing arrives later to overwrite it.
+func (b *HighPerfBackend) SupportsGuardedWrites() bool { return true }

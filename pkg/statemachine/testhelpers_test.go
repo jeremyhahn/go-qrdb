@@ -31,14 +31,24 @@ package statemachine
 // a constrained file when every one of its callers carries at least that
 // same constraint.
 
-// gapErrGetStorage wraps memStorage but returns an error on Get.
+// gapErrGetStorage wraps memStorage and fails Get while getErr is set.
+//
+// It DELEGATES once getErr is cleared rather than continuing to answer nil.
+// That is what lets a test heal the storage and then read the state machine
+// back: after a guard aborts on a read fault, "the key still holds what it
+// held" and "the key resolves to nothing because this double answers nothing"
+// are different facts, and a double that always answered nil could not tell
+// them apart (go-qrdb#175).
 type gapErrGetStorage struct {
 	*memStorage
 	getErr error
 }
 
 func (s *gapErrGetStorage) Get(key []byte) ([]byte, error) {
-	return nil, s.getErr
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	return s.memStorage.Get(key)
 }
 
 // mustEncode unwraps an encoder's (command, error) pair for tests whose

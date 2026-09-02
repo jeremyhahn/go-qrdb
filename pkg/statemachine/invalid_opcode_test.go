@@ -28,10 +28,17 @@ import (
 )
 
 // unimplementedOpcode is an operation code no state machine in this package
-// registers a handler for. It stands in for the real, reachable case:
-// protocol.OpCompareAndDelete (66) and protocol.OpCompareAndSwap (67) are
-// absent from every handler map here, and the SDK's GuardedKVClient proposes
-// them (go-qrdb#119/#123).
+// registers a handler for.
+//
+// It USED to stand in for a reachable case: protocol.OpCompareAndDelete (66)
+// and protocol.OpCompareAndSwap (67) were absent from every handler map here
+// while the SDK's GuardedKVClient proposed them (go-qrdb#119/#123). go-qrdb#175
+// wired both, so this constant is now synthetic — which is the whole reason
+// the refusal contract still needs its own opcode. The contract below is about
+// what happens to an entry naming a verb the state machine was not built with,
+// and that must stay pinned whether or not any real opcode is currently in
+// that position. TestStateMachines_DispatchEveryGuardedOpcode is what now
+// covers 66 and 67.
 const unimplementedOpcode byte = 0xFE
 
 // assertOpcodeRefused asserts the SM.Update contract for an entry naming an
@@ -190,57 +197,17 @@ func TestUpdate_UnimplementedOpcodeDoesNotPoisonRaft(t *testing.T) {
 	})
 }
 
-// TestUpdate_GuardedVerbOpcodesAreRefusedNotFatal pins the exact reachable
-// trigger rather than a synthetic opcode. protocol.OpCompareAndDelete and
-// protocol.OpCompareAndSwap are what sdk/go's GuardedKVClient proposes, over
-// the embedded transport and — since go-qrdb#123 — over gRPC with only the
-// ordinary kv:delete / kv:put permission. Neither is in KVStateMachine's
-// handler map, so before go-qrdb#129 either one permanently removed the shard
-// from service.
+// The guarded-verb refusal test that stood here is gone, deliberately.
 //
-// Using the real opcode constants matters: a test written against 0xFE alone
-// would keep passing if someone renumbered these into a range the map happens
-// to cover, or removed them, and the reachable path would go untested.
-func TestUpdate_GuardedVerbOpcodesAreRefusedNotFatal(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		op   byte
-	}{
-		{"CompareAndDelete", protocol.OpCompareAndDelete},
-		{"CompareAndSwap", protocol.OpCompareAndSwap},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			k := newTestKVSM()
-			if _, implemented := k.handlers[tc.op]; implemented {
-				t.Skipf("opcode %d is now implemented; this refusal test no longer applies", tc.op)
-			}
-
-			results := make([]sm.Result, 1)
-			if err := k.Update([]sm.Entry{{Index: 1, Cmd: []byte{tc.op, 0x00}}}, results); err != nil {
-				t.Fatalf("Update returned %v; a guarded verb this SM does not implement must be "+
-					"refused, not fatal — returning it wedges the shard (go-qrdb#129)", err)
-			}
-			if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-				t.Errorf("results[0].Data = %q, want an encoded application error so the proposer "+
-					"reports a typed refusal instead of (false, nil)", results[0].Data)
-			}
-
-			// The shard must still take writes. This is the difference between
-			// a refused verb and a dead cluster.
-			putCmd, err := kv.EncodePut([]byte("still-alive"), []byte("yes"))
-			if err != nil {
-				t.Fatalf("EncodePut: %v", err)
-			}
-			next := make([]sm.Result, 1)
-			if err := k.Update([]sm.Entry{{Index: 2, Cmd: putCmd}}, next); err != nil {
-				t.Fatalf("a plain Put after the refused verb failed: %v", err)
-			}
-			if v, _ := k.backend.Get([]byte("still-alive")); string(v) != "yes" {
-				t.Errorf("Put after the refused verb stored %q, want %q", v, "yes")
-			}
-		})
-	}
-}
+// It asserted that protocol.OpCompareAndDelete and protocol.OpCompareAndSwap
+// were refused-but-not-fatal, and it carried a t.Skip for the day they were
+// implemented. go-qrdb#175 implemented them, so keeping it would leave a test
+// that skips forever and pins nothing. What it was really protecting — that a
+// verb this state machine does not implement is refused rather than returned
+// to Raft — is covered above with a synthetic opcode, which cannot be made
+// vacuous by someone implementing it. What replaced its reachable half is
+// TestStateMachines_DispatchEveryGuardedOpcode and the behavioural contract
+// tests in guarded_ops_test.go.
 
 // TestResolveApplyError_ClassifiesInvalidOpcodeAsApplicationError covers the
 // classification seam directly. resolveApplyError is the single place that
