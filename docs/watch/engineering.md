@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
 
 ## Exported surface
 
@@ -64,7 +64,9 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
   promised across two streams.
 - **Replay is seamless.** When `StartRevision` is set and supported, historical
   events are delivered before live ones with no gap and no duplicate at the
-  join point.
+  join point. This holds for a consumer that reads the stream to its end. The
+  MCP transport does not — it snapshots the stream inside a bounded collection
+  window — and there the invariant is currently broken; see *Known limitations*.
 - **`PrevKV` is opt-in** because retaining the prior value costs a lookup per
   event.
 - **Cancellation is in-band, never a silent close.** Every abnormal termination
@@ -117,6 +119,39 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
   replay is provoked directly rather than timed.
 - **No `time.Sleep` in tests** — synchronization uses channels and waitgroups,
   per the repo rule.
+- **The MCP poll loop is driven, not timed.** MCP is request/response, so
+  `sdk/go/transport/mcp` implements `Watch`/`WatchPrefix` by polling the
+  `qrdb_watch` tool. Every delay that loop waits on goes through a package-level
+  clock seam, so a test substitutes a clock whose `After` it fires by hand and
+  owns the poll schedule outright. A change pushed while the loop is parked
+  between polls is then in an inter-poll gap **by construction** — the window in
+  which no server-side watcher exists at all — and no-loss is asserted against
+  that schedule rather than against elapsed time.
+
+  This matters beyond tidiness. The earlier version of that test arranged gaps
+  statistically, by giving each poll a collection window a thousandth of its
+  cycle, and asserted a fixed delivery count before a wall-clock deadline. It
+  could not tell a poller that genuinely lost an update from a host that was
+  merely busy, so it failed on three unrelated changes and was re-run away each
+  time — and a gate that only passes on a quiet machine is not a gate. Measured
+  on a 2-core cpuset with 16 concurrent `-race` processes: the timed version
+  fails 6 times in 320 runs, the driven version 0 in 320, while a poller mutated
+  to skip one revision fails the driven version every run.
+
+## Known limitations
+
+- **A replay truncated by the MCP collection window loses events silently.**
+  `qrdb_watch` reports, as its `revision`, the revision of the last stream
+  response it consumed — and `Hub.startReplay` delivers the `Created` response,
+  whose `Revision` is the store boundary at watcher registration, *before* any
+  replayed event. A collection window that expires mid-replay therefore returns
+  a truncated event list next to a revision covering the events it dropped, and
+  the SDK's polling client advances its cursor past them and never asks again.
+  Any backlog that takes longer than one `timeout_seconds` window to drain is
+  affected, which is exactly the resume-after-a-gap case the cursor exists to
+  serve. A deterministic reproducer exists; the fix needs a decision on how
+  replay completion becomes visible to the tool handler, since the handler
+  cannot currently tell a completed replay from a truncated one.
 
 ## Observability
 

@@ -156,27 +156,124 @@ func withFastWatchPolling(t *testing.T) {
 	})
 }
 
-// withGapProneWatchPolling configures a poll cadence whose server-side live
-// collection window (timeout_seconds) is a tiny fraction of the total cycle
-// (interval + timeout), so a push landing at a random instant overwhelmingly
-// likely falls in the *gap* between one poll's watcher closing and the
-// next's opening rather than inside a live window. This makes
-// TestWatchPoll_NoLossAcrossPollGaps a near-deterministic detector of the
-// cursor regression it targets: without the cursor (start_revision sent on
-// every poll, unconditionally), a push landing in the gap is only caught by
-// the luck of overlapping a live window, which these odds make vanishingly
-// unlikely across several independent pushes; with the cursor, the next
-// poll's replay always covers it regardless of duty cycle.
-func withGapProneWatchPolling(t *testing.T) {
+// stepClock is a watchClock whose After never fires on its own: each call
+// hands the poll loop a fresh channel and publishes it on pauses, so the test
+// decides when — and whether — that delay elapses. This is what makes a
+// polling test deterministic. The loop parked in After has provably closed its
+// server-side watcher and not yet opened the next one, so a change pushed at
+// that moment lands in a REAL inter-poll gap by construction, rather than by
+// the statistical argument the old duty-cycle-based helper relied on.
+//
+// The send is non-blocking: if a test stops consuming pauses (teardown, or an
+// early t.Fatal), After still returns promptly and the loop falls through to
+// its ctx.Done() case, so cancellation can never deadlock against an
+// unconsumed pause.
+type stepClock struct {
+	pauses chan chan time.Time
+}
+
+func newStepClock() *stepClock {
+	return &stepClock{pauses: make(chan chan time.Time, 64)}
+}
+
+// After records a pause and returns a channel only the test can fire.
+func (s *stepClock) After(time.Duration) <-chan time.Time {
+	c := make(chan time.Time, 1)
+	select {
+	case s.pauses <- c:
+	default:
+	}
+	return c
+}
+
+// awaitPause blocks until the poll loop reaches its next inter-poll pause and
+// returns the channel that releases it. Reaching a pause means the poll before
+// it ran to completion and any response it produced is already queued on the
+// watch channel, so a caller may drain deliveries immediately afterwards.
+//
+// The bound is a failure deadline, not a timing assumption: a correct loop
+// reaches its pause as fast as the machine allows, so a slow host makes this
+// wait longer without making it flaky, and only a loop that never polls again
+// trips it.
+func (s *stepClock) awaitPause(t *testing.T) chan time.Time {
+	t.Helper()
+	select {
+	case c := <-s.pauses:
+		return c
+	case <-time.After(30 * time.Second):
+		t.Fatal("poll loop did not reach its next inter-poll pause")
+		return nil
+	}
+}
+
+// step releases exactly one poll and returns once that poll has completed and
+// the loop is parked again, ready for the next push.
+func (s *stepClock) step(t *testing.T, pause chan time.Time) chan time.Time {
+	t.Helper()
+	pause <- time.Time{}
+	return s.awaitPause(t)
+}
+
+// withSteppedWatchPolling installs a stepClock for the duration of a test and
+// returns it. The poll interval becomes irrelevant (the stepClock ignores the
+// duration); the server-side collection window stays a real timer because it
+// lives in the MCP tool handler, not in this package, so it is set generously
+// wide relative to the work each poll actually does — delivering at most a
+// handful of in-memory events. 200ms is 200x the 1ms window the previous
+// duty-cycle helper used, under which the handler could be descheduled past
+// its own deadline mid-replay (see the note in TestWatchPoll_NoLossAcrossPollGaps).
+func withSteppedWatchPolling(t *testing.T) *stepClock {
 	t.Helper()
 	origInterval := watchPollInterval
 	origTimeout := watchPollTimeoutSeconds
-	watchPollInterval = 40 * time.Millisecond
-	watchPollTimeoutSeconds = 0.001
+	origClock := watchPollClock
+	clk := newStepClock()
+	watchPollInterval = time.Hour // never waited on; the stepClock gates instead.
+	watchPollTimeoutSeconds = 0.2
+	watchPollClock = clk
 	t.Cleanup(func() {
 		watchPollInterval = origInterval
 		watchPollTimeoutSeconds = origTimeout
+		watchPollClock = origClock
 	})
+	return clk
+}
+
+// drainWatch counts every event currently queued on ch into seen, as
+// seen[key][revision] = number of deliveries. It does not block: the caller
+// invokes it at a point where the poll loop is parked, so everything the last
+// poll produced is already queued. Counting per key rather than filtering to
+// one is what lets a caller assert both "this key arrived" and "that key never
+// did" from a single drain.
+func drainWatch(ch <-chan transport.WatchResponse, seen map[string]map[int64]int) {
+	for {
+		select {
+		case resp, ok := <-ch:
+			if !ok {
+				return
+			}
+			for _, ev := range resp.Events {
+				if ev.Kv == nil {
+					continue
+				}
+				key := string(ev.Kv.Key)
+				if seen[key] == nil {
+					seen[key] = make(map[int64]int)
+				}
+				seen[key][ev.Kv.ModRevision]++
+			}
+		default:
+			return
+		}
+	}
+}
+
+// drainWatchUntilClosed consumes ch until the poll goroutine observes
+// cancellation and closes it, so a test's t.Cleanup cannot race the
+// still-running goroutine's reads of the package-level poll vars.
+func drainWatchUntilClosed(ch <-chan transport.WatchResponse) {
+	for range ch {
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +291,7 @@ func withGapProneWatchPolling(t *testing.T) {
 // confirms it is delivered without needing a second live event to
 // "accidentally" establish the cursor first.
 func TestWatchPoll_BootstrapsCursorViaCurrentRevision(t *testing.T) {
-	withFastWatchPolling(t)
+	clk := withSteppedWatchPolling(t)
 
 	fh := &fakeHistory{}
 	fh.push("other-key", "v0") // pre-existing history; must NOT be replayed.
@@ -210,53 +307,26 @@ func TestWatchPoll_BootstrapsCursorViaCurrentRevision(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	// Let the bootstrap CurrentRevision call and at least one full poll
-	// cycle complete before pushing the change under test, so the assertion
-	// below isolates "was the cursor anchored at all" from "did this
-	// specific push happen to race the first poll" (covered separately by
-	// TestWatchPoll_NoLossAcrossPollGaps).
-	time.Sleep(10 * watchPollInterval)
+	// Reaching the first pause means the bootstrap CurrentRevision call and a
+	// full poll cycle are done, so the assertion below isolates "was the
+	// cursor anchored at all" from "did this push race the first poll"
+	// (covered by TestWatchPoll_NoLossAcrossPollGaps).
+	pause := clk.awaitPause(t)
 
 	rev := fh.push("k", "v1")
+	clk.step(t, pause)
 
-	found := false
-	deadline := time.After(3 * time.Second)
-loop:
-	for {
-		select {
-		case resp, ok := <-ch:
-			if !ok {
-				break loop
-			}
-			for _, ev := range resp.Events {
-				if ev.Kv == nil {
-					continue
-				}
-				if string(ev.Kv.Key) == "other-key" {
-					t.Errorf("pre-existing history must not be replayed on a live watch, got key %q", ev.Kv.Key)
-				}
-				if string(ev.Kv.Key) == "k" {
-					if ev.Kv.ModRevision != rev {
-						t.Errorf("revision = %d, want %d", ev.Kv.ModRevision, rev)
-					}
-					found = true
-					break loop
-				}
-			}
-		case <-deadline:
-			break loop
-		}
-	}
+	seen := make(map[string]map[int64]int)
+	drainWatch(ch, seen)
 
 	cancel()
-	for range ch {
-		// Drain until the poll goroutine observes cancellation and closes
-		// the channel, so withFastWatchPolling's t.Cleanup cannot race the
-		// still-running goroutine's reads of the package-level poll vars.
-	}
+	drainWatchUntilClosed(ch)
 
-	if !found {
-		t.Fatal("timed out waiting for the pushed change")
+	if len(seen["other-key"]) != 0 {
+		t.Errorf("pre-existing history must not be replayed on a live watch, got %v", seen["other-key"])
+	}
+	if seen["k"][rev] != 1 {
+		t.Fatalf("revision %d delivered %d times, want exactly 1: %v", rev, seen["k"][rev], seen)
 	}
 }
 
@@ -264,13 +334,34 @@ loop:
 // No loss across poll gaps (the core regression this fix targets)
 // ---------------------------------------------------------------------------
 
-// TestWatchPoll_NoLossAcrossPollGaps pushes several changes spaced across
-// multiple poll cycles — including gaps between polls where no watcher is
-// server-side registered — and verifies every change is delivered exactly
-// once, in revision order. The old tear-down/recreate-with-no-cursor design
-// would silently drop a change landing in such a gap.
+// TestWatchPoll_NoLossAcrossPollGaps pushes a change into every gap between
+// two polls — the window where no server-side watcher exists at all — and
+// verifies each one is delivered exactly once. The old tear-down/recreate
+// design with no cursor dropped exactly these.
+//
+// The schedule is driven, not timed. The loop is parked in stepClock.After
+// when each push happens, so "this change landed in a gap" is a fact about the
+// schedule rather than a probability, and the assertion below is about what
+// the poller delivered across a known number of polls rather than about what
+// arrived before a wall-clock deadline.
+//
+// Why this shape (issue #171): the previous version pushed on a timer and
+// collected until a 6s deadline, so a host busy enough to stretch the run 6x
+// produced the same failure text as a poller that genuinely lost an update —
+// it failed three times on unrelated changes (PR #168, verifying #196, and a
+// two-line go.mod bump on PR #202) and could not have caught a real regression
+// distinguishably. A test that only passes on a quiet machine is not a gate.
+//
+// Residual note for whoever touches this next: the qrdb_watch tool's
+// collection window is a server-side timer this package cannot inject, and a
+// window narrow enough to expire mid-replay makes the tool report a cursor
+// covering events it never delivered. That is a real defect in the tool
+// handler, not in this loop, and it is tracked separately; it is why
+// withSteppedWatchPolling sets a generously wide window instead of the 1ms
+// the old helper used. Do not narrow it to "make the gaps tighter" — the gaps
+// here are already exact.
 func TestWatchPoll_NoLossAcrossPollGaps(t *testing.T) {
-	withGapProneWatchPolling(t)
+	clk := withSteppedWatchPolling(t)
 
 	fh := &fakeHistory{}
 	tr, cleanup := connectWatchHistoryInProcess(t, fh)
@@ -284,55 +375,35 @@ func TestWatchPoll_NoLossAcrossPollGaps(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	// Let the bootstrap-anchored first poll cycle complete before pushing
-	// anything, so every push below is guaranteed to land at or after the
-	// cursor's starting point (see TestWatchPoll_BootstrapsCursorViaCurrentRevision
-	// for the bootstrap behavior itself).
-	time.Sleep(10 * watchPollInterval)
+	// The loop reaching its first pause means the bootstrap CurrentRevision
+	// call and the first poll have both completed, so every push below is at
+	// or after the cursor's anchor (the bootstrap itself is covered by
+	// TestWatchPoll_BootstrapsCursorViaCurrentRevision).
+	pause := clk.awaitPause(t)
 
 	const numChanges = 5
 	wantRevs := make([]int64, 0, numChanges)
-	for i := 0; i < numChanges; i++ {
-		wantRevs = append(wantRevs, fh.push("k", "v"))
-		// Sleep longer than a full poll cycle (interval+timeout) so each
-		// push has a real chance of landing in the gap between one poll's
-		// watcher closing and the next one opening — the exact window the
-		// old tear-down/recreate-with-no-cursor design silently dropped.
-		time.Sleep(4 * watchPollInterval)
-	}
+	seen := make(map[string]map[int64]int)
 
-	seen := make(map[int64]int)
-	deadline := time.After(6 * time.Second)
-collect:
-	for len(seen) < numChanges {
-		select {
-		case resp, ok := <-ch:
-			if !ok {
-				break collect
-			}
-			for _, ev := range resp.Events {
-				if ev.Kv != nil && string(ev.Kv.Key) == "k" {
-					seen[ev.Kv.ModRevision]++
-				}
-			}
-		case <-deadline:
-			break collect
-		}
+	for i := 0; i < numChanges; i++ {
+		// Parked between polls: no watcher is registered server-side, so this
+		// change can only reach the caller through the next poll's replay.
+		wantRevs = append(wantRevs, fh.push("k", "v"))
+		pause = clk.step(t, pause)
+		drainWatch(ch, seen)
 	}
 
 	cancel()
-	for range ch {
-		// Drain until the poll goroutine observes cancellation and closes
-		// the channel, so withFastWatchPolling's t.Cleanup cannot race the
-		// still-running goroutine's reads of the package-level poll vars.
-	}
+	drainWatchUntilClosed(ch)
 
-	if len(seen) != numChanges {
-		t.Fatalf("observed %d distinct revisions, want %d (pushed %v): %v", len(seen), numChanges, wantRevs, seen)
+	got := seen["k"]
+	if len(got) != numChanges {
+		t.Fatalf("observed %d distinct revisions across %d polled gaps, want %d (pushed %v): %v",
+			len(got), numChanges, numChanges, wantRevs, got)
 	}
 	for _, rev := range wantRevs {
-		if seen[rev] != 1 {
-			t.Errorf("revision %d delivered %d times, want exactly 1", rev, seen[rev])
+		if got[rev] != 1 {
+			t.Errorf("revision %d delivered %d times, want exactly 1", rev, got[rev])
 		}
 	}
 }
@@ -400,7 +471,7 @@ func TestWatchPoll_CompactedSurfacesTypedError(t *testing.T) {
 // start_revision sent) until a real event or a genuine Created response
 // establishes it.
 func TestWatchPoll_LiveOnlyZeroEventDoesNotAdvanceCursor(t *testing.T) {
-	withFastWatchPolling(t)
+	clk := withSteppedWatchPolling(t)
 
 	var mu sync.Mutex
 	var sawStartRevision []bool
@@ -437,18 +508,21 @@ func TestWatchPoll_LiveOnlyZeroEventDoesNotAdvanceCursor(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	time.Sleep(6 * watchPollInterval)
-	cancel()
-	for range ch {
-		// Drain until the poll goroutine observes cancellation and closes
-		// the channel (see the other tests in this file for why this
-		// matters with shared package-level poll vars).
+	// Step a fixed number of polls rather than sleeping for a duration and
+	// hoping enough happened: the count below is then exact on any machine.
+	const wantPolls = 4
+	pause := clk.awaitPause(t)
+	for i := 1; i < wantPolls; i++ {
+		pause = clk.step(t, pause)
 	}
+
+	cancel()
+	drainWatchUntilClosed(ch)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(sawStartRevision) < 2 {
-		t.Fatalf("expected at least 2 polls in %v, got %d", 6*watchPollInterval, len(sawStartRevision))
+	if len(sawStartRevision) < wantPolls {
+		t.Fatalf("expected at least %d polls, got %d", wantPolls, len(sawStartRevision))
 	}
 	for i, has := range sawStartRevision {
 		if has {

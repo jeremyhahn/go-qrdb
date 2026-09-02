@@ -74,7 +74,36 @@ var (
 	// requested on each qrdb_watch tool call. A package variable (not a
 	// const) so tests can shrink it.
 	watchPollTimeoutSeconds = 1.0
+
+	// watchPollClock supplies every delay the poll loop waits on. Production
+	// uses realWatchClock, a direct time.After. Tests substitute a clock whose
+	// After returns a channel they fire by hand, which turns "when does the
+	// next poll happen" from a wall-clock race into a schedule the test owns:
+	// a polling test can then push a change while the loop is provably parked
+	// between polls and assert no-loss against that schedule rather than
+	// against elapsed time. See issue #171 — the previous wall-clock-timed
+	// test could not distinguish a genuinely lost update from a busy host, and
+	// failed three times on unrelated changes because of it.
+	//
+	// A package variable, matching the two above, and deliberately a single
+	// After method rather than a bespoke ticker abstraction: issue #172's
+	// repo-wide clock seam can supply this package's clock by satisfying the
+	// same method, so absorbing this costs an assignment rather than an undo.
+	watchPollClock watchClock = realWatchClock{}
 )
+
+// watchClock is the minimal time seam the poll loop needs: a channel that
+// fires after a delay. Kept to one method so any general-purpose clock
+// satisfies it without adaptation.
+type watchClock interface {
+	After(d time.Duration) <-chan time.Time
+}
+
+// realWatchClock is the production clock, delegating to the runtime timer.
+type realWatchClock struct{}
+
+// After returns a channel that receives after d has elapsed.
+func (realWatchClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // ---------------------------------------------------------------------------
 // Server-side JSON decode types for watch responses
@@ -135,6 +164,10 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 
 	ch := make(chan transport.WatchResponse, 16)
 
+	// Read the clock here, on the caller's goroutine, so the poll goroutine
+	// never races a test restoring watchPollClock during teardown.
+	clock := watchPollClock
+
 	go func() {
 		defer close(ch)
 
@@ -194,7 +227,7 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(watchPollInterval):
+				case <-clock.After(watchPollInterval):
 					continue
 				}
 			}
@@ -204,7 +237,7 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(watchPollInterval):
+				case <-clock.After(watchPollInterval):
 					continue
 				}
 			}
@@ -260,7 +293,7 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(watchPollInterval):
+			case <-clock.After(watchPollInterval):
 			}
 		}
 	}()
