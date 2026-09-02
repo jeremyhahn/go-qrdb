@@ -8,10 +8,17 @@ MODULE        := github.com/jeremyhahn/go-qrdb
 SERVER_BINARY := qrdbd
 CLIENT_BINARY := qrdb
 COVER_DIR     := coverage
-VERSION       := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
+# BUILD_VERSION, not VERSION: `make release-alpha VERSION=vX.Y.Z-alpha` takes the
+# release version as an ARGUMENT, and a file-scope `VERSION` shadows it. A plain
+# `make release-alpha` would then inherit this value, sail past the "state the
+# version explicitly" guard with an unprefixed string, and die several steps
+# later on a grammar error naming a version the operator never typed. The build
+# stamp and the release argument are different facts; only one may be called
+# VERSION, and the release recipe is the one whose name is part of its contract.
+BUILD_VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
 GIT_COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE    := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS       := -X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
+LDFLAGS       := -X main.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
 
 # Go tooling
 GO            := go
@@ -1320,15 +1327,66 @@ test-tag-lockstep:
 # Run both hygiene checks before publishing a release:
 #
 #     make check-tag-lockstep check-version-reconciled RELEASE_TAG=vX.Y.Z
-RELEASE_TAG ?=
+# A TAG NAME IS UNTRUSTED INPUT. `release-lockstep.yml` passes github.ref_name
+# straight in, and since this PR widened that workflow's trigger to `sdk/**/v*`
+# it routes arbitrary DEEPER tag names here. Git accepts far more in a tag name
+# than the version grammar this target reasons about, and the gap between what
+# git accepts and what we audit was the vulnerability:
+#
+#   make check-version-reconciled RELEASE_TAG='sdk/go/.../v0.10.0-alpha;echo>X'
+#
+# expanded $(RELEASE_TAG) into recipe TEXT, so the shell split the command, ran
+# the injected `echo`, and make exited 0 -- the step reported SUCCESS having run
+# attacker-controlled shell. Measured, not theorised.
+#
+# BOTH halves, because either alone is insufficient in a different way. Quoting
+# through the same $(value)/unexport/override sanitiser the release inputs use
+# makes an injected value INERT -- the shell receives exactly one argument
+# whatever it contains. The grammar check makes it REJECTED -- a tag that cannot
+# be a release is not a tag this target should be reasoning about at all.
+# Quoting closes this instance; the grammar closes the class, and closing the
+# instance is not enough.
+#
+# `:=` not `?=`, so an exported RELEASE_TAG in the environment cannot decide
+# what a CI step audits; the command line still can, which is how the workflow
+# passes it.
+RELEASE_TAG :=
+
+unexport RELEASE_TAG REL_RELEASE_TAG
 
 .PHONY: check-version-reconciled
+check-version-reconciled: override export REL_RELEASE_TAG := $(value RELEASE_TAG)
 check-version-reconciled:
-	@./scripts/check-version-reconciled.sh . $(RELEASE_TAG)
+	@num='(0|[1-9][0-9]*)'; \
+	if [ -n "$$REL_RELEASE_TAG" ] && \
+	   ! printf '%s' "$$REL_RELEASE_TAG" | grep -Eq "^([A-Za-z0-9][A-Za-z0-9._-]*/)*v$${num}\.$${num}\.$${num}(-(alpha|beta|rc))?$$"; then \
+	  echo "ERROR: RELEASE_TAG is not a release tag: $$REL_RELEASE_TAG"; \
+	  echo "  expected [<module-path>/]vX.Y.Z with an optional -alpha/-beta/-rc"; \
+	  echo "  (release-versioning.md 1). A tag that cannot name a release is not"; \
+	  echo "  one this check should reason about, and git accepts far more in a"; \
+	  echo "  tag name than a shell treats as inert."; \
+	  exit 1; \
+	fi; \
+	./scripts/check-version-reconciled.sh . "$$REL_RELEASE_TAG"
 
 .PHONY: test-version-reconciled
 test-version-reconciled:
 	@./scripts/check-version-reconciled_test.sh
+
+# release-alpha is orchestration whose failure mode is a PUBLISHED tag, and a
+# published tag is immutable (release-versioning.md 3) — so it is the one target
+# in this Makefile where "I ran it once and it worked" is not enough. The cases
+# cover what a regression would actually cost: a guard that writes VERSION
+# before it refuses, a half-created tag pair, the signing wrapper invoked with
+# the wrong arguments, and a push that publishes refs nobody asked for.
+#
+# Hermetic: throwaway repositories, a local bare repo standing in for `dev`, and
+# a fake AGENT_GIT wrapper with a throwaway signing key. No network, no Gitea,
+# no dependence on the caller having a `dev` remote or a signing identity — a
+# test that only passes on one host is a test that stops running.
+.PHONY: test-release-alpha
+test-release-alpha:
+	@./scripts/check-release-alpha_test.sh
 
 # ============================================================================
 # Security scanning
@@ -1392,7 +1450,7 @@ security: gosec vuln mod-verify trivy
 
 .PHONY: docker-build
 docker-build:
-	docker build -t qrdbd:$(VERSION) .
+	docker build -t qrdbd:$(BUILD_VERSION) .
 
 .PHONY: docker-build-integration
 docker-build-integration:
@@ -1400,7 +1458,7 @@ docker-build-integration:
 
 .PHONY: docker-run
 docker-run:
-	docker run --rm -p 63001:63001 -p 63002:63002 -p 63003:63003 qrdbd:$(VERSION)
+	docker run --rm -p 63001:63001 -p 63002:63002 -p 63003:63003 qrdbd:$(BUILD_VERSION)
 
 .PHONY: docker-run-devcontainer
 docker-run-devcontainer:
@@ -1785,6 +1843,19 @@ help:
 	@echo "  vet-tags               Run go vet over every supported build-tag combination"
 	@echo "  fmt                    Check gofmt formatting"
 	@echo ""
+	@echo "Release (see the release-alpha comment block for the full contract):"
+	@echo "  release-alpha VERSION=vX.Y.Z-alpha   Cut and publish a signed release"
+	@echo "                         Fetches tags from the release remote first (adds"
+	@echo "                         refs, prunes nothing), then commits VERSION, cuts"
+	@echo "                         signed tags for the root and every sdk/ module,"
+	@echo "                         and pushes exactly those refs atomically."
+	@echo "  check-tag-lockstep     Audit root and nested-module tags for lockstep"
+	@echo "  check-version-reconciled [RELEASE_TAG=vX.Y.Z-alpha]"
+	@echo "                         Reconcile VERSION, CHANGELOG and tag"
+	@echo "  test-release-alpha     Regression tests for the release-alpha recipe"
+	@echo "  test-tag-lockstep      Regression tests for the lockstep check"
+	@echo "  test-version-reconciled  Regression tests for the reconciliation check"
+	@echo ""
 	@echo "Security:"
 	@echo "  gosec                  Run gosec security scanner"
 	@echo "  vuln                   Run govulncheck vulnerability scanner"
@@ -1811,7 +1882,62 @@ help:
 	@echo "  bench-gorm                       Run GORM's own upstream benchmarks (node target)"
 	@echo "  coverage-gorm                    Generate coverage for the node-target run"
 
-SUBMODULE_TAGS := sdk/go
+# DERIVED, not declared, and `override` so nothing can reach it.
+#
+# Two problems, one answer. The declared list had already DRIFTED: go-qrdb#50
+# was owner-ruled on 2026-08-20 to make the conformance module a third lockstep
+# tag namespace, `sdk/go/gorm/conformance/go.mod` exists on main, and this line
+# still said `sdk/go` alone. A hand-maintained list drifts from the module graph
+# and the drift stays invisible until it strands something -- the same reasoning
+# sdlc.md 8 records for deriving dispatch priority instead of listing it.
+# Discovery makes #50's release-tooling half fall out of the definition rather
+# than out of somebody remembering.
+#
+# THAT IS NOT THE SAME AS #50 BEING DONE, and nobody should read it that way.
+# Deriving the set makes this recipe correct; it does not make the conformance
+# module ready to publish. Measured 2026-09-02: `go mod tidy` in
+# sdk/go/gorm/conformance SUCCEEDS but rewrites go.mod and go.sum, dropping five
+# direct requirements -- the module's declared dependencies do not match its
+# committed sources, because the upstream GORM suite it imports is materialised
+# on demand by `make gorm-suite-sync` and is not in the tree. So the committed
+# module is untidy, AND tidying it would strip the requirements the materialised
+# suite needs: it is not a "run tidy and commit" fix. Until #50 resolves that,
+# the third tag will point at a module a consumer cannot resolve standalone.
+#
+# And it was OVERRIDABLE, which was a reported escape: `SUBMODULE_TAGS=` on the
+# command line cut a root tag with no lockstep leg. Deriving removes the knob
+# instead of guarding it, which is the direction this repo prefers when the risk
+# is the next engineer.
+#
+# THE DERIVATION LIVES IN scripts/lockstep-modules.sh, and check-tag-lockstep.sh
+# calls the same script. That is the point rather than tidiness: the publisher
+# and the auditor must read ONE derivation, not two that agree today. Two lists
+# that happen to match are one edit away from not matching, and the failure is
+# silent in the direction that matters -- an auditor narrower than the publisher
+# passes green while a namespace goes unchecked. That gap was real here
+# (reviewed on PR #212): discovery widened what release-alpha publishes while
+# the audit still hard-coded sdk/go.
+#
+# `$(shell)` discards the script's exit status, so an empty result arrives as an
+# empty list rather than an error. The recipe's non-empty assertion is what
+# turns that back into a refusal; the script also fails loudly on its own for
+# every other caller.
+#
+# SCOPED TO sdk/, which is the one judgement here, so it is worth stating.
+# `find .` would also match test/performance/{qrdb,tikv,etcd-benchmark,
+# cmd/kvcompare}/go.mod -- four local benchmark harnesses that must never be
+# tagged -- and excluding them would need a hand-maintained exclusion list,
+# which is the drift this change exists to remove wearing a different hat.
+# sdk/ is the published consumer surface; a module outside it is not part of
+# the release. The failure directions decide it: a module wrongly INCLUDED gets
+# an irrevocable tag, a module wrongly EXCLUDED gets a missing one that
+# check-tag-lockstep and the Release Lockstep workflow both report. Only one of
+# those is recoverable.
+#
+# $(sort) is not decoration: it dedupes AND orders, so the published ref list is
+# identical between runs. An unsorted find would make a release's own ref list
+# depend on directory order.
+override SUBMODULE_TAGS := $(shell ./scripts/lockstep-modules.sh 2>/dev/null)
 # Builds never resolve through a workspace: modules come from Gitea tags
 # (dependency-resolution.md §2). Immunizes against stray go.work files.
 export GOWORK=off
@@ -1819,19 +1945,496 @@ export GOWORK=off
 # ---- dependency-resolution.md targets (2026-08-13 cutover) ----
 # SUBMODULE_TAGS lists nested modules tagged in lockstep with the root
 # (release-versioning.md P2). deps-latest runs before compiling in a
-# consumer repo; release-alpha publishes this repo's next -alpha tag to dev.
+# consumer repo; release-alpha publishes this repo's next -alpha tag.
 # deps-latest picks the highest tag INCLUDING -alpha prereleases — bare
 # 'go get @latest' ignores prereleases and would downgrade to legacy v0.0.0.
 
 .PHONY: release-alpha deps-latest
 
-release-alpha:
-	@V=$$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0-alpha); \
-	NEXT=$$(echo $$V | awk -F'[.-]' '{printf "v%s.%s.%d-alpha", substr($$1,2), $$2, $$3+1}'); \
-	echo $${NEXT#v} > VERSION && git add VERSION && git commit -q -m "chore(release): $$NEXT" || true; \
-	git tag $$NEXT; \
-	for s in $(SUBMODULE_TAGS); do git tag "$$s/$$NEXT"; done; \
-	git push dev HEAD --tags && echo "Tagged $$NEXT"
+# release-alpha — company template software/templates/make/release-alpha.mk v2,
+# adapted for this repository's root+sdk/go tag lockstep (go-qrdb#160, #116).
+#
+# The v1 recipe this replaces had six defects and none of them failed loudly:
+#
+#   1. It auto-incremented PATCH from `git describe`, so an API addition shipped
+#      labelled a bugfix. The version is the only signal a pinning consumer
+#      gets, and release-versioning.md §1 puts breakage in MINOR pre-1.0.
+#      The version is now an explicit argument; the recipe refuses to guess.
+#   2. Every git write used plain `git`, so the VERSION commit carried no SSH
+#      signature and was authored as whoever ran make. main enforces signed
+#      commits, so such a release is rejected at push time — after the tags
+#      already exist locally, in a half-released state unpicked by hand.
+#   3. `git tag $NEXT` creates a LIGHTWEIGHT tag. A lightweight tag is a ref to
+#      a commit; it has no object of its own and therefore cannot carry a
+#      signature at all, whatever tag.gpgsign says. Both the root tag and the
+#      sdk/go lockstep tag were unsigned. Tags are now created with `-s`, which
+#      makes them annotated tag objects AND signed, and each is verified after
+#      creation rather than assumed.
+#   4. `git push dev HEAD --tags` pushes EVERY tag in the local clone, not the
+#      two just cut. It now names the exact refs and uses --atomic, so the
+#      server applies the branch and both tags or none of them (a plain
+#      multi-ref push may be accepted in part, which publishes the lockstep
+#      skew that check-tag-lockstep exists to prevent).
+#   5. `|| true` swallowed a failed VERSION commit and tagged anyway, producing
+#      a tag whose VERSION file disagreed with its own name. There is no
+#      `|| true` anywhere below; every step is checked, and HEAD is proved to
+#      BE the release commit before any tag is created.
+#   6. No CHANGELOG stamping. The cut is now refused unless CHANGELOG.md's
+#      newest released section already names this version — checked by running
+#      scripts/check-version-reconciled.sh, the same script the Release
+#      Lockstep workflow runs, against the VERSION content about to be written.
+#      A pre-flight that is not identical to the gate it clears for is not a
+#      check; reusing the script is what makes it identical.
+#
+# Usage:
+#
+#     make release-alpha VERSION=v0.17.0-alpha
+#
+# Overridable inputs, all with sane defaults for this repository:
+#
+#   AGENT_GIT       the identity/signing wrapper, resolved from PATH. Not an
+#                   absolute path: baking one publishes a developer's home
+#                   directory and the internal tooling layout into a repo that
+#                   mirrors publicly. If it is not on your PATH, pass
+#                   AGENT_GIT=/path/to/agent-git.sh on the command line.
+#   REPO_NAME       the LITERAL repo name, never $(notdir $(CURDIR)) — that
+#                   derives the signing identity from the checkout directory,
+#                   so a worktree named anything else signs as the wrong agent.
+#   RELEASE_REMOTE  the Gitea remote. version-control.md §3 names it `dev` in
+#                   every company repository and reserves `origin` for nothing
+#                   at all, so a command given no remote has nothing to reach
+#                   for. It stays a VARIABLE rather than a hardcoded word so a
+#                   clone whose remote is named differently can say so; its
+#                   existence is asserted before it is trusted, because the
+#                   duplicate-tag check below cannot answer against a remote
+#                   that does not resolve, and a check that cannot answer must
+#                   not read as "no such tag".
+#
+# SECURITY — why the body touches no $(...) at all. A variable set on the make
+# command line is expanded when the recipe's environment is built, even in a
+# makefile that never mentions it, so `VERSION=v0.0.0-alpha$(shell ...)` runs
+# before the first guard. `$(value ...)` stops the assignment expanding it and
+# `unexport` stops the environment build expanding it; `override` is what keeps
+# an operator from setting the internal REL_* name directly and outranking the
+# sanitised value. Both name families must appear on both lines. Do not
+# re-measure this with `make -n`: under -n no recipe runs, no environment is
+# built, and an injectable makefile looks clean.
+#
+# Error messages below are SINGLE-quoted on purpose. A double-quoted echo is a
+# live command-substitution context, and error strings are exactly what gets
+# edited casually — a $(...) added to one gets executed at the moment a release
+# is already failing.
+#
+# THESE ARE `:=`, NOT `?=`, AND THAT IS THE SECURITY-RELEVANT PART. An
+# environment variable is a defined make variable, so `?=` DOES NOT OVERRIDE IT
+# and `unexport` does not help -- unexport only keeps a name out of child
+# environments. Measured on GNU Make 4.3:
+#
+#   makefile            environment          command line   REL_REMOTE becomes
+#   ----------------    -----------------    ------------   ------------------
+#   RELEASE_REMOTE ?=   RELEASE_REMOTE=      (none)         dev
+#   RELEASE_REMOTE ?=   RELEASE_REMOTE=origin (none)        ORIGIN  <- wrong
+#   RELEASE_REMOTE :=   RELEASE_REMOTE=origin (none)        dev
+#   RELEASE_REMOTE :=   RELEASE_REMOTE=origin RELEASE_REMOTE=other  other
+#
+# With `?=`, any shell or CI job that happens to export RELEASE_REMOTE silently
+# redirects where the release is PUSHED, and any shell that exports a
+# well-formed VERSION lets a bare `make release-alpha` cut a release the
+# operator never named -- the explicit-version guard passes on a value nobody
+# typed. `:=` gives the order that is actually wanted: the Makefile's default
+# beats the environment, and the command line beats the Makefile. VERSION is
+# assigned EMPTY for exactly this reason; it has no sensible default and must
+# come from the command line, so the file assignment exists only to neutralise
+# an inherited one.
+#
+# The defaults also come BEFORE the unexport lines. `unexport FOO` DEFINES FOO
+# as empty when it is not already set, which silently turned a `?=` default
+# into a no-op here before these became `:=`. The order no longer matters for
+# `:=`, and is kept because it is the order that reads correctly.
+VERSION        :=
+AGENT_GIT      := agent-git.sh
+REPO_NAME      := go-qrdb
+RELEASE_REMOTE := dev
+
+unexport VERSION RELEASE_REMOTE REPO_NAME AGENT_GIT SUBMODULE_TAGS
+unexport REL_VERSION REL_REMOTE REL_REPO REL_AGENT_GIT REL_SUBMODULE_TAGS
+unexport REL_ORIGIN_VERSION REL_ORIGIN_REMOTE REL_ORIGIN_REPO
+unexport REL_ORIGIN_AGENT REL_ORIGIN_SUBMOD
+
+release-alpha: override export REL_VERSION        := $(value VERSION)
+release-alpha: override export REL_REMOTE         := $(value RELEASE_REMOTE)
+release-alpha: override export REL_REPO           := $(value REPO_NAME)
+release-alpha: override export REL_AGENT_GIT      := $(value AGENT_GIT)
+release-alpha: override export REL_SUBMODULE_TAGS := $(value SUBMODULE_TAGS)
+
+# `:=` makes the Makefile's default beat the environment -- EXCEPT under
+# `make -e`, where the environment beats the Makefile, and `-e` can arrive
+# through an inherited MAKEFLAGS without anybody typing it. Measured on GNU
+# Make 4.3: with MAKEFLAGS=-e in the environment, an exported VERSION reaches
+# the recipe with origin 'environment override' and satisfies the
+# explicit-version guard, and an exported RELEASE_REMOTE redirects the push.
+#
+# So the ORIGIN of each input is carried in beside its value and checked. This
+# is the one place a plain $(...) belongs in the recipe: $(origin X) returns a
+# word from a fixed vocabulary -- file, command line, environment, override,
+# undefined -- and can never carry an operator's text, which is what makes
+# expanding it safe where expanding the value would not be.
+release-alpha: override export REL_ORIGIN_VERSION := $(origin VERSION)
+release-alpha: override export REL_ORIGIN_REMOTE  := $(origin RELEASE_REMOTE)
+release-alpha: override export REL_ORIGIN_REPO    := $(origin REPO_NAME)
+release-alpha: override export REL_ORIGIN_AGENT   := $(origin AGENT_GIT)
+release-alpha: override export REL_ORIGIN_SUBMOD  := $(origin SUBMODULE_TAGS)
+
+# check-tag-lockstep as a prerequisite is the fast, offline pre-check: it fails
+# on an obviously broken local tag set before the recipe reaches for the
+# network. It is NOT the authoritative one -- it sees only this clone's tags AND
+# only the default module, which is why the recipe fetches and audits again
+# below over the DISCOVERED set. An audit that knows about fewer namespaces than
+# the tagger cuts passes while one of them is broken. And it runs a third
+# time after both new tags exist and before the push, which is the only moment
+# at which a skewed release can still be prevented rather than reported
+# (go-qrdb#13).
+release-alpha: check-tag-lockstep
+	@for o in "VERSION=$$REL_ORIGIN_VERSION" "RELEASE_REMOTE=$$REL_ORIGIN_REMOTE" "REPO_NAME=$$REL_ORIGIN_REPO" "AGENT_GIT=$$REL_ORIGIN_AGENT" "SUBMODULE_TAGS=$$REL_ORIGIN_SUBMOD"; do \
+	  case "$${o#*=}" in \
+	    environment|"environment override") echo "ERROR: $${o%%=*} is coming from the ENVIRONMENT, not from this Makefile or the command line. That happens under make -e, including an inherited MAKEFLAGS=-e that nobody typed, and it lets an exported value choose the version or the push destination for a release that cannot be retracted. Pass release inputs on the command line: make release-alpha VERSION=vX.Y.Z-alpha"; exit 1 ;; \
+	  esac; \
+	done
+	@test -n "$$REL_VERSION" || { echo 'ERROR: state the version explicitly: make release-alpha VERSION=vX.Y.Z-alpha (release-versioning.md decides patch-vs-minor - the recipe refuses to guess)'; exit 1; }
+	@printf '%s' "$$REL_VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha$$' || { echo "ERROR: VERSION is not of the form vX.Y.Z-alpha (no leading zeroes): $$REL_VERSION"; exit 1; }
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "ERROR: releases are cut from main; you are on $$(git rev-parse --abbrev-ref HEAD). Pushing HEAD would publish this branch."; exit 1; }
+# Before ANYTHING with a side effect, including the tag fetch further down.
+# A refused invocation must not have touched the repository at all, and a fetch
+# creates and updates local refs -- so a dirty tree has to be caught while the
+# only thing that has happened is reading. Raised in review of PR #212.
+	@test -z "$$(git status --porcelain)" || { echo 'ERROR: working tree not clean'; exit 1; }
+	@test -n "$$REL_REPO" || { echo 'ERROR: REPO_NAME is empty - set it to the literal repo name, never the checkout directory name'; exit 1; }
+	@printf '%s' "$$REL_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$$' || { echo "ERROR: REPO_NAME is not a plain repo name: $$REL_REPO"; exit 1; }
+	@command -v "$$REL_AGENT_GIT" >/dev/null 2>&1 || { echo "ERROR: AGENT_GIT does not resolve to an executable: $$REL_AGENT_GIT. Every git write in this recipe signs through it, and a bad path must fail before VERSION is written. Put agent-git.sh on PATH or pass AGENT_GIT=/path/to/agent-git.sh"; exit 1; }
+	@test -n "$$REL_REMOTE" || { echo 'ERROR: RELEASE_REMOTE is empty - set it to the Gitea remote'; exit 1; }
+# The remote must resolve, and it must not be GitHub. Both halves are one recipe
+# line because each line is its own shell and the URL is needed twice.
+#
+# A release tag is permanent and public the instant it lands, and AGENTS.md
+# forbids pushing to github.com without explicit approval per push. Nothing
+# below could take that back, so the refusal belongs here -- BEFORE the
+# duplicate-tag check, which would otherwise reach out to github.com over the
+# network just to ask a question the answer to which is "do not".
+#
+# EVERY url the remote has, fetch AND push, in BOTH the configured and the
+# rewritten view. Four lists, and each one is there because leaving it out was a
+# real defect.
+#
+#  - `git push` uses `remote.<name>.pushurl` when one is set, so a fetch-only
+#    check let a remote with an innocuous fetch url and a github.com pushurl
+#    publish anyway. `--all` because a remote may carry several of each.
+#
+#  - `git remote get-url` APPLIES url.<base>.insteadOf REWRITING. This fleet
+#    rewrites `https://github.com/jeremyhahn/` to the internal Gitea host so Go
+#    can resolve private modules, and under that config `get-url` returned the
+#    Gitea URL for a remote configured as https://github.com/... -- no
+#    "github.com" in it, and THE GUARD ACCEPTED A GITHUB REMOTE. It failed on CI
+#    and passed locally for exactly that reason, and the ssh form still refused
+#    because an https-scoped rewrite does not touch it. A guard against
+#    publishing to GitHub, defeated by ambient git config. Measured 2026-09-02.
+#
+# So the CONFIGURED values are read with `git config --get-all`, which does not
+# rewrite, and both views are tested. They answer different questions and both
+# matter: the configured value is what the operator ASKED for, and a rewrite is
+# ambient and may change; the rewritten value is where git would ACTUALLY
+# connect, so a benign-looking remote rewritten INTO github.com must refuse too.
+# Refusing on either is over-refusal in the safe direction.
+#
+# The split-remote comparison uses the CONFIGURED values, because the question
+# there is whether this remote was set up to fetch and push to different places,
+# not how a rewrite happens to land them today.
+#
+# The comparison is LOWERCASED first, under LC_ALL=C. DNS host names are
+# case-insensitive, so git@GitHub.com:... is the same host and a case-sensitive
+# match would have waved it through -- a one-character difference between
+# refusing an irrevocable publication and performing it. LC_ALL=C because a
+# Turkish locale folds I to a dotless i, which would leave GitHub.com unmatched
+# in the one environment nobody tests in.
+#
+# The test is a substring match. It is deliberately conservative rather than
+# clever: it refuses anything naming github.com, which can only ever
+# over-refuse, and over-refusing an irrevocable publish is the safe direction.
+# It is not a general "is this remote public" oracle -- a GitHub Enterprise host
+# under another name would pass, and the approval requirement still applies to
+# it. Reading the push urls FAILS CLOSED for the same reason the duplicate-tag
+# check does: a remote this recipe cannot fully inspect is not a remote it may
+# publish to.
+	@EFF_URLS=$$(git remote get-url --all "$$REL_REMOTE" 2>/dev/null) || { echo "ERROR: no git remote named $$REL_REMOTE. version-control.md names the Gitea remote dev; if this clone calls it something else pass RELEASE_REMOTE=<name>. The duplicate-tag check cannot answer against a remote that does not resolve, and refusing here is the difference between a clear error and a release that half-happens"; exit 1; }; \
+	EFF_PUSH=$$(git remote get-url --push --all "$$REL_REMOTE" 2>/dev/null) || { echo "ERROR: could not read the push URLs of $$REL_REMOTE. Refusing to publish to a remote this recipe cannot fully inspect"; exit 1; }; \
+	CFG_URLS=$$(git config --get-all "remote.$$REL_REMOTE.url" 2>/dev/null || true); \
+	CFG_PUSH=$$(git config --get-all "remote.$$REL_REMOTE.pushurl" 2>/dev/null || true); \
+	test -n "$$CFG_PUSH" || CFG_PUSH="$$CFG_URLS"; \
+	case "$$(printf '%s %s %s %s' "$$CFG_URLS" "$$CFG_PUSH" "$$EFF_URLS" "$$EFF_PUSH" | LC_ALL=C tr '[:upper:]' '[:lower:]')" in \
+	  *github.com*) echo "ERROR: $$REL_REMOTE points at github.com. Configured: [$$CFG_URLS] push [$$CFG_PUSH]; after url.<base>.insteadOf rewriting: [$$EFF_URLS] push [$$EFF_PUSH]. BOTH views are checked - see the comment above. AGENTS.md requires explicit approval before any push to github.com, and a release tag is permanent and public the moment it lands - there is no retraction to fall back on. Releases are published to the Gitea remote; a GitHub publication is a separate, deliberate, approved step and never a side effect of RELEASE_REMOTE"; exit 1 ;; \
+	esac; \
+	test "$$CFG_URLS" = "$$CFG_PUSH" || { echo "ERROR: $$REL_REMOTE fetches from [$$CFG_URLS] but pushes to [$$CFG_PUSH]. When a push cannot be confirmed, this recipe asks the remote what it holds - and that query reads the FETCH url. On a split remote it would be interrogating one server about what it wrote to another, and could answer 'nothing was published' about a live release. Point both at the same place, or release through a remote that does"; exit 1; }
+# FETCH BEFORE AUDITING. check-tag-lockstep.sh reads the tags present in THIS
+# CLONE, and its own header says a checkout must fetch them first. The
+# prerequisite above therefore answers a question about the operator's laptop,
+# not about what is published: a clone that is merely stale -- not shallow, not
+# tagless, so nothing complains -- can pass the audit while `dev` already
+# carries a skewed pair somebody else pushed. Refusing a local skew and
+# ignoring a published one is the wrong way round; the published one is the one
+# consumers can already resolve. Reported as a P2 in review of PR #212.
+#
+# This runs after the github.com guard on purpose: fetching is the first thing
+# here that talks to the remote, and a remote that must not be published to is
+# not one to reach out to either. It also makes the duplicate-tag checks below
+# stronger, since a tag that exists remotely is now present locally too.
+#
+# No --prune-tags. Deleting the operator's local tags to satisfy an audit is a
+# larger and more destructive act than refusing to release, and a tag deleted
+# on the remote is a separate incident (release-versioning.md 3 says published
+# tags are immutable, so it should not happen at all).
+	@echo "release-alpha: fetching tags from $$REL_REMOTE into this clone. This ADDS refs and prunes nothing; the lockstep audit below is only as good as the tag set this clone can see."
+	@git fetch --quiet --tags "$$REL_REMOTE" || { echo "ERROR: could not fetch tags from $$REL_REMOTE. The lockstep audit is only as good as the tag set this clone can see, and a stale clone hides a skew that is already published"; exit 1; }
+# The HISTORICAL audit runs at the script's default, deliberately, and this is
+# the one place the discovered set is not used. A module added to the lockstep
+# LATER can never satisfy a whole-history audit: every root tag cut before it
+# existed has no counterpart, and tags are immutable, so there is no state the
+# repository could reach that would pass. Measured here the moment discovery
+# picked up sdk/go/gorm/conformance -- the pre-flight refused with MISSING
+# against v0.1.0-alpha and no release would ever have been cuttable again.
+#
+# So history is audited for what has always been in lockstep, and THIS
+# release's own tags are verified directly, against the release commit, over
+# the whole discovered set (in the tag loop below). Reconciling the history of
+# a newly-added namespace is a migration question, and it is go-qrdb#50's.
+	@./scripts/check-tag-lockstep.sh || { echo "ERROR: the published tag set is not in lockstep. This is the audit that matters: the prerequisite ran before the fetch above and saw only this clone's tags. Fix the published skew before cutting a release on top of it"; exit 1; }
+# The discovery runs when make PARSES the file; the tags are cut much later. So
+# it is re-checked here against the filesystem it claimed to describe, rather
+# than trusted -- reading a value at entry and acting on it later is exactly the
+# gap that produced two of this branch's review findings.
+#
+# A discovery that finds NOTHING is the fail-open shape of the defect being
+# fixed: it would publish a root tag with no lockstep leg at all and pass every
+# other check, so it is refused explicitly rather than left to mean "there are
+# no nested modules".
+	@test -n "$$REL_SUBMODULE_TAGS" || { echo 'ERROR: no nested modules were discovered under sdk/. A release with no lockstep leg is exactly the skew this recipe exists to prevent, so an empty discovery is refused rather than read as "there are none"'; exit 1; }
+	@case " $$REL_SUBMODULE_TAGS " in \
+	  *" sdk/go "*) : ;; \
+	  *) echo "ERROR: the discovered lockstep set does not contain sdk/go: $$REL_SUBMODULE_TAGS. sdk/go is this repository's published SDK and every release has carried its tag; a discovery that lost it is broken, not a repository that stopped having one"; exit 1 ;; \
+	esac
+	@for s in $$REL_SUBMODULE_TAGS; do \
+	  printf '%s' "$$s" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$$' || { echo "ERROR: discovered module path is not a plain path: $$s"; exit 1; }; \
+	  test -f "$$s/go.mod" || { echo "ERROR: $$s was discovered as a lockstep module but has no go.mod now. Discovery runs at parse time; this is the check that it still describes the tree being tagged"; exit 1; }; \
+	done
+# EVERY DISCOVERED MODULE MUST BE DECLARED, DECLARED RELEASABLE, AND DECLARED
+# AGAINST A VERSION THAT EITHER EXISTS OR IS THE ONE BEING CUT.
+#
+# The third clause is a state I designed without enumerating. Three states were
+# intended -- a version, `unreleased`, no line at all -- but a version that does
+# NOT exist and is NOT this release is a fourth, and it was reachable: the audit
+# reports such a module `pending` and skips its history scan, forever, so every
+# later release could omit its counterpart without failing anything.
+#
+# The hole came from a correct decision generalised too far. Permitting a
+# baseline that names an untagged version is necessary -- it is how a module's
+# FIRST release is cut, by setting the baseline to the version you are about to
+# cut. But only that one instance of "does not exist yet" is legitimate, and I
+# permitted the whole class. Requiring it to equal REL_VERSION preserves the
+# bootstrap by construction and closes the rest. An enumeration bounds only the
+# axis it enumerates, and this was the state axis. The audit
+# is scoped by lockstep-baseline, so a module recorded as `unreleased` is out of
+# scope for the history check -- which is correct there and would be a hole
+# here: cutting a release that includes a module nobody has decided to release
+# is exactly what the baseline exists to prevent. Undeclared is worse still.
+#
+# This is the release half of the same fact the audit reads. The audit reports;
+# the release refuses.
+	@for s in $$REL_SUBMODULE_TAGS; do \
+	  b=$$(./scripts/lockstep-modules.sh --baseline "$$s" . 2>/dev/null) || { echo "ERROR: $$s is discovered as a lockstep module but is not declared in lockstep-baseline. An undeclared module would be tagged without anyone having decided it should be released. Add a line for it - a version, or 'unreleased'"; exit 1; }; \
+	  test "$$b" != unreleased || { echo "ERROR: $$s is declared 'unreleased' in lockstep-baseline, so this release will not cut a tag for it - and a release that silently omits a discovered module is the skew this recipe exists to prevent. Decide: set its baseline to the version being cut, or remove the module from sdk/. For sdk/go/gorm/conformance that decision is go-qrdb#50's"; exit 1; }; \
+	  test "$$b" = "$$REL_VERSION" || git rev-parse -q --verify "refs/tags/$$b" >/dev/null || { echo "ERROR: $$s has baseline $$b in lockstep-baseline, but no root tag $$b exists and it is not the version being cut ($$REL_VERSION). The audit would report that module 'pending' and skip its history scan FOREVER, so every later release could omit its counterpart without failing. A baseline may name a tag that does not exist ONLY when it is the release being cut - that is how a module's first release works"; exit 1; }; \
+	done
+# ASK THE MODULE, DO NOT ASSUME IT IS FINE. A lockstep tag is a permanent,
+# consumer-resolvable reference; cutting one for a module whose go.mod does not
+# match its own sources publishes a reference that cannot be resolved
+# standalone -- the exact skew the lockstep tag exists to prevent, created by
+# the mechanism meant to prevent it. Owner ruling, 2026-09-02.
+#
+# `go mod tidy -diff` is the check and it MUTATES NOTHING: it reports whether
+# go.mod/go.sum would change, and exits nonzero if they would or if the module
+# graph cannot be loaded at all. Both mean "not publishable". Measured on this
+# tree: sdk/go passes, sdk/go/gorm/conformance does not.
+#
+# It is not the whole of #50's "a fresh clone resolves the tag" bullet, and
+# should not be read as it -- that check needs the tag to exist first, which is
+# a chicken and egg a pre-flight cannot resolve. This is the strongest question
+# that CAN be asked before the irrevocable step.
+#
+# CONSEQUENCE, stated rather than discovered: while sdk/go/gorm/conformance is
+# untidy, `make release-alpha` REFUSES. That is deliberate and there is no
+# override -- an escape hatch here would be used the first time someone is in a
+# hurry, which is exactly when it matters. A blocked release is recoverable; a
+# published broken tag is not. Unblocking it is go-qrdb#50's conformance work.
+#
+# Literal `go`, not $(GO): a settable make variable in the recipe body is an
+# injection surface, and this recipe deliberately takes no toolchain override.
+	@for s in $$REL_SUBMODULE_TAGS; do \
+	  ( cd "$$s" && go mod tidy -diff >/dev/null 2>&1 ) || { echo "ERROR: $$s does not resolve standalone: its go.mod does not match its own sources (go mod tidy -diff reports changes, or the module graph will not load). A lockstep tag is permanent and consumers resolve it, so this refuses rather than publish a reference that cannot be resolved. There is no override. If this is sdk/go/gorm/conformance, it is go-qrdb#50's remaining work"; exit 1; }; \
+	done
+	@TAGS="$$REL_VERSION"; for s in $$REL_SUBMODULE_TAGS; do TAGS="$$TAGS $$s/$$REL_VERSION"; done; \
+	for t in $$TAGS; do \
+	  ! git rev-parse -q --verify "refs/tags/$$t" >/dev/null || { echo "ERROR: tag $$t already exists locally"; exit 1; }; \
+	  rc=0; git ls-remote --exit-code --tags "$$REL_REMOTE" "refs/tags/$$t" >/dev/null 2>&1 || rc=$$?; \
+	  case "$$rc" in \
+	    0) echo "ERROR: tag $$t already exists on $$REL_REMOTE (a local check alone would miss this and fail the push AFTER committing VERSION)"; exit 1 ;; \
+	    2) : ;; \
+	    *) echo "ERROR: could not reach $$REL_REMOTE to check whether tag $$t exists. Refusing to continue: an unreachable remote is not an absent tag"; exit 1 ;; \
+	  esac; \
+	done
+	@d=$$(mktemp -d); test -n "$$d" || { echo 'ERROR: could not create a temporary directory for the CHANGELOG pre-flight'; exit 1; }; \
+	printf '%s\n' "$${REL_VERSION#v}" > "$$d/VERSION"; \
+	cp CHANGELOG.md "$$d/CHANGELOG.md"; \
+	rc=0; ./scripts/check-version-reconciled.sh "$$d" "$$REL_VERSION" || rc=$$?; \
+	rm -rf "$$d"; \
+	test "$$rc" -eq 0 || { echo "ERROR: CHANGELOG.md does not carry $${REL_VERSION#v} as its newest released section. Write the release notes first; this runs the same script the Release Lockstep workflow runs, on a copy, so nothing in the working tree was touched"; exit 1; }
+# EVERYTHING FROM HERE TO THE PUSH IS ONE SHELL, BECAUSE IT IS ONE TRANSACTION.
+# Each recipe line is its own shell, so a cleanup handler cannot be shared
+# across lines -- and while these were separate lines, three failure paths
+# escaped cleanup: the two post-commit assertions, and the post-tag lockstep
+# audit. The last one was real and reported (PR #212): `SUBMODULE_TAGS=` on the
+# command line produced a release commit and a signed root tag with no sdk/go
+# counterpart, nothing published, and a RETRY that then failed on the recipe's
+# own debris -- at the lockstep PREREQUISITE, with a message that never
+# mentioned the previous run. `override` on SUBMODULE_TAGS closes that one
+# door; drawing the boundary here closes the corridor.
+#
+# The contract is now absolute: after this point the release either publishes,
+# or the repository is exactly as it was. No tag, no release commit, no staged
+# VERSION, no advice to run a two-step recovery by hand -- an earlier revision
+# printed such advice and got it wrong, which is what the regression tests
+# caught. Recovery is to fix the cause and run the target again.
+#
+# EACH TAG IS RECORDED IN THE CLEANUP SET BEFORE IT IS CREATED, not after. A
+# wrapper that creates the tag and THEN exits nonzero -- post-command logic
+# failing, or a lost success response -- would otherwise leave behind a tag the
+# cleanup set never heard of, and the next attempt would fail the duplicate-tag
+# preflight on this run's own debris. It is the same shape as trusting a push's
+# exit code about what the remote did: the operation can succeed while the
+# report of it fails, and the two must not be conflated.
+#
+# Recording it early is safe ONLY because the preflight has already established
+# that none of these tags existed, locally or on the remote, after the fetch --
+# so cleanup cannot delete a tag this invocation did not make. It deletes per
+# tag and skips any that is absent, so a genuinely uncreated tag costs nothing
+# while a real failure to delete still warns.
+#
+# cleanup resets to the commit recorded BEFORE anything was written, not to
+# HEAD~1: it undoes exactly this invocation whether it got as far as committing
+# or not. `reset --hard` is safe here and only here, because the clean-tree
+# guard above has already established there is nothing else to lose. It removes
+# LOCAL objects only -- anything that genuinely reached the remote is still
+# there, and the duplicate-tag guard will refuse the next cut loudly rather
+# than quietly re-cutting a published version.
+#
+# THREE OUTCOMES, NOT TWO. `--atomic` guarantees the remote applies every ref or
+# none; it guarantees nothing about whether the CLIENT finds out. The server can
+# commit the update and the connection drop before the success response arrives,
+# so a nonzero exit is not evidence that nothing was published -- it is the
+# absence of evidence either way.
+#
+# The old branch collapsed "I could not confirm" into "nothing happened", then
+# deleted the local tags and told the operator nothing was published, while the
+# tags might be live, immutable and already resolvable by a consumer. Deleting
+# the only local copy of a release you cannot prove is absent is the worst
+# outcome on the table. Present, absent and UNKNOWN are three answers.
+#
+# So the exit code is not trusted: the remote is asked what it holds, and the
+# object each ref points at is compared with the object we meant to publish.
+# THE PUSH NAMES THE COMMIT, NOT `HEAD`. `HEAD` is a moving reference resolved
+# at push time; every assertion above was made about the commit as it stood when
+# they ran. Pushing `HEAD` means the guards checked one object and the push
+# published whatever the symbol pointed at by then -- the same
+# read-a-proxy-for-the-thing shape as validating a fetch URL and then pushing to
+# a pushurl, or reading SUBMODULE_TAGS at entry and tagging from it later. An
+# explicit `<sha>:refs/heads/main` publishes exactly what was verified, and the
+# verification below compares against that same recorded object.
+#
+# The question asked of each ref is "does the remote hold the OBJECT we meant to
+# publish", not "does the ref exist". refs/heads/main always exists -- at the
+# previous commit -- so an existence test could never see "nothing landed", and
+# every failed push would look mixed. Comparing objects is what makes the three
+# outcomes distinguishable.
+#
+# Every ref matches -> the release is live and the error was in the reporting;
+# report success and roll back nothing. None matches -> nothing landed; clean up
+# as usual. Anything in between, including a query that cannot be answered ->
+# PRESERVE EVERYTHING and fail with the ref-by-ref detail, because a human has
+# to reconcile it and needs the local objects to do it with.
+	@BASE_COMMIT=$$(git rev-parse HEAD); \
+	CREATED=""; \
+	cleanup() { \
+	  for t in $$CREATED; do \
+	    git rev-parse -q --verify "refs/tags/$$t" >/dev/null || continue; \
+	    git tag -d "$$t" >/dev/null || echo "WARNING: could not delete $$t; remove it by hand before retrying" >&2; \
+	  done; \
+	  git reset -q --hard "$$BASE_COMMIT" || echo 'WARNING: could not reset to the pre-release commit; check git status before retrying' >&2; \
+	}; \
+	fail() { \
+	  cleanup; \
+	  echo "$$1" >&2; \
+	  echo '  Nothing was published. The release commit and any tag this run created have been removed and the tree is back where it started, so fixing the cause and re-running the target is the whole recovery.' >&2; \
+	  exit 1; \
+	}; \
+	printf '%s\n' "$${REL_VERSION#v}" > VERSION; \
+	"$$REL_AGENT_GIT" "$$REL_REPO" add VERSION || fail "ERROR: could not stage VERSION"; \
+	"$$REL_AGENT_GIT" "$$REL_REPO" commit -q -m "chore(release): $$REL_VERSION" || fail 'ERROR: the release VERSION commit failed - v1 swallowed this with || true and tagged anyway, which is how a tag comes to disagree with its own VERSION file'; \
+	test "$$(git show HEAD:VERSION)" = "$${REL_VERSION#v}" || fail "ERROR: HEAD is not the release commit for $$REL_VERSION - refusing to tag"; \
+	test "$$(git cat-file commit HEAD | grep -c '^gpgsig')" -eq 1 || fail 'ERROR: the release commit carries no SSH signature. main enforces signed commits, so this would be rejected at push time - and without this check that rejection would arrive after the tags already existed'; \
+	test "$$(git log -1 --format='%an %cn')" = "agent-$${REL_REPO#agent-} agent-$${REL_REPO#agent-}" || fail "ERROR: the release commit is authored/committed by $$(git log -1 --format='%an / %cn'), not the repository agent. AGENT_GIT is not the identity wrapper"; \
+	REL_COMMIT=$$(git rev-parse HEAD); \
+	TAGS="$$REL_VERSION"; \
+	REFS="refs/tags/$$REL_VERSION"; \
+	for s in $$REL_SUBMODULE_TAGS; do \
+	  TAGS="$$TAGS $$s/$$REL_VERSION"; \
+	  REFS="$$REFS refs/tags/$$s/$$REL_VERSION"; \
+	done; \
+	for t in $$TAGS; do \
+	  CREATED="$$CREATED $$t"; \
+	  "$$REL_AGENT_GIT" "$$REL_REPO" tag -s -m "$$t" "$$t" || fail "ERROR: could not create signed tag $$t"; \
+	  test "$$(git cat-file -t "$$t")" = tag || fail "ERROR: $$t is a lightweight tag and can carry no signature"; \
+	  git cat-file tag "$$t" | grep -q 'BEGIN SSH SIGNATURE' || fail "ERROR: $$t is annotated but UNSIGNED"; \
+	  test "$$(git rev-parse "$$t^{commit}")" = "$$REL_COMMIT" || fail "ERROR: $$t does not point at the release commit. This is the lockstep property for THIS release, checked over every discovered module rather than left to an audit that only knows the default one"; \
+	done; \
+	./scripts/check-tag-lockstep.sh || fail "ERROR: the tags just created are not in lockstep with each other. Nothing was pushed - this is the one moment a skewed release can still be prevented rather than reported (go-qrdb#13)"; \
+	if "$$REL_AGENT_GIT" "$$REL_REPO" push --atomic "$$REL_REMOTE" "$$REL_COMMIT:refs/heads/main" $$REFS; then \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; atomic push of exactly those refs)"; \
+	  exit 0; \
+	fi; \
+	echo 'WARNING: the push client reported failure. That does not say WHICH outcome occurred, so the remote is being asked what it actually holds before anything is touched.' >&2; \
+	PROBE=$$(git ls-remote "$$REL_REMOTE" refs/heads/main $$REFS 2>/dev/null) || PROBE='@@unqueryable@@'; \
+	if [ "$$PROBE" = '@@unqueryable@@' ]; then \
+	  echo "ERROR: the push to $$REL_REMOTE failed AND the remote cannot be queried, so whether this release was published is UNKNOWN. Nothing has been rolled back on purpose: the release commit and the tags$$TAGS are intact locally, because deleting the only local copy of a release that may already be live and immutable is worse than leaving it. Restore access and compare: git ls-remote $$REL_REMOTE refs/heads/main$$REFS" >&2; \
+	  exit 1; \
+	fi; \
+	CHECK="refs/heads/main=$$REL_COMMIT"; \
+	for t in $$TAGS; do CHECK="$$CHECK refs/tags/$$t=$$(git rev-parse "refs/tags/$$t")"; done; \
+	MATCH=0; TOTAL=0; DETAIL=""; \
+	for c in $$CHECK; do \
+	  r=$${c%%=*}; want=$${c#*=}; \
+	  got=$$(printf '%s\n' "$$PROBE" | awk -v r="$$r" '$$2 == r { print $$1; exit }'); \
+	  TOTAL=$$((TOTAL + 1)); \
+	  if [ "$$got" = "$$want" ]; then MATCH=$$((MATCH + 1)); DETAIL="$$DETAIL\n    published      $$r"; \
+	  elif [ -z "$$got" ]; then DETAIL="$$DETAIL\n    not published  $$r is absent"; \
+	  else DETAIL="$$DETAIL\n    not published  $$r still holds $$got, not $$want"; fi; \
+	done; \
+	if [ "$$MATCH" -eq "$$TOTAL" ]; then \
+	  echo "NOTE: the remote holds every intended ref at the expected object, so the release IS published and the client error was in reporting it, not in doing it. Nothing was rolled back." >&2; \
+	  echo "Released $$REL_VERSION on $$REL_REMOTE (signed commit; annotated signed tags:$$TAGS; the push client errored after the remote had applied every ref)"; \
+	  exit 0; \
+	fi; \
+	if [ "$$MATCH" -eq 0 ]; then \
+	  fail "ERROR: the push to $$REL_REMOTE failed and the remote carries none of this release - established by asking it what it holds, not by reading the client's exit code"; \
+	fi; \
+	printf 'ERROR: the push to %s failed and the remote is in a MIXED state, which --atomic is meant to make impossible. NOTHING HAS BEEN ROLLED BACK: the release commit and the tags%s are intact locally, because part of this release may already be published and immutable. Reconcile by hand and do not re-run until you have.%b\n' "$$REL_REMOTE" "$$TAGS" "$$DETAIL" >&2; \
+	exit 1
 
 deps-latest:
 	@GOWORK=off sh -c ' \

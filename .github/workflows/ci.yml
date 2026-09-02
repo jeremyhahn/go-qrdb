@@ -145,6 +145,25 @@ jobs:
       - name: Test the module-sweep guard
         run: make test-vet-modules
 
+      # go-qrdb#160. `release-alpha` publishes tags, and a published tag is
+      # immutable (release-versioning.md §3), so its failure mode is not a red
+      # build — it is a release consumers have already resolved. Its regression
+      # suite therefore has to be run by something other than the person who
+      # wrote it.
+      #
+      # It lives in this job rather than in a new one because it is the same
+      # shape as the guard self-test above: a few seconds of shell, no Go build,
+      # no network. Adding a step is plumbing; adding a job would change the
+      # gate's job set, which is not this change's call to make.
+      #
+      # It needs git, GNU Make and ssh-keygen and refuses to run without them —
+      # the signature assertions are the point, and a signing test that passes
+      # with no signer is worse than one that stops. All three are present in
+      # the runner image (verified against ci-runner:latest, not assumed:
+      # git 2.54.0, GNU Make 4.3, /usr/bin/ssh-keygen).
+      - name: Test the release-alpha recipe
+        run: make test-release-alpha
+
       # devops.md §4: CI runs the same targets a developer runs. `make fmt` is
       # the gofmt check, not a rewrite.
       - name: gofmt

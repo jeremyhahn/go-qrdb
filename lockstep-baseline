@@ -1,0 +1,45 @@
+# lockstep-baseline — the version from which each nested module is REQUIRED to
+# carry a tag in lockstep with the root (release-versioning.md P2).
+#
+# WHY THIS FILE EXISTS. The lockstep module set is DISCOVERED from the module
+# tree (scripts/lockstep-modules.sh), but "which modules exist" does not answer
+# "since when was each one required in a release". Two facts measured on this
+# repository rule out inferring it:
+#
+#   - Auditing a discovered module over ALL history is unsatisfiable. Every root
+#     tag cut before a module existed has no counterpart and published tags are
+#     immutable, so no reachable state passes.
+#   - Inferring the start from the commit that added the module's go.mod is
+#     equally unsatisfiable here: sdk/go/gorm/conformance's go.mod landed in
+#     e75810a (2026-08-13) and 27 root tags postdate it.
+#
+# And inferring it from the module's FIRST TAG is a fail-open: a module with no
+# tags is scoped out entirely, so the release that should have cut its first tag
+# is exactly the one nothing checks. Announcing that gap is not the same as
+# closing it — a success exit is a success exit however it is worded.
+#
+# So the requirement is DECLARED, in version control, where changing it is a
+# reviewable act rather than a side effect of the tree.
+#
+# FORMAT: "<module> <version|unreleased>", one per line, # for comments.
+#
+#   <version>     the module must have a counterpart for every root tag at or
+#                 after this one, by git ancestry. A baseline naming a tag that
+#                 does not exist yet owes nothing yet — that is how the first
+#                 release including a module is cut: set the baseline to the
+#                 version you are about to cut.
+#   unreleased    the module is not part of any release yet. It is OUT OF SCOPE
+#                 for the history audit, and `make release-alpha` REFUSES until
+#                 someone decides otherwise here.
+#
+# A discovered module with NO line at all is an error in both: an undeclared
+# module is worse than one declared unreleased, because nobody chose it.
+
+sdk/go v0.1.0-alpha
+
+# go-qrdb#50 ruled this a third lockstep namespace on 2026-08-20 and its go.mod
+# exists, but it has never been released: it does not resolve standalone today
+# (`go mod tidy -diff` reports changes, because the upstream GORM suite it
+# imports is materialised on demand by `make gorm-suite-sync`). Flipping this to
+# a version is the act of deciding it joins, and belongs with the rest of #50.
+sdk/go/gorm/conformance unreleased

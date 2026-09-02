@@ -41,7 +41,18 @@ name: Release Lockstep
 on:
   push:
     branches: [main]
-    tags: ["v*", "sdk/go/v*"]           # both release-tag namespaces — see below
+    # Every release-tag namespace. `sdk/**/v*` is the general form, matching the
+    # same sdk/ scope scripts/lockstep-modules.sh derives, so a module added
+    # under sdk/ starts triggering this workflow without an edit here.
+    #
+    # `sdk/go/v*` is kept ALONGSIDE it deliberately, and not as redundancy: it
+    # is the pattern this workflow has always fired on, and whether this Gitea's
+    # glob implementation supports `**` cannot be verified without pushing a
+    # real tag — which is irrevocable. If `**` is unsupported the specific
+    # pattern still fires, so the failure direction is "the deeper module is not
+    # covered yet" rather than "the workflow silently stopped running at all".
+    tags: ["v*", "sdk/go/v*", "sdk/**/v*"]
+
   pull_request:
     branches: [main]
   workflow_dispatch:                    # manual rerun — Gitea has no rerun API

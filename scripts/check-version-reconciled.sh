@@ -49,8 +49,10 @@
 # Usage: check-version-reconciled.sh [repo-dir] [tag]
 #
 #   repo-dir  defaults to the current directory
-#   tag       the version tag being published, e.g. v0.10.0-alpha. When absent
-#             invariant 2 is skipped.
+#   tag       the version tag being published, e.g. v0.10.0-alpha,
+#             sdk/go/v0.10.0-alpha or sdk/go/gorm/conformance/v0.10.0-alpha.
+#             Any lockstep namespace is accepted: the version is the last path
+#             component. When absent invariant 2 is skipped.
 #
 # Exit status: 0 when everything reconciles, 1 otherwise.
 
@@ -97,10 +99,29 @@ if [ "${VERSION}" != "${CHANGELOG_VERSION}" ]; then
 fi
 
 if [ -n "${TAG}" ]; then
-	# Both tag namespaces name the same version: v0.10.0-alpha and
-	# sdk/go/v0.10.0-alpha. Strip whichever prefix is present so the check is
-	# the same one for either leg of a lockstep pair.
-	TAG_VERSION=${TAG#sdk/go/}
+	# EVERY lockstep namespace names the same version: v0.10.0-alpha,
+	# sdk/go/v0.10.0-alpha, sdk/go/gorm/conformance/v0.10.0-alpha. Take the LAST
+	# path component rather than stripping a known prefix.
+	#
+	# It used to strip the literal `sdk/go/`, which was correct while that was
+	# the only nested module. The lockstep set is DERIVED now
+	# (scripts/lockstep-modules.sh), so the set of prefixes is not fixed, and
+	# the Release Lockstep workflow triggers on `sdk/**/v*` — a deeper module's
+	# tag reached this check and was compared as `gorm/conformance/v0.10.0-alpha`
+	# against `0.10.0-alpha`, reporting DRIFT on a perfectly good release.
+	# Measured on PR #212: the widened trigger and this unwidened normaliser
+	# disagreed, which is the same publisher/auditor split this recipe has now
+	# hit on three different pairs.
+	TAG_VERSION=${TAG##*/}
+	case "${TAG_VERSION}" in
+	v*) ;;
+	*)
+		# Not a version tag at all. Reported as such rather than left to surface
+		# as a confusing DRIFT between the tag and VERSION.
+		echo "MALFORMED  ${TAG} does not end in a v-prefixed version component"
+		exit 1
+		;;
+	esac
 	TAG_VERSION=${TAG_VERSION#v}
 	if [ "${TAG_VERSION}" != "${VERSION}" ]; then
 		echo "DRIFT    tag ${TAG} names ${TAG_VERSION} but VERSION is ${VERSION}"

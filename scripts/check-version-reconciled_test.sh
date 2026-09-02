@@ -116,10 +116,34 @@ assert "tag disagrees with VERSION" 1 \
 	"tag v0.9.0-alpha names 0.9.0-alpha but VERSION is 0.10.0-alpha" \
 	"$(fixture tag-skew '0.10.0-alpha' "${RELEASED}")" "v0.9.0-alpha"
 
-# Both namespaces are the same check: sdk/go/vX.Y.Z names X.Y.Z too.
+# EVERY namespace is the same check: sdk/go/vX.Y.Z names X.Y.Z too.
 assert "sdk tag disagrees with VERSION" 1 \
 	"tag sdk/go/v0.9.0-alpha names 0.9.0-alpha but VERSION is 0.10.0-alpha" \
 	"$(fixture sdk-tag-skew '0.10.0-alpha' "${RELEASED}")" "sdk/go/v0.9.0-alpha"
+
+# A DEEPER lockstep namespace. The set of nested modules is derived now
+# (scripts/lockstep-modules.sh) and the Release Lockstep workflow triggers on
+# sdk/**/v*, so a tag with more than one path segment before the version reaches
+# this check. Stripping a literal `sdk/go/` compared `gorm/conformance/v...`
+# against the version and reported DRIFT on a perfectly good release.
+assert "a deeper module's tag reconciles" 0 \
+	"tag sdk/go/gorm/conformance/v0.10.0-alpha all name 0.10.0-alpha" \
+	"$(fixture deep-tag-ok '0.10.0-alpha' "${RELEASED}")" \
+	"sdk/go/gorm/conformance/v0.10.0-alpha"
+
+# And it must still CATCH a skew at that depth, or the normalisation would have
+# turned a real check into an unconditional pass.
+assert "a deeper module's tag still catches a skew" 1 \
+	"tag sdk/go/gorm/conformance/v0.9.0-alpha names 0.9.0-alpha but VERSION is 0.10.0-alpha" \
+	"$(fixture deep-tag-skew '0.10.0-alpha' "${RELEASED}")" \
+	"sdk/go/gorm/conformance/v0.9.0-alpha"
+
+# A tag whose last component is not a version is reported as malformed rather
+# than left to surface as a confusing DRIFT.
+assert "a tag with no version component is refused" 1 \
+	"MALFORMED  sdk/go/gorm/conformance does not end in a v-prefixed version component" \
+	"$(fixture no-version-component '0.10.0-alpha' "${RELEASED}")" \
+	"sdk/go/gorm/conformance"
 
 # Missing inputs fail rather than passing vacuously.
 MISSING=$(fixture missing-changelog '0.10.0-alpha' 'x')
