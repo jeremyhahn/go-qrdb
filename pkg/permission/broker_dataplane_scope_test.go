@@ -159,8 +159,34 @@ func TestBrokerDataPlane_ParseAndRegistered(t *testing.T) {
 
 // TestBrokerDataPlane_TenantOnlyScope verifies that every broker data-plane
 // permission is tagged ScopeTenantOnly in the built-in scope layer.
+// nodeStateExceptions are the broker data-plane permissions that describe the
+// DAEMON'S OWN state rather than tenant-held material, and therefore take the
+// ScopeSelf default instead of ScopeTenantOnly (owner ruling 2026-09-02,
+// go-qrdb#183).
+//
+// Enumerating the EXCEPTIONS rather than adding a scope column to
+// brokerDataPlaneExpectations is deliberate and it is the fail-closed
+// direction: a permission added to this family and not listed here is asserted
+// tenant-only by TestBrokerDataPlane_TenantOnlyScope below. Getting the new
+// permission's scope wrong therefore fails a test, whereas a per-row column
+// would let a wrong value be typed in and pass.
+var nodeStateExceptions = map[Permission]struct{}{
+	OrchestratorHealth: {},
+}
+
+// Every member of the family except the node-state exceptions is
+// ScopeTenantOnly.
+//
+// Before go-qrdb#183 nothing asserted the scope of any INDIVIDUAL member: the
+// whole family was registered in one RegisterScope call and this test looped
+// over the same list, so the classification of a single permission could
+// change without a failing test -- and two permissions had been recruited into
+// tenant-only by exactly that route.
 func TestBrokerDataPlane_TenantOnlyScope(t *testing.T) {
 	for _, tc := range brokerDataPlaneExpectations {
+		if _, skip := nodeStateExceptions[tc.perm]; skip {
+			continue
+		}
 		t.Run(string(tc.perm), func(t *testing.T) {
 			if got := LookupScope(tc.perm); got != ScopeTenantOnly {
 				t.Fatalf("LookupScope(%q): got %v, want %v", tc.perm, got, ScopeTenantOnly)
@@ -169,6 +195,71 @@ func TestBrokerDataPlane_TenantOnlyScope(t *testing.T) {
 				t.Fatalf("IsCrossScope(%q): got true, want false", tc.perm)
 			}
 		})
+	}
+}
+
+// The node-state verbs take ScopeSelf, so the system tenant can read the
+// daemon's own orchestrator state.
+//
+// Under ScopeTenantOnly the denial was STRUCTURAL: the scope check runs after
+// the grant check, so no role -- not admin, not owner -- could satisfy it from
+// the system tenant, and the operator persona was the single persona that
+// could not see whether the node it runs was alive.
+func TestBrokerDataPlane_NodeStateScopeIsSelf(t *testing.T) {
+	if len(nodeStateExceptions) == 0 {
+		t.Fatal("no exceptions listed: this test would pass vacuously")
+	}
+	for perm := range nodeStateExceptions {
+		t.Run(string(perm), func(t *testing.T) {
+			if !IsRegistered(perm) {
+				t.Fatalf("IsRegistered(%q): got false -- excluding a permission "+
+					"from the ScopeTenantOnly set must not unregister it", perm)
+			}
+			if got := LookupScope(perm); got != ScopeSelf {
+				t.Fatalf("LookupScope(%q): got %v, want ScopeSelf. A tenant-only "+
+					"scope denies this to the system tenant structurally "+
+					"(go-qrdb#183)", perm, got)
+			}
+			if IsCrossScope(perm) {
+				t.Fatalf("IsCrossScope(%q): got true -- ScopeSelf, not ScopeCross: "+
+					"a tenant-local identity must stay confined to its own tenant", perm)
+			}
+		})
+	}
+}
+
+// The exception set and the registration function must not drift apart. They
+// are two lists of the same thing in two files, which is exactly the shape
+// that goes stale.
+func TestBrokerDataPlane_NodeStateExceptionsMatchRegistration(t *testing.T) {
+	registered := make(map[Permission]struct{}, len(nodeStateScopePermissions()))
+	for _, p := range nodeStateScopePermissions() {
+		registered[p] = struct{}{}
+	}
+	for p := range nodeStateExceptions {
+		if _, ok := registered[p]; !ok {
+			t.Errorf("%q is excluded from the tenant-only assertion but is not in "+
+				"nodeStateScopePermissions()", p)
+		}
+	}
+	for p := range registered {
+		if _, ok := nodeStateExceptions[p]; !ok {
+			t.Errorf("%q is in nodeStateScopePermissions() but is still asserted "+
+				"tenant-only", p)
+		}
+	}
+}
+
+// A permission must never be in both sets: brokerDataPlaneScopePermissions()
+// is what gets tagged ScopeTenantOnly, so an entry appearing in both would be
+// tagged and the exception silently ineffective.
+func TestBrokerDataPlane_NodeStateNotAlsoTenantOnly(t *testing.T) {
+	for _, p := range brokerDataPlaneScopePermissions() {
+		if _, ok := nodeStateExceptions[p]; ok {
+			t.Errorf("%q is in BOTH brokerDataPlaneScopePermissions() and the "+
+				"node-state set: it will be tagged ScopeTenantOnly and the "+
+				"exception has no effect", p)
+		}
 	}
 }
 

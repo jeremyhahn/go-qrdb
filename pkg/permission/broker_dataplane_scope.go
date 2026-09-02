@@ -313,10 +313,17 @@ func brokerDataPlaneScopePermissions() []Permission {
 		OrchestratorJobStart, OrchestratorJobRead, OrchestratorJobList,
 		OrchestratorJobCancel, OrchestratorBackendList, OrchestratorDiscover,
 		OrchestratorHook, OrchestratorWorkflowRead, OrchestratorWorkflowWrite,
-		OrchestratorHealth, OrchestratorInference, OrchestratorAgentRegister,
+		OrchestratorInference, OrchestratorAgentRegister,
 		OrchestratorAgentRead, OrchestratorAgentList, OrchestratorAgentRemove,
 		OrchestratorAgentHeartbeat, OrchestratorCacheRead,
 		OrchestratorCacheWrite, OrchestratorBroadcast,
+		// OrchestratorHealth is DELIBERATELY ABSENT -- see
+		// nodeStateScopePermissions below. Do not add it back without reading
+		// go-qrdb#183; the scope test enumerates the exceptions and will fail
+		// if it returns.
+		//
+		// OrchestratorStatus is deliberately STILL HERE, and that is a
+		// narrowing of what #183 asked for. See nodeStateScopePermissions.
 
 		MessagingChannelCreate, MessagingChannelRead, MessagingChannelList,
 		MessagingChannelDelete, MessagingPublish, MessagingSubscribe,
@@ -434,9 +441,69 @@ func brokerDataPlaneCategories() []Category {
 	}
 }
 
+// nodeStateScopePermissions returns the broker data-plane permissions that
+// describe the DAEMON'S OWN state rather than material held on a tenant's
+// behalf. They are registered but deliberately NOT tagged ScopeTenantOnly, so
+// they take the ScopeSelf default (owner ruling 2026-09-02, go-qrdb#183).
+//
+// ScopeTenantOnly means "tenant-admin-only, system-admin-denied, no
+// cross-tenant", and scope.go states what that rule is FOR: per-tenant barrier
+// key custody, which the platform operator must not hold. It is a rule about
+// material held on a tenant's behalf.
+//
+// The health and status of the node's own orchestrator is not that. It is
+// process state of the machine the platform operator runs, and tagging it
+// tenant-only denied it to the system tenant STRUCTURALLY -- the scope check
+// runs after the grant check, so no role, not admin, not owner, could satisfy
+// it. The operator persona, which exists to watch the node, was the single
+// persona that could not see whether the node was alive:
+//
+//	GET /api/v1/orchestrator/health
+//	403 permission denied: admin cannot health on orchestrator:
+//	    tenant-only permission denied to system tenant
+//
+// These two rode along because brokerDataPlaneScopePermissions() registers the
+// whole family in one call. Under ScopeSelf the system-tenant rule lifts them
+// across tenants while a tenant-local identity stays confined to its own
+// tenant, so nothing widens for a tenant principal.
+//
+// SCOPED TO THESE TWO ONLY. The rest of the family acts on tenant-owned
+// sessions, jobs, tasks and artifacts, and go-qrdb#183 made no claim about
+// them; a wider re-scoping was offered to the owner and declined.
+// ORCHESTRATORSTATUS IS DELIBERATELY NOT HERE, though go-qrdb#183 asked for
+// both. Its declaration one file-section up reads "grants read access to
+// orchestration SESSION status", and it sits in the run of session verbs --
+// spawn, prompt, status, close, list. On the vocabulary as written it is
+// tenant-owned session metadata, and moving it to ScopeSelf would let a
+// system-tenant grant read every tenant's session status. That is a widening,
+// not a fix, and it is not what the issue was arguing for.
+//
+// #183's measurement is still real: a daemon-level /orchestrator/status
+// endpoint returns the same structural 403. But the cause there is that ONE
+// permission is being used for two different resources -- the daemon's status
+// and a session's status -- and the fix for that is a separate service-level
+// permission, not a scope change on the session one. Adding a permission to
+// the canonical vocabulary is an owner call and needs the consumer to remap
+// its endpoint, so it is reported back on #183 rather than decided here.
+//
+// This is the half that is unambiguous, landing on its own.
+func nodeStateScopePermissions() []Permission {
+	return []Permission{
+		OrchestratorHealth,
+	}
+}
+
 func init() {
-	perms := brokerDataPlaneScopePermissions()
-	Register(perms...)
-	RegisterScope(ScopeTenantOnly, perms...)
+	tenantOnly := brokerDataPlaneScopePermissions()
+	nodeState := nodeStateScopePermissions()
+
+	// Both sets are REGISTERED; only the first is tagged ScopeTenantOnly.
+	// nodeState takes the ScopeSelf default by not being tagged, rather than
+	// by an explicit RegisterScope(ScopeSelf, ...) -- scope.go documents
+	// ScopeSelf as the default and registering it would suggest the other
+	// untagged permissions in this package had been considered and were not.
+	Register(tenantOnly...)
+	Register(nodeState...)
+	RegisterScope(ScopeTenantOnly, tenantOnly...)
 	categories = append(categories, brokerDataPlaneCategories()...)
 }

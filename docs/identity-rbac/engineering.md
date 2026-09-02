@@ -107,6 +107,66 @@ func ByResource(resource string) []Permission
 All permissions are registered by the `init()` in `pkg/permission/constants.go`,
 which walks the category definitions and calls `Register` for each.
 
+### Permission scope — `pkg/permission/scope.go`
+
+A permission's **scope** classifies its tenancy reach, and the RBAC authorizer
+evaluates it **after** the grant check. That ordering is what makes a wrong
+scope structural rather than fixable by a role: no grant can satisfy a scope
+the identity fails.
+
+| scope | tenant-local identity | system-tenant identity |
+|---|---|---|
+| `ScopeSelf` (**the default**) | own tenant only | **lifted across all tenants** |
+| `ScopeCross` | denied | any tenant |
+| `ScopeTenantOnly` | own tenant only | **denied, structurally** |
+
+**Choose by asking whose material the permission acts on, not who usually calls
+it.** `ScopeTenantOnly` means *"tenant-admin-only, system-admin-denied, no
+cross-tenant"*, and it exists for material held **on a tenant's behalf** — the
+canonical case is per-tenant barrier key custody, which the platform operator
+must not hold. A permission that reads the **daemon's own** state is not that,
+even when it lives in a tenant-facing family.
+
+**A permission takes `ScopeSelf` by not being registered with a scope**, so the
+hazard is the opposite of the usual one: the mistake is not forgetting to
+classify, it is classifying a whole family in one call. Measured (go-qrdb#183):
+`RegisterScope(ScopeTenantOnly, brokerDataPlaneScopePermissions()...)` tagged
+the entire broker data-plane family, and `orchestrator:health` rode along. The
+result was that the operator persona — the one that exists to watch the node —
+was the single persona that could not see whether the node's orchestrator was
+alive:
+
+```
+GET /api/v1/orchestrator/health
+403 permission denied: admin cannot health on orchestrator:
+    tenant-only permission denied to system tenant
+```
+
+It now sits in `nodeStateScopePermissions()`, registered but deliberately
+untagged.
+
+**The counter-example is in the same family, and it is the more instructive
+one.** `orchestrator:status` looks like the same case and is not: it is
+declared as *"read access to orchestration SESSION status"* and sits in the run
+of session verbs, so on the vocabulary as written it is tenant-owned metadata.
+Relaxing its scope would let a system-tenant grant read every tenant's session
+status — a widening wearing a fix's clothes. A daemon-level `/orchestrator/status`
+endpoint does return the same structural 403, but the cause there is **one
+permission serving two resources**, and the remedy for that is a separate
+service-level permission, not a scope change on the session one.
+
+**So the question to ask about a scope is what the permission is DECLARED to
+cover, not which endpoint prompted the complaint.**
+
+**Pin the scope of each member of a family, not the family.** Before that fix
+nothing asserted the scope of any individual permission in the family — the
+registration looped over one list and so did the test — so a single
+permission's classification could change without a failing test. The test now
+enumerates the **exceptions** and asserts everything else is tenant-only, which
+is the fail-closed direction: a permission added to the family and not listed
+as an exception is asserted tenant-only, so getting a new permission's scope
+wrong fails a test rather than passing a typed-in column.
+
 ## Invariants
 
 - **`Username` is unique within a tenant**, not globally.
