@@ -420,6 +420,7 @@ func TestApplyConfigToFlags_EmptyTLSFieldsNotOverridden(t *testing.T) {
 // mockUserServicer satisfies user.UserServicer for bootstrap testing.
 type mockUserServicer struct {
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 }
 
@@ -439,6 +440,14 @@ func (m *mockUserServicer) GetUserByUsername(ctx context.Context, tenantID, user
 		return m.getUserByUsernameFn(ctx, tenantID, username)
 	}
 	return nil, &user.UserNotFoundError{Lookup: username}
+}
+
+func (m *mockUserServicer) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	normalized := user.NormalizeEmail(email)
+	if m.getUserByEmailFn != nil {
+		return m.getUserByEmailFn(ctx, tenantID, normalized)
+	}
+	return nil, &user.UserNotFoundError{Lookup: normalized}
 }
 
 func (m *mockUserServicer) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {

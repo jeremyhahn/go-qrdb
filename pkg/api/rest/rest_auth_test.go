@@ -40,6 +40,7 @@ type mockUserService struct {
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	getUserFn           func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
 	deleteUserFn        func(ctx context.Context, id uint64) error
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
@@ -64,6 +65,13 @@ func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, e
 func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	if m.getUserByUsernameFn != nil {
 		return m.getUserByUsernameFn(ctx, tenantID, username)
+	}
+	return nil, nil
+}
+
+func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	if m.getUserByEmailFn != nil {
+		return m.getUserByEmailFn(ctx, tenantID, email)
 	}
 	return nil, nil
 }
@@ -2315,6 +2323,65 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
+			// A taken email is a client-correctable conflict, not a server
+			// fault. Before this case it fell through to the StoreError arm
+			// and surfaced as 500 (Codex review, PR #191).
+			name:     "EmailExistsError",
+			err:      &user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"},
+			wantCode: http.StatusConflict,
+		},
+		{
+			// A lost race the caller can simply retry.
+			name:     "ConcurrentUpdateError",
+			err:      &user.ConcurrentUpdateError{ID: 7},
+			wantCode: http.StatusConflict,
+		},
+		{
+			// The SAME cause, wrapped in a compensation failure, must NOT be a
+			// retryable conflict. IndexCompensationError unwraps to its cause,
+			// so an errors.As for ConcurrentUpdateError matches it — the mapper
+			// has to check the wrapper first or it downgrades "rollback failed,
+			// a login index may be inconsistent" to "re-read and retry"
+			// (Codex review, PR #191).
+			name: "IndexCompensationError wrapping ConcurrentUpdateError",
+			err: &user.IndexCompensationError{
+				Op: "update", UserID: 7,
+				Cause:    &user.ConcurrentUpdateError{ID: 7},
+				Failures: []error{errors.New("restore failed")},
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			// The create path's cause, which the update path's ordering did not
+			// cover. CreateUser claims the username index before the email one,
+			// so a taken email fails the create with EmailExistsError while the
+			// username claim is already held; if releasing it then fails, the
+			// compensation error's cause is EmailExistsError — and the duplicate
+			// arms sat ABOVE the wrapper. The caller got a 409 "email taken",
+			// retried with another email, and hit "username taken" forever on a
+			// username reserved for a user record that was never written.
+			name: "IndexCompensationError wrapping EmailExistsError",
+			err: &user.IndexCompensationError{
+				Op: "create", UserID: 7,
+				Cause:    &user.EmailExistsError{Email: "a@example.com"},
+				Failures: []error{errors.New("release failed")},
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			// Same ordering hazard for the username sibling: a create can fail
+			// on a taken username while holding no claim, but an update that
+			// claims the new username and fails to release the old one wraps
+			// this cause too.
+			name: "IndexCompensationError wrapping UsernameExistsError",
+			err: &user.IndexCompensationError{
+				Op: "create", UserID: 7,
+				Cause:    &user.UsernameExistsError{Username: "a"},
+				Failures: []error{errors.New("release failed")},
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
 			name:     "SystemUserImmutableError",
 			err:      &user.SystemUserImmutableError{ID: 9001},
 			wantCode: http.StatusForbidden,
@@ -2781,4 +2848,85 @@ func wireKeys(wire map[string]json.RawMessage) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ---------------------------------------------------------------------------
+// POST /users/lookup — the canonical email login-key lookup (#190).
+//
+// This route, its body contract and its dispatch arm were all added by this PR
+// and nothing exercised them: a route mismatch or a wire-field typo would have
+// compiled cleanly and shipped. Codex made the point that this is the same
+// class of transport-specific omission the MCP client already had twice.
+// ---------------------------------------------------------------------------
+
+func TestHandleLookupUser_Success(t *testing.T) {
+	var gotTenant, gotEmail string
+	svc := &mockUserService{
+		getUserByEmailFn: func(_ context.Context, tenantID, email string) (*user.User, error) {
+			gotTenant, gotEmail = tenantID, email
+			return testUser(), nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	body := `{"email":"alice@example.com","tenant_id":"tenant-1"}`
+	req := httptest.NewRequest(http.MethodPost, "/users/lookup", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	assertContentType(t, rec, "application/json")
+
+	// The body fields must actually reach the service.
+	if gotEmail != "alice@example.com" {
+		t.Fatalf("email did not reach the service: %q", gotEmail)
+	}
+	if gotTenant != "tenant-1" {
+		t.Fatalf("tenant_id did not reach the service: %q", gotTenant)
+	}
+
+	var resp userResponse
+	decodeJSON(t, rec, &resp)
+	if resp.ID != 1001 {
+		t.Fatalf("id = %d, want 1001", resp.ID)
+	}
+}
+
+func TestHandleLookupUser_MissingEmail(t *testing.T) {
+	srv := newAuthServer(&mockUserService{}, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/lookup", strings.NewReader(`{"tenant_id":"t"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestHandleLookupUser_NotFound(t *testing.T) {
+	svc := &mockUserService{
+		getUserByEmailFn: func(_ context.Context, _, email string) (*user.User, error) {
+			return nil, &user.UserNotFoundError{Lookup: email}
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/users/lookup", strings.NewReader(`{"email":"nobody@example.com"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
+// The email must NOT be reachable as a path parameter: it is the canonical
+// login key, and a path lands in access logs on every successful lookup.
+func TestHandleGetUserByEmail_PathFormIsGone(t *testing.T) {
+	svc := &mockUserService{
+		getUserByEmailFn: func(_ context.Context, _, _ string) (*user.User, error) {
+			t.Fatal("the path form must not reach the service")
+			return nil, nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/users/by-email/alice@example.com", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatal("GET /users/by-email/{email} still resolves — the login key is back in the URL")
+	}
 }

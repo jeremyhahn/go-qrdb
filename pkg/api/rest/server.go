@@ -1201,6 +1201,7 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/users/{id}/cert-bindings", permission.UsersAddCertBinding, s.handleUser)
 	s.route(http.MethodGet, "/users/by-cert-thumbprint/{thumbprint}", permission.UsersGetByCertThumbprint, s.handleUser)
 	s.route(http.MethodGet, "/users/by-username/{username}", permission.UsersRead, s.handleUser)
+	s.route(http.MethodPost, "/users/lookup", permission.UsersRead, s.handleUser)
 
 	// Role management routes.
 	rolesOn := s.roleSvc != nil

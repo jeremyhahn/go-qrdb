@@ -469,10 +469,17 @@ func ProvisionTenant(ctx context.Context, cfg TenantProvisionConfig, deps Depend
 		return nil, &TenantAdminUserCreationError{Cause: err}
 	}
 	adminUser, err := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
-		Username: adminUsername,
-		TenantID: cfg.TenantID,
-		RoleIDs:  []string{adminRoleID},
-		Pending:  mode == AdminEnrollDeferred,
+		// The bootstrap admin authenticates by certificate, not by an email login
+		// key, so the omission is declared rather than defaulted (#190).
+		WithoutEmailLoginKey: true,
+		Username:             adminUsername,
+		TenantID:             cfg.TenantID,
+		RoleIDs:              []string{adminRoleID},
+		// Deferred enrollment (#193) landed on main during this branch. Both
+		// sides of the conflict are load-bearing and neither supersedes the
+		// other: the admin has no email login key AND, under deferred mode,
+		// must be created disabled until it enrolls.
+		Pending: mode == AdminEnrollDeferred,
 	})
 	if err != nil {
 		var exists *user.UsernameExistsError

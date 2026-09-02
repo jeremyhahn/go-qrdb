@@ -92,7 +92,7 @@ func testUsersLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	}
 
 	// --- create ------------------------------------------------------------
-	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create",
+	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username,
 		"--roles", role.ID,
 	)

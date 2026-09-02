@@ -174,9 +174,13 @@ func newMockUserClient() mockUserClient {
 func (m *mockUserClient) CreateUser(_ context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
 	id := m.nextID
 	m.nextID++
+	// Echo the identity fields. A double that drops them cannot show whether
+	// the CLI forwarded --email/--name at all.
 	u := &transport.User{
 		ID:        id,
 		Username:  req.Username,
+		Email:     req.Email,
+		Name:      req.Name,
 		TenantID:  req.TenantID,
 		RoleIDs:   req.RoleIDs,
 		Enabled:   true,
@@ -203,6 +207,12 @@ func (m *mockUserClient) UpdateUser(_ context.Context, req *transport.UpdateUser
 	}
 	if req.Username != "" {
 		u.Username = req.Username
+	}
+	if req.Email != "" {
+		u.Email = req.Email
+	}
+	if req.Name != "" {
+		u.Name = req.Name
 	}
 	if len(req.RoleIDs) > 0 {
 		u.RoleIDs = req.RoleIDs
@@ -544,7 +554,7 @@ func TestUsersListCmd_SuccessJSON(t *testing.T) {
 func TestUsersCreateCmd_Success(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "users", "create", "--username", "charlie")
+	out, err := executeCommand(root, "users", "create", "--without-email-login-key", "--username", "charlie")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -559,7 +569,7 @@ func TestUsersCreateCmd_Success(t *testing.T) {
 func TestUsersCreateCmd_SuccessWithRoles(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "users", "create", "--username", "dave", "--roles", "role-admin, role-reader")
+	out, err := executeCommand(root, "users", "create", "--without-email-login-key", "--username", "dave", "--roles", "role-admin, role-reader")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -574,7 +584,7 @@ func TestUsersCreateCmd_SuccessWithRoles(t *testing.T) {
 func TestUsersCreateCmd_MissingUsername(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	_, err := executeCommand(root, "users", "create")
+	_, err := executeCommand(root, "users", "create", "--without-email-login-key")
 	if err == nil {
 		t.Fatal("expected error for missing --username flag")
 	}
@@ -737,7 +747,7 @@ func TestUsersListCmd_SuccessYAML(t *testing.T) {
 func TestUsersCreateCmd_SuccessJSON(t *testing.T) {
 	root := newTestRootCmdAuth()
 
-	out, err := executeCommand(root, "--output", "json", "users", "create", "--username", "eve")
+	out, err := executeCommand(root, "--output", "json", "users", "create", "--without-email-login-key", "--username", "eve")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1389,5 +1399,39 @@ func TestCertsGenerateCmd_WithTenantID(t *testing.T) {
 	}
 	if !strings.Contains(out, "SERIAL-001") {
 		t.Fatalf("expected serial number in output, got: %q", out)
+	}
+}
+
+// The users create/update commands must actually forward the identity flags.
+//
+// The flags were added to the CLI in this PR and the integration catalogue
+// listed them for create but not update, so a dropped or miswired --email on
+// update would not have been caught anywhere (Codex, PR #191).
+func TestUsersCreate_ForwardsIdentityFlags(t *testing.T) {
+	root := newTestRootCmdAuth()
+	out, err := executeCommand(root, "--output", "json",
+		"users", "create", "--username", "flagtest", "--email", "flag@example.com", "--name", "Flag Test")
+	if err != nil {
+		t.Fatalf("users create: %v (out=%s)", err, out)
+	}
+	if !strings.Contains(out, "flag@example.com") {
+		t.Fatalf("--email did not reach the request/response path: %s", out)
+	}
+}
+
+func TestUsersUpdate_ForwardsIdentityFlags(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	// User 1 is pre-seeded by the mock, as the other update tests rely on.
+	out, err := executeCommand(root, "users", "update", "1",
+		"--email", "updated@example.com", "--name", "Updated")
+	if err != nil {
+		t.Fatalf("users update: %v (out=%s)", err, out)
+	}
+	if !strings.Contains(out, "updated@example.com") {
+		t.Fatalf("--email did not reach the request/response path: %s", out)
+	}
+	if !strings.Contains(out, "Updated") {
+		t.Fatalf("--name did not reach the request/response path: %s", out)
 	}
 }

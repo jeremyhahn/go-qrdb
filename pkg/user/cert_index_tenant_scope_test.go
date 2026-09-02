@@ -33,11 +33,11 @@ func TestCertThumbprintIndex_TenantScoped_NoCollision(t *testing.T) {
 	ctxA := tenant.WithTenantID(t.Context(), "tenant-a")
 	ctxB := tenant.WithTenantID(t.Context(), "tenant-b")
 
-	userA, err := svc.CreateUser(ctxA, &CreateUserRequest{Username: "alice", TenantID: "tenant-a"})
+	userA, err := svc.CreateUser(ctxA, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "tenant-a"})
 	if err != nil {
 		t.Fatalf("create userA: %v", err)
 	}
-	userB, err := svc.CreateUser(ctxB, &CreateUserRequest{Username: "alice", TenantID: "tenant-b"})
+	userB, err := svc.CreateUser(ctxB, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "tenant-b"})
 	if err != nil {
 		t.Fatalf("create userB: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCertThumbprintIndex_WrongTenant_Misses(t *testing.T) {
 	ctxA := tenant.WithTenantID(t.Context(), "tenant-a")
 	ctxC := tenant.WithTenantID(t.Context(), "tenant-c")
 
-	userA, err := svc.CreateUser(ctxA, &CreateUserRequest{Username: "alice", TenantID: "tenant-a"})
+	userA, err := svc.CreateUser(ctxA, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "tenant-a"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

@@ -36,12 +36,19 @@ import (
 // fakeUserServicer
 // ===========================================================================
 
-type fakeUserServicer struct{}
+type fakeUserServicer struct {
+	// lastCreate/lastUpdate record what the SERVER received, so a field the
+	// client dropped or the proto never carried is observable instead of
+	// merely absent from the echoed response.
+	lastCreate *user.CreateUserRequest
+	lastUpdate *user.UpdateUserRequest
+}
 
 var _ user.UserServicer = (*fakeUserServicer)(nil)
 
 func (f *fakeUserServicer) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
-	return &user.User{ID: 1, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+	f.lastCreate = req
+	return &user.User{ID: 1, Username: req.Username, Email: req.Email, Name: req.Name, TenantID: req.TenantID, RoleIDs: req.RoleIDs, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) GetUser(_ context.Context, id uint64) (*user.User, error) {
@@ -50,6 +57,11 @@ func (f *fakeUserServicer) GetUser(_ context.Context, id uint64) (*user.User, er
 
 func (f *fakeUserServicer) GetUserByUsername(_ context.Context, tenantID, username string) (*user.User, error) {
 	return &user.User{ID: 1, Username: username, TenantID: tenantID, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
+}
+
+func (f *fakeUserServicer) GetUserByEmail(_ context.Context, tenantID, email string) (*user.User, error) {
+	normalized := user.NormalizeEmail(email)
+	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenantID, Enabled: true, CreatedAt: time.Unix(1700000000, 0), UpdatedAt: time.Unix(1700000000, 0)}, nil
 }
 
 func (f *fakeUserServicer) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
@@ -142,11 +154,15 @@ func (f *fakeCertProvider) CACertPEM() []byte { return []byte("CA") }
 // Server setup
 // ===========================================================================
 
+// sharedFakeUserServicer is the instance the server registers, so a test can
+// inspect exactly what crossed the wire.
+var sharedFakeUserServicer = &fakeUserServicer{}
+
 func startUserRoleCertServer(t *testing.T) (string, func()) {
 	t.Helper()
 	srv := googlegrpc.NewServer()
 	grpcpkg.RegisterService(srv, nil, nil,
-		grpcpkg.WithRegisterUserService(&fakeUserServicer{}),
+		grpcpkg.WithRegisterUserService(sharedFakeUserServicer),
 		grpcpkg.WithRegisterRoleService(&fakeRoleServicer{}),
 		grpcpkg.WithRegisterCertProvider(&fakeCertProvider{}),
 	)
@@ -185,7 +201,7 @@ func TestGRPCUser_AllMethods_Success(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CreateUser", func(t *testing.T) {
-		u, err := tr.CreateUser(ctx, &transport.CreateUserRequest{Username: "alice", TenantID: "t1", RoleIDs: []string{"r1"}})
+		u, err := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "t1", RoleIDs: []string{"r1"}})
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}
@@ -365,6 +381,64 @@ func TestGRPCRoleAssignment_AllMethods_Success(t *testing.T) {
 	t.Run("ListPermissions", func(t *testing.T) {
 		if _, err := tr.ListPermissions(ctx); err != nil {
 			t.Fatalf("ListPermissions: %v", err)
+		}
+	})
+}
+
+// Every field this PR threads through gRPC must survive the round trip, and
+// GetUserByEmail must actually reach the service.
+//
+// The success suite exercised CreateUser/UpdateUser without asserting the new
+// fields and never called GetUserByEmail at all — so a forgotten proto field or
+// a wrong request mapping would have compiled and shipped. That is exactly the
+// omission the MCP client already had twice on this PR (Codex, PR #191).
+func TestGRPCUser_NewIdentityFieldsRoundTrip(t *testing.T) {
+	addr, stop := startUserRoleCertServer(t)
+	defer stop()
+	tr, cleanup := connectUserTransport(t, addr)
+	defer cleanup()
+	ctx := context.Background()
+
+	t.Run("create carries email and name", func(t *testing.T) {
+		u, err := tr.CreateUser(ctx, &transport.CreateUserRequest{
+			Username: "alice", Email: "alice@example.com", Name: "Alice", TenantID: "t1",
+		})
+		if err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		got := sharedFakeUserServicer.lastCreate
+		if got == nil {
+			t.Fatal("server received no create")
+		}
+		if got.Email != "alice@example.com" {
+			t.Fatalf("Email dropped on the wire: %q", got.Email)
+		}
+		if got.Name != "Alice" {
+			t.Fatalf("Name dropped on the wire: %q", got.Name)
+		}
+		if u.Email != "alice@example.com" {
+			t.Fatalf("Email dropped from the response: %q", u.Email)
+		}
+	})
+
+	t.Run("create carries the no-email opt-in", func(t *testing.T) {
+		if _, err := tr.CreateUser(ctx, &transport.CreateUserRequest{
+			Username: "cert-only", WithoutEmailLoginKey: true, TenantID: "t1",
+		}); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		if !sharedFakeUserServicer.lastCreate.WithoutEmailLoginKey {
+			t.Fatal("WithoutEmailLoginKey dropped — a certificate-only identity cannot be created over gRPC")
+		}
+	})
+
+	t.Run("GetUserByEmail reaches the service", func(t *testing.T) {
+		u, err := tr.GetUserByEmail(ctx, "t1", "alice@example.com")
+		if err != nil {
+			t.Fatalf("GetUserByEmail: %v", err)
+		}
+		if u == nil || u.ID == 0 {
+			t.Fatal("GetUserByEmail returned no user")
 		}
 	})
 }

@@ -54,7 +54,7 @@ func TestUnixRT_CreateUser_Error(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
 	defer cleanup()
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "bob"})
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "bob"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -144,7 +144,7 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 	}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("servedRoleSvc.CreateRole(sealed) = %v, want ErrTenantSealed", err)
 	}
-	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{
+	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "u", TenantID: sealedTenant,
 	}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("servedUserSvc.CreateUser(sealed) = %v, want ErrTenantSealed", err)
@@ -174,7 +174,7 @@ func TestBootstrapUserRoleStores_ServedIAMFailsClosedForSealedBarrierTenant(t *t
 	}); err != nil {
 		t.Fatalf("servedRoleSvc.CreateRole(unsealed) must succeed: %v", err)
 	}
-	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{
+	if _, err := mgmt.servedUserSvc.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "u", TenantID: sealedTenant,
 	}); err != nil {
 		t.Fatalf("servedUserSvc.CreateUser(unsealed) must succeed: %v", err)

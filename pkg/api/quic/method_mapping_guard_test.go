@@ -279,6 +279,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"userauthfactor.Relabel":           permission.UserAuthFactorsRelabel,
 	"userauthfactor.Login":             permission.UserAuthFactorsLogin,
 	"user.GetByUsername":               permission.UsersRead,
+	"user.GetByEmail":                  permission.UsersRead,
 }
 
 // guardAllowAuthorizer permits everything and counts calls, so the guard can

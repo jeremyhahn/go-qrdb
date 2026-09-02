@@ -31,6 +31,32 @@ type User struct {
 	// Username is the human-readable login name, unique within a tenant.
 	Username string `json:"username"`
 
+	// Email is the CANONICAL LOGIN KEY for a human user, unique within a tenant.
+	// It is what a login ceremony resolves a verified factor to, and what every
+	// layer above this one keys a user by — the WebAuthn credential handle, the
+	// session subject, the CLI's user identifier.
+	//
+	// It is tenant-scoped rather than global on purpose: the same person may
+	// legitimately hold an account in two tenants, and every login path already
+	// supplies the tenant alongside the handle. A global index would forbid that
+	// while buying nothing.
+	//
+	// It is a SEPARATE field from Username rather than a re-use of it because
+	// system users (System == true) are named "admin", not an address, and
+	// forcing an email shape on them would be a lie. Human users carry both; the
+	// email is the one anything above qrdb keys on.
+	//
+	// Empty means the user has no email login key, and therefore cannot be
+	// resolved by GetUserByEmail. That is a legitimate state — a bootstrap
+	// admin, an mTLS-only service identity — but never an accident: CreateUser
+	// refuses an empty email unless the caller sets
+	// CreateUserRequest.WithoutEmailLoginKey, so the omission is always
+	// something someone declared.
+	Email string `json:"email,omitempty"`
+
+	// Name is the human display name. Presentation only; never a lookup key.
+	Name string `json:"name,omitempty"`
+
 	// TenantID identifies the tenant this user belongs to.
 	TenantID string `json:"tenantID"`
 
@@ -73,6 +99,27 @@ type CreateUserRequest struct {
 	// Username is the desired login name. Must not be empty.
 	Username string
 
+	// Email is the canonical login key. Unique within the tenant. Required
+	// unless WithoutEmailLoginKey is set.
+	Email string
+
+	// WithoutEmailLoginKey creates a user that has no email login key and so
+	// cannot be resolved by GetUserByEmail.
+	//
+	// It exists so the omission is DECLARED rather than defaulted. The contract
+	// on User.Email said an empty email was valid "for system users only" while
+	// CreateUser neither checked it nor set System — so an ordinary user could
+	// be created with no entry in the canonical login index, and nothing said so
+	// (Codex, PR #191). A store should not decide whether an identity needs an
+	// email; it should refuse to let one go missing silently.
+	//
+	// Legitimate uses: the bootstrap/firstboot admin, and mTLS- or PIV-only
+	// identities that authenticate by certificate.
+	WithoutEmailLoginKey bool
+
+	// Name is the display name. Optional; presentation only.
+	Name string
+
 	// TenantID identifies the tenant. Defaults to SystemTenantID when empty.
 	TenantID string
 
@@ -93,6 +140,13 @@ type UpdateUserRequest struct {
 
 	// Username replaces the current username when non-empty.
 	Username string
+
+	// Email replaces the current login key when non-empty. Uniqueness is
+	// re-validated within the tenant and the secondary index is moved.
+	Email string
+
+	// Name replaces the display name when non-empty.
+	Name string
 
 	// RoleIDs replaces the current role set when non-nil.
 	RoleIDs []string

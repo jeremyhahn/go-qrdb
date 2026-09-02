@@ -34,7 +34,7 @@ func TestRESTCreateUser_Success(t *testing.T) {
 	rs.handle(exactPath(http.MethodPost, "/users"), func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, &transport.User{ID: 1, Username: "alice"})
 	})
-	user, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "alice"})
+	user, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestRESTCreateUser_ServerError(t *testing.T) {
 	rs.handle(exactPath(http.MethodPost, "/users"), func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	})
-	_, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{})
+	_, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -57,7 +57,7 @@ func TestRESTCreateUser_ServerError(t *testing.T) {
 func TestRESTCreateUser_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	_, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{})
+	_, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)

@@ -343,7 +343,7 @@ func TestQUICAuth_AfterClose(t *testing.T) {
 	tr := newClosedTransport()
 	var ce *transport.ClosedError
 
-	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{}); !errors.As(err, &ce) {
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true}); !errors.As(err, &ce) {
 		t.Errorf("CreateUser: %v", err)
 	}
 	if _, err := tr.GetUser(context.Background(), 1); !errors.As(err, &ce) {

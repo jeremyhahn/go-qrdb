@@ -438,6 +438,15 @@ type UserClient interface {
 	// when no user with the given username exists in the tenant.
 	GetUserByUsername(ctx context.Context, tenantID, username string) (*User, error)
 
+	// GetUserByEmail retrieves a user by tenant-scoped email — the canonical
+	// login key. The tenantID may be empty to use the default tenant. Returns
+	// ErrNotFound when no user with the given email exists in the tenant.
+	//
+	// The tenant is part of the key, not a filter: an email is unique within a
+	// tenant, not globally, so the same address may name different people in
+	// two tenants.
+	GetUserByEmail(ctx context.Context, tenantID, email string) (*User, error)
+
 	// GetUserByCertThumbprint resolves a user by an mTLS certificate's SPKI
 	// thumbprint via the server-side secondary index. This is the mTLS-auth
 	// hot path: callers compute ComputeSPKIThumbprint(peerCert) and resolve

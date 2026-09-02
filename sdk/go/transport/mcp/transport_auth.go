@@ -49,8 +49,12 @@ var (
 // struct has json tags matching the SDK type. User's CreatedAt and
 // UpdatedAt are time.Time (marshaled as RFC 3339 strings).
 type serverUser struct {
-	ID        uint64   `json:"id"`
-	Username  string   `json:"username"`
+	ID       uint64 `json:"id"`
+	Username string `json:"username"`
+	// Email is the canonical tenant-unique login key; Name is display only.
+	// Both decode from the same JSON the user record marshals.
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
 	Enabled   bool     `json:"enabled"`
@@ -128,6 +132,8 @@ func serverUserToTransport(u *serverUser) *transport.User {
 	return &transport.User{
 		ID:        u.ID,
 		Username:  u.Username,
+		Email:     u.Email,
+		Name:      u.Name,
 		TenantID:  u.TenantID,
 		RoleIDs:   u.RoleIDs,
 		Enabled:   u.Enabled,
@@ -176,6 +182,26 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	}
 	if req.TenantID != "" {
 		args["tenant_id"] = req.TenantID
+	}
+	// Email is the canonical login key: dropping it here would create a user
+	// with no entry in the index logins resolve through, silently, while
+	// reporting success.
+	if req.Email != "" {
+		args["email"] = req.Email
+	}
+	if req.Name != "" {
+		args["name"] = req.Name
+	}
+	// The opt-out must travel too. Without it a caller asking for a
+	// certificate-only identity sends no email AND no declaration, and the
+	// server rejects it — breaking a supported create mode on this client only.
+	//
+	// MCP is the transport that keeps getting missed, and always for the same
+	// reason: it builds an argument MAP while the others use struct literals, so
+	// an edit shaped around struct fields passes over it silently and nothing
+	// fails to compile. Second occurrence on this PR.
+	if req.WithoutEmailLoginKey {
+		args["without_email_login_key"] = true
 	}
 	if csv := roleIDsToCSV(req.RoleIDs); csv != "" {
 		args["role_ids"] = csv
@@ -245,6 +271,31 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	return serverUserToTransport(&raw), nil
 }
 
+// GetUserByEmail resolves the canonical login key through the MCP tool.
+func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	text, err := t.callTool(ctx, "qrdb_user_get_by_email", map[string]any{
+		"tenant_id": tenantID,
+		"email":     email,
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, &transport.KeyNotFoundError{Key: email}
+		}
+		return nil, err
+	}
+
+	var raw serverUser
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return serverUserToTransport(&raw), nil
+}
+
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint. Calls
 // the qrdb_user_get_by_cert_thumbprint MCP tool.
 func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {
@@ -306,6 +357,12 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 	if req.Username != "" {
 		args["username"] = req.Username
+	}
+	if req.Email != "" {
+		args["email"] = req.Email
+	}
+	if req.Name != "" {
+		args["name"] = req.Name
 	}
 	if csv := roleIDsToCSV(req.RoleIDs); csv != "" {
 		args["role_ids"] = csv

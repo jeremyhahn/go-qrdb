@@ -128,6 +128,49 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	return &user, nil
 }
 
+// GetUserByEmail resolves the canonical login key over REST:
+// POST /users/lookup with the email in the BODY.
+//
+// Deliberately not GET /users/by-email/{email}: email is the canonical login
+// identifier, and a path parameter is captured by access logs, proxies and
+// tracing on every successful lookup (Codex, PR #191).
+func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	body, mErr := json.Marshal(map[string]string{"email": email, "tenant_id": tenantID})
+	if mErr != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: mErr}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/users/lookup", bytes.NewReader(body))
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: err}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &transport.UserNotFoundError{ID: email}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, t.decodeErrorResponse("GetUserByEmail", resp)
+	}
+
+	var user transport.User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: &jsonDecodeError{Err: err}}
+	}
+
+	return &user, nil
+}
+
 // GetUserByCertThumbprint resolves a user by mTLS SPKI thumbprint. Maps to
 // GET /users/by-cert-thumbprint/{thumbprint}.
 func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint string) (*transport.User, error) {

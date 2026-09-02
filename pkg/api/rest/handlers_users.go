@@ -33,14 +33,19 @@ import (
 
 // createUserRequest is the JSON payload for POST /users.
 type createUserRequest struct {
-	Username string   `json:"username"`
-	TenantID string   `json:"tenant_id"`
-	RoleIDs  []string `json:"role_ids"`
+	Username             string   `json:"username"`
+	Email                string   `json:"email,omitempty"`
+	Name                 string   `json:"name,omitempty"`
+	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
+	TenantID             string   `json:"tenant_id"`
+	RoleIDs              []string `json:"role_ids"`
 }
 
 // updateUserRequest is the JSON payload for PUT /users/{id}.
 type updateUserRequest struct {
 	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"role_ids"`
 }
 
@@ -52,6 +57,8 @@ type updateUserRequest struct {
 type userResponse struct {
 	ID        uint64   `json:"id,string"`
 	Username  string   `json:"username"`
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
 	TenantID  string   `json:"tenant_id"`
 	RoleIDs   []string `json:"role_ids"`
 	Enabled   bool     `json:"enabled"`
@@ -88,9 +95,12 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-		RoleIDs:  req.RoleIDs,
+		Username:             req.Username,
+		Email:                req.Email,
+		Name:                 req.Name,
+		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
+		TenantID:             req.TenantID,
+		RoleIDs:              req.RoleIDs,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
@@ -189,6 +199,31 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleGetUserByUsername(w, r, username)
+		return
+	}
+
+	// /users/lookup -> resolve a user by the canonical email login key, with the
+	// key in the request BODY.
+	//
+	// It is deliberately not GET /users/by-email/{email}. Email is now the
+	// canonical login identifier, and a path parameter is recorded by ordinary
+	// reverse-proxy access logs, load balancers, tracing middleware and browser
+	// history — turning every successful lookup into a disclosure of a
+	// credential-adjacent identifier. The gRPC, QUIC and MCP surfaces carry it
+	// in the payload; REST now does too.
+	//
+	// The first version of this endpoint DID use a path parameter, with a
+	// comment acknowledging the logging exposure and accepting it "for symmetry
+	// with by-username". That reasoning was wrong: symmetry with a
+	// non-credential handle is not a reason to log a credential one
+	// (Codex, PR #191).
+	if rest == "lookup" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleLookupUser(w, r)
 		return
 	}
 
@@ -301,6 +336,38 @@ func (s *Server) handleGetUserByUsername(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, userToResponse(u))
 }
 
+// lookupUserRequest is the JSON body for POST /users/lookup. The email travels
+// here rather than in the URL so it stays out of access logs and history.
+type lookupUserRequest struct {
+	Email    string `json:"email"`
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// handleLookupUser handles POST /users/lookup, resolving the canonical email
+// login key through the tenant-scoped email index.
+func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	var req lookupUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Email == "" {
+		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "email"})
+		return
+	}
+
+	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
+	if err != nil {
+		writeErrorJSON(w, mapUserError(err), err)
+		return
+	}
+
+	writeJSON(w, userToResponse(u))
+}
+
 // handleGetUserByCertThumbprint handles GET /users/by-cert-thumbprint/{thumbprint}
 // -- resolves a user by an mTLS certificate's SPKI thumbprint via the
 // secondary index (the mTLS-auth hot path).
@@ -359,6 +426,8 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 	u, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:       id,
 		Username: req.Username,
+		Email:    req.Email,
+		Name:     req.Name,
 		RoleIDs:  req.RoleIDs,
 	})
 	if err != nil {
@@ -426,6 +495,8 @@ func userToResponse(u *user.User) *userResponse {
 	return &userResponse{
 		ID:        u.ID,
 		Username:  u.Username,
+		Email:     u.Email,
+		Name:      u.Name,
 		TenantID:  u.TenantID,
 		RoleIDs:   roleIDs,
 		Enabled:   u.Enabled,
@@ -440,6 +511,10 @@ func mapUserError(err error) int {
 	var ve *user.ValidationError
 	var unf *user.UserNotFoundError
 	var ue *user.UsernameExistsError
+	var ee *user.EmailExistsError
+	var ice *user.IndexCompensationError
+	var cu *user.ConcurrentUpdateError
+	var cou *user.CommitOutcomeUnknownError
 	var si *user.SystemUserImmutableError
 	var se *user.StoreError
 	var xt *tenant.CrossTenantDeniedError
@@ -456,12 +531,45 @@ func mapUserError(err error) int {
 		// through the shared system store — surface 503, matching the
 		// BarrierSealedError data-plane mapping.
 		return http.StatusServiceUnavailable
+	case errors.As(err, &ice):
+		// CHECKED BEFORE EVERY CASE THAT COULD BE ITS CAUSE, which is the whole
+		// point of where this arm sits. IndexCompensationError Unwraps to its
+		// cause so existing matching keeps working — so whichever cause-arm is
+		// listed above it wins instead, and the caller is told the cause while
+		// the far more serious fact, that rollback FAILED and a login index is
+		// inconsistent, is dropped.
+		//
+		// It sat below the duplicate-handle arms because when only UpdateUser
+		// and DeleteUser produced this error its causes were the concurrency
+		// errors below. CreateUser now produces it too, and its cause can be a
+		// UsernameExists/EmailExists conflict: a create that could not release
+		// the username it had already claimed would have been reported as an
+		// ordinary 409, leaving that username permanently unclaimable and
+		// resolving to nothing, with no signal to anyone. The cause set of a
+		// wrapper error grows silently — position this arm above all of them.
+		return http.StatusInternalServerError
 	case errors.As(err, &ve):
 		return http.StatusBadRequest
 	case errors.As(err, &unf):
 		return http.StatusNotFound
 	case errors.As(err, &ue):
 		return http.StatusConflict
+	case errors.As(err, &ee):
+		// A taken email is a client-correctable conflict, exactly as a taken
+		// username is. Without this case it fell through to the StoreError arm
+		// and was reported as 500 — a server fault for a condition the caller
+		// can fix, and one that hides the real reason.
+		return http.StatusConflict
+	case errors.As(err, &cu):
+		// Lost a concurrent update: nothing is wrong, the caller's view is
+		// stale. Conflict tells it to re-read and retry; 500 would tell it the
+		// server is broken.
+		return http.StatusConflict
+	case errors.As(err, &cou):
+		// The commit outcome is UNKNOWN. Distinct from both a conflict and a
+		// failure: the caller must reconcile before retrying, because a blind
+		// retry could double-apply. 503 says "ask again", not "it failed".
+		return http.StatusServiceUnavailable
 	case errors.As(err, &si):
 		return http.StatusForbidden
 	case errors.As(err, &se):

@@ -197,6 +197,7 @@ func (s *Server) buildHandlers() {
 	s.handle("user.Create", permission.UsersCreate, s.handleCreateUser)
 	s.handle("user.Get", permission.UsersRead, s.handleGetUser)
 	s.handle("user.GetByUsername", permission.UsersRead, s.handleGetUserByUsername)
+	s.handle("user.GetByEmail", permission.UsersRead, s.handleGetUserByEmail)
 	s.handle("user.GetByCertThumbprint", permission.UsersGetByCertThumbprint, s.handleGetUserByCertThumbprint)
 	s.handle("user.AddCertBinding", permission.UsersAddCertBinding, s.handleAddCertBinding)
 	s.handle("user.Update", permission.UsersUpdate, s.handleUpdateUser)

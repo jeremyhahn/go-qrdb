@@ -235,6 +235,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"vector.CompactNamespace": true, "vector.GetCompactionProgress": true,
 		// User management
 		"user.Create": true, "user.Get": true, "user.GetByUsername": true,
+		"user.GetByEmail":          true,
 		"user.GetByCertThumbprint": true, "user.AddCertBinding": true, "user.Update": true,
 		"user.Delete": true, "user.List": true, "user.Enable": true,
 		"user.Disable": true,
@@ -483,7 +484,7 @@ func TestBuildHandlers_VectorMethods(t *testing.T) {
 func TestBuildHandlers_UserMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	userMethods := []string{
-		"user.Create", "user.Get", "user.GetByUsername", "user.Update", "user.Delete",
+		"user.Create", "user.Get", "user.GetByUsername", "user.GetByEmail", "user.Update", "user.Delete",
 		"user.List", "user.Enable", "user.Disable",
 	}
 	for _, m := range userMethods {

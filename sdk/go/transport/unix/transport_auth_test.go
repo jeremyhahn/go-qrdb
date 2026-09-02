@@ -138,7 +138,7 @@ func TestUnixUser_AfterClose(t *testing.T) {
 	var ce *transport.ClosedError
 	ctx := context.Background()
 
-	if _, err := tr.CreateUser(ctx, &transport.CreateUserRequest{}); !errors.As(err, &ce) {
+	if _, err := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true}); !errors.As(err, &ce) {
 		t.Errorf("CreateUser: %v", err)
 	}
 	if _, err := tr.GetUser(ctx, 1); !errors.As(err, &ce) {

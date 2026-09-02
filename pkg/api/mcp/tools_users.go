@@ -45,6 +45,11 @@ func userTools(svc user.UserServicer) []serverTool {
 			Handler: handleUserGetByUsername(svc),
 		},
 		{
+			Tool:    toolUserGetByEmail(),
+			Perm:    permission.UsersRead,
+			Handler: handleUserGetByEmail(svc),
+		},
+		{
 			Tool:    toolUserGetByCertThumbprint(),
 			Perm:    permission.UsersGetByCertThumbprint,
 			Handler: handleUserGetByCertThumbprint(svc),
@@ -93,6 +98,15 @@ func toolUserCreate() mcp.Tool {
 		mcp.WithString("tenant_id",
 			mcp.Description("The tenant ID. Defaults to the system default tenant when empty."),
 		),
+		mcp.WithString("email",
+			mcp.Description("The canonical login key, unique within the tenant. Empty only for system users."),
+		),
+		mcp.WithString("name",
+			mcp.Description("Display name. Presentation only; never a lookup key."),
+		),
+		mcp.WithBoolean("without_email_login_key",
+			mcp.Description("Create a user with no email login key (certificate-only or bootstrap identity). Required to omit email."),
+		),
 		mcp.WithString("role_ids",
 			mcp.Description("Comma-separated list of role IDs to assign to the user."),
 		),
@@ -111,9 +125,12 @@ func handleUserCreate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		roleIDs := parseCSV(mcp.ParseString(req, "role_ids", ""))
 
 		u, err := svc.CreateUser(ctx, &user.CreateUserRequest{
-			Username: username,
-			TenantID: tenantID,
-			RoleIDs:  roleIDs,
+			Username:             username,
+			Email:                mcp.ParseString(req, "email", ""),
+			Name:                 mcp.ParseString(req, "name", ""),
+			WithoutEmailLoginKey: mcp.ParseBoolean(req, "without_email_login_key", false),
+			TenantID:             tenantID,
+			RoleIDs:              roleIDs,
 		})
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_user_create", Err: err}
@@ -197,6 +214,44 @@ func handleUserGetByUsername(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		data, jsonErr := json.Marshal(u)
 		if jsonErr != nil {
 			return nil, &ToolError{Tool: "qrdb_user_get_by_username", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// toolUserGetByEmail defines the qrdb_user_get_by_email tool schema.
+func toolUserGetByEmail() mcp.Tool {
+	return mcp.NewTool("qrdb_user_get_by_email",
+		mcp.WithDescription("Retrieve a user by tenant-scoped email — the canonical login key."),
+		mcp.WithString("tenant_id",
+			mcp.Description("Tenant ID. Empty selects the default tenant."),
+		),
+		mcp.WithString("email",
+			mcp.Required(),
+			mcp.Description("The email login key to resolve."),
+		),
+	)
+}
+
+// handleUserGetByEmail returns a tool handler that delegates to
+// svc.GetUserByEmail.
+func handleUserGetByEmail(svc user.UserServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		tenantID := mcp.ParseString(req, "tenant_id", "")
+		email := mcp.ParseString(req, "email", "")
+		if email == "" {
+			return mcp.NewToolResultError("email is required"), nil
+		}
+
+		u, err := svc.GetUserByEmail(ctx, tenantID, email)
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(u)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_user_get_by_email", Err: jsonErr}
 		}
 
 		return mcp.NewToolResultText(string(data)), nil
@@ -302,6 +357,12 @@ func toolUserUpdate() mcp.Tool {
 		mcp.WithString("username",
 			mcp.Description("The new username. Left unchanged when empty."),
 		),
+		mcp.WithString("email",
+			mcp.Description("The new canonical login key. Left unchanged when empty; uniqueness is re-validated within the tenant."),
+		),
+		mcp.WithString("name",
+			mcp.Description("The new display name. Left unchanged when empty."),
+		),
 		mcp.WithString("role_ids",
 			mcp.Description("Comma-separated list of role IDs to replace the current set. Left unchanged when empty."),
 		),
@@ -323,6 +384,8 @@ func handleUserUpdate(svc user.UserServicer) mcpserver.ToolHandlerFunc {
 		updateReq := &user.UpdateUserRequest{
 			ID:       id,
 			Username: mcp.ParseString(req, "username", ""),
+			Email:    mcp.ParseString(req, "email", ""),
+			Name:     mcp.ParseString(req, "name", ""),
 		}
 
 		roleIDsStr := mcp.ParseString(req, "role_ids", "")

@@ -125,6 +125,19 @@ func (m *mockUserSvc) GetUserByUsername(_ context.Context, tenantID, username st
 	return m.getResp, nil
 }
 
+// GetUserByEmail records the same way GetUserByUsername does so a test can
+// assert which handle a caller actually resolved by.
+func (m *mockUserSvc) GetUserByEmail(_ context.Context, tenantID, email string) (*user.User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastGetByTen = tenantID
+	m.lastGetByUser = user.NormalizeEmail(email)
+	if m.getByErr != nil {
+		return nil, m.getByErr
+	}
+	return m.getResp, nil
+}
+
 func (m *mockUserSvc) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -438,7 +451,7 @@ func TestCreateUser_Success(t *testing.T) {
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
 	defer cleanup()
 
-	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "t1",
 		RoleIDs:  []string{"r1", "r2"},
@@ -469,7 +482,7 @@ func TestCreateUser_ServiceError(t *testing.T) {
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
 	defer cleanup()
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "x"})
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "x"})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -998,5 +1011,105 @@ func TestListCerts_ServiceError(t *testing.T) {
 
 	if _, err := tr.ListCerts(context.Background(), "t1"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// Every field of transport.CreateUserRequest must reach the service through the
+// MCP client.
+//
+// MCP is the transport that keeps being missed on this PR, and always for the
+// same reason: it builds an argument MAP while the other transports use struct
+// literals, so an edit shaped around struct fields passes over it and nothing
+// fails to compile. It silently dropped Email/Name once and
+// WithoutEmailLoginKey once. This test enumerates the fields rather than
+// checking the one that was reported, so the next addition has somewhere to fail.
+func TestTransport_CreateUser_ForwardsEveryField(t *testing.T) {
+	svc := &mockUserSvc{}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	// A certificate-only identity: no email, opt-out declared.
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+		Username:             "cert-only",
+		WithoutEmailLoginKey: true,
+		TenantID:             "acme",
+		RoleIDs:              []string{"viewer"},
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	svc.mu.Lock()
+	got := svc.lastCreate
+	svc.mu.Unlock()
+	if got == nil {
+		t.Fatal("service never received a create")
+	}
+	if !got.WithoutEmailLoginKey {
+		t.Fatal("WithoutEmailLoginKey was dropped — a certificate-only identity cannot be created over MCP")
+	}
+	if got.Username != "cert-only" || got.TenantID != "acme" {
+		t.Fatalf("username/tenant dropped: %q / %q", got.Username, got.TenantID)
+	}
+
+	// And the email-backed shape carries its own fields.
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+		Username: "alice",
+		Email:    "alice@example.com",
+		Name:     "Alice",
+		TenantID: "acme",
+	}); err != nil {
+		t.Fatalf("CreateUser(email): %v", err)
+	}
+	svc.mu.Lock()
+	got = svc.lastCreate
+	svc.mu.Unlock()
+	if got.Email != "alice@example.com" {
+		t.Fatalf("Email dropped: %q", got.Email)
+	}
+	if got.Name != "Alice" {
+		t.Fatalf("Name dropped: %q", got.Name)
+	}
+}
+
+// The MCP email lookup is assembled from free-form strings on both sides — the
+// tool name qrdb_user_get_by_email and the argument keys tenant_id/email — so a
+// typo compiles cleanly and ships as a broken lookup. Registration and
+// create/update forwarding were covered; the lookup itself was not
+// (Codex, PR #191).
+func TestTransport_GetUserByEmail_ReachesTheService(t *testing.T) {
+	svc := &mockUserSvc{getResp: &user.User{
+		ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Enabled: true,
+	}}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	got, err := tr.GetUserByEmail(context.Background(), "t1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+	if got == nil || got.ID != 42 {
+		t.Fatalf("response not decoded: %+v", got)
+	}
+
+	// The tool name and argument keys must have carried, not just returned
+	// something: the mock records what the server handler received.
+	svc.mu.Lock()
+	tenant, email := svc.lastGetByTen, svc.lastGetByUser
+	svc.mu.Unlock()
+	if email != "alice@example.com" {
+		t.Fatalf(`argument key "email" did not reach the service: %q`, email)
+	}
+	if tenant != "t1" {
+		t.Fatalf(`argument key "tenant_id" did not reach the service: %q`, tenant)
+	}
+}
+
+func TestTransport_GetUserByEmail_NotFound(t *testing.T) {
+	svc := &mockUserSvc{getByErr: &user.UserNotFoundError{Lookup: "t1/nobody@example.com"}}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	if _, err := tr.GetUserByEmail(context.Background(), "t1", "nobody@example.com"); err == nil {
+		t.Fatal("expected a not-found error")
 	}
 }

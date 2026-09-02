@@ -469,7 +469,7 @@ func TestRouting_GetUserByUsername_Success(t *testing.T) {
 	}
 	ctx := context.Background()
 	// Create user and then look up by username.
-	_, createErr := svc.CreateUser(ctx, &CreateUserRequest{Username: "routeuser", TenantID: "rt"})
+	_, createErr := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "routeuser", TenantID: "rt"})
 	if createErr != nil {
 		t.Fatalf("CreateUser: %v", createErr)
 	}
@@ -490,7 +490,7 @@ func TestRouting_UserByCertThumbprint_Success(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 	ctx := context.Background()
-	u, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "thumbuser"})
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "thumbuser"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestRouting_UpdateUser_Success(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 	ctx := context.Background()
-	u, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "updateroute"})
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "updateroute"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestRouting_DeleteUser_Success(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 	ctx := context.Background()
-	u, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "deleteroute"})
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "deleteroute"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -557,7 +557,7 @@ func TestRouting_EnableDisableUser_Success(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 	ctx := context.Background()
-	u, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "enroute"})
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "enroute"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestRouting_AddCertBinding_Success(t *testing.T) {
 		t.Fatalf("NewRoutingService: %v", err)
 	}
 	ctx := context.Background()
-	u, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "certroute"})
+	u, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "certroute"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}

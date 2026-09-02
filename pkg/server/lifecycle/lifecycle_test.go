@@ -318,7 +318,7 @@ func TestBuildServices_WithBarrierRegistry_InstallsRoutingServices(t *testing.T)
 
 	// Write a user into the barrier tenant. The routing decorator must send
 	// this to the tenant's barrier-backed store, not the shared system store.
-	created, err := node.User.CreateUser(ctx, &user.CreateUserRequest{
+	created, err := node.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: barrierTenant,
 	})
@@ -1129,7 +1129,7 @@ func TestBuildServices_SealDisabled_StillIsolatesPrefixTenants(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	acme, err := node.User.CreateUser(ctx, &user.CreateUserRequest{
+	acme, err := node.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice", TenantID: "acme",
 	})
 	if err != nil {

@@ -477,7 +477,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("user.Create", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "user.Create", "err")
-		if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "a"}); err == nil {
+		if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "a"}); err == nil {
 			t.Fatal("expected err")
 		}
 	})

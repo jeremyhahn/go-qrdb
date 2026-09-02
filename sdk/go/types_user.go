@@ -44,6 +44,12 @@ const (
 	CertBindingPIVAttested = user.CertBindingPIVAttested
 )
 
+// NormalizeEmail is THE single canonical normalization for the email login key
+// (lowercase, trimmed). Every layer that stores, indexes, or compares an email
+// must route through it: a consumer that lowercases its own copy differently
+// reintroduces the two-accounts-for-one-person split this key exists to close.
+var NormalizeEmail = user.NormalizeEmail
+
 // ComputeSPKIThumbprint is THE single canonical mTLS-identity algorithm
 // (SHA-256 over SubjectPublicKeyInfo, base64url). Consumers must not reimplement
 // it.

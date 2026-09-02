@@ -43,9 +43,12 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		return nil, &transport.NotImplementedError{Method: "CreateUser"}
 	}
 	u, err := t.userSvc.CreateUser(ctx, &user.CreateUserRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-		RoleIDs:  req.RoleIDs,
+		Username:             req.Username,
+		Email:                req.Email,
+		Name:                 req.Name,
+		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
+		TenantID:             req.TenantID,
+		RoleIDs:              req.RoleIDs,
 	})
 	if err != nil {
 		return nil, err
@@ -72,6 +75,18 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 		return nil, &transport.NotImplementedError{Method: "GetUserByUsername"}
 	}
 	u, err := t.userSvc.GetUserByUsername(ctx, tenantID, username)
+	if err != nil {
+		return nil, err
+	}
+	return userToTransport(u), nil
+}
+
+// GetUserByEmail resolves the canonical login key through the embedded service.
+func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if t.userSvc == nil {
+		return nil, &transport.NotImplementedError{Method: "GetUserByEmail"}
+	}
+	u, err := t.userSvc.GetUserByEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +127,8 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	u, err := t.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:       req.ID,
 		Username: req.Username,
+		Email:    req.Email,
+		Name:     req.Name,
 		RoleIDs:  req.RoleIDs,
 	})
 	if err != nil {
@@ -419,6 +436,8 @@ func userToTransport(u *user.User) *transport.User {
 	return &transport.User{
 		ID:        u.ID,
 		Username:  u.Username,
+		Email:     u.Email,
+		Name:      u.Name,
 		TenantID:  u.TenantID,
 		RoleIDs:   roleIDs,
 		Enabled:   u.Enabled,

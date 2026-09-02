@@ -153,6 +153,9 @@ func (f *fakeUsers) GetUser(_ context.Context, _ uint64) (*user.User, error) { r
 func (f *fakeUsers) GetUserByUsername(_ context.Context, _ string, _ string) (*user.User, error) {
 	return nil, nil
 }
+func (f *fakeUsers) GetUserByEmail(_ context.Context, _ string, _ string) (*user.User, error) {
+	return nil, nil
+}
 func (f *fakeUsers) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	return nil, nil
 }

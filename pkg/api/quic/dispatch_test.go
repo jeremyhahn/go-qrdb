@@ -121,6 +121,7 @@ var expectedMethods = []string{
 	"user.Create",
 	"user.Get",
 	"user.GetByUsername",
+	"user.GetByEmail",
 	"user.GetByCertThumbprint",
 	"user.AddCertBinding",
 	"user.Update",
@@ -238,10 +239,10 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 160 = 159 prior unary handlers + mvcc.RestoreToRevision (selective
-	// point-in-time restore). The 2 watch methods remain on the streaming
-	// path, not the unary table.
-	const wantCount = 160
+	// 161 = 160 prior unary handlers + user.GetByEmail (the canonical
+	// login-key lookup, go-qrdb #190). The 2 watch methods remain on the
+	// streaming path, not the unary table.
+	const wantCount = 161
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -341,7 +342,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 		"index":    5,
 		"ts":       10,
 		"vector":   20,
-		"user":     10,
+		"user":     11,
 		"role":     10,
 		"cert":     4,
 		"barrier":  23,

@@ -196,7 +196,7 @@ func testRolesLifecycleOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 
 	// --- assign / unassign (exercise via a fresh user) ---------------------
 	username := fmt.Sprintf("rlc-user-%s-%d", proto.name, time.Now().UnixNano())
-	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create", "--username", username)
+	out, err = runCLIProto(t, node, proto, "--output", "json", "users", "create", "--without-email-login-key", "--username", username)
 	if err != nil {
 		t.Fatalf("[%s] users create (for role assign): %v\noutput: %s", proto.name, err, out)
 	}

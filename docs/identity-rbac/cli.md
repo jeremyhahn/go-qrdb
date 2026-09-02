@@ -19,12 +19,24 @@ group — identity is a certificate.
 | Flag | Type | Meaning |
 |---|---|---|
 | `--username` | string | username for the new user (maps to certificate CN) |
+| `--email` | string | **canonical login key**, unique within the tenant. Required unless `--without-email-login-key` |
+| `--name` | string | display name (presentation only; never a lookup key) |
+| `--without-email-login-key` | bool | create an identity with **no** email login key — certificate-only or bootstrap. It cannot be resolved by email |
 | `--tenant-id` | string | tenant (maps to certificate OU) |
 | `--roles` | string | comma-separated **role IDs** to assign |
 
 ```bash
-qrdb users create --username alice --tenant-id acme --roles "$OPERATOR_ROLE_ID"
+# An ordinary user: the email is the login key.
+qrdb users create --username alice --email alice@acme.com --name "Alice" \
+  --tenant-id acme --roles "$OPERATOR_ROLE_ID"
+
+# A certificate-only identity: the omission is DECLARED, never defaulted.
+qrdb users create --username svc-backup --without-email-login-key --tenant-id acme
 ```
+
+Creating a user with no email and no `--without-email-login-key` is refused. The
+flag exists so an identity that cannot be resolved by its login key is always
+something somebody asked for.
 
 ### `qrdb users get <id>` / `delete <id>` / `enable <id>` / `disable <id>`
 
@@ -57,7 +69,13 @@ qrdb users list --tenant-id acme --page-size 50 --output json
 | Flag | Type | Meaning |
 |---|---|---|
 | `--username` | string | new username |
+| `--email` | string | new canonical login key; uniqueness is re-validated within the tenant. Left unchanged when empty |
+| `--name` | string | new display name. Left unchanged when empty |
 | `--roles` | string | comma-separated role IDs to assign |
+
+Changing the email moves the login index atomically: the new key is claimed
+before the old one is released, so a failed update never leaves the account
+reachable by neither.
 
 ## Roles
 

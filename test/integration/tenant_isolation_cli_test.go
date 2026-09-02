@@ -382,7 +382,7 @@ func testCrossTenantIAMOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 	assertCrossTenantIAMForbidden(t, node, proto, connA, victimRole,
 		"roles", "list", "--tenant-id", tenantB)
 	assertCrossTenantIAMForbidden(t, node, proto, connA, victimRole,
-		"users", "create", "--username", "intruder-"+suffix, "--tenant-id", tenantB)
+		"users", "create", "--without-email-login-key", "--username", "intruder-"+suffix, "--tenant-id", tenantB)
 	assertCrossTenantIAMForbidden(t, node, proto, connA, victimRole,
 		"roles", "create", "--name", "intruder-role-"+suffix, "--permissions", "kv:get", "--tenant-id", tenantB)
 	assertCrossTenantIAMForbidden(t, node, proto, connA, victimRole,
@@ -542,7 +542,7 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 	// so this is not an authz outcome.
 	assertSealedIAMRefused(t, node, proto, "roles", "create",
 		"--name", "role-"+suffix, "--permissions", "kv:get", "--tenant-id", sealedID)
-	assertSealedIAMRefused(t, node, proto, "users", "create",
+	assertSealedIAMRefused(t, node, proto, "users", "create", "--without-email-login-key",
 		"--username", "user-"+suffix, "--tenant-id", sealedID)
 	assertSealedIAMRefused(t, node, proto, "roles", "list", "--tenant-id", sealedID)
 
@@ -561,7 +561,7 @@ func testSealedDedicatedTenantIAMOverProtocol(t *testing.T, node *multiProtoNode
 		"--name", openRole, "--permissions", "kv:get", "--tenant-id", openID); err != nil {
 		t.Fatalf("[%s] roles create against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}
-	if out, err := runCLIProto(t, node, proto, "users", "create",
+	if out, err := runCLIProto(t, node, proto, "users", "create", "--without-email-login-key",
 		"--username", "user-open-"+suffix, "--tenant-id", openID); err != nil {
 		t.Fatalf("[%s] users create against UNSEALED barrier tenant %s must succeed: %v\noutput: %s", proto.name, openID, err, out)
 	}

@@ -158,7 +158,7 @@ func TestTransport_CreateUser_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	_, err = tr.CreateUser(ctx, &transport.CreateUserRequest{Username: "test"})
+	_, err = tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "test"})
 	if err == nil {
 		t.Fatal("CreateUser() on closed transport should return error")
 	}

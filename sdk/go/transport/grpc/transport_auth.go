@@ -41,9 +41,12 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	}
 
 	resp, err := t.client.CreateUser(ctx, &pb.CreateUserRequest{
-		TenantId: req.TenantID,
-		Username: req.Username,
-		RoleIds:  req.RoleIDs,
+		TenantId:             req.TenantID,
+		Username:             req.Username,
+		Email:                req.Email,
+		Name:                 req.Name,
+		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
+		RoleIds:              req.RoleIDs,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateUser", err)
@@ -79,6 +82,23 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	})
 	if err != nil {
 		return nil, mapGRPCError("GetUserByUsername", err)
+	}
+
+	return protoToUser(resp), nil
+}
+
+// GetUserByEmail resolves the canonical login key over gRPC.
+func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetUserByEmail(ctx, &pb.GetUserByEmailRequest{
+		TenantId: tenantID,
+		Email:    email,
+	})
+	if err != nil {
+		return nil, mapGRPCError("GetUserByEmail", err)
 	}
 
 	return protoToUser(resp), nil
@@ -129,6 +149,8 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	resp, err := t.client.UpdateUser(ctx, &pb.UpdateUserProtoRequest{
 		Id:       req.ID,
 		Username: req.Username,
+		Email:    req.Email,
+		Name:     req.Name,
 		RoleIds:  req.RoleIDs,
 	})
 	if err != nil {
@@ -452,6 +474,8 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		ID:        resp.GetId(),
 		TenantID:  resp.GetTenantId(),
 		Username:  resp.GetUsername(),
+		Email:     resp.GetEmail(),
+		Name:      resp.GetName(),
 		RoleIDs:   resp.GetRoleIds(),
 		Enabled:   resp.GetEnabled(),
 		System:    resp.GetSystem(),

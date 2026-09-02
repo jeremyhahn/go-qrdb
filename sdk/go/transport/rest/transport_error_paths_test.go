@@ -479,7 +479,7 @@ func TestRESTUserRoleCert_AllMethods_BadJSON(t *testing.T) {
 	rt := badJSONServer(t)
 	ctx := context.Background()
 
-	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{}); err == nil {
+	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true}); err == nil {
 		t.Fatal("CreateUser: expected JSON error")
 	}
 	if _, err := rt.GetUser(ctx, 1); err == nil {
@@ -528,7 +528,7 @@ func TestRESTUserRoleCert_AllMethods_ServerError(t *testing.T) {
 	rt := errorServer(t, http.StatusInternalServerError)
 	ctx := context.Background()
 
-	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{}); err == nil {
+	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true}); err == nil {
 		t.Fatal("CreateUser: expected error")
 	}
 	if _, err := rt.UpdateUser(ctx, &transport.UpdateUserRequest{ID: 1}); err == nil {
@@ -690,7 +690,7 @@ func TestRESTAllMethods_NetworkError(t *testing.T) {
 		t.Fatal("CurrentRevision: expected error")
 	}
 	// User / Role / Cert
-	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{}); err == nil {
+	if _, err := rt.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true}); err == nil {
 		t.Fatal("CreateUser: expected error")
 	}
 	if _, err := rt.GetUser(ctx, 1); err == nil {

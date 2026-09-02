@@ -35,7 +35,7 @@ import (
 // These tests pin the contract so future refactors don't drift.
 
 func TestUserAudit_CreateUser_AcceptsTenantAndRoles(t *testing.T) {
-	captured := &user.CreateUserRequest{}
+	captured := &user.CreateUserRequest{WithoutEmailLoginKey: true}
 	mock := &mockUserServicer{
 		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 			*captured = *req
@@ -44,7 +44,7 @@ func TestUserAudit_CreateUser_AcceptsTenantAndRoles(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "bob",
 		TenantID: "acme",
 		RoleIDs:  []string{"role-user", "role-admin"},

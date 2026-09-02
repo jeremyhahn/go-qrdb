@@ -89,8 +89,26 @@ func (s *fakeKVStore) CompareAndDelete(ctx context.Context, key string, expected
 	return true, nil
 }
 
+// CompareAndSwap completes the trio, replacing the value only when it still
+// equals expected. It was a stub returning (false, nil) — a double asserting
+// "the swap never happens", which is not a thing any real store does. That went
+// unnoticed while nothing called it; UpdateUser now commits through it, and the
+// stub would have failed every routed update with a spurious
+// ConcurrentUpdateError.
 func (s *fakeKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.m[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	cp := make([]byte, len(next))
+	copy(cp, next)
+	s.m[key] = cp
+	return true, nil
 }
 
 func (s *fakeKVStore) Get(ctx context.Context, k string) ([]byte, error) {
@@ -199,7 +217,7 @@ func TestRoutingUserService_BarrierTenantUsesOwnStore(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	created, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "alice", TenantID: "secure"})
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "secure"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -253,7 +271,7 @@ func TestRoutingUserService_PrefixTenantUsesSharedStore(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "bob", TenantID: "acme"}); err != nil {
+	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "bob", TenantID: "acme"}); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	if len(shared.m) == 0 {
@@ -276,7 +294,7 @@ func TestRoutingUserService_TwoBarrierTenantsIsolated(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ua, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "carol", TenantID: "a"})
+	ua, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "carol", TenantID: "a"})
 	if err != nil {
 		t.Fatalf("CreateUser(a): %v", err)
 	}
@@ -312,7 +330,7 @@ func TestRoutingUserService_SealedTenantFailsClosed(t *testing.T) {
 
 	ctx := context.Background()
 
-	if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "dan", TenantID: "vault"}); !errors.Is(err, tenant.ErrTenantSealed) {
+	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "dan", TenantID: "vault"}); !errors.Is(err, tenant.ErrTenantSealed) {
 		t.Fatalf("CreateUser(sealed) = %v, want ErrTenantSealed", err)
 	}
 
@@ -365,7 +383,7 @@ func TestRoutingUserService_CrossTenantDenied(t *testing.T) {
 		}
 	}
 
-	_, err := svc.CreateUser(actx, &CreateUserRequest{Username: "mallory", TenantID: "b"})
+	_, err := svc.CreateUser(actx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "mallory", TenantID: "b"})
 	assertDenied("CreateUser", err)
 
 	_, err = svc.ListUsers(actx, &ListUsersRequest{TenantID: "b"})
@@ -387,12 +405,12 @@ func TestRoutingUserService_SameTenantRoutesToSelf(t *testing.T) {
 	actx := tenant.WithTenantID(context.Background(), "a")
 
 	// Explicit matching tenant.
-	if _, err := svc.CreateUser(actx, &CreateUserRequest{Username: "alice", TenantID: "a"}); err != nil {
+	if _, err := svc.CreateUser(actx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "a"}); err != nil {
 		t.Fatalf("CreateUser(match): %v", err)
 	}
 	// Empty request tenant resolves to the identity tenant, not the system
 	// tenant — the record must land in tenant A's store.
-	if _, err := svc.CreateUser(actx, &CreateUserRequest{Username: "annie", TenantID: ""}); err != nil {
+	if _, err := svc.CreateUser(actx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "annie", TenantID: ""}); err != nil {
 		t.Fatalf("CreateUser(empty): %v", err)
 	}
 	if len(storeA.m) == 0 {
@@ -418,7 +436,7 @@ func TestRoutingUserService_SystemCallerMayTargetTenant(t *testing.T) {
 	svc, _, storeB := crossTenantSetup(t)
 	sctx := tenant.WithTenantID(context.Background(), tenant.SystemTenantID)
 
-	created, err := svc.CreateUser(sctx, &CreateUserRequest{Username: "provisioned", TenantID: "b"})
+	created, err := svc.CreateUser(sctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "provisioned", TenantID: "b"})
 	if err != nil {
 		t.Fatalf("CreateUser(system→b): %v", err)
 	}
@@ -452,7 +470,7 @@ func TestRoutingUserService_AllRequestTenantMethodsReconciled(t *testing.T) {
 		call func() error
 	}{
 		{"CreateUser", func() error {
-			_, err := svc.CreateUser(actx, &CreateUserRequest{Username: "x", TenantID: "b"})
+			_, err := svc.CreateUser(actx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "x", TenantID: "b"})
 			return err
 		}},
 		{"ListUsers", func() error {
@@ -505,7 +523,7 @@ func TestRoutingUserService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 	// The admin: no tenant bound to the context, so FromContext is "" and
 	// the caller is the system tenant.
 	ctx := context.Background()
-	created, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "dana", TenantID: "acme"})
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "dana", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -571,7 +589,7 @@ func TestRoutingUserService_ByIDFailsClosedWhenOwnerSealed(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	created, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "erin", TenantID: "vault"})
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "erin", TenantID: "vault"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -619,7 +637,7 @@ func TestRoutingUserService_ByIDTellsAForeignCallerNothing(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	created, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "frank", TenantID: "acme"})
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "frank", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -687,12 +705,12 @@ func TestRoutingUserService_ARefusedClaimWritesNothing(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "first", TenantID: "acme"}); err != nil {
+	if _, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "first", TenantID: "acme"}); err != nil {
 		t.Fatalf("CreateUser(acme): %v", err)
 	}
 
 	// The same id, generated again, for a different tenant.
-	_, err = svc.CreateUser(ctx, &CreateUserRequest{Username: "second", TenantID: "globex"})
+	_, err = svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "second", TenantID: "globex"})
 	var conflict *tenant.IdentityClaimConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("colliding id across tenants = %v, want *tenant.IdentityClaimConflictError", err)
@@ -748,6 +766,23 @@ func (f *faultStore) Put(ctx context.Context, k string, v []byte) error {
 		return errInjected
 	}
 	return f.fakeKVStore.Put(ctx, k, v)
+}
+
+// PutIfAbsent honours failPut too. A test that says "the write of this key
+// fails" is describing the OUTCOME, not the verb, and the user store now claims
+// its username/email index entries with PutIfAbsent rather than Put (#190). If
+// the injection point did not follow the verb, the fault would silently stop
+// firing and the rollback assertions below would pass without ever exercising a
+// failure.
+func (f *faultStore) PutIfAbsent(ctx context.Context, k string, v []byte) (bool, error) {
+	if f.onPut != nil {
+		f.onPut()
+	}
+	if n := f.failPut[k]; n > 0 {
+		f.failPut[k] = n - 1
+		return false, errInjected
+	}
+	return f.fakeKVStore.PutIfAbsent(ctx, k, v)
 }
 
 func (f *faultStore) Delete(ctx context.Context, k string) error {
@@ -808,7 +843,7 @@ func TestRoutingUserService_AFailedCreateRollsBackCompletely(t *testing.T) {
 			}
 			tenantStore.failPut[key] = 1
 
-			req := &CreateUserRequest{Username: "gwen", TenantID: "acme"}
+			req := &CreateUserRequest{WithoutEmailLoginKey: true, Username: "gwen", TenantID: "acme"}
 			if _, err := svc.CreateUser(ctx, req); !errors.Is(err, errInjected) {
 				t.Fatalf("CreateUser = %v, want the injected fault", err)
 			}
@@ -853,7 +888,7 @@ func TestRoutingUserService_AnInterruptedDeleteIsCompletedByRetry(t *testing.T) 
 	}
 	ctx := context.Background()
 
-	created, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "hank", TenantID: "acme"})
+	created, err := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "hank", TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -919,7 +954,7 @@ func TestRoutingUserService_RollbackSurvivesACancelledContext(t *testing.T) {
 	tenantStore.failPut["__sys:users/id/"+string(encodeID(5150))] = 1
 	tenantStore.onPut = func() { cancel() }
 
-	if _, cerr := svc.CreateUser(ctx, &CreateUserRequest{Username: "ivan", TenantID: "acme"}); cerr == nil {
+	if _, cerr := svc.CreateUser(ctx, &CreateUserRequest{WithoutEmailLoginKey: true, Username: "ivan", TenantID: "acme"}); cerr == nil {
 		t.Fatal("CreateUser succeeded; the injected fault did not fire")
 	}
 	tenantStore.onPut = nil

@@ -43,9 +43,12 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 	}
 
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
-		Username: req.GetUsername(),
-		TenantID: req.GetTenantId(),
-		RoleIDs:  req.GetRoleIds(),
+		Username:             req.GetUsername(),
+		Email:                req.GetEmail(),
+		Name:                 req.GetName(),
+		WithoutEmailLoginKey: req.GetWithoutEmailLoginKey(),
+		TenantID:             req.GetTenantId(),
+		RoleIDs:              req.GetRoleIds(),
 	})
 	if err != nil {
 		return nil, mapAuthServiceError(err)
@@ -75,6 +78,22 @@ func (s *qrdbServiceServer) GetUserByUsername(ctx context.Context, req *pb.GetUs
 	}
 
 	u, err := s.userSvc.GetUserByUsername(ctx, req.GetTenantId(), req.GetUsername())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return userToProto(u), nil
+}
+
+// GetUserByEmail retrieves a user by tenant-scoped email — the canonical login
+// key. Same permission and error mapping as its username sibling; they differ
+// only in which secondary index answers.
+func (s *qrdbServiceServer) GetUserByEmail(ctx context.Context, req *pb.GetUserByEmailRequest) (*pb.UserResponse, error) {
+	if s.userSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "user"}).Error())
+	}
+
+	u, err := s.userSvc.GetUserByEmail(ctx, req.GetTenantId(), req.GetEmail())
 	if err != nil {
 		return nil, mapAuthServiceError(err)
 	}
@@ -119,6 +138,8 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 	updateReq := &user.UpdateUserRequest{
 		ID:       req.GetId(),
 		Username: req.GetUsername(),
+		Email:    req.GetEmail(),
+		Name:     req.GetName(),
 	}
 	if len(req.GetRoleIds()) > 0 {
 		updateReq.RoleIDs = req.GetRoleIds()
@@ -533,6 +554,8 @@ func userToProto(u *user.User) *pb.UserResponse {
 		Id:        u.ID,
 		TenantId:  u.TenantID,
 		Username:  u.Username,
+		Email:     u.Email,
+		Name:      u.Name,
 		RoleIds:   u.RoleIDs,
 		Enabled:   u.Enabled,
 		System:    u.System,
@@ -605,6 +628,27 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	}
 
+	// CHECKED BEFORE EVERY CASE THAT COULD BE ITS CAUSE, which is the whole point
+	// of where this branch sits. IndexCompensationError Unwraps to its cause, so
+	// whichever cause-branch is listed above it matches first and downgrades
+	// "rollback was incomplete" to that cause's code — "retry" for the
+	// concurrency errors, AlreadyExists for a duplicate handle. DataLoss is the
+	// honest code: secondary state may be inconsistent and a blind client retry
+	// is not the remedy.
+	//
+	// It sat below the duplicate-handle branches because when only UpdateUser and
+	// DeleteUser produced this error, its causes were the concurrency errors
+	// below. CreateUser now produces it too, and its cause can be a
+	// UsernameExists/EmailExists conflict: a create that could not release the
+	// username it had already claimed would have been reported as an ordinary
+	// AlreadyExists, leaving that username permanently unclaimable and resolving
+	// to nothing. The cause set of a wrapper error grows silently — this branch
+	// belongs above all of them.
+	var icee *user.IndexCompensationError
+	if errors.As(err, &icee) {
+		return status.Error(codes.DataLoss, err.Error())
+	}
+
 	// User errors
 	var unf *user.UserNotFoundError
 	if errors.As(err, &unf) {
@@ -614,6 +658,27 @@ func mapAuthServiceError(err error) error {
 	var uee *user.UsernameExistsError
 	if errors.As(err, &uee) {
 		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
+	// A taken email is AlreadyExists for the same reason a taken username is;
+	// without this it fell through to Internal.
+	var eee *user.EmailExistsError
+	if errors.As(err, &eee) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
+	// A lost concurrent update is Aborted — gRPC's designated code for a failed
+	// optimistic-concurrency check, which tells the client to re-read and retry.
+	var cue *user.ConcurrentUpdateError
+	if errors.As(err, &cue) {
+		return status.Error(codes.Aborted, err.Error())
+	}
+
+	// An unknown commit outcome is Unavailable, not Internal: the operation may
+	// have landed, so the client must reconcile rather than assume failure.
+	var coue *user.CommitOutcomeUnknownError
+	if errors.As(err, &coue) {
+		return status.Error(codes.Unavailable, err.Error())
 	}
 
 	var ude *user.UserDisabledError

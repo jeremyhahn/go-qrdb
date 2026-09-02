@@ -114,6 +114,7 @@ const (
 	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
 	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
 	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
+	QRDBService_GetUserByEmail_FullMethodName                    = "/qrdb.v1.QRDBService/GetUserByEmail"
 	QRDBService_GetUserByCertThumbprint_FullMethodName           = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
 	QRDBService_AddCertBinding_FullMethodName                    = "/qrdb.v1.QRDBService/AddCertBinding"
 	QRDBService_UpdateUser_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateUser"
@@ -413,6 +414,7 @@ type QRDBServiceClient interface {
 	GetUser(ctx context.Context, in *GetUserRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// GetUserByUsername retrieves a user by tenant-scoped username.
 	GetUserByUsername(ctx context.Context, in *GetUserByUsernameRequest, opts ...grpc.CallOption) (*UserResponse, error)
+	GetUserByEmail(ctx context.Context, in *GetUserByEmailRequest, opts ...grpc.CallOption) (*UserResponse, error)
 	// GetUserByCertThumbprint resolves a user by an mTLS certificate's
 	// SPKI thumbprint via the secondary index (the mTLS-auth hot path).
 	GetUserByCertThumbprint(ctx context.Context, in *GetUserByCertThumbprintRequest, opts ...grpc.CallOption) (*UserResponse, error)
@@ -1491,6 +1493,16 @@ func (c *qRDBServiceClient) GetUserByUsername(ctx context.Context, in *GetUserBy
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(UserResponse)
 	err := c.cc.Invoke(ctx, QRDBService_GetUserByUsername_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) GetUserByEmail(ctx context.Context, in *GetUserByEmailRequest, opts ...grpc.CallOption) (*UserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UserResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetUserByEmail_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2802,6 +2814,7 @@ type QRDBServiceServer interface {
 	GetUser(context.Context, *GetUserRequest) (*UserResponse, error)
 	// GetUserByUsername retrieves a user by tenant-scoped username.
 	GetUserByUsername(context.Context, *GetUserByUsernameRequest) (*UserResponse, error)
+	GetUserByEmail(context.Context, *GetUserByEmailRequest) (*UserResponse, error)
 	// GetUserByCertThumbprint resolves a user by an mTLS certificate's
 	// SPKI thumbprint via the secondary index (the mTLS-auth hot path).
 	GetUserByCertThumbprint(context.Context, *GetUserByCertThumbprintRequest) (*UserResponse, error)
@@ -3316,6 +3329,9 @@ func (UnimplementedQRDBServiceServer) GetUser(context.Context, *GetUserRequest) 
 }
 func (UnimplementedQRDBServiceServer) GetUserByUsername(context.Context, *GetUserByUsernameRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUserByUsername not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetUserByEmail(context.Context, *GetUserByEmailRequest) (*UserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetUserByEmail not implemented")
 }
 func (UnimplementedQRDBServiceServer) GetUserByCertThumbprint(context.Context, *GetUserByCertThumbprintRequest) (*UserResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetUserByCertThumbprint not implemented")
@@ -5103,6 +5119,24 @@ func _QRDBService_GetUserByUsername_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).GetUserByUsername(ctx, req.(*GetUserByUsernameRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_GetUserByEmail_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUserByEmailRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetUserByEmail(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetUserByEmail_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetUserByEmail(ctx, req.(*GetUserByEmailRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7445,6 +7479,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetUserByUsername",
 			Handler:    _QRDBService_GetUserByUsername_Handler,
+		},
+		{
+			MethodName: "GetUserByEmail",
+			Handler:    _QRDBService_GetUserByEmail_Handler,
 		},
 		{
 			MethodName: "GetUserByCertThumbprint",

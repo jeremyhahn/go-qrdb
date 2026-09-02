@@ -367,7 +367,7 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
-	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{
+	if _, err := svc.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "matrix",
 		TenantID: tenant.SystemTenantID,
 		RoleIDs:  []string{r.ID},

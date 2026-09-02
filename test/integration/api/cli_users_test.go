@@ -36,7 +36,7 @@ func TestCLIMultiProtocolUsersLifecycle(t *testing.T) {
 			})
 
 			// Step 1: Create a user.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "users", "create", "--username", username)
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "users", "create", "--without-email-login-key", "--username", username)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -147,7 +147,7 @@ func TestCLIMultiProtocolUsersPagination(t *testing.T) {
 			for i := 1; i <= 3; i++ {
 				username := fmt.Sprintf("user-page-%d-%s-%d", i, proto, ts)
 
-				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "users", "create", "--username", username)
+				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "users", "create", "--without-email-login-key", "--username", username)
 				if err != nil {
 					t.Logf("stdout: %s", stdout)
 					t.Logf("stderr: %s", stderr)
@@ -226,7 +226,7 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 			})
 
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--username", tenantUsername, "--tenant-id", "test-tenant")
+				"users", "create", "--without-email-login-key", "--username", tenantUsername, "--tenant-id", "test-tenant")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -280,7 +280,7 @@ func TestCLIMultiProtocolUsersCreateFlags(t *testing.T) {
 			})
 
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--username", roleUsername, "--roles", roleID)
+				"users", "create", "--without-email-login-key", "--username", roleUsername, "--roles", roleID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -363,7 +363,7 @@ func TestCLIMultiProtocolUsersListTenantFilter(t *testing.T) {
 			})
 
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--username", username, "--tenant-id", "test-tenant")
+				"users", "create", "--without-email-login-key", "--username", username, "--tenant-id", "test-tenant")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)

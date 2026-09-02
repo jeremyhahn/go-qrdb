@@ -489,6 +489,9 @@ service QRDBService {
     rpc GetUserByUsername(GetUserByUsernameRequest) returns (UserResponse) {
         option (qrdb.v1.permission) = "users:read";
     }
+    rpc GetUserByEmail(GetUserByEmailRequest) returns (UserResponse) {
+        option (qrdb.v1.permission) = "users:read";
+    }
 
     // GetUserByCertThumbprint resolves a user by an mTLS certificate's
     // SPKI thumbprint via the secondary index (the mTLS-auth hot path).
@@ -2387,6 +2390,14 @@ message CreateUserRequest {
     string tenant_id = 1;
     string username = 2;
     repeated string role_ids = 3;
+    // email is the canonical tenant-unique login key.
+    string email = 4;
+    // name is the display name; presentation only.
+    string name = 5;
+    // without_email_login_key creates a user that has no email login key and so
+    // cannot be resolved by GetUserByEmail — a certificate-only or bootstrap
+    // identity. It exists so the omission is declared rather than defaulted.
+    bool without_email_login_key = 6;
 }
 
 // GetUserRequest retrieves a user by ID.
@@ -2398,6 +2409,14 @@ message GetUserRequest {
 message GetUserByUsernameRequest {
     string tenant_id = 1;
     string username = 2;
+}
+
+// GetUserByEmailRequest resolves a user by tenant-scoped email — the canonical
+// login key. The tenant is required: an email is unique within a tenant, not
+// globally, so a lookup without one is ambiguous by construction.
+message GetUserByEmailRequest {
+    string tenant_id = 1;
+    string email = 2;
 }
 
 // GetUserByCertThumbprintRequest resolves a user by an mTLS certificate's
@@ -2420,6 +2439,10 @@ message UpdateUserProtoRequest {
     uint64 id = 1;
     string username = 2;
     repeated string role_ids = 3;
+    // email replaces the canonical login key when non-empty.
+    string email = 4;
+    // name replaces the display name when non-empty.
+    string name = 5;
 }
 
 // DeleteUserRequest removes a user by ID.
@@ -2461,6 +2484,10 @@ message UserResponse {
     bool system = 6;
     string created_at = 7;
     string updated_at = 8;
+    // email is the canonical tenant-unique login key. Empty for system users.
+    string email = 9;
+    // name is the display name. Presentation only; never a lookup key.
+    string name = 10;
 }
 
 // ===========================================================================

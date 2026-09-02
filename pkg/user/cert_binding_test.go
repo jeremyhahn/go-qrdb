@@ -105,7 +105,7 @@ func TestKVUserStore_CertThumbprintRoundTrip(t *testing.T) {
 	s := &kvUserStore{store: newMemKVStore(), idgen: newTestIDGen(t)}
 	ctx := context.Background()
 
-	u, err := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system"})
+	u, err := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system", WithoutEmailLoginKey: true})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestIsValidSPKIThumbprint(t *testing.T) {
 func TestAddCertBinding_RejectsNonCanonical(t *testing.T) {
 	s := &kvUserStore{store: newMemKVStore(), idgen: newTestIDGen(t)}
 	ctx := context.Background()
-	u, err := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system"})
+	u, err := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system", WithoutEmailLoginKey: true})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -181,8 +181,8 @@ func TestAddCertBinding_RejectsNonCanonical(t *testing.T) {
 func TestAddCertBinding_RejectsCrossUserConflict(t *testing.T) {
 	s := &kvUserStore{store: newMemKVStore(), idgen: newTestIDGen(t)}
 	ctx := context.Background()
-	victim, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "victim", TenantID: "system"})
-	attacker, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "attacker", TenantID: "system"})
+	victim, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "victim", TenantID: "system", WithoutEmailLoginKey: true})
+	attacker, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "attacker", TenantID: "system", WithoutEmailLoginKey: true})
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tp := ComputeSPKIThumbprint(makeCertForKey(t, key, "victim", 1))
@@ -210,7 +210,7 @@ func TestAddCertBinding_RejectsCrossUserConflict(t *testing.T) {
 func TestUserByCertThumbprint_EnforcesExpiry(t *testing.T) {
 	s := &kvUserStore{store: newMemKVStore(), idgen: newTestIDGen(t)}
 	ctx := context.Background()
-	u, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system"})
+	u, _ := s.CreateUser(ctx, &CreateUserRequest{Username: "admin", TenantID: "system", WithoutEmailLoginKey: true})
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tp := ComputeSPKIThumbprint(makeCertForKey(t, key, "admin", 1))

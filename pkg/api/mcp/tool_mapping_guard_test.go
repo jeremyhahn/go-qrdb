@@ -132,6 +132,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_user_create":                    permission.UsersCreate,
 	"qrdb_user_get":                       permission.UsersRead,
 	"qrdb_user_get_by_username":           permission.UsersRead,
+	"qrdb_user_get_by_email":              permission.UsersRead,
 	"qrdb_user_update":                    permission.UsersUpdate,
 	"qrdb_user_delete":                    permission.UsersDelete,
 	"qrdb_user_list":                      permission.UsersList,

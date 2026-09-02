@@ -206,6 +206,22 @@ func (r *routingUserService) GetUserByUsername(ctx context.Context, tenantID, us
 	return svc.GetUserByUsername(ctx, eff, username)
 }
 
+// GetUserByEmail routes on the EFFECTIVE tenant, exactly as GetUserByUsername
+// does. The cross-tenant denial matters more here, not less: this is the login
+// lookup, so routing a raw tenant argument would let a caller resolve a
+// credential holder in a tenant it was never admitted to.
+func (r *routingUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*User, error) {
+	eff, err := tenant.EffectiveTenant(ctx, tenantID, "read user by email")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	return svc.GetUserByEmail(ctx, eff, email)
+}
+
 // UserByCertThumbprint routes on the context tenant.
 //
 // It is the one caller-routed method with no id to place: the lookup key is

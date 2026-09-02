@@ -562,9 +562,12 @@ func createAdminUser(ctx context.Context, deps Dependencies, tenantID string, ro
 	}
 
 	adminUser, createErr := deps.Users.CreateUser(ctx, &user.CreateUserRequest{
-		Username: adminUsername,
-		TenantID: tenantID,
-		RoleIDs:  roleIDs,
+		// The firstboot admin authenticates by certificate, not by an email login
+		// key, so the omission is declared rather than defaulted (#190).
+		WithoutEmailLoginKey: true,
+		Username:             adminUsername,
+		TenantID:             tenantID,
+		RoleIDs:              roleIDs,
 	})
 	if createErr == nil {
 		deps.Logger.Info("first-boot: admin user created",

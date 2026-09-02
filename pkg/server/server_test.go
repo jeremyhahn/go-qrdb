@@ -1128,6 +1128,9 @@ func (s *stubUserService) GetUser(_ context.Context, _ uint64) (*user.User, erro
 func (s *stubUserService) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return nil, nil
 }
+func (s *stubUserService) GetUserByEmail(_ context.Context, _, _ string) (*user.User, error) {
+	return nil, nil
+}
 func (s *stubUserService) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	return nil, nil
 }

@@ -37,14 +37,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockUserService struct {
-	createFn  func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
-	getFn     func(ctx context.Context, id uint64) (*user.User, error)
-	getByName func(ctx context.Context, tenantID, username string) (*user.User, error)
-	updateFn  func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
-	deleteFn  func(ctx context.Context, id uint64) error
-	listFn    func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-	enableFn  func(ctx context.Context, id uint64) error
-	disableFn func(ctx context.Context, id uint64) error
+	createFn   func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
+	getFn      func(ctx context.Context, id uint64) (*user.User, error)
+	getByName  func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getByEmail func(ctx context.Context, tenantID, email string) (*user.User, error)
+	updateFn   func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+	deleteFn   func(ctx context.Context, id uint64) error
+	listFn     func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+	enableFn   func(ctx context.Context, id uint64) error
+	disableFn  func(ctx context.Context, id uint64) error
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -66,6 +67,14 @@ func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, usern
 		return m.getByName(ctx, tenantID, username)
 	}
 	return &user.User{ID: 1001, Username: username, TenantID: tenantID, Enabled: true}, nil
+}
+
+func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	normalized := user.NormalizeEmail(email)
+	if m.getByEmail != nil {
+		return m.getByEmail(ctx, tenantID, normalized)
+	}
+	return &user.User{ID: 1001, Username: normalized, Email: normalized, TenantID: tenantID, Enabled: true}, nil
 }
 
 func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
@@ -292,7 +301,7 @@ func TestUserBinding_Create_Success(t *testing.T) {
 	conn := newAuthTestConnectionBinding(t, &mockUserService{}, nil, nil)
 	b := NewUserBinding(testLogger(t), conn)
 
-	u, err := b.Create(&transport.CreateUserRequest{
+	u, err := b.Create(&transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "system",
 	})
@@ -313,7 +322,7 @@ func TestUserBinding_Create_ServiceError(t *testing.T) {
 	conn := newAuthTestConnectionBinding(t, svc, nil, nil)
 	b := NewUserBinding(testLogger(t), conn)
 
-	_, err := b.Create(&transport.CreateUserRequest{Username: "alice"})
+	_, err := b.Create(&transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error from Create")
 	}

@@ -83,6 +83,19 @@ func (m *mockUserServicer) GetUserByUsername(_ context.Context, _, username stri
 	return m.user, nil
 }
 
+// GetUserByEmail records through the same fields as its username sibling, so a
+// test can assert which handle a caller resolved by. It normalizes the way the
+// real store does — a double that skipped that would accept spellings the store
+// rejects.
+func (m *mockUserServicer) GetUserByEmail(_ context.Context, _, email string) (*user.User, error) {
+	m.calls.Add(1)
+	m.lastUser = user.NormalizeEmail(email)
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.user, nil
+}
+
 func (m *mockUserServicer) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
 	return nil, nil
 }

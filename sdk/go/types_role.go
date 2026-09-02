@@ -41,8 +41,12 @@ type ListUsersResponse = user.ListUsersResponse
 // exists.
 type UsernameExistsError = user.UsernameExistsError
 
-// UserNotFoundError is returned when a user lookup (by id, username, or cert
-// thumbprint) does not resolve.
+// EmailExistsError is returned when creating or updating a user whose email
+// login key is already taken within the tenant.
+type EmailExistsError = user.EmailExistsError
+
+// UserNotFoundError is returned when a user lookup (by id, username, email, or
+// cert thumbprint) does not resolve.
 type UserNotFoundError = user.UserNotFoundError
 
 // ---------------------------------------------------------------------------

@@ -126,7 +126,7 @@ func TestCLIMultiProtocolRolesAssignment(t *testing.T) {
 			// Step 1: Create a user.
 			username := fmt.Sprintf("roletest-%s-%d", proto, ts)
 			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-				"users", "create", "--username", username)
+				"users", "create", "--without-email-login-key", "--username", username)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)

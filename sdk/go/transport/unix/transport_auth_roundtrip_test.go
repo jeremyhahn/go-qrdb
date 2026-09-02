@@ -41,6 +41,7 @@ type mockUserSvc struct {
 	createFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	getFn           func(ctx context.Context, id uint64) (*user.User, error)
 	getByUserNameFn func(ctx context.Context, tenant, username string) (*user.User, error)
+	getByEmailFn    func(ctx context.Context, tenant, email string) (*user.User, error)
 	updateFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
 	deleteFn        func(ctx context.Context, id uint64) error
 	listFn          func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
@@ -67,6 +68,14 @@ func (m *mockUserSvc) GetUserByUsername(ctx context.Context, tenant, username st
 		return m.getByUserNameFn(ctx, tenant, username)
 	}
 	return &user.User{ID: 1, Username: username, TenantID: tenant, Enabled: true}, nil
+}
+
+func (m *mockUserSvc) GetUserByEmail(ctx context.Context, tenant, email string) (*user.User, error) {
+	normalized := user.NormalizeEmail(email)
+	if m.getByEmailFn != nil {
+		return m.getByEmailFn(ctx, tenant, normalized)
+	}
+	return &user.User{ID: 1, Username: normalized, Email: normalized, TenantID: tenant, Enabled: true}, nil
 }
 
 func (m *mockUserSvc) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
@@ -271,7 +280,7 @@ func TestUnixRT_CreateUser(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
 	defer cleanup()
 
-	got, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	got, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "t1",
 		RoleIDs:  []string{"admin"},
@@ -409,7 +418,7 @@ func TestUnixRT_CreateUser_ServiceUnavailable(t *testing.T) {
 	tr, cleanup := startAuthServer(t)
 	defer cleanup()
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "alice"})
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice"})
 	if err == nil {
 		t.Fatal("expected error when user service is not configured")
 	}
@@ -646,5 +655,69 @@ func TestUnixRT_GetUser_NotFound(t *testing.T) {
 	_, err := tr.GetUser(context.Background(), 9999)
 	if err == nil {
 		t.Fatal("expected error from server")
+	}
+}
+
+// The identity fields this PR threads through the unix transport must survive
+// the round trip, and GetUserByEmail must reach the service.
+//
+// The round-trip suite exercised CreateUser without asserting the new fields
+// and never called GetUserByEmail — the same transport-specific omission the
+// MCP client already had twice on this PR (Codex, PR #191).
+func TestUnixRT_NewIdentityFieldsRoundTrip(t *testing.T) {
+	var gotCreate *user.CreateUserRequest
+	var gotEmailLookup string
+
+	usvc := &mockUserSvc{
+		createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			gotCreate = req
+			return &user.User{
+				ID: 1, Username: req.Username, Email: req.Email, Name: req.Name,
+				TenantID: req.TenantID, Enabled: true,
+			}, nil
+		},
+		getByEmailFn: func(_ context.Context, _, email string) (*user.User, error) {
+			gotEmailLookup = email
+			return &user.User{ID: 7, Email: email, Enabled: true}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+	ctx := context.Background()
+
+	got, err := tr.CreateUser(ctx, &transport.CreateUserRequest{
+		Username: "alice", Email: "alice@example.com", Name: "Alice", TenantID: "t1",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if gotCreate.Email != "alice@example.com" {
+		t.Fatalf("Email dropped on the wire: %q", gotCreate.Email)
+	}
+	if gotCreate.Name != "Alice" {
+		t.Fatalf("Name dropped on the wire: %q", gotCreate.Name)
+	}
+	if got.Email != "alice@example.com" {
+		t.Fatalf("Email dropped from the response: %q", got.Email)
+	}
+
+	if _, cErr := tr.CreateUser(ctx, &transport.CreateUserRequest{
+		Username: "cert-only", WithoutEmailLoginKey: true, TenantID: "t1",
+	}); cErr != nil {
+		t.Fatalf("CreateUser(cert-only): %v", cErr)
+	}
+	if !gotCreate.WithoutEmailLoginKey {
+		t.Fatal("WithoutEmailLoginKey dropped — a certificate-only identity cannot be created over the unix socket")
+	}
+
+	u, lErr := tr.GetUserByEmail(ctx, "t1", "alice@example.com")
+	if lErr != nil {
+		t.Fatalf("GetUserByEmail: %v", lErr)
+	}
+	if gotEmailLookup != "alice@example.com" {
+		t.Fatalf("lookup email did not reach the service: %q", gotEmailLookup)
+	}
+	if u.ID != 7 {
+		t.Fatalf("GetUserByEmail returned id %d, want 7", u.ID)
 	}
 }

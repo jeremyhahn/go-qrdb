@@ -110,7 +110,7 @@ func newAuthEnforcedRESTNode(t *testing.T) (n *Node, ca *qrdbdharness.CA, adminK
 	})
 	require.NoError(t, err)
 
-	_, err = svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{
+	_, err = svcNode.User.CreateUser(context.Background(), &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "admin",
 		TenantID: tenant.SystemTenantID,
 		RoleIDs:  []string{adminRole.ID},

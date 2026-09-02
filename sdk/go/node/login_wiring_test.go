@@ -182,7 +182,7 @@ func TestBuildEmbeddedOpts_WiresFunctionalLoginCeremony(t *testing.T) {
 	svcNode := n.Services()
 
 	// Create a user whose mapping we assert.
-	u, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{
+	u, err := svcNode.User.CreateUser(ctx, &user.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "tenant-a",
 		RoleIDs:  []string{"admin"},

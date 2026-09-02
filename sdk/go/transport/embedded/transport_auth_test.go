@@ -37,6 +37,7 @@ type mockUserServicer struct {
 	createUserFn      func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	getUserFn         func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUserFn   func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn  func(ctx context.Context, tenantID, email string) (*user.User, error)
 	updateUserFn      func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
 	deleteUserFn      func(ctx context.Context, id uint64) error
 	listUsersFn       func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
@@ -55,6 +56,10 @@ func (m *mockUserServicer) GetUser(ctx context.Context, id uint64) (*user.User, 
 
 func (m *mockUserServicer) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	return m.getUserByUserFn(ctx, tenantID, username)
+}
+
+func (m *mockUserServicer) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	return m.getUserByEmailFn(ctx, tenantID, user.NormalizeEmail(email))
 }
 
 func (m *mockUserServicer) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {
@@ -241,7 +246,7 @@ func TestCreateUser_Success(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "tenant-a",
 		RoleIDs:  []string{"role-admin"},
@@ -262,7 +267,7 @@ func TestCreateUser_Success(t *testing.T) {
 
 func TestCreateUser_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 	})
 	assertNotImplementedError(t, err, "CreateUser")
@@ -277,7 +282,7 @@ func TestCreateUser_ServiceError(t *testing.T) {
 	}
 	tr := newAuthTransport(t, WithUserService(mock))
 
-	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+	_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 		TenantID: "tenant-a",
 	})

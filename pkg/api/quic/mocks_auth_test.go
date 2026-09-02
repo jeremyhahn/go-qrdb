@@ -33,6 +33,7 @@ type mockUserService struct {
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	getUserFn           func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	updateUserFn        func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
 	deleteUserFn        func(ctx context.Context, id uint64) error
 	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
@@ -50,6 +51,10 @@ func (m *mockUserService) GetUser(ctx context.Context, id uint64) (*user.User, e
 
 func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	return m.getUserByUsernameFn(ctx, tenantID, username)
+}
+
+func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	return m.getUserByEmailFn(ctx, tenantID, email)
 }
 
 func (m *mockUserService) UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error) {

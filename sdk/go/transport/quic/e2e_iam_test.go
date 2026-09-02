@@ -39,7 +39,7 @@ func TestE2E_CreateUser_HappyPath(t *testing.T) {
 			ID: 1, Username: "alice", TenantID: "t1", Enabled: true,
 		})
 	})
-	resp, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "alice", TenantID: "t1"})
+	resp, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice", TenantID: "t1"})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -327,5 +327,60 @@ func TestE2E_ListCerts_HappyPath(t *testing.T) {
 	}
 	if len(resp.Certs) != 1 {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+// The QUIC email lookup is stringly typed on both sides — the method name
+// "user.GetByEmail" and the JSON keys tenantID/email are handwritten in the
+// client and matched by name on the server — so a typo compiles cleanly and
+// fails only at runtime. This asserts the wire contract, not just that a call
+// returns something (Codex, PR #191).
+func TestE2E_GetUserByEmail_WireContract(t *testing.T) {
+	srv, tr := startE2EServer(t)
+
+	srv.SetResponder("user.GetByEmail", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, userJSON(&userWireResponse{
+			ID: 42, Username: "alice", Email: "alice@example.com", TenantID: "t1", Enabled: true,
+		})
+	})
+
+	resp, err := tr.GetUserByEmail(context.Background(), "t1", "alice@example.com")
+	if err != nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+
+	// Read the request back through the harness's recorder, which is guarded by
+	// recordMu. Capturing it into a closure variable instead was a genuine data
+	// race: the responder runs on the server's per-stream goroutine while these
+	// assertions run on the test goroutine, and a QUIC round trip is not a
+	// happens-before edge between them. It passed locally because nothing here
+	// is ever run under -race — only CI's sdk/go job does that (PR #191).
+	rec := srv.LastRequest("user.GetByEmail")
+	// The method name reached the server: nothing is recorded otherwise.
+	if rec == nil {
+		t.Fatal(`no request reached "user.GetByEmail" — the method name does not match the server route`)
+	}
+	var gotPayload map[string]any
+	if uErr := json.Unmarshal(rec.Payload, &gotPayload); uErr != nil {
+		t.Fatalf("request payload is not JSON: %v", uErr)
+	}
+	if gotPayload["email"] != "alice@example.com" {
+		t.Fatalf(`payload key "email" wrong or missing: %v`, gotPayload)
+	}
+	if gotPayload["tenantID"] != "t1" {
+		t.Fatalf(`payload key "tenantID" wrong or missing: %v`, gotPayload)
+	}
+	if resp.ID != 42 || resp.Email != "alice@example.com" {
+		t.Fatalf("response not decoded: %+v", resp)
+	}
+}
+
+func TestE2E_GetUserByEmail_NotFound(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("user.GetByEmail", func(_ []byte) (uint16, []byte) {
+		return wire.StatusError, []byte(`{"error":"not found"}`)
+	})
+	if _, err := tr.GetUserByEmail(context.Background(), "t1", "nobody@example.com"); err == nil {
+		t.Fatal("expected a not-found error")
 	}
 }

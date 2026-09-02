@@ -35,7 +35,10 @@ func TestGRPCUser_AllMethods_Closed(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"CreateUser", func() error { _, e := tr.CreateUser(ctx, &transport.CreateUserRequest{}); return e }},
+		{"CreateUser", func() error {
+			_, e := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true})
+			return e
+		}},
 		{"GetUser", func() error { _, e := tr.GetUser(ctx, 1); return e }},
 		{"GetUserByUsername", func() error { _, e := tr.GetUserByUsername(ctx, "t1", "alice"); return e }},
 		{"UpdateUser", func() error { _, e := tr.UpdateUser(ctx, &transport.UpdateUserRequest{}); return e }},
@@ -543,7 +546,7 @@ func TestGRPCServer_AuthCtxCanceled(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := tr.CreateUser(canceledCtx, &transport.CreateUserRequest{}); err == nil {
+	if _, err := tr.CreateUser(canceledCtx, &transport.CreateUserRequest{WithoutEmailLoginKey: true}); err == nil {
 		t.Fatal("CreateUser: expected error")
 	}
 	if _, err := tr.GetUser(canceledCtx, 1); err == nil {

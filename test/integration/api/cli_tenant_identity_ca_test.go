@@ -202,7 +202,7 @@ func TestCLIMultiProtocolTenantIdentityBarrierFlow(t *testing.T) {
 			// Step 4: users create --tenant-id (no --roles yet; assigned next
 			// via a separate `roles assign` call per the requested flow).
 			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
-				"--output", "json", "users", "create",
+				"--output", "json", "users", "create", "--without-email-login-key",
 				"--username", username, "--tenant-id", tenantID)
 			if err != nil {
 				t.Logf("stdout: %s", stdout)

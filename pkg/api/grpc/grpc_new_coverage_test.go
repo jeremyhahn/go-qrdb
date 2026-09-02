@@ -702,6 +702,9 @@ func (m *mockUserServiceForGRPC) GetUser(_ context.Context, _ uint64) (*user.Use
 func (m *mockUserServiceForGRPC) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return &user.User{ID: 1, Username: "alice"}, nil
 }
+func (m *mockUserServiceForGRPC) GetUserByEmail(_ context.Context, _, email string) (*user.User, error) {
+	return &user.User{ID: 1, Username: "alice", Email: user.NormalizeEmail(email)}, nil
+}
 func (m *mockUserServiceForGRPC) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	if m.updateErr != nil {
 		return nil, m.updateErr

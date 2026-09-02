@@ -96,6 +96,17 @@ func (f *fakeUserService) GetUserByUsername(_ context.Context, tenantID, usernam
 	}
 	return nil, &user.UserNotFoundError{Lookup: tenantID + "/" + username}
 }
+
+// GetUserByEmail mirrors the real store: tenant-scoped, normalized comparison.
+// A double that ignored the tenant or the normalization would pass tests the
+// store itself would fail.
+func (f *fakeUserService) GetUserByEmail(_ context.Context, tenantID, email string) (*user.User, error) {
+	normalized := user.NormalizeEmail(email)
+	if f.u != nil && f.u.TenantID == tenantID && normalized != "" && f.u.Email == normalized {
+		return f.u, nil
+	}
+	return nil, &user.UserNotFoundError{Lookup: tenantID + "/" + normalized}
+}
 func (f *fakeUserService) UserByCertThumbprint(context.Context, string) (*user.User, error) {
 	return nil, errors.ErrUnsupported
 }

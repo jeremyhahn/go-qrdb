@@ -652,8 +652,13 @@ func UsersCommands() []CommandDefinition {
 			RequiresServer: true,
 			RequiredArgs: []ArgDefinition{
 				{Flag: "username", Value: "test-user", Description: "Username"},
+				// The canonical login key is required unless the omission is
+				// declared; this definition exercises the ordinary shape.
+				{Flag: "email", Value: "test-user@example.com", Description: "Canonical login key"},
 			},
 			OptionalArgs: []ArgDefinition{
+				{Flag: "name", Value: "", Description: "Display name"},
+				{Flag: "without-email-login-key", Value: "", Description: "Create a certificate-only identity with no email login key"},
 				{Flag: "tenant-id", Value: "", Description: "Tenant ID"},
 				{Flag: "roles", Value: "", Description: "Role IDs"},
 			},
@@ -693,6 +698,8 @@ func UsersCommands() []CommandDefinition {
 			},
 			OptionalArgs: []ArgDefinition{
 				{Flag: "username", Value: "", Description: "New username"},
+				{Flag: "email", Value: "", Description: "New canonical login key"},
+				{Flag: "name", Value: "", Description: "New display name"},
 				{Flag: "roles", Value: "", Description: "New role IDs"},
 			},
 		},

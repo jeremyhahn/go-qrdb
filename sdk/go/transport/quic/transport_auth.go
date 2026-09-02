@@ -34,9 +34,12 @@ var (
 
 // createUserWireRequest is the JSON wire payload for user.Create.
 type createUserWireRequest struct {
-	Username string   `json:"username"`
-	TenantID string   `json:"tenantID"`
-	RoleIDs  []string `json:"roleIDs"`
+	Username             string   `json:"username"`
+	Email                string   `json:"email,omitempty"`
+	Name                 string   `json:"name,omitempty"`
+	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
+	TenantID             string   `json:"tenantID"`
+	RoleIDs              []string `json:"roleIDs"`
 }
 
 // getUserWireRequest is the JSON wire payload for user.Get.
@@ -46,6 +49,13 @@ type getUserWireRequest struct {
 
 // getUserByUsernameWireRequest is the JSON wire payload for
 // user.GetByUsername.
+// getUserByEmailWireRequest is the JSON wire payload for a get-by-email
+// lookup — the canonical login-key resolution.
+type getUserByEmailWireRequest struct {
+	TenantID string `json:"tenantID"`
+	Email    string `json:"email"`
+}
+
 type getUserByUsernameWireRequest struct {
 	TenantID string `json:"tenantID"`
 	Username string `json:"username"`
@@ -68,6 +78,8 @@ type addCertBindingWireRequest struct {
 type updateUserWireRequest struct {
 	ID       uint64   `json:"id"`
 	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
 }
 
@@ -96,8 +108,12 @@ type disableUserWireRequest struct {
 // userWireResponse is the JSON wire representation of a user entity
 // returned by the server.
 type userWireResponse struct {
-	ID        uint64   `json:"id"`
-	Username  string   `json:"username"`
+	ID       uint64 `json:"id"`
+	Username string `json:"username"`
+	// Email is the canonical tenant-unique login key; Name is display only.
+	// Both decode from the same JSON the user record marshals.
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
 	Enabled   bool     `json:"enabled"`
@@ -257,9 +273,12 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	}
 
 	payload, err := json.Marshal(createUserWireRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-		RoleIDs:  req.RoleIDs,
+		Username:             req.Username,
+		Email:                req.Email,
+		Name:                 req.Name,
+		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
+		TenantID:             req.TenantID,
+		RoleIDs:              req.RoleIDs,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &MarshalError{Err: err}}
@@ -323,6 +342,30 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	var wire userWireResponse
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: &UnmarshalError{Err: err}}
+	}
+
+	return wireToUser(&wire), nil
+}
+
+// GetUserByEmail resolves the canonical login key over QUIC.
+func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) (*transport.User, error) {
+	if t.closed.Load() {
+		return nil, &transport.ClosedError{}
+	}
+
+	payload, err := json.Marshal(getUserByEmailWireRequest{TenantID: tenantID, Email: email})
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: &MarshalError{Err: err}}
+	}
+
+	data, err := t.call(ctx, "user.GetByEmail", payload)
+	if err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: err}
+	}
+
+	var wire userWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: &UnmarshalError{Err: err}}
 	}
 
 	return wireToUser(&wire), nil
@@ -392,6 +435,8 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	payload, err := json.Marshal(updateUserWireRequest{
 		ID:       req.ID,
 		Username: req.Username,
+		Email:    req.Email,
+		Name:     req.Name,
 		RoleIDs:  req.RoleIDs,
 	})
 	if err != nil {
@@ -865,6 +910,8 @@ func wireToUser(w *userWireResponse) *transport.User {
 	return &transport.User{
 		ID:        w.ID,
 		Username:  w.Username,
+		Email:     w.Email,
+		Name:      w.Name,
 		TenantID:  w.TenantID,
 		RoleIDs:   w.RoleIDs,
 		Enabled:   w.Enabled,

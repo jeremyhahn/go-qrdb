@@ -57,7 +57,7 @@ func TestBootstrapUserRoleStores_SealDisabled_StillRoutesByTenant(t *testing.T) 
 	}
 
 	ctx := context.Background()
-	acme, err := mgmt.servedUserSvc.CreateUser(ctx, &userpkg.CreateUserRequest{
+	acme, err := mgmt.servedUserSvc.CreateUser(ctx, &userpkg.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice", TenantID: "acme",
 	})
 	if err != nil {

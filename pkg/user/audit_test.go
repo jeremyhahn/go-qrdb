@@ -82,6 +82,7 @@ func TestUserAudit_Create(t *testing.T) {
 
 	u, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username: "alice",
+		Email:    "audit@example.com",
 		TenantID: "acme",
 		RoleIDs:  []string{"viewer"},
 	})

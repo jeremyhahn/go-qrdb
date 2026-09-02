@@ -73,6 +73,25 @@ the permission matrix. The load-bearing one is the **Security Officer's explicit
 denial of crypto operations**: governance and key use are different people, and
 that is the FIPS 140-3 AS10.03 separation-of-duties control.
 
+## The canonical login key
+
+Identity in qrdb has two handles, and they answer different questions.
+
+`Username` is the tenant-scoped human name, and for a system identity it is the
+only one — `admin` is not an address. `Email` is the **canonical login key**:
+the handle every layer above this one resolves a principal by, from the WebAuthn
+credential name through the session subject to the CLI's user identifier.
+
+Before this existed, each layer above kept its own answer — go-xkms named
+credentials from one field, go-quicbaas held an email in a side table beside the
+qrdb record — and a login could verify a factor and then fail to find anybody it
+belonged to. Owning the key here, and exporting it through the SDK, is what
+makes those layers agree by construction rather than by convention.
+
+The key is tenant-scoped, not global: the same person may legitimately hold an
+account in two tenants, and every login path supplies the tenant alongside the
+handle, so a global index would forbid that while buying nothing.
+
 ## Component boundaries
 
 | Piece | Package | Owner |

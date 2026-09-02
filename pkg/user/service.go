@@ -29,6 +29,11 @@ type UserServicer interface {
 	// GetUserByUsername retrieves a user by tenant-scoped username.
 	GetUserByUsername(ctx context.Context, tenantID, username string) (*User, error)
 
+	// GetUserByEmail retrieves a user by tenant-scoped email — the canonical
+	// login key. This is the lookup a login ceremony performs to join a
+	// verified factor to the record that says what its holder may do.
+	GetUserByEmail(ctx context.Context, tenantID, email string) (*User, error)
+
 	// UserByCertThumbprint resolves a user by an mTLS certificate's SPKI
 	// thumbprint via the secondary index. This is the mTLS-auth lookup:
 	// given a presented client cert, compute ComputeSPKIThumbprint and

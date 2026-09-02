@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -36,6 +38,7 @@ type mockUserService struct {
 	createUserFn              func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	getUserFn                 func(ctx context.Context, id uint64) (*user.User, error)
 	getUserByUsernameFn       func(ctx context.Context, tenantID, username string) (*user.User, error)
+	getUserByEmailFn          func(ctx context.Context, tenantID, email string) (*user.User, error)
 	getUserByCertThumbprintFn func(ctx context.Context, thumbprint string) (*user.User, error)
 	updateUserFn              func(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
 	deleteUserFn              func(ctx context.Context, id uint64) error
@@ -81,6 +84,20 @@ func (m *mockUserService) GetUserByUsername(ctx context.Context, tenantID, usern
 	return &user.User{
 		ID:       1001,
 		Username: username,
+		TenantID: tenantID,
+		Enabled:  true,
+	}, nil
+}
+
+func (m *mockUserService) GetUserByEmail(ctx context.Context, tenantID, email string) (*user.User, error) {
+	if m.getUserByEmailFn != nil {
+		return m.getUserByEmailFn(ctx, tenantID, email)
+	}
+	normalized := user.NormalizeEmail(email)
+	return &user.User{
+		ID:       1001,
+		Username: normalized,
+		Email:    normalized,
 		TenantID: tenantID,
 		Enabled:  true,
 	}, nil
@@ -858,6 +875,7 @@ func TestUserTools_Registration(t *testing.T) {
 		"qrdb_user_create",
 		"qrdb_user_get",
 		"qrdb_user_get_by_username",
+		"qrdb_user_get_by_email",
 		"qrdb_user_get_by_cert_thumbprint",
 		"qrdb_user_add_cert_binding",
 		"qrdb_user_update",
@@ -2300,5 +2318,85 @@ func TestParsePermissions_EmptyAction(t *testing.T) {
 	_, err := parsePermissions("resource:")
 	if err == nil {
 		t.Fatal("expected error for empty action")
+	}
+}
+
+// The MCP tool schemas and handlers must carry the canonical login key. The
+// transport exposed Email/Name on the request types while MCP forwarded neither,
+// so a caller could set them, be told the create succeeded, and get a user with
+// no entry in the index logins resolve through (Codex review, PR #191).
+func TestUserCreateTool_CarriesEmailAndName(t *testing.T) {
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{
+				ID: 1, Username: req.Username, Email: req.Email, Name: req.Name,
+				TenantID: req.TenantID, Enabled: true,
+			}, nil
+		},
+	}
+
+	if _, err := handleUserCreate(svc)(context.Background(), makeReq(map[string]any{
+		"username": "alice",
+		"email":    "alice@example.com",
+		"name":     "Alice",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("service was never called")
+	}
+	if got.Email != "alice@example.com" {
+		t.Fatalf("email dropped on the way to the store: %q", got.Email)
+	}
+	if got.Name != "Alice" {
+		t.Fatalf("name dropped on the way to the store: %q", got.Name)
+	}
+}
+
+func TestUserUpdateTool_CarriesEmailAndName(t *testing.T) {
+	var got *user.UpdateUserRequest
+	svc := &mockUserService{
+		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{ID: req.ID, Email: req.Email, Name: req.Name, Enabled: true}, nil
+		},
+	}
+
+	if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+		"id":    "42",
+		"email": "new@example.com",
+		"name":  "New Name",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("service was never called")
+	}
+	if got.Email != "new@example.com" {
+		t.Fatalf("email dropped on the way to the store: %q", got.Email)
+	}
+	if got.Name != "New Name" {
+		t.Fatalf("name dropped on the way to the store: %q", got.Name)
+	}
+}
+
+// The schema is the contract a caller reads. A handler that parses a field the
+// schema does not declare works only for a caller that guessed.
+func TestUserTools_SchemasDeclareEmailAndName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tool mcp.Tool
+	}{
+		{"create", toolUserCreate()},
+		{"update", toolUserUpdate()},
+	} {
+		props := tc.tool.InputSchema.Properties
+		for _, field := range []string{"email", "name"} {
+			if _, ok := props[field]; !ok {
+				t.Errorf("%s tool schema does not declare %q", tc.name, field)
+			}
+		}
 	}
 }

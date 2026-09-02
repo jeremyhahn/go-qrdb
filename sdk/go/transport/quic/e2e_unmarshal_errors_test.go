@@ -747,7 +747,7 @@ func TestE2E_CreateUser_UnmarshalError(t *testing.T) {
 	srv.SetResponder("user.Create", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, garbageJSON
 	})
-	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{Username: "alice"}); err == nil {
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{WithoutEmailLoginKey: true, Username: "alice"}); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }

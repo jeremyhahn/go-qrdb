@@ -28,7 +28,7 @@ func TestEnableUser_PutFails_Coverage(t *testing.T) {
 	ctx := context.Background()
 
 	u, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err != nil {
@@ -63,7 +63,7 @@ func TestDisableUser_PutFails_Coverage(t *testing.T) {
 	ctx := context.Background()
 
 	u, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "bob",
+		WithoutEmailLoginKey: true, Username: "bob",
 		TenantID: "acme",
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestCreateUser_UsernameIndexPutFails(t *testing.T) {
 	ctx := context.Background()
 
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "charlie",
+		WithoutEmailLoginKey: true, Username: "charlie",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -148,7 +148,7 @@ func TestUpdateUser_PutPrimaryFails_Coverage(t *testing.T) {
 	ctx := context.Background()
 
 	u, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "dave",
+		WithoutEmailLoginKey: true, Username: "dave",
 		TenantID: "acme",
 	})
 	if err != nil {

@@ -15,6 +15,7 @@
 package user
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -38,6 +39,8 @@ import (
 
 type memKVStore struct {
 	data sync.Map
+	// atomicMu serialises the AtomicKVStore verbs against each other.
+	atomicMu sync.Mutex
 }
 
 func newMemKVStore() *memKVStore {
@@ -47,6 +50,47 @@ func newMemKVStore() *memKVStore {
 func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
 	m.data.Store(key, append([]byte(nil), value...))
 	return nil
+}
+
+// The three kvstore.AtomicKVStore operations, serialised under one mutex so
+// each decides-and-acts in a single step. A Load-then-Store here would
+// reproduce the very race the store uses these to close, and the concurrency
+// test would then pass against broken code.
+//
+// Plain Put/Get/Delete deliberately stay on sync.Map without this lock, as they
+// were: a production store serialises everything in its own consistency domain,
+// while this double only needs the atomic verbs to be atomic with respect to
+// each other, which is what the claim paths use.
+func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.atomicMu.Lock()
+	defer m.atomicMu.Unlock()
+	if _, ok := m.data.Load(key); ok {
+		return false, nil
+	}
+	m.data.Store(key, append([]byte(nil), value...))
+	return true, nil
+}
+
+func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.atomicMu.Lock()
+	defer m.atomicMu.Unlock()
+	v, ok := m.data.Load(key)
+	if !ok || !bytes.Equal(v.([]byte), expected) {
+		return false, nil
+	}
+	m.data.Delete(key)
+	return true, nil
+}
+
+func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.atomicMu.Lock()
+	defer m.atomicMu.Unlock()
+	v, ok := m.data.Load(key)
+	if !ok || !bytes.Equal(v.([]byte), expected) {
+		return false, nil
+	}
+	m.data.Store(key, append([]byte(nil), next...))
+	return true, nil
 }
 
 func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
@@ -130,6 +174,18 @@ func (m *errKVStore) Put(context.Context, string, []byte) error {
 	return m.putErr
 }
 
+func (m *errKVStore) PutIfAbsent(context.Context, string, []byte) (bool, error) {
+	return false, m.putErr
+}
+
+func (m *errKVStore) CompareAndDelete(context.Context, string, []byte) (bool, error) {
+	return false, m.delErr
+}
+
+func (m *errKVStore) CompareAndSwap(context.Context, string, []byte, []byte) (bool, error) {
+	return false, m.putErr
+}
+
 func (m *errKVStore) Get(context.Context, string) ([]byte, error) {
 	return nil, m.getErr
 }
@@ -195,11 +251,15 @@ func newTestStore(t *testing.T) UserServicer {
 	return store
 }
 
+// createTestUser makes an ORDINARY user, so it supplies the canonical login key
+// the way a real caller must (#190). Tests that specifically exercise a user
+// without one declare WithoutEmailLoginKey themselves.
 func createTestUser(t *testing.T, svc UserServicer, username, tenantID string) *User {
 	t.Helper()
 	ctx := context.Background()
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
 		Username: username,
+		Email:    username + "@example.com",
 		TenantID: tenantID,
 		RoleIDs:  []string{"viewer"},
 	})
@@ -246,7 +306,7 @@ func TestCreateUser_Success(t *testing.T) {
 	ctx := context.Background()
 
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 		RoleIDs:  []string{"admin", "editor"},
 	})
@@ -287,6 +347,13 @@ func TestCreateUser_PendingCreatesDisabled(t *testing.T) {
 		Username: "invited-admin",
 		TenantID: "acme",
 		Pending:  true,
+		// An invited admin has no email login key until it enrolls, and #190
+		// requires that absence to be DECLARED rather than defaulted — the same
+		// declaration the bootstrap caller makes. Exempting Pending implicitly
+		// would put back the silent "no login key" case the check exists to
+		// prevent, for the one kind of account most likely to be created in
+		// bulk by automation.
+		WithoutEmailLoginKey: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -315,7 +382,7 @@ func TestCreateUser_DuplicateUsername(t *testing.T) {
 	createTestUser(t, svc, "alice", "acme")
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -346,7 +413,7 @@ func TestCreateUser_EmptyUsername(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "",
+		WithoutEmailLoginKey: true, Username: "",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -380,7 +447,7 @@ func TestCreateUser_DefaultTenant(t *testing.T) {
 	ctx := context.Background()
 
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "bob",
+		WithoutEmailLoginKey: true, Username: "bob",
 	})
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
@@ -395,7 +462,7 @@ func TestCreateUser_NilRoleIDs(t *testing.T) {
 	ctx := context.Background()
 
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "charlie",
+		WithoutEmailLoginKey: true, Username: "charlie",
 		TenantID: "acme",
 		RoleIDs:  nil,
 	})
@@ -410,8 +477,12 @@ func TestCreateUser_NilRoleIDs(t *testing.T) {
 	}
 }
 
-func TestCreateUser_StoreGetError(t *testing.T) {
-	eStore := &errKVStore{getErr: errors.New("disk fault")}
+// Renamed from TestCreateUser_StoreGetError: uniqueness is no longer decided by
+// a Get. CreateUser CLAIMS the username handle with PutIfAbsent (#190), so a
+// store failure surfaces from the claim, and injecting on Get would leave this
+// test asserting against a code path that no longer runs.
+func TestCreateUser_StoreClaimError(t *testing.T) {
+	eStore := &errKVStore{putErr: errors.New("disk fault")}
 	svc, err := NewStore(eStore, newTestIDGen(t))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -419,15 +490,22 @@ func TestCreateUser_StoreGetError(t *testing.T) {
 	ctx := context.Background()
 
 	_, err = svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err == nil {
-		t.Fatal("expected error from store Get")
+		t.Fatal("expected error from the handle claim")
 	}
 	var target *StoreError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+	// A store failure must NOT be reported as a taken handle: "already exists"
+	// tells the caller to pick another name, when the truth is that the store
+	// could not answer.
+	var exists *UsernameExistsError
+	if errors.As(err, &exists) {
+		t.Fatalf("store failure reported as a name conflict: %v", err)
 	}
 }
 
@@ -1184,6 +1262,37 @@ func (f *faultKVStore) Put(ctx context.Context, key string, value []byte) error 
 	return f.inner.Put(ctx, key, value)
 }
 
+// The AtomicKVStore verbs. PutIfAbsent shares Put's injection counter and
+// CompareAndDelete shares Delete's: a test that says "the Nth write fails" is
+// describing the outcome, not the verb, and the user store now claims its
+// handle indexes with PutIfAbsent (#190). An injection point that did not
+// follow the verb would silently stop firing.
+func (f *faultKVStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	f.putCount++
+	if f.putFailAt > 0 && f.putCount >= f.putFailAt {
+		return false, f.putErr
+	}
+	return f.inner.PutIfAbsent(ctx, key, value)
+}
+
+func (f *faultKVStore) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	f.delCount++
+	if f.delFailAt > 0 && f.delCount >= f.delFailAt {
+		return false, f.delErr
+	}
+	return f.inner.CompareAndDelete(ctx, key, expected)
+}
+
+func (f *faultKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	// Shares Put's counter: UpdateUser commits the primary record with
+	// CompareAndSwap, so a test injecting on "the Nth write" must still reach it.
+	f.putCount++
+	if f.putFailAt > 0 && f.putCount >= f.putFailAt {
+		return false, f.putErr
+	}
+	return f.inner.CompareAndSwap(ctx, key, expected, next)
+}
+
 func (f *faultKVStore) Get(ctx context.Context, key string) ([]byte, error) {
 	f.getCount++
 	if f.getFailAt > 0 && f.getCount >= f.getFailAt {
@@ -1249,7 +1358,7 @@ func TestCreateUser_PutPrimaryFails(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -1271,7 +1380,7 @@ func TestCreateUser_PutTenantIndexFails(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -1293,7 +1402,7 @@ func TestCreateUser_PutUsernameIndexFails(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "alice",
+		WithoutEmailLoginKey: true, Username: "alice",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -1368,7 +1477,9 @@ func TestUpdateUser_PutPrimaryFails(t *testing.T) {
 	}
 }
 
-func TestUpdateUser_UsernameChange_GetFails(t *testing.T) {
+// Renamed from TestUpdateUser_UsernameChange_GetFails: the uniqueness Get is
+// gone, replaced by an atomic claim (#190). The injection follows the verb.
+func TestUpdateUser_UsernameChange_ClaimFails(t *testing.T) {
 	mem := newMemKVStore()
 	fkv := &faultKVStore{inner: mem}
 	svc, _ := NewStore(fkv, newTestIDGen(t))
@@ -1376,22 +1487,24 @@ func TestUpdateUser_UsernameChange_GetFails(t *testing.T) {
 
 	user := createTestUser(t, svc, "alice", "acme")
 
-	// Fail on the Get for username uniqueness check.
-	// After create, getCount has been used. We need the next
-	// Get calls: 1 for GetUser(id), 2 for username index check.
-	fkv.getFailAt = fkv.getCount + 2
-	fkv.getErr = errors.New("read error")
+	// The next write is the claim of the new username handle.
+	fkv.putFailAt = fkv.putCount + 1
+	fkv.putErr = errors.New("write error")
 
 	_, err := svc.UpdateUser(ctx, &UpdateUserRequest{
 		ID:       user.ID,
 		Username: "alice2",
 	})
 	if err == nil {
-		t.Fatal("expected error on username index Get check")
+		t.Fatal("expected error on the username handle claim")
 	}
 	var target *StoreError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+	var exists *UsernameExistsError
+	if errors.As(err, &exists) {
+		t.Fatalf("store failure reported as a name conflict: %v", err)
 	}
 }
 
@@ -1599,7 +1712,7 @@ func TestUserLifecycle(t *testing.T) {
 
 	// Create.
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "lifecycle",
+		WithoutEmailLoginKey: true, Username: "lifecycle",
 		TenantID: "test-tenant",
 		RoleIDs:  []string{"viewer"},
 	})
@@ -1725,7 +1838,7 @@ func TestKVUserStore_CreateUser_QuotaExceeded(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "blocked",
+		WithoutEmailLoginKey: true, Username: "blocked",
 		TenantID: "acme",
 	})
 	if err == nil {
@@ -1746,7 +1859,7 @@ func TestKVUserStore_CreateUser_NoQuotaChecker(t *testing.T) {
 	ctx := context.Background()
 
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "noquota",
+		WithoutEmailLoginKey: true, Username: "noquota",
 		TenantID: "acme",
 	})
 	if err != nil {
@@ -1772,7 +1885,7 @@ func TestKVUserStore_CreateUser_QuotaPasses(t *testing.T) {
 	ctx := context.Background()
 
 	user, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "allowed",
+		WithoutEmailLoginKey: true, Username: "allowed",
 		TenantID: "acme",
 	})
 	if err != nil {
@@ -1803,7 +1916,7 @@ func TestKVUserStore_WithQuotaChecker_DefaultTenant(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "default-tenant-user",
+		WithoutEmailLoginKey: true, Username: "default-tenant-user",
 		TenantID: "", // empty → should default
 	})
 	if err != nil {
@@ -1823,7 +1936,7 @@ func TestCreateUser_AssignsSnowflakeID_AndIndexRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := svc.CreateUser(ctx, &CreateUserRequest{
-		Username: "snowflake",
+		WithoutEmailLoginKey: true, Username: "snowflake",
 		TenantID: "acme",
 	})
 	if err != nil {

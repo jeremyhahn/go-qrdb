@@ -773,6 +773,9 @@ func (s *stubUserSvc) GetUser(_ context.Context, _ uint64) (*user.User, error) {
 func (s *stubUserSvc) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return nil, nil
 }
+func (s *stubUserSvc) GetUserByEmail(_ context.Context, _, _ string) (*user.User, error) {
+	return nil, nil
+}
 func (s *stubUserSvc) UpdateUser(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
 	return nil, nil
 }

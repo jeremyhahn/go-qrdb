@@ -28,9 +28,12 @@ import (
 
 // createUserWireRequest is the JSON wire payload for user.Create.
 type createUserWireRequest struct {
-	Username string   `json:"username"`
-	TenantID string   `json:"tenantID"`
-	RoleIDs  []string `json:"roleIDs"`
+	Username             string   `json:"username"`
+	Email                string   `json:"email,omitempty"`
+	Name                 string   `json:"name,omitempty"`
+	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
+	TenantID             string   `json:"tenantID"`
+	RoleIDs              []string `json:"roleIDs"`
 }
 
 // getUserWireRequest is the JSON wire payload for user.Get.
@@ -43,6 +46,13 @@ type getUserWireRequest struct {
 type getUserByUsernameWireRequest struct {
 	TenantID string `json:"tenantID"`
 	Username string `json:"username"`
+}
+
+// getUserByEmailWireRequest is the JSON wire payload for a get-by-email
+// lookup — the canonical login-key resolution.
+type getUserByEmailWireRequest struct {
+	TenantID string `json:"tenantID"`
+	Email    string `json:"email"`
 }
 
 // getUserByCertThumbprintWireRequest is the JSON wire payload for
@@ -62,6 +72,8 @@ type addCertBindingWireRequest struct {
 type updateUserWireRequest struct {
 	ID       uint64   `json:"id"`
 	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
 }
 
@@ -91,6 +103,8 @@ type disableUserWireRequest struct {
 type userWireResponse struct {
 	ID        uint64   `json:"id"`
 	Username  string   `json:"username"`
+	Email     string   `json:"email,omitempty"`
+	Name      string   `json:"name,omitempty"`
 	TenantID  string   `json:"tenantID"`
 	RoleIDs   []string `json:"roleIDs"`
 	Enabled   bool     `json:"enabled"`
@@ -129,9 +143,12 @@ func (s *Server) handleCreateUser(ctx context.Context, payload []byte) ([]byte, 
 	}
 
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
-		Username: req.Username,
-		TenantID: req.TenantID,
-		RoleIDs:  req.RoleIDs,
+		Username:             req.Username,
+		Email:                req.Email,
+		Name:                 req.Name,
+		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
+		TenantID:             req.TenantID,
+		RoleIDs:              req.RoleIDs,
 	})
 	if err != nil {
 		return nil, err
@@ -182,6 +199,30 @@ func (s *Server) handleGetUserByUsername(ctx context.Context, payload []byte) ([
 	}
 
 	u, err := s.userSvc.GetUserByUsername(ctx, req.TenantID, req.Username)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := json.Marshal(userToWireResponse(u))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return out, nil
+}
+
+// handleGetUserByEmail unmarshals a JSON get-by-email request and resolves the
+// canonical login key through the tenant-scoped email index.
+func (s *Server) handleGetUserByEmail(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.userSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "user"}
+	}
+
+	var req getUserByEmailWireRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -258,6 +299,8 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 	u, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
 		ID:       req.ID,
 		Username: req.Username,
+		Email:    req.Email,
+		Name:     req.Name,
 		RoleIDs:  req.RoleIDs,
 	})
 	if err != nil {
@@ -398,6 +441,8 @@ func userToWireResponse(u *user.User) *userWireResponse {
 	return &userWireResponse{
 		ID:        u.ID,
 		Username:  u.Username,
+		Email:     u.Email,
+		Name:      u.Name,
 		TenantID:  u.TenantID,
 		RoleIDs:   roleIDs,
 		Enabled:   u.Enabled,

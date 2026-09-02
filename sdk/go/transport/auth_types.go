@@ -26,8 +26,14 @@ package transport
 // (proto3 JSON convention) to avoid precision loss in JS clients. The
 // json tags mirror the REST server's snake_case wire contract.
 type User struct {
-	ID        uint64   `json:"id,string"`
-	Username  string   `json:"username"`
+	ID       uint64 `json:"id,string"`
+	Username string `json:"username"`
+	// Email is the canonical tenant-unique login key. Every layer above qrdb
+	// keys a user by this — WebAuthn credential handle, session subject, CLI
+	// identifier. Empty only for system users.
+	Email string `json:"email,omitempty"`
+	// Name is the display name. Presentation only; never a lookup key.
+	Name      string   `json:"name,omitempty"`
 	TenantID  string   `json:"tenant_id"`
 	RoleIDs   []string `json:"role_ids"`
 	Enabled   bool     `json:"enabled"`
@@ -38,16 +44,29 @@ type User struct {
 
 // CreateUserRequest holds parameters for creating a user.
 type CreateUserRequest struct {
-	Username string   `json:"username"`
-	TenantID string   `json:"tenant_id,omitempty"`
-	RoleIDs  []string `json:"role_ids,omitempty"`
+	Username string `json:"username"`
+	// Email is the canonical tenant-unique login key. Empty is permitted only
+	// for system users, which authenticate by other means.
+	Email string `json:"email,omitempty"`
+	// Name is the display name. Presentation only.
+	Name string `json:"name,omitempty"`
+	// WithoutEmailLoginKey creates a user with no email login key (a
+	// certificate-only or bootstrap identity). Required to omit Email.
+	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
+	TenantID             string   `json:"tenant_id,omitempty"`
+	RoleIDs              []string `json:"role_ids,omitempty"`
 }
 
 // UpdateUserRequest holds parameters for updating a user.
 type UpdateUserRequest struct {
-	ID       uint64   `json:"id,string"`
-	Username string   `json:"username,omitempty"`
-	RoleIDs  []string `json:"role_ids,omitempty"`
+	ID       uint64 `json:"id,string"`
+	Username string `json:"username,omitempty"`
+	// Email replaces the login key when non-empty; uniqueness is re-validated
+	// within the tenant and the secondary index moves with it.
+	Email string `json:"email,omitempty"`
+	// Name replaces the display name when non-empty.
+	Name    string   `json:"name,omitempty"`
+	RoleIDs []string `json:"role_ids,omitempty"`
 }
 
 // ListUsersRequest holds parameters for listing users.

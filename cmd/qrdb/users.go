@@ -76,7 +76,7 @@ func newUsersListCmd() *cobra.Command {
 			case "yaml":
 				return printYAML(resp)
 			default:
-				headers := []string{"ID", "USERNAME", "TENANT_ID", "ROLES", "ENABLED", "SYSTEM", "CREATED_AT"}
+				headers := []string{"ID", "USERNAME", "EMAIL", "TENANT_ID", "ROLES", "ENABLED", "SYSTEM", "CREATED_AT"}
 				var rows [][]string
 				for _, u := range resp.Users {
 					rows = append(rows, userRow(u))
@@ -100,9 +100,12 @@ func newUsersListCmd() *cobra.Command {
 // newUsersCreateCmd creates the "users create" subcommand.
 func newUsersCreateCmd() *cobra.Command {
 	var (
-		username string
-		tenantID string
-		roles    string
+		username             string
+		email                string
+		name                 string
+		tenantID             string
+		roles                string
+		withoutEmailLoginKey bool
 	)
 
 	cmd := &cobra.Command{
@@ -111,8 +114,11 @@ func newUsersCreateCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.CreateUserRequest{
-				Username: username,
-				TenantID: tenantID,
+				Username:             username,
+				Email:                email,
+				Name:                 name,
+				WithoutEmailLoginKey: withoutEmailLoginKey,
+				TenantID:             tenantID,
 			}
 
 			if roles != "" {
@@ -130,6 +136,10 @@ func newUsersCreateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&username, "username", "", "Username for the new user")
 	_ = cmd.MarkFlagRequired("username")
+	cmd.Flags().StringVar(&email, "email", "", "Canonical login key, unique within the tenant (required unless --without-email-login-key)")
+	cmd.Flags().StringVar(&name, "name", "", "Display name (presentation only)")
+	cmd.Flags().BoolVar(&withoutEmailLoginKey, "without-email-login-key", false,
+		"Create a user with no email login key — a certificate-only or bootstrap identity that cannot be resolved by email")
 	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
 	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs to assign")
 
@@ -163,6 +173,8 @@ func newUsersUpdateCmd() *cobra.Command {
 	var (
 		username string
 		roles    string
+		email    string
+		name     string
 	)
 
 	cmd := &cobra.Command{
@@ -177,6 +189,8 @@ func newUsersUpdateCmd() *cobra.Command {
 			req := &transport.UpdateUserRequest{
 				ID:       id,
 				Username: username,
+				Email:    email,
+				Name:     name,
 			}
 
 			if roles != "" {
@@ -193,6 +207,8 @@ func newUsersUpdateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&username, "username", "", "New username")
+	cmd.Flags().StringVar(&email, "email", "", "New canonical login key; uniqueness is re-validated within the tenant. Left unchanged when empty")
+	cmd.Flags().StringVar(&name, "name", "", "New display name. Left unchanged when empty")
 	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs to assign")
 
 	return cmd
@@ -274,6 +290,10 @@ func printUser(u *transport.User) error {
 	default:
 		_, _ = fmt.Fprintf(outputWriter, "ID:        %d\n", u.ID)
 		_, _ = fmt.Fprintf(outputWriter, "Username:  %s\n", u.Username)
+		// The canonical login key, and the display name. Omitting them meant a
+		// caller could set --email and never see it back.
+		_, _ = fmt.Fprintf(outputWriter, "Email:     %s\n", u.Email)
+		_, _ = fmt.Fprintf(outputWriter, "Name:      %s\n", u.Name)
 		_, _ = fmt.Fprintf(outputWriter, "TenantID:  %s\n", u.TenantID)
 		_, _ = fmt.Fprintf(outputWriter, "RoleIDs:   %s\n", strings.Join(u.RoleIDs, ", "))
 		_, _ = fmt.Fprintf(outputWriter, "Enabled:   %s\n", strconv.FormatBool(u.Enabled))
@@ -289,6 +309,7 @@ func userRow(u *transport.User) []string {
 	return []string{
 		strconv.FormatUint(u.ID, 10),
 		u.Username,
+		u.Email,
 		u.TenantID,
 		strings.Join(u.RoleIDs, ","),
 		strconv.FormatBool(u.Enabled),

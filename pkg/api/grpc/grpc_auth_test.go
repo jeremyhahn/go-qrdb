@@ -44,6 +44,7 @@ type mockUserService struct {
 	getResult         *user.User
 	getErr            error
 	getByUsernameErr  error
+	getByEmailErr     error
 	updateResult      *user.User
 	updateErr         error
 	deleteErr         error
@@ -72,6 +73,10 @@ func (m *mockUserService) GetUser(_ context.Context, id uint64) (*user.User, err
 
 func (m *mockUserService) GetUserByUsername(_ context.Context, _, _ string) (*user.User, error) {
 	return nil, m.getByUsernameErr
+}
+
+func (m *mockUserService) GetUserByEmail(_ context.Context, _, _ string) (*user.User, error) {
+	return nil, m.getByEmailErr
 }
 
 func (m *mockUserService) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
@@ -364,6 +369,65 @@ func TestMapAuthServiceError_UserNotFoundError(t *testing.T) {
 	}
 }
 
+// A taken email must be AlreadyExists, as its username sibling is. Before this
+// it fell through to Internal — a server fault for a condition the caller can
+// fix (Codex review, PR #191).
+// A compensation failure must not be downgraded to its unwrapped cause. It
+// wraps ConcurrentUpdateError, so a mapper checking that first reports Aborted
+// — telling the client to retry when secondary state may be inconsistent.
+func TestMapAuthServiceError_IndexCompensationOutranksItsCause(t *testing.T) {
+	err := mapAuthServiceError(&user.IndexCompensationError{
+		Op: "update", UserID: 7,
+		Cause:    &user.ConcurrentUpdateError{ID: 7},
+		Failures: []error{errors.New("restore failed")},
+	})
+	if status.Code(err) != codes.DataLoss {
+		t.Fatalf("got %v, want DataLoss", status.Code(err))
+	}
+}
+
+// The create path's cause, which the update path's ordering did not cover.
+// CreateUser claims the username index before the email one, so a taken email
+// fails the create while the username claim is already held; if releasing it
+// then fails, the compensation error's cause is EmailExistsError — and the
+// AlreadyExists branches sat ABOVE the wrapper. The client saw "email taken",
+// retried with another address, and hit "username taken" forever on a username
+// reserved for a record that was never written.
+func TestMapAuthServiceError_IndexCompensationOutranksADuplicateHandle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+	}{
+		{"email", &user.EmailExistsError{Email: "a@example.com"}},
+		{"username", &user.UsernameExistsError{Username: "a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := mapAuthServiceError(&user.IndexCompensationError{
+				Op: "create", UserID: 7,
+				Cause:    tc.cause,
+				Failures: []error{errors.New("release failed")},
+			})
+			if status.Code(err) != codes.DataLoss {
+				t.Fatalf("got %v, want DataLoss", status.Code(err))
+			}
+		})
+	}
+}
+
+func TestMapAuthServiceError_ConcurrentUpdateIsAborted(t *testing.T) {
+	err := mapAuthServiceError(&user.ConcurrentUpdateError{ID: 7})
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("got %v, want Aborted", status.Code(err))
+	}
+}
+
+func TestMapAuthServiceError_EmailExistsError(t *testing.T) {
+	err := mapAuthServiceError(&user.EmailExistsError{Email: "alice@example.com", TenantID: "t1"})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("got %v, want AlreadyExists", status.Code(err))
+	}
+}
+
 func TestMapAuthServiceError_UsernameExistsError(t *testing.T) {
 	err := mapAuthServiceError(&user.UsernameExistsError{Username: "alice"})
 	st, _ := status.FromError(err)
@@ -556,7 +620,7 @@ func TestGRPC_CreateUser_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	resp, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{
+	resp, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice", TenantId: "t1", RoleIds: []string{"r1"},
 	})
 	if err != nil {
@@ -577,7 +641,7 @@ func TestGRPC_CreateUser_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithUserService(userSvc))
 	defer cleanup()
 
-	_, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{
+	_, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 	})
 	if err == nil {
@@ -593,7 +657,7 @@ func TestGRPC_CreateUser_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{
+	_, err := client.CreateUser(context.Background(), &pb.CreateUserRequest{WithoutEmailLoginKey: true,
 		Username: "alice",
 	})
 	if err == nil {

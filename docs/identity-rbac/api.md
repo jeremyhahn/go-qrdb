@@ -12,6 +12,7 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Create | `POST /users` | `CreateUser` | `user.Create` | `qrdb_user_create` | `CreateUser` | `users:create` |
 | Get by ID | `GET /users/{id}` | `GetUser` | `user.Get` | `qrdb_user_get` | `GetUser` | `users:read` |
 | Get by username | `GET /users/by-username/{username}` | `GetUserByUsername` | `user.GetByUsername` | `qrdb_user_get_by_username` | `GetUserByUsername` | `users:read` |
+| Get by email (canonical login key) | `POST /users/lookup` | `GetUserByEmail` | `user.GetByEmail` | `qrdb_user_get_by_email` | `GetUserByEmail` | `users:read` |
 | Get by cert thumbprint | `GET /users/by-cert-thumbprint/{thumbprint}` | `GetUserByCertThumbprint` | `user.GetByCertThumbprint` | `qrdb_user_get_by_cert_thumbprint` | `GetUserByCertThumbprint` | `users:get_by_cert_thumbprint` |
 | Add cert binding | `POST /users/{id}/cert-bindings` | `AddCertBinding` | `user.AddCertBinding` | `qrdb_user_add_cert_binding` | `AddCertBinding` | `users:add_cert_binding` |
 | Update | `PUT /users/{id}` | `UpdateUser` | `user.Update` | `qrdb_user_update` | `UpdateUser` | `users:update` |
@@ -91,6 +92,10 @@ names for UI rendering.
 | Success | 200 | `OK` |
 | User or role not found | 404 | `NOT_FOUND` |
 | Duplicate username within a tenant | 409 | `ALREADY_EXISTS` |
+| Duplicate email within a tenant | 409 | `ALREADY_EXISTS` |
+| Empty email without `without_email_login_key` | 400 | `INVALID_ARGUMENT` |
+| Lost a concurrent update (re-read and retry) | 409 | `ABORTED` |
+| Commit outcome unknown (reconcile, then retry) | 503 | `UNAVAILABLE` |
 | Unregistered permission string | 400 | `INVALID_ARGUMENT` |
 | Deleting a `system` user or a built-in role | 403 | `PERMISSION_DENIED` |
 | Certificate with no matching binding | 401 | `UNAUTHENTICATED` |
@@ -106,3 +111,48 @@ names for UI rendering.
 
 Identity REST paths are unversioned (`/users/...`, `/roles/...`,
 `/permissions/...`). Nothing here is deprecated.
+
+## The email login key
+
+`Email` is the **canonical login key**: unique within a tenant, and what every
+layer above qrdb resolves a principal by — the WebAuthn credential handle, the
+session subject, the CLI's user identifier.
+
+- **Tenant-scoped, not global.** The same person may hold an account in two
+  tenants, and every login path supplies the tenant alongside the handle.
+- **Normalized** by `sdk.NormalizeEmail` (lowercase, trimmed) on both the stored
+  record and its index key. Comparison is case-insensitive, so `Op@x.com` and
+  `op@x.com` are one account rather than two.
+- **Required on create** unless the caller sets `without_email_login_key`, which
+  creates a certificate-only or bootstrap identity that cannot be resolved by
+  email. The omission must be declared; it is never a default.
+
+### Why the lookup is a POST
+
+`POST /users/lookup` takes `{"email": "...", "tenant_id": "..."}` in the body
+rather than `GET /users/by-email/{email}`. Email is the canonical login
+identifier, and a path parameter is captured by reverse-proxy access logs, load
+balancers, tracing middleware and browser history on every successful lookup.
+The gRPC, QUIC and MCP surfaces carry it in the payload; REST does too.
+
+## Index consistency
+
+Secondary indexes (username, email, certificate thumbprint) are maintained with
+atomic claims rather than read-then-write:
+
+- A handle is **claimed** with `PutIfAbsent` and **released** with
+  `CompareAndDelete` against the owning id, so a claim cannot be taken twice and
+  a release cannot evict an entry another account has since taken.
+- `Update`, `Enable`, `Disable` and `Delete` **commit conditionally** against the
+  record version they read. Losing yields `ConcurrentUpdateError` — nothing is
+  wrong; re-read and retry.
+- A store error from a conditional commit is **ambiguous**, not a failure: the
+  record is read back to decide. Only an inconclusive read yields
+  `CommitOutcomeUnknownError`, which asks the caller to reconcile before
+  retrying rather than assuming either outcome.
+- Compensation undoes only what its own invocation did, and a losing update
+  restores exactly the handles the winning record still relies on.
+
+A store that cannot claim atomically is refused (`ErrStoreNotAtomic`) rather
+than silently degraded to a check-then-write, which would be a uniqueness
+guarantee that is not one.

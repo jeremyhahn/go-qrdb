@@ -20,6 +20,15 @@ Your certificate carries everything:
 | OU | your tenant |
 | the public key's SHA-256 | the binding the server matches you by |
 
+Separately from the certificate, your account carries an **email login key**.
+That is the identifier everything above the database resolves you by — the
+passkey you register, the session you get, the address you type into a sign-in
+form. It is unique within your tenant and compared case-insensitively, so
+`Alice@acme.com` and `alice@acme.com` are the same account.
+
+Service identities that authenticate only by certificate can be created without
+one; they simply cannot be looked up by email.
+
 Because the binding is over the **public key**, renewing your certificate with
 the same key keeps you the same user. Rotate the key and you need a new
 binding.
@@ -30,8 +39,8 @@ binding.
 # 1. Issue a certificate
 qrdb ca issue --username alice --tenant-id acme --out ./alice
 
-# 2. Create the user record
-qrdb users create --username alice --tenant-id acme
+# 2. Create the user record — the email is the login key
+qrdb users create --username alice --email alice@acme.com --tenant-id acme
 
 # 3. Find the IDs (both assign flags take IDs, not names)
 ROLE=$(qrdb roles get-by-name Operator --output json | jq -r .id)

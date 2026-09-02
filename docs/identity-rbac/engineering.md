@@ -73,8 +73,30 @@ which walks the category definitions and calls `Register` for each.
 
 ## Invariants
 
-- **`Username` is unique within a tenant**, not globally. `ID` is the global
-  UUID.
+- **`Username` is unique within a tenant**, not globally.
+- **`Email` is the canonical login key**, unique within a tenant and normalized
+  by `NormalizeEmail` (lowercase, trimmed) on both the record and its index key.
+  Tenant-scoped rather than global on purpose: one person may hold accounts in
+  two tenants, and every login path already supplies the tenant. It is a
+  separate field from `Username` because system users are named `admin`, not an
+  address.
+- **An empty `Email` must be DECLARED** via `CreateUserRequest.WithoutEmailLoginKey`.
+  A certificate-only or bootstrap identity is a legitimate state; an ordinary
+  user silently created with no entry in the login index is not.
+- **Every secondary-index mutation is atomic.** Handles are claimed with
+  `PutIfAbsent` and released with `CompareAndDelete` against the owning id, so a
+  handle cannot be claimed twice and a release cannot evict an entry another
+  account has legitimately taken. A store lacking `kvstore.AtomicKVStore` is
+  refused (`ErrStoreNotAtomic`) rather than degraded to check-then-write.
+- **`Update`, `Enable`, `Disable` and `Delete` commit conditionally** against
+  the version they read. A lost commit is `ConcurrentUpdateError` (re-read and
+  retry), which is a different statement from a store failure.
+- **A store error from a conditional commit is AMBIGUOUS**, per
+  `kvstore.AtomicKVStore`: the outcome is unknown, so the record is read back to
+  decide. Only an inconclusive read yields `CommitOutcomeUnknownError`.
+- **Compensation undoes only what its own invocation did**, and a losing update
+  restores exactly the handles the winning record still relies on — "we lost"
+  does not imply "the winner retired the same handles".
 - **The SPKI thumbprint is base64url SHA-256 over `SubjectPublicKeyInfo`.**
   Computing it over the public key rather than the certificate is what makes a
   binding survive renewal.
@@ -120,6 +142,13 @@ unchecked call panics rather than failing cleanly.
   role name (`pkg/role.SystemRoleID`).
 - User lookup by certificate thumbprint is a secondary index —
   `GET /users/by-cert-thumbprint/{thumbprint}`.
+- The email login key is a tenant-scoped secondary index at
+  `__sys:user_idx/email/{tenantID}/{normalized-email}`, maintained by the same
+  functions that write the record so the two cannot drift.
+- Email lookup is `POST /users/lookup` with the key in the **body**. It is
+  deliberately not a path parameter: the canonical login identifier would then
+  be captured by access logs, proxies, tracing and browser history on every
+  successful read.
 
 **Identifier compatibility.** The derivation was UUIDv5 (name-based, SHA-1)
 until the FIPS 140-3 migration: SHA-1 does not exist under FIPS 140-3, and RFC

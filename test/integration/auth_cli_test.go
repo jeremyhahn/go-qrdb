@@ -109,7 +109,7 @@ func testAuthLoginAndFactorLifecycleOverProtocol(t *testing.T, node *multiProtoN
 	// so the login-enrichment assertion below can verify the resolved role set
 	// round-trips (not just the username).
 	const fixtureRole = "auditor"
-	out, err := runCLIProto(t, node, proto, "--output", "json", "users", "create",
+	out, err := runCLIProto(t, node, proto, "--output", "json", "users", "create", "--without-email-login-key",
 		"--username", username, "--roles", fixtureRole)
 	if err != nil {
 		t.Fatalf("[%s] users create (fixture): %v\noutput: %s", proto.name, err, out)
