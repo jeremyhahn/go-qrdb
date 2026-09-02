@@ -100,7 +100,10 @@ registered API route but the method carries no registered permission — a wrong
 verb, not an authorization failure.
 
 The 405 is evaluated *after* authentication, so an anonymous caller gets 401
-and never learns which verbs a path serves. Full mapping:
+and never learns which verbs a path serves. A caller on a capability module's
+own session-token plane reaches it as well: for a method that matches no route,
+the module auth fallback is resolved from the path's owner rather than from one
+verb of it. Full mapping:
 [../api-server/api.md](../api-server/api.md#common-status-mapping).
 
 ## Admin Bootstrap

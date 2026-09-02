@@ -130,6 +130,32 @@ grants do not cover a route that exists.
 
 `Allow` is required on a 405 (RFC 9110 §15.5.6), not a nicety.
 
+**A module's own callers reach the 405 too.** A caller on a capability
+module's session-token plane (`ModuleAuthFallback`) is not authenticated by the
+host, so it would otherwise be stopped one layer earlier, at 401 — and a 401 is
+a worse signpost than the 403 this section replaced. 403 at least says "you got
+in"; 401 says the credentials failed, sending the operator off to re-issue a
+token or suspect clock skew for what is a wrong verb. So when the request's
+method matches no route on the path, the fallback lookup widens from the
+(method, path) route to the **path's owning module**: a module owns a path's
+auth plane, not one verb of it.
+
+The widening is bounded by the condition that triggers it. It applies only when
+the method matched no route — which is exactly the case that cannot reach a
+handler and cannot reach the authorizer — so the identity it establishes only
+ever decides 405 versus 401. A method that *does* have a registered route is
+untouched: it uses that route's own fallback, or none, because widening there
+would let one module's auth plane establish the identity a different owner's
+handler is then dispatched for.
+
+Two owners on one path resolve to **no** fallback. Routes are keyed by
+method *and* pattern, so two modules may split one path's verbs between them
+and bring one auth plane each; which of them owns a verb that neither
+registered is not answerable, and the caller keeps its 401.
+
+The disclosure guarantee is unchanged throughout: a caller the fallback also
+rejects gets 401 with no `Allow` header.
+
 **gRPC does not have this case.** grpc-go rejects an unregistered method with
 `UNIMPLEMENTED` before any interceptor runs, so a permission-lookup miss there
 means the method *is* served and carries no annotation — a server

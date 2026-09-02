@@ -126,6 +126,15 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			// fallback only ever replaces the "who is this" step, never the
 			// authorization decision. Routes without a fallback keep the
 			// original failure verbatim.
+			//
+			// When the METHOD matched no route, FallbackFor widens to the
+			// path's owning module (go-qrdb#211): a module owns the path's
+			// auth plane, not one verb of it, and a caller it can
+			// authenticate deserves the 405 below rather than a 401 that
+			// blames its credentials for a wrong verb. That widened case
+			// provably cannot reach a handler -- Lookup misses the same
+			// (method, path) a few lines down -- so the identity it
+			// establishes only ever decides 405 versus 401.
 			fb := routes.FallbackFor(r.Method, r.URL.Path)
 			if fb == nil {
 				code := mapHTTPAuthError(authnErr)

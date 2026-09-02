@@ -217,3 +217,178 @@ func TestRESTMiddleware_ModulePublicRoute_SkipsAuthentication(t *testing.T) {
 		t.Fatalf("authenticator consulted %d times for a public route", authn.calls.Load())
 	}
 }
+
+// fallbackRoutesMultiVerb builds a registry where ONE module owns two verbs of
+// a path (POST and GET) and a third verb (PUT) is registered nowhere. This is
+// the go-qrdb#211 shape: the caller's credentials are ones the module can
+// authenticate, and the only thing wrong with the request is its verb.
+func fallbackRoutesMultiVerb(fb RESTAuthFallback) *RESTRouteRegistry {
+	rr := NewRESTRouteRegistry()
+	rr.Register(http.MethodPost, "/api/v1/keys", permission.Permission("keys:create"))
+	rr.SetFallback(http.MethodPost, "/api/v1/keys", fb)
+	return rr
+}
+
+// TestRESTMiddleware_Fallback_WrongVerbAuthenticable_Is405 is the go-qrdb#211
+// fix: a caller the owning module CAN authenticate, sending a verb that path
+// does not serve, is told about the verb rather than about its credentials.
+//
+// The old behaviour answered 401 because FallbackFor was method-keyed: PUT
+// matched no route, so the lookup found no fallback and the request was
+// refused with a perfectly valid module token in hand. A 401 is a worse
+// signpost than the 403 go-qrdb#185 replaced -- 403 at least says "you got
+// in", while 401 sends the operator off to re-issue a token or suspect clock
+// skew, an arbitrarily long detour from a wrong verb.
+func TestRESTMiddleware_Fallback_WrongVerbAuthenticable_Is405(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	fb := &mockFallback{identity: &auth.Identity{Subject: "alice", TenantID: "t1"}}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("handler must not be reached: the middleware still fails closed")
+	})
+	handler := m.RESTMiddleware(fallbackRoutesMultiVerb(fb), next)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/keys", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405: a module-authenticable caller with a wrong "+
+			"verb must be told about the verb, not about its credentials (body=%s)",
+			w.Code, w.Body.String())
+	}
+	if allow := w.Header().Get("Allow"); allow != http.MethodPost {
+		t.Errorf("Allow = %q, want %q", allow, http.MethodPost)
+	}
+	if fb.calls != 1 {
+		t.Errorf("fallback calls = %d, want 1: the path's owner is consulted exactly "+
+			"once for a verb it did not register", fb.calls)
+	}
+}
+
+// TestRESTMiddleware_Fallback_WrongVerbUnauthenticated_Is401 is the disclosure
+// guarantee for the widened lookup, and the assertion that must not regress: a
+// caller the module CANNOT authenticate still gets 401 with no Allow header, so
+// widening the fallback lookup did not move the 405 above authentication.
+func TestRESTMiddleware_Fallback_WrongVerbUnauthenticated_Is401(t *testing.T) {
+	authn := &mockAuthenticator{name: "mtls", err: auth.ErrUnauthenticated}
+	fb := &mockFallback{err: errors.New("token expired")}
+	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
+
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("handler must not be reached")
+	})
+	handler := m.RESTMiddleware(fallbackRoutesMultiVerb(fb), next)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/keys", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: the 405 stays downstream of authentication", w.Code)
+	}
+	if allow := w.Header().Get("Allow"); allow != "" {
+		t.Errorf("Allow = %q on a 401: a caller that did not authenticate must not "+
+			"learn which verbs a path serves", allow)
+	}
+}
+
+// TestRESTRouteRegistry_FallbackFor_WidensOnlyWhenMethodUnregistered pins the
+// exact-match-first half of the rule. A registered route whose owner declared
+// NO fallback must keep answering nil: widening there would let one module's
+// auth plane establish the identity a different owner's handler is then
+// authorized and dispatched for -- an authorization consequence, unlike the
+// widened case, which can only ever end in 405 or 401.
+func TestRESTRouteRegistry_FallbackFor_WidensOnlyWhenMethodUnregistered(t *testing.T) {
+	fb := &mockFallback{identity: &auth.Identity{Subject: "alice"}}
+	rr := NewRESTRouteRegistry()
+	rr.Register(http.MethodPost, "/api/v1/keys", permission.Permission("keys:create"))
+	rr.SetFallback(http.MethodPost, "/api/v1/keys", fb)
+	// A second module (or the built-in surface) owns GET on the same path and
+	// brought no fallback of its own.
+	rr.Register(http.MethodGet, "/api/v1/keys", permission.Permission("keys:read"))
+
+	if got := rr.FallbackFor(http.MethodPost, "/api/v1/keys"); got != RESTAuthFallback(fb) {
+		t.Errorf("FallbackFor(POST) = %v, want the registered fallback", got)
+	}
+	if got := rr.FallbackFor(http.MethodGet, "/api/v1/keys"); got != nil {
+		t.Errorf("FallbackFor(GET) = %v, want nil: GET is registered and its owner "+
+			"declared no fallback", got)
+	}
+	if got := rr.FallbackFor(http.MethodPut, "/api/v1/keys"); got != RESTAuthFallback(fb) {
+		t.Errorf("FallbackFor(PUT) = %v, want the path's fallback: PUT matches no "+
+			"route, so the lookup widens to the path's owner", got)
+	}
+	// A path with no fallback on any method is unchanged.
+	rr.Register(http.MethodGet, "/status", permission.AdminStatus)
+	if got := rr.FallbackFor(http.MethodDelete, "/status"); got != nil {
+		t.Errorf("FallbackFor(DELETE, /status) = %v, want nil", got)
+	}
+	// Off the registered surface entirely: still nil, not a panic.
+	if got := rr.FallbackFor(http.MethodGet, "/static/logo.png"); got != nil {
+		t.Errorf("FallbackFor on an unregistered path = %v, want nil", got)
+	}
+	var nilRR *RESTRouteRegistry
+	if got := nilRR.FallbackFor(http.MethodPut, "/api/v1/keys"); got != nil {
+		t.Errorf("nil registry FallbackFor = %v, want nil", got)
+	}
+}
+
+// TestRESTRouteRegistry_FallbackFor_AmbiguousPathResolvesToNone pins the
+// deliberate choice for the contested case. entries is keyed
+// method + " " + pattern and so is the collision guard, so two modules may
+// split one path's verbs between them and bring one auth plane each. Which of
+// them owns a verb NEITHER registered is unanswerable, so the registry answers
+// none and the caller keeps its 401 -- the conservative half of a change whose
+// whole benefit is a clearer status code.
+func TestRESTRouteRegistry_FallbackFor_AmbiguousPathResolvesToNone(t *testing.T) {
+	fbA := &mockFallback{identity: &auth.Identity{Subject: "from-module-a"}}
+	fbB := &mockFallback{identity: &auth.Identity{Subject: "from-module-b"}}
+
+	rr := NewRESTRouteRegistry()
+	rr.Register(http.MethodGet, "/api/v1/keys", permission.Permission("keys:read"))
+	rr.SetFallback(http.MethodGet, "/api/v1/keys", fbA)
+	rr.Register(http.MethodPost, "/api/v1/keys", permission.Permission("keys:create"))
+	rr.SetFallback(http.MethodPost, "/api/v1/keys", fbB)
+
+	// Each registered verb still resolves to its own owner...
+	if got := rr.FallbackFor(http.MethodGet, "/api/v1/keys"); got != RESTAuthFallback(fbA) {
+		t.Errorf("FallbackFor(GET) = %v, want module A's fallback", got)
+	}
+	if got := rr.FallbackFor(http.MethodPost, "/api/v1/keys"); got != RESTAuthFallback(fbB) {
+		t.Errorf("FallbackFor(POST) = %v, want module B's fallback", got)
+	}
+	// ...but an unregistered verb belongs to neither.
+	if got := rr.FallbackFor(http.MethodPut, "/api/v1/keys"); got != nil {
+		t.Errorf("FallbackFor(PUT) = %v, want nil: two owners, no answer", got)
+	}
+	if fbA.calls != 0 || fbB.calls != 0 {
+		t.Errorf("resolution consulted a fallback (%d/%d calls); it must only select one",
+			fbA.calls, fbB.calls)
+	}
+}
+
+// nonComparableFallback has a non-comparable dynamic type (a map field). Two
+// interface values holding it would panic under ==, which is why sameFallback
+// exists; the registry must answer, not crash.
+type nonComparableFallback struct {
+	tokens map[string]string
+}
+
+func (nonComparableFallback) AuthenticateHTTP(*http.Request) (*auth.Identity, error) {
+	return nil, errors.New("not authenticated")
+}
+
+func TestRESTRouteRegistry_FallbackFor_NonComparableFallbacksDoNotPanic(t *testing.T) {
+	rr := NewRESTRouteRegistry()
+	rr.Register(http.MethodGet, "/api/v1/keys", permission.Permission("keys:read"))
+	rr.SetFallback(http.MethodGet, "/api/v1/keys", nonComparableFallback{tokens: map[string]string{}})
+	rr.Register(http.MethodPost, "/api/v1/keys", permission.Permission("keys:create"))
+	rr.SetFallback(http.MethodPost, "/api/v1/keys", nonComparableFallback{tokens: map[string]string{}})
+
+	// Unprovable equality is reported as ambiguity: nil, not a panic.
+	if got := rr.FallbackFor(http.MethodPut, "/api/v1/keys"); got != nil {
+		t.Errorf("FallbackFor(PUT) = %v, want nil", got)
+	}
+}

@@ -96,6 +96,17 @@ Implementations must fail closed.
 That is the whole design in one paragraph: a module may say *who* you are; it
 never says *what you may do*.
 
+**A fallback is scoped to the path, not to one verb.** For a request whose
+method matches no registered route, the host resolves the fallback from the
+path's owning module rather than from the (method, path) route, so a caller the
+module can authenticate is told its *verb* is wrong (405) instead of being told
+at 401 that its credentials are. That widening is confined to the case that
+provably cannot reach a handler or the authorizer; a method that has its own
+registered route still uses that route's fallback, or none. A path whose verbs
+are split between two modules with different fallbacks resolves to none, since
+neither owns a verb neither registered. See
+[api.md](api.md#403-and-405-are-different-claims).
+
 ### Alternatives rejected
 
 - **Per-transport authorization.** Rejected — six answers to one question.

@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"net/http"
+	"reflect"
 
 	"github.com/go-chi/chi/v5"
 
@@ -247,15 +248,84 @@ func (rr *RESTRouteRegistry) SetFallback(method, pattern string, fb RESTAuthFall
 }
 
 // FallbackFor resolves the module authentication fallback for a concrete
-// request, or nil when the matched route has none.
+// request, or nil when none applies.
+//
+// EXACT MATCH FIRST. A route registered for this method answers with its own
+// fallback, whatever that is — including nil. A registered route whose owner
+// declared no fallback keeps the original authentication failure; widening
+// there would let one module's auth plane establish the identity that a
+// DIFFERENT owner's handler is then authorized and dispatched for.
+//
+// WIDEN TO THE PATH when the method has no registered route at all. A module
+// owns the path's auth plane, not one verb of it, so a caller the module can
+// authenticate should not be told at 401 that its credentials are the problem
+// when the real defect is its verb (go-qrdb#211). This widening is safe
+// precisely because of the condition that triggers it: a request whose method
+// matched no route cannot reach a handler and cannot reach the authorizer —
+// Lookup misses for the same (method, path) a moment later, so the only
+// outcomes downstream are the 405 + Allow the caller needed to see, or a 401
+// if the fallback also rejects. The identity a widened fallback produces is
+// therefore never used to decide anything.
+//
+// The disclosure order is unchanged: the 405 still sits below authentication,
+// so an anonymous caller — and one whose module token the fallback rejects —
+// still gets 401 with no Allow header and learns nothing about the path's
+// verbs.
 func (rr *RESTRouteRegistry) FallbackFor(method, path string) RESTAuthFallback {
 	if rr == nil {
 		return nil
 	}
 	rctx := chi.NewRouteContext()
-	pattern := rr.matcher.Find(rctx, method, path)
-	if pattern == "" {
-		return nil
+	if pattern := rr.matcher.Find(rctx, method, path); pattern != "" {
+		return rr.entries[method+" "+pattern].fallback
 	}
-	return rr.entries[method+" "+pattern].fallback
+	return rr.pathFallback(path)
+}
+
+// pathFallback resolves the single fallback that owns path, probing the same
+// restMethodProbeOrder PathHasRoutes and MethodsForPath use rather than adding
+// a third probe loop. It returns nil when no registered method on the path
+// carries a fallback, and also when two of them carry DIFFERENT ones.
+//
+// The ambiguous case is real, not hypothetical: entries is keyed
+// method + " " + pattern and the collision guard is keyed the same way, so two
+// modules may split the verbs of one path between them and bring one auth
+// plane each. Which of them owns a verb that neither registered is not a
+// question the registry can answer, so it answers none and the caller keeps
+// the 401 it got before — the conservative half of a change whose entire
+// benefit is a clearer status code.
+func (rr *RESTRouteRegistry) pathFallback(path string) RESTAuthFallback {
+	var found RESTAuthFallback
+	for _, m := range restMethodProbeOrder {
+		rctx := chi.NewRouteContext()
+		pattern := rr.matcher.Find(rctx, m, path)
+		if pattern == "" {
+			continue
+		}
+		fb := rr.entries[m+" "+pattern].fallback
+		if fb == nil {
+			continue
+		}
+		if found != nil && !sameFallback(found, fb) {
+			return nil
+		}
+		found = fb
+	}
+	return found
+}
+
+// sameFallback reports whether two fallbacks are the same registration.
+//
+// It cannot simply use ==: comparing two interface values whose dynamic type
+// is identical and non-comparable panics at run time (Go spec, comparison
+// operators), and RESTAuthFallback is satisfied by whatever a module hands
+// over — a struct value with a map field is enough to trigger it. A type it
+// cannot prove equal is reported as different, which routes pathFallback to
+// its conservative nil rather than to a panic in the middleware.
+func sameFallback(a, b RESTAuthFallback) bool {
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
 }
