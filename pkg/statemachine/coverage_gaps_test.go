@@ -587,16 +587,6 @@ func TestFastBackend_RecoverSnapshot_TruncatedCountRead(t *testing.T) {
 // FastBackend.Get — storage error path (cache miss)
 // ---------------------------------------------------------------------------
 
-// gapErrGetStorage wraps memStorage but returns an error on Get.
-type gapErrGetStorage struct {
-	*memStorage
-	getErr error
-}
-
-func (s *gapErrGetStorage) Get(key []byte) ([]byte, error) {
-	return nil, s.getErr
-}
-
 func TestFastBackend_Get_StorageError(t *testing.T) {
 	getErr := stderrors.New("storage get failed")
 	underlying := &gapErrGetStorage{

@@ -1035,14 +1035,3 @@ type errorDeleteStorage struct {
 func (s *errorDeleteStorage) Delete(key []byte) error {
 	return errors.New("delete error")
 }
-
-// mustEncode unwraps an encoder's (command, error) pair for tests whose
-// inputs are small and fixed. An error here is a TEST bug -- the encoders
-// refuse only values their length fields cannot describe -- so it fails
-// loudly rather than being threaded through every call site.
-func mustEncode(cmd []byte, err error) []byte {
-	if err != nil {
-		panic(err)
-	}
-	return cmd
-}

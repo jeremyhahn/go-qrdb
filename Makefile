@@ -1184,6 +1184,50 @@ lint:
 vet:
 	$(GOVET) $(TAG_FLAG) ./...
 
+# vet-tags sweeps go vet over EVERY build-tag combination this repo ships,
+# not just the one `make vet` above happens to use.
+#
+# `go vet ./...` is scoped to the tag set it is given, so a package that is
+# clean under one combination says NOTHING about the others -- and `make vet`
+# asks about exactly one. That blindness is not theoretical: pkg/statemachine
+# failed to typecheck under three of four combinations for weeks, on two
+# undefined symbols, invisible because the only combination anyone ran was the
+# fourth (#178).
+#
+# The two sets below are not new policy. They are the configurations the repo
+# already builds and tests: BUILD_TAGS (the `test` target) and BUILD_TAGS plus
+# `integration` (the integration suites under test/). A combination nothing
+# builds is not swept, because a red leg for an unsupported configuration
+# teaches people to ignore this target.
+#
+# Untagged is deliberately NOT swept: whole packages legitimately fail to
+# typecheck without tags -- pkg/api/mcp's test mocks sit behind
+# `codec_json && raft && qrdb_ts && ...` -- which is the same reason LINT_TAGS
+# exists (see the comment above `lint`).
+#
+# NOT WIRED INTO CI YET, deliberately, and this is the only reason: as of #178
+# the `+integration` leg is RED repo-wide. Four more instances of the same
+# undefined-symbol shape (pkg/api/grpc, pkg/api/mcp, pkg/api/rest, cmd/qrdbd)
+# and two test doubles that no longer satisfy service.KVServicer since the
+# guarded verbs landed. Arming this in ci-gate before those are fixed would
+# turn `main` red on a check `main` itself introduced, and block every PR
+# behind it. Run it by hand meanwhile; arm it in the change that clears the
+# sweep.
+VET_TAG_SETS := "$(LINT_TAGS)" "$(LINT_TAGS),integration"
+
+.PHONY: vet-tags
+vet-tags:
+	@rc=0; \
+	for t in $(VET_TAG_SETS); do \
+	  echo "==> go vet -tags \"$$t\" ./..."; \
+	  if ! $(GOVET) -tags "$$t" ./...; then rc=1; echo "    FAILED under [$$t]"; fi; \
+	done; \
+	if [ $$rc -ne 0 ]; then \
+	  echo "vet-tags: at least one supported build-tag combination does not typecheck (#178)"; \
+	  exit 1; \
+	fi; \
+	echo "vet-tags: all supported combinations clean"
+
 .PHONY: fmt
 fmt:
 	@UNFORMATTED=$$($(GOFMT) -l .); \
@@ -1694,6 +1738,7 @@ help:
 	@echo "Linting:"
 	@echo "  lint                   Run golangci-lint"
 	@echo "  vet                    Run go vet"
+	@echo "  vet-tags               Run go vet over every supported build-tag combination"
 	@echo "  fmt                    Check gofmt formatting"
 	@echo ""
 	@echo "Security:"
