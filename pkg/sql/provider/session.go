@@ -203,11 +203,17 @@ func (s *QRDBSession) Identity() *auth.Identity {
 // TenantID returns the tenant namespace for this session. Returns
 // tenant.SystemTenantID if the identity is nil or has an empty TenantID —
 // callers without explicit tenant binding execute against the system tenant.
+//
+// The fold is tenant.Normalize, not an open-coded comparison: this is one of
+// the boundaries tenant.IsSystemTenant's precondition depends on (the SQL
+// privilege plane reads it in privilege.principalOf and exempts the system
+// tenant from every grant check), so it must use the same single fold every
+// other boundary uses. See #188.
 func (s *QRDBSession) TenantID() string {
-	if s.identity == nil || s.identity.TenantID == "" {
+	if s.identity == nil {
 		return tenant.SystemTenantID
 	}
-	return s.identity.TenantID
+	return tenant.Normalize(s.identity.TenantID)
 }
 
 // ---------------------------------------------------------------------------

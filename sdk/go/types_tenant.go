@@ -83,6 +83,17 @@ const SystemTenantID = tenant.SystemTenantID
 // against SystemTenantID directly. (Aliases tenant.IsSystemTenant.)
 var IsSystemTenant = tenant.IsSystemTenant
 
+// NormalizeTenantID folds an absent tenant ("" — no tenant binding) onto
+// SystemTenantID and returns every other value unchanged.
+//
+// It is the enforcement half of IsSystemTenant's precondition: a consumer
+// that binds a tenant onto a context, a session or an identity calls this at
+// that boundary, so IsSystemTenant is never asked about an unnormalized
+// value further in. A boundary that folds only one of the two — the context
+// but not the identity — is the defect #188 records, because the
+// authorization predicate reads the identity. (Aliases tenant.Normalize.)
+var NormalizeTenantID = tenant.Normalize
+
 // ErrTenantExists is returned by the tenant store when creating a tenant whose
 // id already exists. (Aliases pkg/tenant.ErrTenantAlreadyExists; named
 // ErrTenantExists to avoid colliding with the seal package's

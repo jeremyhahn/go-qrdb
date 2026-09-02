@@ -196,6 +196,34 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // a transient store failure returns StoreUnavailableError so clients retry
 // rather than being denied with stale/empty roles.
 func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
+	// Fold an absent tenant onto the system tenant HERE, on the identity
+	// itself, before anything reads it. This function is the single funnel
+	// every authenticated identity passes through on every transport, and it
+	// is the "auth/middleware identity normalization" that
+	// tenant.IsSystemTenant names as the reason its empty-string branch is
+	// safe.
+	//
+	// Until #188 it normalized only the CONTEXT tenant (below), leaving
+	// identity.TenantID raw — and rbac.IsSystemTenant reads the raw field,
+	// not the context. An identity that authenticated with no tenant binding
+	// (pkg/auth/mtls.go: a verified client certificate carrying neither a
+	// SPIFFE tenant SAN nor a Subject OU yields TenantID "" with no error;
+	// pkg/auth/middleware/onbehalf.go: a forwarded assertion re-carries
+	// whatever tenant the origin node had, empty included) therefore reached
+	// the authorization predicate unnormalized. The precondition was stated
+	// in a doc comment and enforced by nothing.
+	//
+	// This changes no authorization OUTCOME — IsSystemTenant("") and
+	// IsSystemTenant(SystemTenantID) are both true, and every store resolver
+	// already maps "" to the system keyspace — which is exactly why it is a
+	// defect fix and not a policy change. What it changes is that the mapping
+	// "no tenant -> system" now happens once, visibly, at the boundary, and
+	// the value that flows into RBAC, into the permission cache key, into the
+	// scope resolver and into the audit log is the tenant that was actually
+	// used. Making an absent tenant fail CLOSED instead is a separate
+	// decision; it is not this one, and it does not belong in a fold.
+	identity.TenantID = tenant.Normalize(identity.TenantID)
+
 	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
@@ -213,11 +241,7 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				}
 				identity.Metadata[tenantIAMSealedMetadataKey] = "true"
 				ctx = auth.WithIdentity(ctx, identity)
-				tenantID := identity.TenantID
-				if tenantID == "" {
-					tenantID = tenant.SystemTenantID
-				}
-				return tenant.WithTenantID(ctx, tenantID), identity, nil
+				return tenant.WithTenantID(ctx, identity.TenantID), identity, nil
 			}
 			// If user not found, proceed with base identity (no enrichment).
 			var unf *user.UserNotFoundError
@@ -284,13 +308,10 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 
 	// Bind the canonical tenant context from the authenticated identity so
 	// that tenant.FromContext(ctx) returns the authenticated tenant for every
-	// downstream service on every transport. Fall back to SystemTenantID for
-	// system/admin identities where TenantID is empty (no regression).
-	tenantID := identity.TenantID
-	if tenantID == "" {
-		tenantID = tenant.SystemTenantID
-	}
-	ctx = tenant.WithTenantID(ctx, tenantID)
+	// downstream service on every transport. The fold happened once at the
+	// top of this function, so context and identity now agree by
+	// construction rather than by two separate copies of the same rule.
+	ctx = tenant.WithTenantID(ctx, identity.TenantID)
 
 	return ctx, identity, nil
 }

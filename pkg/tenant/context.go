@@ -39,14 +39,47 @@ const SystemTenantID = "system"
 // it instead of re-deriving the `x == "" || x == SystemTenantID` (or bare
 // `x == SystemTenantID`) comparison at each call site.
 //
-// Note that on a normalized path (e.g. after FromContext, or downstream of
-// auth/middleware's identity normalization) the empty case can never
-// occur, since those paths already fold "" into SystemTenantID. The
-// predicate is still correct there — it simply never observes "" — which
-// is why it is safe to adopt uniformly rather than only at the string's
-// origin.
+// The empty case is a PRECONDITION, not a convenience: on a normalized path
+// the predicate must never observe "". Normalize is the single fold that
+// establishes it, and every boundary that binds a tenant onto a context, a
+// session or an identity calls it — see FromContext,
+// auth/middleware.finalizeIdentity and sql/provider.QRDBSession.TenantID.
+// Before #188 that precondition was documented here and enforced nowhere:
+// auth/middleware folded the CONTEXT tenant but left identity.TenantID raw,
+// and rbac.IsSystemTenant reads exactly that raw field, so an identity
+// authenticated without a tenant binding reached this predicate unnormalized.
+//
+// The empty branch is retained rather than removed because unscoped STORE
+// callers depend on it (identity_index, store_resolver, kv_service and
+// database/manager_tenant all ask "is this the unscoped keyspace?"), and
+// because folding is what the fix does — "" is turned into SystemTenantID at
+// the boundary, not made to mean something new here. It follows that this
+// predicate cannot distinguish "unknown" from "system"; making an absent
+// tenant fail CLOSED is a separate, deliberate decision that belongs to a
+// distinct authorization-facing predicate (see #188, options 1 and 3).
 func IsSystemTenant(id string) bool {
 	return id == "" || id == SystemTenantID
+}
+
+// Normalize folds a tenant identifier onto its canonical form: the empty
+// string — "no tenant binding" — becomes SystemTenantID, and every other
+// value is returned unchanged.
+//
+// This is the enforcement half of IsSystemTenant's precondition. Boundaries
+// that bind a tenant MUST call it rather than open-coding
+// `if id == "" { id = SystemTenantID }`; five copies of that fold existed
+// before #188 and the one that was missing — identity.TenantID in
+// auth/middleware — is what let an unnormalized "" reach an authorization
+// decision.
+//
+// Normalize does not decide privilege. It records that a caller arrived
+// without a tenant and states the tenant that decision has always mapped to,
+// in one place, so a future change to that mapping has one place to change.
+func Normalize(id string) string {
+	if id == "" {
+		return SystemTenantID
+	}
+	return id
 }
 
 // contextKey is an unexported type used as the key for tenant ID values
@@ -70,10 +103,8 @@ func WithTenantID(ctx context.Context, tenantID string) context.Context {
 // callers without an explicit tenant binding execute against the
 // structurally privileged system tenant.
 func FromContext(ctx context.Context) string {
-	if v, ok := ctx.Value(contextKey{}).(string); ok && v != "" {
-		return v
-	}
-	return SystemTenantID
+	v, _ := ctx.Value(contextKey{}).(string)
+	return Normalize(v)
 }
 
 // IDFromContext extracts the tenant ID from the context with comma-ok

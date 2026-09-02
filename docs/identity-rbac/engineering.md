@@ -1,6 +1,6 @@
 # Identity and RBAC — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
 
 ## Exported surface
 
@@ -273,6 +273,23 @@ wrong fails a test rather than passing a typed-in column.
   `UpdateUserRequest` without being named there would be silently dropped by the
   fast path, and a test asserts the list covers every field.
 - **`System: true` records are undeletable.**
+- **The system-tenant rule reads `identity.TenantID`, so that field must
+  arrive NORMALIZED.** `rbac.IsSystemTenant(identity)` is what lifts a
+  `ScopeCross` permission and what denies a `ScopeTenantOnly` one; it delegates
+  to `tenant.IsSystemTenant`, whose empty-string branch is safe only because
+  the boundary already folded `""`. `auth/middleware.finalizeIdentity` performs
+  that fold — on the identity as well as the context, which is the fix for
+  #188; folding only the context left the authorizer reading the raw value.
+  See [../multi-tenancy/engineering.md](../multi-tenancy/engineering.md) for
+  the fold contract and for which token shapes mint an absent tenant.
+- **`rbac.IsSystemTenant(nil)` is true, and unreachable through the
+  authorizer.** `RBACAuthorizer.Authorize` rejects a nil identity with
+  `auth.ErrUnauthenticated` as its first statement, far above the system-tenant
+  rule, so the nil branch is live only for a direct caller of the exported
+  predicate (`sdk.IdentityIsSystemTenant` aliases it) and no such caller exists
+  in this repository. The branch means "an internal, unauthenticated pipeline",
+  not "an unauthenticated request"; the guard is what keeps those two apart and
+  is pinned by a test.
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).

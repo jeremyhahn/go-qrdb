@@ -1,6 +1,6 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
 
 ## Exported surface
 
@@ -145,6 +145,37 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   `tenant.quota_reconcile_interval` (default `5m`), to correct drift.
 - **Tenant identity is sourced only from the authenticated mTLS identity**,
   never from a header or metadata field.
+- **An absent tenant is FOLDED at the boundary, never inferred at the
+  predicate.** `tenant.IsSystemTenant` answers true for both `SystemTenantID`
+  and `""`, because the unscoped keyspace and the system keyspace are the same
+  keyspace — `StoreResolver`, `IdentityIndex`, `kv_service` and
+  `database.manager_tenant` all ask it that question and all depend on the
+  empty branch. That branch is safe only under a precondition: on an
+  AUTHORIZATION path the predicate must never be handed `""`. `tenant.Normalize`
+  is the single fold that establishes it, and every boundary that binds a
+  tenant calls it — `FromContext` (context), `auth/middleware.finalizeIdentity`
+  (identity **and** context), `sql/provider.QRDBSession.TenantID` (SQL
+  session). Open-coding `if id == "" { id = SystemTenantID }` at a new boundary
+  is the defect, not the fold: before #188 `auth/middleware` folded the context
+  and left `identity.TenantID` raw, and `rbac.IsSystemTenant` reads the
+  identity, so the one value the authorizer consumed was the one value the
+  boundary did not normalize.
+- **The fold maps absence onto PRIVILEGE, and says so.** Folding `""` to
+  `SystemTenantID` preserves `IsSystemTenant`'s answer exactly — it is a
+  normalization, not a policy — so a principal that authenticates with no
+  tenant binding is system-scoped both before and after. `pkg/auth/mtls.go`
+  mints exactly that shape: a certificate that chains to the trusted CA but
+  carries neither a SPIFFE tenant SAN nor a Subject OU authenticates with
+  `TenantID ""` and no error. qrdb's own issuance cannot produce one
+  (`pkg/cert` refuses an empty `TenantID`; `cmd/qrdbd` issues its admin cert
+  with `OU=system`), so the shape arrives only from a CA-signed certificate
+  minted outside qrdb's issuance path. Making absence fail CLOSED instead —
+  a distinct authorization-facing predicate for which "unknown" is not
+  "system" — is a deliberate change to who can authenticate, not a
+  normalization, and is tracked separately (#188). The precedent for it
+  already exists at one boundary: `sdk/go/transport/embedded`'s RBAC surface
+  REFUSES an identity with an empty `TenantID` (`InvalidIdentityError`) rather
+  than folding it.
 - **Per-node key independence**: the tenant root key is transported over
   authenticated mTLS with HPKE and **re-wrapped under each receiving node's own
   system barrier** (system-managed) or the tenant's strategy (self-managed).
