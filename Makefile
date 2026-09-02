@@ -1228,18 +1228,25 @@ vet:
 # sweep.
 VET_TAG_SETS := "$(LINT_TAGS)" "$(LINT_TAGS),integration"
 
+# vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
+#
+# The logic lives in scripts/vet-modules.sh, not here, and that is the point:
+# as an inline recipe this target was wrong SIX times, always in the same
+# direction -- narrower than its own claim, and silent about it. A guard fails
+# by staying SILENT, so none of those was visible without deliberately breaking
+# something, and an inline recipe has nowhere to put the test. The script's
+# header lists all six; scripts/vet-modules_test.sh drives every rejecting
+# branch and has a --mutate mode, exactly as require-tool.sh does.
 .PHONY: vet-tags
 vet-tags:
-	@rc=0; \
-	for t in $(VET_TAG_SETS); do \
-	  echo "==> go vet -tags \"$$t\" ./..."; \
-	  if ! $(GOVET) -tags "$$t" ./...; then rc=1; echo "    FAILED under [$$t]"; fi; \
-	done; \
-	if [ $$rc -ne 0 ]; then \
-	  echo "vet-tags: at least one supported build-tag combination does not typecheck (#178)"; \
-	  exit 1; \
-	fi; \
-	echo "vet-tags: all supported combinations clean"
+	@GOVET="$(GOVET)" ./scripts/vet-modules.sh --vet "$(LINT_TAGS)" "$(GORM_TAGS)"
+
+# The guard's own regression suite. Same reasoning as test-require-tool: a
+# healthy sweep only exercises the accepting path, so every rejecting branch --
+# the entire reason the script exists -- would otherwise ship untested.
+.PHONY: test-vet-modules
+test-vet-modules:
+	@./scripts/vet-modules_test.sh
 
 .PHONY: fmt
 fmt:

@@ -135,6 +135,16 @@ jobs:
       - name: Test the tool-version guard
         run: make test-require-tool
 
+      # Same reasoning, for the module sweep's guard. A healthy tree exercises
+      # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
+      # unmapped module, an empty or rootless discovery, a partial traversal —
+      # would ship untested. That target was wrong six times as an inline
+      # recipe, every time by being narrower than its own claim and silent
+      # about it (#221), which is precisely what an untested guard looks like.
+      # No network, no Go build; the sweep itself uses a fake `go`.
+      - name: Test the module-sweep guard
+        run: make test-vet-modules
+
       # devops.md §4: CI runs the same targets a developer runs. `make fmt` is
       # the gofmt check, not a rewrite.
       - name: gofmt
