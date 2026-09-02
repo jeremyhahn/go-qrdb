@@ -244,7 +244,7 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 	// migration, exactly mirroring pkg/server/tenant_migrate_test.go's
 	// TestTenantHostRegistry_MigrateEncryption_NoneToShamir.
 	dist := &nodeCaptureDist{}
-	n.barrier.SetCeremonyDistributor(dist)
+	n.barrier.Load().SetCeremonyDistributor(dist)
 
 	// --- Write data through the none (unencrypted) barrier. ----------------
 	kv := n.KVService()
@@ -275,7 +275,7 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 	// M/N — and SEALED (Shamir never auto-unseals from disk, migration or
 	// not).
 	require.True(t, n.IsSealed(), "post-migration shamir system barrier must be sealed pending Security Officer quorum")
-	status := n.barrier.Status()
+	status := n.barrier.Load().Status()
 	require.Equal(t, seal.StrategyShamir, status.Strategy, "must not be silently downgraded to passphrase")
 	require.Equal(t, 2, status.ShamirThreshold)
 	require.Equal(t, 3, status.ShamirTotal)
@@ -286,12 +286,12 @@ func TestNode_EnableEncryption_SystemNoneToShamir(t *testing.T) {
 	// Submitting a quorum (2-of-3) of the REAL distributed shares unseals the
 	// migrated barrier — the "shares are usable" proof.
 	shares := dist.Shares()
-	_, uerr := n.barrier.UnsealWithShare(ctx, shares[0])
+	_, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[0])
 	require.NoError(t, uerr)
-	progress, uerr := n.barrier.UnsealWithShare(ctx, shares[1])
+	progress, uerr := n.barrier.Load().UnsealWithShare(ctx, shares[1])
 	require.NoError(t, uerr)
 	require.True(t, progress.Complete)
-	require.False(t, n.barrier.IsSealed())
+	require.False(t, n.barrier.Load().IsSealed())
 
 	// Completing the boot (mirrors the ceremony API driving Node.Unseal once
 	// quorum is reached externally — see its doc comment on the "already
@@ -359,5 +359,5 @@ func TestNode_EnableEncryption_SystemShamirInsufficientOfficers(t *testing.T) {
 
 	// The barrier must be untouched by the failed attempt.
 	require.False(t, n.IsSealed())
-	require.Equal(t, seal.StrategyNone, n.barrier.ActiveStrategy())
+	require.Equal(t, seal.StrategyNone, n.barrier.Load().ActiveStrategy())
 }

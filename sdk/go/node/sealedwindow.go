@@ -59,23 +59,23 @@ func ServeSealedWindow(ctx context.Context, n *Node, extraOpts ...server.ServerO
 	}
 
 	var opts []server.ServerOption
-	if n.svcNode != nil {
-		if n.svcNode.Barrier != nil {
-			opts = append(opts, server.WithBarrierService(n.svcNode.Barrier))
+	if svcNode := n.svcNode.Load(); svcNode != nil {
+		if svcNode.Barrier != nil {
+			opts = append(opts, server.WithBarrierService(svcNode.Barrier))
 		}
-		if n.svcNode.Ceremony != nil {
-			opts = append(opts, server.WithCeremonyService(n.svcNode.Ceremony))
+		if svcNode.Ceremony != nil {
+			opts = append(opts, server.WithCeremonyService(svcNode.Ceremony))
 		}
-		if n.svcNode.Credential != nil {
-			opts = append(opts, server.WithCredentialService(n.svcNode.Credential))
+		if svcNode.Credential != nil {
+			opts = append(opts, server.WithCredentialService(svcNode.Credential))
 		}
 	}
-	if n.barrierRegistry != nil {
-		opts = append(opts, server.WithBarrierRegistry(n.barrierRegistry))
+	if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
+		opts = append(opts, server.WithBarrierRegistry(barrierRegistry))
 	}
 	opts = append(opts, extraOpts...)
 
-	return server.ServeSealedWindow(ctx, cfg, n.barrier, opts...)
+	return server.ServeSealedWindow(ctx, cfg, n.barrier.Load(), opts...)
 }
 
 // sealedWindowConfig returns the *qrdbconfig.Config captured by the

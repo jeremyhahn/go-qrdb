@@ -85,6 +85,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"log/slog"
@@ -454,10 +455,74 @@ type pendingClusteredBoot struct {
 // and only the seal-layer services (BarrierService, CeremonyService,
 // CredentialService) are reachable via Services(). Call Unseal to complete
 // the boot once the operator has driven the barrier unsealed.
+//
+// # Accessor concurrency
+//
+// # Accessor reads are race-free; node LIFECYCLE is not synchronised
+//
+// Read this before relying on either half. The two are deliberately separated
+// because only the first is a guarantee.
+//
+// What is guaranteed. Every no-argument exported accessor — Client, Server,
+// Services, KVService, AdminService, RebalanceService, UserService,
+// AuthFactorService, UserAuthFactorService, ABACPolicyReloader,
+// BarrierRegistry, IsSealed — performs a RACE-FREE READ from any goroutine at
+// any point. It returns a fully constructed value or nil, never a torn or
+// unsynchronised one. That is what the atomic.Pointer fields below buy.
+//
+// This matters because a sealed node is handed to the embedder BEFORE its data
+// plane exists, and each data-plane accessor documents a nil return for exactly
+// that window (Services is the near-exception — it returns the seal-only
+// lifecycle.Node until the boot republishes it with the full graph), which is
+// an invitation to poll it while a second goroutine is inside Unseal: the
+// sealed-window shape every embedder uses. go-qrdb#176 measured the
+// alternative: `Read at Client()` vs `Previous write at
+// wireClientAndServer()` under -race, twice, from independent consumer runs,
+// the second reproduced at a clean base.
+//
+// What is NOT guaranteed. Node has no lifecycle state, so CLOSE IS NOT
+// SYNCHRONISED AGAINST BOOT OR MIGRATION:
+//
+//   - Close concurrent with Unseal is undefined. Close retracts the handles,
+//     then the in-flight boot's Store calls republish them, and the node looks
+//     open again after Close returned.
+//   - Close concurrent with EnableEncryption is undefined. The migration
+//     reloads barrier and barrierRegistry after Close has nilled them, and
+//     Reopen can rebuild the data plane after shutdown.
+//
+// Neither is a torn read — the reads are still atomic — so this is an ordering
+// gap, not the defect #176 fixed. Callers must not overlap Close with Unseal or
+// EnableEncryption. Closing that gap needs an explicit lifecycle state and a
+// ruling on what Close means for an embedded Node (does it block on an in-flight
+// Unseal, or does Unseal start failing, and with which typed error). That is
+// tracked as go-qrdb#226, NOT fixed here.
+//
+// Retraction, within those limits. Close retracts every handle it published
+// before stopping what backs them, and teardownDataPlane (the in-process
+// encryption-migration recycle) retracts the ones the stopped service graph
+// owns. So a caller that does NOT overlap Close with a boot sees nil from every
+// accessor afterwards rather than a live-looking handle onto a stopped graph.
+//
+// The tests enumerate the accessors by REFLECTION over this type rather than by
+// hand, so an accessor added later is covered by construction — a hand-list is
+// how IsSealed and BarrierRegistry were missed on the first pass at #176.
+//
+// atomic.Pointer and not a mutex because each handle is an independent
+// single-word publication with no invariant spanning two of them, and reads
+// outnumber the single write by orders of magnitude — the same reasoning
+// pkg/database, pkg/secure and pkg/storage/pool apply to their swappable
+// handles. A mutex is what the LIFECYCLE gap above will need; it is not what a
+// per-handle publication needs. Interface-typed handles are boxed, so the
+// pointer holds *Iface.
+//
+// Finally, all of this is about ACQUIRING a handle, never about USING one.
+// Calling through a handle you already hold, concurrently with Close, is a
+// use-after-close; the node has never promised to survive that and still does
+// not.
 type Node struct {
-	srv     *server.Server
-	client  *sdk.Client
-	svcNode *lifecycle.Node
+	srv     atomic.Pointer[server.Server]
+	client  atomic.Pointer[sdk.Client]
+	svcNode atomic.Pointer[lifecycle.Node]
 	host    quicraftCloser // nil for standalone
 	stg     storage.Storage
 	// pebbleDB is the main data-plane pebble instance; nil for memory/file
@@ -466,8 +531,8 @@ type Node struct {
 	// sealStore is the dedicated PebbleDB for the seal sub-store; it must
 	// outlive the barrier and the data-plane PebbleDB.
 	sealStore       *pebbleStorage.PebbleStorage
-	barrier         *seal.StorageBarrier
-	barrierRegistry *seal.BarrierRegistry
+	barrier         atomic.Pointer[seal.StorageBarrier]
+	barrierRegistry atomic.Pointer[seal.BarrierRegistry]
 	// volumePool is non-nil when the config declares at least one volume pool.
 	// Its PerTenantRegistry is drained before the sealStore is closed on
 	// shutdown, mirroring cmd/qrdbd/start.go's shutdown ordering.
@@ -517,7 +582,7 @@ type Node struct {
 	// (abac.PolicyReloader). Nil when ABAC was not configured with
 	// WithABACLiveReload and no initial policies were supplied. Exposed via
 	// ABACPolicyReloader.
-	abacDecorator abac.PolicyReloader
+	abacDecorator atomic.Pointer[abac.PolicyReloader]
 
 	// auditLogger is the caller-supplied compliance audit logger resolved
 	// from the server.ServerOptions. It is shared with the multi-protocol
@@ -531,7 +596,7 @@ type Node struct {
 	// into the SAME store instance the LoginResolver resolves against,
 	// guaranteeing enroll-writes are visible to login-reads. Nil until
 	// buildLoginOpts runs (only when a User service is present).
-	loginFactorSvc service.UserAuthFactorServicer
+	loginFactorSvc atomic.Pointer[service.UserAuthFactorServicer]
 
 	// authFactorSvc is the custodian enrollment/challenge/verify service shared
 	// by the embedded transport and the multi-protocol server so both see the
@@ -539,7 +604,7 @@ type Node struct {
 	// Populated in wireClientAndServer from the caller-supplied
 	// server.WithAuthFactorService or constructed automatically from
 	// server.WithFactorRegistry when no explicit service is supplied.
-	authFactorSvc service.AuthFactorServicer
+	authFactorSvc atomic.Pointer[service.AuthFactorServicer]
 
 	// pendingStandalone is non-nil when the node was constructed with a sealed
 	// barrier from a passphrase-missing or Shamir strategy. Unseal consumes it
@@ -604,7 +669,7 @@ type Node struct {
 	// and tenant scope to tenantHosts.MigrateEncryption. Both Node.EnableEncryption
 	// and the multi-protocol server's transport handlers route through the same
 	// underlying scoped-router semantics.
-	encMigrator service.EncryptionMigrator
+	encMigrator atomic.Pointer[service.EncryptionMigrator]
 }
 
 // quicraftCloser is satisfied by *quicraft.Host and allows tests to inject
@@ -615,18 +680,18 @@ type quicraftCloser interface {
 
 // Server returns the started multi-protocol server. Returns nil when the
 // node is in the sealed state (Unseal has not yet been called).
-func (n *Node) Server() *server.Server { return n.srv }
+func (n *Node) Server() *server.Server { return n.srv.Load() }
 
 // Client returns the in-process SDK client connected to this node. Returns
 // nil when the node is in the sealed state.
-func (n *Node) Client() *sdk.Client { return n.client }
+func (n *Node) Client() *sdk.Client { return n.client.Load() }
 
 // Services returns the lifecycle.Node that aggregates all service instances.
 // Embedders that need direct service references (e.g. to wire additional
 // protocol servers) use this accessor. When the node is in the sealed state
 // this returns a Node that has only the seal-layer services populated (Barrier,
 // Ceremony, Credential); data-plane services are nil.
-func (n *Node) Services() *lifecycle.Node { return n.svcNode }
+func (n *Node) Services() *lifecycle.Node { return n.svcNode.Load() }
 
 // BarrierRegistry returns the per-tenant barrier registry built during the
 // seal subsystem phase. Embedders use this to construct tenant-scoped
@@ -635,16 +700,17 @@ func (n *Node) Services() *lifecycle.Node { return n.svcNode }
 // credential:// lookups route to the correct per-tenant barrier store.
 // Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
 // the node is in the sealed state before Unseal has been called.
-func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry }
+func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry.Load() }
 
 // IsSealed reports whether the node is in the sealed state, meaning the data
 // plane has not yet been started because the seal barrier requires operator
 // credentials to unseal. Call Unseal to complete the boot.
 func (n *Node) IsSealed() bool {
-	if n.barrier == nil {
+	barrier := n.barrier.Load()
+	if barrier == nil {
 		return false
 	}
-	return n.barrier.IsSealed()
+	return barrier.IsSealed()
 }
 
 // Unseal drives the barrier to the unsealed state using the supplied
@@ -660,10 +726,13 @@ func (n *Node) IsSealed() bool {
 // non-nil values. On failure the node remains in the sealed state and the
 // caller may retry.
 func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
-	if n.barrier == nil {
+	// One snapshot for the whole call. Loading per-use would let a concurrent
+	// Close turn a nil check into a nil dereference two lines later.
+	barrier := n.barrier.Load()
+	if barrier == nil {
 		return nil // seal not enabled
 	}
-	if !n.barrier.IsSealed() {
+	if !barrier.IsSealed() {
 		if n.pendingStandalone != nil || n.pendingClustered != nil {
 			// Barrier already unsealed externally (e.g. via the ceremony API)
 			// but completeBoot hasn't run yet. Fall through.
@@ -673,13 +742,13 @@ func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
 	}
 
 	// Attempt to unseal the barrier if it is still sealed.
-	if n.barrier.IsSealed() {
-		if initErr := n.barrier.Initialize(ctx, creds); initErr != nil {
+	if barrier.IsSealed() {
+		if initErr := barrier.Initialize(ctx, creds); initErr != nil {
 			if !errors.Is(initErr, seal.ErrAlreadyInitialized) {
 				return &UnsealError{Err: initErr}
 			}
 			// Already initialized: attempt standard unseal.
-			if unsealErr := n.barrier.Unseal(ctx, creds); unsealErr != nil {
+			if unsealErr := barrier.Unseal(ctx, creds); unsealErr != nil {
 				if !errors.Is(unsealErr, seal.ErrAlreadyUnsealed) {
 					return &UnsealError{Err: unsealErr}
 				}
@@ -687,7 +756,7 @@ func (n *Node) Unseal(ctx context.Context, creds seal.Credentials) error {
 		}
 	}
 
-	if n.barrier.IsSealed() {
+	if barrier.IsSealed() {
 		return &UnsealError{Err: seal.ErrSealed}
 	}
 
@@ -716,9 +785,16 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	// rebuild the data plane under a keyed barrier without a process restart.
 	n.retainedStandalone = pending
 
+	// One snapshot of the seal layer for the whole boot: it is written by the
+	// constructor before the node escapes and by Close, never by the boot
+	// itself, so re-loading per use would only widen the window for a
+	// concurrent Close to turn a nil check into a nil dereference.
+	barrier := n.barrier.Load()
+	barrierRegistry := n.barrierRegistry.Load()
+
 	var dataPlaneFS vfs.FS
-	if n.barrier != nil && !n.barrier.IsSealed() && pending.backendType == database.BackendPebble {
-		dataPlaneFS = encfs.New(vfs.Default, n.barrier)
+	if barrier != nil && !barrier.IsSealed() && pending.backendType == database.BackendPebble {
+		dataPlaneFS = encfs.New(vfs.Default, barrier)
 	}
 
 	stg, pdb, err := createNodeStorage(pending.backendType, pending.dataDir, dataPlaneFS, pending.cfg.Storage.Objstore)
@@ -739,8 +815,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	localHost := backend.NewLocalBackend(smAdapter)
 
 	var encryptor *atrest.Encryptor
-	if n.barrier != nil {
-		encryptor = atrest.New(n.barrier)
+	if barrier != nil {
+		encryptor = atrest.New(barrier)
 	}
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
@@ -760,8 +836,8 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
-		SealBarrier:       n.barrier,
-		BarrierRegistry:   n.barrierRegistry,
+		SealBarrier:       barrier,
+		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
 		// Forward an injected (xkms) seal StrategyRegistry into the
 		// TenantService so per-tenant hardware/cloud seal strategies resolve.
@@ -776,7 +852,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		n.stg = nil
 		return &ServicesCreateError{Err: err}
 	}
-	n.svcNode = svcNode
+	n.svcNode.Store(svcNode)
 
 	// Build the IsolationVolume tenant stack when the caller opted in via
 	// WithTenantIsolation and the prerequisites are all present. The guard
@@ -784,10 +860,10 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 	// the in-process recycle triggered by an encryption migration (where
 	// n.tenantHosts is already set and the tenant Hosts keep running through
 	// the system data-plane tear-down and rebuild).
-	if n.tenantIsolation && n.barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+	if n.tenantIsolation && barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
 		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
 			Ctx:        ctx,
-			BarrierReg: n.barrierRegistry,
+			BarrierReg: barrierRegistry,
 			TenantSvc:  svcNode.Tenant,
 			VolumePool: n.volumePool,
 			Logger:     n.logger,
@@ -898,9 +974,15 @@ func (n *Node) startLeaseExpiry(host *quicraft.Host, lr *lease.Lessor, leaseSvc 
 func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingClusteredBoot) error {
 	n.pendingClustered = nil
 
+	// One snapshot of the seal layer for the whole boot, as in
+	// completeStandaloneBoot: written by the constructor and by Close, never
+	// by the boot itself.
+	barrier := n.barrier.Load()
+	barrierRegistry := n.barrierRegistry.Load()
+
 	var encryptor *atrest.Encryptor
-	if n.barrier != nil {
-		encryptor = atrest.New(n.barrier)
+	if barrier != nil {
+		encryptor = atrest.New(barrier)
 	}
 
 	watchHub := watch.NewHub()
@@ -961,8 +1043,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		Profile:           &profile,
 		Logger:            n.logger,
 		Encryptor:         encryptor,
-		SealBarrier:       n.barrier,
-		BarrierRegistry:   n.barrierRegistry,
+		SealBarrier:       barrier,
+		BarrierRegistry:   barrierRegistry,
 		CredentialCoreSvc: n.credCoreSvc,
 		// DatabaseManager is shared so the shard allocator is not reset
 		// mid-flight and lifecycle does not open a second manager on the same
@@ -980,7 +1062,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		n.dbManager = nil
 		return &ServicesCreateError{Err: err}
 	}
-	n.svcNode = svcNode
+	n.svcNode.Store(svcNode)
 
 	// Phase 2: bind the cluster-wide replicated volume-pool state now that the
 	// replicated system KV is available. Mirrors cmd/qrdbd/start.go.
@@ -993,7 +1075,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// only the standalone path rebuilds via completeStandaloneBoot). In the
 	// clustered path there is no in-process system-migration recycle today, but
 	// the guard matches the standalone pattern for consistency.
-	if n.tenantIsolation && n.barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
+	if n.tenantIsolation && barrierRegistry != nil && n.volumePool != nil && svcNode.Tenant != nil && n.tenantHosts == nil {
 		// Wait for the system shard to elect a leader before building tenant
 		// infrastructure. reattachRaftTenants calls ListTenants which requires
 		// a linearizable read; that read fails if the shard has no leader yet.
@@ -1008,7 +1090,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		}
 		ti, tiErr := server.BuildTenantInfra(server.TenantInfraConfig{
 			Ctx:        ctx,
-			BarrierReg: n.barrierRegistry,
+			BarrierReg: barrierRegistry,
 			TenantSvc:  svcNode.Tenant,
 			VolumePool: n.volumePool,
 			Logger:     n.logger,
@@ -1074,8 +1156,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 			n.bgCancel()
 			n.bgCancel = nil
 		}
-		_ = n.svcNode.Stop(context.Background())
-		n.svcNode = nil
+		_ = svcNode.Stop(context.Background())
+		n.svcNode.Store(nil)
 		// Stop IsolationRaft shards BEFORE closing the shared host — mirrors
 		// the ordering in Node.Close (raftBackend.CloseAll before host.Close).
 		// Inverting this order would close the host while Pebble shard locks are
@@ -1120,10 +1202,33 @@ func (n *Node) bindReplicatedVolumePool(svcNode *lifecycle.Node) {
 				slog.Any("error", err))
 		}
 	}
-	if n.barrierRegistry != nil {
-		n.barrierRegistry.Attach(seal.WithReplicatedSlotStore(
+	if barrierRegistry := n.barrierRegistry.Load(); barrierRegistry != nil {
+		barrierRegistry.Attach(seal.WithReplicatedSlotStore(
 			lifecycle.NewReplicatedSealBackend(svcNode.KV, svcNode.Transaction)))
 	}
+}
+
+// retractDataPlaneServices clears the service handles that belong to the
+// service graph the caller is about to stop: the custodian factor service, the
+// unified-login factor service, and the ABAC reload seam. Both Close and
+// teardownDataPlane (the in-process encryption-migration recycle) call it, so
+// neither leaves an accessor handing out a live-looking handle onto stopped
+// backing services. wireClientAndServer republishes all three on the rebuild.
+//
+// encMigrator is deliberately NOT retracted here. It is the scoped router, and
+// its tenant leg reaches TenantHostRegistry and RaftBackendFactory, which
+// SURVIVE a system-scope recycle by design (tenant migrations use a per-tenant
+// guard and do not contend on migrateMu). Clearing it during teardownDataPlane
+// would turn a concurrent tenant-scope migration — which today proceeds
+// independently of the system migration — into a typed "not yet fully booted"
+// refusal. Close clears it directly instead, where there is no rebuild to come.
+// The router does hold the OLD svcNode.Tenant across a recycle; that staleness
+// is tracked separately as go-qrdb#222, because fixing it means rebuilding or
+// lazily resolving the router, not nilling a pointer.
+func (n *Node) retractDataPlaneServices() {
+	n.authFactorSvc.Store(nil)
+	n.loginFactorSvc.Store(nil)
+	n.abacDecorator.Store(nil)
 }
 
 // Close tears down all node resources in LIFO order. Nil fields are skipped.
@@ -1151,18 +1256,25 @@ func (n *Node) Close() error {
 		n.bgCancel = nil
 	}
 
-	if n.client != nil {
-		record(n.client.Close())
-		n.client = nil
+	// Retract every handle this node published BEFORE stopping what backs
+	// them. A caller that loads one after Close gets nil rather than a
+	// live-looking handle onto a stopped service graph — the accessors promise
+	// "a value or nil", and after Close the honest answer is nil for all of
+	// them, not just the three with an obvious owner.
+	if client := n.client.Swap(nil); client != nil {
+		record(client.Close())
 	}
-	if n.srv != nil {
-		n.srv.Stop()
-		n.srv = nil
+	if srv := n.srv.Swap(nil); srv != nil {
+		srv.Stop()
 	}
-	if n.svcNode != nil {
-		record(n.svcNode.Stop(context.Background()))
-		n.svcNode = nil
+	n.retractDataPlaneServices()
+	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
+		record(svcNode.Stop(context.Background()))
 	}
+	// The scoped encryption router is retracted only here, never in
+	// teardownDataPlane: see retractDataPlaneServices for why the migration
+	// recycle keeps it.
+	n.encMigrator.Store(nil)
 	// Stop dedicated IsolationRaft shards on the shared host BEFORE closing the
 	// host itself — each shard holds an active raft group registered with the
 	// host's quicraft state machine and its own Pebble instance rooted in the
@@ -1193,13 +1305,15 @@ func (n *Node) Close() error {
 	// key and DEKs and is idempotent, so a still-sealed barrier is a no-op.
 	// SealAll covers the system barrier registered in the registry; the
 	// direct barrier seal handles registry-less configurations.
-	if n.barrierRegistry != nil {
-		record(n.barrierRegistry.SealAll())
-	} else if n.barrier != nil {
-		record(n.barrier.Seal())
+	// Retract the seal handles BEFORE sealing, so an accessor racing Close
+	// cannot hand out a barrier that is about to have its key material wiped.
+	barrierRegistry := n.barrierRegistry.Swap(nil)
+	barrier := n.barrier.Swap(nil)
+	if barrierRegistry != nil {
+		record(barrierRegistry.SealAll())
+	} else if barrier != nil {
+		record(barrier.Seal())
 	}
-	n.barrier = nil
-	n.barrierRegistry = nil
 	n.credCoreSvc = nil
 	// Drain per-tenant Pebble instances before closing the volume-pool state
 	// store. Mirrors cmd/qrdbd/start.go shutdown ordering.
@@ -1309,8 +1423,8 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		if err != nil {
 			return nil, err
 		}
-		n.barrier = sub.barrier
-		n.barrierRegistry = sub.barrierRegistry
+		n.barrier.Store(sub.barrier)
+		n.barrierRegistry.Store(sub.barrierRegistry)
 		n.sealStore = sub.sealStore
 		n.credCoreSvc = sub.credCoreSvc
 		n.volumePool = sub.volumePool
@@ -1329,7 +1443,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}
 		}
-		n.svcNode = sealNode
+		n.svcNode.Store(sealNode)
 
 		// Attempt auto-unseal. If it fails (operator-unseal strategy) record
 		// the pending state and return the sealed node to the caller.
@@ -1399,7 +1513,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		_ = n.stg.Close()
 		return nil, &ServicesCreateError{Err: err}
 	}
-	n.svcNode = svcNode
+	n.svcNode.Store(svcNode)
 
 	if err := n.wireClientAndServer(ctx, svcNode, cfg, serverOpts, true); err != nil {
 		_ = svcNode.Stop(context.Background())
@@ -1475,8 +1589,8 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		if err != nil {
 			return nil, err
 		}
-		n.barrier = sub.barrier
-		n.barrierRegistry = sub.barrierRegistry
+		n.barrier.Store(sub.barrier)
+		n.barrierRegistry.Store(sub.barrierRegistry)
 		n.sealStore = sub.sealStore
 		n.credCoreSvc = sub.credCoreSvc
 		n.volumePool = sub.volumePool
@@ -1493,7 +1607,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 			_ = sub.close()
 			return nil, &ServicesCreateError{Err: sealNodeErr}
 		}
-		n.svcNode = sealNode
+		n.svcNode.Store(sealNode)
 
 		if attemptAutoUnseal(ctx, sub.barrier, cfg.Seal, nOpts.sealPassphrase, log) {
 			if err := n.completeClusteredBoot(ctx, &pendingClusteredBoot{
@@ -1556,7 +1670,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		_ = host.Close()
 		return nil, &ServicesCreateError{Err: err}
 	}
-	n.svcNode = svcNode
+	n.svcNode.Store(svcNode)
 
 	// Leader-side lease-expiry sweeper, as in completeClusteredBoot. The
 	// seal-disabled branch builds its host and services inline rather than
@@ -1826,6 +1940,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// Resolve caller-supplied crypto options once so the same instances back
 	// both the multi-protocol server and the in-process transport.
 	crypto := server.ResolveCryptoOptions(callerOpts...)
+
+	// One snapshot of the seal layer for the whole wiring pass; see
+	// completeStandaloneBoot for why it is loaded once rather than per use.
+	barrier := n.barrier.Load()
+	barrierRegistry := n.barrierRegistry.Load()
 	n.auditLogger = crypto.AuditLogger
 
 	// Wire the AuthFactorService. If the caller supplied one explicitly via
@@ -1833,7 +1952,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// If they supplied only a FactorRegistry, construct the service now so the
 	// embedded transport and all wire protocol servers share one instance.
 	if crypto.AuthFactorService != nil {
-		n.authFactorSvc = crypto.AuthFactorService
+		authFactorSvc := crypto.AuthFactorService
+		n.authFactorSvc.Store(&authFactorSvc)
 	} else if crypto.FactorRegistry != nil {
 		svc, err := service.NewAuthFactorService(service.AuthFactorServiceConfig{
 			Factors: crypto.FactorRegistry.All(),
@@ -1842,7 +1962,8 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		if err != nil {
 			return &AuthFactorWiringError{Err: err}
 		}
-		n.authFactorSvc = svc
+		var authFactorSvc service.AuthFactorServicer = svc
+		n.authFactorSvc.Store(&authFactorSvc)
 	}
 
 	// Build in-process transport.
@@ -1871,7 +1992,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		_ = client.Close()
 		return &ClientCreateError{Err: err}
 	}
-	n.client = client
+	n.client.Store(client)
 
 	// Build the canonical RBAC[+ABAC]-authorized, mTLS-authenticated auth
 	// middleware and install it on the multi-protocol server so every
@@ -1928,7 +2049,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	})
 	if err != nil {
 		_ = client.Close()
-		n.client = nil
+		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
 
@@ -1938,11 +2059,11 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if authMW != nil {
 		allOpts = append(allOpts, server.WithAuthMiddleware(authMW))
 	}
-	if n.barrier != nil {
-		allOpts = append(allOpts, server.WithSealedWindowProbe(n.barrier))
+	if barrier != nil {
+		allOpts = append(allOpts, server.WithSealedWindowProbe(barrier))
 	}
-	if n.authFactorSvc != nil {
-		allOpts = append(allOpts, server.WithAuthFactorService(n.authFactorSvc))
+	if p := n.authFactorSvc.Load(); p != nil {
+		allOpts = append(allOpts, server.WithAuthFactorService(*p))
 	}
 
 	// Build the system-scope migrator adapter that holds migrateMu for the
@@ -1953,10 +2074,10 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// nodeSystemMigrator handles system scope; the server's
 	// effectiveEncryptionMigrator auto-composes a scopedEncryptionMigrator
 	// that routes tenant scope to TenantHostRegistry when tenantHosts is wired.
-	if n.barrierRegistry != nil {
+	if barrierRegistry != nil {
 		allOpts = append(allOpts,
 			server.WithEncryptionMigrator(sysMig),
-			server.WithBarrierRegistry(n.barrierRegistry),
+			server.WithBarrierRegistry(barrierRegistry),
 		)
 	}
 	// Wire the IsolationVolume tenant host registry into every transport so
@@ -1980,15 +2101,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// This mirrors what the server builds internally via effectiveEncryptionMigrator,
 	// so the direct in-process call and every transport handler share the same
 	// routing semantics (system → sysMig → migrateMu; tenant → tenantHosts).
-	n.encMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, n.barrierRegistry, svcNode.Tenant)
+	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, svcNode.Tenant)
+	n.encMigrator.Store(&encMigrator)
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)
 	if err := srv.Start(); err != nil {
 		_ = client.Close()
-		n.client = nil
+		n.client.Store(nil)
 		return &ServerCreateError{Err: err}
 	}
-	n.srv = srv
+	n.srv.Store(srv)
 	return nil
 }
 
@@ -2086,8 +2208,8 @@ func (n *Node) buildEmbeddedOpts(svcNode *lifecycle.Node, strictSoD bool, standa
 	if n.auditLogger != nil {
 		opts = append(opts, embedded.WithAuditLogger(n.auditLogger))
 	}
-	if n.authFactorSvc != nil {
-		opts = append(opts, embedded.WithAuthFactorService(n.authFactorSvc))
+	if p := n.authFactorSvc.Load(); p != nil {
+		opts = append(opts, embedded.WithAuthFactorService(*p))
 	}
 
 	// Wire the unified-login ceremony only when a user model is present.
@@ -2132,7 +2254,7 @@ func (n *Node) decorateABAC(inner auth.Authorizer) (auth.Authorizer, error) {
 		return nil, &ABACWiringError{Err: err}
 	}
 	if reloader, ok := authorizer.(abac.PolicyReloader); ok {
-		n.abacDecorator = reloader
+		n.abacDecorator.Store(&reloader)
 	}
 	return authorizer, nil
 }
@@ -2150,7 +2272,10 @@ func (n *Node) decorateABAC(inner auth.Authorizer) (auth.Authorizer, error) {
 // unix, QUIC, MCP, MySQL, PostgreSQL) — a Reload call is visible to every
 // transport atomically and immediately.
 func (n *Node) ABACPolicyReloader() abac.PolicyReloader {
-	return n.abacDecorator
+	if p := n.abacDecorator.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // buildLoginOpts constructs the embedded options that wire the unified-login
@@ -2164,7 +2289,8 @@ func (n *Node) buildLoginOpts(svcNode *lifecycle.Node) ([]embedded.Option, error
 	if err != nil {
 		return nil, &LoginWiringError{Err: err}
 	}
-	n.loginFactorSvc = factorSvc
+	var loginFactorSvc service.UserAuthFactorServicer = factorSvc
+	n.loginFactorSvc.Store(&loginFactorSvc)
 
 	userLookup := auth.UserLookupFunc(func(ctx context.Context, id uint64) (*auth.Principal, error) {
 		u, err := svcNode.User.GetUser(ctx, id)
@@ -2500,13 +2626,13 @@ func buildNodeServerConfig(cfg *qrdbconfig.Config) *qrdbconfig.Config {
 // memguard enclaves, and Seal wipes it deterministically (idempotent when
 // the barrier never unsealed).
 func (n *Node) closeSeal() {
-	if n.barrierRegistry != nil {
-		_ = n.barrierRegistry.SealAll()
-	} else if n.barrier != nil {
-		_ = n.barrier.Seal()
+	barrierRegistry := n.barrierRegistry.Swap(nil)
+	barrier := n.barrier.Swap(nil)
+	if barrierRegistry != nil {
+		_ = barrierRegistry.SealAll()
+	} else if barrier != nil {
+		_ = barrier.Seal()
 	}
-	n.barrier = nil
-	n.barrierRegistry = nil
 	n.credCoreSvc = nil
 	if n.volumePool != nil {
 		if n.volumePool.PerTenantRegistry != nil {
@@ -2524,28 +2650,31 @@ func (n *Node) closeSeal() {
 // KVService returns the node's KVServicer. Convenience accessor so
 // embedders do not need to dig through Services().
 func (n *Node) KVService() service.KVServicer {
-	if n.svcNode == nil {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil {
 		return nil
 	}
-	return n.svcNode.KV
+	return svcNode.KV
 }
 
 // AdminService returns the node's AdminServicer.
 func (n *Node) AdminService() service.AdminServicer {
-	if n.svcNode == nil {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil {
 		return nil
 	}
-	return n.svcNode.Admin
+	return svcNode.Admin
 }
 
 // RebalanceService returns the node's RebalanceServicer (shard stats, plan,
 // execute, imbalance report), or nil if the node has no service layer. It pairs
 // with AdminService for composers that host qrdb's control plane directly.
 func (n *Node) RebalanceService() service.RebalanceServicer {
-	if n.svcNode == nil {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil {
 		return nil
 	}
-	return n.svcNode.Rebalance
+	return svcNode.Rebalance
 }
 
 // UserAuthFactorService returns the UserAuthFactor service instance the
@@ -2558,7 +2687,10 @@ func (n *Node) RebalanceService() service.RebalanceServicer {
 // ceremony is only wired when svcNode.User != nil) or before Unseal has
 // completed the boot.
 func (n *Node) UserAuthFactorService() service.UserAuthFactorServicer {
-	return n.loginFactorSvc
+	if p := n.loginFactorSvc.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // AuthFactorService returns the AuthFactorService instance shared by the
@@ -2572,7 +2704,10 @@ func (n *Node) UserAuthFactorService() service.UserAuthFactorServicer {
 // explicit WithAuthFactorService option, or before wireClientAndServer
 // completes (sealed state).
 func (n *Node) AuthFactorService() service.AuthFactorServicer {
-	return n.authFactorSvc
+	if p := n.authFactorSvc.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // UserService returns the node's UserServicer. Convenience accessor that
@@ -2580,8 +2715,9 @@ func (n *Node) AuthFactorService() service.AuthFactorServicer {
 // (tenant + username) to a uint64 user id against the same user store the
 // login ceremony uses.
 func (n *Node) UserService() user.UserServicer {
-	if n.svcNode == nil {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil {
 		return nil
 	}
-	return n.svcNode.User
+	return svcNode.User
 }

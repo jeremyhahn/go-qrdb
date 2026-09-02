@@ -292,7 +292,12 @@ func TestNode_Close_NilFields(t *testing.T) {
 }
 
 func TestNode_Close_NilSvcNode(t *testing.T) {
-	n := &Node{svcNode: nil, client: nil, srv: nil}
+	// The data-plane handles are published through atomic.Pointer, whose zero
+	// value already reads nil, so an un-booted Node needs no explicit nils.
+	n := &Node{}
+	assert.Nil(t, n.Services())
+	assert.Nil(t, n.Client())
+	assert.Nil(t, n.Server())
 	assert.NoError(t, n.Close())
 }
 

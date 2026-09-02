@@ -161,7 +161,7 @@ func TestNode_TenantIsolation_VolumeKV(t *testing.T) {
 	// Create an IsolationVolume tenant with auto-unseal (system-managed key).
 	// CreateTenant allocates the DataRoot from the pool, registers the barrier,
 	// and initializes it so the tenant is immediately ready for use.
-	_, err = n.svcNode.Tenant.CreateTenant(ctx, "acme", "Acme Corp",
+	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",
 		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err, "CreateTenant(IsolationVolume) must succeed with volume entitlements")
 
@@ -207,10 +207,10 @@ func TestNode_TenantIsolation_EnableEncryption(t *testing.T) {
 	t.Cleanup(func() { _ = n.Close() })
 
 	require.NotNil(t, n.tenantHosts)
-	require.NotNil(t, n.encMigrator, "encMigrator must be built by wireClientAndServer")
+	require.NotNil(t, n.encMigrator.Load(), "encMigrator must be built by wireClientAndServer")
 
 	// Create the tenant.
-	_, err = n.svcNode.Tenant.CreateTenant(ctx, "beta", "Beta Inc",
+	_, err = n.Services().Tenant.CreateTenant(ctx, "beta", "Beta Inc",
 		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)
 
@@ -259,7 +259,7 @@ func TestNode_TenantIsolation_EnableEncryption(t *testing.T) {
 	}
 
 	// Verify the tenant barrier strategy flipped to passphrase.
-	tb, err := n.barrierRegistry.GetTenant("beta")
+	tb, err := n.barrierRegistry.Load().GetTenant("beta")
 	require.NoError(t, err)
 	st := tb.Barrier().Status()
 	require.Equalf(t, seal.StrategyPassphrase, st.Strategy,
@@ -284,7 +284,7 @@ func TestNode_TenantIsolation_RestartSurvival(t *testing.T) {
 
 	require.NotNil(t, n.tenantHosts)
 
-	_, err = n.svcNode.Tenant.CreateTenant(ctx, "gamma", "Gamma LLC",
+	_, err = n.Services().Tenant.CreateTenant(ctx, "gamma", "Gamma LLC",
 		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)
 
@@ -359,7 +359,7 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 	// Create an IsolationRaft tenant with a system-managed auto-unseal barrier.
 	// CreateTenant allocates the DataRoot from the pool, registers the tenant
 	// barrier, and initializes it so the tenant is immediately ready for use.
-	_, err = n.svcNode.Tenant.CreateTenant(ctx, "acme", "Acme Corp",
+	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",
 		tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err, "CreateTenant(IsolationRaft) must succeed with raft entitlements")
 
@@ -367,7 +367,7 @@ func TestNode_ClusteredIsolationRaft_KV(t *testing.T) {
 	// DatabaseService has WithTenantInfoLookup wired (via buildDatabaseQuotaOpts)
 	// so it auto-sets Backend=Raft, DataDir, and Raft.ClusterMode=Local from
 	// the tenant record without requiring explicit backend flags in the call.
-	_, err = n.svcNode.Database.CreateForTenant(
+	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "acme"),
 		database.DatabaseConfig{Name: "orders", Engine: database.EngineKV},
 	)
@@ -426,14 +426,14 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 	t.Cleanup(func() { _ = n.Close() })
 
 	require.NotNil(t, n.raftBackend)
-	require.NotNil(t, n.encMigrator, "encMigrator must be built by wireClientAndServer")
+	require.NotNil(t, n.encMigrator.Load(), "encMigrator must be built by wireClientAndServer")
 
 	// Create the tenant and a dedicated-raft database.
-	_, err = n.svcNode.Tenant.CreateTenant(ctx, "beta", "Beta Inc",
+	_, err = n.Services().Tenant.CreateTenant(ctx, "beta", "Beta Inc",
 		tenant.IsolationRaft, tenant.WithBarrierAutoUnseal(true))
 	require.NoError(t, err)
 
-	_, err = n.svcNode.Database.CreateForTenant(
+	_, err = n.Services().Database.CreateForTenant(
 		tenant.WithTenantID(ctx, "beta"),
 		database.DatabaseConfig{Name: "sales", Engine: database.EngineKV},
 	)
@@ -488,7 +488,7 @@ func TestNode_ClusteredIsolationRaft_EnableEncryption(t *testing.T) {
 	}
 
 	// The tenant barrier strategy must have flipped to passphrase.
-	tb, err := n.barrierRegistry.GetTenant("beta")
+	tb, err := n.barrierRegistry.Load().GetTenant("beta")
 	require.NoError(t, err)
 	st := tb.Barrier().Status()
 	require.Equalf(t, seal.StrategyPassphrase, st.Strategy,

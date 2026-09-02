@@ -53,6 +53,116 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   on every transport, not a generic error.
 - **Standalone skips the raft identity requirements**; only `raft.data_dir`
   stays mandatory.
+- **Every no-argument `*Node` accessor performs a race-free read** from any
+  goroutine at any point — a fully constructed value or nil, never a torn one.
+  **`Close` itself is not synchronised against `Unseal` or `EnableEncryption`**
+  (go-qrdb#226); callers must not overlap them. See *Node accessor
+  concurrency* below.
+
+## Node accessor concurrency
+
+Two things are true, and only the first is a guarantee. Keeping them apart is
+the point of this section.
+
+### Guaranteed: accessor reads are race-free
+
+Every **no-argument exported accessor** on `*Node` — `Client`, `Server`,
+`Services`, `KVService`, `AdminService`, `RebalanceService`, `UserService`,
+`AuthFactorService`, `UserAuthFactorService`, `ABACPolicyReloader`,
+`BarrierRegistry`, `IsSealed` — performs a race-free read from any goroutine at
+any point. It returns a fully constructed value or nil, never a torn or
+unsynchronised one.
+
+This matters because a node built with a barrier that needs operator input is
+returned to the embedder **before its data plane exists**: `IsSealed()` is true
+and the data-plane accessors return nil. `Services()` is the near-exception —
+it returns the seal-only `lifecycle.Node` the constructor built, with `Barrier`,
+`Ceremony` and `Credential` populated and the data-plane services nil — but the
+same boot republishes it with the full graph, so it is inside this contract.
+Those documented nils are an invitation to hold the node in one goroutine and
+poll it while a second drives `Unseal` — the sealed-window shape every embedder
+uses (`ServeSealedWindow` on one goroutine, the operator's unseal on another).
+
+### NOT guaranteed: `Close` is not synchronised against boot or migration
+
+`Node` has no lifecycle state. Two interleavings are therefore **undefined**,
+and callers must not create them:
+
+- **`Close` concurrent with `Unseal`.** `Close` retracts the handles, then the
+  in-flight boot's `Store` calls republish them, and the node looks open again
+  after `Close` returned.
+- **`Close` concurrent with `EnableEncryption`.** The migration reloads
+  `barrier` and `barrierRegistry` after `Close` has nilled them, and `Reopen`
+  can rebuild the data plane after shutdown.
+
+Neither is a torn read — the reads are still atomic — so this is an **ordering**
+gap, not the publication defect go-qrdb#176 fixed. Closing it needs an explicit
+lifecycle state plus a ruling on what `Close` means for an embedded `Node`
+(block on an in-flight `Unseal`, or start failing it and with which typed
+error). Tracked as **go-qrdb#226**, deliberately not fixed in #176.
+
+### Mechanism
+
+Every such handle lives in an `atomic.Pointer` on `Node`, written by
+`wireClientAndServer` (or, for the service graph, by `completeStandaloneBoot` /
+`completeClusteredBoot`; the seal handles by the constructor) and retracted by
+`Close` / `teardownDataPlane`. Interface-typed handles are boxed, so the
+pointer holds `*Iface`.
+
+`atomic.Pointer` rather than a mutex because each handle is an independent
+single-word publication with no invariant spanning two of them, and reads
+outnumber the single write by orders of magnitude — the same reasoning
+`pkg/database`, `pkg/secure` and `pkg/storage/pool` apply to their swappable
+handles. A mutex is what the **lifecycle** gap above will need; it is not what a
+per-handle publication needs.
+
+### Retraction, within those limits
+
+For a caller that does not overlap `Close` with a boot, `Close` retracts every
+handle it published before stopping what backs them, so every accessor reads
+nil afterwards rather than handing out a live-looking handle onto a stopped
+service graph.
+
+The in-process encryption-migration recycle (`EnableEncryption` →
+`teardownDataPlane`) retracts the handles owned by the service graph it stops —
+the custodian factor service, the login factor service, the ABAC reload seam —
+and `wireClientAndServer` republishes them on the rebuild. The
+Shamir-committed branch of `Reopen` never reaches that rebuild (it returns
+sealed, pending a Security Officer quorum), and leaving handles published
+through *that* window is precisely the stale-handle hazard this closes.
+
+The scoped encryption router (`Node.encMigrator`, reached through
+`EnableEncryption`) is the deliberate exception: it is **not** retracted by
+`teardownDataPlane`. Its tenant leg reaches `TenantHostRegistry` and
+`RaftBackendFactory`, which survive a system-scope recycle by design — tenant
+migrations use a per-tenant guard and do not contend on `migrateMu`. Clearing
+it mid-recycle would turn a concurrent tenant-scope migration, which today
+proceeds independently, into a typed "not yet fully booted" refusal. `Close`
+clears it directly instead, where no rebuild follows.
+
+The router does hold the pre-recycle `svcNode.Tenant` across that window. That
+is a separate defect — fixing it means rebuilding or lazily resolving the
+router, not nilling a pointer — tracked as go-qrdb#222.
+
+### What none of this promises
+
+It governs **acquiring** a handle, never **using** one. Calling through a handle
+you already hold, concurrently with `Close`, is a use-after-close; the node has
+never promised to survive that and still does not. The nil-while-sealed
+contract is likewise unchanged — this makes the transition safe, not different.
+
+### Verification
+
+The regression tests enumerate the accessors by **reflection over the type**,
+not by hand. A hand-list stops covering the next accessor someone adds, which
+is exactly how `IsSealed` and `BarrierRegistry` were missed on the first pass
+at go-qrdb#176. `Node.encMigrator` has no no-argument accessor and so cannot be
+reached reflectively; it is asserted directly.
+
+Measured: go-qrdb#176 — two independent `-race` sightings from a consumer
+(`Read at Client()` vs `Previous write at wireClientAndServer()`), the second
+reproduced at a clean base, which is what attributed the defect here rather
+than to the consumer.
 
 ## Capability gates
 
@@ -169,6 +279,16 @@ them. Downstream consumers are notified via Gitea issues on their repos.
   standalone gate's refusal on every raft-only endpoint family.
 - **The refusal tests are the important ones**: they are what stops a
   raft-only feature silently degrading rather than erroring.
+- **Accessor publication is verified under `-race` only.** An unsynchronised
+  word read almost never observes a stale value on amd64/arm64, so
+  `sdk/go/node`'s `TestNode_AccessorsRaceFreeDuringUnseal` and
+  `TestNode_AccessorsRaceFreeDuringClose` are evidence only when the detector
+  is on; `make test-sdk` runs them that way (`GOTEST` carries `-race`).
+- **Retraction is verified with the optional handles populated.**
+  `TestNode_CloseRetractsEveryHandle_Configured` boots with ABAC live reload so
+  `ABACPolicyReloader` and the login factor service are non-nil *before*
+  `Close`; asserting nil afterwards on a node that never populated them would
+  be vacuous.
 - **Integration**: the standalone stage runs the standalone composition; the
   cluster stage runs raft, and is **not currently wired into CI**.
 

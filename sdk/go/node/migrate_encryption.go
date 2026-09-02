@@ -56,13 +56,14 @@ func (e *MigrationNotSupportedError) Error() string {
 // protocol server flow through the same scoped-router semantics, guaranteeing
 // identical routing, authority, and entitlement checks.
 func (n *Node) EnableEncryption(ctx context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
-	if n.encMigrator == nil {
-		if n.barrierRegistry == nil {
+	mig := n.encMigrator.Load()
+	if mig == nil {
+		if n.barrierRegistry.Load() == nil {
 			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
 		}
 		return &MigrationNotSupportedError{Reason: "node not yet fully booted; call Unseal first"}
 	}
-	return n.encMigrator.EnableEncryption(ctx, scope, opts)
+	return (*mig).EnableEncryption(ctx, scope, opts)
 }
 
 // nodeSystemMigrator adapts *Node to service.EncryptionMigrator for the system
@@ -87,11 +88,12 @@ func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service
 		m.node.migrateMu.Lock()
 		defer m.node.migrateMu.Unlock()
 
-		if m.node.barrierRegistry == nil {
+		barrierRegistry := m.node.barrierRegistry.Load()
+		if barrierRegistry == nil {
 			return &MigrationNotSupportedError{Reason: "no barrier registry (seal not enabled)"}
 		}
 		prov := &nodeMigrationProvider{node: m.node}
-		svc := service.NewEncryptionMigrationService(m.node.barrierRegistry, prov, m.node.logger)
+		svc := service.NewEncryptionMigrationService(barrierRegistry, prov, m.node.logger)
 		return svc.EnableSystemEncryption(ctx, opts)
 	case service.ScopeTenant:
 		// Tenant scope must be routed via TenantHostRegistry, which recycles
@@ -175,7 +177,7 @@ func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope servi
 	}
 
 	if opts.TargetStrategy == seal.StrategyShamir {
-		target, _, err := n.barrier.MintKeyedShamirSibling(ctx, stagingRootKeySuffix, opts.ShamirThreshold, opts.ShamirTotal)
+		target, _, err := n.barrier.Load().MintKeyedShamirSibling(ctx, stagingRootKeySuffix, opts.ShamirThreshold, opts.ShamirTotal)
 		if err != nil {
 			return nil, err
 		}
@@ -192,7 +194,7 @@ func (p *nodeMigrationProvider) MintKeyedTarget(ctx context.Context, scope servi
 	// same RootKeyPath base). DeploymentID participates in DEK derivation, so
 	// minting via the source barrier guarantees the migrated data is reproducible
 	// by the normal boot path (which constructs the system barrier identically).
-	target, err := n.barrier.MintKeyedSibling(ctx, stagingRootKeySuffix, strategy, opts.Credentials)
+	target, err := n.barrier.Load().MintKeyedSibling(ctx, stagingRootKeySuffix, strategy, opts.Credentials)
 	if err != nil {
 		return nil, err
 	}
@@ -251,12 +253,12 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 		if serr != nil {
 			return serr
 		}
-		keyed, rerr := n.barrier.ReopenKeyed(ctx, reopenStrat, p.creds)
+		keyed, rerr := n.barrier.Load().ReopenKeyed(ctx, reopenStrat, p.creds)
 		if rerr != nil {
 			return rerr
 		}
-		n.barrier = keyed
-		n.barrierRegistry.SetSystemBarrier(keyed)
+		n.barrier.Store(keyed)
+		n.barrierRegistry.Load().SetSystemBarrier(keyed)
 		// Drop the now-redundant staging root-key blob (best effort).
 		_ = seal.NewStorageAdapter(n.sealStore).Delete(ctx, canonicalRootKeyPath(n)+stagingRootKeySuffix)
 
@@ -264,7 +266,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			sealNode, serr := lifecycle.BuildSealServicesOnly(ctx, lifecycle.Infra{
 				DataDir:           pending.dataDir,
 				SealBarrier:       keyed,
-				BarrierRegistry:   n.barrierRegistry,
+				BarrierRegistry:   n.barrierRegistry.Load(),
 				CredentialCoreSvc: n.credCoreSvc,
 				CeremonyDataDir:   filepath.Join(pending.dataDir, "seal"),
 				Logger:            n.logger,
@@ -272,7 +274,7 @@ func (p *nodeMigrationProvider) Reopen(ctx context.Context, scope service.Barrie
 			if serr != nil {
 				return &MigrationNotSupportedError{Reason: "rebuild seal-window services after shamir migration: " + serr.Error()}
 			}
-			n.svcNode = sealNode
+			n.svcNode.Store(sealNode)
 			n.pendingStandalone = pending
 			return nil
 		}
@@ -303,17 +305,21 @@ func (p *nodeMigrationProvider) reopenStrategy(id seal.StrategyID) (seal.Sealing
 // leaving the seal layer (barrier, registry, seal store, volume pool) intact.
 // It mirrors the data-plane portion of Close.
 func (n *Node) teardownDataPlane() {
-	if n.client != nil {
-		_ = n.client.Close()
-		n.client = nil
+	if client := n.client.Swap(nil); client != nil {
+		_ = client.Close()
 	}
-	if n.srv != nil {
-		n.srv.Stop()
-		n.srv = nil
+	if srv := n.srv.Swap(nil); srv != nil {
+		srv.Stop()
 	}
-	if n.svcNode != nil {
-		_ = n.svcNode.Stop(context.Background())
-		n.svcNode = nil
+	// Retract the service handles that belong to the graph being stopped, so
+	// the recycle window cannot hand out a live-looking factor service or ABAC
+	// reloader onto stopped backing services. wireClientAndServer republishes
+	// them on the rebuild; the Shamir-committed branch of Reopen never gets
+	// there (it returns sealed, pending quorum), and leaving them published
+	// through THAT window is exactly the stale handle this closes.
+	n.retractDataPlaneServices()
+	if svcNode := n.svcNode.Swap(nil); svcNode != nil {
+		_ = svcNode.Stop(context.Background())
 	}
 	if n.host != nil {
 		_ = n.host.Close()
