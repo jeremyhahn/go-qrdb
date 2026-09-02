@@ -53,14 +53,20 @@ type serverUser struct {
 	Username string `json:"username"`
 	// Email is the canonical tenant-unique login key; Name is display only.
 	// Both decode from the same JSON the user record marshals.
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	TenantID  string   `json:"tenantID"`
-	RoleIDs   []string `json:"roleIDs"`
-	Enabled   bool     `json:"enabled"`
-	System    bool     `json:"system"`
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenantID"`
+	RoleIDs  []string `json:"roleIDs"`
+	Enabled  bool     `json:"enabled"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical account state (pending, active, suspended,
+	// locked, disabled, deleting). Enabled is a derived projection of it.
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	GroupIDs    []string `json:"groupIDs,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	LastAuth    string   `json:"lastAuth,omitempty"`
+	CreatedAt   string   `json:"createdAt"`
+	UpdatedAt   string   `json:"updatedAt"`
 }
 
 // serverListUsersResponse mirrors user.ListUsersResponse for JSON decoding.
@@ -130,16 +136,20 @@ type serverCertRecord struct {
 // representation.
 func serverUserToTransport(u *serverUser) *transport.User {
 	return &transport.User{
-		ID:        u.ID,
-		Username:  u.Username,
-		Email:     u.Email,
-		Name:      u.Name,
-		TenantID:  u.TenantID,
-		RoleIDs:   u.RoleIDs,
-		Enabled:   u.Enabled,
-		System:    u.System,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
+		ID:          u.ID,
+		Username:    u.Username,
+		Email:       u.Email,
+		Name:        u.Name,
+		TenantID:    u.TenantID,
+		RoleIDs:     u.RoleIDs,
+		Enabled:     u.Enabled,
+		System:      u.System,
+		Lifecycle:   u.Lifecycle,
+		GroupIDs:    u.GroupIDs,
+		AuthMethods: u.AuthMethods,
+		LastAuth:    u.LastAuth,
+		CreatedAt:   u.CreatedAt,
+		UpdatedAt:   u.UpdatedAt,
 	}
 }
 
@@ -205,6 +215,26 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	}
 	if csv := roleIDsToCSV(req.RoleIDs); csv != "" {
 		args["role_ids"] = csv
+	}
+	// The identity fields travel here too — the argument-map shape is exactly
+	// why the comment above says this transport keeps getting missed.
+	//
+	// JSON, not CSV. A group id is an OPAQUE minted token, so joining on commas
+	// is lossy for the values it carries: an id containing a comma arrives as
+	// two memberships and a blank element is dropped where the store refuses
+	// it, writing a different authorization graph than the caller asked for
+	// while reporting success (Codex peer review, PR #198).
+	if err := putJSONList(args, "group_ids", req.GroupIDs); err != nil {
+		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+	}
+	if err := putJSONList(args, "auth_methods", req.AuthMethods); err != nil {
+		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+	}
+	if req.Lifecycle != "" {
+		args["lifecycle"] = req.Lifecycle
+	}
+	if req.Pending {
+		args["pending"] = true
 	}
 
 	text, err := t.callTool(ctx, "qrdb_user_create", args)
@@ -366,6 +396,33 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 	if csv := roleIDsToCSV(req.RoleIDs); csv != "" {
 		args["role_ids"] = csv
+	}
+	if req.Lifecycle != "" {
+		args["lifecycle"] = req.Lifecycle
+	}
+	if req.LastAuth != "" {
+		args["last_auth"] = req.LastAuth
+	}
+	// nil means "leave alone" and an empty non-nil slice means "clear". An
+	// absent tool argument already says "leave alone", so an empty set becomes
+	// the tool's explicit clear flag rather than an empty list the server would
+	// have to disambiguate.
+	//
+	// The non-empty case travels as JSON for the reason given in CreateUser:
+	// these are opaque identifiers and CSV is lossy for them.
+	if req.GroupIDs != nil {
+		if len(req.GroupIDs) == 0 {
+			args["clear_group_ids"] = true
+		} else if err := putJSONList(args, "group_ids", req.GroupIDs); err != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
+		}
+	}
+	if req.AuthMethods != nil {
+		if len(req.AuthMethods) == 0 {
+			args["clear_auth_methods"] = true
+		} else if err := putJSONList(args, "auth_methods", req.AuthMethods); err != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
+		}
 	}
 
 	text, err := t.callTool(ctx, "qrdb_user_update", args)
@@ -786,4 +843,25 @@ func (t *Transport) ListCerts(ctx context.Context, tenantID string) (*transport.
 	return &transport.ListCertsResponse{
 		Certs: certs,
 	}, nil
+}
+
+// putJSONList encodes a list of opaque identifiers into args as a JSON array
+// string, the array-argument convention this transport uses. An empty or nil
+// list writes nothing: an absent argument is what says "leave alone".
+//
+// JSON rather than a delimiter-joined string because the elements are OPAQUE.
+// Any separator is a character the value may legitimately contain, and a
+// separator-based encoding turns that into a silently different list — which,
+// for an authorization list, is a success that granted or revoked something
+// nobody asked for.
+func putJSONList(args map[string]any, key string, values []string) error {
+	if len(values) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return &jsonEncodeError{Err: err}
+	}
+	args[key] = string(encoded)
+	return nil
 }

@@ -692,3 +692,69 @@ func TestHandleDisableUser_InvalidJSON(t *testing.T) {
 		t.Fatalf("expected UnmarshalError, got %T: %v", err, err)
 	}
 }
+
+// A QUIC client that could only read `enabled` would see a suspended, locked
+// and pending account as identically "false". The canonical state is carried
+// alongside it so the distinction survives the wire.
+func TestUserToWireResponse_CarriesLifecycle(t *testing.T) {
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		lifecycle user.Lifecycle
+		enabled   bool
+	}{
+		{user.LifecycleActive, true},
+		{user.LifecycleSuspended, false},
+		{user.LifecycleLocked, false},
+		{user.LifecycleDeleting, false},
+	} {
+		u := &user.User{
+			ID:        3,
+			Username:  "carol",
+			TenantID:  "tenant-3",
+			Lifecycle: tc.lifecycle,
+			Enabled:   tc.enabled,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		result := userToWireResponse(u)
+		if result.Lifecycle != string(tc.lifecycle) {
+			t.Errorf("Lifecycle: got %q, want %q", result.Lifecycle, tc.lifecycle)
+		}
+		if result.Enabled != tc.enabled {
+			t.Errorf("Enabled: got %v, want %v", result.Enabled, tc.enabled)
+		}
+	}
+}
+
+// Every identity field must reach a QUIC client.
+func TestUserToWireResponse_CarriesEveryIdentityField(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	u := &user.User{
+		ID:          4,
+		Username:    "dave",
+		TenantID:    "tenant-4",
+		Lifecycle:   user.LifecycleActive,
+		Enabled:     true,
+		GroupIDs:    []string{"platform"},
+		AuthMethods: []string{"piv"},
+		LastAuth:    &at,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	got := userToWireResponse(u)
+	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
+		t.Errorf("groupIDs: got %v", got.GroupIDs)
+	}
+	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "piv" {
+		t.Errorf("authMethods: got %v", got.AuthMethods)
+	}
+	if got.LastAuth != at.Format(time.RFC3339) {
+		t.Errorf("lastAuth: got %q", got.LastAuth)
+	}
+
+	u.LastAuth = nil
+	if got := userToWireResponse(u).LastAuth; got != "" {
+		t.Errorf("never-authenticated lastAuth: got %q, want empty", got)
+	}
+}

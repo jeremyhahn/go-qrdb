@@ -34,6 +34,14 @@ type createUserWireRequest struct {
 	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
 	TenantID             string   `json:"tenantID"`
 	RoleIDs              []string `json:"roleIDs"`
+	// GroupIDs are opaque group-membership identifiers; qrdb owns no Group
+	// entity. AuthMethods are the permitted authentication methods.
+	GroupIDs    []string `json:"groupIDs,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	// Lifecycle is the state to create in — pending, active or disabled only.
+	// Empty defaults to active, or pending when Pending is set.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	Pending   bool   `json:"pending,omitempty"`
 }
 
 // getUserWireRequest is the JSON wire payload for user.Get.
@@ -75,6 +83,17 @@ type updateUserWireRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
+	// GroupIDs and AuthMethods replace their sets when PRESENT in the payload.
+	// Absent leaves them alone; `[]` clears them. JSON carries that distinction
+	// for free — an absent key leaves the slice nil — which is exactly the
+	// domain request's nil-vs-empty contract, so a membership can be revoked.
+	GroupIDs    []string `json:"groupIDs,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	// Lifecycle transitions the account when non-empty.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// LastAuth raises the last-authentication high-water mark when non-empty.
+	// RFC 3339, matching the timestamps this transport already emits.
+	LastAuth string `json:"lastAuth,omitempty"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
@@ -101,16 +120,26 @@ type disableUserWireRequest struct {
 
 // userWireResponse is the JSON wire representation of a user entity.
 type userWireResponse struct {
-	ID        uint64   `json:"id"`
-	Username  string   `json:"username"`
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	TenantID  string   `json:"tenantID"`
-	RoleIDs   []string `json:"roleIDs"`
-	Enabled   bool     `json:"enabled"`
-	System    bool     `json:"system"`
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	ID       uint64   `json:"id"`
+	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenantID"`
+	RoleIDs  []string `json:"roleIDs"`
+	Enabled  bool     `json:"enabled"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical account state: pending, active, suspended,
+	// locked, disabled or deleting. Enabled is a derived projection of it
+	// (exactly lifecycle == "active"), so a client that needs the distinction
+	// reads this.
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	GroupIDs    []string `json:"groupIDs,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	// LastAuth is RFC 3339, omitted entirely when the account has never
+	// authenticated — a zero timestamp would read as 1970 rather than "never".
+	LastAuth  string `json:"lastAuth,omitempty"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -149,6 +178,10 @@ func (s *Server) handleCreateUser(ctx context.Context, payload []byte) ([]byte, 
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
+		GroupIDs:             req.GroupIDs,
+		AuthMethods:          req.AuthMethods,
+		Lifecycle:            user.Lifecycle(req.Lifecycle),
+		Pending:              req.Pending,
 	})
 	if err != nil {
 		return nil, err
@@ -296,13 +329,26 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	u, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
-		ID:       req.ID,
-		Username: req.Username,
-		Email:    req.Email,
-		Name:     req.Name,
-		RoleIDs:  req.RoleIDs,
-	})
+	updateReq := &user.UpdateUserRequest{
+		ID:          req.ID,
+		Username:    req.Username,
+		Email:       req.Email,
+		Name:        req.Name,
+		RoleIDs:     req.RoleIDs,
+		GroupIDs:    req.GroupIDs,
+		AuthMethods: req.AuthMethods,
+		Lifecycle:   user.Lifecycle(req.Lifecycle),
+	}
+	if req.LastAuth != "" {
+		at, perr := time.Parse(time.RFC3339, req.LastAuth)
+		if perr != nil {
+			return nil, &UnmarshalError{Err: perr}
+		}
+		utc := at.UTC()
+		updateReq.LastAuth = &utc
+	}
+
+	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		return nil, err
 	}
@@ -439,15 +485,30 @@ func userToWireResponse(u *user.User) *userWireResponse {
 	}
 
 	return &userWireResponse{
-		ID:        u.ID,
-		Username:  u.Username,
-		Email:     u.Email,
-		Name:      u.Name,
-		TenantID:  u.TenantID,
-		RoleIDs:   roleIDs,
-		Enabled:   u.Enabled,
-		System:    u.System,
-		CreatedAt: u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: u.UpdatedAt.Format(time.RFC3339),
+		ID:          u.ID,
+		Username:    u.Username,
+		Email:       u.Email,
+		Name:        u.Name,
+		TenantID:    u.TenantID,
+		RoleIDs:     roleIDs,
+		Enabled:     u.Enabled,
+		System:      u.System,
+		Lifecycle:   string(u.Lifecycle),
+		GroupIDs:    u.GroupIDs,
+		AuthMethods: u.AuthMethods,
+		LastAuth:    formatLastAuth(u.LastAuth),
+		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// formatLastAuth renders a nil-able last-authentication time as RFC 3339, or
+// the empty string when the account has never authenticated. Empty rather than
+// a zero timestamp, so `omitempty` drops the key entirely instead of claiming
+// the account last authenticated in 1970.
+func formatLastAuth(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339)
 }

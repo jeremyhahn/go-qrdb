@@ -16,6 +16,7 @@ package unix
 
 import (
 	"context"
+	"time"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -47,6 +48,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		Name:                 req.Name,
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		RoleIds:              req.RoleIDs,
+		GroupIds:             req.GroupIDs,
+		AuthMethods:          req.AuthMethods,
+		Lifecycle:            req.Lifecycle,
+		Pending:              req.Pending,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateUser", err)
@@ -146,13 +151,35 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 		return nil, &transport.ClosedError{}
 	}
 
-	resp, err := t.client.UpdateUser(ctx, &pb.UpdateUserProtoRequest{
-		Id:       req.ID,
-		Username: req.Username,
-		Email:    req.Email,
-		Name:     req.Name,
-		RoleIds:  req.RoleIDs,
-	})
+	pbReq := &pb.UpdateUserProtoRequest{
+		Id:        req.ID,
+		Username:  req.Username,
+		Email:     req.Email,
+		Name:      req.Name,
+		RoleIds:   req.RoleIDs,
+		Lifecycle: req.Lifecycle,
+	}
+	// proto3 cannot tell an absent repeated field from an empty one, so the
+	// has_* flags carry the nil-vs-empty distinction that decides between
+	// "leave alone" and "clear". Without them a membership could never be
+	// revoked over gRPC.
+	if req.GroupIDs != nil {
+		pbReq.GroupIds = req.GroupIDs
+		pbReq.HasGroupIds = true
+	}
+	if req.AuthMethods != nil {
+		pbReq.AuthMethods = req.AuthMethods
+		pbReq.HasAuthMethods = true
+	}
+	if req.LastAuth != "" {
+		at, perr := time.Parse(time.RFC3339, req.LastAuth)
+		if perr != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: perr}
+		}
+		pbReq.LastAuthUnix = at.UTC().Unix()
+	}
+
+	resp, err := t.client.UpdateUser(ctx, pbReq)
 	if err != nil {
 		return nil, mapGRPCError("UpdateUser", err)
 	}
@@ -471,16 +498,20 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:        resp.GetId(),
-		TenantID:  resp.GetTenantId(),
-		Username:  resp.GetUsername(),
-		Email:     resp.GetEmail(),
-		Name:      resp.GetName(),
-		RoleIDs:   resp.GetRoleIds(),
-		Enabled:   resp.GetEnabled(),
-		System:    resp.GetSystem(),
-		CreatedAt: resp.GetCreatedAt(),
-		UpdatedAt: resp.GetUpdatedAt(),
+		ID:          resp.GetId(),
+		TenantID:    resp.GetTenantId(),
+		Username:    resp.GetUsername(),
+		Email:       resp.GetEmail(),
+		Name:        resp.GetName(),
+		RoleIDs:     resp.GetRoleIds(),
+		Enabled:     resp.GetEnabled(),
+		System:      resp.GetSystem(),
+		Lifecycle:   resp.GetLifecycle(),
+		GroupIDs:    resp.GetGroupIds(),
+		AuthMethods: resp.GetAuthMethods(),
+		LastAuth:    unixToRFC3339(resp.GetLastAuthUnix()),
+		CreatedAt:   resp.GetCreatedAt(),
+		UpdatedAt:   resp.GetUpdatedAt(),
 	}
 }
 
@@ -513,4 +544,14 @@ func protoToCertRecord(rec *pb.CertRecord) *transport.CertRecord {
 		ExpiresAt: rec.GetExpiresAt(),
 		Revoked:   rec.GetRevoked(),
 	}
+}
+
+// unixToRFC3339 renders a last-authentication instant carried as seconds since
+// the epoch back into the RFC 3339 form transport.User uses. Zero means "never
+// authenticated" and maps to the empty string, not to 1970.
+func unixToRFC3339(sec int64) string {
+	if sec <= 0 {
+		return ""
+	}
+	return time.Unix(sec, 0).UTC().Format(time.RFC3339)
 }

@@ -2398,6 +2398,19 @@ message CreateUserRequest {
     // cannot be resolved by GetUserByEmail — a certificate-only or bootstrap
     // identity. It exists so the omission is declared rather than defaulted.
     bool without_email_login_key = 6;
+    // group_ids are opaque group-membership identifiers. qrdb stores the
+    // membership edge and owns no Group entity.
+    repeated string group_ids = 7;
+    // auth_methods are the permitted authentication methods ("webauthn",
+    // "piv"). Empty states no restriction.
+    repeated string auth_methods = 8;
+    // lifecycle is the state to create the account in. Empty defaults to
+    // "active", or "pending" when pending is set. Only pending, active and
+    // disabled may be created directly.
+    string lifecycle = 9;
+    // pending is the shorthand for lifecycle "pending". Setting both is
+    // refused unless they agree.
+    bool pending = 10;
 }
 
 // GetUserRequest retrieves a user by ID.
@@ -2443,6 +2456,24 @@ message UpdateUserProtoRequest {
     string email = 4;
     // name replaces the display name when non-empty.
     string name = 5;
+    // group_ids replaces the group memberships when present. Because proto3
+    // cannot distinguish an absent repeated field from an empty one, the
+    // has_group_ids flag carries the nil-vs-empty distinction the domain
+    // request needs: absent means "leave alone", present-and-empty means
+    // "clear".
+    repeated string group_ids = 6;
+    bool has_group_ids = 7;
+    // auth_methods replaces the permitted methods when present; has_auth_methods
+    // carries nil-vs-empty for the same reason as group_ids.
+    repeated string auth_methods = 8;
+    bool has_auth_methods = 9;
+    // lifecycle transitions the account when non-empty. Checked against the
+    // transition table; nothing moves out of "deleting".
+    string lifecycle = 10;
+    // last_auth_unix raises the last-successful-authentication high-water mark
+    // when > 0. Seconds since the epoch, UTC. A value at or before the stored
+    // one writes nothing.
+    int64 last_auth_unix = 11;
 }
 
 // DeleteUserRequest removes a user by ID.
@@ -2488,6 +2519,19 @@ message UserResponse {
     string email = 9;
     // name is the display name. Presentation only; never a lookup key.
     string name = 10;
+    // lifecycle is the canonical account state: pending, active, suspended,
+    // locked, disabled or deleting. `enabled` is a derived projection of it
+    // (exactly lifecycle == "active") and cannot distinguish a suspended
+    // account from a locked or pending one, so a client that needs the
+    // distinction reads this.
+    string lifecycle = 11;
+    // group_ids are opaque group-membership identifiers.
+    repeated string group_ids = 12;
+    // auth_methods are the permitted authentication methods.
+    repeated string auth_methods = 13;
+    // last_auth_unix is the last successful authentication, seconds since the
+    // epoch UTC. Zero when the account has never authenticated.
+    int64 last_auth_unix = 14;
 }
 
 // ===========================================================================

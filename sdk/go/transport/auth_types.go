@@ -33,13 +33,27 @@ type User struct {
 	// identifier. Empty only for system users.
 	Email string `json:"email,omitempty"`
 	// Name is the display name. Presentation only; never a lookup key.
-	Name      string   `json:"name,omitempty"`
-	TenantID  string   `json:"tenant_id"`
-	RoleIDs   []string `json:"role_ids"`
-	Enabled   bool     `json:"enabled"`
-	System    bool     `json:"system"`
-	CreatedAt string   `json:"created_at"`
-	UpdatedAt string   `json:"updated_at"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenant_id"`
+	RoleIDs  []string `json:"role_ids"`
+	Enabled  bool     `json:"enabled"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical account state: pending, active, suspended,
+	// locked, disabled or deleting. Enabled is a derived projection of it
+	// (exactly lifecycle == "active") and collapses every non-active state into
+	// one false, so read this when the distinction matters.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// GroupIDs are opaque group-membership identifiers. qrdb stores the
+	// membership edge and owns no Group entity.
+	GroupIDs []string `json:"group_ids,omitempty"`
+	// AuthMethods are the permitted authentication methods ("webauthn",
+	// "piv"). A policy statement, distinct from enrolled factors.
+	AuthMethods []string `json:"auth_methods,omitempty"`
+	// LastAuth is the last successful authentication, RFC 3339. Empty when the
+	// account has never authenticated.
+	LastAuth  string `json:"last_auth,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // CreateUserRequest holds parameters for creating a user.
@@ -55,6 +69,17 @@ type CreateUserRequest struct {
 	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
 	TenantID             string   `json:"tenant_id,omitempty"`
 	RoleIDs              []string `json:"role_ids,omitempty"`
+	// GroupIDs are the initial opaque group memberships.
+	GroupIDs []string `json:"group_ids,omitempty"`
+	// AuthMethods are the initial permitted authentication methods. Empty
+	// states no restriction.
+	AuthMethods []string `json:"auth_methods,omitempty"`
+	// Lifecycle is the state to create in — pending, active or disabled only.
+	// Empty defaults to active, or pending when Pending is set.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// Pending is the shorthand for lifecycle "pending". Setting both is
+	// refused unless they agree.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // UpdateUserRequest holds parameters for updating a user.
@@ -67,6 +92,23 @@ type UpdateUserRequest struct {
 	// Name replaces the display name when non-empty.
 	Name    string   `json:"name,omitempty"`
 	RoleIDs []string `json:"role_ids,omitempty"`
+	// GroupIDs and AuthMethods replace their sets when NON-NIL. Nil leaves them
+	// alone; an empty non-nil slice clears them, which is how a membership or a
+	// method restriction is revoked.
+	//
+	// NO `omitempty` on these two, deliberately. omitempty drops an empty slice
+	// from the encoded body, which would make "clear" indistinguishable from
+	// "leave alone" on every JSON transport — a revocation that silently did
+	// nothing. Nil encodes as `null` and decodes back to nil, so the
+	// three-way distinction (absent / null / []) survives the wire intact.
+	GroupIDs    []string `json:"group_ids"`
+	AuthMethods []string `json:"auth_methods"`
+	// Lifecycle transitions the account when non-empty. Checked against the
+	// transition table; nothing moves out of "deleting".
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// LastAuth raises the last-authentication high-water mark when non-empty.
+	// RFC 3339. A value at or before the stored one writes nothing.
+	LastAuth string `json:"last_auth,omitempty"`
 }
 
 // ListUsersRequest holds parameters for listing users.

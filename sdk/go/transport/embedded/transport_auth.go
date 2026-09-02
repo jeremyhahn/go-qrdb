@@ -49,6 +49,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
+		GroupIDs:             req.GroupIDs,
+		AuthMethods:          req.AuthMethods,
+		Lifecycle:            user.Lifecycle(req.Lifecycle),
+		Pending:              req.Pending,
 	})
 	if err != nil {
 		return nil, err
@@ -124,13 +128,25 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "UpdateUser"}
 	}
-	u, err := t.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
-		ID:       req.ID,
-		Username: req.Username,
-		Email:    req.Email,
-		Name:     req.Name,
-		RoleIDs:  req.RoleIDs,
-	})
+	updateReq := &user.UpdateUserRequest{
+		ID:          req.ID,
+		Username:    req.Username,
+		Email:       req.Email,
+		Name:        req.Name,
+		RoleIDs:     req.RoleIDs,
+		GroupIDs:    req.GroupIDs,
+		AuthMethods: req.AuthMethods,
+		Lifecycle:   user.Lifecycle(req.Lifecycle),
+	}
+	if req.LastAuth != "" {
+		at, perr := time.Parse(time.RFC3339, req.LastAuth)
+		if perr != nil {
+			return nil, &transport.RequestError{Method: "UpdateUser", Err: perr}
+		}
+		utc := at.UTC()
+		updateReq.LastAuth = &utc
+	}
+	u, err := t.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		return nil, err
 	}
@@ -434,16 +450,20 @@ func userToTransport(u *user.User) *transport.User {
 		roleIDs = []string{}
 	}
 	return &transport.User{
-		ID:        u.ID,
-		Username:  u.Username,
-		Email:     u.Email,
-		Name:      u.Name,
-		TenantID:  u.TenantID,
-		RoleIDs:   roleIDs,
-		Enabled:   u.Enabled,
-		System:    u.System,
-		CreatedAt: u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: u.UpdatedAt.Format(time.RFC3339),
+		ID:          u.ID,
+		Username:    u.Username,
+		Email:       u.Email,
+		Name:        u.Name,
+		TenantID:    u.TenantID,
+		RoleIDs:     roleIDs,
+		Enabled:     u.Enabled,
+		System:      u.System,
+		Lifecycle:   string(u.Lifecycle),
+		GroupIDs:    u.GroupIDs,
+		AuthMethods: u.AuthMethods,
+		LastAuth:    formatLastAuth(u.LastAuth),
+		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -477,4 +497,14 @@ func stringsToPermissions(ss []string) []permission.Permission {
 		perms[i] = permission.Permission(s)
 	}
 	return perms
+}
+
+// formatLastAuth renders a nil-able last-authentication time as RFC 3339, or
+// the empty string when the account has never authenticated — empty rather than
+// a zero timestamp, so a consumer never reads "never" as 1970.
+func formatLastAuth(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339)
 }

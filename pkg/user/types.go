@@ -63,11 +63,54 @@ type User struct {
 	// RoleIDs lists the roles assigned to this user.
 	RoleIDs []string `json:"roleIDs"`
 
-	// Enabled indicates whether the user can authenticate.
+	// Lifecycle is the CANONICAL account state — pending, active, suspended,
+	// locked, disabled or deleting. It is the single source of truth for
+	// whether this account may authenticate; see CanAuthenticate.
+	//
+	// It is never empty on a record the store returns: a record written before
+	// this field existed has its state derived from Enabled on decode (see
+	// lifecycleFromEnabled) and carries the derived value from then on.
+	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
+
+	// Enabled reports whether the user can authenticate.
+	//
+	// It is a DERIVED PROJECTION of Lifecycle — exactly Lifecycle == active —
+	// maintained by the store on every write. It is retained because it is the
+	// field consumers already read, and it never lies; it is simply coarser
+	// than the state it projects, collapsing pending, suspended, locked,
+	// disabled and deleting into a single false. Read Lifecycle when the
+	// distinction matters, and never write Enabled directly: there is no
+	// request field that sets it, because a second writable source of truth is
+	// how a record ends up claiming to be locked and active at once.
 	Enabled bool `json:"enabled"`
 
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
+
+	// GroupIDs lists the group memberships this user holds.
+	//
+	// qrdb stores the MEMBERSHIP EDGE and does not own a Group entity: the
+	// values are opaque identifiers, exactly as RoleIDs holds role identifiers
+	// without the user record owning the roles. A group's name, description and
+	// the roles it confers belong to whichever layer performs the authorization
+	// that consumes them — the same division qrdb already applies to Attributes,
+	// which it stores while the ABAC policy that evaluates them lives above.
+	GroupIDs []string `json:"groupIDs,omitempty"`
+
+	// AuthMethods lists the authentication methods this user is permitted to
+	// use ("webauthn", "piv", ...). It is a POLICY statement about what the
+	// account may present, distinct from Factors, which records what it has
+	// actually enrolled: an account may be permitted webauthn before any
+	// authenticator is registered, and an enrollment left over from a method
+	// since withdrawn must not become a way in.
+	//
+	// Empty means qrdb states no restriction — the layer performing the
+	// ceremony decides. Values are opaque, lowercased and de-duplicated.
+	AuthMethods []string `json:"authMethods,omitempty"`
+
+	// LastAuth records the last successful authentication (UTC). Nil for an
+	// account that has never authenticated.
+	LastAuth *time.Time `json:"lastAuth,omitempty"`
 
 	// RoleBindings grants roles within a tenant scope (tenant-scoped RBAC). A
 	// control-plane user may hold, e.g., a tenant-admin binding for another
@@ -92,6 +135,57 @@ type User struct {
 
 	// UpdatedAt records the last modification time (UTC).
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// CanAuthenticate reports whether this account is in a state that permits
+// authentication. It is the check a login or credential-registration ceremony
+// performs against the record it resolved.
+//
+// It applies the same two rules normalize does, so a record answers the same
+// question the same way whether or not it has been through a decode:
+//
+//   - An ABSENT state falls back to Enabled. A value built before this field
+//     existed — a record from an older node, or one a caller assembled by hand
+//     for a fallback or a test double — carries no state, and reading that as
+//     "cannot authenticate" would lock out every such account. Enabled IS the
+//     state for a value that has no other.
+//   - An UNRECOGNIZED state fails closed. A state written by a newer node
+//     during a rolling upgrade must not be waved through because this build had
+//     no case for it, and unlike an absent state there is no honest fallback:
+//     the newer node meant something specific by it.
+func (u *User) CanAuthenticate() bool {
+	if u == nil {
+		return false
+	}
+	if u.Lifecycle == "" {
+		return lifecycleFromEnabled(u.Enabled).CanAuthenticate()
+	}
+	return u.Lifecycle.CanAuthenticate()
+}
+
+// normalize brings a decoded record to the canonical representation: it fills
+// in a lifecycle state for records written before the field existed, and
+// re-derives Enabled from it.
+//
+// It runs after EVERY decode rather than on a migration pass, because a
+// migration pass would have to rewrite every user record to be correct and a
+// derivation does not have to rewrite anything: the value is reconstructed
+// identically on every read, and the record picks up the explicit field the
+// next time it is written for some other reason.
+func (u *User) normalize() {
+	if u == nil {
+		return
+	}
+	// ONLY an absent state is filled in. A state that is present but
+	// unrecognized is left exactly as written — it came from a node running a
+	// newer build, and overwriting it would destroy that node's record on the
+	// next write while telling this one a story it made up. CanAuthenticate
+	// already fails closed on it, so leaving it costs nothing but a coarser
+	// Enabled.
+	if u.Lifecycle == "" {
+		u.Lifecycle = lifecycleFromEnabled(u.Enabled)
+	}
+	u.Enabled = u.Lifecycle.CanAuthenticate()
 }
 
 // CreateUserRequest holds parameters for creating a user.
@@ -126,11 +220,35 @@ type CreateUserRequest struct {
 	// RoleIDs are the initial roles to assign.
 	RoleIDs []string
 
-	// Pending, when true, creates the user with Enabled=false: an account
+	// Pending, when true, creates the user in LifecyclePending: an account
 	// awaiting activation, such as an invited user whose first credential is
 	// bound at invitation redemption. EnableUser activates it. The zero value
-	// preserves the existing create-enabled behavior.
+	// preserves the existing create-active behavior.
+	//
+	// It predates Lifecycle and remains as the shorthand for the one state it
+	// names. Setting both is allowed only when they agree; see Lifecycle.
 	Pending bool
+
+	// Lifecycle is the state to create the account in. Empty defers to
+	// Pending — pending when set, active otherwise.
+	//
+	// Only pending, active and disabled may be created directly: suspended and
+	// locked describe something that happened to an account that already
+	// existed, and deleting describes one on its way out. Anything else is
+	// refused with an InvalidLifecycleError naming what is allowed.
+	//
+	// Supplying both this and Pending is refused unless they agree, rather than
+	// letting one silently win: a caller that sets Pending and then asks for
+	// active is describing two different accounts and should be told so.
+	Lifecycle Lifecycle
+
+	// GroupIDs are the initial group memberships. Opaque identifiers; qrdb does
+	// not own a Group entity (see User.GroupIDs).
+	GroupIDs []string
+
+	// AuthMethods are the initial permitted authentication methods. Empty
+	// states no restriction.
+	AuthMethods []string
 }
 
 // UpdateUserRequest holds parameters for updating a user.
@@ -163,6 +281,47 @@ type UpdateUserRequest struct {
 
 	// Factors replaces the auth-factor enrollments when non-nil.
 	Factors []FactorEnrollment
+
+	// Lifecycle transitions the account when non-empty. The move is checked
+	// against the transition table: a state the record cannot reach from where
+	// it is fails with a LifecycleTransitionError rather than being written.
+	//
+	// Setting the state the record already holds is a no-op, not an error, so a
+	// retried request is safe — including a retried deleting, which is what
+	// makes a partially-completed deletion resumable. Nothing transitions out
+	// of deleting to a different state.
+	//
+	// This is the field a caller writes before beginning a multi-step deletion:
+	// once it reads deleting, CanAuthenticate is false and no concurrent
+	// request can make it true again.
+	Lifecycle Lifecycle
+
+	// GroupIDs replaces the group memberships when non-nil. An empty non-nil
+	// slice clears them.
+	GroupIDs []string
+
+	// AuthMethods replaces the permitted authentication methods when non-nil.
+	// An empty non-nil slice clears the restriction.
+	AuthMethods []string
+
+	// LastAuth raises the last-successful-authentication timestamp when
+	// non-nil. It is stored in UTC.
+	//
+	// It is a HIGH-WATER MARK, not a replacement: the committed value is
+	// max(stored, requested), so a value at or before the one already recorded
+	// writes nothing. A delayed or retried login therefore cannot roll an
+	// account's last-seen time backwards, which is what everything reading it —
+	// an operator auditing dormant accounts, an idle-expiry policy deciding what
+	// to reap — depends on.
+	//
+	// A request that sets ONLY this field takes a dedicated merge path that
+	// RETRIES a lost conditional commit instead of reporting
+	// ConcurrentUpdateError. It can, because the merge is commutative: unlike
+	// every other field, there is nothing stale for the caller to reconcile —
+	// re-reading and recomputing the max is always correct. Combining it with
+	// any other field makes the request an ordinary update again, with ordinary
+	// lost-update semantics.
+	LastAuth *time.Time
 }
 
 // ListUsersRequest holds parameters for listing users.

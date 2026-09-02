@@ -39,6 +39,14 @@ type createUserRequest struct {
 	WithoutEmailLoginKey bool     `json:"without_email_login_key,omitempty"`
 	TenantID             string   `json:"tenant_id"`
 	RoleIDs              []string `json:"role_ids"`
+	// GroupIDs are opaque group-membership identifiers; qrdb owns no Group
+	// entity. AuthMethods are the permitted authentication methods.
+	GroupIDs    []string `json:"group_ids,omitempty"`
+	AuthMethods []string `json:"auth_methods,omitempty"`
+	// Lifecycle is the state to create in — pending, active or disabled only.
+	// Empty defaults to active, or pending when Pending is set.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	Pending   bool   `json:"pending,omitempty"`
 }
 
 // updateUserRequest is the JSON payload for PUT /users/{id}.
@@ -47,6 +55,19 @@ type updateUserRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"role_ids"`
+	// GroupIDs and AuthMethods replace their sets when PRESENT in the body.
+	// Absent leaves them alone; `[]` clears them. JSON gives that distinction
+	// for free — an absent key leaves the slice nil, an empty array makes it
+	// non-nil and empty — which is exactly the domain request's nil-vs-empty
+	// contract, so a membership can actually be revoked.
+	GroupIDs    []string `json:"group_ids,omitempty"`
+	AuthMethods []string `json:"auth_methods,omitempty"`
+	// Lifecycle transitions the account when non-empty.
+	Lifecycle string `json:"lifecycle,omitempty"`
+	// LastAuth raises the last-authentication high-water mark when non-empty.
+	// RFC 3339, matching the timestamps this API already emits. A value at or
+	// before the stored one writes nothing.
+	LastAuth string `json:"last_auth,omitempty"`
 }
 
 // userResponse is the JSON representation of a user entity.
@@ -55,16 +76,26 @@ type updateUserRequest struct {
 // Number.MAX_SAFE_INTEGER, so it is encoded as a JSON string
 // (proto3 JSON convention) to avoid precision loss in JS clients.
 type userResponse struct {
-	ID        uint64   `json:"id,string"`
-	Username  string   `json:"username"`
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	TenantID  string   `json:"tenant_id"`
-	RoleIDs   []string `json:"role_ids"`
-	Enabled   bool     `json:"enabled"`
-	System    bool     `json:"system"`
-	CreatedAt string   `json:"created_at"`
-	UpdatedAt string   `json:"updated_at"`
+	ID       uint64   `json:"id,string"`
+	Username string   `json:"username"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenant_id"`
+	RoleIDs  []string `json:"role_ids"`
+	Enabled  bool     `json:"enabled"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical account state: pending, active, suspended,
+	// locked, disabled or deleting. Enabled is a derived projection of it
+	// (exactly lifecycle == "active"), so a client that needs to tell a
+	// suspended account from a locked or pending one reads this.
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	GroupIDs    []string `json:"group_ids,omitempty"`
+	AuthMethods []string `json:"auth_methods,omitempty"`
+	// LastAuth is RFC 3339, omitted entirely when the account has never
+	// authenticated — a zero timestamp would read as 1970 rather than "never".
+	LastAuth  string `json:"last_auth,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // listUsersResponse is the JSON payload returned by GET /users/list.
@@ -101,6 +132,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
+		GroupIDs:             req.GroupIDs,
+		AuthMethods:          req.AuthMethods,
+		Lifecycle:            user.Lifecycle(req.Lifecycle),
+		Pending:              req.Pending,
 	})
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
@@ -423,13 +458,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request, id uin
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	u, err := s.userSvc.UpdateUser(ctx, &user.UpdateUserRequest{
-		ID:       id,
-		Username: req.Username,
-		Email:    req.Email,
-		Name:     req.Name,
-		RoleIDs:  req.RoleIDs,
-	})
+	updateReq := &user.UpdateUserRequest{
+		ID:          id,
+		Username:    req.Username,
+		Email:       req.Email,
+		Name:        req.Name,
+		RoleIDs:     req.RoleIDs,
+		GroupIDs:    req.GroupIDs,
+		AuthMethods: req.AuthMethods,
+		Lifecycle:   user.Lifecycle(req.Lifecycle),
+	}
+	if req.LastAuth != "" {
+		at, perr := time.Parse(time.RFC3339, req.LastAuth)
+		if perr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "last_auth", Err: perr})
+			return
+		}
+		utc := at.UTC()
+		updateReq.LastAuth = &utc
+	}
+
+	u, err := s.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
 		writeErrorJSON(w, mapUserError(err), err)
 		return
@@ -493,16 +542,20 @@ func userToResponse(u *user.User) *userResponse {
 	}
 
 	return &userResponse{
-		ID:        u.ID,
-		Username:  u.Username,
-		Email:     u.Email,
-		Name:      u.Name,
-		TenantID:  u.TenantID,
-		RoleIDs:   roleIDs,
-		Enabled:   u.Enabled,
-		System:    u.System,
-		CreatedAt: u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: u.UpdatedAt.Format(time.RFC3339),
+		ID:          u.ID,
+		Username:    u.Username,
+		Email:       u.Email,
+		Name:        u.Name,
+		TenantID:    u.TenantID,
+		RoleIDs:     roleIDs,
+		Enabled:     u.Enabled,
+		System:      u.System,
+		Lifecycle:   string(u.Lifecycle),
+		GroupIDs:    u.GroupIDs,
+		AuthMethods: u.AuthMethods,
+		LastAuth:    formatLastAuth(u.LastAuth),
+		CreatedAt:   u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -516,6 +569,8 @@ func mapUserError(err error) int {
 	var cu *user.ConcurrentUpdateError
 	var cou *user.CommitOutcomeUnknownError
 	var si *user.SystemUserImmutableError
+	var il *user.InvalidLifecycleError
+	var lt *user.LifecycleTransitionError
 	var se *user.StoreError
 	var xt *tenant.CrossTenantDeniedError
 
@@ -570,6 +625,20 @@ func mapUserError(err error) int {
 		// failure: the caller must reconcile before retrying, because a blind
 		// retry could double-apply. 503 says "ask again", not "it failed".
 		return http.StatusServiceUnavailable
+	case errors.As(err, &il):
+		// A state that is undefined, or defined but not permitted where it was
+		// used. The caller sent something wrong and the error names the allowed
+		// set, so this is a 400 — the same class as any other bad field.
+		return http.StatusBadRequest
+	case errors.As(err, &lt):
+		// The state is valid, the CALLER is not wrong about it, and the record
+		// simply is not somewhere this move can start from — the account is
+		// already being deleted, or was never activated. That is a precondition
+		// on the resource, not a malformed request, so it is 409 rather than
+		// 400. Without this arm the commonest instance, an EnableUser racing a
+		// delete, was reported as 500: a server fault for a refusal the server
+		// made on purpose, and one a client could never learn to expect.
+		return http.StatusConflict
 	case errors.As(err, &si):
 		return http.StatusForbidden
 	case errors.As(err, &se):
@@ -587,4 +656,15 @@ func parseUserID(seg string) (uint64, *InvalidParameterError) {
 		return 0, &InvalidParameterError{Param: "id", Err: err}
 	}
 	return id, nil
+}
+
+// formatLastAuth renders a nil-able last-authentication time as RFC 3339, or
+// the empty string when the account has never authenticated. Empty rather than
+// a zero timestamp, so `omitempty` drops the key entirely instead of claiming
+// the account last authenticated in 1970.
+func formatLastAuth(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339)
 }

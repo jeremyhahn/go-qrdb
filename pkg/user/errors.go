@@ -248,3 +248,74 @@ func (e *CommitOutcomeUnknownError) Error() string {
 
 // Unwrap exposes the underlying store error.
 func (e *CommitOutcomeUnknownError) Unwrap() error { return e.Err }
+
+// InvalidLifecycleError is returned when a request names a lifecycle state
+// that is not defined, or one that is defined but not permitted in the position
+// it was used (creating an account directly as suspended, for example).
+//
+// It is separate from ValidationError because a caller can act on it: the
+// Allowed list names exactly what it may send instead, which a free-text
+// validation reason cannot carry.
+type InvalidLifecycleError struct {
+	// Value is the state the caller supplied.
+	Value Lifecycle
+
+	// Op names where it was rejected ("create" or "update").
+	Op string
+
+	// Allowed lists the states valid in this position, in a stable order.
+	Allowed []Lifecycle
+}
+
+// Error returns a human-readable description naming the allowed states.
+func (e *InvalidLifecycleError) Error() string {
+	msg := "user: invalid lifecycle state " + strconv.Quote(string(e.Value))
+	if e.Op != "" {
+		msg += " for " + e.Op
+	}
+	if len(e.Allowed) > 0 {
+		msg += "; allowed: " + joinLifecycles(e.Allowed)
+	}
+	return msg
+}
+
+// LifecycleTransitionError is returned when an account is asked to move between
+// two states the transition table does not connect.
+//
+// The most important instance is any transition out of LifecycleDeleting: that
+// state is terminal precisely so a deletion in progress cannot be raced back
+// into an authenticating account by a concurrent enable, and reporting the
+// refusal as a typed error is what lets a caller distinguish "you may not" from
+// "the store failed".
+type LifecycleTransitionError struct {
+	// ID is the user whose transition was refused.
+	ID uint64
+
+	// From is the state the record currently holds.
+	From Lifecycle
+
+	// To is the state the caller asked for.
+	To Lifecycle
+}
+
+// Error returns a human-readable description of the refused transition.
+func (e *LifecycleTransitionError) Error() string {
+	msg := "user: cannot transition user " + strconv.FormatUint(e.ID, 10) +
+		" from " + string(e.From) + " to " + string(e.To)
+	if e.From.Terminal() {
+		msg += "; " + string(e.From) + " is terminal"
+	}
+	return msg
+}
+
+// joinLifecycles renders a state list for an error message.
+func joinLifecycles(states []Lifecycle) string {
+	out := ""
+	for i, s := range states {
+		if i > 0 {
+			out += ", "
+		}
+		out += string(s)
+	}
+	return out
+}

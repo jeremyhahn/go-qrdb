@@ -1382,10 +1382,20 @@ func TestRESTRouteRegistry_KVLookups(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserDisabledError(t *testing.T) {
+	// The condition is broader than "disabled" — a pending, suspended, locked
+	// or deleting account fails the same gate — so the message names the state
+	// when one is known. An operator needs it: a lockout is cleared by the
+	// control that set it, a suspension by a human.
 	e := &UserDisabledError{Username: "bob", TenantID: "t1"}
-	want := "auth/middleware: user disabled: bob in tenant t1"
+	want := "auth/middleware: user cannot authenticate: bob in tenant t1"
 	if e.Error() != want {
 		t.Errorf("got %q, want %q", e.Error(), want)
+	}
+
+	withState := &UserDisabledError{Username: "bob", TenantID: "t1", Lifecycle: "locked"}
+	wantState := "auth/middleware: user cannot authenticate: bob in tenant t1 (lifecycle locked)"
+	if withState.Error() != wantState {
+		t.Errorf("got %q, want %q", withState.Error(), wantState)
 	}
 }
 
@@ -1567,5 +1577,205 @@ func TestWriteJSONError(t *testing.T) {
 	}
 	if resp.Error != "access denied" {
 		t.Errorf("expected 'access denied', got %q", resp.Error)
+	}
+}
+
+// The authentication gate asks the CANONICAL question, not the derived boolean.
+// A record whose lifecycle says suspended, locked, pending or deleting must be
+// refused even when a stale Enabled=true rides along — that stale field is
+// exactly what a hand-built or fallback record can carry, and this is the one
+// place where believing it lets someone in.
+func TestAuthenticate_LifecycleGatesLogin(t *testing.T) {
+	refused := []user.Lifecycle{
+		user.LifecyclePending,
+		user.LifecycleSuspended,
+		user.LifecycleLocked,
+		user.LifecycleDisabled,
+		user.LifecycleDeleting,
+	}
+	for _, l := range refused {
+		t.Run(string(l), func(t *testing.T) {
+			id := &auth.Identity{Subject: "dana", TenantID: "t1"}
+			users := &mockUserServicer{
+				user: &user.User{
+					ID:        2,
+					Username:  "dana",
+					TenantID:  "t1",
+					Lifecycle: l,
+					Enabled:   true, // deliberately stale
+				},
+			}
+			m := New(&mockAuthorizer{},
+				WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
+				WithUserService(users))
+
+			_, _, err := m.authenticate(context.Background())
+			var disabled *UserDisabledError
+			if !errors.As(err, &disabled) {
+				t.Fatalf("expected *UserDisabledError, got %T: %v", err, err)
+			}
+			if disabled.Lifecycle != string(l) {
+				t.Errorf("Lifecycle: got %q, want %q", disabled.Lifecycle, l)
+			}
+		})
+	}
+
+	t.Run("active is admitted", func(t *testing.T) {
+		id := &auth.Identity{Subject: "dana", TenantID: "t1"}
+		users := &mockUserServicer{
+			user: &user.User{
+				ID: 2, Username: "dana", TenantID: "t1",
+				Lifecycle: user.LifecycleActive, Enabled: true,
+			},
+		}
+		m := New(&mockAuthorizer{},
+			WithAuthenticator(&mockAuthenticator{name: "mtls", identity: id}),
+			WithUserService(users))
+		if _, _, err := m.authenticate(context.Background()); err != nil {
+			t.Fatalf("an active account was refused: %v", err)
+		}
+	})
+}
+
+// A permitted-method policy that is stored but never checked fails OPEN: a user
+// restricted to webauthn could still walk in through the mTLS authenticator,
+// because the credential is valid and nothing compared it against the policy.
+func TestAuthenticate_AuthMethodPolicyIsEnforced(t *testing.T) {
+	cases := []struct {
+		name        string
+		authName    string
+		authMethods []string
+		wantRefused bool
+	}{
+		{name: "empty policy permits anything", authName: "mtls", authMethods: nil, wantRefused: false},
+		{name: "method in policy", authName: "mtls", authMethods: []string{"mtls", "piv"}, wantRefused: false},
+		{name: "method not in policy", authName: "mtls", authMethods: []string{"webauthn"}, wantRefused: true},
+		{
+			// The policy is stored normalized, so the authenticator name must
+			// be normalized the same way. Normalizing one side is how a policy
+			// silently stops matching what it was written to allow.
+			name: "case is folded on both sides", authName: "MTLS",
+			authMethods: []string{"mtls"}, wantRefused: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := &auth.Identity{Subject: "erin", TenantID: "t1"}
+			users := &mockUserServicer{
+				user: &user.User{
+					ID: 3, Username: "erin", TenantID: "t1",
+					Lifecycle:   user.LifecycleActive,
+					Enabled:     true,
+					AuthMethods: tc.authMethods,
+					RoleIDs:     []string{"viewer"},
+				},
+			}
+			m := New(&mockAuthorizer{},
+				WithAuthenticator(&mockAuthenticator{name: tc.authName, identity: id}),
+				WithUserService(users))
+
+			_, _, err := m.authenticate(context.Background())
+			var refused *AuthMethodNotPermittedError
+			switch {
+			case tc.wantRefused:
+				if !errors.As(err, &refused) {
+					t.Fatalf("expected *AuthMethodNotPermittedError, got %T: %v", err, err)
+				}
+				if refused.Method != "mtls" {
+					t.Errorf("Method: got %q, want %q", refused.Method, "mtls")
+				}
+				if len(refused.Permitted) != len(tc.authMethods) {
+					t.Errorf("Permitted: got %v", refused.Permitted)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("unexpected refusal: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// The policy can only be enforced where the method is KNOWN. A forwarded
+// on-behalf assertion and a capability module's session token carry no method
+// qrdb can observe, so qrdb does not pretend to check them — refusing on a
+// policy it could not evaluate would deny a request on no evidence.
+func TestCheckAuthMethod_UnobservableIsNotEnforcedButBlankFailsClosed(t *testing.T) {
+	u := &user.User{Username: "erin", TenantID: "t1", AuthMethods: []string{"webauthn"}}
+
+	// UNOBSERVABLE: on-behalf and the capability-module fallback. Refusing on a
+	// policy qrdb could not evaluate would deny a request on no evidence.
+	if err := checkAuthMethod(u, unknownMethod()); err != nil {
+		t.Fatalf("an unobservable method must not be refused: %v", err)
+	}
+	if err := checkAuthMethod(nil, knownMethod("mtls")); err != nil {
+		t.Fatalf("nil user: %v", err)
+	}
+	if err := checkAuthMethod(&user.User{}, knownMethod("mtls")); err != nil {
+		t.Fatalf("empty policy: %v", err)
+	}
+
+	// OBSERVED but blank or unnormalizable. This is the case that must NOT be
+	// mistaken for unobservable: it matches no policy entry, and a
+	// misconfigured authenticator must not become a way past the policy.
+	for _, name := range []string{"", "   ", "\t"} {
+		if err := checkAuthMethod(u, knownMethod(name)); err == nil {
+			t.Errorf("an observed method named %q was admitted against a non-empty policy", name)
+		}
+	}
+}
+
+// The bypass is keyed on a FLAG, not on an empty string. An authenticator that
+// names itself "" is observed, not unobservable — conflating the two let it
+// walk straight past a non-empty policy through the normal qrdb-owned chain
+// (Codex, PR #198).
+func TestAuthenticate_BlankAuthenticatorNameCannotBypassThePolicy(t *testing.T) {
+	id := &auth.Identity{Subject: "erin", TenantID: "t1"}
+	users := &mockUserServicer{
+		user: &user.User{
+			ID: 3, Username: "erin", TenantID: "t1",
+			Lifecycle:   user.LifecycleActive,
+			Enabled:     true,
+			AuthMethods: []string{"mtls"},
+		},
+	}
+	m := New(&mockAuthorizer{},
+		WithAuthenticator(&mockAuthenticator{name: "", identity: id}),
+		WithUserService(users))
+
+	_, _, err := m.authenticate(context.Background())
+	var refused *AuthMethodNotPermittedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("expected *AuthMethodNotPermittedError, got %T: %v", err, err)
+	}
+
+	// And with NO policy the same authenticator is still fine: the fail-closed
+	// rule must not become a lockout for accounts that state no restriction.
+	users.user.AuthMethods = nil
+	if _, _, uerr := m.authenticate(context.Background()); uerr != nil {
+		t.Fatalf("a blank-named authenticator was refused despite an empty policy: %v", uerr)
+	}
+}
+
+func TestAuthMethodNotPermittedError_Message(t *testing.T) {
+	e := &AuthMethodNotPermittedError{
+		Username: "erin", TenantID: "t1", Method: "mtls", Permitted: []string{"webauthn", "piv"},
+	}
+	want := "auth/middleware: authentication method mtls is not permitted for erin in tenant t1 (permitted: webauthn, piv)"
+	if e.Error() != want {
+		t.Fatalf("got %q, want %q", e.Error(), want)
+	}
+}
+
+// The refusal is 403 / PermissionDenied, not 401 / Unauthenticated: the
+// credential is valid and retrying the same method will never succeed, so
+// telling the client to present credentials again is the wrong instruction.
+func TestAuthMethodNotPermitted_MapsToForbidden(t *testing.T) {
+	err := &AuthMethodNotPermittedError{Username: "erin", TenantID: "t1", Method: "mtls"}
+	if got := mapHTTPAuthError(err); got != http.StatusForbidden {
+		t.Errorf("REST: got %d, want %d", got, http.StatusForbidden)
+	}
+	if got := status.Code(mapGRPCAuthError(err)); got != codes.PermissionDenied {
+		t.Errorf("gRPC: got %v, want %v", got, codes.PermissionDenied)
 	}
 }

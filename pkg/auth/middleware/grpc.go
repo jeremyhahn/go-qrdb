@@ -270,6 +270,15 @@ func mapGRPCAuthError(err error) error {
 		return status.Error(codes.PermissionDenied, disabled.Error())
 	}
 
+	// The credential is valid and the account is in good standing; this WAY in
+	// is not one the account may use. PermissionDenied, matching the disabled
+	// case: retrying the same method will never succeed, so Unauthenticated
+	// (which invites a credential retry) would be the wrong instruction.
+	var badMethod *AuthMethodNotPermittedError
+	if errors.As(err, &badMethod) {
+		return status.Error(codes.PermissionDenied, badMethod.Error())
+	}
+
 	var chainErr *AuthChainError
 	if errors.As(err, &chainErr) {
 		return status.Error(codes.Unauthenticated, chainErr.Error())

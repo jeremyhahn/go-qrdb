@@ -2337,6 +2337,23 @@ func TestMapUserError_AllTypes(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
+			// An undefined state, or one not permitted where it was used. The
+			// error names the allowed set, so the caller can fix the request.
+			name:     "InvalidLifecycleError",
+			err:      &user.InvalidLifecycleError{Value: "quarantined", Op: "create"},
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			// The state is valid and the caller is not wrong about it — the
+			// RECORD is not somewhere this move can start from. A precondition
+			// on the resource, not a malformed request. Without its own arm the
+			// commonest instance, an EnableUser racing a delete, surfaced as 500:
+			// a server fault for a refusal the server made deliberately.
+			name:     "LifecycleTransitionError",
+			err:      &user.LifecycleTransitionError{ID: 7, From: user.LifecycleDeleting, To: user.LifecycleActive},
+			wantCode: http.StatusConflict,
+		},
+		{
 			// The SAME cause, wrapped in a compensation failure, must NOT be a
 			// retryable conflict. IndexCompensationError unwraps to its cause,
 			// so an errors.As for ConcurrentUpdateError matches it — the mapper
@@ -2928,5 +2945,162 @@ func TestHandleGetUserByEmail_PathFormIsGone(t *testing.T) {
 	srv.dispatch(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Fatal("GET /users/by-email/{email} still resolves — the login key is back in the URL")
+	}
+}
+
+// `enabled` collapses pending, suspended, locked, disabled and deleting into a
+// single false, so the canonical state travels beside it. A REST client that
+// needs to tell an operator hold from an automated lockout reads `lifecycle`.
+func TestUserToResponse_CarriesLifecycle(t *testing.T) {
+	u := testUser()
+	u.Lifecycle = user.LifecycleSuspended
+	u.Enabled = false
+
+	resp := userToResponse(u)
+	if resp.Lifecycle != string(user.LifecycleSuspended) {
+		t.Fatalf("lifecycle = %q, want %q", resp.Lifecycle, user.LifecycleSuspended)
+	}
+	if resp.Enabled {
+		t.Fatal("enabled should project false for a suspended account")
+	}
+}
+
+// Every identity field must reach a REST client. A field the domain stores and
+// the wire drops is a field a remote consumer cannot see, which is how a
+// consumer ends up keeping its own copy.
+func TestUserToResponse_CarriesEveryIdentityField(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	u := testUser()
+	u.Lifecycle = user.LifecycleActive
+	u.GroupIDs = []string{"platform", "sre"}
+	u.AuthMethods = []string{"webauthn", "piv"}
+	u.LastAuth = &at
+
+	resp := userToResponse(u)
+	if len(resp.GroupIDs) != 2 || resp.GroupIDs[0] != "platform" {
+		t.Errorf("group_ids: got %v", resp.GroupIDs)
+	}
+	if len(resp.AuthMethods) != 2 || resp.AuthMethods[1] != "piv" {
+		t.Errorf("auth_methods: got %v", resp.AuthMethods)
+	}
+	if resp.LastAuth != at.Format(time.RFC3339) {
+		t.Errorf("last_auth: got %q, want %q", resp.LastAuth, at.Format(time.RFC3339))
+	}
+}
+
+// "Never authenticated" must not render as 1970. An empty string lets
+// `omitempty` drop the key entirely, which is the honest encoding of absence.
+func TestFormatLastAuth_NeverAuthenticatedIsAbsentNotEpoch(t *testing.T) {
+	if got := formatLastAuth(nil); got != "" {
+		t.Fatalf("got %q, want the empty string", got)
+	}
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if got := formatLastAuth(&at); got != at.Format(time.RFC3339) {
+		t.Fatalf("got %q, want %q", got, at.Format(time.RFC3339))
+	}
+}
+
+// The three-way distinction the domain request depends on must survive the
+// wire: an ABSENT key leaves the set alone, an EMPTY array clears it. JSON
+// carries that for free — absent and `null` both decode to nil, `[]` decodes to
+// a non-nil empty slice — and getting it wrong makes a revocation silently do
+// nothing, which is the worst possible failure mode for removing an access
+// grant.
+func TestHandleUpdateUser_GroupIDsAbsentVersusEmptyVersusSet(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantNil     bool
+		wantCleared bool
+		wantSet     []string
+	}{
+		{name: "absent leaves alone", body: `{"username":"bob"}`, wantNil: true},
+		{name: "null leaves alone", body: `{"group_ids":null}`, wantNil: true},
+		{name: "empty array clears", body: `{"group_ids":[]}`, wantCleared: true},
+		{name: "set replaces", body: `{"group_ids":["platform","sre"]}`, wantSet: []string{"platform", "sre"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *user.UpdateUserRequest
+			svc := &mockUserService{
+				updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+					got = req
+					return testUser(), nil
+				},
+			}
+			srv := newAuthServer(svc, nil, nil)
+			r := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(tc.body))
+			srv.dispatch(httptest.NewRecorder(), r)
+
+			if got == nil {
+				t.Fatal("the service was never called")
+			}
+			switch {
+			case tc.wantNil:
+				if got.GroupIDs != nil {
+					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got.GroupIDs)
+				}
+			case tc.wantCleared:
+				if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
+					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+				}
+			default:
+				if len(got.GroupIDs) != len(tc.wantSet) {
+					t.Fatalf("GroupIDs = %#v, want %v", got.GroupIDs, tc.wantSet)
+				}
+			}
+		})
+	}
+}
+
+// A malformed last_auth is the caller's mistake and must be reported as one,
+// not swallowed into a successful update that quietly changed nothing.
+func TestHandleUpdateUser_MalformedLastAuthIsBadRequest(t *testing.T) {
+	called := false
+	svc := &mockUserService{
+		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+			called = true
+			return testUser(), nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+	r := httptest.NewRequest(http.MethodPut, "/users/1001", strings.NewReader(`{"last_auth":"yesterday"}`))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, r)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+	if called {
+		t.Fatal("the update reached the service despite a malformed timestamp")
+	}
+}
+
+// The identity fields must reach the service on a create, not be dropped
+// between the body and the domain request.
+func TestHandleCreateUser_CarriesIdentityFields(t *testing.T) {
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return testUser(), nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	body := `{"username":"bob","email":"bob@example.com","group_ids":["platform"],` +
+		`"auth_methods":["webauthn"],"lifecycle":"pending"}`
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body))
+	srv.dispatch(httptest.NewRecorder(), r)
+
+	if got == nil {
+		t.Fatal("the service was never called")
+	}
+	if len(got.GroupIDs) != 1 || got.GroupIDs[0] != "platform" {
+		t.Errorf("GroupIDs = %v", got.GroupIDs)
+	}
+	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "webauthn" {
+		t.Errorf("AuthMethods = %v", got.AuthMethods)
+	}
+	if got.Lifecycle != user.LifecyclePending {
+		t.Errorf("Lifecycle = %q, want %q", got.Lifecycle, user.LifecyclePending)
 	}
 }

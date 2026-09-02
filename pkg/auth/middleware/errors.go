@@ -14,17 +14,35 @@
 
 package middleware
 
-// UserDisabledError is returned when an authenticated user account is
-// disabled. The middleware rejects the request even though the credentials
-// are valid.
+import "strings"
+
+// UserDisabledError is returned when an authenticated user account is not in a
+// lifecycle state that permits authentication. The middleware rejects the
+// request even though the credentials are valid.
+//
+// The name is kept for compatibility with the callers that already match it,
+// but the condition it reports is broader than "disabled": a pending, suspended,
+// locked or deleting account fails the same gate, and an operator reading a log
+// line needs to know which — a lockout is cleared by the control that set it, a
+// suspension by a human, and a pending account by redeeming its invitation.
+// Lifecycle carries that.
 type UserDisabledError struct {
 	Username string
 	TenantID string
+
+	// Lifecycle is the state the account was in when the gate refused it. It is
+	// empty only for a record that carried no state at all.
+	Lifecycle string
 }
 
-// Error returns a human-readable description of the disabled condition.
+// Error returns a human-readable description of the refusal, naming the state
+// when one is known.
 func (e *UserDisabledError) Error() string {
-	return "auth/middleware: user disabled: " + e.Username + " in tenant " + e.TenantID
+	msg := "auth/middleware: user cannot authenticate: " + e.Username + " in tenant " + e.TenantID
+	if e.Lifecycle != "" {
+		msg += " (lifecycle " + e.Lifecycle + ")"
+	}
+	return msg
 }
 
 // AuthChainError is returned when every authenticator in the chain fails.
@@ -96,4 +114,31 @@ type InvalidPublicGRPCMethodError struct {
 // Error returns a human-readable description of the malformed method name.
 func (e *InvalidPublicGRPCMethodError) Error() string {
 	return "auth/middleware: invalid public gRPC method name (want \"/package.Service/Method\"): " + e.Method
+}
+
+// AuthMethodNotPermittedError is returned when an account authenticated
+// successfully by a method its own policy does not permit.
+//
+// It is distinct from UserDisabledError because the account is in perfectly
+// good standing: the credential is valid and the lifecycle allows a login. What
+// failed is narrower — this WAY in is not one the account may use — and an
+// operator reading the log needs to see which method was refused against which
+// permitted set to know whether the policy or the client is wrong.
+type AuthMethodNotPermittedError struct {
+	Username string
+	TenantID string
+
+	// Method is the authenticator that succeeded (e.g. "mtls").
+	Method string
+
+	// Permitted is the account's policy, in the order it is stored.
+	Permitted []string
+}
+
+// Error returns a human-readable description naming the refused method and the
+// permitted set.
+func (e *AuthMethodNotPermittedError) Error() string {
+	return "auth/middleware: authentication method " + e.Method +
+		" is not permitted for " + e.Username + " in tenant " + e.TenantID +
+		" (permitted: " + strings.Join(e.Permitted, ", ") + ")"
 }

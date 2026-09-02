@@ -133,6 +133,23 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		return nil, &ValidationError{Field: "username", Reason: "must not be empty"}
 	}
 
+	// The account's initial state, its memberships and its permitted methods are
+	// all resolved BEFORE any id is generated or any key claimed: they are pure
+	// validation of the request, and a request that cannot produce a valid
+	// record must leave the store completely untouched.
+	initial, lerr := initialLifecycle(req)
+	if lerr != nil {
+		return nil, lerr
+	}
+	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
+	if gerr != nil {
+		return nil, gerr
+	}
+	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
+	if aerr != nil {
+		return nil, aerr
+	}
+
 	tenantID := req.TenantID
 	if tenantID == "" {
 		tenantID = tenant.SystemTenantID
@@ -249,17 +266,24 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		Name:     req.Name,
 		TenantID: tenantID,
 		RoleIDs:  req.RoleIDs,
+		// Lifecycle is the canonical state; Enabled is derived from it by
+		// normalize below rather than set here, so there is exactly one place in
+		// this function that decides whether the account can authenticate.
+		//
 		// Pending arrived on main in the deferred tenant-admin enrollment seam
 		// (#193) while this branch was rewriting the surrounding create path to
 		// atomic claims. The conflict presented as "old Get-then-Put vs new
 		// claims", and resolving it by structure alone would have dropped this
 		// field silently — an invited-but-not-yet-enrolled account would come
-		// back ENABLED.
-		Enabled:   !req.Pending,
-		System:    false,
-		CreatedAt: now,
-		UpdatedAt: now,
+		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
+		Lifecycle:   initial,
+		System:      false,
+		GroupIDs:    groupIDs,
+		AuthMethods: authMethods,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
+	user.normalize()
 	if user.RoleIDs == nil {
 		user.RoleIDs = []string{}
 	}
@@ -291,10 +315,12 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 	// releaseClaims on failure.
 
 	s.emitAudit(ctx, "create", user.ID, map[string]any{
-		"username": user.Username,
-		"email":    user.Email,
-		"tenantID": tenantID,
-		"role_ids": user.RoleIDs,
+		"username":  user.Username,
+		"email":     user.Email,
+		"tenantID":  tenantID,
+		"role_ids":  user.RoleIDs,
+		"lifecycle": string(user.Lifecycle),
+		"group_ids": user.GroupIDs,
 	})
 
 	return user, nil
@@ -318,6 +344,10 @@ func (s *kvUserStore) GetUser(ctx context.Context, id uint64) (*User, error) {
 	if err := json.Unmarshal(data, &user); err != nil {
 		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
+	// Fill in the lifecycle state for a record written before the field
+	// existed, and re-derive Enabled from it. Every decode goes through this,
+	// so no caller downstream has to know the field can be absent.
+	user.normalize()
 	return &user, nil
 }
 
@@ -469,6 +499,15 @@ func (s *kvUserStore) AddCertBinding(ctx context.Context, userID uint64, thumbpr
 		return nil, err
 	}
 
+	// NEVER bind a credential to a record whose deletion has begun. This is the
+	// enrollment seam, so it is the single most consequential write to leave
+	// open on a deleting account: a certificate bound here after the deletion
+	// cascade has swept the index is a live credential belonging to an account
+	// that is on its way out — an orphan by construction.
+	if u.Lifecycle.Terminal() {
+		return nil, &LifecycleTransitionError{ID: u.ID, From: u.Lifecycle, To: u.Lifecycle}
+	}
+
 	// A thumbprint resolves to exactly one identity within a tenant. Reject
 	// binding a thumbprint that is already bound to a different user in the
 	// same tenant — silently overwriting it would let a caller hijack another
@@ -511,6 +550,47 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
 	}
 
+	// A request whose ONLY mutation is LastAuth is a different kind of write
+	// from every other update, and takes a different path.
+	//
+	// It is a high-water-mark MERGE, not a replacement: the value it commits is
+	// max(stored, requested), which makes it commutative and therefore safe to
+	// retry. Every other field is a replacement, where a lost race means the
+	// caller's view was stale and only the caller can decide what to do about
+	// it — which is why UpdateUser reports ConcurrentUpdateError rather than
+	// retrying on its own.
+	//
+	// Handling it here matters because of WHO writes it. LastAuth is written on
+	// the login path, once per successful authentication, while the ordinary
+	// update path is where an administrator edits roles or an address. Sending
+	// the login through the general path made a login's timestamp lost whenever
+	// an admin happened to be editing the same account — and worse, silently
+	// below the true high-water mark, because the loser computed its max against
+	// a base the winner had already replaced (Codex, PR #196). It also drags a
+	// login through the whole secondary-index machinery to move one timestamp.
+	if lastAuthOnly(req) {
+		return s.mergeLastAuth(ctx, req.ID, req.LastAuth.UTC())
+	}
+
+	// The identity sets are validated FIRST, before the record is read and long
+	// before any index key is claimed or released. They are pure functions of
+	// the request, so a request that cannot produce a valid record must be
+	// refused while the store is still untouched.
+	//
+	// Deferring them into the apply block below would have left the refusal
+	// dependent on the compensation path — and compensation is best-effort by
+	// construction (it is itself a write that can fail, and reports
+	// IndexCompensationError when it does). Trading a guaranteed no-op for a
+	// probable undo is a bad trade when the check costs nothing.
+	groupIDs, gerr := NormalizeGroupIDs(req.GroupIDs)
+	if gerr != nil {
+		return nil, gerr
+	}
+	authMethods, aerr := NormalizeAuthMethods(req.AuthMethods)
+	if aerr != nil {
+		return nil, aerr
+	}
+
 	// Read the record's RAW bytes, not just the decoded value: they are the
 	// version this update commits against. Two concurrent updates of the SAME
 	// user would otherwise both read it, both claim distinct new handles, both
@@ -527,6 +607,45 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "update", Detail: "unmarshal", Err: uerr}
+	}
+	// Fill in the lifecycle state for a record written before the field
+	// existed, and re-derive Enabled from it. Every decode goes through this,
+	// so no caller downstream has to know the field can be absent.
+	existing.normalize()
+
+	// The lifecycle transition is checked here, immediately after the decode and
+	// still before the first index mutation, so a refused transition is also a
+	// guaranteed no-op. It is validated against the state as COMMITTED — the
+	// bytes this update conditionally swaps against — so a concurrent transition
+	// that beat us here loses that swap rather than having this one layered on
+	// top of a state it never saw.
+	//
+	// `existing` is a local decode: mutating it now writes nothing. Nothing is
+	// persisted until the CompareAndSwap at the end of this function.
+	lifecycleChanged := false
+	if req.Lifecycle != "" {
+		before := existing.Lifecycle
+		if lerr := applyLifecycle(existing, req.Lifecycle); lerr != nil {
+			return nil, lerr
+		}
+		lifecycleChanged = existing.Lifecycle != before
+	}
+
+	// A record whose deletion has BEGUN accepts no edits. Refusing only the
+	// lifecycle transition was not enough: every other field stayed writable, so
+	// a caller could still rename a deleting account, replace its roles, or bind
+	// a certificate to it — and a credential bound after the deletion sweep is
+	// exactly the orphan the marker exists to prevent.
+	//
+	// Re-asserting the state the record already holds is still permitted (it is
+	// how a partially completed deletion is retried); anything that would CHANGE
+	// the record is not.
+	if existing.Lifecycle.Terminal() && !onlyReassertsLifecycle(req) {
+		return nil, &LifecycleTransitionError{
+			ID:   existing.ID,
+			From: existing.Lifecycle,
+			To:   existing.Lifecycle,
+		}
 	}
 
 	idBytes := encodeID(existing.ID)
@@ -772,6 +891,25 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 	if req.Factors != nil {
 		existing.Factors = req.Factors
 	}
+	if req.GroupIDs != nil {
+		existing.GroupIDs = groupIDs
+	}
+	if req.AuthMethods != nil {
+		existing.AuthMethods = authMethods
+	}
+	if req.LastAuth != nil {
+		// FORWARD ONLY. A login is recorded after the ceremony completes, so two
+		// logins that overlap in flight can be written out of order — and an
+		// account whose last-seen time moves backwards misleads exactly the
+		// people who read it: an operator auditing dormant accounts, an
+		// idle-expiry policy deciding what to reap. Ignoring the older value is
+		// not a lost write, it is the correct merge for a high-water mark.
+		at := req.LastAuth.UTC()
+		if existing.LastAuth == nil || at.After(*existing.LastAuth) {
+			existing.LastAuth = &at
+		}
+	}
+
 	if req.CertBindings != nil {
 		// DIFF the key sets before touching the index.
 		//
@@ -940,13 +1078,16 @@ func (s *kvUserStore) UpdateUser(ctx context.Context, req *UpdateUserRequest) (u
 	}
 
 	s.emitAudit(ctx, "update", existing.ID, map[string]any{
-		"username":         existing.Username,
-		"email":            existing.Email,
-		"tenantID":         existing.TenantID,
-		"email_changed":    emailChanged,
-		"username_changed": usernameChanged,
-		"roles_changed":    req.RoleIDs != nil,
-		"role_ids":         existing.RoleIDs,
+		"username":          existing.Username,
+		"email":             existing.Email,
+		"tenantID":          existing.TenantID,
+		"email_changed":     emailChanged,
+		"username_changed":  usernameChanged,
+		"roles_changed":     req.RoleIDs != nil,
+		"role_ids":          existing.RoleIDs,
+		"lifecycle":         string(existing.Lifecycle),
+		"lifecycle_changed": lifecycleChanged,
+		"groups_changed":    req.GroupIDs != nil,
 	})
 
 	return existing, nil
@@ -975,9 +1116,41 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return &StoreError{Op: "delete", Detail: "unmarshal", Err: uerr}
 	}
+	// Fill in the lifecycle state for a record written before the field
+	// existed, and re-derive Enabled from it. Every decode goes through this,
+	// so no caller downstream has to know the field can be absent.
+	existing.normalize()
 	if existing.System {
 		return &SystemUserImmutableError{ID: id}
 	}
+
+	// CLAIM the record by marking it deleting, conditionally on the version just
+	// read, BEFORE the cascade removes anything.
+	//
+	// This is the invariant LifecycleDeleting exists for, applied to qrdb's own
+	// delete rather than only to a consumer's. Until the mark lands, this call
+	// has not won the record: another writer can still bind a credential or
+	// change a handle, and the cascade below would then be sweeping a snapshot
+	// that no longer describes the account. Marking first collapses that to one
+	// question — did we win? — asked once, before any destructive step.
+	//
+	// It also makes the account UNAUTHENTICABLE from the first write instead of
+	// from the last. Between the mark and the primary delete the record still
+	// exists, and without the mark it stays fully able to log in throughout,
+	// including through a credential another caller binds in that window.
+	//
+	// The state is terminal, so a delete that fails part way leaves an account
+	// that cannot authenticate and cannot be re-enabled. That is the correct
+	// direction to fail: the deletion HAS begun, and a retry of DeleteUser
+	// finishes it (re-asserting the mark is a no-op). An account silently
+	// restored to service by a half-finished delete would be the worse outcome.
+	marked, merr := s.markDeleting(ctx, id, base, existing)
+	if merr != nil {
+		return merr
+	}
+	// Everything below commits against the MARKED version, which is now the
+	// record on disk.
+	base = marked
 
 	idBytes := encodeID(id)
 
@@ -1254,8 +1427,18 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "enable", Detail: "unmarshal", Err: uerr}
 	}
+	// Fill in the lifecycle state for a record written before the field
+	// existed, and re-derive Enabled from it. Every decode goes through this,
+	// so no caller downstream has to know the field can be absent.
+	user.normalize()
 
-	user.Enabled = true
+	// EnableUser is the lifecycle transition to active, not a boolean set. That
+	// matters for the one case a boolean cannot express: an account already
+	// marked deleting must not be re-enabled by a request that raced the
+	// deletion, and a plain `Enabled = true` would do exactly that.
+	if err := applyLifecycle(user, LifecycleActive); err != nil {
+		return err
+	}
 	user.UpdatedAt = time.Now().UTC()
 
 	data, err := json.Marshal(user)
@@ -1293,8 +1476,9 @@ func (s *kvUserStore) EnableUser(ctx context.Context, id uint64) error {
 	}
 
 	s.emitAudit(ctx, "enable", id, map[string]any{
-		"username": user.Username,
-		"tenantID": user.TenantID,
+		"username":  user.Username,
+		"tenantID":  user.TenantID,
+		"lifecycle": string(user.Lifecycle),
 	})
 	return nil
 }
@@ -1320,8 +1504,19 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	if uerr := json.Unmarshal(base, user); uerr != nil {
 		return &StoreError{Op: "disable", Detail: "unmarshal", Err: uerr}
 	}
+	// Fill in the lifecycle state for a record written before the field
+	// existed, and re-derive Enabled from it. Every decode goes through this,
+	// so no caller downstream has to know the field can be absent.
+	user.normalize()
 
-	user.Enabled = false
+	// The transition to disabled, for the same reason EnableUser transitions:
+	// the state, not the boolean, is what the record is. Disabling an account
+	// already marked deleting is refused — the deletion is further along than
+	// the disable, and letting a disable land on top of it would report a
+	// success that changed nothing about the account's fate.
+	if err := applyLifecycle(user, LifecycleDisabled); err != nil {
+		return err
+	}
 	user.UpdatedAt = time.Now().UTC()
 
 	data, err := json.Marshal(user)
@@ -1359,10 +1554,225 @@ func (s *kvUserStore) DisableUser(ctx context.Context, id uint64) error {
 	}
 
 	s.emitAudit(ctx, "disable", id, map[string]any{
-		"username": user.Username,
-		"tenantID": user.TenantID,
+		"username":  user.Username,
+		"tenantID":  user.TenantID,
+		"lifecycle": string(user.Lifecycle),
 	})
 	return nil
+}
+
+// onlyReassertsLifecycle reports whether req asks for nothing except the
+// lifecycle state the record already holds — the shape of a retried deletion
+// marker, which must stay permitted on a terminal record so a partially
+// completed deletion can be resumed.
+//
+// Like lastAuthOnly, it is an exhaustive field list: a field added to
+// UpdateUserRequest without being named here would become writable on an
+// account whose deletion has already begun.
+func onlyReassertsLifecycle(req *UpdateUserRequest) bool {
+	return req.Lifecycle != "" &&
+		req.Username == "" &&
+		req.Email == "" &&
+		req.Name == "" &&
+		req.LastAuth == nil &&
+		req.RoleIDs == nil &&
+		req.RoleBindings == nil &&
+		req.Attributes == nil &&
+		req.CertBindings == nil &&
+		req.Factors == nil &&
+		req.GroupIDs == nil &&
+		req.AuthMethods == nil
+}
+
+// markDeleting commits the transition to LifecycleDeleting against the exact
+// bytes the caller read, and returns the marked encoding so the deletion
+// cascade can commit against it in turn.
+//
+// It is the delete's CLAIM on the record: winning it means no other writer held
+// the record at that instant, and because the state is terminal none can take
+// it afterwards — UpdateUser and AddCertBinding both refuse a terminal record.
+// A record already marked is accepted, which is what makes a retried delete
+// idempotent.
+func (s *kvUserStore) markDeleting(ctx context.Context, id uint64, base []byte, existing *User) ([]byte, error) {
+	if existing.Lifecycle == LifecycleDeleting {
+		// Already claimed by an earlier attempt at this delete. Nothing to
+		// commit, and `base` still describes the record on disk.
+		return base, nil
+	}
+	if err := applyLifecycle(existing, LifecycleDeleting); err != nil {
+		return nil, err
+	}
+	existing.UpdatedAt = time.Now().UTC()
+
+	data, merr := json.Marshal(existing)
+	if merr != nil {
+		return nil, &StoreError{Op: "delete", Detail: "marshal delete marker", Err: merr}
+	}
+
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, &StoreError{Op: "delete", Detail: "mark deleting", Err: ErrStoreNotAtomic}
+	}
+	swapped, serr := atomicStore.CompareAndSwap(ctx, primaryKey(id), base, data)
+	switch {
+	case serr != nil:
+		// AMBIGUOUS, and this is the CHEAPEST possible place to be ambiguous:
+		// nothing has been deleted yet, so reading back to decide costs one Get
+		// and either answer is actionable.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+		actual, rerr := s.store.Get(rctx, primaryKey(id))
+		rcancel()
+		switch {
+		case rerr != nil:
+			return nil, &CommitOutcomeUnknownError{ID: id, Err: serr}
+		case bytes.Equal(actual, data):
+			// It landed.
+			return data, nil
+		case bytes.Equal(actual, base):
+			return nil, &StoreError{Op: "delete", Detail: "mark deleting", Err: serr}
+		default:
+			return nil, &ConcurrentUpdateError{ID: id}
+		}
+	case !swapped:
+		return nil, &ConcurrentUpdateError{ID: id}
+	}
+	return data, nil
+}
+
+// lastAuthOnly reports whether req asks for nothing but a LastAuth bump.
+//
+// Every other mutable field must be at its zero value: a request that also
+// renames the user, or moves its lifecycle, is an ordinary update and has to go
+// through the index and transition machinery. The check is written as an
+// exhaustive field list on purpose — a field added to UpdateUserRequest without
+// being named here would silently be DROPPED by the fast path, so the list is
+// the one place that has to be kept in step, and `mergeLastAuth` writes nothing
+// but the timestamp.
+func lastAuthOnly(req *UpdateUserRequest) bool {
+	return req.LastAuth != nil &&
+		req.Username == "" &&
+		req.Email == "" &&
+		req.Name == "" &&
+		req.Lifecycle == "" &&
+		req.RoleIDs == nil &&
+		req.RoleBindings == nil &&
+		req.Attributes == nil &&
+		req.CertBindings == nil &&
+		req.Factors == nil &&
+		req.GroupIDs == nil &&
+		req.AuthMethods == nil
+}
+
+// lastAuthMergeAttempts bounds the retry on a lost conditional commit. The
+// merge is commutative, so a retry is always correct; the bound exists so a
+// pathologically contended record cannot hold a login request open forever. It
+// is small because each attempt is a fresh read plus one compare-and-swap with
+// no backoff, and a login that loses three consecutive races to other writers of
+// the SAME user record has a contention problem no retry count will fix.
+const lastAuthMergeAttempts = 3
+
+// mergeLastAuth raises a user's LastAuth to at (a high-water-mark merge) and
+// returns the resulting record.
+//
+// It writes NOTHING when the stored value is already at or after at. That is
+// the common case for a duplicate or delayed login report, and skipping the
+// write means such a report costs one read and cannot lose a race at all.
+//
+// On a lost conditional commit it retries rather than reporting
+// ConcurrentUpdateError, because unlike every other update this one has nothing
+// stale to reconcile: the value it wants to commit is a function of the request
+// and whatever is stored now, so re-reading and recomputing is always correct.
+// The retry is bounded and has no sleep — each attempt re-reads, which is the
+// only thing that could change the outcome.
+func (s *kvUserStore) mergeLastAuth(ctx context.Context, id uint64, at time.Time) (*User, error) {
+	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+	if !ok {
+		return nil, &StoreError{Op: "record_auth", Detail: "conditional commit", Err: ErrStoreNotAtomic}
+	}
+
+	var lastConflict error
+	for attempt := 0; attempt < lastAuthMergeAttempts; attempt++ {
+		base, err := s.store.Get(ctx, primaryKey(id))
+		if err != nil {
+			return nil, &StoreError{Op: "record_auth", Detail: "primary lookup", Err: err}
+		}
+		if base == nil {
+			return nil, &UserNotFoundError{ID: id}
+		}
+		existing := &User{}
+		if uerr := json.Unmarshal(base, existing); uerr != nil {
+			return nil, &StoreError{Op: "record_auth", Detail: "unmarshal", Err: uerr}
+		}
+		existing.normalize()
+
+		// The terminal guard applies HERE TOO. This path runs before
+		// UpdateUser's own check — that is the point of it being a fast path —
+		// so without this the one mutation that could still land on an account
+		// whose deletion has begun would be the login timestamp. It would also
+		// be a lie: a deleting account cannot authenticate, so a successful
+		// authentication is not something that happened to it.
+		if existing.Lifecycle.Terminal() {
+			return nil, &LifecycleTransitionError{
+				ID:   existing.ID,
+				From: existing.Lifecycle,
+				To:   existing.Lifecycle,
+			}
+		}
+
+		// Already at or past the mark: nothing to commit, and therefore no race
+		// to lose.
+		if existing.LastAuth != nil && !at.After(*existing.LastAuth) {
+			return existing, nil
+		}
+
+		stamp := at
+		existing.LastAuth = &stamp
+		existing.UpdatedAt = time.Now().UTC()
+
+		data, merr := json.Marshal(existing)
+		if merr != nil {
+			return nil, &StoreError{Op: "record_auth", Detail: "marshal", Err: merr}
+		}
+
+		swapped, serr := atomicStore.CompareAndSwap(ctx, primaryKey(id), base, data)
+		switch {
+		case serr != nil:
+			// AMBIGUOUS, exactly as in UpdateUser: a non-nil error means the
+			// outcome is unknown. Read back to decide rather than guessing.
+			// No index is involved here, so the only question is whether the
+			// write landed.
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), compensationTimeout)
+			actual, rerr := s.store.Get(rctx, primaryKey(id))
+			rcancel()
+			switch {
+			case rerr != nil:
+				return nil, &CommitOutcomeUnknownError{ID: id, Err: serr}
+			case bytes.Equal(actual, data):
+				// It landed; fall through to the audit below.
+			case bytes.Equal(actual, base):
+				return nil, &StoreError{Op: "record_auth", Detail: "put", Err: serr}
+			default:
+				// Someone else committed. Re-read and merge against theirs.
+				lastConflict = &ConcurrentUpdateError{ID: id}
+				continue
+			}
+		case !swapped:
+			lastConflict = &ConcurrentUpdateError{ID: id}
+			continue
+		}
+
+		s.emitAudit(ctx, "record_auth", id, map[string]any{
+			"username":  existing.Username,
+			"tenantID":  existing.TenantID,
+			"lifecycle": string(existing.Lifecycle),
+		})
+		return existing, nil
+	}
+
+	// Exhausted the bound. The mark was not raised, and saying so is better than
+	// pretending: the caller decides whether a login timestamp is worth another
+	// attempt.
+	return nil, lastConflict
 }
 
 // encodeID returns the fixed-width 8-byte big-endian encoding of a user ID.
@@ -1670,6 +2080,63 @@ func (s *kvUserStore) restoreHandle(ctx context.Context, key string, idBytes []b
 // them here would silently merge addresses that a provider treats as distinct.
 func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// NormalizeGroupIDs canonicalises a group-membership set: surrounding space is
+// trimmed and duplicates are dropped, preserving first-seen order so a caller's
+// list reads back the way it was written.
+//
+// Case is deliberately PRESERVED, unlike an email. A group identifier is an
+// opaque token minted by whatever layer owns the group catalog — frequently a
+// UUID or a base64 handle where case is significant — so lowercasing it would
+// silently merge two distinct groups into one membership, quietly widening or
+// narrowing what the holder can reach.
+//
+// An entry that is empty after trimming is refused rather than dropped: a blank
+// membership is a caller bug, and silently discarding it hides a list that was
+// built wrong.
+func NormalizeGroupIDs(ids []string) ([]string, error) {
+	return dedupeTokens(ids, "groupIDs", false)
+}
+
+// NormalizeAuthMethods canonicalises a permitted-method set: trimmed,
+// lowercased, de-duplicated, first-seen order preserved.
+//
+// Case IS folded here, in contrast to a group id, because these are protocol
+// names from a small closed vocabulary ("webauthn", "piv") rather than minted
+// identifiers — and a policy list in which "WebAuthn" and "webauthn" are two
+// different permissions is a list that will eventually deny a method it meant
+// to allow.
+func NormalizeAuthMethods(methods []string) ([]string, error) {
+	return dedupeTokens(methods, "authMethods", true)
+}
+
+// dedupeTokens trims, optionally lowercases, and de-duplicates an opaque token
+// list, refusing an entry that is empty once trimmed.
+func dedupeTokens(in []string, field string, lower bool) ([]string, error) {
+	if in == nil {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for i, raw := range in {
+		v := strings.TrimSpace(raw)
+		if lower {
+			v = strings.ToLower(v)
+		}
+		if v == "" {
+			return nil, &ValidationError{
+				Field:  field,
+				Reason: "entry " + strconv.Itoa(i) + " must not be empty",
+			}
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // emailIndexKey builds the email secondary index key — the canonical login-key

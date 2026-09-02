@@ -40,6 +40,10 @@ type createUserWireRequest struct {
 	WithoutEmailLoginKey bool     `json:"withoutEmailLoginKey,omitempty"`
 	TenantID             string   `json:"tenantID"`
 	RoleIDs              []string `json:"roleIDs"`
+	GroupIDs             []string `json:"groupIDs,omitempty"`
+	AuthMethods          []string `json:"authMethods,omitempty"`
+	Lifecycle            string   `json:"lifecycle,omitempty"`
+	Pending              bool     `json:"pending,omitempty"`
 }
 
 // getUserWireRequest is the JSON wire payload for user.Get.
@@ -81,6 +85,14 @@ type updateUserWireRequest struct {
 	Email    string   `json:"email,omitempty"`
 	Name     string   `json:"name,omitempty"`
 	RoleIDs  []string `json:"roleIDs"`
+	// NO `omitempty` on GroupIDs/AuthMethods: it would drop an empty slice from
+	// the payload, making "clear" indistinguishable from "leave alone" and a
+	// revocation silently do nothing. Nil encodes as `null` and decodes back to
+	// nil, so absent / null / [] all survive the wire.
+	GroupIDs    []string `json:"groupIDs"`
+	AuthMethods []string `json:"authMethods"`
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	LastAuth    string   `json:"lastAuth,omitempty"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
@@ -112,14 +124,20 @@ type userWireResponse struct {
 	Username string `json:"username"`
 	// Email is the canonical tenant-unique login key; Name is display only.
 	// Both decode from the same JSON the user record marshals.
-	Email     string   `json:"email,omitempty"`
-	Name      string   `json:"name,omitempty"`
-	TenantID  string   `json:"tenantID"`
-	RoleIDs   []string `json:"roleIDs"`
-	Enabled   bool     `json:"enabled"`
-	System    bool     `json:"system"`
-	CreatedAt string   `json:"createdAt"`
-	UpdatedAt string   `json:"updatedAt"`
+	Email    string   `json:"email,omitempty"`
+	Name     string   `json:"name,omitempty"`
+	TenantID string   `json:"tenantID"`
+	RoleIDs  []string `json:"roleIDs"`
+	Enabled  bool     `json:"enabled"`
+	System   bool     `json:"system"`
+	// Lifecycle is the canonical account state (pending, active, suspended,
+	// locked, disabled, deleting). Enabled is a derived projection of it.
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	GroupIDs    []string `json:"groupIDs,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	LastAuth    string   `json:"lastAuth,omitempty"`
+	CreatedAt   string   `json:"createdAt"`
+	UpdatedAt   string   `json:"updatedAt"`
 }
 
 // listUsersWireResponse is the JSON wire payload returned by user.List.
@@ -279,6 +297,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
 		TenantID:             req.TenantID,
 		RoleIDs:              req.RoleIDs,
+		GroupIDs:             req.GroupIDs,
+		AuthMethods:          req.AuthMethods,
+		Lifecycle:            req.Lifecycle,
+		Pending:              req.Pending,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &MarshalError{Err: err}}
@@ -433,11 +455,15 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 
 	payload, err := json.Marshal(updateUserWireRequest{
-		ID:       req.ID,
-		Username: req.Username,
-		Email:    req.Email,
-		Name:     req.Name,
-		RoleIDs:  req.RoleIDs,
+		ID:          req.ID,
+		Username:    req.Username,
+		Email:       req.Email,
+		Name:        req.Name,
+		RoleIDs:     req.RoleIDs,
+		GroupIDs:    req.GroupIDs,
+		AuthMethods: req.AuthMethods,
+		Lifecycle:   req.Lifecycle,
+		LastAuth:    req.LastAuth,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "UpdateUser", Err: &MarshalError{Err: err}}
@@ -908,16 +934,20 @@ func wireToUser(w *userWireResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:        w.ID,
-		Username:  w.Username,
-		Email:     w.Email,
-		Name:      w.Name,
-		TenantID:  w.TenantID,
-		RoleIDs:   w.RoleIDs,
-		Enabled:   w.Enabled,
-		System:    w.System,
-		CreatedAt: w.CreatedAt,
-		UpdatedAt: w.UpdatedAt,
+		ID:          w.ID,
+		Username:    w.Username,
+		Email:       w.Email,
+		Name:        w.Name,
+		TenantID:    w.TenantID,
+		RoleIDs:     w.RoleIDs,
+		Enabled:     w.Enabled,
+		System:      w.System,
+		Lifecycle:   w.Lifecycle,
+		GroupIDs:    w.GroupIDs,
+		AuthMethods: w.AuthMethods,
+		LastAuth:    w.LastAuth,
+		CreatedAt:   w.CreatedAt,
+		UpdatedAt:   w.UpdatedAt,
 	}
 }
 

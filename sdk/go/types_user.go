@@ -33,7 +33,56 @@ type (
 	FactorEnrollment = user.FactorEnrollment
 	// RoleBinding grants a role within a tenant scope (tenant-scoped RBAC).
 	RoleBinding = user.RoleBinding
+
+	// Lifecycle is the canonical account state — pending, active, suspended,
+	// locked, disabled or deleting. It is the SINGLE source of truth for
+	// whether an account may authenticate; User.Enabled is a derived projection
+	// of it. Consumers must not carry a parallel state field of their own.
+	Lifecycle = user.Lifecycle
 )
+
+const (
+	// LifecyclePending is an account created but not yet activated.
+	LifecyclePending = user.LifecyclePending
+	// LifecycleActive is the only state in which an account may authenticate.
+	LifecycleActive = user.LifecycleActive
+	// LifecycleSuspended is an administrative hold.
+	LifecycleSuspended = user.LifecycleSuspended
+	// LifecycleLocked is an automated lockout.
+	LifecycleLocked = user.LifecycleLocked
+	// LifecycleDisabled is an administratively deactivated account.
+	LifecycleDisabled = user.LifecycleDisabled
+	// LifecycleDeleting marks a deletion in progress. It is terminal: nothing
+	// transitions out of it to another state, which is what lets a credential
+	// ceremony refuse against it without racing a concurrent enable.
+	LifecycleDeleting = user.LifecycleDeleting
+)
+
+// Lifecycle and identity-set errors. A consumer distinguishes "you may not"
+// from "the store failed" by matching these with errors.As.
+type (
+	// InvalidLifecycleError reports a state that is undefined, or defined but
+	// not permitted where it was used (creating an account as suspended, say).
+	InvalidLifecycleError = user.InvalidLifecycleError
+
+	// LifecycleTransitionError reports a move the transition table does not
+	// connect — most importantly any move out of LifecycleDeleting.
+	LifecycleTransitionError = user.LifecycleTransitionError
+)
+
+// NormalizeGroupIDs is THE canonical normalization for a group-membership set:
+// trimmed, de-duplicated, first-seen order preserved, case PRESERVED because a
+// group identifier is an opaque minted token. A consumer that de-duplicates its
+// own copy differently will disagree with the store about what the user belongs
+// to.
+var NormalizeGroupIDs = user.NormalizeGroupIDs
+
+// NormalizeAuthMethods is THE canonical normalization for a permitted-method
+// set: trimmed, LOWERCASED, de-duplicated, first-seen order preserved. Case is
+// folded here (unlike a group id) because these are protocol names from a
+// closed vocabulary, and a list holding both "WebAuthn" and "webauthn" is a
+// policy that will eventually deny what it meant to allow.
+var NormalizeAuthMethods = user.NormalizeAuthMethods
 
 const (
 	// CertBindingSPKIThumbprint is the canonical default (SHA-256 over SPKI).

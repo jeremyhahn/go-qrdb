@@ -130,6 +130,10 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 
 	var lastErr error
 	var identity *auth.Identity
+	// The NAME of the authenticator that succeeded. It was previously discarded
+	// the moment the loop broke, which is why the account's permitted-method
+	// policy had nothing to compare against.
+	var method authMethod
 
 	for _, authn := range m.authenticators {
 		id, err := authn.Authenticate(ctx)
@@ -138,6 +142,12 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 			continue
 		}
 		identity = id
+		// KNOWN, whatever the name turns out to be — including blank. This
+		// path observed the method, so it must never be mistaken for one of
+		// the paths that could not: an authenticator whose Name() returns ""
+		// would otherwise take the unknown-method bypass and walk straight
+		// past a non-empty policy (Codex, PR #198).
+		method = knownMethod(authn.Name())
 		break
 	}
 
@@ -152,7 +162,7 @@ func (m *AuthMiddleware) authenticate(ctx context.Context) (context.Context, *au
 		return ctx, nil, &AuthChainError{Err: lastErr}
 	}
 
-	return m.finalizeIdentity(ctx, identity)
+	return m.finalizeIdentity(ctx, identity, method)
 }
 
 // tenantIAMSealedMetadataKey marks an identity whose tenant's IAM store was
@@ -185,7 +195,7 @@ func IdentityIAMSealed(identity *auth.Identity) bool {
 // user proceeds without enrichment (empty roles -> default-deny at authorize);
 // a transient store failure returns StoreUnavailableError so clients retry
 // rather than being denied with stale/empty roles.
-func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity) (context.Context, *auth.Identity, error) {
+func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Identity, method authMethod) (context.Context, *auth.Identity, error) {
 	if m.users != nil {
 		u, err := m.lookupUser(ctx, identity.TenantID, identity.Subject)
 		if err != nil {
@@ -223,13 +233,48 @@ func (m *AuthMiddleware) finalizeIdentity(ctx context.Context, identity *auth.Id
 				return ctx, nil, &StoreUnavailableError{Err: err}
 			}
 		} else {
-			// User found; check enabled status.
-			if !u.Enabled {
+			// User found; check that its lifecycle state permits a login.
+			//
+			// CanAuthenticate rather than the derived Enabled boolean: this is
+			// the authentication gate, and it must ask the canonical question.
+			// The two agree for any record the store decoded — normalize keeps
+			// Enabled in step — but a record reaching here by another route
+			// (a fallback store, a hand-built value) could carry a stale true
+			// beside a suspended, locked or deleting state, and this is the one
+			// place where believing the stale copy lets someone in.
+			if !u.CanAuthenticate() {
 				return ctx, nil, &UserDisabledError{
-					Username: u.Username,
-					TenantID: u.TenantID,
+					Username:  u.Username,
+					TenantID:  u.TenantID,
+					Lifecycle: string(u.Lifecycle),
 				}
 			}
+			// Enforce the account's permitted-method policy.
+			//
+			// User.AuthMethods says what an account MAY present. Storing it
+			// without checking it here would make method withdrawal fail open:
+			// a user restricted to webauthn could still walk in through the
+			// mTLS authenticator, because the credential exists and nothing
+			// compared it against the policy (Codex peer review, PR #198).
+			//
+			// Two deliberate limits, both stated rather than assumed:
+			//   - An EMPTY policy states no restriction, so every account that
+			//     predates the field is unaffected. That is what makes turning
+			//     this on safe rather than a fleet-wide lockout.
+			//   - It can only be enforced where the method is KNOWN — the
+			//     authenticator chain qrdb owns. A forwarded on-behalf
+			//     assertion and a capability module's session token carry no
+			//     method qrdb can observe, so they pass unknownMethod() and
+			//     qrdb does not pretend to check them. The layer that ran that
+			//     ceremony is the one that must enforce the policy there.
+			//
+			// The distinction is carried by a FLAG, not by an empty string. An
+			// authenticator that names itself "" is observed, not unobservable,
+			// and conflating the two let it bypass the policy entirely.
+			if perr := checkAuthMethod(u, method); perr != nil {
+				return ctx, nil, perr
+			}
+
 			// Enrich identity with persistent role assignments.
 			identity.Roles = u.RoleIDs
 		}
@@ -415,4 +460,75 @@ func (m *AuthMiddleware) AuthorizeTenant(ctx context.Context, targetTenantID str
 	}
 	ctx = tenant.WithTenantID(ctx, targetTenantID)
 	return m.authorize(ctx, identity, perm)
+}
+
+// authMethod carries HOW a request authenticated, and — separately — whether
+// that is something the caller could observe at all.
+//
+// The two facts must not share a representation. Encoding "unobservable" as an
+// empty name let an authenticator that names itself "" be treated as
+// unobservable and skip the policy check entirely, which is precisely the
+// bypass the policy exists to prevent (Codex, PR #198). A flag cannot be
+// produced by accident: only unknownMethod() sets it, and only the two paths
+// that genuinely cannot see a method call it.
+type authMethod struct {
+	name  string
+	known bool
+}
+
+// knownMethod records a method the caller observed, whatever it is named.
+func knownMethod(name string) authMethod { return authMethod{name: name, known: true} }
+
+// unknownMethod records that the caller could not observe a method at all — a
+// forwarded on-behalf assertion, or a capability module's own session-token
+// plane. It is not "no method"; it is "not ours to know".
+func unknownMethod() authMethod { return authMethod{} }
+
+// checkAuthMethod enforces a user's permitted-authentication-method policy
+// against the method that actually authenticated this request.
+//
+// It permits the request in two cases, both statements rather than oversights:
+//
+//   - The policy is EMPTY. User.AuthMethods empty means qrdb states no
+//     restriction, so every account written before the field existed keeps
+//     working. Enforcing an empty list as "nothing is allowed" would lock out
+//     the entire fleet the moment this shipped.
+//   - The method is UNOBSERVABLE. Only the authenticator chain qrdb owns can
+//     name the method; a forwarded on-behalf assertion and a capability
+//     module's session token cannot, and refusing them on a policy qrdb could
+//     not evaluate would deny a request on no evidence.
+//
+// Everything else FAILS CLOSED, including an observed method with a blank or
+// unnormalizable name: it cannot match any stored policy entry, and this is an
+// authentication gate.
+//
+// Comparison uses the SAME normalization the store applied when the policy was
+// written, so a policy stored as "webauthn" matches an authenticator named
+// "WebAuthn". Normalizing only one side is how a policy silently stops matching
+// the thing it was written to allow.
+func checkAuthMethod(u *user.User, method authMethod) error {
+	if u == nil || len(u.AuthMethods) == 0 || !method.known {
+		return nil
+	}
+	refuse := func(name string) error {
+		return &AuthMethodNotPermittedError{
+			Username:  u.Username,
+			TenantID:  u.TenantID,
+			Method:    name,
+			Permitted: u.AuthMethods,
+		}
+	}
+	normalized, err := user.NormalizeAuthMethods([]string{method.name})
+	if err != nil || len(normalized) == 0 {
+		// An observed method whose name does not survive normalization — blank,
+		// whitespace — matches nothing. A misconfigured authenticator must not
+		// become a way past the policy.
+		return refuse(method.name)
+	}
+	for _, permitted := range u.AuthMethods {
+		if permitted == normalized[0] {
+			return nil
+		}
+	}
+	return refuse(normalized[0])
 }

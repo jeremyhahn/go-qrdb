@@ -98,7 +98,12 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, r *http.Reque
 		},
 	}
 
-	return m.finalizeIdentity(ctx, identity)
+	// No auth method: the SUBJECT presented nothing here. This is a cluster peer
+	// forwarding a call it already authenticated, so the method that let the
+	// subject in was observed at that node, not this one. Claiming a method
+	// would be inventing one; passing none says so, and the account's
+	// permitted-method policy is enforced where the ceremony actually ran.
+	return m.finalizeIdentity(ctx, identity, unknownMethod())
 }
 
 // verifiedPeerCertificate returns the leaf of the first verified chain from the

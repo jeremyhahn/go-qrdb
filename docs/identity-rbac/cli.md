@@ -52,6 +52,15 @@ qrdb users delete 1f2e...      # refused for built-in (System) users
 `disable` is the reversible option; prefer it over `delete` for an account you
 may want back.
 
+`enable` and `disable` are **lifecycle transitions**, to `active` and `disabled`
+respectively — not writes to a boolean. Repeating either is a no-op, and both
+are **refused on an account whose deletion has begun** (`lifecycle: deleting`),
+because that state is terminal: nothing moves a record out of it. `get` shows
+the state, which distinguishes an account awaiting activation (`pending`), an
+administrative hold (`suspended`), an automated lockout (`locked`) and a
+deactivated record (`disabled`) — all of which the `enabled` field reports
+identically as `false`.
+
 ### `qrdb users list`
 
 | Flag | Type | Meaning |

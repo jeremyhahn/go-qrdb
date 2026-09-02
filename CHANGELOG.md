@@ -11,6 +11,188 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **A real account lifecycle on `user.User`** (#196). `Enabled bool` could not
+  express the states an identity actually moves through, so every consumer above
+  qrdb carried its own — go-quicbaas kept a `BrokerProfile` side-record with a
+  state enum plus separate `suspended` and `locked` booleans, an encoding that
+  admits contradictions (locked *and* active) with no rule saying which wins.
+  `Lifecycle` is now the single source of truth — `pending` · `active` ·
+  `suspended` · `locked` · `disabled` · `deleting` — with a fixed transition
+  table, and `Enabled` is a derived projection (`Lifecycle == active`) kept
+  because it is the field existing clients read. `User.CanAuthenticate()` is the
+  check, and it fails closed on a state the build does not recognize.
+  `deleting` is **terminal**: a deletion writes it before its first mutation, so
+  a credential ceremony that finishes late cannot leave a fresh orphan behind
+  (the shape go-quicbaas#290 needs to close its registration-during-deletion
+  TOCTOU). Re-asserting a state is a no-op, so a partially completed deletion is
+  resumable.
+- **`GroupIDs`, `AuthMethods` and `LastAuth` on `user.User`** (#196), settable
+  through `CreateUserRequest` and `UpdateUserRequest`. `GroupIDs` stores the
+  membership EDGE — qrdb owns no Group entity, exactly as `RoleIDs` holds role
+  identifiers without owning the roles; a group's name and the roles it confers
+  belong to the layer that performs the authorization consuming them.
+  `AuthMethods` is a policy statement of what an account may present, distinct
+  from `Factors`, which records what it has enrolled. `LastAuth` is a high-water
+  mark that never moves backwards, so overlapping logins written out of order
+  cannot roll an account's last-seen time back.
+- **`NormalizeGroupIDs` / `NormalizeAuthMethods`** (#196) — the canonical
+  identity-set normalizers, re-exported under `sdk/go` beside `NormalizeEmail`.
+  Group ids preserve case (opaque minted tokens); auth methods fold case (a
+  closed protocol vocabulary).
+- **Every new identity field on every transport** (#196). REST, gRPC, QUIC, MCP,
+  unix and all six `sdk/go/transport` clients carry `lifecycle`, `groupIDs`,
+  `authMethods` and `lastAuth` on both the response and the create/update
+  requests. `enabled` collapses five distinct states into one `false`, and a
+  field the domain stores while the wire drops it is a field a remote consumer
+  cannot see — which is how a consumer ends up keeping its own copy in the first
+  place.
+- **The clear-versus-leave-alone distinction survives every wire** (#196).
+  `nil` leaves a set alone and an empty non-nil slice CLEARS it, and each
+  transport carries that in its own idiom: JSON gets it free (absent / `null` /
+  `[]`), gRPC needs explicit `has_group_ids` / `has_auth_methods` flags because
+  proto3 cannot distinguish an absent repeated field from an empty one, and the
+  MCP tools take `clear_group_ids` / `clear_auth_methods` because a flat tool
+  argument cannot either. Without them a membership could be granted but never
+  **revoked**: an empty list would read as "no change" and the revocation would
+  report success while doing nothing.
+- **The MCP identifier lists are JSON arrays, not comma-separated strings**
+  (#196). A group id is an opaque minted token, so a comma is a character it may
+  legitimately contain: CSV split such an id into two memberships and dropped
+  blank elements the store refuses, writing a different authorization graph than
+  the caller asked for while reporting success. A malformed list is now reported
+  rather than read as "leave alone", because quietly not changing an
+  authorization list the caller asked to change is the same defect wearing a
+  different hat.
+
+### Changed
+
+- **`AuthMethods` is enforced at the authentication gate**, not merely stored
+  (#196). `pkg/auth/middleware` now carries the name of the authenticator that
+  succeeded and refuses with `AuthMethodNotPermittedError` (403 /
+  `PermissionDenied`) when the account's policy is non-empty and does not list
+  it. Storing the policy without checking it made method withdrawal fail
+  **open**: a user restricted to `webauthn` could still walk in through the
+  mTLS authenticator, because the credential was valid and nothing compared it
+  against the policy. An empty policy states no restriction, so no account that
+  predates the field is affected; and the check applies only where the method is
+  observable to qrdb, because a forwarded assertion and a capability module's
+  session token carry none it could evaluate. That second limit is carried by an
+  explicit flag rather than by an empty name — an authenticator that names
+  itself `""` is observed, not unobservable, and conflating the two would have
+  let it bypass the policy through the ordinary chain.
+- **`DeleteUser` claims the record by marking it `deleting` before the cascade**
+  (#196), and the cascade commits against the marked version. Until the mark
+  landed the delete had not won the record: another writer could still bind a
+  credential or move a handle, and the cascade was sweeping a snapshot that no
+  longer described the account. The account is now unauthenticable from the
+  FIRST write of the delete rather than the last.
+- **A terminal record accepts no mutation at all** (#196). `UpdateUser`, the
+  `LastAuth` merge path and `AddCertBinding` all refuse it. Refusing only the
+  lifecycle transition left every other field writable, so a certificate could
+  still be bound to an account whose deletion had begun — the exact orphan the
+  marker exists to prevent. Re-asserting the terminal state stays permitted, so
+  a partially completed deletion is still resumable.
+- **Lifecycle refusals map to client-actionable statuses** (#196).
+  `InvalidLifecycleError` is HTTP 400 / gRPC `InvalidArgument`; a
+  `LifecycleTransitionError` is HTTP 409 / gRPC `FailedPrecondition`. Neither
+  had a mapping arm, so the commonest instance — an `EnableUser` racing a
+  delete — surfaced as a 500 / `Internal`: a server fault reported for a refusal
+  the server made deliberately, and one no client could learn to expect.
+- **A `LastAuth`-only update is a commutative merge that retries** (#196)
+  instead of returning `ConcurrentUpdateError`. `LastAuth` is written on the
+  login path while ordinary updates are where an administrator edits roles;
+  routing the login through the general path made its timestamp lost — and lost
+  *below* the true high-water mark, because the loser computed its max against a
+  base the winner had already replaced — whenever the two overlapped. The retry
+  is bounded and sleepless, and the merge writes nothing at all when the stored
+  value is already at or past the request.
+- **`EnableUser` and `DisableUser` are lifecycle transitions**, not boolean sets
+  (#196). Both are refused with a `LifecycleTransitionError` on an account
+  already marked `deleting` — a plain `Enabled = true` would have revived an
+  account whose deletion was in flight. Repeating either verb is still a no-op.
+- **Records written before this release need no migration** (#196). A decode
+  with no `lifecycle` derives one from `Enabled` (`true → active`,
+  `false → disabled`) and re-derives `Enabled` from it, so no pre-upgrade
+  account is locked out by an empty state and the explicit field is picked up
+  the next time the record is written. A state that is present but unrecognized
+  — written by a newer node mid-upgrade — is left exactly as written.
+
+### Fixed
+
+- **`docs/identity-rbac/engineering.md` had drifted** (#196): its `User` struct
+  still showed a `string` ID and no `Email`. Corrected alongside the new fields.
+- **`sdk/go/go.mod` required a stale root** (#196). It named
+  `github.com/jeremyhahn/go-qrdb v0.10.0-alpha` while the tags had reached
+  v0.15.0-alpha. Its `replace ... => ../..` keeps the repository building, but a
+  `replace` in a dependency module is ignored by consumers, so an external
+  module taking `sdk/go` alone resolved a root five releases behind it. Bumped
+  in the release commit that cuts this version, and verified against a throwaway
+  external consumer.
+- **The release notes for 0.13.0-alpha, 0.14.0-alpha and 0.15.0-alpha were never
+  written** (#196), so `make check-version-reconciled` — the check that exists
+  precisely to catch this — had been failing on `main` since v0.13.0-alpha:
+  VERSION read `0.15.0-alpha` while the newest CHANGELOG release heading still
+  read `0.12.0-alpha`. The three sections are reconstructed below from the
+  release commits and tag annotations, which restores the check to green.
+
+## [0.15.0-alpha] - 2026-09-01
+
+Notes reconstructed for a release that shipped without them (see the
+[Unreleased] entry for #196, which found the gap). Content is taken from the
+release commit and the tag annotation, not re-derived.
+
+### Added
+
+- **`Email` is the canonical tenant-unique login key** (#191). `User.Email` and
+  `User.Name`, a tenant-scoped email secondary index, and `GetUserByEmail`
+  across REST, gRPC, QUIC, MCP, the SDK and the CLI.
+
+### Changed
+
+- **`CreateUser` refuses a user with no email login key** unless the caller sets
+  `CreateUserRequest.WithoutEmailLoginKey` (#191). A certificate-only or
+  bootstrap identity is legitimate; an ordinary user silently created with no
+  entry in the index every login resolves through is not. **Breaking.**
+
+## [0.14.0-alpha] - 2026-08-31
+
+Notes reconstructed from the tag annotation; see the note under 0.15.0-alpha.
+
+### Added
+
+- **Deferred tenant-admin enrollment seam** (#189, #193).
+  `AdminEnrollmentMode` on `ProvisionTenant` — `cert` (default) or `deferred`
+  (pending-invite) — with fail-closed pending-admin validation including a
+  canonical-factor-store check (`service.ActiveFactorChecker` /
+  `HasActiveFactor`), and `user.CreateUserRequest.Pending`.
+- Registration-config ownership documented (it belongs to quicbaas
+  `iam.self_service_registration`, not here).
+
+## [0.13.0-alpha] - 2026-08-28
+
+Notes reconstructed from the tag annotation; see the note under 0.15.0-alpha.
+
+### Added
+
+- **Coordination surface for control-plane consumers** (#166, #168) —
+  lock / lease / CAS / watch. Hard acknowledged-deadline lease-loss model,
+  `LeaseLostError` on late acks, a terminal-error contract on `WatchStream`, and
+  bounded cleanup revoke.
+
+### Fixed
+
+- **`dek_accesses` counts reads, not attempts** (#164) — the counter is
+  incremented inside the borrow.
+- **`ChangePassword` leaves the barrier still checking passwords** (#161).
+- **`withCurrentDEK`'s purge borrow is held across the callback**, with both
+  escapes fenced (#82).
+
+### Security
+
+- Bumped echo to v4.15.3 for CVE-2026-55677 (#155).
+
 ## [0.12.0-alpha] - 2026-08-25
 
 The guarded-verb plane: the conditional writes that arbitrate a cross-process

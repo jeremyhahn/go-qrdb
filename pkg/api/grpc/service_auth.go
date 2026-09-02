@@ -49,6 +49,10 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 		WithoutEmailLoginKey: req.GetWithoutEmailLoginKey(),
 		TenantID:             req.GetTenantId(),
 		RoleIDs:              req.GetRoleIds(),
+		GroupIDs:             req.GetGroupIds(),
+		AuthMethods:          req.GetAuthMethods(),
+		Lifecycle:            user.Lifecycle(req.GetLifecycle()),
+		Pending:              req.GetPending(),
 	})
 	if err != nil {
 		return nil, mapAuthServiceError(err)
@@ -136,13 +140,35 @@ func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserPr
 	}
 
 	updateReq := &user.UpdateUserRequest{
-		ID:       req.GetId(),
-		Username: req.GetUsername(),
-		Email:    req.GetEmail(),
-		Name:     req.GetName(),
+		ID:        req.GetId(),
+		Username:  req.GetUsername(),
+		Email:     req.GetEmail(),
+		Name:      req.GetName(),
+		Lifecycle: user.Lifecycle(req.GetLifecycle()),
 	}
 	if len(req.GetRoleIds()) > 0 {
 		updateReq.RoleIDs = req.GetRoleIds()
+	}
+	// nil means "leave alone" and an empty non-nil slice means "clear", and
+	// proto3 cannot tell an absent repeated field from an empty one — so the
+	// explicit has_* flag is what carries the distinction. Without it a caller
+	// could never REVOKE a membership over gRPC: an empty list would read as
+	// "no change" and the revocation would silently do nothing.
+	if req.GetHasGroupIds() {
+		updateReq.GroupIDs = req.GetGroupIds()
+		if updateReq.GroupIDs == nil {
+			updateReq.GroupIDs = []string{}
+		}
+	}
+	if req.GetHasAuthMethods() {
+		updateReq.AuthMethods = req.GetAuthMethods()
+		if updateReq.AuthMethods == nil {
+			updateReq.AuthMethods = []string{}
+		}
+	}
+	if sec := req.GetLastAuthUnix(); sec > 0 {
+		at := time.Unix(sec, 0).UTC()
+		updateReq.LastAuth = &at
 	}
 
 	u, err := s.userSvc.UpdateUser(ctx, updateReq)
@@ -551,16 +577,23 @@ func userToProto(u *user.User) *pb.UserResponse {
 		return nil
 	}
 	return &pb.UserResponse{
-		Id:        u.ID,
-		TenantId:  u.TenantID,
-		Username:  u.Username,
-		Email:     u.Email,
-		Name:      u.Name,
-		RoleIds:   u.RoleIDs,
-		Enabled:   u.Enabled,
-		System:    u.System,
-		CreatedAt: u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: u.UpdatedAt.Format(time.RFC3339),
+		Id:          u.ID,
+		TenantId:    u.TenantID,
+		Username:    u.Username,
+		Email:       u.Email,
+		Name:        u.Name,
+		RoleIds:     u.RoleIDs,
+		Enabled:     u.Enabled,
+		System:      u.System,
+		Lifecycle:   string(u.Lifecycle),
+		GroupIds:    u.GroupIDs,
+		AuthMethods: u.AuthMethods,
+		// Seconds rather than RFC 3339 because this is a point in time a client
+		// compares and orders, not one it displays; zero says "never
+		// authenticated" without a second presence field.
+		LastAuthUnix: lastAuthUnix(u.LastAuth),
+		CreatedAt:    u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    u.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -691,6 +724,26 @@ func mapAuthServiceError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 
+	// An undefined lifecycle state, or one not permitted where it was used, is
+	// a malformed argument — the error names the allowed set, so the caller can
+	// fix it. Placed with the other argument errors and above the generic store
+	// branch.
+	var ile *user.InvalidLifecycleError
+	if errors.As(err, &ile) {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	// A transition the table does not connect is FailedPrecondition, not
+	// InvalidArgument: the state named is valid and the caller is not wrong
+	// about it — the RECORD is not somewhere the move can start from. The
+	// commonest instance is an EnableUser racing a delete, which without this
+	// branch was reported as Internal: a server fault for a refusal the server
+	// made deliberately, and one no client could learn to expect.
+	var lte *user.LifecycleTransitionError
+	if errors.As(err, &lte) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+
 	var uve *user.ValidationError
 	if errors.As(err, &uve) {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -790,4 +843,14 @@ func mapAuthServiceError(err error) error {
 	}
 
 	return status.Error(codes.Internal, err.Error())
+}
+
+// lastAuthUnix renders a nil-able last-authentication time as seconds since the
+// epoch, with zero standing for "never authenticated". Zero is unambiguous here
+// because no account authenticates at the epoch.
+func lastAuthUnix(at *time.Time) int64 {
+	if at == nil {
+		return 0
+	}
+	return at.UTC().Unix()
 }

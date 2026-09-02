@@ -2400,3 +2400,308 @@ func TestUserTools_SchemasDeclareEmailAndName(t *testing.T) {
 		}
 	}
 }
+
+// MCP is the transport that keeps getting missed, because it builds an argument
+// MAP while every other transport uses struct literals — an edit shaped around
+// struct fields passes over it silently and nothing fails to compile. These pin
+// the identity fields on both verbs.
+func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{ID: 1001}, nil
+		},
+	}
+	handler := handleUserCreate(svc)
+
+	if _, err := handler(context.Background(), makeReq(map[string]any{
+		"username":     "alice",
+		"email":        "alice@example.com",
+		"group_ids":    `["platform","sre"]`,
+		"auth_methods": `["webauthn","piv"]`,
+		"lifecycle":    "pending",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the service was never called")
+	}
+	if len(got.GroupIDs) != 2 || got.GroupIDs[1] != "sre" {
+		t.Errorf("GroupIDs = %v", got.GroupIDs)
+	}
+	if len(got.AuthMethods) != 2 || got.AuthMethods[1] != "piv" {
+		t.Errorf("AuthMethods = %v", got.AuthMethods)
+	}
+	if got.Lifecycle != user.LifecyclePending {
+		t.Errorf("Lifecycle = %q, want %q", got.Lifecycle, user.LifecyclePending)
+	}
+}
+
+// A flat tool argument cannot carry nil-vs-empty the way JSON null-vs-[] does,
+// so clearing is its own flag. Without it, revoking every membership would be
+// unexpressible over MCP: an empty string reads as "leave alone" and the
+// revocation would report success while doing nothing.
+func TestUserUpdateTool_ClearFlagsExpressRevocation(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        map[string]any
+		wantNil     bool
+		wantCleared bool
+		wantSet     []string
+	}{
+		{name: "absent leaves alone", args: map[string]any{"id": "1001"}, wantNil: true},
+		{
+			name:        "clear flag revokes",
+			args:        map[string]any{"id": "1001", "clear_group_ids": true},
+			wantCleared: true,
+		},
+		{
+			name:    "values replace",
+			args:    map[string]any{"id": "1001", "group_ids": `["platform","sre"]`},
+			wantSet: []string{"platform", "sre"},
+		},
+		{
+			// Values win over the flag: a caller that sends both means to set,
+			// not to clear.
+			name:    "values win over the flag",
+			args:    map[string]any{"id": "1001", "group_ids": `["platform"]`, "clear_group_ids": true},
+			wantSet: []string{"platform"},
+		},
+		{
+			// THE REASON THIS IS JSON. A group id is an opaque minted token, so
+			// a comma inside one is a legitimate character. A CSV encoding split
+			// it into two memberships — granting access to a group the caller
+			// never named, and reporting success (Codex peer review, PR #198).
+			name:    "an id containing a comma stays one id",
+			args:    map[string]any{"id": "1001", "group_ids": `["team,with,commas"]`},
+			wantSet: []string{"team,with,commas"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *user.UpdateUserRequest
+			svc := &mockUserService{
+				updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+					got = req
+					return &user.User{ID: 1001}, nil
+				},
+			}
+			if _, err := handleUserUpdate(svc)(context.Background(), makeReq(tc.args)); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got == nil {
+				t.Fatal("the service was never called")
+			}
+			switch {
+			case tc.wantNil:
+				if got.GroupIDs != nil {
+					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got.GroupIDs)
+				}
+			case tc.wantCleared:
+				if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
+					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+				}
+			default:
+				if len(got.GroupIDs) != len(tc.wantSet) || got.GroupIDs[0] != tc.wantSet[0] {
+					t.Fatalf("GroupIDs = %#v, want %v", got.GroupIDs, tc.wantSet)
+				}
+			}
+		})
+	}
+}
+
+// A malformed last_auth is the caller's mistake and must be reported as one,
+// not swallowed into an update that quietly changed nothing.
+func TestUserUpdateTool_MalformedLastAuthIsAnErrorResult(t *testing.T) {
+	called := false
+	svc := &mockUserService{
+		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+			called = true
+			return &user.User{ID: 1001}, nil
+		},
+	}
+	result, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+		"id":        "1001",
+		"last_auth": "yesterday",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected an error result for a malformed last_auth")
+	}
+	if called {
+		t.Error("the update reached the service despite a malformed timestamp")
+	}
+}
+
+// A malformed identifier list must be REPORTED, not silently read as "leave
+// alone". Quietly leaving an authorization list unchanged when the caller asked
+// to change it is the same class of defect as changing it wrongly: a success
+// that did something other than what was requested.
+func TestUserUpdateTool_MalformedIdentifierListIsAnErrorResult(t *testing.T) {
+	for _, bad := range []string{"not-json", `{"a":1}`, `["ok", 7]`} {
+		called := false
+		svc := &mockUserService{
+			updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+				called = true
+				return &user.User{ID: 1001}, nil
+			},
+		}
+		result, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+			"id":        "1001",
+			"group_ids": bad,
+		}))
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", bad, err)
+		}
+		if !result.IsError {
+			t.Errorf("%q: expected an error result", bad)
+		}
+		if called {
+			t.Errorf("%q: the update reached the service despite a malformed list", bad)
+		}
+	}
+}
+
+// Blank elements are not dropped. The store refuses them, and this surface must
+// send what the caller wrote so that refusal actually reaches them.
+func TestUserUpdateTool_BlankIdentifierElementReachesTheStore(t *testing.T) {
+	var got *user.UpdateUserRequest
+	svc := &mockUserService{
+		updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{ID: 1001}, nil
+		},
+	}
+	if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+		"id":        "1001",
+		"group_ids": `["ok",""]`,
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the service was never called")
+	}
+	if len(got.GroupIDs) != 2 || got.GroupIDs[1] != "" {
+		t.Fatalf("GroupIDs = %#v; the blank element was dropped instead of forwarded for the store to refuse", got.GroupIDs)
+	}
+}
+
+// mcp.ParseString routes through cast.ToString, which returns "" for anything
+// it cannot convert — a native JSON array included. Reading the argument that
+// way made every malformed or non-string payload indistinguishable from an
+// ABSENT one, so update left the field unchanged and create dropped the list,
+// both reporting success. That is the same silent-corruption class the JSON
+// encoding exists to close, reached by a different route (Codex, PR #198).
+func TestParseOpaqueStringList_ShapesAreNeverMistakenForAbsence(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    map[string]any
+		want    []string
+		wantNil bool
+		wantErr bool
+	}{
+		{name: "absent is nil", args: map[string]any{}, wantNil: true},
+		{name: "explicit null is nil", args: map[string]any{"group_ids": nil}, wantNil: true},
+		{name: "JSON null is nil", args: map[string]any{"group_ids": "null"}, wantNil: true},
+		{name: "JSON string array", args: map[string]any{"group_ids": `["a","b"]`}, want: []string{"a", "b"}},
+		{name: "JSON empty array clears", args: map[string]any{"group_ids": `[]`}, want: []string{}},
+		{
+			// A raw MCP client answering the schema with a real array is a
+			// legitimate caller, not a malformed one.
+			name: "native array", args: map[string]any{"group_ids": []any{"a", "b"}},
+			want: []string{"a", "b"},
+		},
+		{name: "native empty array clears", args: map[string]any{"group_ids": []any{}}, want: []string{}},
+		{
+			// An in-process caller can hand the tool a []string directly (JSON
+			// only ever produces []any). Cloning it with append([]string(nil),
+			// v...) turned an empty one back into nil — "leave alone" — so a
+			// revocation reported success and revoked nothing.
+			name: "native []string", args: map[string]any{"group_ids": []string{"a", "b"}},
+			want: []string{"a", "b"},
+		},
+		{
+			name: "native empty []string clears",
+			args: map[string]any{"group_ids": []string{}}, want: []string{},
+		},
+		{
+			// The values that used to vanish.
+			name: "empty string is an error", args: map[string]any{"group_ids": ""}, wantErr: true,
+		},
+		{name: "number is an error", args: map[string]any{"group_ids": 7}, wantErr: true},
+		{name: "object is an error", args: map[string]any{"group_ids": map[string]any{"a": 1}}, wantErr: true},
+		{name: "non-string element is an error", args: map[string]any{"group_ids": []any{"a", 7}}, wantErr: true},
+		{name: "not JSON is an error", args: map[string]any{"group_ids": "a,b"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseOpaqueStringList(makeReq(tc.args), "group_ids")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %#v", got)
+				}
+				var argErr *ToolArgumentError
+				if !errors.As(err, &argErr) {
+					t.Fatalf("expected *ToolArgumentError, got %T: %v", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("got %#v, want nil (absent)", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("got nil, want %v", tc.want)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %#v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %#v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// An empty list must CLEAR, not be read as absent — the whole point of
+// distinguishing the two — and it must do so through EVERY encoding a caller
+// can use, since each takes a different branch on the way in.
+func TestUserUpdateTool_EmptyListClearsThroughEveryEncoding(t *testing.T) {
+	for name, value := range map[string]any{
+		"JSON string":     `[]`,
+		"native []any":    []any{},
+		"native []string": []string{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got *user.UpdateUserRequest
+			svc := &mockUserService{
+				updateUserFn: func(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+					got = req
+					return &user.User{ID: 1001}, nil
+				},
+			}
+			if _, err := handleUserUpdate(svc)(context.Background(), makeReq(map[string]any{
+				"id":        "1001",
+				"group_ids": value,
+			})); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got == nil {
+				t.Fatal("the service was never called")
+			}
+			if got.GroupIDs == nil || len(got.GroupIDs) != 0 {
+				t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got.GroupIDs)
+			}
+		})
+	}
+}

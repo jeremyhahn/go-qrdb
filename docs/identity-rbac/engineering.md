@@ -20,12 +20,18 @@ implement the corresponding provider interface — nil-check them.
 
 ```go
 type User struct {
-	ID           string             `json:"id"`           // globally unique UUID
+	ID           uint64             `json:"id"`           // store-assigned Snowflake; never zero when persisted
 	Username     string             `json:"username"`     // unique within tenant; maps to cert CN
+	Email        string             `json:"email"`        // CANONICAL LOGIN KEY, unique within tenant
+	Name         string             `json:"name"`         // display only; never a lookup key
 	TenantID     string             `json:"tenantID"`     // maps to cert OU
-	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role UUIDs
-	Enabled      bool               `json:"enabled"`
+	RoleIDs      []string           `json:"roleIDs"`      // system-scoped role identifiers
+	Lifecycle    Lifecycle          `json:"lifecycle"`    // CANONICAL account state
+	Enabled      bool               `json:"enabled"`      // DERIVED: Lifecycle == active
 	System       bool               `json:"system"`       // built-in, cannot be deleted
+	GroupIDs     []string           `json:"groupIDs"`     // opaque membership ids; qrdb owns no Group entity
+	AuthMethods  []string           `json:"authMethods"`  // permitted methods (policy), lowercased
+	LastAuth     *time.Time         `json:"lastAuth"`     // high-water mark; never moves backwards
 	RoleBindings []RoleBinding      `json:"roleBindings"` // {RoleID, TenantID} — tenant-scoped RBAC
 	Attributes   map[string]string  `json:"attributes"`   // ABAC
 	CertBindings []CertBinding      `json:"certBindings"` // mTLS SPKI thumbprints
@@ -34,6 +40,36 @@ type User struct {
 	UpdatedAt    time.Time          `json:"updatedAt"`
 }
 ```
+
+`User.CanAuthenticate()` is the check a login or credential-registration
+ceremony makes. It is `Lifecycle == active` and nothing else.
+
+### Lifecycle — `pkg/user/lifecycle.go`
+
+```go
+type Lifecycle string
+const (
+	LifecyclePending   Lifecycle = "pending"   // created, never activated
+	LifecycleActive    Lifecycle = "active"    // the ONLY state that may authenticate
+	LifecycleSuspended Lifecycle = "suspended" // administrative hold
+	LifecycleLocked    Lifecycle = "locked"    // automated lockout
+	LifecycleDisabled  Lifecycle = "disabled"  // administratively deactivated
+	LifecycleDeleting  Lifecycle = "deleting"  // TERMINAL: deletion in progress
+)
+```
+
+| From \ To | pending | active | suspended | locked | disabled | deleting |
+|---|---|---|---|---|---|---|
+| **pending**   | — | ✓ | ✗ | ✗ | ✓ | ✓ |
+| **active**    | ✗ | — | ✓ | ✓ | ✓ | ✓ |
+| **suspended** | ✗ | ✓ | — | ✓ | ✓ | ✓ |
+| **locked**    | ✗ | ✓ | ✓ | — | ✓ | ✓ |
+| **disabled**  | ✗ | ✓ | ✗ | ✗ | — | ✓ |
+| **deleting**  | ✗ | ✗ | ✗ | ✗ | ✗ | — |
+
+`—` on the diagonal is admitted as a no-op, including `deleting → deleting`,
+which is what keeps a partially completed deletion resumable. Only `pending`,
+`active` and `disabled` are directly creatable.
 
 ### Cert binding — `pkg/user/cert_binding.go`
 
@@ -111,8 +147,72 @@ which walks the category definitions and calls `Register` for each.
   extended at runtime by a caller.
 - **`FactorEnrollment.Data` is opaque.** qrdb stores it and never interprets it;
   verification is the registered `authfactors.Factor`'s job.
-- **`Enabled: false` blocks authentication** and is reversible; `System: true`
-  records are undeletable.
+- **`Lifecycle` is the single writable source of truth for account state.**
+  `Enabled` is re-derived from it on every write and every decode, and no
+  request field sets `Enabled` directly — two writable sources are how a record
+  ends up claiming to be locked and active at once.
+- **`normalize()` runs after every decode.** A record written before the field
+  existed has its state derived from `Enabled` (`true → active`,
+  `false → disabled`), so no migration pass is needed and no pre-upgrade account
+  is locked out by an empty state. A state that is present but UNRECOGNIZED is
+  left exactly as written — it came from a newer node, and `CanAuthenticate`
+  already fails closed on it.
+- **`deleting` is terminal and closes the registration-during-deletion window.**
+  A deletion writes it before its first mutation; from that instant
+  `CanAuthenticate` is false and neither `EnableUser`, `DisableUser` nor
+  `UpdateUser` can move the record to another state.
+- **`DeleteUser` CLAIMS the record by marking it `deleting` before the cascade**
+  (a conditional write against the version it read), and the cascade then
+  commits against the marked version. Until that mark lands the delete has not
+  won the record — another writer can still bind a credential or move a handle,
+  and the cascade would be sweeping a snapshot that no longer describes the
+  account. A delete that fails part way leaves an account that cannot
+  authenticate and cannot be re-enabled; that is the correct direction to fail,
+  and a retry of `DeleteUser` finishes it because re-asserting the mark is a
+  no-op.
+- **A terminal record accepts NO mutation.** `UpdateUser` refuses every edit
+  (`onlyReassertsLifecycle` is the sole exception, and is an exhaustive field
+  list), the `LastAuth` fast path refuses, and `AddCertBinding` refuses.
+  Refusing only the lifecycle transition left every other field writable, so a
+  caller could still bind a certificate to an account whose deletion had begun —
+  the exact orphan the marker exists to prevent.
+- **`AuthMethods` is ENFORCED at qrdb's authentication gate**, not merely
+  stored. `pkg/auth/middleware` carries the name of the authenticator that
+  succeeded and refuses with `AuthMethodNotPermittedError` (403 /
+  `PermissionDenied`) when the account's policy is non-empty and does not list
+  it. Two limits are stated rather than assumed: an EMPTY policy states no
+  restriction, so accounts predating the field are unaffected; and the check
+  applies only where the method is OBSERVABLE — a forwarded on-behalf assertion
+  and a capability module's session token carry none qrdb can see, and the layer
+  that ran that ceremony enforces the policy there. That distinction is carried
+  by an explicit flag (`authMethod.known`), never by an empty name: an
+  authenticator that names itself `""` is observed, not unobservable, and
+  conflating the two let it walk past a non-empty policy through the ordinary
+  chain. An observed method whose name does not normalize fails closed.
+- **`EnableUser` / `DisableUser` are transitions, not boolean sets** — to
+  `active` and `disabled` respectively. Both are refused on a `deleting` record.
+- **`GroupIDs` are opaque and case-PRESERVING**; `AuthMethods` are opaque and
+  case-FOLDED. Both are trimmed and de-duplicated by `NormalizeGroupIDs` /
+  `NormalizeAuthMethods`, and a blank entry is refused rather than dropped.
+  On an update, `nil` means "leave alone" and an empty non-nil slice means
+  "clear".
+- **`LastAuth` only moves forward.** A value at or before the stored one is
+  ignored, so overlapping logins written out of order cannot roll an account's
+  last-seen time backwards. It is stored in UTC.
+- **A `LastAuth`-only update is a commutative merge and RETRIES a lost commit**
+  rather than returning `ConcurrentUpdateError`. Every other field is a
+  replacement, where a lost race means the caller's view was stale and only the
+  caller can decide what to do; `max(stored, requested)` has nothing stale to
+  reconcile, so re-reading and recomputing is always correct. It matters because
+  of who writes it: `LastAuth` is written on the login path, and routing a login
+  through the general update path made its timestamp lost — and lost *below* the
+  true high-water mark — whenever an administrator happened to be editing the
+  same account. The retry is bounded (`lastAuthMergeAttempts`) with no sleep,
+  and writes nothing at all when the stored value is already at or past the
+  request. `lastAuthOnly` is an exhaustive field list: a field added to
+  `UpdateUserRequest` without being named there would be silently dropped by the
+  fast path, and a test asserts the list covers every field.
+- **`System: true` records are undeletable.**
 - **Built-in role IDs are deterministic** UUIDv8 over SHA-256 — see
   [../firstboot/](../firstboot/engineering.md) and the identifier-compatibility
   rules under [Persistence](#persistence).
@@ -122,7 +222,11 @@ which walks the category definitions and calls `Register` for each.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Certificate presents no matching binding | authentication fails | **yes** |
-| User disabled | authentication fails | **yes** |
+| User not in `active` lifecycle | authentication fails | **yes** |
+| Lifecycle state unrecognized by this build | authentication fails | **yes** |
+| Transition the table does not connect (incl. out of `deleting`) | `LifecycleTransitionError` | **yes** |
+| Undefined or not-creatable lifecycle state | `InvalidLifecycleError` naming the allowed set | **yes** |
+| Blank `groupIDs` / `authMethods` entry | `ValidationError`, nothing written | **yes** |
 | Unregistered permission string | `Parse` error | **yes** |
 | Missing permission for the operation | permission denied | **yes** |
 | Deleting a `System: true` user or a built-in role | refused | **yes** |

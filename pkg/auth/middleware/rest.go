@@ -142,7 +142,11 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 				writeJSONError(w, code, authnErr.Error())
 				return
 			}
-			ctx, identity, authnErr = m.finalizeIdentity(ctx, fbIdentity)
+			// No auth method: this identity came from a capability module's own
+			// session-token plane (the JWT pairs xkms's FIDO2/PIV logins mint),
+			// a ceremony qrdb does not speak and cannot name. The module that
+			// ran it enforces the permitted-method policy there.
+			ctx, identity, authnErr = m.finalizeIdentity(ctx, fbIdentity, unknownMethod())
 			if authnErr != nil {
 				code := mapHTTPAuthError(authnErr)
 				writeJSONError(w, code, authnErr.Error())
@@ -210,6 +214,14 @@ func mapHTTPAuthError(err error) int {
 
 	var disabled *UserDisabledError
 	if errors.As(err, &disabled) {
+		return http.StatusForbidden
+	}
+
+	// 403, not 401: the credential is valid and the account is fine — this way
+	// in is not one the account may use, and retrying it will never work. A 401
+	// would tell the client to present credentials again.
+	var badMethod *AuthMethodNotPermittedError
+	if errors.As(err, &badMethod) {
 		return http.StatusForbidden
 	}
 

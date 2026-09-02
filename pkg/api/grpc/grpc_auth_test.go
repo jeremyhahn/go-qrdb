@@ -54,9 +54,12 @@ type mockUserService struct {
 	disableErr        error
 	lastUpdateRoleIDs []string
 	lastGetID         uint64
+	lastCreateReq     *user.CreateUserRequest
+	lastUpdateReq     *user.UpdateUserRequest
 }
 
-func (m *mockUserService) CreateUser(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+func (m *mockUserService) CreateUser(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+	m.lastCreateReq = req
 	if m.createErr != nil {
 		return nil, m.createErr
 	}
@@ -84,6 +87,7 @@ func (m *mockUserService) UpdateUser(_ context.Context, req *user.UpdateUserRequ
 		return nil, m.updateErr
 	}
 	m.lastUpdateRoleIDs = req.RoleIDs
+	m.lastUpdateReq = req
 	return m.updateResult, nil
 }
 
@@ -1882,5 +1886,209 @@ func TestWithCertProvider_Nil(t *testing.T) {
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithCertProvider(nil))
 	if srv.certProv != nil {
 		t.Fatal("expected certProv to be nil")
+	}
+}
+
+// The gRPC UserResponse carries the canonical lifecycle state beside the
+// derived `enabled` boolean. Without it a gRPC client cannot tell a suspended
+// account from a locked or pending one — every non-active state arrives as the
+// same false.
+func TestUserToProto_CarriesLifecycle(t *testing.T) {
+	for _, l := range []user.Lifecycle{
+		user.LifecyclePending,
+		user.LifecycleActive,
+		user.LifecycleSuspended,
+		user.LifecycleLocked,
+		user.LifecycleDisabled,
+		user.LifecycleDeleting,
+	} {
+		u := &user.User{
+			ID:        2,
+			Username:  "bob",
+			TenantID:  "tenant-2",
+			Lifecycle: l,
+			Enabled:   l == user.LifecycleActive,
+			CreatedAt: testTime,
+			UpdatedAt: testTime,
+		}
+		result := userToProto(u)
+		if result.GetLifecycle() != string(l) {
+			t.Errorf("lifecycle: got %q, want %q", result.GetLifecycle(), l)
+		}
+		if result.GetEnabled() != (l == user.LifecycleActive) {
+			t.Errorf("enabled for %q: got %v", l, result.GetEnabled())
+		}
+	}
+}
+
+// A lifecycle refusal is a deliberate server decision, so it must not reach the
+// client as Internal. The two errors carry different meanings and get different
+// codes: an undefined state is the caller's mistake, a disconnected transition
+// is a precondition on the record.
+func TestMapAuthServiceError_LifecycleErrors(t *testing.T) {
+	invalid := mapAuthServiceError(&user.InvalidLifecycleError{Value: "quarantined", Op: "create"})
+	if got := status.Code(invalid); got != codes.InvalidArgument {
+		t.Errorf("InvalidLifecycleError: got %v, want %v", got, codes.InvalidArgument)
+	}
+
+	refused := mapAuthServiceError(&user.LifecycleTransitionError{
+		ID: 7, From: user.LifecycleDeleting, To: user.LifecycleActive,
+	})
+	if got := status.Code(refused); got != codes.FailedPrecondition {
+		t.Errorf("LifecycleTransitionError: got %v, want %v", got, codes.FailedPrecondition)
+	}
+}
+
+// Every identity field must reach a gRPC client, and "never authenticated" must
+// arrive as zero rather than as a 1970 timestamp.
+func TestUserToProto_CarriesEveryIdentityField(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	u := &user.User{
+		ID:          3,
+		Username:    "carol",
+		TenantID:    "tenant-3",
+		Lifecycle:   user.LifecycleActive,
+		Enabled:     true,
+		GroupIDs:    []string{"platform", "sre"},
+		AuthMethods: []string{"webauthn", "piv"},
+		LastAuth:    &at,
+		CreatedAt:   testTime,
+		UpdatedAt:   testTime,
+	}
+	got := userToProto(u)
+	if len(got.GetGroupIds()) != 2 || got.GetGroupIds()[0] != "platform" {
+		t.Errorf("group_ids: got %v", got.GetGroupIds())
+	}
+	if len(got.GetAuthMethods()) != 2 || got.GetAuthMethods()[1] != "piv" {
+		t.Errorf("auth_methods: got %v", got.GetAuthMethods())
+	}
+	if got.GetLastAuthUnix() != at.Unix() {
+		t.Errorf("last_auth_unix: got %d, want %d", got.GetLastAuthUnix(), at.Unix())
+	}
+
+	u.LastAuth = nil
+	if got := userToProto(u).GetLastAuthUnix(); got != 0 {
+		t.Errorf("never-authenticated last_auth_unix: got %d, want 0", got)
+	}
+}
+
+func TestLastAuthUnix(t *testing.T) {
+	if got := lastAuthUnix(nil); got != 0 {
+		t.Fatalf("nil: got %d, want 0", got)
+	}
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if got := lastAuthUnix(&at); got != at.Unix() {
+		t.Fatalf("got %d, want %d", got, at.Unix())
+	}
+}
+
+// proto3 cannot tell an absent repeated field from an empty one, so the has_*
+// flags are what carry "leave alone" versus "clear". Without them a gRPC caller
+// could never REVOKE a membership: an empty list would read as "no change" and
+// the revocation would silently succeed while doing nothing.
+func TestUpdateUser_ProtoHasFlagsCarryClearVersusLeaveAlone(t *testing.T) {
+	cases := []struct {
+		name        string
+		req         *pb.UpdateUserProtoRequest
+		wantNil     bool
+		wantCleared bool
+		wantSet     []string
+	}{
+		{
+			name:    "no flag leaves alone",
+			req:     &pb.UpdateUserProtoRequest{Id: 1},
+			wantNil: true,
+		},
+		{
+			// The trap: values present but the flag not set. Honouring them
+			// would make the flag decorative.
+			name:    "values without the flag are ignored",
+			req:     &pb.UpdateUserProtoRequest{Id: 1, GroupIds: []string{"platform"}},
+			wantNil: true,
+		},
+		{
+			name:        "flag with no values clears",
+			req:         &pb.UpdateUserProtoRequest{Id: 1, HasGroupIds: true},
+			wantCleared: true,
+		},
+		{
+			name:    "flag with values replaces",
+			req:     &pb.UpdateUserProtoRequest{Id: 1, HasGroupIds: true, GroupIds: []string{"platform", "sre"}},
+			wantSet: []string{"platform", "sre"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &mockUserService{updateResult: &user.User{ID: 1}}
+			s := &qrdbServiceServer{userSvc: svc}
+			if _, err := s.UpdateUser(context.Background(), tc.req); err != nil {
+				t.Fatalf("UpdateUser: %v", err)
+			}
+			got := svc.lastUpdateReq.GroupIDs
+			switch {
+			case tc.wantNil:
+				if got != nil {
+					t.Fatalf("GroupIDs = %#v, want nil (leave alone)", got)
+				}
+			case tc.wantCleared:
+				if got == nil || len(got) != 0 {
+					t.Fatalf("GroupIDs = %#v, want a non-nil empty slice (clear)", got)
+				}
+			default:
+				if len(got) != len(tc.wantSet) || got[0] != tc.wantSet[0] {
+					t.Fatalf("GroupIDs = %#v, want %v", got, tc.wantSet)
+				}
+			}
+		})
+	}
+}
+
+// The identity fields must survive the proto -> domain mapping on both verbs.
+func TestCreateAndUpdateUser_ProtoCarriesIdentityFields(t *testing.T) {
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+
+	svc := &mockUserService{createResult: &user.User{ID: 1}, updateResult: &user.User{ID: 1}}
+	s := &qrdbServiceServer{userSvc: svc}
+
+	if _, err := s.CreateUser(context.Background(), &pb.CreateUserRequest{
+		Username:    "bob",
+		Email:       "bob@example.com",
+		GroupIds:    []string{"platform"},
+		AuthMethods: []string{"webauthn"},
+		Lifecycle:   string(user.LifecyclePending),
+	}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if got := svc.lastCreateReq; got.Lifecycle != user.LifecyclePending ||
+		len(got.GroupIDs) != 1 || len(got.AuthMethods) != 1 {
+		t.Fatalf("create request dropped fields: %+v", got)
+	}
+
+	if _, err := s.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{
+		Id:             1,
+		Lifecycle:      string(user.LifecycleSuspended),
+		HasAuthMethods: true,
+		AuthMethods:    []string{"piv"},
+		LastAuthUnix:   at.Unix(),
+	}); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	got := svc.lastUpdateReq
+	if got.Lifecycle != user.LifecycleSuspended {
+		t.Errorf("Lifecycle = %q", got.Lifecycle)
+	}
+	if len(got.AuthMethods) != 1 || got.AuthMethods[0] != "piv" {
+		t.Errorf("AuthMethods = %v", got.AuthMethods)
+	}
+	if got.LastAuth == nil || !got.LastAuth.Equal(at) {
+		t.Errorf("LastAuth = %v, want %v", got.LastAuth, at)
+	}
+
+	// Zero seconds means "not supplied", not 1970.
+	if _, err := s.UpdateUser(context.Background(), &pb.UpdateUserProtoRequest{Id: 1}); err != nil {
+		t.Fatalf("UpdateUser: %v", err)
+	}
+	if svc.lastUpdateReq.LastAuth != nil {
+		t.Errorf("LastAuth = %v, want nil for last_auth_unix=0", svc.lastUpdateReq.LastAuth)
 	}
 }

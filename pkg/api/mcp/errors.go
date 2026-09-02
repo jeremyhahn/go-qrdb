@@ -173,3 +173,21 @@ type ImportFileTooLargeError struct {
 func (e *ImportFileTooLargeError) Error() string {
 	return "mcp: import file too large: " + strconv.Itoa(e.Size) + " bytes exceeds max " + strconv.Itoa(e.Max) + " bytes"
 }
+
+// ToolArgumentError reports a tool argument whose SHAPE is wrong — an array
+// where a scalar arrived, or a non-string element in a list of identifiers.
+//
+// It is distinct from a validation failure inside the store: nothing was
+// attempted, because the argument could not be read as the type the tool
+// declares. Coercing instead would be worse than refusing — these lists carry
+// opaque identifiers, and a value the caller did not write is not an
+// improvement on an error.
+type ToolArgumentError struct {
+	Argument string
+	Reason   string
+}
+
+// Error returns a human-readable description naming the argument.
+func (e *ToolArgumentError) Error() string {
+	return "mcp: argument " + e.Argument + ": " + e.Reason
+}

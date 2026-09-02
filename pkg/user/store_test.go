@@ -41,10 +41,33 @@ type memKVStore struct {
 	data sync.Map
 	// atomicMu serialises the AtomicKVStore verbs against each other.
 	atomicMu sync.Mutex
+
+	// beforeCAS, when set, runs immediately before a CompareAndSwap evaluates
+	// its guard, with the store's own lock NOT yet taken. It exists so a test
+	// can commit an interfering write at exactly the instant that makes a
+	// caller lose the race, instead of spawning goroutines and hoping the
+	// interleaving happens — a hope that produces a test which passes against
+	// broken code most of the time.
+	//
+	// It is a plain field rather than an atomic because it is set before the
+	// call under test and only ever read on that call's own goroutine.
+	beforeCAS func(key string)
+
+	// onDelete, when set, runs immediately before a Delete removes a key. It
+	// lets a test observe the store at the instant a cascade takes its first
+	// destructive step, which is the only place that can say whether the record
+	// was claimed BEFORE the cascade or merely during it.
+	onDelete func(key string)
 }
 
 func newMemKVStore() *memKVStore {
 	return &memKVStore{}
+}
+
+func (m *memKVStore) noteDelete(key string) {
+	if m.onDelete != nil {
+		m.onDelete(key)
+	}
 }
 
 func (m *memKVStore) Put(_ context.Context, key string, value []byte) error {
@@ -72,6 +95,7 @@ func (m *memKVStore) PutIfAbsent(_ context.Context, key string, value []byte) (b
 }
 
 func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.noteDelete(key)
 	m.atomicMu.Lock()
 	defer m.atomicMu.Unlock()
 	v, ok := m.data.Load(key)
@@ -83,6 +107,9 @@ func (m *memKVStore) CompareAndDelete(_ context.Context, key string, expected []
 }
 
 func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	if m.beforeCAS != nil {
+		m.beforeCAS(key)
+	}
 	m.atomicMu.Lock()
 	defer m.atomicMu.Unlock()
 	v, ok := m.data.Load(key)
@@ -102,6 +129,7 @@ func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
 }
 
 func (m *memKVStore) Delete(_ context.Context, key string) error {
+	m.noteDelete(key)
 	m.data.Delete(key)
 	return nil
 }

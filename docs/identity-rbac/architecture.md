@@ -96,7 +96,7 @@ handle, so a global index would forbid that while buying nothing.
 
 | Piece | Package | Owner |
 |---|---|---|
-| User model, cert bindings, role bindings, attributes | `pkg/user` | go-qrdb |
+| User model, lifecycle state, cert bindings, role bindings, group membership, attributes | `pkg/user` | go-qrdb |
 | Roles | `pkg/role` | go-qrdb |
 | Permission vocabulary and registry | `pkg/permission` | go-qrdb |
 | The RBAC PDP, ABAC, middleware, authenticators | `pkg/auth` | go-qrdb |
@@ -111,7 +111,25 @@ handle, so a global index would forbid that while buying nothing.
   root of tenant isolation across every feature.
 - **Enrolment bindings are SPKI thumbprints**, so possession of the private key
   is what authenticates.
-- **`Enabled: false` blocks authentication** without deleting the record.
+- **`Lifecycle` is the single source of truth for whether an account may
+  authenticate** — `pending` · `active` · `suspended` · `locked` · `disabled` ·
+  `deleting`, with `Enabled` a derived projection (`Lifecycle == active`)
+  maintained by the store. `User.CanAuthenticate()` is the check, and it fails
+  closed on a state this build does not recognize.
+- **`deleting` is terminal.** A deletion writes it before its first mutation,
+  and from that instant no concurrent enable, and no credential ceremony
+  finishing late, can make the account authenticable again. `DeleteUser` marks
+  the record before its own cascade, and a terminal record accepts no mutation
+  at all — not an update, not a login timestamp, and above all not a new
+  certificate binding.
+- **`AuthMethods` is a policy qrdb enforces for the authenticators it owns.**
+  An empty policy states no restriction. Where the method is not observable to
+  qrdb — a forwarded assertion, a capability module's own session token — the
+  layer that ran the ceremony enforces it.
+- **Group membership is stored, the Group entity is not owned.** `GroupIDs`
+  holds opaque identifiers; a group's name and the roles it confers belong to
+  the layer performing the authorization that consumes them — the same division
+  qrdb already applies to `Attributes`.
 - **`System: true` users and the built-in roles cannot be deleted.**
 - **Factor data is opaque.** qrdb never parses it, so a factor implementation
   cannot smuggle a decision past the PDP through its blob.
@@ -125,6 +143,11 @@ handle, so a global index would forbid that while buying nothing.
   go-auth's, composed above.
 - **No permission invention at runtime.** The vocabulary is a registry populated
   at `init()`; `Parse` validates against it.
+- **No Group entity.** qrdb stores a user's `GroupIDs` — the membership edge —
+  but owns no group catalog, no group CRUD and no group→role resolution. Roles
+  live here because qrdb's own PDP evaluates them; a group is an indirection for
+  assigning roles to many users, and the layer that owns the mapping is the one
+  that resolves it. Adding a Group entity later would not change this field.
 
 ## Companion documents
 

@@ -63,14 +63,92 @@ key, a renewed certificate for the same key resolves to the same user.
 `User`:
 
 ```json
-{ "id": "…", "username": "alice", "tenantID": "acme",
-  "roleIDs": ["…"], "enabled": true, "system": false,
+{ "id": "…", "username": "alice", "email": "alice@acme.example",
+  "tenantID": "acme", "roleIDs": ["…"], "groupIDs": ["platform"],
+  "lifecycle": "active", "enabled": true, "system": false,
+  "authMethods": ["webauthn", "piv"], "lastAuth": "…",
   "roleBindings": [ { "roleID": "…", "tenantID": "acme" } ],
   "attributes": { "department": "eng" },
   "certBindings": [ { "thumbprint": "…", "kind": 0 } ],
   "factors": [ { "…": "opaque" } ],
   "createdAt": "…", "updatedAt": "…" }
 ```
+
+`lifecycle` is the **canonical account state**: `pending` · `active` ·
+`suspended` · `locked` · `disabled` · `deleting`. `enabled` is a **derived
+projection** of it — exactly `lifecycle == "active"` — kept because it is the
+field existing clients read. It never lies, but it collapses every non-active
+state into one `false`, so a client that needs to tell an operator hold from an
+automated lockout reads `lifecycle`. There is no request field that writes
+`enabled`: a second writable source of truth is how a record ends up claiming to
+be locked and active at once.
+
+Transitions are checked against a fixed table. `pending → active` is the only
+activation; `disabled` and `deleting` are reachable from every non-terminal
+state; **nothing transitions out of `deleting` to another state**. Re-asserting
+the state a record already holds is a no-op, not an error, so a retried request
+— including a retried `deleting` on a partially completed deletion — is safe.
+A refused move returns a `LifecycleTransitionError`; an undefined or
+not-permitted-here state returns an `InvalidLifecycleError` naming what is
+allowed. Only `pending`, `active` and `disabled` may be created directly.
+
+`EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
+they are refused on an account already marked `deleting`.
+
+`groupIDs` are **opaque membership identifiers** — qrdb stores the membership
+edge and does not own a Group entity, exactly as `roleIDs` holds identifiers
+without the user record owning the roles. Trimmed and de-duplicated,
+**case-preserving**, because a group id is a minted token.
+
+`authMethods` is a **policy** statement of what the account may present
+(`webauthn`, `piv`, …), distinct from `factors`, which records what it has
+actually enrolled. Trimmed, de-duplicated and **lowercased** — these are
+protocol names from a closed vocabulary. Empty means no restriction.
+
+It is **enforced**, not merely stored: an authentication that succeeds by a
+method the policy does not list is refused with **403** (gRPC
+`PermissionDenied`) — the credential is valid and retrying the same method will
+never work, so 401 would be the wrong instruction. The check applies only where
+the method is observable to qrdb (its own authenticator chain); a forwarded
+on-behalf assertion and a capability module's session token are enforced by the
+layer that ran that ceremony.
+
+`lastAuth` is a **high-water mark**: a value at or before the one already
+recorded is ignored rather than written, so two logins that overlap in flight
+cannot move an account's last-seen time backwards. A request that sets **only**
+`lastAuth` takes a merge path that RETRIES a lost conditional commit instead of
+returning a conflict — the merge is commutative, so there is nothing stale for
+the caller to reconcile. Combined with any other field it is an ordinary update
+again.
+
+### Setting the identity fields
+
+`groupIDs` and `authMethods` distinguish three states on an update, and every
+transport carries the distinction in its own idiom:
+
+| Intent | REST / QUIC / MCP-response JSON | gRPC | MCP tool arguments |
+|---|---|---|---|
+| Leave alone | key absent, or `null` | `has_group_ids` unset | argument absent |
+| Clear | `[]` | `has_group_ids: true` with no values | `clear_group_ids: true` |
+| Replace | `["a","b"]` | `has_group_ids: true` + values | `group_ids: "[\"a\",\"b\"]"` |
+
+The flags and the clear-argument exist because proto3 cannot distinguish an
+absent repeated field from an empty one, and a flat tool argument cannot either.
+Without them a membership could be granted but never **revoked** — an empty list
+would read as "no change" and the revocation would report success while doing
+nothing.
+
+The MCP list arguments are **JSON arrays**, never comma-separated. A group id is
+an opaque minted token, so a comma is a character it may legitimately contain: a
+CSV encoding splits such an id into two memberships and drops blank elements the
+store would have refused, writing a different authorization graph than the
+caller asked for while reporting success. A malformed list is an error, not a
+silent "leave alone".
+
+`lastAuth` is RFC 3339 on the JSON transports and MCP, and
+`last_auth_unix` (seconds since the epoch, UTC) on gRPC, where `0` means the
+account has never authenticated. On the JSON transports "never" is the **absent
+key**, never a zero timestamp — `1970` is not a login.
 
 `certBindings[].kind`: `0` SPKI thumbprint (**canonical default**) ·
 `1` full-certificate fingerprint (exact pinning) · `2` PIV-attested.
