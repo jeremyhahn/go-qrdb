@@ -103,8 +103,9 @@ func assertSingleKeyGuardedVerbsWork(t *testing.T, cl clients) {
 	if swapped {
 		t.Error("CompareAndSwap must refuse a stale expected value")
 	}
-	if got, _ := cl.kv.Get(ctx, "claim"); string(got) != "acme" {
-		t.Errorf("a refused swap changed the value to %q; want %q untouched", got, "acme")
+	if got, err := cl.kv.Get(ctx, "claim"); err != nil || string(got) != "acme" {
+		t.Errorf("a refused swap must leave the value untouched: Get(claim)=%q err=%v; want %q",
+			got, err, "acme")
 	}
 	swapped, err = cl.guarded.CompareAndSwap(ctx, "claim", []byte("acme"), []byte("globex"))
 	if err != nil {
@@ -113,8 +114,9 @@ func assertSingleKeyGuardedVerbsWork(t *testing.T, cl clients) {
 	if !swapped {
 		t.Error("CompareAndSwap must swap when the expected value matches")
 	}
-	if got, _ := cl.kv.Get(ctx, "claim"); string(got) != "globex" {
-		t.Errorf("after a successful swap key=%q; want %q", got, "globex")
+	if got, err := cl.kv.Get(ctx, "claim"); err != nil || string(got) != "globex" {
+		t.Errorf("a successful swap must store the new value: Get(claim)=%q err=%v; want %q",
+			got, err, "globex")
 	}
 
 	// A swap is not a create. This is what keeps the three verbs distinct, and
@@ -253,9 +255,8 @@ func assertTransactionsWork(t *testing.T, c cell, cl clients) {
 				"must apply its operation set atomically, not partially", k, got, err, want)
 		}
 	}
-	if exists, _ := cl.kv.Exists(ctx, "multi/never"); exists {
-		t.Error("the FAILURE branch was applied for a transaction whose compare held")
-	}
+	assertKeyAbsent(t, cl, "multi/never",
+		"the FAILURE branch was applied for a transaction whose compare held")
 
 	// The guard fails: failure ops apply and success ops do not. Without this
 	// branch the test passes against a transaction service that ignores its
@@ -271,9 +272,8 @@ func assertTransactionsWork(t *testing.T, c cell, cl clients) {
 	if resp.Succeeded {
 		t.Error("a transaction whose compare fails must not report Succeeded")
 	}
-	if exists, _ := cl.kv.Exists(ctx, "multi/wrong"); exists {
-		t.Error("the SUCCESS branch was applied for a transaction whose compare failed")
-	}
+	assertKeyAbsent(t, cl, "multi/wrong",
+		"the SUCCESS branch was applied for a transaction whose compare failed")
 	if got, err := cl.kv.Get(ctx, "multi/fallback"); err != nil || string(got) != "fallback" {
 		t.Errorf("failure branch not applied: %q err=%v", got, err)
 	}
