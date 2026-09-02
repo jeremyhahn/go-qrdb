@@ -47,34 +47,41 @@
 // space: this feature's actionable refusal on a daemon that does NOT run
 // raft.sm_type: mvcc (the default).
 //
-// PRODUCT BUG (confirmed, reported, NOT worked around here -- pkg/** is out
-// of scope for this test package): every "rest" subtest in this file FAILS.
-// `kv restore` is completely unreachable over the REST transport for EVERY
-// caller, including the harness's own full-Owner admin identity -- it always
-// gets a 403 with body "route not authorized (no permission mapping): POST
-// /kv" (note: "/kv", NOT "/kv/restore"). Root cause: pkg/auth/middleware/rest.go's
-// normalizePath (used by RESTMiddleware to look up the required permission
-// before dispatch) has an explicit exact-match list for every OTHER POST/GET
-// /kv/<verb> sub-route -- "/kv/scan", "/kv/range", "/kv/lease", "/kv/revision",
-// "/kv/compact" (pkg/auth/middleware/rest.go:130-133) -- but "/kv/restore" is
-// missing from that list. Because it's missing, normalizePath falls through
-// to its generic case (`strings.HasPrefix(path, "/kv/"): return "/kv"`,
-// rest.go:134-136 -- the branch that exists to method-dispatch /kv/{key}
-// requests), which silently rewrites "/kv/restore" down to "/kv". The lookup
-// table only has PUT/GET/DELETE entries for plain "/kv" (KVPut/KVGet/
-// KVDelete -- pkg/auth/middleware/mapping.go:338-340), not POST, so
-// LookupREST("POST", "/kv") always misses and the DEFAULT-DENY path
-// (rest.go:100-106) rejects the request before REST's own handler
-// (s.handleRestoreToRevision, registered correctly at
-// pkg/api/rest/server.go:649) is ever reached. permission.MVCCRestore IS
-// correctly mapped for "POST /kv/restore" in mapping.go:348 -- the mapping
-// itself is right, only normalizePath's routing to it is broken. Confirmed
-// isolated to REST: the identical scenario over gRPC/QUIC/MCP/Unix in this
-// same file passes cleanly, proving RestoreToRevision, its permission grant,
-// and every transport's own handler wiring are all correct -- this is a
-// REST-middleware-only path-normalization gap. The fix is a one-line
-// addition to normalizePath's exact-match switch: add `path == "/kv/restore"`
-// alongside the other five /kv/<verb> cases already there.
+// STALE PRODUCT-BUG NOTE, CORRECTED 2026-09-02 (go-qrdb#185). The paragraph
+// that stood here said "every 'rest' subtest in this file FAILS" and named a
+// root cause in pkg/auth/middleware/rest.go's normalizePath: an exact-match
+// switch listing /kv/scan, /kv/range, /kv/lease, /kv/revision and /kv/compact
+// but not /kv/restore, so /kv/restore fell through to a generic
+// `HasPrefix(path, "/kv/") -> "/kv"` rewrite and the POST lookup missed.
+//
+// Both halves of that root cause are gone from the tree:
+//
+//   - normalizePath NO LONGER EXISTS. The middleware resolves a route's
+//     permission through RESTRouteRegistry, which matches with chi's own trie,
+//     so templated routes and most-specific-wins resolution come from the
+//     router rather than a parallel pattern table. There is no path-rewrite
+//     step left to lose a sub-route in.
+//   - POST /kv/restore IS registered with its permission, at
+//     pkg/api/rest/server.go:1035
+//     (`s.route(http.MethodPost, "/kv/restore", permission.MVCCRestore, ...)`).
+//
+// What is NOT claimed: that the "rest" subtests now pass. That was not
+// verified when this note was corrected -- the suite needs the docker harness
+// -- and asserting it from a code reading would repeat the mistake this note
+// is being corrected for. What is claimed is narrower and checkable: the
+// mechanism this note names as the cause is not in the tree, so a reader must
+// re-measure rather than trust the diagnosis.
+//
+// That a fix landed and this note never noticed is itself the finding, and it
+// is tracked: go-qrdb#203 measured that no CI leg compiles test/integration/*
+// at all (test/integration/auth has not compiled since the guarded verbs
+// landed, in silence). A suite nothing builds cannot tell you when its
+// known-failing cases start passing.
+//
+// One thing HAS changed for this path as of go-qrdb#185: a known path with an
+// unregistered verb now answers 405 with an Allow header, not 403 "route not
+// authorized (no permission mapping)". Any assertion anywhere on that 403
+// string for a wrong-verb request is now wrong on both the code and the text.
 package integration_test
 
 import (

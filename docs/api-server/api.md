@@ -100,12 +100,40 @@ Absent a database, the server's default (`system`) is used.
 | Bad request | 400 | `INVALID_ARGUMENT` |
 | Unauthenticated | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) |
 | Not found | 404 | `NOT_FOUND` |
 | Conflict / precondition | 409 | `ALREADY_EXISTS` / `FAILED_PRECONDITION` |
 | Quota exceeded | 429 | `RESOURCE_EXHAUSTED` |
 | Barrier sealed, not leader, draining | 503 | `UNAVAILABLE` |
 | Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` |
 | Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` |
+
+### 403 and 405 are different claims
+
+A request whose **path** is a registered API route but whose **method** carries
+no registered permission gets **405 Method Not Allowed** with an `Allow` header
+listing the verbs that path does serve. It is still rejected before the handler
+— default-deny has not changed — but the response says the **verb** is wrong
+rather than the caller's authorization.
+
+This distinction is not cosmetic. Answering 403 there asserts an authorization
+decision about a route that was never registered, and points an operator at
+their grants when the problem is the verb. Measured (go-qrdb#185): an operator
+probing with `PUT` where the write verb is `POST` read the 403 as a permissions
+defect and filed a bug against the route-permission table — a fix that would
+have been inert, because that table only decorates routes that exist.
+
+**The 405 is only reachable after authentication.** An anonymous caller still
+gets 401 with no `Allow` header, so the verb set is never disclosed to an
+unauthenticated request. 403 keeps its meaning: an authenticated caller whose
+grants do not cover a route that exists.
+
+`Allow` is required on a 405 (RFC 9110 §15.5.6), not a nicety.
+
+**gRPC does not have this case.** grpc-go rejects an unregistered method with
+`UNIMPLEMENTED` before any interceptor runs, so a permission-lookup miss there
+means the method *is* served and carries no annotation — a server
+misconfiguration, not a client's wrong verb.
 
 ## Module registration order
 

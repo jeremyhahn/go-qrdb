@@ -352,7 +352,9 @@ func TestRESTMiddleware_APIPath_NoPermissionMapping_DefaultDeny(t *testing.T) {
 	}
 	m := New(&mockAuthorizer{}, WithAuthenticator(authn))
 
+	reached := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := m.RESTMiddleware(testRESTRoutes(), next)
@@ -363,8 +365,25 @@ func TestRESTMiddleware_APIPath_NoPermissionMapping_DefaultDeny(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
-		t.Errorf("expected 403/401 default-deny, got %d", w.Code)
+	// THE PROPERTY THIS TEST IS FOR is that the handler is not reached. It was
+	// not asserted -- only the status code was -- so the test would have passed
+	// with the request served and a 403 written by the handler itself. Asserting
+	// it directly is what makes the status-code change below safe to make.
+	if reached {
+		t.Error("default-deny breached: the handler ran for an unregistered verb")
+	}
+
+	// 405, not 403 (go-qrdb#185). This assertion USED to be
+	// `403 || 401`. That was a correct reading of the old behaviour and a
+	// wrong statement of the invariant: a wrong verb on a known path is a
+	// METHOD problem, and answering 403 asserts an authorization decision
+	// about a route that was never registered. Failing closed did not change;
+	// the claim the response makes did.
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for an unregistered verb on a known path, got %d", w.Code)
+	}
+	if allow := w.Header().Get("Allow"); allow == "" {
+		t.Error("405 carries no Allow header; RFC 9110 §15.5.6 requires one")
 	}
 }
 

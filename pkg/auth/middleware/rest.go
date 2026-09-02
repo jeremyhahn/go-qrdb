@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
@@ -163,9 +164,31 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 			// DEFAULT-DENY: the path belongs to a registered API route but the
 			// method carries no registered permission (e.g. a wrong-method
 			// request). Reject rather than fall through to the router.
-			if routes.PathHasRoutes(r.URL.Path) {
-				code := mapHTTPAuthError(&auth.AuthError{Code: "unauthorized"})
-				writeJSONError(w, code, "route not authorized (no permission mapping): "+r.Method+" "+r.URL.Path)
+			//
+			// 405, NOT 403 (go-qrdb#185). Failing closed is right and has not
+			// changed -- the handler is still never reached. What changed is
+			// the claim the response makes. A 403 "route not authorized"
+			// asserts an AUTHORIZATION decision about a route that was never
+			// registered, and tells the caller their credentials or grants are
+			// at fault when the VERB is. That misdirection has a measured
+			// cost: an operator probing with PUT (the API's write verb is
+			// POST) read it as a permissions defect and filed
+			// go-quicbaas#270 against the frozen route-permission table -- a
+			// fix that would have been inert, because that table only
+			// decorates routes that exist. The whole investigation was spent
+			// disproving a diagnosis this message supplied.
+			//
+			// The Allow header is mandatory on a 405 (RFC 9110 §15.5.6), and
+			// it is safe here: this branch is downstream of authentication, so
+			// only an authenticated caller ever sees which verbs a path
+			// serves. The authenticated-but-unauthorized case below keeps 403
+			// and its wording.
+			if allowed := routes.MethodsForPath(r.URL.Path); len(allowed) > 0 {
+				allow := strings.Join(allowed, ", ")
+				w.Header().Set("Allow", allow)
+				writeJSONError(w, http.StatusMethodNotAllowed,
+					"method not allowed: "+r.Method+" is not supported for "+
+						r.URL.Path+" (supported: "+allow+")")
 				return
 			}
 			// Outside the registered API surface: the embedded web UI /

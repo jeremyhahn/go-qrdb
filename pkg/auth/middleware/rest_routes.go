@@ -175,6 +175,10 @@ var restMethodProbeOrder = []string{
 // HTTP method. RESTMiddleware uses it for default-deny: a request whose
 // method does not match a registered route, but whose path belongs to the
 // API surface, is rejected rather than passed through.
+//
+// It short-circuits on the first match rather than delegating to
+// MethodsForPath, because the common case is a path that is on the API
+// surface and the first probe answers it.
 func (rr *RESTRouteRegistry) PathHasRoutes(path string) bool {
 	if rr == nil {
 		return false
@@ -186,6 +190,33 @@ func (rr *RESTRouteRegistry) PathHasRoutes(path string) bool {
 		}
 	}
 	return false
+}
+
+// MethodsForPath returns every HTTP method registered for path, in
+// restMethodProbeOrder, or nil when the path is outside the registered API
+// surface.
+//
+// This is what a 405 response's Allow header is built from, which RFC 9110
+// §15.5.6 makes MANDATORY on a 405 rather than a nicety -- so the "if cheap"
+// framing in go-qrdb#185 understates it: without this the middleware cannot
+// answer 405 correctly at all.
+//
+// The result is only ever disclosed to a caller that has already
+// authenticated: the sole call site sits after the middleware's
+// authentication step, so an anonymous caller still gets 401 and learns
+// nothing about which verbs a path serves.
+func (rr *RESTRouteRegistry) MethodsForPath(path string) []string {
+	if rr == nil {
+		return nil
+	}
+	var methods []string
+	for _, m := range restMethodProbeOrder {
+		rctx := chi.NewRouteContext()
+		if rr.matcher.Find(rctx, m, path) != "" {
+			methods = append(methods, m)
+		}
+	}
+	return methods
 }
 
 // Covered reports whether (method, pattern) was registered with a permission
