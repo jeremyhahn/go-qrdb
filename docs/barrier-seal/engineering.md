@@ -32,7 +32,8 @@ type StrategyRegistry interface {
 type StrategyFactory func() (SealingStrategy, error)
 
 func NewDefaultStrategyRegistry() StrategyRegistry
-func NewDeferredSoftwareStrategy() (SealingStrategy, error)
+func NewSoftwareStrategy(passphrase []byte) (*SoftwareStrategy, error)
+func NewDeferredSoftwareStrategy() *SoftwareStrategy
 func NewNoneStrategy() SealingStrategy
 
 func FIPSEnabled() bool // the stack's single FIPS 140 predicate
@@ -69,6 +70,46 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   **`StrategyShamir` is deliberately NOT in it** — it needs a threshold and
   share count only the daemon's init command can supply, and the daemon
   constructs it inline.
+- **The two software constructors have OPPOSITE credential semantics, and the
+  difference is invisible in the type.** Both return a `SoftwareStrategy`.
+  `NewSoftwareStrategy` binds its passphrase at construction and **ignores the
+  credentials passed to `SealRootKey`/`UnsealRootKey`** — an unseal with the
+  wrong secret returns the root key and a nil error. `NewDeferredSoftwareStrategy`
+  derives from `Credentials.Secret` on every call and refuses a wrong secret.
+  Only the deferred constructor authenticates the caller that unseals the
+  barrier, which is why the default registry and `pkg/database` use it and why
+  `ChangePassword` installs one.
+
+  Two consequences worth stating separately, because each has already cost an
+  incident:
+
+  - **Replacing a registered strategy can silently change whether the barrier
+    authenticates anyone**, with no signature, type or error to notice. A
+    passphrase-rotation feature built on a bound strategy converts a barrier
+    that checks credentials into one that accepts any passphrase for the
+    lifetime of the process.
+  - **A wrong-credential assertion cannot be written against a bound fixture,
+    and a success-only assertion proves nothing against either.** These are two
+    different failures and conflating them leads to deleting the wrong test.
+    Against a bound strategy a *rejection* assertion goes **red** — the strategy
+    accepts the wrong secret — so the test fails over its own fixture rather
+    than over the code it meant to cover; the rejection test is the right test,
+    and every test in this repo that asserts a wrong secret is refused must
+    build its fixture with the deferred constructor. The **vacuous** shape is
+    the opposite one: a test asserting only that the root key comes back passes
+    with either constructor, which is how a whole suite stayed green over a
+    barrier that checked nothing.
+- **A barrier's KDF work factor is not preserved across a strategy
+  replacement, because it cannot currently be expressed.** The deferred
+  constructor takes no KDF parameters, so a deferred strategy always derives
+  with the library defaults for the selected algorithm; the tunable
+  constructors upstream return **bound** strategies, which `ChangePassword`
+  must not install. Tunability and deferred binding are disjoint today, so no
+  deployment can hold a tuned work factor for a password change to discard.
+  This is a latent trap for whoever adds a KDF tuning surface, not a live
+  weakening: adding that surface owns adding the preservation with it, and
+  depends on upstream accepting a deferred constructor that takes explicit KDF
+  parameters plus an accessor for reading them back.
 - **Multiple registered strategies require an explicit choice.**
   `ErrNoStrategySpecified` otherwise. Exactly one registered is selected
   unconditionally.

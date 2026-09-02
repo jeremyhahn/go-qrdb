@@ -101,6 +101,32 @@ type SoftwareStrategy = quicraftseal.SoftwareStrategy
 // NewSoftwareStrategy is a constructor alias for go-quicraft's software
 // strategy. It creates a SoftwareStrategy that auto-selects the KDF based on
 // FIPS mode: PBKDF2-SHA256 in FIPS 140 mode, Argon2id otherwise.
+//
+// The returned strategy BINDS ITS PASSPHRASE AT CONSTRUCTION AND IGNORES THE
+// CREDENTIALS PASSED TO SealRootKey/UnsealRootKey. UnsealRootKey therefore
+// returns the root key for ANY credentials, including wrong ones, and a nil
+// error from it is not evidence that the caller supplied the right passphrase.
+// Use NewDeferredSoftwareStrategy for a barrier that authenticates its
+// unsealer; that is what pkg/database registers and what ChangePassword
+// installs, and TestSoftwareStrategyBindingModes_CredentialSemantics pins both
+// halves of this comment against the code.
+//
+// A TEST ASSERTING THAT A WRONG CREDENTIAL IS REJECTED MUST USE THE DEFERRED
+// CONSTRUCTOR. Against a bound strategy that assertion cannot hold at all: the
+// bound strategy accepts the wrong credential, so the test goes red over its
+// own fixture rather than over the code it meant to cover. Do not read that red
+// as the rejection test being the wrong test — it is the right test on the
+// wrong constructor.
+//
+// The shape that proves nothing is the opposite one: a test asserting only that
+// the root key comes back passes against BOTH constructors, so it says nothing
+// about credential validation. That is how an entire pkg/database suite stayed
+// green over a barrier that checked nothing.
+//
+// Measured three times: the #157 production bypass (after a password change
+// every passphrase unsealed the barrier), that green pkg/database suite, and a
+// #158 fixture whose wrong-passphrase assertion went red because the bound
+// fixture it was built on accepted the wrong passphrase (#162).
 var NewSoftwareStrategy = quicraftseal.NewSoftwareStrategy
 
 // FIPSEnabled is the single FIPS 140 mode predicate for the stack,
@@ -120,6 +146,16 @@ var FIPSEnabled = quicraftseal.FIPSEnabled
 // binding to Seal/Unseal time. The passphrase is extracted from
 // Credentials.Secret on each SealRootKey and UnsealRootKey call, enabling
 // scenarios where the passphrase is not known at construction time.
+//
+// This is the constructor that VALIDATES credentials: an unseal with the wrong
+// secret fails, where NewSoftwareStrategy's bound strategy would succeed. Use
+// it wherever the barrier is expected to authenticate the caller that unseals
+// it, and in any test asserting that it does.
+//
+// It takes no KDF parameters, so a deferred strategy always carries the library
+// defaults for the selected algorithm. A tuned work factor cannot be expressed
+// through this constructor and therefore cannot survive a strategy replacement
+// — see #156 and go-quicraft#72.
 var NewDeferredSoftwareStrategy = quicraftseal.NewDeferredSoftwareStrategy
 
 // EpochBarrier is a type alias for go-quicraft's Barrier. The EpochBarrier

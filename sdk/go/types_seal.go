@@ -244,13 +244,38 @@ var NewNamespacedBackend = seal.NewNamespacedBackend
 // NewShamirStrategy creates a new Shamir sealing strategy.
 var NewShamirStrategy = seal.NewShamirStrategy
 
-// NewSoftwareStrategy creates a new software-only sealing strategy.
+// NewSoftwareStrategy creates a new software-only sealing strategy, binding the
+// given passphrase at construction.
+//
+// The returned strategy IGNORES THE CREDENTIALS PASSED TO
+// SealRootKey/UnsealRootKey — UnsealRootKey succeeds for ANY credentials,
+// including wrong ones, so a nil error from it is not evidence that the
+// supplied passphrase was correct. Building a "change barrier password" or
+// "rotate barrier passphrase" feature on a bound strategy reproduces go-qrdb
+// #157: an authentication bypass in which, after the password change, the
+// wrong passphrase, the old one and the new one all unsealed the barrier.
+//
+// Use NewDeferredSoftwareStrategy for a barrier that authenticates its
+// unsealer. A test asserting that a wrong credential is REJECTED must use the
+// deferred constructor too: against a bound strategy that assertion cannot
+// hold, because the bound strategy accepts the wrong credential and the test
+// then goes red over its own fixture rather than over the code under test. The
+// rejection test is the right test; it just cannot be written on this
+// constructor.
+//
+// The shape that proves nothing is the opposite one — asserting only that the
+// root key comes back succeeds against both constructors, and so says nothing
+// about whether credentials are checked at all.
 var NewSoftwareStrategy = seal.NewSoftwareStrategy
 
 // NewDeferredSoftwareStrategy creates a SoftwareStrategy that defers passphrase
 // binding to Seal/Unseal time. The passphrase is extracted from
 // Credentials.Secret on each call, enabling scenarios where the passphrase is
 // not known at construction time.
+//
+// This is the constructor that VALIDATES credentials: an unseal with the wrong
+// secret fails. Prefer it wherever the barrier is expected to authenticate the
+// caller that unseals it, and in any test asserting that it does.
 var NewDeferredSoftwareStrategy = seal.NewDeferredSoftwareStrategy
 
 // NewSealStore creates a new SealStore backed by the given barrier.
