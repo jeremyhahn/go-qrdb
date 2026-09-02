@@ -118,7 +118,7 @@ rather than the caller's authorization.
 
 This distinction is not cosmetic. Answering 403 there asserts an authorization
 decision about a route that was never registered, and points an operator at
-their grants when the problem is the verb. Measured (go-qrdb#185): an operator
+their grants when the problem is the verb. Measured: an operator
 probing with `PUT` where the write verb is `POST` read the 403 as a permissions
 defect and filed a bug against the route-permission table — a fix that would
 have been inert, because that table only decorates routes that exist.

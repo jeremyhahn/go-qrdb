@@ -129,7 +129,7 @@ even when it lives in a tenant-facing family.
 
 **A permission takes `ScopeSelf` by not being registered with a scope**, so the
 hazard is the opposite of the usual one: the mistake is not forgetting to
-classify, it is classifying a whole family in one call. Measured (go-qrdb#183):
+classify, it is classifying a whole family in one call. Measured:
 `RegisterScope(ScopeTenantOnly, brokerDataPlaneScopePermissions()...)` tagged
 the entire broker data-plane family, and `orchestrator:health` rode along. The
 result was that the operator persona — the one that exists to watch the node —

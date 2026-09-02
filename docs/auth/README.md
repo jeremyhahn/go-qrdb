@@ -97,7 +97,7 @@ Unauthorized** when the caller could not be authenticated, **403 Forbidden**
 when an authenticated caller's grants do not cover a route that exists, and
 **405 Method Not Allowed** (with an `Allow` header) when the path is a
 registered API route but the method carries no registered permission — a wrong
-verb, not an authorization failure (go-qrdb#185).
+verb, not an authorization failure.
 
 The 405 is evaluated *after* authentication, so an anonymous caller gets 401
 and never learns which verbs a path serves. Full mapping:
