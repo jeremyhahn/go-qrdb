@@ -46,25 +46,6 @@ func (w *workItem) SetEntityID(id uint64) { w.ID = id }
 // newWorkItem is the dao.New entity factory.
 func newWorkItem() *workItem { return &workItem{} }
 
-// newSharedTenantNode boots a standalone node and creates two SHARED-PREFIX
-// tenants, which is the default isolation and the consumer's primary path:
-// per the tenancy architecture a tenant is not isolated unless it asks to be,
-// and a prefix tenant lives in the system store separated by keyspace.
-func newSharedTenantNode(ctx context.Context, t *testing.T) *Node {
-	t.Helper()
-	cfg := newTenantIsolationConfig(t)
-	n, err := NewStandaloneNode(ctx, cfg, nil, WithTenantIsolation())
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = n.Close() })
-	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
-
-	for _, id := range []string{"acme", "globex"} {
-		_, err := n.Services().Tenant.CreateTenant(ctx, id, id, tenant.IsolationPrefix)
-		require.NoErrorf(t, err, "CreateTenant(%s, IsolationPrefix)", id)
-	}
-	return n
-}
-
 // TestSharedPrefixTenants_ResolveAndAreDistinguishable records what the
 // resolver actually hands a consumer for two shared-prefix tenants.
 //

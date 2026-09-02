@@ -80,6 +80,11 @@ type intKV struct {
 
 func newIntKV() *intKV { return &intKV{store: make(map[string][]byte)} }
 
+// The compile-time check keeps this double honest. intKV went weeks without
+// CompareAndDelete or CompareAndSwap after the guarded verbs landed (#119/#121)
+// and nothing noticed, because no CI leg compiles this package (#203).
+var _ service.KVServicer = (*intKV)(nil)
+
 func (m *intKV) Put(_ context.Context, k string, v []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -98,6 +103,42 @@ func (m *intKV) PutIfAbsent(_ context.Context, k string, v []byte) (bool, error)
 		return false, nil
 	}
 	m.store[k] = append([]byte(nil), v...)
+	return true, nil
+}
+
+// CompareAndDelete removes k only when its stored value still equals expected,
+// reporting whether it removed. It is the release half of PutIfAbsent
+// (go-qrdb#41) and, like PutIfAbsent above, does the whole compare-and-remove
+// under the one lock so an unguarded delete cannot un-decide what a guarded
+// create decided.
+func (m *intKV) CompareAndDelete(_ context.Context, k string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[k]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	delete(m.store, k)
+	return true, nil
+}
+
+// CompareAndSwap replaces k's value with next only when its stored value still
+// equals expected, reporting whether it replaced. An absent key is left absent
+// -- a swap is not a create (go-qrdb#56).
+func (m *intKV) CompareAndSwap(_ context.Context, k string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[k]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[k] = append([]byte(nil), next...)
 	return true, nil
 }
 

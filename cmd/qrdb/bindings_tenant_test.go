@@ -186,6 +186,16 @@ func (m *mockTenantService) TenantBarrierShamirSealVote(ctx context.Context, ten
 	return &tenant.TenantBarrierUnsealProgress{}, nil
 }
 
+// CheckBarrierMode lives HERE, with the rest of the method set. It used to sit
+// in bindings_officer_test.go, which is `!integration`, while the type is
+// unconstrained: under BUILD_TAGS+integration the double still compiled and had
+// silently stopped implementing tenant.TenantServicer, failing at
+// newTestTenantBinding's call site rather than anywhere near the cause (#203).
+// A type's method set must not straddle a build constraint.
+func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
+	return nil
+}
+
 // newTestTenantBinding creates a TenantBinding wired to the given mock service.
 func newTestTenantBinding(t *testing.T, svc tenant.TenantServicer) *TenantBinding {
 	t.Helper()

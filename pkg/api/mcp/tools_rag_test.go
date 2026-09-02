@@ -28,58 +28,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Mock RAGServicer
-// ---------------------------------------------------------------------------
-
-type mockRAGSvc struct {
-	ingestFn func(context.Context, *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error)
-	queryFn  func(context.Context, *service.RAGQueryRequest) (*service.RAGQueryResponse, error)
-	deleteFn func(context.Context, *service.DeleteRAGDocumentRequest) (*service.DeleteRAGDocumentResponse, error)
-	listFn   func(context.Context, *service.ListRAGDocumentsRequest) (*service.ListRAGDocumentsResponse, error)
-}
-
-var _ service.RAGServicer = (*mockRAGSvc)(nil)
-
-func (m *mockRAGSvc) IngestDocument(ctx context.Context, req *service.IngestDocumentRequest) (*service.IngestDocumentResponse, error) {
-	if m.ingestFn != nil {
-		return m.ingestFn(ctx, req)
-	}
-	return &service.IngestDocumentResponse{DocumentID: req.DocumentID, ChunkCount: 3, Namespace: req.Namespace}, nil
-}
-
-func (m *mockRAGSvc) Query(ctx context.Context, req *service.RAGQueryRequest) (*service.RAGQueryResponse, error) {
-	if m.queryFn != nil {
-		return m.queryFn(ctx, req)
-	}
-	return &service.RAGQueryResponse{
-		Results: []*service.RAGQueryResult{
-			{ChunkText: "passage", Score: 0.1, DocumentID: "doc1", ChunkIndex: 0},
-		},
-	}, nil
-}
-
-func (m *mockRAGSvc) DeleteDocument(ctx context.Context, req *service.DeleteRAGDocumentRequest) (*service.DeleteRAGDocumentResponse, error) {
-	if m.deleteFn != nil {
-		return m.deleteFn(ctx, req)
-	}
-	return &service.DeleteRAGDocumentResponse{DocumentID: req.DocumentID, ChunksRemoved: 2}, nil
-}
-
-func (m *mockRAGSvc) ListDocuments(ctx context.Context, req *service.ListRAGDocumentsRequest) (*service.ListRAGDocumentsResponse, error) {
-	if m.listFn != nil {
-		return m.listFn(ctx, req)
-	}
-	return &service.ListRAGDocumentsResponse{
-		Documents: []*service.RAGDocumentInfo{
-			{ID: "doc1", Namespace: req.Namespace, ChunkCount: 3},
-		},
-		Total: 1,
-	}, nil
-}
-
-func (m *mockRAGSvc) Close() error { return nil }
-
-// ---------------------------------------------------------------------------
 // Helper to build a CallToolRequest with string arguments.
 // ---------------------------------------------------------------------------
 

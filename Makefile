@@ -1218,14 +1218,38 @@ vet:
 # `codec_json && raft && qrdb_ts && ...` -- which is the same reason LINT_TAGS
 # exists (see the comment above `lint`).
 #
-# NOT WIRED INTO CI YET, deliberately, and this is the only reason: as of #178
-# the `+integration` leg is RED repo-wide. Four more instances of the same
-# undefined-symbol shape (pkg/api/grpc, pkg/api/mcp, pkg/api/rest, cmd/qrdbd)
-# and two test doubles that no longer satisfy service.KVServicer since the
-# guarded verbs landed. Arming this in ci-gate before those are fixed would
-# turn `main` red on a check `main` itself introduced, and block every PR
-# behind it. Run it by hand meanwhile; arm it in the change that clears the
-# sweep.
+# STILL NOT WIRED INTO CI, but for a different reason than when #178 shipped it.
+#
+# #178's reason was the `+integration` leg being RED repo-wide. #203 cleared
+# that: eleven sites across seven packages in both modules, and both legs of
+# this target are green on `main` and on the tree merged with it.
+#
+# What blocks arming now is a module this target does not yet reach.
+# `sdk/go/gorm/conformance` is one of SEVEN Go modules in the tree, and:
+#
+#     cd sdk/go/gorm/conformance && go vet -tags gormconformance ./...
+#     go: updates to go.mod needed; to update it:
+#             go mod tidy
+#
+# That is pre-existing on `main` -- neither #203 nor #221 caused it -- and it has
+# gone unnoticed precisely because nothing has ever vetted that module. #221
+# extends this target to sweep all seven, which is what makes it visible, so
+# arming #203's fix and landing #221's sweep produces a tree where a REQUIRED job
+# is red on `main` and blocks every PR behind it, in either merge order. Neither
+# branch is red alone; the MERGE is (sdlc.md section 5).
+#
+# Tracked in #233, which carries the full measurement. Arm it once that go.mod is
+# tidy -- which belongs with the rest of the work on that module in #50 (lockstep
+# tag namespace, unresolved `replace ... => ../../../..`) -- and verify against
+# the MERGED tree, not against a branch, re-fetching first: #203's own merged-tree
+# check went stale within the day when #221 grew from two modules to seven. Run
+# this by hand meanwhile.
+#
+# Do NOT add an exclusion list or a baseline file here, and specifically do not
+# skip the conformance module to get this armed sooner. The entire value of this
+# target is that its green result means the whole tree typechecks under every
+# supported combination; a baseline would make it mean "the tree typechecks
+# except where it does not", which is what `make vet` alone already said.
 VET_TAG_SETS := "$(LINT_TAGS)" "$(LINT_TAGS),integration"
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.

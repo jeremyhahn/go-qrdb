@@ -75,31 +75,6 @@ func raftEntitlements() *quota.Entitlements {
 	}
 }
 
-// newTenantIsolationConfig builds a minimal standalone-node Config with a
-// none-strategy system barrier, a single-path volume pool, and pebble storage.
-// All protocol listeners are disabled so the node binds no ports.
-func newTenantIsolationConfig(t *testing.T) *qrdbconfig.Config {
-	t.Helper()
-	dataDir := t.TempDir()
-	poolDir := t.TempDir()
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = dataDir
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendPebble)},
-	}
-	cfg.Seal.Enabled = true
-	cfg.Seal.Strategy = "none"
-	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{
-		{Name: "default", Paths: []string{poolDir}},
-	}
-	cfg.Protocols.REST = false
-	cfg.Protocols.GRPC = false
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
-	cfg.Protocols.MCP = false
-	return cfg
-}
-
 // newRaftIsolationConfig builds a minimal single-node clustered Config with a
 // none-strategy system barrier, a single-path volume pool for tenant DataRoot
 // allocation, pebble storage, and a deterministic Raft address. All protocol

@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -149,14 +148,6 @@ func (m *mockEmbeddingService) RegisterProvider(_ string, _ service.EmbeddingPro
 }
 func (m *mockEmbeddingService) DeregisterProvider(_ string) error { return nil }
 func (m *mockEmbeddingService) Close() error                      { return nil }
-
-// ---------------------------------------------------------------------------
-// newGRPCServer helper
-// ---------------------------------------------------------------------------
-
-func newGRPCServer() *grpc.Server {
-	return grpc.NewServer()
-}
 
 // ---------------------------------------------------------------------------
 // Barrier error-path tests

@@ -17,7 +17,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/pem"
 	"errors"
@@ -1121,67 +1120,4 @@ func TestStartDynamicMembership_DefaultMinPeers(t *testing.T) {
 	_, err := startDynamicMembership(ctx, f, kvMock, adminMock, nil, nil, nil)
 	// Result is acceptable regardless — we're covering the minPeers<=0 branch.
 	t.Logf("startDynamicMembership (minPeers=0): %v", err)
-}
-
-// ---------------------------------------------------------------------------
-// Helpers shared by tests in this file
-// ---------------------------------------------------------------------------
-
-// newMockKVStore creates a mockKVServicer backed by the provided store map,
-// with Put/Get/Delete/Scan/List all wired to the in-memory store.
-func newMockKVStore(store map[string][]byte) *mockKVServicer {
-	return &mockKVServicer{
-		putFn: func(_ context.Context, key string, value []byte) error {
-			store[key] = value
-			return nil
-		},
-		// The guarded write and its release must act on the SAME map the
-		// plain ones do. The zero-value mock reports PutIfAbsent success
-		// WITHOUT storing, which makes a claim look taken and then vanish —
-		// every by-id route then falls back to the caller's own tenant and a
-		// test over this mock cannot exercise routing at all.
-		putIfAbsentFn: func(_ context.Context, key string, value []byte) (bool, error) {
-			if _, exists := store[key]; exists {
-				return false, nil
-			}
-			store[key] = value
-			return true, nil
-		},
-		compareAndDeleteFn: func(_ context.Context, key string, expected []byte) (bool, error) {
-			current, exists := store[key]
-			if !exists || !bytes.Equal(current, expected) {
-				return false, nil
-			}
-			delete(store, key)
-			return true, nil
-		},
-		getFn: func(_ context.Context, key string) ([]byte, error) {
-			if v, ok := store[key]; ok {
-				return v, nil
-			}
-			return nil, &service.KeyNotFoundError{Key: key}
-		},
-		deleteFn: func(_ context.Context, key string) error {
-			delete(store, key)
-			return nil
-		},
-		scanFn: func(_ context.Context, prefix string) (map[string][]byte, error) {
-			result := make(map[string][]byte)
-			for k, v := range store {
-				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-					result[k] = v
-				}
-			}
-			return result, nil
-		},
-		listFn: func(_ context.Context, prefix string) ([]string, error) {
-			var keys []string
-			for k := range store {
-				if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
-					keys = append(keys, k)
-				}
-			}
-			return keys, nil
-		},
-	}
 }

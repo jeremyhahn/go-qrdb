@@ -25,7 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -795,14 +794,4 @@ func TestCertBinding_List_ServiceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from List")
 	}
-}
-
-// suppress unused import warnings
-var (
-	_ service.KVServicer = (*mockKVService)(nil)
-)
-
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
 }

@@ -42,6 +42,15 @@ type mockKVService struct {
 	store map[string][]byte
 }
 
+// The compile-time interface check lives HERE, next to the type, and so does
+// every method. Both used to sit in auth_bindings_coverage_test.go, which is
+// `!integration`, while the type itself is unconstrained: under
+// BUILD_TAGS+integration the double still compiled and had silently stopped
+// satisfying service.KVServicer, failing at auth_cmd_test.go's call into
+// embedded.New rather than anywhere near the cause (#203). A type's method set
+// must not straddle a build constraint.
+var _ service.KVServicer = (*mockKVService)(nil)
+
 func newMockKVService() *mockKVService {
 	return &mockKVService{store: make(map[string][]byte)}
 }
@@ -71,6 +80,11 @@ func (m *mockKVService) CompareAndDelete(_ context.Context, key string, expected
 	}
 	delete(m.store, key)
 	return true, nil
+}
+
+// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
+func (*mockKVService) CompareAndSwap(_ context.Context, _ string, _, _ []byte) (bool, error) {
+	return false, nil
 }
 
 func (m *mockKVService) Get(_ context.Context, key string) ([]byte, error) {

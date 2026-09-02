@@ -343,28 +343,6 @@ func TestWithRaftMTLS_SetsConfig(t *testing.T) {
 // IsSealed / Unseal — passphrase + software strategy
 // ---------------------------------------------------------------------------
 
-// sealedStandaloneConfig returns a config with seal enabled, passphrase
-// strategy, and the supplied dataDir as the pebble backend root.
-func sealedStandaloneConfig(t *testing.T, dataDir string) *qrdbconfig.Config {
-	t.Helper()
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = dataDir
-	cfg.Databases = []qrdbconfig.DatabaseConfig{
-		{Name: "default", Backend: string(database.BackendPebble)},
-	}
-	cfg.Seal.Enabled = true
-	cfg.Seal.Strategy = "passphrase"
-	cfg.Seal.RootKeyPath = "root-key"
-	cfg.Seal.CredentialStrategy = "barrier"
-	// Disable all network-bound protocol servers so Start() doesn't need ports.
-	cfg.Protocols.REST = false
-	cfg.Protocols.GRPC = false
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
-	cfg.Protocols.MCP = false
-	return cfg
-}
-
 // TestNewStandaloneNode_SealEnabled_WithPassphrase verifies that a standalone
 // node configured with passphrase sealing and WithSealPassphrase boots fully
 // (IsSealed() == false, Server/Client non-nil).

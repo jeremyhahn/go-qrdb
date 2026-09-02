@@ -26,64 +26,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Mock: EmbeddingServicer
-// ---------------------------------------------------------------------------
-
-type mockEmbeddingService struct {
-	embedFn      func(ctx context.Context, req *service.EmbedRequest) (*service.EmbedResponse, error)
-	batchEmbedFn func(ctx context.Context, req *service.BatchEmbedRequest) (*service.BatchEmbedResponse, error)
-	listModelsFn func(ctx context.Context, req *service.ListEmbeddingModelsRequest) (*service.ListEmbeddingModelsResponse, error)
-}
-
-func (m *mockEmbeddingService) Embed(ctx context.Context, req *service.EmbedRequest) (*service.EmbedResponse, error) {
-	if m.embedFn != nil {
-		return m.embedFn(ctx, req)
-	}
-	return &service.EmbedResponse{
-		Embeddings: [][]float32{{0.1, 0.2, 0.3}},
-		Model:      "text-embedding-3-small",
-		Cached:     false,
-	}, nil
-}
-
-func (m *mockEmbeddingService) BatchEmbed(ctx context.Context, req *service.BatchEmbedRequest) (*service.BatchEmbedResponse, error) {
-	if m.batchEmbedFn != nil {
-		return m.batchEmbedFn(ctx, req)
-	}
-	vecs := make([][]float32, len(req.Texts))
-	for i := range req.Texts {
-		vecs[i] = []float32{float32(i) * 0.1}
-	}
-	return &service.BatchEmbedResponse{
-		Embeddings: vecs,
-		Model:      "text-embedding-3-small",
-	}, nil
-}
-
-func (m *mockEmbeddingService) ListModels(ctx context.Context, req *service.ListEmbeddingModelsRequest) (*service.ListEmbeddingModelsResponse, error) {
-	if m.listModelsFn != nil {
-		return m.listModelsFn(ctx, req)
-	}
-	return &service.ListEmbeddingModelsResponse{
-		Models: []service.ModelInfo{
-			{Name: "text-embedding-3-small", Dimensions: 1536, MaxTokens: 8191},
-		},
-	}, nil
-}
-
-func (m *mockEmbeddingService) RegisterProvider(name string, provider service.EmbeddingProvider) error {
-	return nil
-}
-
-func (m *mockEmbeddingService) DeregisterProvider(name string) error {
-	return nil
-}
-
-func (m *mockEmbeddingService) Close() error {
-	return nil
-}
-
-// ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
 

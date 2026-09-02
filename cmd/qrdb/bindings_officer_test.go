@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -784,8 +783,4 @@ func TestOfficerBinding_SubmitTenantSealVote_ServiceError(t *testing.T) {
 	if _, err := b.SubmitTenantSealVote(&transport.TenantShamirSealVoteRequest{TenantID: "acme", Share: "s"}); !errors.Is(err, errOfficerTest) {
 		t.Fatalf("expected errOfficerTest, got %v", err)
 	}
-}
-
-func (m *mockTenantService) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
-	return nil
 }
