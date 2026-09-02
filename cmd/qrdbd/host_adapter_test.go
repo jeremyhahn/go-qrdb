@@ -729,6 +729,7 @@ func TestInitializeNode_WalBarrierNonNil_CoversBranchLines(t *testing.T) {
 		replicaID:       1,
 		// Set a non-nil walBarrier to cover start.go:1888-1891.
 		walBarrier: &mockQuicraftBarrier{},
+		host:       testBindHost,
 	}
 
 	// initializeNode reaches the walBarrier branch (lines 1888-1891) and

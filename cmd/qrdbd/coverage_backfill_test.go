@@ -573,6 +573,7 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 		adminPort:       19999, // safe high port
 		grpcPort:        19998,
 		authEnabled:     false,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -617,6 +618,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 			Enabled:  true,
 			Strategy: "", // passphrase
 		},
+		host: testBindHost,
 	}
 
 	err = runStart(f)
@@ -657,6 +659,7 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 		grpcPort:        9999,
 		authEnabled:     false,
 		enableREST:      true,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -702,6 +705,7 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 		adminPort:       adminPort,
 		grpcPort:        grpcPort,
 		authEnabled:     false, // skip auth bootstrap so audit logger error surfaces
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -748,6 +752,7 @@ func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 		enableREST:        true,
 		enableGRPC:        true,
 		dynamicMembership: true, // enters the if block at line 1373
+		host:              testBindHost,
 	}
 
 	err = runStart(f)
@@ -795,6 +800,7 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 				{Name: "default", Paths: []string{poolPath}, Strategy: ""},
 			},
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -974,6 +980,7 @@ func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: 0,
+		host:               testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
@@ -1001,6 +1008,7 @@ func TestStartBootstrapServers_StartFails(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: occupiedTCPPort(t),
+		host:               testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())

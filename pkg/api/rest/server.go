@@ -172,11 +172,14 @@ type Server struct {
 
 	// modules are capability modules whose HTTP routes are registered on the chi
 	// router. Set via WithServiceModules by the server orchestrator.
-	modules         []apimodule.ServiceModule
-	tlsConfig       *tls.Config
-	tlsErr          error
-	caCertPool      *x509.CertPool
-	http3Server     *http3.Server
+	modules     []apimodule.ServiceModule
+	tlsConfig   *tls.Config
+	tlsErr      error
+	caCertPool  *x509.CertPool
+	http3Server *http3.Server
+	// http3Conn is the UDP socket the HTTP/3 server serves. It is opened
+	// by Start so the bind is checked synchronously, and closed by Stop.
+	http3Conn       net.PacketConn
 	host            Host
 	caBootstrapCert []byte // PEM-encoded CA cert for bootstrap endpoint
 	caBootstrapKey  []byte // PEM-encoded CA private key for bootstrap endpoint
@@ -783,6 +786,47 @@ func (s *Server) Start() error {
 		})
 	}
 
+	// Bind HTTP/3 on the SAME host and port as the TCP listener via QUIC,
+	// BEFORE either transport starts serving.
+	//
+	// The host is read back from the bound TCP listener rather than
+	// re-derived, so the two transports cannot disagree: they serve the
+	// same handler with the same TLS config, and a bind address is a
+	// containment decision that has to hold on both or it holds on
+	// neither. go-qrdb#165 measured the previous behaviour on a live node
+	// -- `ss` showed `udp UNCONN *:18443` beside `tcp LISTEN
+	// 127.0.0.1:18443`, i.e. a REST server deliberately rebound to
+	// loopback still accepted QUIC datagrams on every interface.
+	//
+	// The UDP socket is opened here rather than inside ListenAndServe on
+	// a goroutine for three reasons: a bind failure becomes a Start error
+	// the operator sees instead of one log line nobody reads; the address
+	// the kernel actually assigned can be compared with the TCP listener's
+	// before any datagram is served; and a rejected QUIC bind leaves the
+	// REST server unstarted rather than half-started.
+	var h3Conn net.PacketConn
+	if s.tlsConfig != nil {
+		h3Addr := net.JoinHostPort(hostOfAddr(ln.Addr()), portOfAddr(ln.Addr()))
+		pc, h3Err := net.ListenPacket("udp", h3Addr)
+		if h3Err != nil {
+			_ = ln.Close()
+			s.listener = nil
+			return &HTTP3StartError{Addr: h3Addr, Err: h3Err}
+		}
+		// The kernel, not this process, decides what a bind string
+		// resolves to: a dual-stack or resolver difference between the
+		// TCP and UDP stacks would widen the QUIC surface past what the
+		// TCP listener accepted, which is exactly the #165 exposure and
+		// is invisible from configuration. Refuse to serve it.
+		if mismatch := sameBindHost(ln.Addr(), pc.LocalAddr()); mismatch != nil {
+			_ = pc.Close()
+			_ = ln.Close()
+			s.listener = nil
+			return mismatch
+		}
+		h3Conn = pc
+	}
+
 	proto := "HTTP"
 	if s.tlsConfig != nil {
 		proto = "HTTPS (HTTP/2+TLS)"
@@ -795,24 +839,83 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	// Start HTTP/3 server on the same port via QUIC when TLS is configured.
-	if s.tlsConfig != nil {
-		_, port, _ := net.SplitHostPort(ln.Addr().String())
-		h3Addr := net.JoinHostPort("0.0.0.0", port)
+	if h3Conn != nil {
+		s.http3Conn = h3Conn
 		s.http3Server = &http3.Server{
-			Addr:      h3Addr,
+			Addr:      h3Conn.LocalAddr().String(),
 			TLSConfig: s.tlsConfig,
 			Handler:   s.server.Handler,
 		}
 		go func() {
-			if h3Err := s.http3Server.ListenAndServe(); h3Err != nil && !errors.Is(h3Err, http.ErrServerClosed) {
-				slog.Error("HTTP/3 server error", "error", h3Err)
+			if serveErr := s.http3Server.Serve(h3Conn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+				slog.Error("HTTP/3 server error", "error", serveErr)
 			}
 		}()
-		slog.Info("HTTP/3 server started", "addr", h3Addr)
+		slog.Info("HTTP/3 server started", "addr", h3Conn.LocalAddr().String())
 	}
 
 	return nil
+}
+
+// hostOfAddr returns the host portion of a bound listener address. Reading it
+// back off the listener rather than off the configured string is what keeps
+// the HTTP/3 socket on the host the TCP listener actually got.
+func hostOfAddr(a net.Addr) string {
+	host, _, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
+// portOfAddr returns the port portion of a bound listener address. It must
+// come from the bound listener, not the configured string, so port 0
+// (ephemeral) resolves to the port the kernel assigned.
+func portOfAddr(a net.Addr) string {
+	_, port, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return ""
+	}
+	return port
+}
+
+// sameBindHost reports whether a QUIC socket landed on the same bind host as
+// the TCP listener it shadows. Hosts must be equal; the single exception is
+// two spellings of the wildcard (Go reports a "0.0.0.0" UDP bind back as
+// "[::]" on a dual-stack host), which name the same "every interface" and
+// which this code does not get to choose between.
+//
+// Two DIFFERENT concrete hosts are a mismatch even though neither is a
+// wildcard. Alt-Svc advertises HTTP/3 on the TCP response at the same
+// authority, so a client that reached the TCP listener at one address probes
+// QUIC at that address; a QUIC socket sitting on another concrete address is
+// unreachable to it, and on a dual-stack host resolving a name can land the
+// two on 127.0.0.1 and ::1 respectively. Nothing in this file can produce
+// that today -- the UDP bind string is the TCP listener's own resolved
+// address -- and requiring equality is what keeps it that way.
+func sameBindHost(tcpAddr, udpAddr net.Addr) error {
+	tcpHost, udpHost := hostOfAddr(tcpAddr), hostOfAddr(udpAddr)
+	if tcpHost == udpHost {
+		return nil
+	}
+	if isWildcardHost(tcpHost) && isWildcardHost(udpHost) {
+		return nil
+	}
+	return &ListenerHostMismatchError{TCPHost: tcpHost, UDPHost: udpHost}
+}
+
+// isWildcardHost reports whether host names every local interface. An
+// unparseable or empty host counts as a wildcard: net.Listen treats "" that
+// way, and an address this code cannot read is not one it can vouch for.
+func isWildcardHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsUnspecified()
 }
 
 // Stop gracefully shuts down the REST server. When HTTP/3 is active, it
@@ -826,6 +929,14 @@ func (s *Server) Stop() {
 		if err := s.http3Server.Close(); err != nil {
 			slog.Error("HTTP/3 server close error", "error", err)
 		}
+	}
+	// Start owns the UDP socket, so Stop closes it. http3.Server.Serve
+	// does not close a PacketConn it did not open.
+	if s.http3Conn != nil {
+		if err := s.http3Conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Error("HTTP/3 socket close error", "error", err)
+		}
+		s.http3Conn = nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

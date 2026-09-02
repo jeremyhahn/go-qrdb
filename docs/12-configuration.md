@@ -156,7 +156,8 @@ Configures the QRDB server's network listeners.
 |--------------|--------|-----------|----------|----------------|-----------------------------------------|
 | `admin_port` | int    | `63002`   | yes      | `--admin-port` | TCP port for the REST/admin HTTP server |
 | `grpc_port`  | int    | `63003`   | no       | `--grpc-port`  | TCP port for the gRPC data-plane service |
-| `host`       | string | `0.0.0.0` | yes      | N/A            | Bind address for all listeners          |
+| `host`       | string | `0.0.0.0` | yes      | `--host`       | Bind host for every API listener        |
+| `advertise_host` | string | host of `raft.raft_address` | no | `--advertise-host` | Host peers and clients dial to reach this node |
 
 **Validation rules:**
 
@@ -168,6 +169,50 @@ Configures the QRDB server's network listeners.
 
 - The `admin_port` serves both the REST API and operational endpoints (`/status`, `/health`, `/metrics`, `/peers`, `/drain`).
 - When using non-static discovery methods (multicast, dns) without a config file, the server auto-selects free ports for `admin_port` and `grpc_port`.
+- `host` binds **every** API listener: REST, the HTTP/3 (QUIC) listener that
+  shares the REST port, gRPC, the native QUIC transport, MCP, MySQL and
+  PostgreSQL. Settable by `server.host`, `QRDB_SERVER_HOST` or `--host` under
+  the documented precedence. The HTTP/3 listener takes the host the REST
+  listener actually bound; if the two ever land on different bind hosts the
+  daemon returns `*rest.ListenerHostMismatchError` from start rather than
+  serving the same handler on a wider surface than was asked for.
+- `host` is a **bind** host and is commonly a wildcard no peer can dial;
+  `advertise_host` is what this node publishes — into the cluster API-endpoint
+  registry and as its own admin URL in the leader-forwarding peer registry.
+  A node whose advertise host resolves to a wildcard publishes nothing rather
+  than an unreachable address.
+
+---
+
+### bootstrap
+
+Configures TLS bootstrap for cluster enrollment: how a joining node obtains the
+cluster CA, and where the first node serves it from.
+
+| Field | Type | Default | CLI Flag | Description |
+|---|---|---|---|---|
+| `noise_key`   | string | `""` | `--bootstrap-noise-key`  | Hex Curve25519 public key of the first node's Noise server |
+| `noise_addr`  | string | `""` | `--bootstrap-noise-addr` | `host:port` of the Noise server to fetch from |
+| `noise_port`  | int    | `63006` | `--bootstrap-noise-port` | TCP port the first node's Noise server listens on |
+| `noise_host`  | string | `server.host` | `--bootstrap-noise-host` | Bind host for the first node's Noise server |
+| `spki_pin`    | string | `""` | `--bootstrap-spki-pin`   | Hex SHA-256 SPKI pin of the bootstrap server's TLS certificate |
+| `dane_dns`    | string | `""` | `--bootstrap-dane-dns`   | DNS server for DANE TLSA lookup |
+| `dane_dot`    | bool   | `false` | `--bootstrap-dane-dot`  | Use DNS-over-TLS for DANE lookups |
+| `direct_url`  | string | `""` | `--bootstrap-direct-url` | Full HTTPS URL for direct CA bundle download |
+| `addr`        | string | `""` | `--bootstrap-addr`       | `host:port` of the first node's admin server |
+
+**Notes:**
+
+- `noise_host` is a bind host in the same sense as `server.host`, and defaults
+  to it. The enrollment listener is the one socket a joining node reaches before
+  it holds any credential, so containing a node to an interface contains
+  enrollment too; give it a different address only when enrollment should be
+  reachable somewhere the APIs are not.
+- When neither `bootstrap.addr` nor `direct_url` is set, the bootstrap server
+  URL is derived from the first static peer (or `discovery.dns_domain`) plus
+  `server.admin_port`. If that port is unset the derivation **fails with
+  `*clusterenroll.MissingAdminPortError`** rather than completing the URL with a
+  guessed port.
 
 ---
 

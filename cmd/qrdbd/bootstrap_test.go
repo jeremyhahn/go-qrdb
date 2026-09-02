@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	encoding_hex "encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
 	noiseboot "github.com/jeremyhahn/go-truststrap/pkg/noiseproto/bootstrap"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
 
 // writeTLSFixtures generates a CA and node certificate, writes them to
@@ -69,6 +72,7 @@ func TestResolveTLS_ExplicitFiles(t *testing.T) {
 		tlsCAFile:       filepath.Join(dir, "ca.pem"),
 		tlsCertFile:     filepath.Join(dir, "node-cert.pem"),
 		tlsKeyFile:      filepath.Join(dir, "node-key.pem"),
+		host:            testBindHost,
 	}
 
 	got, servers, err := resolveTLS(f, testLogger())
@@ -100,6 +104,7 @@ func TestResolveTLS_ExplicitFiles_MissingFile(t *testing.T) {
 		tlsCAFile:       "/nonexistent/ca.pem",
 		tlsCertFile:     "/nonexistent/cert.pem",
 		tlsKeyFile:      "/nonexistent/key.pem",
+		host:            testBindHost,
 	}
 
 	_, _, err := resolveTLS(f, testLogger())
@@ -119,6 +124,7 @@ func TestResolveTLS_ExistingCerts(t *testing.T) {
 		dataDir:         dir,
 		discoveryMethod: "static",
 		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
 	}
 
 	got, servers, err := resolveTLS(f, testLogger())
@@ -146,6 +152,7 @@ func TestResolveTLS_SingleNode(t *testing.T) {
 		dataDir:         dir,
 		discoveryMethod: "static",
 		peers:           []string{"1=127.0.0.1:63001"},
+		host:            testBindHost,
 	}
 
 	got, servers, err := resolveTLS(f, testLogger())
@@ -188,6 +195,10 @@ func TestResolveTLS_FirstNode(t *testing.T) {
 		discoveryMethod:    "static",
 		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
 		bootstrapNoisePort: 0, // will use default
+		// The Noise listener has no default bind host of its own: it
+		// follows --host, which cobra always populates in production but
+		// a hand-built startFlags does not.
+		host: testBindHost,
 	}
 
 	got, servers, err := resolveTLS(f, testLogger())
@@ -299,7 +310,10 @@ func TestResolveBootstrapServerURL_ExplicitAddr(t *testing.T) {
 	f := &startFlags{
 		bootstrapAddr: "10.0.0.1:9443",
 	}
-	got := resolveBootstrapServerURL(f)
+	got, err := resolveBootstrapServerURL(f)
+	if err != nil {
+		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
+	}
 	want := "https://10.0.0.1:9443"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -312,23 +326,33 @@ func TestResolveBootstrapServerURL_StaticPeers(t *testing.T) {
 		peers:           []string{"1=192.168.1.10:63001", "2=192.168.1.11:63001"},
 		adminPort:       8443,
 	}
-	got := resolveBootstrapServerURL(f)
+	got, err := resolveBootstrapServerURL(f)
+	if err != nil {
+		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
+	}
 	want := "https://192.168.1.10:8443"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestResolveBootstrapServerURL_StaticPeers_DefaultPort(t *testing.T) {
+// TestResolveBootstrapServerURL_StaticPeers_MissingAdminPort: with a peer to
+// derive the host from but no admin port, there is no URL. The old code
+// completed it with 8443 and the enroll client dialed a port this system
+// never listens on (go-qrdb#167 item 4).
+func TestResolveBootstrapServerURL_StaticPeers_MissingAdminPort(t *testing.T) {
 	f := &startFlags{
 		discoveryMethod: "static",
 		peers:           []string{"1=192.168.1.10:63001"},
 		adminPort:       0,
 	}
-	got := resolveBootstrapServerURL(f)
-	want := "https://192.168.1.10:8443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+	got, err := resolveBootstrapServerURL(f)
+	if got != "" {
+		t.Errorf("resolveBootstrapServerURL = %q, want empty", got)
+	}
+	var missing *clusterenroll.MissingAdminPortError
+	if !errors.As(err, &missing) {
+		t.Fatalf("error = %v (%T), want *clusterenroll.MissingAdminPortError", err, err)
 	}
 }
 
@@ -338,23 +362,29 @@ func TestResolveBootstrapServerURL_DNSDomain(t *testing.T) {
 		dnsDomain:       "cluster.example.com",
 		adminPort:       9443,
 	}
-	got := resolveBootstrapServerURL(f)
+	got, err := resolveBootstrapServerURL(f)
+	if err != nil {
+		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
+	}
 	want := "https://cluster.example.com:9443"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
-func TestResolveBootstrapServerURL_DNSDomain_DefaultPort(t *testing.T) {
+func TestResolveBootstrapServerURL_DNSDomain_MissingAdminPort(t *testing.T) {
 	f := &startFlags{
 		discoveryMethod: "dns",
 		dnsDomain:       "cluster.example.com",
 		adminPort:       0,
 	}
-	got := resolveBootstrapServerURL(f)
-	want := "https://cluster.example.com:8443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+	got, err := resolveBootstrapServerURL(f)
+	if got != "" {
+		t.Errorf("resolveBootstrapServerURL = %q, want empty", got)
+	}
+	var missing *clusterenroll.MissingAdminPortError
+	if !errors.As(err, &missing) {
+		t.Fatalf("error = %v (%T), want *clusterenroll.MissingAdminPortError", err, err)
 	}
 }
 
@@ -362,7 +392,10 @@ func TestResolveBootstrapServerURL_Empty(t *testing.T) {
 	f := &startFlags{
 		discoveryMethod: "multicast",
 	}
-	got := resolveBootstrapServerURL(f)
+	got, err := resolveBootstrapServerURL(f)
+	if err != nil {
+		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
+	}
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
@@ -376,7 +409,10 @@ func TestResolveBootstrapServerURL_ExplicitAddrTakesPriority(t *testing.T) {
 		dnsDomain:       "dns.example.com",
 		adminPort:       8443,
 	}
-	got := resolveBootstrapServerURL(f)
+	got, err := resolveBootstrapServerURL(f)
+	if err != nil {
+		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
+	}
 	want := "https://priority.example.com:9443"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -446,6 +482,7 @@ func TestStartBootstrapServers_GeneratesKey(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: 0, // OS-assigned port
+		host:               testBindHost,
 	}
 
 	// Use port 0 for OS-assigned port to avoid conflicts.
@@ -488,6 +525,7 @@ func TestStartBootstrapServers_LoadsExistingKey(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: 0,
+		host:               testBindHost,
 	}
 
 	servers1, err := startBootstrapServers(bundle, f, testLogger())
@@ -527,6 +565,7 @@ func TestStartBootstrapServers_InvalidExistingKey(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: 0,
+		host:               testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
@@ -838,6 +877,7 @@ func TestResolveTLS_Path2_LoadError(t *testing.T) {
 		dataDir:         dir,
 		discoveryMethod: "static",
 		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
 	}
 
 	_, _, err = resolveTLS(f, testLogger())
@@ -862,6 +902,7 @@ func TestResolveTLS_Path3_PersistError(t *testing.T) {
 		dataDir:         badDataDir,
 		discoveryMethod: "static",
 		peers:           []string{"1=127.0.0.1:63001"},
+		host:            testBindHost,
 	}
 
 	_, _, err := resolveTLS(f, testLogger())
@@ -893,6 +934,7 @@ func TestResolveTLS_Path4_JoiningNode(t *testing.T) {
 		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
 		bootstrapNoiseKey:  pubKeyHex,
 		bootstrapNoiseAddr: listenAddr,
+		host:               testBindHost,
 	}
 
 	_, _, err = resolveTLS(f, testLogger())
@@ -919,6 +961,7 @@ func TestResolveTLS_Path5_PersistError(t *testing.T) {
 		dataDir:         badDataDir,
 		discoveryMethod: "static",
 		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
 	}
 
 	_, _, err := resolveTLS(f, testLogger())
@@ -949,6 +992,7 @@ func TestResolveTLS_Path5_BootstrapServerStartError(t *testing.T) {
 		discoveryMethod:    "static",
 		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
 		bootstrapNoisePort: 0,
+		host:               testBindHost,
 	}
 
 	_, _, err := resolveTLS(f, testLogger())

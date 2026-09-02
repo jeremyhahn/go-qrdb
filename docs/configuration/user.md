@@ -11,17 +11,23 @@ is read at boot — there is no runtime reconfiguration.
 
 ## How settings are resolved
 
-Three layers, in this order:
+Four layers, in this order:
 
 1. **Built-in defaults** — every field starts with a production-ready value.
 2. **Your YAML** — only the fields you actually write override the defaults.
    Omitting a field leaves the default; it does not zero it.
-3. **CLI flags you explicitly set** — a flag left at its own default will not
-   overwrite what your YAML said.
+3. **`QRDB_` environment variables** — any field, named by its path upper-cased
+   with separators as underscores: `server.host` is `QRDB_SERVER_HOST`.
+4. **CLI flags you explicitly set** — a flag left at its own default will not
+   overwrite what your YAML or environment said.
 
 ```bash
 qrdbd start --config /etc/qrdb/qrdb.yaml
 ```
+
+Layer 3 is read while the config file is loaded, so it needs `--config`. If you
+start the daemon with no config file, only the defaults and your flags apply —
+an otherwise empty file is enough to turn the environment layer on.
 
 ## A minimal file
 
@@ -69,6 +75,43 @@ protected in-memory values. If the reference cannot be resolved, the server
 fails to start rather than continuing with nothing. See
 [../credentials/user.md](../credentials/user.md).
 
+## Choosing where the node listens
+
+`server.host` is the bind host for every API listener — REST, its HTTP/3
+sibling on the same port, gRPC, QUIC, MCP, MySQL and PostgreSQL. It defaults to
+`0.0.0.0`, which answers on every interface.
+
+To contain a node to one interface:
+
+```yaml
+server:
+  host: 127.0.0.1
+```
+
+or `QRDB_SERVER_HOST=127.0.0.1`, or `--host 127.0.0.1`. It applies to all of
+them at once, HTTP/3 included: the QUIC listener binds the host the REST
+listener got, and the daemon refuses to start rather than serve the same API on
+a wider surface than you asked for. Earlier releases took only the port for the
+HTTP/3 listener and bound the wildcard, so a REST server bound to loopback still
+accepted QUIC datagrams on every interface.
+
+Two hosts that are easy to confuse:
+
+| Field | Means | Default |
+|---|---|---|
+| `server.host` | where this node **binds** | `0.0.0.0` |
+| `server.advertise_host` | the address peers and clients **dial** to reach it | host portion of `raft.raft_address` |
+
+Set `advertise_host` when the API is reached over a different address than the
+Raft plane (NAT, split networking). It is also the host this node publishes for
+itself in the leader-forwarding peer registry, so a wrong value there sends
+peers' forwarded writes to the wrong place. A node whose advertise host works
+out to a wildcard publishes nothing rather than an address no peer can dial.
+
+The cluster enrollment listener (Noise) follows `server.host` too. Give it its
+own address with `bootstrap.noise_host` when enrollment should be reachable
+somewhere the APIs are not.
+
 ## Ports
 
 | Service | Default | Where to change it |
@@ -97,6 +140,14 @@ usual causes: the run mode forbids it (standalone cannot enable MVCC, watch or
 lease), or the build tag is absent. Config can only ever **narrow** what the
 mode and the binary allow — it can never enable something they forbid, and
 asking is an error rather than a silent no-op.
+
+**You set `server.host` and a listener still answers on every interface.**
+The HTTP/3 listener used to bind the wildcard regardless. On an older build,
+check `ss -ltnup` for a `udp UNCONN *:<port>` line beside the loopback TCP line.
+On a current build the daemon refuses to start rather than reach that state.
+
+**You set `QRDB_SERVER_HOST` and nothing changed.** The environment layer is
+part of loading the config file. Pass `--config`, or use `--host`.
 
 **Your YAML value was ignored in favour of a flag you did not set.** It should
 not be — only explicitly-set flags override YAML. If you see this, check whether

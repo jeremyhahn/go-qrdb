@@ -24,7 +24,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"net"
-	"strconv"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -51,6 +50,12 @@ func freePort(t *testing.T) int {
 	return port
 }
 
+// testBindHost is the bind host every advertiser in this package's tests
+// uses. AdvertiseOptions.NoiseHost has no default -- StartAdvertiser fails
+// closed without one (go-qrdb#167) -- and loopback keeps the suite from
+// opening a wildcard socket on the build host.
+const testBindHost = "127.0.0.1"
+
 // startFirstNode brings up a real first node (path 5): it generates the
 // cluster CA and starts the Noise advertiser on a port of its own. The
 // returned options are what a joining node needs to reach it.
@@ -63,7 +68,7 @@ func startFirstNode(t *testing.T) (*Advertiser, BootstrapOptions) {
 		TrustDomain: "test.cluster",
 		DataDir:     t.TempDir(),
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: port},
+		Advertise:   AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost},
 	}
 
 	_, adv, err := Resolve(context.Background(), opts, discardLogger())
@@ -77,8 +82,9 @@ func startFirstNode(t *testing.T) (*Advertiser, BootstrapOptions) {
 
 	return adv, BootstrapOptions{
 		NoiseKey: hex.EncodeToString(adv.NoisePublicKey()),
-		// Addr() reports a wildcard host; dial the loopback explicitly.
-		NoiseAddr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		// Addr() now reports the host the advertiser was actually bound
+		// to, so the joining node dials exactly that.
+		NoiseAddr: adv.Addr(),
 	}
 }
 

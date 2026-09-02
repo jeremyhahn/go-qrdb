@@ -12,6 +12,8 @@ func (c *Config) ValidateCapabilities() error    // separate; called by composit
 func (c *Config) EffectiveCapabilities() ...     // sealed into pkg/capabilities at boot
 func (c *SealConfig) CanonicalStrategy() string  // canonicalizes the "software" alias
 
+const DefaultServerHost = "0.0.0.0"              // the defaults-layer bind host
+
 type LoadError struct{ /* implements error and Unwrap() */ }
 type ValidationError struct{ /* field path + reason */ }
 ```
@@ -23,9 +25,15 @@ type ValidationError struct{ /* field path + reason */ }
 1. `DefaultConfig()` — production-ready defaults for every field.
 2. The YAML file (via `--config`) unmarshaled **on top of** the defaults; only
    fields present in the YAML override.
-3. CLI flags **explicitly set** override the corresponding YAML value.
+3. `QRDB_`-prefixed environment variables, applied by Viper's `AutomaticEnv`
+   over every default-bearing key (`server.host` → `QRDB_SERVER_HOST`).
+4. CLI flags **explicitly set** override everything below them.
 
 Then `Config.Validate()`.
+
+Layers 2 and 3 both live in `config.Load(path)`, which the daemon calls only
+for `--config`. Without a config file the daemon resolves from defaults and
+flags alone.
 
 ## Invariants
 
@@ -46,6 +54,24 @@ Then `Config.Validate()`.
   downstream consumer sees `passphrase`.
 - **`mode` absent means `raft`** — full backward compatibility with configs
   written before run modes existed.
+- **No infrastructure literal on a configuration path.** Bind hosts, ports and
+  advertised addresses come from the load order above. The one permitted
+  literal is the defaults-layer value that path overrides — `DefaultServerHost`,
+  read by both `DefaultConfig()` and the `--host` flag default, so there is one
+  value and one place to change it.
+- **A resolved value must reach its consumer.** `server.host` is carried into
+  the `*Config` the daemon hands `server.New`, and every listener joins that
+  field with its port; a field that is defined, validated and then replaced
+  downstream is the same defect as no field at all.
+- **An absent infrastructure value fails closed.** `clusterenroll` returns
+  `*MissingBindHostError` rather than choosing a bind host, and
+  `*MissingAdminPortError` rather than completing a bootstrap URL with a
+  guessed port. Both are re-exported from `sdk/go/clusterenroll`.
+- **A bind decision holds on every transport that serves the same handler.**
+  The REST server's HTTP/3 sibling binds the host the TCP listener actually
+  got; `Start` returns `*rest.ListenerHostMismatchError` if they land on
+  different bind hosts, and `*rest.HTTP3StartError` if the QUIC socket cannot
+  bind at all.
 - **Protected fields must reference a secret.** `credential://` and `literal://`
   references resolve at boot into enclave-backed values; a protected field with
   no reference, or an unresolvable one, **fails the boot**.

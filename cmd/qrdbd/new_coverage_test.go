@@ -449,6 +449,7 @@ func TestResolveTLS_Path2_CachedCertsWithCAKey(t *testing.T) {
 		dataDir:         dataDir,
 		discoveryMethod: "static",
 		peers:           []string{},
+		host:            testBindHost,
 	}
 
 	loaded, servers, err := resolveTLS(f, newDiscardLogger())

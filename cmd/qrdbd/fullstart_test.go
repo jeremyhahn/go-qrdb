@@ -60,6 +60,7 @@ func TestRunStart_SealConfig_ShamirInvalidParams_ReturnsError(t *testing.T) {
 			ShamirThreshold: 10,
 			ShamirTotal:     2, // invalid: threshold > total
 		},
+		host: testBindHost,
 	}
 
 	err = runStart(f)
@@ -93,6 +94,7 @@ func TestRunStart_VolumePool_StateStoreBlocked_ReturnsError(t *testing.T) {
 				{Name: "default", Paths: []string{filepath.Join(dir, "vol")}, Strategy: ""},
 			},
 		},
+		host: testBindHost,
 	}
 
 	err := runStart(f)
@@ -128,6 +130,7 @@ func TestRunStart_VolumePoolConfigured_FailsAtSM(t *testing.T) {
 				{Name: "default", Paths: []string{volDir}, Strategy: "round_robin"},
 			},
 		},
+		host: testBindHost,
 	}
 
 	err := runStart(f)
@@ -401,6 +404,7 @@ func TestRunStart_OpenAll_DatabasesDirUnreadable(t *testing.T) {
 		// authEnabled=false skips generateAdminClientCert so the only
 		// blockage between resolveTLS and dbManager.OpenAll is removed.
 		authEnabled: false,
+		host:        testBindHost,
 	}
 
 	err := runStart(f)

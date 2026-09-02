@@ -125,6 +125,7 @@ func flagsToEnrollOptions(f *startFlags) *clusterenroll.Options {
 		},
 		Advertise: clusterenroll.AdvertiseOptions{
 			NoisePort: f.bootstrapNoisePort,
+			NoiseHost: resolveNoiseHost(f),
 			AdminPort: f.adminPort,
 		},
 	}
@@ -157,11 +158,24 @@ func bootstrapTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, error) {
 	return tlsBundleFromMaterial(mat)
 }
 
+// resolveNoiseHost returns the bind host for this node's Noise enrollment
+// listener: bootstrap.noise_host / --bootstrap-noise-host when set, else the
+// API bind host. Defaulting to --host is what keeps a node contained to one
+// interface from exposing enrollment on all of them (go-qrdb#167); an
+// operator who wants the enrollment listener somewhere else says so.
+func resolveNoiseHost(f *startFlags) string {
+	if f.bootstrapNoiseHost != "" {
+		return f.bootstrapNoiseHost
+	}
+	return f.host
+}
+
 // resolveBootstrapServerURL derives the HTTPS URL of the bootstrap server
 // from available flag values. It checks, in order: explicit bootstrapAddr,
-// first static peer address, and DNS domain. Returns an empty string if
-// no address can be determined.
-func resolveBootstrapServerURL(f *startFlags) string {
+// first static peer address, and DNS domain. It returns an empty URL when no
+// address source is configured, and an error when one is configured but the
+// admin port needed to complete it is not.
+func resolveBootstrapServerURL(f *startFlags) (string, error) {
 	return clusterenroll.ResolveServerURL(clusterenroll.BootstrapOptions{
 		ServerAddr:      f.bootstrapAddr,
 		DiscoveryMethod: f.discoveryMethod,
@@ -195,6 +209,7 @@ func startBootstrapServers(bundle *TLSBundle, f *startFlags, logger *slog.Logger
 	}
 	return clusterenroll.StartAdvertiser(mat, clusterenroll.AdvertiseOptions{
 		NoisePort: f.bootstrapNoisePort,
+		NoiseHost: resolveNoiseHost(f),
 		AdminPort: f.adminPort,
 	}, f.dataDir, logger)
 }
@@ -209,14 +224,19 @@ func logBootstrapInfo(bundle *TLSBundle, servers *bootstrapServers, f *startFlag
 
 	pubKeyHex := hex.EncodeToString(servers.NoisePublicKey())
 
-	adminPort := f.adminPort
-	if adminPort == 0 {
-		adminPort = 8443
+	// Reported as configured; a substituted literal would tell operators to
+	// point joining nodes at a port this node does not serve (go-qrdb#167).
+	if f.adminPort == 0 {
+		slog.Warn("bootstrap enrollment: admin port is unconfigured; joining nodes cannot be told which port to use",
+			"noise_public_key", pubKeyHex,
+			"noise_addr", servers.Addr(),
+		)
+		return
 	}
 
 	slog.Info("bootstrap enrollment information for joining nodes",
 		"noise_public_key", pubKeyHex,
 		"noise_addr", servers.Addr(),
-		"admin_port", adminPort,
+		"admin_port", f.adminPort,
 	)
 }

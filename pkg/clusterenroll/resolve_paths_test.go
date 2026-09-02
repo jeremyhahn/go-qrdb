@@ -209,7 +209,7 @@ func TestResolveCAFirstNodeStartsAnAdvertiser(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: freePort(t)},
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost},
 	}
 
 	certPEM, keyPEM, adv, err := ResolveCA(context.Background(), opts, discardLogger())
@@ -280,7 +280,7 @@ func TestStartAdvertiserRejectsAnUnusablePort(t *testing.T) {
 	t.Cleanup(func() { _ = occupied.Close() })
 	port := occupied.Addr().(*net.TCPAddr).Port
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: port}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: port, NoiseHost: testBindHost}, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected StartAdvertiser to fail on an already-bound port")
 	}

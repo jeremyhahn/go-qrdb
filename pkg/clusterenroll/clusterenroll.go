@@ -142,7 +142,9 @@ type BootstrapOptions struct {
 	DNSDomain string
 
 	// AdminPort is the admin server port, used by ResolveServerURL to derive
-	// the bootstrap HTTPS URL. Defaults to 8443 when zero.
+	// the bootstrap HTTPS URL from a peer address or DNS domain. Zero is an
+	// absent value, not a default: ResolveServerURL returns
+	// *MissingAdminPortError rather than dialing a guessed port.
 	AdminPort int
 }
 
@@ -163,8 +165,16 @@ type AdvertiseOptions struct {
 	// Zero defaults to DefaultNoisePort.
 	NoisePort int
 
+	// NoiseHost is the bind host for the Noise bootstrap server. It is
+	// required: the enrollment listener is the one socket a joining node
+	// reaches before it holds any credential, so this package will not
+	// pick a bind host on the caller's behalf. The daemon sources it from
+	// bootstrap.noise_host, falling back to server.host (go-qrdb#167).
+	NoiseHost string
+
 	// AdminPort is logged alongside the Noise public key so operators know
-	// which port to configure on joining nodes. Defaults to 8443 when zero.
+	// which port to configure on joining nodes. Zero means unconfigured
+	// and is reported as such rather than substituted.
 	AdminPort int
 }
 
@@ -203,7 +213,8 @@ func (a *Advertiser) NoisePublicKey() []byte {
 	return a.noiseKey.Public
 }
 
-// Addr returns the listen address of the Noise server (e.g., "0.0.0.0:63006").
+// Addr returns the listen address of the Noise server, as bound (the
+// configured NoiseHost joined with NoisePort, e.g. "10.0.0.1:63006").
 // Returns an empty string when the Advertiser is nil or the server is not
 // running.
 func (a *Advertiser) Addr() string {
@@ -271,6 +282,47 @@ type ExplicitFilesError struct{}
 func (e *ExplicitFilesError) Error() string {
 	return "clusterenroll: ResolveCA does not support explicit TLS file options; " +
 		"clear TLSCAFile, TLSCertFile, and TLSKeyFile"
+}
+
+// validate checks the advertiser configuration. It is a precondition, not a
+// startup step: the callers that generate and persist cluster CA material
+// before starting the advertiser run it FIRST, so a configuration that cannot
+// produce a running advertiser also does not leave material behind. Persisted
+// material makes the next boot take the cached path, which returns no
+// advertiser at all -- so a first node that failed here and was then
+// "corrected" would come up permanently unable to enroll peers.
+func (o AdvertiseOptions) validate() error {
+	if o.NoiseHost == "" {
+		return &MissingBindHostError{Component: "noise bootstrap server"}
+	}
+	return nil
+}
+
+// MissingBindHostError is returned when a listener this package starts has no
+// configured bind host. The bind host is a containment decision and belongs
+// to the configuration layer; this package refuses to invent one.
+type MissingBindHostError struct {
+	// Component names the listener that has no bind host.
+	Component string
+}
+
+// Error returns a human-readable description.
+func (e *MissingBindHostError) Error() string {
+	return "clusterenroll: no bind host configured for the " + e.Component +
+		"; set bootstrap.noise_host (or server.host, which it defaults to)"
+}
+
+// MissingAdminPortError is returned when the bootstrap server URL must be
+// built from a host plus the admin port and no admin port is configured.
+type MissingAdminPortError struct {
+	// Source names the address source the host came from.
+	Source string
+}
+
+// Error returns a human-readable description.
+func (e *MissingAdminPortError) Error() string {
+	return "clusterenroll: cannot derive the bootstrap server URL from " + e.Source +
+		": no admin port configured; set server.admin_port (or --admin-port)"
 }
 
 // clusterBundleProvider implements noiseboot.BundleProvider by concatenating
@@ -346,6 +398,16 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 
 	// Path 5: first node of a multi-node cluster generates the CA, persists
 	// it, and starts the Noise NK advertiser for peer enrollment.
+	//
+	// The advertiser configuration is validated BEFORE any material is
+	// generated. Persisting a CA and then failing to start the advertiser
+	// would leave this node on path 2 (cached certificates) for every
+	// subsequent boot, and path 2 returns no advertiser -- so the node would
+	// come up looking healthy while no peer could ever enroll, and correcting
+	// the configuration would not undo it.
+	if err := opts.Advertise.validate(); err != nil {
+		return nil, nil, err
+	}
 	logger.Info("first node of multi-node cluster, generating CA and starting bootstrap servers")
 	nodeURI := spiffe.NodeURI(opts.TrustDomain, opts.RaftAddress)
 	mat, err = clustertls.GenerateCABundle(nodeURI)
@@ -411,10 +473,16 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 		return caCertPEM, caKeyPEM, nil, nil
 	}
 
-	// Single node or first node: generate a new CA and persist it.
+	// Single node or first node: generate a new CA and persist it. The
+	// first-node path validates the advertiser configuration first, for the
+	// reason given on Resolve path 5: persisted CA material sends every later
+	// boot down the cached path, which starts no advertiser.
 	if opts.SingleNode {
 		logger.Info("single-node mode, generating self-signed CA")
 	} else {
+		if err := opts.Advertise.validate(); err != nil {
+			return nil, nil, nil, err
+		}
 		logger.Info("first node of multi-node cluster, generating CA and starting bootstrap server")
 	}
 	caCertPEM, caKeyPEM, _, _, err = clustertls.GenerateCA(clustertls.CAValidity)
@@ -489,6 +557,18 @@ func StartAdvertiser(mat *clustertls.Material, opts AdvertiseOptions, dataDir st
 // StartAdvertiser (CA cert+key bundle) and StartAnchorAdvertiser
 // (anchor-only bundle).
 func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptions, dataDir string, logger *slog.Logger) (*Advertiser, error) {
+	// Configuration is checked before anything with a side effect runs.
+	// The bind host is never chosen here: a node contained to one interface
+	// must not have its enrollment listener quietly opened on all of them,
+	// and this package cannot know which containment the operator asked for
+	// -- only the configuration layer can. Rejecting it up here also means a
+	// refused configuration leaves no freshly generated Noise static key on
+	// disk, which the key-generation branch below would otherwise persist
+	// before the address was ever looked at.
+	if err := opts.validate(); err != nil {
+		return nil, err
+	}
+
 	keyPath := filepath.Join(dataDir, NoiseKeyFile)
 
 	var noiseKey *noiseproto.StaticKey
@@ -537,11 +617,12 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 	if listenPort == 0 {
 		listenPort = DefaultNoisePort
 	}
+	listenAddr := net.JoinHostPort(opts.NoiseHost, strconv.Itoa(listenPort))
 
 	// The embedded DHKey aliases the protected private scalar; the Advertiser
 	// owns the StaticKey from here and releases it in Stop.
 	srv, err := noiseboot.NewServer(&noiseboot.ServerConfig{
-		ListenAddr: "0.0.0.0:" + strconv.Itoa(listenPort),
+		ListenAddr: listenAddr,
 		StaticKey:  &noiseKey.DHKey,
 		CABundler:  provider,
 		Logger:     logger,
@@ -567,35 +648,40 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 // ResolveServerURL derives the HTTPS URL of the bootstrap server from
 // BootstrapOptions. It checks, in order: explicit ServerAddr, first static
 // peer address (combined with AdminPort), and DNSDomain (combined with
-// AdminPort). Returns an empty string if no address can be determined.
-func ResolveServerURL(opts BootstrapOptions) string {
+// AdminPort). It returns an empty URL and a nil error when no address source
+// is configured at all -- that is a caller stating it has no bootstrap
+// server, not a failure.
+//
+// It fails closed with *MissingAdminPortError when an address source IS
+// configured but AdminPort is zero. The previous behaviour substituted 8443,
+// a literal that exists nowhere in the defaults layer and contradicts
+// DefaultConfig().Server.AdminPort, so a caller that forgot to plumb the port
+// silently dialed a port nothing in this system listens on (go-qrdb#167).
+func ResolveServerURL(opts BootstrapOptions) (string, error) {
 	// Explicit bootstrap address takes priority.
 	if opts.ServerAddr != "" {
-		return "https://" + opts.ServerAddr
+		return "https://" + opts.ServerAddr, nil
 	}
 
 	// Extract host from the first static peer and combine with admin port.
 	if opts.DiscoveryMethod == "static" && len(opts.Peers) > 0 {
-		host := ExtractHostFromPeer(opts.Peers[0])
-		if host != "" {
-			port := opts.AdminPort
-			if port == 0 {
-				port = 8443
+		if host := ExtractHostFromPeer(opts.Peers[0]); host != "" {
+			if opts.AdminPort == 0 {
+				return "", &MissingAdminPortError{Source: "static peer " + opts.Peers[0]}
 			}
-			return "https://" + net.JoinHostPort(host, strconv.Itoa(port))
+			return "https://" + net.JoinHostPort(host, strconv.Itoa(opts.AdminPort)), nil
 		}
 	}
 
 	// Fall back to DNS domain with admin port.
 	if opts.DNSDomain != "" {
-		port := opts.AdminPort
-		if port == 0 {
-			port = 8443
+		if opts.AdminPort == 0 {
+			return "", &MissingAdminPortError{Source: "DNS domain " + opts.DNSDomain}
 		}
-		return "https://" + net.JoinHostPort(opts.DNSDomain, strconv.Itoa(port))
+		return "https://" + net.JoinHostPort(opts.DNSDomain, strconv.Itoa(opts.AdminPort)), nil
 	}
 
-	return ""
+	return "", nil
 }
 
 // ExtractHostFromPeer extracts the host portion from a peer specification in
@@ -648,7 +734,10 @@ func autoFetchBundle(ctx context.Context, opts *Options, logger *slog.Logger) ([
 
 	// Configure DANE if a DNS server is provided.
 	if opts.Bootstrap.DANEDNS != "" {
-		serverURL := ResolveServerURL(opts.Bootstrap)
+		serverURL, urlErr := ResolveServerURL(opts.Bootstrap)
+		if urlErr != nil {
+			return nil, &FetchError{Method: "dane", Err: urlErr}
+		}
 		if serverURL != "" {
 			cfg.DANE = &truststrap.DANEConfig{
 				ServerURL:  serverURL,
@@ -714,14 +803,20 @@ func logAdvertiserInfo(adv *Advertiser, opts AdvertiseOptions) {
 	if adv == nil || adv.noiseKey == nil {
 		return
 	}
-	adminPort := opts.AdminPort
-	if adminPort == 0 {
-		adminPort = 8443
+	// The admin port is reported as configured. Substituting a literal here
+	// would hand operators a port to configure on joining nodes that this
+	// node is not listening on (go-qrdb#167).
+	if opts.AdminPort == 0 {
+		slog.Warn("bootstrap enrollment: admin port is unconfigured; joining nodes cannot be told which port to use",
+			"noise_public_key", hex.EncodeToString(adv.noiseKey.Public),
+			"noise_addr", adv.Addr(),
+		)
+		return
 	}
 	slog.Info("bootstrap enrollment information for joining nodes",
 		"noise_public_key", hex.EncodeToString(adv.noiseKey.Public),
 		"noise_addr", adv.Addr(),
-		"admin_port", adminPort,
+		"admin_port", opts.AdminPort,
 	)
 }
 

@@ -232,7 +232,15 @@ type ServerConfig struct {
 	// PgSQLPort is the port for the PostgreSQL wire protocol server.
 	PgSQLPort int `yaml:"pgsql_port"`
 
-	// Host is the bind address for all listeners.
+	// Host is the bind host for every API listener this node opens: the
+	// admin/REST server (and its HTTP/3 sibling on the same port), gRPC,
+	// the native QUIC transport, MCP, MySQL and PostgreSQL. It is a bind
+	// host, not an address peers dial — see AdvertiseHost for that.
+	//
+	// It is settable, in the documented precedence order, by --host, by
+	// QRDB_SERVER_HOST and by server.host in the YAML file, and it reaches
+	// every listener through the *Config the daemon hands to server.New.
+	// The default is DefaultServerHost.
 	Host string `yaml:"host"`
 
 	// AdvertiseHost is the host or IP that peers and clients should use to
@@ -248,6 +256,14 @@ type ServerConfig struct {
 	// split networking) must set it explicitly.
 	AdvertiseHost string `yaml:"advertise_host"`
 }
+
+// DefaultServerHost is the defaults-layer bind host for every API listener.
+// The wildcard preserves the historical out-of-the-box behaviour (a node
+// answers on every interface); a deployment that wants containment overrides
+// it through server.host, QRDB_SERVER_HOST or --host. This is the ONLY place
+// the literal is allowed to appear: DefaultConfig and the --host flag default
+// both read it, so there is a single value for the config path to override.
+const DefaultServerHost = "0.0.0.0"
 
 // ProtocolsConfig controls which API protocols are enabled.
 type ProtocolsConfig struct {
@@ -870,6 +886,13 @@ type BootstrapConfig struct {
 	// (first node only). Default: 63006.
 	NoisePort int `yaml:"noise_port"`
 
+	// NoiseHost is the bind host for the Noise NK bootstrap/enrollment
+	// server started on the first node. It is a bind host in the same
+	// sense as Server.Host, and when unset the daemon uses Server.Host so
+	// a node that was contained to one interface does not silently expose
+	// its enrollment listener on every interface (go-qrdb#167).
+	NoiseHost string `yaml:"noise_host"`
+
 	// SPKIPin is the hex-encoded SHA-256 SPKI pin of the bootstrap
 	// server's TLS certificate. Required for SPKI method.
 	SPKIPin string `yaml:"spki_pin"`
@@ -986,7 +1009,7 @@ func DefaultConfig() *Config {
 			QUICPort:  63004,
 			MySQLPort: 3306,
 			PgSQLPort: 5432,
-			Host:      "0.0.0.0",
+			Host:      DefaultServerHost,
 		},
 		Protocols: ProtocolsConfig{
 			REST: true,

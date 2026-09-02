@@ -1,0 +1,222 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Tests for the bind-host configuration path (go-qrdb#167).
+//
+// The defect these cover is not "a literal appears in the source" but "a value
+// the operator set never arrives": server.host was defined, validated and
+// viper-registered, and then buildServerConfig replaced it with a literal on
+// the one path that reaches server.New. Every assertion here therefore follows
+// a value from a configuration source through to the *qrdbconfig.Config the
+// orchestrator hands each listener.
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+)
+
+// testBindHost is the bind host tests use when they build a startFlags by
+// hand and then start something that listens. A startFlags built directly is
+// not a resolved configuration -- in production cobra's --host default fills
+// this in before anything reads it -- so a hand-built one has to supply it,
+// and loopback keeps the suite from opening wildcard sockets on the build
+// host.
+const testBindHost = "127.0.0.1"
+
+// writeBindHostConfig writes a minimal valid config file containing the given
+// server section body and returns its path.
+func writeBindHostConfig(t *testing.T, serverBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrdb.yaml")
+	body := `mode: "raft"
+server:
+` + serverBody + `
+protocols:
+  rest: true
+raft:
+  data_dir: "` + filepath.Join(dir, "data") + `"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "127.0.0.1:19001"
+  peers: "1=127.0.0.1:19001"
+tls:
+  enabled: false
+logging:
+  level: "info"
+  format: "text"
+discovery:
+  method: "static"
+`
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
+}
+
+// resolveWithArgs parses args and resolves the configuration exactly as the
+// start command does, returning the resolved flags.
+func resolveWithArgs(t *testing.T, args ...string) *startFlags {
+	t.Helper()
+	cmd, f := newStartCmdWithFlags()
+	require.NoError(t, cmd.ParseFlags(args))
+	require.NoError(t, resolveStartFlags(cmd, f))
+	return f
+}
+
+// TestBuildServerConfig_CarriesResolvedHost is the assertion the whole issue
+// turns on: whatever host resolution produced has to be the host in the
+// *qrdbconfig.Config handed to server.New, because that struct field is what
+// every listener joins with its port.
+func TestBuildServerConfig_CarriesResolvedHost(t *testing.T) {
+	f := &startFlags{host: "10.1.2.3", adminPort: 63002, grpcPort: 63003}
+	assert.Equal(t, "10.1.2.3", buildServerConfig(f).Server.Host)
+}
+
+// TestBindHost_DefaultsToDefaultsLayer proves the flag default is the
+// defaults-layer value and not a second, independent literal.
+func TestBindHost_DefaultsToDefaultsLayer(t *testing.T) {
+	f := resolveWithArgs(t)
+	assert.Equal(t, qrdbconfig.DefaultServerHost, f.host)
+	assert.Equal(t, qrdbconfig.DefaultConfig().Server.Host, f.host)
+	assert.Equal(t, qrdbconfig.DefaultServerHost, buildServerConfig(f).Server.Host)
+}
+
+// TestBindHost_FromConfigFile: server.host in YAML reaches the server config.
+// This is the path that was silently discarded.
+func TestBindHost_FromConfigFile(t *testing.T) {
+	cfgPath := writeBindHostConfig(t, `  host: "127.0.0.1"
+  admin_port: 19443`)
+	f := resolveWithArgs(t, "--config", cfgPath)
+	assert.Equal(t, "127.0.0.1", f.host)
+	assert.Equal(t, "127.0.0.1", buildServerConfig(f).Server.Host)
+}
+
+// TestBindHost_FromEnv: QRDB_SERVER_HOST reaches the server config and beats
+// the file.
+func TestBindHost_FromEnv(t *testing.T) {
+	cfgPath := writeBindHostConfig(t, `  host: "127.0.0.1"
+  admin_port: 19443`)
+	t.Setenv("QRDB_SERVER_HOST", "10.9.9.9")
+	f := resolveWithArgs(t, "--config", cfgPath)
+	assert.Equal(t, "10.9.9.9", f.host)
+	assert.Equal(t, "10.9.9.9", buildServerConfig(f).Server.Host)
+}
+
+// TestBindHost_FlagBeatsEnvAndFile pins the documented precedence
+// flags > env > file > defaults on this key.
+func TestBindHost_FlagBeatsEnvAndFile(t *testing.T) {
+	cfgPath := writeBindHostConfig(t, `  host: "127.0.0.1"
+  admin_port: 19443`)
+	t.Setenv("QRDB_SERVER_HOST", "10.9.9.9")
+	f := resolveWithArgs(t, "--config", cfgPath, "--host", "192.168.5.5")
+	assert.Equal(t, "192.168.5.5", f.host)
+	assert.Equal(t, "192.168.5.5", buildServerConfig(f).Server.Host)
+}
+
+// TestNoiseHost_DefaultsToServerHost: the enrollment listener follows the API
+// bind host unless it is given one of its own, so containing a node to an
+// interface contains enrollment too.
+func TestNoiseHost_DefaultsToServerHost(t *testing.T) {
+	cfgPath := writeBindHostConfig(t, `  host: "127.0.0.1"
+  admin_port: 19443`)
+	f := resolveWithArgs(t, "--config", cfgPath)
+	assert.Equal(t, "127.0.0.1", resolveNoiseHost(f))
+}
+
+// TestNoiseHost_FromConfigFile: bootstrap.noise_host overrides server.host.
+func TestNoiseHost_FromConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qrdb.yaml")
+	body := `mode: "raft"
+server:
+  host: "127.0.0.1"
+bootstrap:
+  noise_host: "10.4.4.4"
+raft:
+  data_dir: "` + filepath.Join(dir, "data") + `"
+  deployment_id: 1
+  shard_id: 1
+  replica_id: 1
+  raft_address: "127.0.0.1:19001"
+  peers: "1=127.0.0.1:19001"
+tls:
+  enabled: false
+logging:
+  level: "info"
+  format: "text"
+discovery:
+  method: "static"
+`
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	f := resolveWithArgs(t, "--config", path)
+	assert.Equal(t, "10.4.4.4", resolveNoiseHost(f))
+}
+
+// TestNoiseHost_FlagBeatsFile pins precedence for the enrollment bind host.
+func TestNoiseHost_FlagBeatsFile(t *testing.T) {
+	cfgPath := writeBindHostConfig(t, `  host: "127.0.0.1"`)
+	f := resolveWithArgs(t, "--config", cfgPath, "--bootstrap-noise-host", "10.7.7.7")
+	assert.Equal(t, "10.7.7.7", resolveNoiseHost(f))
+}
+
+// TestResolveAdvertiseHost_PrefersExplicit and _FallsBackToRaftAddress cover
+// the host the node publishes as its own admin URL in the leader-forward peer
+// registry. It has to be an address a PEER can dial: the entry is keyed by the
+// Raft address peers identify us by, so a loopback literal there told the
+// cluster to reach this node at 127.0.0.1.
+func TestResolveAdvertiseHost_PrefersExplicit(t *testing.T) {
+	f := &startFlags{advertiseHost: "10.0.0.9", raftAddress: "10.0.0.2:63001"}
+	assert.Equal(t, "10.0.0.9", resolveAdvertiseHost(f))
+}
+
+func TestResolveAdvertiseHost_FallsBackToRaftAddressHost(t *testing.T) {
+	f := &startFlags{raftAddress: "10.0.0.2:63001"}
+	assert.Equal(t, "10.0.0.2", resolveAdvertiseHost(f))
+}
+
+// TestSelfAdminURL_UsesAdvertiseHost: the node publishes the URL a PEER can
+// reach it on. A loopback literal here (the pre-#167 behaviour) told every
+// node resolving this one through the shared registry to dial 127.0.0.1, and
+// was strictly worse than the registry's own derivation from the Raft address.
+func TestSelfAdminURL_UsesAdvertiseHost(t *testing.T) {
+	f := &startFlags{advertiseHost: "10.0.0.9", raftAddress: "10.0.0.2:63001", adminPort: 63002}
+	got, ok := selfAdminURL(f)
+	require.True(t, ok)
+	assert.Equal(t, "https://10.0.0.9:63002", got)
+}
+
+// TestSelfAdminURL_FallsBackToRaftAddressHost: with no explicit advertise
+// host, the Raft address host is by definition an address peers already dial.
+func TestSelfAdminURL_FallsBackToRaftAddressHost(t *testing.T) {
+	f := &startFlags{raftAddress: "10.0.0.2:63001", adminPort: 63002}
+	got, ok := selfAdminURL(f)
+	require.True(t, ok)
+	assert.Equal(t, "https://10.0.0.2:63002", got)
+}
+
+// TestSelfAdminURL_NoAdvertisableHost: a wildcard Raft address with no
+// advertise host yields no URL at all rather than a guessed one.
+func TestSelfAdminURL_NoAdvertisableHost(t *testing.T) {
+	f := &startFlags{raftAddress: "0.0.0.0:63001", adminPort: 63002}
+	got, ok := selfAdminURL(f)
+	assert.False(t, ok)
+	assert.Empty(t, got)
+}

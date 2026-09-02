@@ -694,6 +694,7 @@ func TestRunStart_TLSResolutionError(t *testing.T) {
 		tlsCAFile:       "/nonexistent/ca.pem",
 		tlsCertFile:     "/nonexistent/cert.pem",
 		tlsKeyFile:      "/nonexistent/key.pem",
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -717,6 +718,7 @@ func TestRunStart_SingleNode_SMError(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -760,6 +762,7 @@ func TestRunStart_MVCCSMType_SwitchCaseExecuted(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	// runStart should fail at initializeNode due to blocked WAL dir.
@@ -791,6 +794,7 @@ func TestRunStart_PebbleSMType_SwitchCaseExecuted(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -819,6 +823,7 @@ func TestRunStart_DatabaseAlreadyExists_OpensExisting(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 	err := runStart(f1)
 	require.Error(t, err)
@@ -837,6 +842,7 @@ func TestRunStart_DatabaseAlreadyExists_OpensExisting(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 	err = runStart(f2)
 	require.Error(t, err)
@@ -866,6 +872,7 @@ func TestRunStart_SQLDatabaseSetup_CreatesNewDatabase(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "my-sql-db",
 		enableMySQL:     true,
+		host:            testBindHost,
 	}
 
 	// Should fail at initializeNode (unknown SM), but the SQL database
@@ -891,6 +898,7 @@ func TestRunStart_SQLDatabaseSetup_MemoryBackend(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "my-mem-sql-db",
 		enablePgSQL:     true,
+		host:            testBindHost,
 	}
 
 	// Fail initializeNode fast by blocking the WAL path.
@@ -918,6 +926,7 @@ func TestRunStart_SQLDatabaseSetup_ExistingDatabase_UpdatesProtocol(t *testing.T
 		replicaID:       1,
 		sqlDatabase:     "qrdb",
 		enableMySQL:     true,
+		host:            testBindHost,
 	}
 	err := runStart(f1)
 	require.Error(t, err)
@@ -938,6 +947,7 @@ func TestRunStart_SQLDatabaseSetup_ExistingDatabase_UpdatesProtocol(t *testing.T
 		sqlDatabase:     "qrdb",
 		enableMySQL:     true,
 		enablePgSQL:     true,
+		host:            testBindHost,
 	}
 	err = runStart(f2)
 	require.Error(t, err)
@@ -981,6 +991,7 @@ func TestRunStart_WireCertReloaderSuccess_LogsEnabled(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -1028,6 +1039,7 @@ func TestRunStart_MigrateIfNeeded_Error(t *testing.T) {
 		tlsCAFile:       caFile,
 		tlsCertFile:     certFile,
 		tlsKeyFile:      keyFile,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -1155,6 +1167,7 @@ func TestRunStart_AuthDisabled_FullStartup_ThenSIGINT(t *testing.T) {
 		authEnabled:     false, // skip bootstrapAuth → covers the else branch
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -1213,6 +1226,7 @@ func TestRunStart_AuthDisabled_SIGHUP_ThenSIGTERM(t *testing.T) {
 		authEnabled:     false,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	// Observe the daemon's OWN handling of SIGHUP, not merely its delivery.
@@ -1348,6 +1362,7 @@ func TestRunStart_WithCodecConfig_FullStartup(t *testing.T) {
 			StorageCodec: "json",
 			WireCodec:    "json",
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -1421,6 +1436,7 @@ func TestRunStart_SealConfig_SoftwareStrategy_SealedWindow_ThenSIGTERM(t *testin
 			Enabled:  true,
 			Strategy: "",
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -1469,6 +1485,7 @@ func TestRunStart_SealConfig_ShamirStrategy_InvalidParams_ReturnsError(t *testin
 			ShamirThreshold: 10,
 			ShamirTotal:     2,
 		},
+		host: testBindHost,
 	}
 
 	err = runStart(f)
@@ -1513,6 +1530,7 @@ func TestRunStart_AuthEnabled_ContextCanceled_ReturnsNil(t *testing.T) {
 		authEnabled:     true, // triggers bootstrapAuth code path
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -1571,6 +1589,7 @@ func TestRunStart_AuthEnabled_FullStartup_ThenSIGTERM(t *testing.T) {
 		authEnabled:     true, // full auth bootstrap path
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -1637,6 +1656,7 @@ func TestRunStart_SealAndVolumePool_WiredTogether_ThenSIGTERM(t *testing.T) {
 				{Name: "default", Paths: []string{volDir}, Strategy: "round_robin"},
 			},
 		},
+		host: testBindHost,
 	}
 
 	// Observe the wiring this test is NAMED for before shutting down.

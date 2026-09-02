@@ -132,8 +132,35 @@ neither owns a verb neither registered. See
 | SDK Tier 2 aliases | `sdk/go/types_server.go` | go-qrdb |
 | Capability modules | — | **go-xkms, go-quicbaas, go-trusted-platform** |
 
+### Where the transports bind
+
+Every listener the server opens — REST, the HTTP/3 (QUIC) listener that shares
+the REST port, gRPC, the native QUIC transport, MCP, MySQL, PostgreSQL — joins
+`config.Server.Host` with its own port. One bind host, one containment
+decision, no per-transport literal; see
+[../configuration/architecture.md](../configuration/architecture.md#infrastructure-values-are-never-literals).
+
+HTTP/3 is the case worth stating explicitly, because it is the one transport
+that does not get its own address from configuration: it shares the REST
+listener's port, and it takes the host that listener **actually bound**, read
+back off the socket. Both sockets are opened before either serves, and if the
+kernel puts them on different bind hosts — one wildcard, one specific — start
+fails with `*rest.ListenerHostMismatchError` instead of serving the same
+handler and the same TLS config on a wider surface than was asked for. The
+QUIC socket's bind failure is likewise a `Start` error rather than a log line
+on a goroutine, so a REST server never reports success with no HTTP/3 listener
+behind it. Previously the host was a literal wildcard, and a REST server bound
+to loopback still accepted QUIC datagrams on every interface — a containment
+decision honoured on one transport and silently discarded on the other.
+
+HTTP/3 starts whenever TLS is configured; making it opt-in or independently
+addressable is an open architecture question, not a decided one.
+
 ## Trust boundaries
 
+- **A bind address holds on every transport or on none.** REST and HTTP/3 serve
+  the same handler on the same port; binding is enforced to agree at start
+  rather than reported in a log line an operator would have to notice.
 - **Default deny.** A route, RPC or tool with no permission declaration fails the
   startup assertion rather than serving unauthenticated.
 - **Public routes are explicit and few** — `GET /health`,

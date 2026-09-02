@@ -594,6 +594,10 @@ func TestBuildServerConfig(t *testing.T) {
 		discoveryMethod:      "static",
 		multicastSecret:      "secret",
 		dnsDomain:            "example.com",
+		// The bind host has no default of its own inside startFlags:
+		// cobra's --host default supplies it in production, so a
+		// hand-built value has to state it too.
+		host: qrdbconfig.DefaultServerHost,
 	}
 
 	cfg := buildServerConfig(f)
@@ -604,8 +608,8 @@ func TestBuildServerConfig(t *testing.T) {
 	if cfg.Server.GRPCPort != 8444 {
 		t.Fatalf("GRPCPort = %d, want %d", cfg.Server.GRPCPort, 8444)
 	}
-	if cfg.Server.Host != "0.0.0.0" {
-		t.Fatalf("Host = %q, want %q", cfg.Server.Host, "0.0.0.0")
+	if cfg.Server.Host != qrdbconfig.DefaultServerHost {
+		t.Fatalf("Host = %q, want %q", cfg.Server.Host, qrdbconfig.DefaultServerHost)
 	}
 	if !cfg.Protocols.REST {
 		t.Fatal("Protocols.REST = false, want true")
@@ -3722,6 +3726,7 @@ func TestStartBootstrapServers_MkdirError(t *testing.T) {
 
 	f := &startFlags{
 		dataDir: fakeDataDir,
+		host:    testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
@@ -3744,6 +3749,7 @@ func TestStartBootstrapServers_KeyWriteError(t *testing.T) {
 
 	f := &startFlags{
 		dataDir: dir,
+		host:    testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
@@ -3792,6 +3798,7 @@ func TestStartBootstrapServers_KeyError(t *testing.T) {
 
 	f := &startFlags{
 		dataDir: dir,
+		host:    testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, testLogger())

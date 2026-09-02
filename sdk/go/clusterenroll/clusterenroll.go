@@ -49,7 +49,10 @@ type Options = clusterenroll.Options
 type BootstrapOptions = clusterenroll.BootstrapOptions
 
 // AdvertiseOptions configures the Noise NK bootstrap server started on the
-// first node of a multi-node cluster (path 5).
+// first node of a multi-node cluster (path 5). NoiseHost is required: the
+// enrollment listener is reached by joining nodes before they hold any
+// credential, so where it binds is the caller's decision to state, not this
+// package's to assume.
 type AdvertiseOptions = clusterenroll.AdvertiseOptions
 
 // Advertiser holds the running Noise NK bootstrap server started on the first
@@ -66,6 +69,16 @@ type JoinError = clusterenroll.JoinError
 
 // ServerError is returned when starting or operating a bootstrap server fails.
 type ServerError = clusterenroll.ServerError
+
+// MissingBindHostError is returned by StartAdvertiser and
+// StartAnchorAdvertiser when AdvertiseOptions.NoiseHost is empty. A bind host
+// is a containment decision and the package will not invent one.
+type MissingBindHostError = clusterenroll.MissingBindHostError
+
+// MissingAdminPortError is returned by ResolveServerURL when a bootstrap
+// server address must be completed with the admin port and none is
+// configured. The URL is not built from a guessed port.
+type MissingAdminPortError = clusterenroll.MissingAdminPortError
 
 // ExplicitFilesError is returned by ResolveCA when TLS*File options are set.
 // ResolveCA resolves only the cluster CA signing key; explicit file options
@@ -120,7 +133,9 @@ var ValidateAnchorBundle = clusterenroll.ValidateAnchorBundle
 type AnchorError = clusterenroll.AnchorError
 
 // ResolveServerURL derives the HTTPS URL of the bootstrap server from
-// BootstrapOptions.
+// BootstrapOptions. It returns an empty URL and a nil error when no address
+// source is configured, and *MissingAdminPortError when one is configured but
+// the admin port needed to complete it is not.
 var ResolveServerURL = clusterenroll.ResolveServerURL
 
 // ExtractHostFromPeer extracts the host portion from a peer specification in

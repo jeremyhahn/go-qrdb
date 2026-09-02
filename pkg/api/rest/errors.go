@@ -97,6 +97,25 @@ func (e *HTTP3StartError) Unwrap() error {
 	return e.Err
 }
 
+// ListenerHostMismatchError is returned when the HTTP/3 (QUIC) socket lands
+// on a different bind host than the TCP listener it shadows -- one wildcard,
+// the other specific. The two transports serve the same handler, so the
+// operator's bind decision has to hold on both; go-qrdb#165 is the case where
+// it did not and nothing in the configuration said so.
+type ListenerHostMismatchError struct {
+	// TCPHost is the host the TCP listener bound.
+	TCPHost string
+	// UDPHost is the host the QUIC socket bound.
+	UDPHost string
+}
+
+// Error returns a human-readable description.
+func (e *ListenerHostMismatchError) Error() string {
+	return "rest: HTTP/3 bind host " + e.UDPHost +
+		" does not match REST bind host " + e.TCPHost +
+		"; the two transports serve the same handler and must share a bind host"
+}
+
 // FetchError is returned when an HTTP request to a REST server endpoint
 // fails during fetching.
 type FetchError struct {

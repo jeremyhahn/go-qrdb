@@ -69,6 +69,7 @@ func TestRunStart_AuthDisabled_SingleNode_ThenSIGTERM(t *testing.T) {
 		authEnabled:     false,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -122,6 +123,7 @@ func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
 		authEnabled:     true,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -185,6 +187,7 @@ func TestRunStart_MultiNode_FirstNode_BootstrapServers_ThenSIGTERM(t *testing.T)
 		enableGRPC:      true,
 		// No bootstrapAddr/bootstrapNoiseAddr/bootstrapDirectURL → first node
 		// → resolveTLS Path 5 → startBootstrapServers called.
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -247,6 +250,7 @@ func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 				{Name: "default", Paths: []string{filepath.Join(dir, "vol1")}, Strategy: ""},
 			},
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -303,6 +307,7 @@ func TestRunStart_SIGHUPThenSIGTERM(t *testing.T) {
 		authEnabled:     false,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -375,6 +380,7 @@ func TestRunStart_ServerStartFails_PortInUse(t *testing.T) {
 		authEnabled:     false,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -432,6 +438,7 @@ func TestRunStart_PebbleSMType_FullStartup_ThenSIGTERM(t *testing.T) {
 		authEnabled:     false,
 		enableREST:      true,
 		enableGRPC:      true,
+		host:            testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -494,6 +501,7 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 				{Name: "default", Paths: []string{filepath.Join(dir, "vol1")}, Strategy: ""},
 			},
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)
@@ -542,6 +550,7 @@ func TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly(t *testing.T) 
 		databases: []qrdbconfig.DatabaseConfig{
 			{Name: "default", Engine: "kv", Backend: "memory"},
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)

@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
@@ -272,7 +273,7 @@ func TestResolve_Path5_FirstNode_ReturnsAdvertiser(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // 0 would map to DefaultNoisePort and flake when occupied
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, // 0 would map to DefaultNoisePort and flake when occupied
 	}
 
 	got, adv, err := Resolve(context.Background(), opts, discardLogger())
@@ -308,7 +309,7 @@ func TestResolve_Path5_FirstNode_ReloadsExistingKey(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: freePort(t)},
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost},
 	}
 
 	// First call: generates key and starts server.
@@ -369,7 +370,10 @@ func TestAdvertiser_Addr_NilReceiver(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveServerURL_ExplicitAddr(t *testing.T) {
-	got := ResolveServerURL(BootstrapOptions{ServerAddr: "10.0.0.1:9443"})
+	got, err := ResolveServerURL(BootstrapOptions{ServerAddr: "10.0.0.1:9443"})
+	if err != nil {
+		t.Fatalf("ResolveServerURL error = %v, want nil", err)
+	}
 	if got != "https://10.0.0.1:9443" {
 		t.Errorf("got %q, want https://10.0.0.1:9443", got)
 	}
@@ -381,7 +385,10 @@ func TestResolveServerURL_StaticPeers(t *testing.T) {
 		Peers:           []string{"1=192.168.1.10:63001"},
 		AdminPort:       8443,
 	}
-	got := ResolveServerURL(opts)
+	got, err := ResolveServerURL(opts)
+	if err != nil {
+		t.Fatalf("ResolveServerURL error = %v, want nil", err)
+	}
 	if got != "https://192.168.1.10:8443" {
 		t.Errorf("got %q, want https://192.168.1.10:8443", got)
 	}
@@ -392,26 +399,62 @@ func TestResolveServerURL_DNSDomain(t *testing.T) {
 		DNSDomain: "cluster.example.com",
 		AdminPort: 9443,
 	}
-	got := ResolveServerURL(opts)
+	got, err := ResolveServerURL(opts)
+	if err != nil {
+		t.Fatalf("ResolveServerURL error = %v, want nil", err)
+	}
 	if got != "https://cluster.example.com:9443" {
 		t.Errorf("got %q, want https://cluster.example.com:9443", got)
 	}
 }
 
-func TestResolveServerURL_DefaultPort(t *testing.T) {
+// TestResolveServerURL_MissingAdminPort_Peers pins the fail-closed contract
+// for go-qrdb#167 item 4: an address source is configured but the admin port
+// is not, so there is nothing to complete the URL with. The old code
+// substituted 8443 -- a literal absent from the defaults layer and in conflict
+// with DefaultConfig().Server.AdminPort -- and the enroll client dialed it.
+func TestResolveServerURL_MissingAdminPort_Peers(t *testing.T) {
 	opts := BootstrapOptions{
 		DiscoveryMethod: "static",
 		Peers:           []string{"1=10.0.0.1:63001"},
-		AdminPort:       0, // defaults to 8443
+		AdminPort:       0,
 	}
-	got := ResolveServerURL(opts)
-	if got != "https://10.0.0.1:8443" {
-		t.Errorf("got %q, want https://10.0.0.1:8443", got)
+	got, err := ResolveServerURL(opts)
+	if got != "" {
+		t.Errorf("ResolveServerURL = %q, want empty", got)
+	}
+	var missing *MissingAdminPortError
+	if !errors.As(err, &missing) {
+		t.Fatalf("ResolveServerURL error = %v (%T), want *MissingAdminPortError", err, err)
+	}
+	if !strings.Contains(missing.Error(), "1=10.0.0.1:63001") {
+		t.Errorf("error %q does not name the address source", missing.Error())
 	}
 }
 
+func TestResolveServerURL_MissingAdminPort_DNSDomain(t *testing.T) {
+	opts := BootstrapOptions{
+		DNSDomain: "cluster.example.com",
+		AdminPort: 0,
+	}
+	got, err := ResolveServerURL(opts)
+	if got != "" {
+		t.Errorf("ResolveServerURL = %q, want empty", got)
+	}
+	var missing *MissingAdminPortError
+	if !errors.As(err, &missing) {
+		t.Fatalf("ResolveServerURL error = %v (%T), want *MissingAdminPortError", err, err)
+	}
+}
+
+// TestResolveServerURL_Empty covers "no address source at all", which is a
+// caller stating it has no bootstrap server rather than a misconfiguration:
+// empty URL, nil error.
 func TestResolveServerURL_Empty(t *testing.T) {
-	got := ResolveServerURL(BootstrapOptions{DiscoveryMethod: "multicast"})
+	got, err := ResolveServerURL(BootstrapOptions{DiscoveryMethod: "multicast"})
+	if err != nil {
+		t.Fatalf("ResolveServerURL error = %v, want nil", err)
+	}
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
@@ -497,7 +540,7 @@ func TestStartAdvertiser_InvalidExistingKey(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error for invalid noise key file")
 	}
@@ -538,7 +581,7 @@ func TestStartAdvertiser_KeyReadFails(t *testing.T) {
 		return orig(name)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("StartAdvertiser error = %v, want the injected read error", err)
 	}
@@ -564,7 +607,7 @@ func TestStartAdvertiser_WriteKeyFileFails(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t)}, dir, discardLogger())
+	_, err = StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
 	if err == nil {
 		t.Fatal("expected error when noise key path is a directory")
 	}
@@ -669,7 +712,7 @@ func TestResolveCA_FirstNode_ReturnsAdvertiser(t *testing.T) {
 		TrustDomain: "test.cluster",
 		DataDir:     dir,
 		SingleNode:  false,
-		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // 0 would map to DefaultNoisePort and flake when occupied
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, // 0 would map to DefaultNoisePort and flake when occupied
 	}
 
 	caCertPEM, caKeyPEM, adv, err := ResolveCA(context.Background(), opts, discardLogger())

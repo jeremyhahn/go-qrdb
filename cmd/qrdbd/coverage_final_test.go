@@ -364,6 +364,7 @@ func TestStartBootstrapServers_InvalidNoiseKeyFile(t *testing.T) {
 	f := &startFlags{
 		dataDir:            dir,
 		bootstrapNoisePort: 0,
+		host:               testBindHost,
 	}
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
@@ -433,6 +434,7 @@ func TestRunStart_MigrateIfNeededFails(t *testing.T) {
 		tlsCAFile:       caFile,
 		tlsCertFile:     certFile,
 		tlsKeyFile:      keyFile,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -460,6 +462,7 @@ func TestRunStart_AuthEnabled_AdminCertWriteFails(t *testing.T) {
 		shardID:         1,
 		replicaID:       1,
 		authEnabled:     true, // triggers generateAdminClientCert with CAKeyPEM
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -501,6 +504,7 @@ func TestRunStart_SQLDatabase_MemoryBackend_SmType(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "memsqldb",
 		enableMySQL:     true,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -535,6 +539,7 @@ func TestRunStart_SQLDatabase_GetReturnsOtherError(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "existing-sql-db",
 		enableMySQL:     true,
+		host:            testBindHost,
 	}
 	err := runStart(f1)
 	require.Error(t, err)
@@ -553,6 +558,7 @@ func TestRunStart_SQLDatabase_GetReturnsOtherError(t *testing.T) {
 		sqlDatabase:     "existing-sql-db",
 		enableMySQL:     true,
 		enablePgSQL:     true, // different flags → UpdateProtocol
+		host:            testBindHost,
 	}
 	err = runStart(f2)
 	require.Error(t, err)
@@ -575,6 +581,7 @@ func TestRunStart_MVCCSMType_AssignsCreateFn(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -598,6 +605,7 @@ func TestRunStart_PebbleSMType_AssignsCreateFn(t *testing.T) {
 		raftAddress:     "127.0.0.1:0",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -627,6 +635,7 @@ func TestRunStart_DuplicateDatabaseName_AlreadyExistsPath(t *testing.T) {
 			{Name: "testdb", Engine: "kv", Backend: "pebble"},
 			{Name: "testdb", Engine: "kv", Backend: "pebble"}, // duplicate
 		},
+		host: testBindHost,
 	}
 
 	err := runStart(f)
@@ -694,6 +703,7 @@ func TestResolveTLS_NoiseAddr_Set_BootstrapAttempts(t *testing.T) {
 		dataDir:            t.TempDir(),
 		bootstrapNoiseAddr: "127.0.0.1:19997",
 		bootstrapNoiseKey:  "deadbeefdeadbeef",
+		host:               testBindHost,
 	}
 
 	_, _, err := resolveTLS(f, newDiscardLogger())

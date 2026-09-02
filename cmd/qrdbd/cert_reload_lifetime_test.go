@@ -90,6 +90,7 @@ func TestRunStart_ReleasesTheCertWatcherOnEveryReturn(t *testing.T) {
 		databases: []qrdbconfig.DatabaseConfig{
 			{Name: "testdb", Engine: "invalid-engine", Backend: "pebble"},
 		},
+		host: testBindHost,
 	}
 
 	if runErr := runStart(f); runErr == nil {

@@ -81,7 +81,7 @@ func TestStartAnchorAdvertiser_RejectsKeyBearingBundle(t *testing.T) {
 	caCertPEM, caKeyPEM := anchorTestCA(t)
 	bundle := append(append([]byte{}, caCertPEM...), caKeyPEM...)
 
-	_, err := StartAnchorAdvertiser(bundle, AdvertiseOptions{NoisePort: 63106}, t.TempDir(), discardLogger())
+	_, err := StartAnchorAdvertiser(bundle, AdvertiseOptions{NoisePort: 63106, NoiseHost: testBindHost}, t.TempDir(), discardLogger())
 	if err == nil {
 		t.Fatal("expected anchor advertiser to reject a key-bearing bundle")
 	}
@@ -95,7 +95,7 @@ func TestStartAnchorAdvertiser_ServesAnchorRoundTrip(t *testing.T) {
 	caCertPEM, _ := anchorTestCA(t)
 	dir := t.TempDir()
 
-	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: 63107}, dir, discardLogger())
+	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: 63107, NoiseHost: testBindHost}, dir, discardLogger())
 	if err != nil {
 		t.Fatalf("StartAnchorAdvertiser: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestFetchAnchor_SharedKeyModeServerYieldsCertOnly(t *testing.T) {
 	caCertPEM, caKeyPEM := anchorTestCA(t)
 	mat := &clustertls.Material{CACertPEM: caCertPEM, CAKeyPEM: caKeyPEM}
 
-	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: 63108}, t.TempDir(), discardLogger())
+	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: 63108, NoiseHost: testBindHost}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartAdvertiser: %v", err)
 	}

@@ -117,6 +117,7 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 			Strategy:    "",
 			RootKeyPath: "__sys:seal/root_key",
 		},
+		host: testBindHost,
 	}
 
 	done := make(chan error, 1)

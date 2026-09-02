@@ -192,6 +192,7 @@ func TestRunStart_InvalidDatabaseEngine_ReturnsError(t *testing.T) {
 		databases: []qrdbconfig.DatabaseConfig{
 			{Name: "testdb", Engine: "invalid-engine", Backend: "pebble"},
 		},
+		host: testBindHost,
 	}
 
 	err := runStart(f)

@@ -222,6 +222,7 @@ func TestRunStart_InitializeNodeError(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -731,6 +732,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 		deploymentID:    1,
 		logFormat:       "text",
 		logLevel:        "error",
+		host:            testBindHost,
 	}
 
 	_, err = initializeNode(context.Background(), f, bundle)
@@ -763,6 +765,7 @@ func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
 		deploymentID:    1,
 		logFormat:       "text",
 		logLevel:        "error",
+		host:            testBindHost,
 	}
 
 	// nil bundle means no mTLS config, but multi-node. Host creation

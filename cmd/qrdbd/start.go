@@ -123,6 +123,12 @@ type startFlags struct {
 	clusterMinPeers      int
 	dynamicMembership    bool
 	advertiseHost        string
+	// host is the bind host every API listener uses (REST/HTTP3, gRPC,
+	// QUIC, MCP, MySQL, PgSQL). It reaches them through buildServerConfig
+	// -> qrdbconfig.Config.Server.Host -> server.New. Sourced from --host,
+	// QRDB_SERVER_HOST or server.host under the documented precedence; its
+	// flag default is qrdbconfig.DefaultServerHost, the defaults layer.
+	host                 string
 	adminPort            int
 	grpcPort             int
 	maxInMemLogSize      uint64
@@ -172,6 +178,7 @@ type startFlags struct {
 	bootstrapNoiseKey     string
 	bootstrapNoiseAddr    string
 	bootstrapNoisePort    int
+	bootstrapNoiseHost    string
 	bootstrapSPKIPin      string
 	bootstrapDANEDNS      string
 	bootstrapDANEDoT      bool
@@ -459,6 +466,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 
 	cmd.Flags().StringVar(&f.configFile, "config", "", "Path to YAML configuration file")
 	cmd.Flags().StringVar(&f.mode, "mode", "raft", "Run mode: raft (default; single- or multi-node consensus) or standalone (no raft, standard database operations only)")
+	cmd.Flags().StringVar(&f.host, "host", qrdbconfig.DefaultServerHost, "Bind host for all API listeners (REST/HTTP3, gRPC, QUIC, MCP, MySQL, PgSQL); maps to server.host / QRDB_SERVER_HOST")
 	cmd.Flags().StringVar(&f.listen, "listen", "0.0.0.0:63001", "Listen address (host:port)")
 	cmd.Flags().StringVar(&f.raftAddress, "raft-address", "127.0.0.1:63001", "Raft address visible to peers")
 	cmd.Flags().StringVar(&f.dataDir, "data-dir", "./data", "Data directory for WAL and metadata")
@@ -519,6 +527,7 @@ func newStartCmdWithFlags() (*cobra.Command, *startFlags) {
 	cmd.Flags().StringVar(&f.bootstrapNoiseKey, "bootstrap-noise-key", "", "Hex Curve25519 public key for Noise bootstrap")
 	cmd.Flags().StringVar(&f.bootstrapNoiseAddr, "bootstrap-noise-addr", "", "host:port of Noise bootstrap server")
 	cmd.Flags().IntVar(&f.bootstrapNoisePort, "bootstrap-noise-port", 63006, "TCP port for Noise bootstrap server (first node)")
+	cmd.Flags().StringVar(&f.bootstrapNoiseHost, "bootstrap-noise-host", "", "Bind host for the Noise bootstrap server (first node); maps to bootstrap.noise_host, defaults to --host")
 	cmd.Flags().StringVar(&f.bootstrapSPKIPin, "bootstrap-spki-pin", "", "Hex SHA-256 SPKI pin for bootstrap server")
 	cmd.Flags().StringVar(&f.bootstrapDANEDNS, "bootstrap-dane-dns", "", "DNS server for DANE TLSA lookup (e.g. 8.8.8.8:53)")
 	cmd.Flags().BoolVar(&f.bootstrapDANEDoT, "bootstrap-dane-dot", false, "Use DNS-over-TLS for DANE")
@@ -622,6 +631,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("advertise-host") && cfg.Server.AdvertiseHost != "" {
 		f.advertiseHost = cfg.Server.AdvertiseHost
+	}
+	if !cmd.Flags().Changed("host") && cfg.Server.Host != "" {
+		f.host = cfg.Server.Host
 	}
 	if !cmd.Flags().Changed("admin-port") {
 		f.adminPort = cfg.Server.AdminPort
@@ -742,6 +754,9 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	}
 	if !cmd.Flags().Changed("bootstrap-noise-port") {
 		f.bootstrapNoisePort = cfg.Bootstrap.NoisePort
+	}
+	if !cmd.Flags().Changed("bootstrap-noise-host") && cfg.Bootstrap.NoiseHost != "" {
+		f.bootstrapNoiseHost = cfg.Bootstrap.NoiseHost
 	}
 	if !cmd.Flags().Changed("bootstrap-spki-pin") && cfg.Bootstrap.SPKIPin != "" {
 		f.bootstrapSPKIPin = cfg.Bootstrap.SPKIPin
@@ -1651,8 +1666,21 @@ func runStart(f *startFlags) error {
 
 			// Register the local node so other nodes forwarding back to us can
 			// be detected as a loop (and for symmetry with peer registrations).
-			localAdminURL := "https://" + net.JoinHostPort("127.0.0.1", adminPortStr)
-			registry.Register(f.raftAddress, localAdminURL)
+			//
+			// The entry is keyed by f.raftAddress -- the identity peers use --
+			// so its value must be the URL a PEER would reach us on, which is
+			// the advertise host. A loopback literal here published "reach me
+			// at 127.0.0.1" into the shared registry (go-qrdb#167), which is
+			// also strictly worse than the registry's own derivation from the
+			// Raft address host. A node whose advertise host is a wildcard has
+			// no such URL, so it registers nothing rather than a wrong one.
+			if selfAdminURL, ok := selfAdminURL(f); ok {
+				registry.Register(f.raftAddress, selfAdminURL)
+			} else {
+				slog.Warn("no advertisable host for this node's admin URL; skipping self-registration in the peer registry",
+					"raft_address", f.raftAddress,
+					"advertise_host", f.advertiseHost)
+			}
 
 			// Pre-register peer admin URLs from config (Phase 4c-1c). This is required
 			// when cluster nodes share a host but use distinct admin ports (e.g.
@@ -2321,7 +2349,11 @@ func buildServerConfig(f *startFlags) *qrdbconfig.Config {
 			QUICPort:  f.quicPort,
 			MySQLPort: f.mysqlPort,
 			PgSQLPort: f.pgsqlPort,
-			Host:      "0.0.0.0",
+			// The resolved bind host, not a literal. Every listener the
+			// orchestrator opens joins it with its port, so server.host,
+			// QRDB_SERVER_HOST and --host reach all of them (go-qrdb#167:
+			// this line used to discard all three).
+			Host: f.host,
 		},
 		Protocols: qrdbconfig.ProtocolsConfig{
 			REST:       f.enableREST,
@@ -2525,6 +2557,33 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 	return host, nil
 }
 
+// resolveAdvertiseHost returns the host peers and clients use to reach this
+// node's APIs: the explicit advertise host when set, else the host portion of
+// the Raft address, which is by definition an address peers already dial. The
+// result may still be a wildcard (an unconfigured node with a wildcard Raft
+// address); callers check cluster.AdvertisableHost before publishing it.
+func resolveAdvertiseHost(f *startFlags) string {
+	if f.advertiseHost != "" {
+		return f.advertiseHost
+	}
+	return cluster.HostFromAddress(f.raftAddress)
+}
+
+// selfAdminURL builds the admin HTTPS base URL this node publishes for itself
+// in the leader-forward peer registry. The entry is keyed by the node's Raft
+// address -- the identity peers use -- so the value has to be a URL a PEER can
+// dial, which is the advertise host and the admin port. A node with no
+// advertisable host (wildcard Raft address, no advertise host) has no such URL
+// and reports false so the caller registers nothing: the registry's own
+// derivation from the Raft address host is a better answer than a wrong one.
+func selfAdminURL(f *startFlags) (string, bool) {
+	host := resolveAdvertiseHost(f)
+	if !cluster.AdvertisableHost(host) {
+		return "", false
+	}
+	return "https://" + net.JoinHostPort(host, strconv.Itoa(f.adminPort)), true
+}
+
 // advertisedAPIEndpoints builds the client-facing API endpoint map this node
 // publishes into the cluster registry. Every value comes from this node's own
 // configuration: the advertise host (explicit, else the host portion of the
@@ -2533,10 +2592,7 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 // with no explicit advertise host publishes nothing rather than an address no
 // peer can dial.
 func advertisedAPIEndpoints(f *startFlags) (map[cluster.APIProtocol]string, error) {
-	host := f.advertiseHost
-	if host == "" {
-		host = cluster.HostFromAddress(f.raftAddress)
-	}
+	host := resolveAdvertiseHost(f)
 
 	ports := make(map[cluster.APIProtocol]int, len(cluster.APIProtocols))
 	if f.enableREST {

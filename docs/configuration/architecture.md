@@ -14,16 +14,47 @@ every misconfiguration into a production surprise.
 
 ## Shape chosen
 
-**Three layers, in one order, then validate everything.**
+**Four layers, in one order, then validate everything.**
 
 1. `DefaultConfig()` initializes all fields with production-ready defaults.
 2. The YAML file (if provided via `--config`) is unmarshaled on top of the defaults. Only fields present in the YAML file override the defaults.
-3. CLI flags that are explicitly set override the corresponding YAML values.
-
+3. `QRDB_`-prefixed environment variables override the file. Every default-bearing key is registered with Viper before the file is merged, so an env var works whether or not the file mentions the key; the variable name is the key path upper-cased with separators as underscores (`server.host` -> `QRDB_SERVER_HOST`).
+4. CLI flags that are explicitly set override everything below them.
 
 **Only fields present in the YAML override the defaults**, and only flags
-explicitly set override the YAML. A flag left at its own default does not
-silently overwrite a YAML value.
+explicitly set override the layers below. A flag left at its own default does
+not silently overwrite a YAML or environment value.
+
+Layer 3 lives inside `config.Load`, which the daemon calls only when `--config`
+names a file. A daemon started with no config file therefore resolves from
+defaults and flags alone; environment overrides need a file, even an otherwise
+empty one. Changing that would move every key, not just the addressing ones, so
+it is deliberately left as it stands.
+
+### Infrastructure values are never literals
+
+**Owner ruling, 2026-08-26** (`software/conventions/configuration.md` §3): bind
+hosts, ports and advertised/peer addresses come from the config path above. A
+literal in non-test code is a defect **unless it is the defaults-layer value
+that path overrides** — `config.DefaultServerHost` is such a value, and it is
+the single source both `DefaultConfig()` and the `--host` flag default read.
+
+Two shapes follow from it:
+
+- **The resolved value reaches the consumer.** `server.host` is not merely
+  defined and validated; `cmd/qrdbd` puts it in the `*config.Config` handed to
+  `server.New`, and every listener joins that field with its port. The defect
+  this ruling was filed against was the missing middle: the field was defined,
+  validated, Viper-registered, then replaced with a literal on the only path
+  that built that struct, so `server.host` and `QRDB_SERVER_HOST` were
+  discarded for every listener.
+- **Where a value is genuinely absent, fail closed.** `clusterenroll` returns
+  `*MissingBindHostError` rather than binding the enrollment listener somewhere
+  the operator did not ask for, and `*MissingAdminPortError` rather than
+  completing a bootstrap URL with a guessed port. The guessed port used to be
+  `8443`, which exists nowhere in the defaults layer and contradicts
+  `DefaultConfig().Server.AdminPort`, so the enroll client dialed a port nothing
+  in the system listens on.
 
 After merging, `Config.Validate()` checks **every** field and returns the first
 error as a `*ValidationError` carrying the field path and the reason:
@@ -102,7 +133,13 @@ reference with defaults is [12-configuration.md](../12-configuration.md).
 
 - **No runtime reconfiguration.** Configuration is read at boot; changing it is
   a restart.
-- **No environment-variable-only configuration** beyond the documented bindings
-  (`QRDB_SO_PIN`, `QRDB_USER_PIN`, `QRDB_BARRIER_STRATEGY`, `QRDB_SHARES`,
-  `QRDB_THRESHOLD`, `QRDB_HOSTNAME`, `QRDB_SANS`, `QRDB_SEAL_SHARE_TTL`).
+- **No environment-variable configuration without a config file.** The
+  `QRDB_`-prefixed overlay is part of `config.Load`, which runs only for
+  `--config`. The command-scoped bindings (`QRDB_SO_PIN`, `QRDB_USER_PIN`,
+  `QRDB_BARRIER_STRATEGY`, `QRDB_SHARES`, `QRDB_THRESHOLD`, `QRDB_HOSTNAME`,
+  `QRDB_SANS`) are bound separately by their own commands and are unaffected.
+- **No separate bind host per protocol.** All API listeners share
+  `server.host`. The enrollment listener is the one exception
+  (`bootstrap.noise_host`), because it serves a different trust boundary — a
+  joining node reaches it before it holds any credential.
 - **No config-driven database creation beyond the `databases:` block.**

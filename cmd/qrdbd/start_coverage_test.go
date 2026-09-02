@@ -1419,6 +1419,7 @@ func TestRunStart_TLSLoadError(t *testing.T) {
 		tlsKeyFile:  filepath.Join(dir, "nonexistent-key.pem"),
 		dataDir:     dir,
 		smType:      "memory",
+		host:        testBindHost,
 	}
 
 	err := runStart(f)
@@ -1446,6 +1447,7 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 	f := &startFlags{
 		dataDir: badDataDir,
 		smType:  "memory",
+		host:    testBindHost,
 	}
 
 	err := runStart(f)
@@ -1476,6 +1478,7 @@ func TestRunStart_CACertWriteFileError(t *testing.T) {
 	f := &startFlags{
 		dataDir: dataDir,
 		smType:  "memory",
+		host:    testBindHost,
 	}
 
 	err := runStart(f)
@@ -1505,6 +1508,7 @@ func TestInitializeNode_PeerParseError(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	_, err = initializeNode(context.Background(), f, bundle)
@@ -1530,6 +1534,7 @@ func TestInitializeNode_UnknownSMType(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	_, err := initializeNode(context.Background(), f, nil)
@@ -1759,6 +1764,7 @@ func TestRunStart_WireCertReloaderWarnsOnInvalidCerts(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err = runStart(f)
@@ -1834,6 +1840,7 @@ func TestRunStart_SQLDatabaseCreated(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "testdb",
 		enableMySQL:     true,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -1863,6 +1870,7 @@ func TestRunStart_SQLDatabaseConcurrentMemoryBackend(t *testing.T) {
 		replicaID:       1,
 		sqlDatabase:     "testdb-concurrent",
 		enablePgSQL:     true,
+		host:            testBindHost,
 	}
 
 	err := runStart(f)
@@ -1891,6 +1899,7 @@ func TestRunStart_DatabaseAlreadyExistsOpensIt(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err := runStart(f1)
@@ -1905,6 +1914,7 @@ func TestRunStart_DatabaseAlreadyExistsOpensIt(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	err = runStart(f2)
@@ -1933,6 +1943,7 @@ func TestRunStart_PebbleSMTypeExercisesSwitch(t *testing.T) {
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
 		replicaID:       1,
+		host:            testBindHost,
 	}
 
 	// pebble SM type is valid so initializeNode proceeds past the factory
