@@ -41,9 +41,10 @@ permissions:
   security-events: write
 
 env:
-  # Kept in lockstep with ci.yml. Latest 1.26 patch (owner ruling 2026-08-20);
-  # 1.27.0 is BLOCKED because cockroachdb/swiss does not compile under it and
-  # pebble pulls it in transitively. setup-go 'stable' is prohibited as a spec.
+  # Kept in lockstep with ci.yml, including the reason: the swiss blocker that
+  # used to be recorded here is gone (#177), both modules build clean under
+  # 1.27.0, and what remains is the portfolio toolchain wave (#39), not a
+  # technical obstruction. setup-go 'stable' is prohibited as a spec.
   GO_VERSION: "1.26.7"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
@@ -58,9 +59,9 @@ jobs:
     runs-on: ubuntu-latest
     # needs: none — nightly runs standalone, and build health is ci.yml's job.
     # In ci.yml this staged behind build so a broken tree did not burn the slot,
-    # and it deliberately did NOT stage behind lint (#42, 2026-08-19): a linter
-    # tooling outage must never stop tests from EXECUTING. Neither concern
-    # survives the move, because there is nothing here to stage behind.
+    # and it deliberately did NOT stage behind lint (#143): a linter tooling
+    # outage must never stop tests from EXECUTING. Neither concern survives the
+    # move, because there is nothing here to stage behind.
     #
     # timeout-minutes stays at 90 rather than the template's 30: this job runs
     # the RACE-enabled suite under fips140=only, which is what takes the time.
@@ -126,46 +127,97 @@ jobs:
           set -o pipefail
           make test GOTEST_TIMEOUT=60m 2>&1 | tee fips-test.log
 
+      # `sdk/go` IS A SEPARATE GO MODULE (#142). `make test` is
+      # `./pkg/... ./cmd/...`, so it has never reached one line of the SDK, and
+      # this job had silently become the "FIPS job over a subset of the suite"
+      # its own comment above rules out. go-qrdb#132 added `make test-sdk` to
+      # ci.yml so the gate covers both modules; this job was not updated and the
+      # two scopes diverged. The uncovered surface is the whole SDK — every
+      # transport, sdk/go/node, the driver, the DAO layer and the conformance
+      # matrix (go-qrdb#121) — and whether any of it operates under
+      # fips140=only is, as of this change, still unknown.
+      #
+      # `if: always()` IS LOAD-BEARING AND IS NOT BOILERPLATE. This job is
+      # known-red on the root module today (#18, #20). A plain sequential step
+      # would therefore never execute: the root suite fails, the job stops, and
+      # sdk/go stays exactly as unexercised as it was — the change would satisfy
+      # the words of #142 while delivering none of it. Both suites run, and
+      # either one failing fails the job.
+      #
+      # Its own log file, because the reporting step below parses these by
+      # package and a single file could not say which module a `FAIL` came from
+      # when both modules define a package of the same name.
+      #
+      # Same GOTEST_TIMEOUT=60m as the root suite, for the same reason and with
+      # more force: sdk/go/node boots real nodes including raft groups, whose
+      # leader election alone costs ~2.4s per shard under -race before FIPS
+      # swaps the KDF to PBKDF2-HMAC-SHA256 at 600,000 iterations. Budget for
+      # it: the job ceiling is 90 minutes and the root suite already takes ~50.
+      # If the pair does not fit, the answer is to raise the ceiling — NOT to
+      # trim a package list, which the header comment forbids for exactly the
+      # reason this step exists.
+      - name: Unit tests (race, FIPS 140-only, sdk/go module)
+        if: always()
+        run: |
+          set -o pipefail
+          make test-sdk GOTEST_TIMEOUT=60m 2>&1 | tee fips-test-sdk.log
+
       # A per-package timeout panic names whichever test was running when the
       # alarm fired, NOT the test that consumed the budget -- on 2026-08-26 it
       # accused a 3-second test while two tests holding 948s of the 1800s had
       # already finished and were named nowhere. Anyone reading the panic alone
       # is sent to the wrong file. This step is the antidote, and it runs on
       # success too so the trend is visible before the cliff is reached.
+      #
+      # It reports BOTH modules since #142. A missing log is reported rather
+      # than passed over in silence: with two suites, "fips-test-sdk.log is
+      # absent" means the sdk step never ran, which is precisely the condition
+      # #142 exists to make visible and would otherwise look identical to a
+      # clean sdk run in a log nobody reads to the end.
       - name: Package results and slowest tests
         if: always()
         run: |
-          if [ ! -f fips-test.log ]; then
-            echo "no fips-test.log: the suite never started" >&2
-            exit 0
-          fi
-          # Captured into variables rather than piped straight to stdout so the
-          # "nothing parsed" case can actually be reported. A `grep ... | sort
-          # || echo fallback` cannot do that: the pipeline's status is sort's,
-          # which is 0 on empty input, so the fallback is unreachable.
-          pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
-            fips-test.log | sort -u || true)
-          slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' fips-test.log \
-            | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
-            | sort -rn | head -25 || true)
+          report() { # report <label> <logfile>
+            label="$1"
+            log="$2"
+            echo "######## ${label} ########"
+            if [ ! -f "$log" ]; then
+              echo "no ${log}: this suite never started -- see the step above" >&2
+              echo
+              return 0
+            fi
+            # Captured into variables rather than piped straight to stdout so
+            # the "nothing parsed" case can actually be reported. A `grep ...
+            # | sort || echo fallback` cannot do that: the pipeline's status is
+            # sort's, which is 0 on empty input, so the fallback is unreachable.
+            pkgs=$(grep -aE '^(ok|FAIL|\?)[[:space:]]+github\.com/jeremyhahn/go-qrdb/' \
+              "$log" | sort -u || true)
+            slow=$(grep -aoE '^--- (PASS|FAIL): [A-Za-z0-9_/]+ \([0-9.]+s\)' "$log" \
+              | sed -E 's/^--- (PASS|FAIL): ([A-Za-z0-9_/]+) \(([0-9.]+)s\)/\3 \1 \2/' \
+              | sort -rn | head -25 || true)
 
-          echo "== package results =="
-          if [ -n "$pkgs" ]; then
-            echo "$pkgs"
-            echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
-          else
-            echo "(no package result lines parsed -- the suite may have died before any package finished)"
-          fi
+            echo "== package results =="
+            if [ -n "$pkgs" ]; then
+              echo "$pkgs"
+              echo "-- counts: $(printf '%s\n' "$pkgs" | grep -c '^ok') ok, $(printf '%s\n' "$pkgs" | grep -c '^FAIL') FAIL"
+            else
+              echo "(no package result lines parsed -- the suite may have died before any package finished)"
+            fi
 
-          echo
-          echo "== 25 slowest tests that COMPLETED =="
-          echo "A timeout panic names the test holding the alarm, not the one"
-          echo "that spent the budget. These are the candidates that did."
-          if [ -n "$slow" ]; then
-            echo "$slow"
-          else
-            echo "(no completed top-level tests parsed)"
-          fi
+            echo
+            echo "== 25 slowest tests that COMPLETED =="
+            echo "A timeout panic names the test holding the alarm, not the one"
+            echo "that spent the budget. These are the candidates that did."
+            if [ -n "$slow" ]; then
+              echo "$slow"
+            else
+              echo "(no completed top-level tests parsed)"
+            fi
+            echo
+          }
+
+          report "root module (./pkg/... ./cmd/...)" fips-test.log
+          report "sdk/go module" fips-test-sdk.log
 
   trivy:
     name: Trivy

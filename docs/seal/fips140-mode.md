@@ -14,11 +14,13 @@ document as a compliance claim.
 
 ## The job
 
-CI runs a `FIPS 140-3` job that executes the full unit suite under:
+CI runs a nightly `FIPS 140-3` job that executes the full unit suite of **both
+modules** under:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only go build ./...
 GOFIPS140=latest GODEBUG=fips140=only make test
+GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
 
 `GOFIPS140` selects the module at build time. `GODEBUG` selects the enforcement
@@ -34,19 +36,34 @@ prohibited cryptography and the job still reports green. `only` is the setting a
 FedRAMP / PCI DSS v4 / HIPAA gate has to run. Ratified by the owner 2026-08-17
 (`automatethethings` `software/conventions/configuration.md` §5).
 
-The job scope is deliberately identical to the ordinary `Test` job — the same
-`make test` target with the same build tags. A FIPS job over a subset of the
-suite does not tell you the product is FIPS-clean.
+The job scope is deliberately identical to the ordinary gate — the same
+`make test` **and `make test-sdk`** targets with the same build tags. A FIPS job
+over a subset of the suite does not tell you the product is FIPS-clean.
+
+**`make test-sdk` is not optional decoration.** `sdk/go` is a separate Go
+module, so `make test` (`./pkg/... ./cmd/...`) does not reach a single line of
+it. The job ran `make test` alone until 2026-09-02, which means the entire SDK —
+every transport, `sdk/go/node`, the driver, the DAO layer and the conformance
+matrix — **had never executed under `fips140=only` at all**. Nothing in this
+document has ever asserted a FIPS property about the SDK, and until this job has
+had a clean run over both modules, nothing should.
+
+The sdk step runs even when the root suite fails, deliberately. This job is
+known-red on the root module (see [Open blockers](#open-blockers)), so a step
+that only ran after a green `make test` would never run at all, and the SDK
+would stay unmeasured while the workflow appeared to cover it. Either module
+failing fails the job.
 
 The job is **not** in `ci-gate`'s `needs` and is therefore not a required
 check — see [Open blockers](#open-blockers) for the two findings that keep it
 red and [Arming the gate](#arming-the-gate) for the exact change that makes it
 required.
 
-To reproduce a CI failure locally, prefix the same command:
+To reproduce a CI failure locally, prefix the same commands:
 
 ```
 GOFIPS140=latest GODEBUG=fips140=only make test
+GOFIPS140=latest GODEBUG=fips140=only make test-sdk
 ```
 
 ## Handling a failure
@@ -291,9 +308,11 @@ it is reachable from the code as well as from here.
 The `FIPS 140-3` job fails today, it is **not** a required check, and it must
 not be presented as an enforceable compliance gate until it passes. Its purpose
 until then is to measure the remaining distance under the enforcement level the
-policy requires, on every pull request, where the number cannot be quietly lost.
-That is a strict improvement over having no FIPS coverage at all; it is not a
-claim of compliance.
+policy requires, nightly, where the number cannot be quietly lost. (It ran on
+every pull request until the known-red and long-horizon jobs moved off the push
+path; a known-red job burning a runner slot per pull request produced a number
+we already had.) That is a strict improvement over having no FIPS coverage at
+all; it is not a claim of compliance.
 
 **One finding** now stands between the job and green, and it is **in a
 dependency**. It cannot be closed from this repository: the composition
@@ -351,6 +370,17 @@ external officer. **Neither is go-qrdb's call to make.**
 Go 1.26.6, linux/amd64, `GOFIPS140=latest GODEBUG=fips140=only make test`:
 **120 packages pass, 2 fail**, and both attribute to the one finding above.
 `go build ./...` against the module is clean.
+
+**These figures are the ROOT MODULE ONLY.** `make test` is
+`./pkg/... ./cmd/...`; the `sdk/go` module has no measurement here because
+until 2026-09-02 nothing had ever run it under `fips140=only` — the job did not
+invoke `make test-sdk`. It does now, and the first nightly run after that
+change is what produces the SDK's numbers. Until they appear in this table, the
+count above is a statement about `pkg/` and `cmd/` and about nothing else, and
+the SDK's status is **unknown rather than clean**. When the numbers arrive,
+record them; if the SDK turns out not to be FIPS-clean, that is a finding to add
+to [Open blockers](#open-blockers) — not a reason to narrow the job's scope,
+which is forbidden here for the reason stated at the top of this section.
 
 | Blocker | Failing packages |
 |---|---|
@@ -414,13 +444,16 @@ by anything other than a dependency's non-approved primitive.
 
 ### Arming the gate
 
-Once both findings are closed and this module bumps to
-approved-algorithm dependency releases, `fips` becomes a required check in
-three lines of `.github/workflows/ci.yml`: add `fips` to `ci-gate`'s `needs`,
-add `RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop.
-Do that in the change that closes the last finding, not later — a FIPS job that
-can pass and is not required is the fail-open gate this document exists to
-argue against.
+Once the remaining finding is closed, this module bumps to approved-algorithm
+dependency releases, **and the SDK has had a clean run** (see [Measured
+status](#measured-status) — its status is currently unknown, not clean), `fips`
+becomes a required check. The job lives in `.github/workflows/nightly.yml`, so
+arming it is four moves and they are one act: move the job into
+`.github/workflows/ci.yml`, add `fips` to `ci-gate`'s `needs`, add
+`RESULT_FIPS` to its `env` block, and add a `check fips` call to its loop. Do
+that in the change that closes the last finding, not later — a FIPS job that can
+pass and is not required is the fail-open gate this document exists to argue
+against.
 
 ## See Also
 

@@ -22,12 +22,63 @@ permissions:
   security-events: write
 
 env:
-  # Latest 1.26 patch (owner ruling 2026-08-20). 1.27.0 is BLOCKED: cockroachdb/swiss
-  # fails to compile under it (undefined fastrand64/hashFn), and this module pulls
-  # swiss in transitively through pebble. Bump within 1.26 as patches ship; move to
-  # 1.27 only in the company #121 wave, after the swiss/pebble chain is bumped.
-  # setup-go 'stable' is prohibited as a spec — it flipped to 1.27.0 mid-campaign.
+  # Latest 1.26 patch (owner ruling 2026-08-20). setup-go 'stable' is prohibited
+  # as a spec — it flipped to 1.27.0 mid-campaign and broke every repo riding it.
+  #
+  # The swiss BLOCKER THAT USED TO BE RECORDED HERE IS GONE (#177, 2026-09-02):
+  # cockroachdb/swiss widened its build tag to `!go1.28` and this module's pin
+  # moved, so both modules now compile clean under 1.27.0 — measured on this
+  # tree, `GOTOOLCHAIN=go1.27.0 go build ./...` exits 0 in the root and in
+  # sdk/go. What remains is not technical: raising the directive is the
+  # portfolio toolchain wave (#39), which is still `task:blocked` on the owner's
+  # ruling and is dispatched centrally, not per repo. So this stays at 1.26.7
+  # and #39 moves it — but nobody should re-derive a blocker from this comment,
+  # because there isn't one.
   GO_VERSION: "1.26.7"
+
+  # ANALYSIS TOOL PINS (#179, #195). These are the versions BAKED into the
+  # self-hosted runner image; the steps below ASSERT the binary they got matches
+  # and refuse to run otherwise. Nothing in this workflow installs them.
+  #
+  # Two separate defects closed here, and pinning alone fixed neither:
+  #
+  #   * A `go install` is a NETWORK dependency at job time. A pin fixes WHICH
+  #     version you get and says nothing about whether you can reach it. Every
+  #     host in this fleet resolves an AAAA record for sum.golang.org and none
+  #     has a default IPv6 route; job containers use host networking, so they
+  #     inherit that stack. Go's v6->v4 fallback usually saves it, which is why
+  #     this was intermittent — and why this file had grown a hand-rolled
+  #     3-attempt retry loop around each install, treating the symptom.
+  #
+  #   * A `go install` is a VERSION SUBSTITUTION. actions/setup-go prepends
+  #     GOPATH/bin to PATH, so an installed binary SHADOWS /usr/local/bin. This
+  #     workflow installed golangci-lint v2.12.2 unconditionally on top of an
+  #     image baking v2.13.2 — pinned on paper, running something else in fact.
+  #
+  # GOLANGCI_LINT_VERSION moved v2.12.2 -> v2.13.2 here, deliberately and on
+  # evidence rather than on a version number. v2.12.2 was pinned because
+  # @latest had reached v2.13.0, which panicked under Go 1.26 ("nilness:
+  # internal error: unhandled builtin recover") and took the gate down. v2.13.2
+  # was measured against THIS tree under Go 1.26.7 before the pin moved: it does
+  # not panic, reports `0 issues`, and enables the SAME fifteen linters as
+  # v2.12.2 under this repo's .golangci.yml — which is the check that matters,
+  # because the quiet way a linter bump goes wrong is silently dropping a
+  # security linter while still exiting 0. The binary measured self-reports mod
+  # sum h1:bCyq3E4vo9qwzifjpzJqYndEt7Ncva80qkk8G2B4TXU=, identical to the
+  # image's, so it is the same artifact and not merely the same version string.
+  #
+  # GOVULNCHECK_VERSION replaces an unpinned `@latest`. `@latest` means the same
+  # commit is scanned by different analyser versions on different days, so a new
+  # finding cannot be told apart from a scanner that moved underneath you.
+  #
+  # BUMPING ONE OF THESE IS A DELIBERATE CHANGE, one issue per bump, and the
+  # runner image moves in the same breath (its pins live in the company repo at
+  # infra/gitea/ci-runner/Dockerfile). Do NOT add a `go install` back to move a
+  # version: a skew between this file and the image must fail the job, which is
+  # what the require-tool.sh assertions below are for.
+  GOLANGCI_LINT_VERSION: "v2.13.2"
+  GOSEC_VERSION: "v2.29.0"
+  GOVULNCHECK_VERSION: "v1.7.0"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
   # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
@@ -46,28 +97,43 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      # devops.md §9: tools installed in CI take @latest, never a pin.
-      - name: Install golangci-lint
-        # PINNED (devops.md §9 documented-pin clause; #42, 2026-08-19):
-        # @latest moved to v2.13.0, which panics under Go 1.26 ("nilness:
-        # internal error: unhandled builtin recover" in honnef.co/go/tools
-        # v0.8.0-rc.1, while analysing the third-party sentry package) and took
-        # the whole gate down — and with it every job that needed lint.
-        # Bisected on this tree: v2.12.2 reports "0 issues", v2.13.0 panics.
-        # Unpin when an upstream release passes on the portfolio (#42).
-        # RETRIED (2026-08-20): sum.golang.org tile fetches during this
-        # install flake with HTTP/2 INTERNAL_ERROR (2/2 runs observed on
-        # go-qrdb), and under staged fail-fast a linter-INSTALL flake blocks
-        # the whole pipeline. Bounded retry, full sumdb verification kept —
-        # do NOT "fix" this with GOSUMDB=off, which trades a flake for a
-        # supply-chain hole. Durable fix: bake the pinned linter into the
-        # runner image (infra).
+      # NO NETWORK INSTALL (#179, #195). golangci-lint is baked into the
+      # self-hosted runner image at GOLANGCI_LINT_VERSION; this step asserts the
+      # binary that will run IS that version and fails the job otherwise.
+      #
+      # What it replaces was a 3-attempt retry loop around
+      # `go install ...@v2.12.2`, and the loop was the tell: the durable fix
+      # named in its own comment was "bake the pinned linter into the runner
+      # image", which has since happened. Retrying was treating the symptom in
+      # one repo.
+      #
+      # FAIL CLOSED, and specifically do NOT fall back to a network install when
+      # the binary is missing. The fallback would reinstate the flake at exactly
+      # the moment the image is wrong, and it would do so while reporting
+      # success. A failed tool install leaves a red check carrying NO verdict on
+      # the code; refusing to run without the pinned binary is what makes an
+      # image defect and a code defect distinguishable in the log.
+      #
+      # The assertion is not redundant with the pin. actions/setup-go prepends
+      # GOPATH/bin to PATH, so anything installed there shadows /usr/local/bin,
+      # and /etc/ci-runner-tools.txt describes the IMAGE — it says nothing about
+      # what a job actually ran. require-tool.sh reads the binary's own
+      # self-report, and carries its own regression suite
+      # (scripts/require-tool_test.sh) because on a healthy runner only its
+      # accepting branch is ever exercised.
+      - name: Require golangci-lint at the pinned version
         run: |
-          for i in 1 2 3; do
-            go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 && exit 0
-            echo "install attempt $i failed; retrying"; sleep 10
-          done
-          echo "golangci-lint install failed after 3 attempts"; exit 1
+          set -eu
+          "${GITHUB_WORKSPACE}/scripts/require-tool.sh" \
+            golangci-lint "$GOLANGCI_LINT_VERSION" \
+            "github.com/golangci/golangci-lint/v2/cmd/golangci-lint"
+
+      # The guard's own rejecting branches, which the step above never reaches
+      # while the image is healthy. It runs AFTER that step deliberately: if the
+      # runner image is broken, the first failure a reader should see is the
+      # image, not a self-test. No network, no Go build — sub-second.
+      - name: Test the tool-version guard
+        run: make test-require-tool
 
       # devops.md §4: CI runs the same targets a developer runs. `make fmt` is
       # the gofmt check, not a rewrite.
@@ -107,12 +173,20 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # needs deliberately EXCLUDES lint (#42, 2026-08-19): a linter tooling
-    # outage must never stop tests from EXECUTING. The ci-gate job still
-    # requires both, so nothing merges on red lint — but test results keep
-    # existing while lint is down, instead of CI reporting failure while
-    # silently verifying less than it appears to.
-    needs: [lint, build]
+    # needs deliberately EXCLUDES lint (#143): a linter tooling outage must
+    # never stop tests from EXECUTING. `ci-gate` still requires lint DIRECTLY
+    # and fails closed on `skipped`, so nothing merges on red lint — but test
+    # results keep existing while lint is down, instead of CI reporting failure
+    # while silently verifying less than it appears to.
+    #
+    # This comment used to sit above `needs: [lint, build]`, asserting an intent
+    # its own dependency list defeated: a lint outage SKIPPED the tests and the
+    # gate reported SKIP, producing exactly the outcome the comment says it
+    # exists to prevent. The list now matches the claim (#143).
+    #
+    # `build` is a REAL dependency and stays: the tests cannot run against a
+    # tree that does not compile.
+    needs: [build]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
@@ -146,7 +220,12 @@ jobs:
     # whole root module under -race and is the long pole, so appending this
     # would serialise them, and a distinct job makes the gate say WHICH module
     # broke.
-    needs: [lint, build]
+    #
+    # needs EXCLUDES lint for the same reason as `test` above (#143). This job
+    # copied neither that comment nor its dependency list from anywhere — it
+    # simply inherited `[lint, build]` — so it carried the defect without even
+    # the contradicting comment to make it visible.
+    needs: [build]
     # sdk/go/node boots real nodes, including single-replica raft groups whose
     # leader election alone costs ~2.4s per shard and more under -race. This is
     # not a pure unit suite and must not inherit a timeout tuned for one.
@@ -168,12 +247,10 @@ jobs:
   integration-standalone:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
-    # needs deliberately EXCLUDES lint (#42, 2026-08-19): a linter tooling
-    # outage must never stop tests from EXECUTING. The ci-gate job still
-    # requires both, so nothing merges on red lint — but test results keep
-    # existing while lint is down, instead of CI reporting failure while
-    # silently verifying less than it appears to.
-    needs: [lint, build]
+    # needs deliberately EXCLUDES lint, and now actually does (#143) — see the
+    # `test` job above for the full reasoning and for what this list used to
+    # say. `ci-gate` requires lint directly and fails closed on `skipped`.
+    needs: [build]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
@@ -230,8 +307,22 @@ jobs:
     # ci-template v1.9 staged fail-fast (owner ruling 2026-08-20): Gitea has no
     # cancel API, so ORDERING is the only fail-fast available. lint+build run in
     # minutes and gate the expensive tier, so a broken push reports fast and burns
-    # nothing downstream. This supersedes the lint-decoupling of #42, whose
-    # silent-skip hazard is closed by the golangci-lint pin.
+    # nothing downstream.
+    #
+    # This job KEEPS `lint` in needs while the three test jobs above dropped it
+    # (#143), and the asymmetry is deliberate rather than an oversight. #143's
+    # argument is that a test result which could have existed should exist; a
+    # gosec and govulncheck pass over the whole module graph is the expensive
+    # tier the owner ruling stages precisely to avoid burning, and its findings
+    # keep until the lint outage is over. If that ever stops being the right
+    # trade, it is a change to the staged fail-fast ruling, not to this line.
+    #
+    # (This paragraph previously said the arrangement "supersedes the
+    # lint-decoupling of #42, whose silent-skip hazard is closed by the
+    # golangci-lint pin". Both halves were wrong: #42 is long closed, the pin
+    # closes nothing about skipping, and the hazard was live in this file until
+    # #143 — a pinned linter still fails when its tooling or its host does,
+    # which is the outage the decoupling is for.)
     # ci-template v1.6: the Go toolchain is cgroup-unaware — in a 16 GB job
     # container it sees the HOST's 24 cores and 94 GB, so gosec ran 24 workers
     # and the GC grew the heap to ~27 GB, swapping 11 GB of anonymous memory
@@ -248,35 +339,43 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Install gosec
-        # PINNED to v2.29.0 (devops.md §9 documented-pin clause; owner-ruled
-        # fleet-wide 2026-08-26, go-qrdb#154). gosec joins the discipline
-        # golangci-lint has carried since #42, for a reason measured today:
-        # @latest self-updated mid-day and introduced G703, which reddened the
-        # Security job on every branch — including main — on code nobody had
-        # touched since 2026-04-10. Run 6862 on main was green at 08:04Z and
-        # run 6885 red at 08:47Z with the offending file identical in both.
-        # Upgrade deliberately, one issue per bump — never by drifting.
-        #
-        # What this pin does NOT do: fix that finding. v2.29.0 still raises
-        # G703 (checked, not assumed) — the Makefile's GOSEC_EXCLUDE entry is
-        # what clears it, and it carries its own three-legged justification.
-        # The pin buys reproducibility, not a green gate.
-        #
-        # Note `gosec --version` prints "dev" whatever version is selected:
-        # `go install` builds it without the release ldflags. So the reported
-        # version is NOT evidence of which gosec ran, and this line is the
-        # only record of it — do not read "dev" in a log as "unpinned".
-        #
-        # RETRIED (2026-08-20): same sum.golang.org flake class as the lint
-        # install — a tool-install network failure must not fail a job that
-        # never ran its analysis. Full sumdb verification kept.
+      # NO NETWORK INSTALL (#179, #195), same reason as the lint job: both tools
+      # are baked into the runner image at the pinned versions in the env block
+      # above, and the retry loops this replaces were the workaround for a live
+      # ENETUNREACH failure rather than a fix for it.
+      #
+      # gosec stays PINNED to v2.29.0 (owner-ruled fleet-wide 2026-08-26,
+      # go-qrdb#154) for the reason measured then: @latest self-updated mid-day
+      # and introduced G703, which reddened the Security job on every branch —
+      # including main — on code nobody had touched since 2026-04-10. Run 6862
+      # on main was green at 08:04Z and run 6885 red at 08:47Z with the
+      # offending file identical in both. What the pin does NOT do is fix that
+      # finding: v2.29.0 still raises G703 (checked, not assumed) and the
+      # Makefile's GOSEC_EXCLUDE entry with its three-legged justification is
+      # what clears it. The pin buys reproducibility, not a green gate.
+      #
+      # THE ASSERTION IS THE DELIVERABLE HERE, NOT THE PIN, and gosec is why.
+      # It takes its version string from ldflags rather than from the module
+      # path, so `go install ...@v2.29.0` still self-reports `dev` — meaning
+      # the job log could not attribute a scan to a scanner version AT ALL, and
+      # the workflow comment was the only record of what was requested. The
+      # image builds it with `-X main.Version=`, so the baked binary reports
+      # v2.29.0 and require-tool.sh can check it. Do not read `dev` in an old
+      # log as "unpinned"; read it as "unattributable", which is the defect.
+      #
+      # govulncheck moves from `@latest` to a pin in this change. Unpinned, the
+      # same commit is scanned by different analyser versions on different days
+      # and a new finding cannot be distinguished from a scanner that moved.
+      - name: Require gosec and govulncheck at the pinned versions
         run: |
-          for i in 1 2 3; do
-            go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0 && exit 0
-            echo "install attempt $i failed; retrying"; sleep 10
-          done
-          echo "tool install failed after 3 attempts"; exit 1
+          set -eu
+          "${GITHUB_WORKSPACE}/scripts/require-tool.sh" \
+            gosec "$GOSEC_VERSION" \
+            "github.com/securego/gosec/v2/cmd/gosec" \
+            -ldflags "-X main.Version=${GOSEC_VERSION}"
+          "${GITHUB_WORKSPACE}/scripts/require-tool.sh" \
+            govulncheck "$GOVULNCHECK_VERSION" \
+            "golang.org/x/vuln/cmd/govulncheck"
 
       # gosec type-loads every package, so the full module graph must be in
       # the local cache BEFORE it runs: on a cold cache its loader surfaces
@@ -307,17 +406,6 @@ jobs:
         with:
           sarif_file: gosec.sarif
           category: gosec
-
-      - name: Install govulncheck
-        # RETRIED (2026-08-20): same sum.golang.org flake class as the lint
-        # install — a tool-install network failure must not fail a job that
-        # never ran its analysis. Full sumdb verification kept.
-        run: |
-          for i in 1 2 3; do
-            go install golang.org/x/vuln/cmd/govulncheck@latest && exit 0
-            echo "install attempt $i failed; retrying"; sleep 10
-          done
-          echo "tool install failed after 3 attempts"; exit 1
 
       # Blocking, in both modules. This is also the §9 forcing function for
       # toolchain currency — it fails on a known-vulnerable stdlib.

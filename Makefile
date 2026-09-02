@@ -1180,6 +1180,19 @@ LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
 lint:
 	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
 
+# scripts/require-tool.sh is what stands between this repository and a lint or
+# scan performed by an unknown analyser version (#179, #195). The pins in
+# ci.yml match the runner image, so a healthy run exercises only its ACCEPTING
+# branch — every rejecting branch, which is the whole reason it exists, would
+# otherwise ship untested. Same reasoning as test-tag-lockstep below.
+#
+# `--mutate` re-loosens the version comparison to the substring test that fails
+# open (a v1.7.0 pin accepting v11.7.0) and asserts the near-miss cases go red.
+# A suite that passes both with and without the check proves nothing.
+.PHONY: test-require-tool
+test-require-tool:
+	@./scripts/require-tool_test.sh
+
 .PHONY: vet
 vet:
 	$(GOVET) $(TAG_FLAG) ./...
