@@ -15,6 +15,7 @@
 package conformance
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -39,6 +40,12 @@ func TestGuardedVerbConformanceMatrix(t *testing.T) {
 		t.Run(c.name(), func(t *testing.T) {
 			t.Logf("cell %s: expecting %s", c.name(), c.want)
 			cl := c.boot(t)
+
+			// Every cell, both outcomes. Absence is not a guarded-verb
+			// capability — it is the read plane the guarded verbs are
+			// observed through, and a cell that cannot answer it makes every
+			// assertion below vacuous.
+			assertAbsenceIsObservable(t, cl)
 
 			switch c.want {
 			case fullPassage:
@@ -271,6 +278,70 @@ func assertPutIfAbsentWorks(t *testing.T, cl clients) {
 	if got, err := cl.kv.Get(ctx, "claim"); err != nil || string(got) != "acme" {
 		t.Errorf("the losing acquirer overwrote the winner: key=%q err=%v; want %q", got, err, "acme")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// absence
+// ---------------------------------------------------------------------------
+
+// assertAbsenceIsObservable is go-qrdb#214's acceptance test: on every cell,
+// Exists and Get must be able to tell "this key is not here" from "this key
+// holds a value".
+//
+// It runs on EVERY cell rather than on the sm_types that were observed broken.
+// The defect was invisible for exactly as long as the matrix asserted absence
+// only where it already worked: on raft.sm_type disk and highperf the state
+// machine adapter implements sm.NALookup, go-quicraft's Lookup fast path boxed
+// its typed nil []byte into a non-nil interface{}, and service.KVService
+// reported every missing key as a successful read of an empty value — so
+// Exists was true for keys never written and stayed true after a delete
+// (measured 2026-09-02, file/raft). The sm_types without NALookup took the
+// generic path and were correct. A per-cell assertion is the only thing that
+// separates those two populations, which is why this is a matrix assertion and
+// not a unit test in the affected package.
+//
+// The delete half is asserted separately from the never-written half. They
+// reach the read plane the same way today, but a tombstone that reads back as
+// an empty value is a distinct failure a store could reintroduce on its own.
+func assertAbsenceIsObservable(t *testing.T, cl clients) {
+	t.Helper()
+	ctx := boundedCtx(t)
+
+	const key = "absence/probe"
+
+	assertAbsent := func(stage string) {
+		exists, err := cl.kv.Exists(ctx, key)
+		if err != nil {
+			t.Errorf("Exists(%q) %s: %v", key, stage, err)
+		}
+		if exists {
+			t.Errorf("Exists(%q) = true %s; want false", key, stage)
+		}
+		got, err := cl.kv.Get(ctx, key)
+		var knf *transport.KeyNotFoundError
+		if !errors.As(err, &knf) {
+			t.Errorf("Get(%q) %s = %q err=%v; want a KeyNotFoundError, not a "+
+				"successful read of an empty value", key, stage, got, err)
+		}
+	}
+
+	assertAbsent("for a key that was never written")
+
+	if err := cl.kv.Put(ctx, key, []byte("v1")); err != nil {
+		t.Fatalf("Put(%q): %v", key, err)
+	}
+	exists, err := cl.kv.Exists(ctx, key)
+	if err != nil || !exists {
+		t.Errorf("Exists(%q) after Put = %v err=%v; want true", key, exists, err)
+	}
+	if got, err := cl.kv.Get(ctx, key); err != nil || string(got) != "v1" {
+		t.Errorf("Get(%q) after Put = %q err=%v; want %q", key, got, err, "v1")
+	}
+
+	if err := cl.kv.Delete(ctx, key); err != nil {
+		t.Fatalf("Delete(%q): %v", key, err)
+	}
+	assertAbsent("after a Delete")
 }
 
 // ---------------------------------------------------------------------------

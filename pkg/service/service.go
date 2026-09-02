@@ -494,7 +494,9 @@ func (s *KVService) Get(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
-	if result == nil {
+	// keyIsAbsent, not result == nil: see its doc comment and
+	// go-quicraft#73.
+	if keyIsAbsent(result) {
 		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
 	}
 
@@ -578,7 +580,9 @@ func (s *KVService) GetStale(ctx context.Context, key string) ([]byte, error) {
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
-	if result == nil {
+	// keyIsAbsent, not result == nil: see its doc comment and
+	// go-quicraft#73.
+	if keyIsAbsent(result) {
 		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
 	}
 
@@ -691,7 +695,9 @@ func (s *KVService) GetWithConsistency(ctx context.Context, key string, opts con
 	if err != nil {
 		return nil, s.translateReadError(err)
 	}
-	if result == nil {
+	// keyIsAbsent, not result == nil: see its doc comment and
+	// go-quicraft#73.
+	if keyIsAbsent(result) {
 		return nil, &ReadError{Err: &KeyNotFoundError{Key: key}}
 	}
 
@@ -764,7 +770,9 @@ func (s *KVService) ExistsWithConsistency(ctx context.Context, key string, opts 
 		}
 		return false, s.translateReadError(err)
 	}
-	return result != nil, nil
+	// keyIsAbsent, not result != nil: see its doc comment and
+	// go-quicraft#73.
+	return !keyIsAbsent(result), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +969,46 @@ func (s *KVService) translateReadError(err error) error {
 	}
 
 	return &ReadError{Err: err}
+}
+
+// keyIsAbsent reports whether a point-lookup result handed back by the Raft
+// host means "no such key".
+//
+// The first arm is the state machines' documented answer: Lookup returns an
+// untyped nil for a key it does not hold, and FastStateMachine.lookupKey
+// documents the trap of returning a typed one.
+//
+// The second arm COMPENSATES FOR AN UPSTREAM DEFECT and is not a defensive
+// nil check — do not simplify it away. go-quicraft's rsm.StateMachine.Lookup
+// has a fast path for []byte queries that forwards to sm.NALookup and returns
+// its result directly, which boxes a []byte(nil) into a NON-NIL interface{}.
+// The state machines that implement sm.NALookup are DiskAdapter and
+// HighPerfAdapter, so on raft.sm_type disk and highperf a missing key arrived
+// here as a non-nil interface holding a nil slice and was reported as a
+// successful read of an empty value: Exists answered true for every key ever
+// asked about, including keys never written and keys just deleted (measured
+// 2026-09-02, sm_type disk / sm_storage file, single-replica raft). The
+// sm_types with no NALookup went down the generic path and were correct,
+// which is why only some cells misbehaved.
+//
+// Distinguishing the two on nil-ness is EXACT rather than approximate: every
+// storage engine behind these adapters returns (nil, nil) for an absent key
+// and a defensively copied make([]byte, len(v)) for a present one, which is
+// non-nil even at length zero. A genuinely empty value therefore still reads
+// back as an empty value, not as not-found.
+//
+// This is the smallest correct change go-qrdb can make on its own and it is
+// bounded to the four call sites that pass a bare []byte key as the query —
+// the only queries the upstream fast path fires on. It does NOT fix any other
+// consumer of Host.SyncRead. The real fix belongs upstream and is filed as
+// go-quicraft#73; when it lands and this repo pins the release that carries
+// it, this second arm can be deleted.
+func keyIsAbsent(result interface{}) bool {
+	if result == nil {
+		return true
+	}
+	data, ok := result.([]byte)
+	return ok && data == nil
 }
 
 // unexpectedResultTypeError is returned when SyncRead returns a result

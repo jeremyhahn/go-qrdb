@@ -109,6 +109,43 @@ sweep becoming an enumeration of the internal keyspace.
   and both (ambiguous) are refused.
 - **`kv restore` and as-of reads require `raft.sm_type: mvcc`.** The default
   `pebble` state machine keeps no revision history and refuses them.
+- **An absent key and a key holding an empty value are different answers on
+  every `raft.sm_type`.** `Get` returns not-found for the first and a
+  zero-length value for the second; `Exists` is false and true respectively.
+  This is a promise about the read plane, not about any one state machine —
+  see [Point reads and absence](#point-reads-and-absence).
+
+### Point reads and absence
+
+A point read (`Get`, `GetStale`, `GetWithConsistency`, `ExistsWithConsistency`)
+passes the bare key as the Raft query and gets back an `interface{}`. Absence is
+decided on that value being nil, not on its length: every storage engine behind
+every state machine returns `(nil, nil)` for a key it does not hold and a
+defensively copied `make([]byte, len(v))` for one it does, which is non-nil even
+at length zero. Length is therefore never a proxy for absence, and a key written
+with an empty value keeps reading back as present.
+
+The nil test has two arms, and the second is load-bearing rather than
+defensive. go-quicraft's `rsm.StateMachine.Lookup` has a fast path for `[]byte`
+queries that forwards to `sm.NALookup` and returns its result directly, which
+boxes a `[]byte(nil)` into a NON-NIL `interface{}`. The two state machines that
+implement `sm.NALookup` for their zero-allocation read path are `DiskAdapter`
+and `HighPerfAdapter`, so on `raft.sm_type: disk` and `highperf` a missing key
+arrived at the service layer as a non-nil interface holding a nil slice and was
+served as a successful read of an empty value: `Exists` answered true for every
+key ever asked about, including keys never written and keys just deleted
+(measured 2026-09-02 on `sm_type: disk` / `sm_storage: file`, single-replica
+raft). The state machines without `sm.NALookup` took the generic `Lookup` path,
+which returns an untyped nil, and were always correct — which is why the defect
+was confined to some `sm_type`s.
+
+`service.keyIsAbsent` (`pkg/service/service.go`) therefore treats a nil `[]byte`
+as not-found as well as a nil interface. That compensates for the upstream
+defect at this repo's four point-read call sites only; it does not fix any other
+consumer of `Host.SyncRead`. The defect is tracked against the consensus
+library, and when a release carrying its fix is pinned here the second arm
+becomes redundant and can be removed. The code comment on `keyIsAbsent` carries
+the tracker reference.
 
 ### Wire-field bounds — the owning contract for every plane
 
