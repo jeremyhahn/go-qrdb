@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.16.0-alpha] - 2026-09-02
+
 ### Added
 
 - **A real account lifecycle on `user.User`** (#196). `Enabled bool` could not
