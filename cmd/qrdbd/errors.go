@@ -68,6 +68,28 @@ func (e *StandaloneMigrationError) Error() string {
 	return "cli: system encryption migration requires mode: raft"
 }
 
+// MissingBindHostError is returned when the resolved start flags carry no bind
+// host. It is a fail-closed guard on the one path that builds the
+// *qrdbconfig.Config every listener binds from.
+//
+// An empty host is NOT a harmless "unset". net.JoinHostPort("", port) is
+// ":port", which net.Listen binds to [::] -- every interface. So an absent
+// value would silently mean the widest possible bind, decided by a stdlib
+// convention rather than declared in the defaults layer, and an operator
+// reading the configuration could not see what the bind address would be.
+// That is the failure go-qrdb#165 is about, arrived at from the other side.
+//
+// The daemon's own flag default is qrdbconfig.DefaultServerHost, applied by
+// cobra at registration, so this is unreachable through the command. It
+// guards direct constructions of startFlags.
+type MissingBindHostError struct{}
+
+// Error returns a human-readable description.
+func (e *MissingBindHostError) Error() string {
+	return "qrdbd: no bind host resolved for the API listeners; " +
+		"set server.host, QRDB_SERVER_HOST or --host"
+}
+
 // UnknownSMStorageError is returned when --sm-storage names an
 // unsupported state machine storage backend. Objstore is deliberately
 // unsupported: it is a snapshot/backup tier, never the hot apply path.

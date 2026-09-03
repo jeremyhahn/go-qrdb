@@ -36,7 +36,7 @@ func TestApplyConfigToFlags_ModeFromConfig(t *testing.T) {
 	t.Parallel()
 
 	cmd := newStartCmd()
-	f := &startFlags{mode: "raft"}
+	f := &startFlags{mode: "raft", host: testBindHost}
 	cfg := &qrdbconfig.Config{Mode: capabilities.ModeStandalone}
 	applyConfigToFlags(cmd, f, cfg)
 
@@ -64,8 +64,11 @@ func TestApplyConfigToFlags_ModeCLIPrecedence(t *testing.T) {
 func TestBuildServerConfig_CarriesMode(t *testing.T) {
 	t.Parallel()
 
-	f := &startFlags{mode: capabilities.ModeStandalone, adminPort: 63002}
-	cfg := buildServerConfig(f)
+	f := &startFlags{mode: capabilities.ModeStandalone, adminPort: 63002, host: testBindHost}
+	cfg, cfgErr := buildServerConfig(f)
+	if cfgErr != nil {
+		t.Fatalf("buildServerConfig: %v", cfgErr)
+	}
 	assert.Equal(t, capabilities.ModeStandalone, cfg.Mode)
 
 	caps := cfg.EffectiveCapabilities()

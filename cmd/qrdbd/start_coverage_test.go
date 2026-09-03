@@ -354,7 +354,7 @@ func TestApplyConfigToFlags_TLSFieldsFromConfig(t *testing.T) {
 		},
 	}
 
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 	applyConfigToFlags(cmd, f, cfg)
 
 	assert.Equal(t, "/etc/tls/ca.pem", f.tlsCAFile)
@@ -381,6 +381,7 @@ func TestApplyConfigToFlags_TLSFieldsCLIPrecedence(t *testing.T) {
 		tlsCAFile:   "/cli/ca.pem",
 		tlsCertFile: "/cli/cert.pem",
 		tlsKeyFile:  "/cli/key.pem",
+		host:        testBindHost,
 	}
 	applyConfigToFlags(cmd, f, cfg)
 
@@ -405,6 +406,7 @@ func TestApplyConfigToFlags_EmptyTLSFieldsNotOverridden(t *testing.T) {
 		tlsCAFile:   "/existing/ca.pem",
 		tlsCertFile: "/existing/cert.pem",
 		tlsKeyFile:  "/existing/key.pem",
+		host:        testBindHost,
 	}
 	applyConfigToFlags(cmd, f, cfg)
 
@@ -1207,6 +1209,7 @@ func TestResolveAutoConfig_NonStaticWithAllExplicit(t *testing.T) {
 		adminPort:       40001,
 		grpcPort:        40002,
 		dataDir:         "/explicit/data",
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -1231,6 +1234,7 @@ func TestResolveAutoConfig_DNSAutoGenerates(t *testing.T) {
 		replicaID:       1,
 		adminPort:       63002,
 		grpcPort:        63003,
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -1646,7 +1650,7 @@ func TestCertReloader_FileWatch_WatcherError(t *testing.T) {
 
 func TestApplyConfigToFlags_BootstrapFields(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 	cfg := &qrdbconfig.Config{
 		Bootstrap: qrdbconfig.BootstrapConfig{
 			NoiseKey:  "testnoisekey",
@@ -2019,7 +2023,7 @@ func TestApplyTLSClientAuth_RequireAndVerify(t *testing.T) {
 	bundle, err := generateCATLS()
 	require.NoError(t, err)
 
-	f := &startFlags{tlsClientAuth: "require_and_verify", tlsClientAuthSet: true}
+	f := &startFlags{tlsClientAuth: "require_and_verify", tlsClientAuthSet: true, host: testBindHost}
 	applyTLSClientAuth(f, bundle)
 
 	assert.Equal(t, tls.RequireAndVerifyClientCert, bundle.TLSConfig.ClientAuth)
@@ -2032,7 +2036,7 @@ func TestApplyTLSClientAuth_RequireAndVerify(t *testing.T) {
 
 func TestApplyConfigToFlags_TLSClientAuthFromYAML(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	cfg := &qrdbconfig.Config{
 		TLS: qrdbconfig.TLSConfig{ClientAuth: "request"},
@@ -2045,7 +2049,7 @@ func TestApplyConfigToFlags_TLSClientAuthFromYAML(t *testing.T) {
 
 func TestApplyConfigToFlags_TLSClientAuthUnsetStaysImplicit(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	applyConfigToFlags(cmd, f, &qrdbconfig.Config{})
 
@@ -2064,7 +2068,7 @@ func TestApplyConfigToFlags_ClusterTrustDomainFromConfig(t *testing.T) {
 	t.Parallel()
 
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	cfg := &qrdbconfig.Config{
 		Auth: qrdbconfig.AuthConfig{
@@ -2084,7 +2088,7 @@ func TestApplyConfigToFlags_ClusterTrustDomainCLIPrecedence(t *testing.T) {
 	cmd := newStartCmd()
 	require.NoError(t, cmd.Flags().Set("cluster-trust-domain", "cli.cluster"))
 
-	f := &startFlags{clusterTrustDomain: "cli.cluster"}
+	f := &startFlags{clusterTrustDomain: "cli.cluster", host: testBindHost}
 	cfg := &qrdbconfig.Config{
 		Auth: qrdbconfig.AuthConfig{
 			ClusterTrustDomain: "yaml.cluster",
@@ -2107,7 +2111,7 @@ func TestApplyConfigToFlags_PeerAdminURLsFromConfig(t *testing.T) {
 	t.Parallel()
 
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	cfg := &qrdbconfig.Config{
 		Auth: qrdbconfig.AuthConfig{

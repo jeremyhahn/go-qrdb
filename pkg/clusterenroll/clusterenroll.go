@@ -284,13 +284,21 @@ func (e *ExplicitFilesError) Error() string {
 		"clear TLSCAFile, TLSCertFile, and TLSKeyFile"
 }
 
-// validate checks the advertiser configuration. It is a precondition, not a
-// startup step: the callers that generate and persist cluster CA material
-// before starting the advertiser run it FIRST, so a configuration that cannot
-// produce a running advertiser also does not leave material behind. Persisted
-// material makes the next boot take the cached path, which returns no
-// advertiser at all -- so a first node that failed here and was then
-// "corrected" would come up permanently unable to enroll peers.
+// validate checks the advertiser configuration.
+//
+// VALIDATION GOES ABOVE THE FIRST IRREVERSIBLE STEP, NEVER BELOW IT.
+// Everything that can reject the request runs before anything is written,
+// generated or handed out. Once a file has been persisted you are no longer
+// validating, you are cleaning up, and cleanup on an error path is its own
+// failure mode.
+//
+// Concretely here: Resolve and ResolveCA generate and persist cluster CA
+// material before they start the advertiser. A check that lived only inside
+// startNoiseAdvertiser would reject the FIRST attempt loudly and leave that
+// material on disk -- and the next boot takes the cached-material path, which
+// returns no advertiser at all. The operator would correct the configuration,
+// see the node start cleanly, and have a first node that no peer can ever
+// join. So both callers run this before generating anything.
 func (o AdvertiseOptions) validate() error {
 	if o.NoiseHost == "" {
 		return &MissingBindHostError{Component: "noise bootstrap server"}

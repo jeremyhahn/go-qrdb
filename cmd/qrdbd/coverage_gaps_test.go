@@ -75,6 +75,7 @@ func TestResolveAutoConfig_QUICAutoSelectsPort(t *testing.T) {
 		discoveryMethod: "multicast",
 		enableQUIC:      true,
 		quicPort:        63004, // default
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -94,6 +95,7 @@ func TestResolveAutoConfig_QUICDisabledSkipsAutoPort(t *testing.T) {
 		discoveryMethod: "multicast",
 		enableQUIC:      false,
 		quicPort:        63004,
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -386,9 +388,13 @@ func TestBuildServerConfig_AllFieldsPopulated(t *testing.T) {
 		tlsCAFile:            "/ca.pem",
 		tlsCertFile:          "/cert.pem",
 		tlsKeyFile:           "/key.pem",
+		host:                 testBindHost,
 	}
 
-	cfg := buildServerConfig(f)
+	cfg, cfgErr := buildServerConfig(f)
+	if cfgErr != nil {
+		t.Fatalf("buildServerConfig: %v", cfgErr)
+	}
 	assert.Equal(t, 9001, cfg.Server.AdminPort)
 	assert.Equal(t, 9002, cfg.Server.GRPCPort)
 	assert.Equal(t, 9003, cfg.Server.QUICPort)

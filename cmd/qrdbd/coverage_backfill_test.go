@@ -839,6 +839,7 @@ func TestAwaitUnseal_NilSealBarrier(t *testing.T) {
 		dataDir:      dir,
 		deploymentID: 1,
 		sealConfig:   qrdbconfig.SealConfig{Strategy: ""},
+		host:         testBindHost,
 	}
 
 	bundle, err := generateCATLS()
@@ -882,6 +883,7 @@ func TestAwaitUnseal_ServerStartFails(t *testing.T) {
 		grpcPort:     occupiedTCPPort(t),
 		enableREST:   true, // triggers bind attempt on adminPort
 		enableGRPC:   true, // triggers bind attempt on grpcPort
+		host:         testBindHost,
 	}
 
 	sub, err := initSealSubsystem(f, context.Background())

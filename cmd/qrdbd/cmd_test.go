@@ -600,7 +600,10 @@ func TestBuildServerConfig(t *testing.T) {
 		host: qrdbconfig.DefaultServerHost,
 	}
 
-	cfg := buildServerConfig(f)
+	cfg, cfgErr := buildServerConfig(f)
+	if cfgErr != nil {
+		t.Fatalf("buildServerConfig: %v", cfgErr)
+	}
 
 	if cfg.Server.AdminPort != 8443 {
 		t.Fatalf("AdminPort = %d, want %d", cfg.Server.AdminPort, 8443)
@@ -1081,7 +1084,7 @@ func TestApplyConfigToFlags_AllFieldsFromConfig(t *testing.T) {
 		},
 	}
 
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 	applyConfigToFlags(cmd, f, cfg)
 
 	// f.listen is the Raft host bind address, sourced from Raft.ListenAddress
@@ -1215,6 +1218,7 @@ func TestApplyConfigToFlags_CLIFlagsPrecedence(t *testing.T) {
 		shardID:     99,
 		logLevel:    "warn",
 		enableREST:  false,
+		host:        testBindHost,
 	}
 	applyConfigToFlags(cmd, f, cfg)
 
@@ -1264,7 +1268,7 @@ func TestApplyConfigToFlags_EmptyPeersNotOverridden(t *testing.T) {
 		Server: qrdbconfig.ServerConfig{Host: "0.0.0.0", AdminPort: 63002},
 	}
 
-	f := &startFlags{peers: []string{"1=127.0.0.1:63001"}}
+	f := &startFlags{peers: []string{"1=127.0.0.1:63001"}, host: testBindHost}
 	applyConfigToFlags(cmd, f, cfg)
 
 	// Peers should remain unchanged because YAML peers is empty.
@@ -1284,7 +1288,7 @@ func TestApplyConfigToFlags_EmptySecretNotOverridden(t *testing.T) {
 		Server: qrdbconfig.ServerConfig{Host: "0.0.0.0", AdminPort: 63002},
 	}
 
-	f := &startFlags{multicastSecret: "original", dnsDomain: "original.com"}
+	f := &startFlags{multicastSecret: "original", dnsDomain: "original.com", host: testBindHost}
 	applyConfigToFlags(cmd, f, cfg)
 
 	// Empty YAML values should not override existing defaults.
@@ -1310,6 +1314,7 @@ func TestResolveAutoConfig_StaticNoOp(t *testing.T) {
 		replicaID:       1,
 		adminPort:       63002,
 		grpcPort:        63003,
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -1343,6 +1348,7 @@ func TestResolveAutoConfig_NonStaticAutoGenerates(t *testing.T) {
 		adminPort:       63002,
 		grpcPort:        63003,
 		configFile:      "", // No config file, so auto-generation applies.
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -1391,6 +1397,7 @@ func TestResolveAutoConfig_WithConfigFileSkips(t *testing.T) {
 		adminPort:       63002,
 		grpcPort:        63003,
 		configFile:      "/some/config.yaml", // Config file set, skip auto-gen.
+		host:            testBindHost,
 	}
 
 	err := resolveAutoConfig(cmd, f)
@@ -1741,7 +1748,7 @@ func TestBuildDNSDiscovery_MissingDomain(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildMulticastDiscovery_MissingSecret(t *testing.T) {
-	f := &startFlags{multicastSecret: ""}
+	f := &startFlags{multicastSecret: "", host: testBindHost}
 
 	_, err := buildMulticastDiscovery(f)
 	if err == nil {
@@ -2519,6 +2526,7 @@ func TestStartShardWithBootstrap_StaticDiscoveryNodeError(t *testing.T) {
 		replicaID:       1,
 		raftAddress:     "127.0.0.1:63001",
 		shardID:         1,
+		host:            testBindHost,
 	}
 
 	err := startShardWithBootstrap(context.Background(), f, node, nil, quicraftconfig.Config{ShardID: 1, ReplicaID: 1})

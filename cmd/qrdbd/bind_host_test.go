@@ -23,6 +23,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,13 +82,22 @@ func resolveWithArgs(t *testing.T, args ...string) *startFlags {
 	return f
 }
 
+// serverHostOf builds the server config the daemon hands server.New and
+// returns the bind host it carries, failing the test if the build is refused.
+func serverHostOf(t *testing.T, f *startFlags) string {
+	t.Helper()
+	cfg, err := buildServerConfig(f)
+	require.NoError(t, err)
+	return cfg.Server.Host
+}
+
 // TestBuildServerConfig_CarriesResolvedHost is the assertion the whole issue
 // turns on: whatever host resolution produced has to be the host in the
 // *qrdbconfig.Config handed to server.New, because that struct field is what
 // every listener joins with its port.
 func TestBuildServerConfig_CarriesResolvedHost(t *testing.T) {
 	f := &startFlags{host: "10.1.2.3", adminPort: 63002, grpcPort: 63003}
-	assert.Equal(t, "10.1.2.3", buildServerConfig(f).Server.Host)
+	assert.Equal(t, "10.1.2.3", serverHostOf(t, f))
 }
 
 // TestBindHost_DefaultsToDefaultsLayer proves the flag default is the
@@ -96,7 +106,7 @@ func TestBindHost_DefaultsToDefaultsLayer(t *testing.T) {
 	f := resolveWithArgs(t)
 	assert.Equal(t, qrdbconfig.DefaultServerHost, f.host)
 	assert.Equal(t, qrdbconfig.DefaultConfig().Server.Host, f.host)
-	assert.Equal(t, qrdbconfig.DefaultServerHost, buildServerConfig(f).Server.Host)
+	assert.Equal(t, qrdbconfig.DefaultServerHost, serverHostOf(t, f))
 }
 
 // TestBindHost_FromConfigFile: server.host in YAML reaches the server config.
@@ -106,7 +116,7 @@ func TestBindHost_FromConfigFile(t *testing.T) {
   admin_port: 19443`)
 	f := resolveWithArgs(t, "--config", cfgPath)
 	assert.Equal(t, "127.0.0.1", f.host)
-	assert.Equal(t, "127.0.0.1", buildServerConfig(f).Server.Host)
+	assert.Equal(t, "127.0.0.1", serverHostOf(t, f))
 }
 
 // TestBindHost_FromEnv: QRDB_SERVER_HOST reaches the server config and beats
@@ -117,7 +127,7 @@ func TestBindHost_FromEnv(t *testing.T) {
 	t.Setenv("QRDB_SERVER_HOST", "10.9.9.9")
 	f := resolveWithArgs(t, "--config", cfgPath)
 	assert.Equal(t, "10.9.9.9", f.host)
-	assert.Equal(t, "10.9.9.9", buildServerConfig(f).Server.Host)
+	assert.Equal(t, "10.9.9.9", serverHostOf(t, f))
 }
 
 // TestBindHost_FlagBeatsEnvAndFile pins the documented precedence
@@ -128,7 +138,24 @@ func TestBindHost_FlagBeatsEnvAndFile(t *testing.T) {
 	t.Setenv("QRDB_SERVER_HOST", "10.9.9.9")
 	f := resolveWithArgs(t, "--config", cfgPath, "--host", "192.168.5.5")
 	assert.Equal(t, "192.168.5.5", f.host)
-	assert.Equal(t, "192.168.5.5", buildServerConfig(f).Server.Host)
+	assert.Equal(t, "192.168.5.5", serverHostOf(t, f))
+}
+
+// TestBuildServerConfig_FailsClosedWithoutHost: an absent bind host is refused,
+// not treated as "every interface".
+//
+// This is the guard the pre-existing TestBuildServerConfig failure pointed at.
+// net.JoinHostPort("", port) is ":port" and net.Listen binds that to [::], so
+// an empty host would have silently produced the widest possible bind -- by a
+// stdlib convention rather than by anything an operator could read out of the
+// configuration. Unreachable through the command (cobra applies
+// qrdbconfig.DefaultServerHost at flag registration, before any parsing); this
+// guards direct constructions.
+func TestBuildServerConfig_FailsClosedWithoutHost(t *testing.T) {
+	cfg, err := buildServerConfig(&startFlags{adminPort: 63002})
+	assert.Nil(t, cfg)
+	var missing *MissingBindHostError
+	require.True(t, errors.As(err, &missing), "error = %v (%T), want *MissingBindHostError", err, err)
 }
 
 // TestNoiseHost_DefaultsToServerHost: the enrollment listener follows the API

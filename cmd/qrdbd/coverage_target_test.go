@@ -118,6 +118,7 @@ func TestAwaitUnseal_SuccessPath(t *testing.T) {
 			Strategy:    "",
 			RootKeyPath: "__sys:seal/root_key",
 		},
+		host: testBindHost,
 	}
 
 	sub, err := initSealSubsystem(f, context.Background())

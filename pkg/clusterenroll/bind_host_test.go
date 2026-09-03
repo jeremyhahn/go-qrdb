@@ -164,6 +164,88 @@ func TestResolveCA_FirstNode_NoMaterialWhenBindHostMissing(t *testing.T) {
 	assertDirEmpty(t, dir, "ResolveCA")
 }
 
+// TestResolve_FirstNode_RetryAfterCorrectingBindHostAdvertises is the other
+// half of the contract, and the one that says the rejection was RECOVERABLE.
+// Asserting the error alone would have passed just as well when the rejection
+// left CA material behind -- and that state is unrecoverable, because the
+// retry then takes the cached path and returns a nil Advertiser. So the
+// assertion is on the second call: a corrected configuration must produce a
+// running enrollment listener.
+func TestResolve_FirstNode_RetryAfterCorrectingBindHostAdvertises(t *testing.T) {
+	dir := t.TempDir()
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63001",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		SingleNode:  false,
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // no NoiseHost
+	}
+
+	if _, _, err := Resolve(context.Background(), opts, discardLogger()); err == nil {
+		t.Fatal("Resolve accepted a configuration with no bind host")
+	}
+
+	// The operator corrects the configuration and starts the node again.
+	opts.Advertise.NoiseHost = testBindHost
+	mat, adv, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("Resolve after correcting the bind host: %v", err)
+	}
+	if mat == nil {
+		t.Fatal("Resolve returned no material on the corrected retry")
+	}
+	if adv == nil {
+		t.Fatal("Resolve returned a nil Advertiser on the corrected retry: the first attempt persisted material, so this boot took the cached path and started no enrollment listener")
+	}
+	t.Cleanup(adv.Stop)
+	if host := hostOf(t, adv.Addr()); host != testBindHost {
+		t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+	}
+}
+
+// TestResolveCA_FirstNode_RetryAfterCorrectingBindHostAdvertises is the same
+// on the CA-only path.
+func TestResolveCA_FirstNode_RetryAfterCorrectingBindHostAdvertises(t *testing.T) {
+	dir := t.TempDir()
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63001",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		SingleNode:  false,
+		Advertise:   AdvertiseOptions{NoisePort: freePort(t)}, // no NoiseHost
+	}
+
+	if _, _, _, err := ResolveCA(context.Background(), opts, discardLogger()); err == nil {
+		t.Fatal("ResolveCA accepted a configuration with no bind host")
+	}
+
+	opts.Advertise.NoiseHost = testBindHost
+	caCertPEM, caKeyPEM, adv, err := ResolveCA(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("ResolveCA after correcting the bind host: %v", err)
+	}
+	if caCertPEM == nil || caKeyPEM == nil {
+		t.Fatal("ResolveCA returned no CA material on the corrected retry")
+	}
+	if adv == nil {
+		t.Fatal("ResolveCA returned a nil Advertiser on the corrected retry: the first attempt persisted CA material, so this boot took the cached path and started no enrollment listener")
+	}
+	t.Cleanup(adv.Stop)
+	if host := hostOf(t, adv.Addr()); host != testBindHost {
+		t.Fatalf("advertiser bound %q, want %q", host, testBindHost)
+	}
+}
+
+// hostOf returns the host portion of a bound address.
+func hostOf(t *testing.T, addr string) string {
+	t.Helper()
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", addr, err)
+	}
+	return host
+}
+
 // assertDirEmpty fails when a refused configuration left anything behind. It
 // is the whole point of these two tests: the error type is cheap to get right
 // and the absence of durable state is what actually keeps the node

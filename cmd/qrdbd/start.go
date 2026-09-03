@@ -1421,7 +1421,11 @@ func runStart(f *startFlags) error {
 			// config) once per boot, before the service graph and any
 			// transport exists; the same profile is pinned per-instance on
 			// the AdminService below.
-			profile := buildServerConfig(f).EffectiveCapabilities()
+			capCfg, err := buildServerConfig(f)
+			if err != nil {
+				return err
+			}
+			profile := capCfg.EffectiveCapabilities()
 			capabilities.Seal(profile)
 
 			svcNode, err := lifecycle.BuildServices(sigCtx, lifecycle.Infra{
@@ -1882,7 +1886,10 @@ func runStart(f *startFlags) error {
 
 			// Build server configuration using the QRDB config type required by
 			// the server.New constructor.
-			serverCfg := buildServerConfig(f)
+			serverCfg, err := buildServerConfig(f)
+			if err != nil {
+				return err
+			}
 
 			// Configure mTLS on the TLS listener. An explicit operator selection
 			// (--tls-client-auth flag or YAML tls.client_auth) was already applied
@@ -2340,7 +2347,13 @@ func buildQuotaReconciler(acct *quota.Accountant, tenantSvc tenant.TenantService
 
 // buildServerConfig constructs a *qrdbconfig.Config from the parsed start
 // flags for use by the multi-protocol server orchestrator.
-func buildServerConfig(f *startFlags) *qrdbconfig.Config {
+func buildServerConfig(f *startFlags) (*qrdbconfig.Config, error) {
+	// Fail closed on an absent bind host rather than let net.Listen read ""
+	// as "every interface". See MissingBindHostError for why silence is the
+	// wrong answer here.
+	if f.host == "" {
+		return nil, &MissingBindHostError{}
+	}
 	return &qrdbconfig.Config{
 		Mode: f.mode,
 		Server: qrdbconfig.ServerConfig{
@@ -2417,7 +2430,7 @@ func buildServerConfig(f *startFlags) *qrdbconfig.Config {
 			MinPeers:               f.clusterMinPeers,
 			DynamicMembership:      f.dynamicMembership,
 		},
-	}
+	}, nil
 }
 
 // initializeNode performs all initialization: validates flags, creates the

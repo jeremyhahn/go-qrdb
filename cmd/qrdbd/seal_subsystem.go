@@ -309,7 +309,10 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		return nil, &SealedListenerStartupError{Err: err}
 	}
 
-	serverCfg := buildServerConfig(f)
+	serverCfg, err := buildServerConfig(f)
+	if err != nil {
+		return nil, err
+	}
 	serverOpts := []server.ServerOption{
 		server.WithTLS(bundle.TLSConfig),
 		server.WithCACertPool(bundle.CACertPool),

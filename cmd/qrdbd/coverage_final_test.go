@@ -730,7 +730,7 @@ func TestResolveCreateFunc_MemoryType(t *testing.T) {
 
 func TestApplyConfigToFlags_SealFields(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	cfg := &qrdbconfig.Config{
 		Seal: qrdbconfig.SealConfig{
@@ -750,7 +750,7 @@ func TestApplyConfigToFlags_SealFields(t *testing.T) {
 
 func TestApplyConfigToFlags_DiscoveryFields(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	cfg := &qrdbconfig.Config{
 		Discovery: qrdbconfig.DiscoveryConfig{
@@ -782,7 +782,7 @@ func TestApplyConfigToFlags_DiscoveryFields(t *testing.T) {
 
 func TestApplyConfigToFlags_LeaseReadAndCheckQuorum(t *testing.T) {
 	cmd := newStartCmd()
-	f := &startFlags{}
+	f := &startFlags{host: testBindHost}
 
 	leaseRead := true
 	checkQuorum := true
@@ -906,6 +906,7 @@ func TestAwaitUnseal_BuildSealServicesOnlyError(t *testing.T) {
 		sealConfig:   f.sealConfig,
 		adminPort:    f.adminPort,
 		grpcPort:     f.grpcPort,
+		host:         testBindHost,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
