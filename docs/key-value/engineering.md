@@ -172,11 +172,11 @@ middle decided nowhere.
   | `fast` | yes | **refused** — `GuardedWriteUnsupportedError`, see below |
 
   `fast` is the single exception and it is a refusal, not a silent failure: its
-  backend cannot keep the durability and ordering promises a guarded result
-  makes, so the verbs decline rather than report a success the disk may
-  contradict. The next two bullets say why; making it capable is tracked
-  separately and is an owner's call, not a doc's. **Do not choose `sm_type: fast` for a workload that needs a guarded
-  delete or swap.**
+  backend acknowledges a write before it is durable and logs a storage failure
+  rather than returning it, so the verbs decline rather than report a success
+  the disk may contradict. The next two bullets say why; making it capable is
+  tracked separately and is an owner's call, not a doc's. **Do not choose
+  `sm_type: fast` for a workload that needs a guarded delete or swap.**
 - **The comparison runs inside apply, never on the proposer.** Every replica
   evaluates the same entry against the state it has applied up to that entry's
   log position, so every replica reaches the same decision. Reading on the
@@ -213,20 +213,30 @@ middle decided nowhere.
   are different facts, and only the first is fixed by changing `raft.sm_type`.
 
   That type is a `KVStateMachine` over `FastBackend`, which persists on a
-  background goroutine that is ordered against nothing and swallows its error.
-  Measured deterministically on that backend with **ordinary unguarded writes**,
-  no guarded verb involved: `Put(k,"old")` then `Put(k,"new")` leaves durable
-  state holding `"old"`, and `Put(k,"v")` then `Delete(k)` leaves the key
-  **present**, holding `"v"`. Applied to a guarded delete that is a released
-  lock that comes back — the failure this plane exists to prevent — so
-  advertising the verbs there would be worse than not offering them.
+  background goroutine: `Put` returns once the cache holds the value, and a
+  storage error is logged rather than returned. So a caller told "you released
+  the claim" can still be contradicted by the disk, which is the failure this
+  plane exists to prevent — and advertising the verbs there would be worse than
+  not offering them.
+
+  The list used to carry a third reason, and it was the worst of the three:
+  those background writes were ordered against nothing, so an older pending
+  write could land after a newer one. Measured on the pre-fix code with
+  **ordinary unguarded writes** and no guarded verb involved, `Put(k,"old")`
+  then `Put(k,"new")` left durable state holding `"old"`, and `Put(k,"v")` then
+  `Delete(k)` left the key **present**, holding `"v"` — a lost write and a
+  resurrected key on the default path. **That is fixed**: `FastBackend` now
+  draws a `persistOrder` ticket under the same lock acquisition as its cache
+  write, the discipline `FastStateMachine` and `ConcurrentStateMachine` have
+  always had.
 
   Every other state machine keeps the promises and executes the verbs:
   `sm_type: disk` writes through synchronously and returns its error; `memory`,
   `standard`, `concurrent` and `highperf` are in-memory, so a write has landed
   when it returns; `mvcc-fast` owns its storage and orders every write through
-  `persistOrder`. Making `fast` capable, and the unordered write path itself,
-  are tracked separately: both are backend changes, not guard changes.
+  `persistOrder`. Making `fast` capable is tracked separately: it is a backend
+  change, not a guard change. The unordered write path it also used to have is
+  already fixed.
 
   `PutIfAbsent` is the exception to the exception: it still executes on
   `sm_type: fast` despite having the same hole, because it has been offered

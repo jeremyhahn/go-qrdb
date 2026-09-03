@@ -32,26 +32,34 @@ const kvFastShardCount = 256
 
 // Compile-time interface assertion.
 //
-// FastBackend deliberately does NOT implement GuardedWriteBackend, and this is
-// the one Backend in the tree that does not. Its writes land in the cache
-// synchronously and then persist on a background goroutine that is ordered
-// against nothing and whose error is swallowed, so it can satisfy none of that
-// interface's three promises. The guarded verbs therefore refuse on it with a
-// typed GuardedWriteUnsupportedError rather than reporting a success the disk
-// may contradict.
+// FastBackend still does NOT implement GuardedWriteBackend, and it remains the
+// one Backend in the tree that does not — but for FEWER reasons than before.
+// That interface asks for three promises, and go-qrdb#224 delivered the third:
 //
-// Measured deterministically on this backend, with ORDINARY writes and no
-// guarded verb involved (go-qrdb#224):
+//	durable when acknowledged  — NO.  Put returns once the cache holds the
+//	                                  value; storage is written afterwards.
+//	failure returned           — NO.  A storage error is logged, not returned.
+//	ordered against earlier
+//	writes to the same key     — YES, since go-qrdb#224.
 //
-//	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable value "old"
-//	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT with "v"
+// Two of three is not two thirds of a guarantee, so the guarded verbs continue
+// to refuse here with a typed GuardedWriteUnsupportedError. Supplying the other
+// two means giving Backend a way to express a synchronous write, which is an
+// interface change and the owner's call: go-qrdb#216. Do NOT close that gap by
+// making Put synchronous, which would discard the asynchronous contract this
+// backend exists to provide.
 //
-// FastStateMachine and ConcurrentStateMachine do not have this problem: they
-// own their storage and draw a persistOrder ticket under the shard lock, where
-// apply order is already established (go-qrdb#86). This backend never received
-// that fix. Giving it one is go-qrdb#216; do not paper over it here by making
-// Put synchronous, which would change the asynchronous contract this backend
-// exists to provide.
+// What go-qrdb#224 was, measured on the pre-fix code with ORDINARY writes and
+// no guarded verb involved:
+//
+//	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable "old"
+//	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT "v"
+//
+// A lost write and a resurrected key. FastStateMachine and
+// ConcurrentStateMachine never had it: they own their storage and draw a
+// persistOrder ticket under the shard lock, where apply order is already
+// established (go-qrdb#86). This backend was written later, reproduced the
+// pre-#86 write path, and did not receive the fix until #224.
 var _ Backend = (*FastBackend)(nil)
 
 // kvFastShard is a single partition of the in-memory cache for
@@ -60,6 +68,10 @@ var _ Backend = (*FastBackend)(nil)
 type kvFastShard struct {
 	mu   sync.RWMutex
 	data map[string][]byte
+
+	// order keeps this shard's asynchronous storage writes in apply order.
+	// See persistOrder — and go-qrdb#224 for why this field arrived late.
+	order persistOrder
 }
 
 // FastBackend is a 256-shard in-memory cache backed by persistent
@@ -89,6 +101,7 @@ func NewFastBackend(shardID, replicaID uint64, store storage.Storage, logger *sl
 	}
 	for i := range b.shards {
 		b.shards[i].data = make(map[string][]byte)
+		b.shards[i].order.init()
 	}
 	return b
 }
@@ -126,7 +139,13 @@ func (b *FastBackend) Get(key []byte) ([]byte, error) {
 	return stored, nil
 }
 
-// Put writes to the cache shard and asynchronously persists to storage.
+// Put writes to the cache shard and asynchronously persists to storage, in
+// this shard's apply order.
+//
+// The ticket is drawn under the SAME lock acquisition as the cache write, which
+// is the whole mechanism: that is the point at which apply order is already
+// established, so the order of tickets is the order of applies. Drawing it
+// after releasing the lock would race exactly as the unordered goroutines did.
 func (b *FastBackend) Put(key, value []byte) error {
 	k := string(key)
 	owned := make([]byte, len(value))
@@ -135,43 +154,53 @@ func (b *FastBackend) Put(key, value []byte) error {
 	s := b.shardFor(k)
 	s.mu.Lock()
 	s.data[k] = owned
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
-		if err := b.storage.Set([]byte(k), owned); err != nil {
-			b.logger.Error("async storage set failed",
-				"key", k,
-				"error", err,
-				"shard_id", b.shardID,
-				"replica_id", b.replicaID)
-		}
+		s.order.run(ticket, func() {
+			if err := b.storage.Set([]byte(k), owned); err != nil {
+				b.logger.Error("async storage set failed",
+					"key", k,
+					"error", err,
+					"shard_id", b.shardID,
+					"replica_id", b.replicaID)
+			}
+		})
 	}()
 
 	return nil
 }
 
 // Delete sets a tombstone in the cache and asynchronously deletes from
-// storage.
+// storage, in this shard's apply order.
+//
+// Ordering matters at least as much here as for Put: an unordered delete can be
+// followed on disk by an older pending Set, which resurrects the value the
+// delete retired (go-qrdb#224).
 func (b *FastBackend) Delete(key []byte) error {
 	k := string(key)
 	s := b.shardFor(k)
 
 	s.mu.Lock()
 	s.data[k] = nil // tombstone
+	ticket := s.order.ticket()
 	s.mu.Unlock()
 
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
-		if err := b.storage.Delete([]byte(k)); err != nil {
-			b.logger.Error("async storage delete failed",
-				"key", k,
-				"error", err,
-				"shard_id", b.shardID,
-				"replica_id", b.replicaID)
-		}
+		s.order.run(ticket, func() {
+			if err := b.storage.Delete([]byte(k)); err != nil {
+				b.logger.Error("async storage delete failed",
+					"key", k,
+					"error", err,
+					"shard_id", b.shardID,
+					"replica_id", b.replicaID)
+			}
+		})
 	}()
 
 	return nil

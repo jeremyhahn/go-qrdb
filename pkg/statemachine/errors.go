@@ -100,13 +100,15 @@ func (e *ServiceNotConfiguredError) Error() string {
 // the shard's circuit breaker (go-qrdb#129).
 //
 // The alternative — executing the verb anyway and reporting success — is what
-// the local Codex review on go-qrdb#175 blocked, and it was right: on
-// FastBackend an earlier pending Put can land on disk AFTER a later
-// CompareAndSwap, so durable state ends up holding the OLD value, and a
-// CompareAndDelete can be followed by an older pending Set that resurrects the
-// value it deleted. Measured on that backend, deterministically, with ordinary
-// unguarded writes alone (go-qrdb#224). A guarded delete that comes back is
-// the exact failure the guarded plane exists to prevent.
+// the local Codex review on go-qrdb#175 blocked. Its specific hazard, an older
+// pending write landing on disk after a newer one, was fixed by go-qrdb#224:
+// FastBackend now orders its persistence through persistOrder.
+//
+// The refusal stands on what is still true there: the write is acknowledged
+// before it is durable, and a storage failure is logged rather than returned.
+// A caller told "you released the claim" can still be contradicted by the
+// disk, which is the failure the guarded plane exists to prevent. Supplying
+// the missing promises is go-qrdb#216.
 type GuardedWriteUnsupportedError struct {
 	// Op is the refused operation code.
 	Op byte
@@ -116,10 +118,21 @@ type GuardedWriteUnsupportedError struct {
 	Backend string
 }
 
-// Error returns a human-readable description naming the opcode and the backend.
+// Error returns a human-readable description naming the opcode, the backend and
+// the promise the backend cannot keep.
+//
+// It names the CURRENT reason, which is not the reason this error was written
+// with. It originally cited unordered persistence as well; go-qrdb#224 fixed
+// that, and a refusal that keeps citing a repaired defect sends an operator to
+// look at the wrong thing. What remains is the pair go-qrdb#216 covers.
+//
+// The tracker ID stays in THIS comment and out of the message. No other error
+// string in the tree carries one, and a number an operator cannot resolve is
+// noise in the one sentence they are given — the same reason docs/<feature>/
+// is publication-bound.
 func (e *GuardedWriteUnsupportedError) Error() string {
 	return "statemachine: guarded opcode " + strconv.Itoa(int(e.Op)) +
 		" is not supported on the " + e.Backend +
-		" backend: its writes are neither durable when acknowledged nor ordered " +
-		"against earlier writes to the same key (go-qrdb#216)"
+		" backend: it acknowledges a write before it is durable and logs a storage " +
+		"failure instead of returning it"
 }

@@ -103,18 +103,21 @@ import (
 //
 // So the guarded verbs REFUSE on FastBackend, with a typed
 // GuardedWriteUnsupportedError, rather than reporting a success the disk may
-// contradict. That is not conservatism. Measured deterministically on that
-// backend with ordinary unguarded writes, no guarded verb involved
-// (go-qrdb#224):
+// contradict.
+//
+// The ORDERING half of that reasoning is now historical: go-qrdb#224 gave
+// FastBackend the persistOrder discipline it was missing, so an older pending
+// write can no longer land after a newer one. What it was, measured
+// deterministically with ordinary unguarded writes and no guarded verb
+// involved:
 //
 //	Put(k,"old"); Put(k,"new")  -> durable value "old"
 //	Put(k,"v");   Delete(k)     -> key PRESENT, holding "v"
 //
-// Applied to the guarded verbs, the second line is a released lock that comes
-// back — precisely the failure this whole plane exists to prevent. The local
-// Codex review on go-qrdb#175 blocked advertising them there and was right:
-// documenting it as a caveat does not make an acknowledged write that is
-// silently reversed safe to offer.
+// The refusal stands on the two promises that remain unmet: a write is
+// acknowledged before it is durable, and a storage failure is logged rather
+// than returned. Either alone is enough to make "your claim succeeded" a
+// statement the disk can contradict. Supplying them is go-qrdb#216.
 //
 // Two things are deliberately NOT done. Making FastBackend capable is
 // go-qrdb#216 and needs an owner ruling on the Backend seam — this file only

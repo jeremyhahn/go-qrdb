@@ -17,8 +17,10 @@ package statemachine
 import (
 	"bytes"
 	stderrors "errors"
+	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -852,76 +854,164 @@ func TestBackends_DeclareWhetherTheyCarryGuardedWrites(t *testing.T) {
 	}
 }
 
-// The hazard itself, on the backend, with no state machine and no guarded verb.
+// FastBackend persists a shard's writes in the order they were applied
+// (go-qrdb#224).
 //
-// This is the measurement the refusal above rests on, kept as a test so the
-// claim stays true rather than becoming folklore in a comment. It asserts the
-// CURRENT broken behaviour deliberately: when go-qrdb#224 is fixed this test
-// fails, and that failure is the signal to flip FastBackend to
-// GuardedWriteBackend and delete the refusal.
+// It did not, until this fix: each write persisted on its own goroutine,
+// ordered against nothing, so storage could apply them in any order. Measured
+// on the pre-fix code, with ORDINARY writes and no guarded verb involved:
 //
-// The interleaving is forced, not raced: twoOpStorage parks the first storage
-// operation and only releases it after the second has actually landed. Racing
-// two goroutines and hoping would exercise the inversion once in a thousand
-// runs — the first version of this probe did exactly that and reported no
-// inversion at all, because the second write had not yet reached storage when
-// the first was released.
-func TestFastBackend_UnguardedWritesCanLandOutOfOrder(t *testing.T) {
-	t.Run("a later Put is overwritten by an earlier one", func(t *testing.T) {
+//	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable "old"
+//	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT "v"
+//
+// A lost write and a resurrected key, on the default path for sm_type "fast",
+// with no crash and no error. FastStateMachine and ConcurrentStateMachine were
+// given persistOrder for exactly this in go-qrdb#86; FastBackend, added later,
+// reproduced the pre-#86 write path and never received it.
+//
+// THE SENSITIVITY CHECK BELOW IS NOT CEREMONY. An ordering defect that only
+// manifests once the second write lands reports CLEAN under the obvious probe:
+// the first version of this measurement released the parked write before the
+// second had reached storage, saw [set:k set:k] in the right order, and
+// concluded there was no defect. A test here has to prove it can OBSERVE an
+// inversion before its silence means anything, so the instrument is exercised
+// against a deliberately unordered writer in the same run.
+//
+// Note what the ordered cases deliberately do NOT do: wait for the second write
+// to reach storage before releasing the first. Under a correct implementation
+// that wait can never return — the second writer is blocked on the first's
+// ticket, which is the property being tested — so a probe written that way
+// would deadlock rather than fail. The window is instead opened by parking the
+// first write INSIDE storage with the shard lock already released, which is
+// precisely the interval the old code lost writes in.
+func TestFastBackend_PersistsWritesInApplyOrder(t *testing.T) {
+	// The instrument first. Two independent goroutines with no ordering
+	// between them — the shape FastBackend.Put had before this fix — driven
+	// through the same double the assertions below use. If this does not
+	// record an inversion, nothing the ordered cases report is meaningful.
+	t.Run("the probe can observe an inversion", func(t *testing.T) {
 		store := newTwoOpStorage()
-		b := NewFastBackend(1, 1, store, nil)
 
-		if err := b.Put([]byte("k"), []byte("old")); err != nil {
-			t.Fatalf("Put(old): %v", err)
-		}
-		<-store.firstIn // the Set("old") goroutine is parked inside storage
-		if err := b.Put([]byte("k"), []byte("new")); err != nil {
-			t.Fatalf("Put(new): %v", err)
-		}
-		<-store.secondIn     // Set("new") has actually landed
-		close(store.release) // only now let the older write proceed
-		if err := b.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = store.Set([]byte("k"), []byte("old"))
+		}()
+		<-store.firstIn // the older write is parked inside storage
 
-		got, err := store.memStorage.Get([]byte("k"))
-		if err != nil {
-			t.Fatalf("storage.Get: %v", err)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = store.Set([]byte("k"), []byte("new"))
+		}()
+		<-store.secondIn     // the newer write has actually landed
+		close(store.release) // only now let the older one proceed
+		wg.Wait()
+
+		if got := store.snapshot(); !equalOrder(got, []string{"set:k=new", "set:k=old"}) {
+			t.Fatalf("storage saw %v, want the INVERTED order [set:k=new set:k=old]; "+
+				"the probe cannot see an inversion, so the ordered cases below "+
+				"would pass whether or not FastBackend orders anything", got)
 		}
-		if string(got) != "old" {
-			t.Fatalf("durable value = %q, want %q — go-qrdb#224 appears to be FIXED. "+
-				"If FastBackend now orders its writes, make it implement "+
-				"GuardedWriteBackend and delete the refusal in "+
-				"TestKVStateMachine_GuardedVerbsRefuseOnAnUnorderedBackend.", got, "old")
+		if v, _ := store.memStorage.Get([]byte("k")); string(v) != "old" {
+			t.Fatalf("durable value = %q, want the stale %q — same conclusion", v, "old")
 		}
 	})
 
-	t.Run("a delete is undone by an earlier pending write", func(t *testing.T) {
+	// Both ordered cases issue MANY writes behind the parked one, not just a
+	// second. That is not thoroughness, it is what makes the case decisive.
+	//
+	// With a single follow-up write the test is a coin flip and reports the
+	// wrong answer: releasing the parked write before the follow-up goroutine
+	// has reached storage lets it land afterwards anyway, so the sequence looks
+	// ordered and an unordered implementation PASSES. Measured — the first
+	// version of these two cases did exactly that, and the mutation that strips
+	// s.order.run from both writers went green against them.
+	//
+	// Holding one write inside storage while N others are issued gives every
+	// one of them the whole parked interval to overtake. An implementation
+	// without ordering has N racing goroutines and lands them in an arbitrary
+	// sequence; one with ordering queues them on their tickets and lands them
+	// in exactly the order they were applied.
+	const followers = 32
+
+	t.Run("a later Put is not overwritten by an earlier one", func(t *testing.T) {
 		store := newTwoOpStorage()
 		b := NewFastBackend(1, 1, store, nil)
 
-		if err := b.Put([]byte("k"), []byte("v")); err != nil {
-			t.Fatalf("Put: %v", err)
+		want := []string{"set:k=v0"}
+		if err := b.Put([]byte("k"), []byte("v0")); err != nil {
+			t.Fatalf("Put(v0): %v", err)
 		}
-		<-store.firstIn
-		if err := b.Delete([]byte("k")); err != nil {
-			t.Fatalf("Delete: %v", err)
+		<-store.firstIn // v0's goroutine is parked inside storage
+
+		for i := 1; i <= followers; i++ {
+			v := fmt.Sprintf("v%d", i)
+			if err := b.Put([]byte("k"), []byte(v)); err != nil {
+				t.Fatalf("Put(%s): %v", v, err)
+			}
+			want = append(want, "set:k="+v)
 		}
-		<-store.secondIn
+
 		close(store.release)
 		if err := b.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 
+		if got := store.snapshot(); !equalOrder(got, want) {
+			t.Errorf("storage saw %v,\nwant apply order %v — writes reached storage out "+
+				"of the order they were applied, so a caller was told its write "+
+				"succeeded and a later reader gets a value it replaced (go-qrdb#224)",
+				got, want)
+		}
+		got, err := store.memStorage.Get([]byte("k"))
+		if err != nil {
+			t.Fatalf("storage.Get: %v", err)
+		}
+		if wantLast := fmt.Sprintf("v%d", followers); string(got) != wantLast {
+			t.Fatalf("durable value = %q, want the last write %q", got, wantLast)
+		}
+	})
+
+	t.Run("a delete is not undone by an earlier pending write", func(t *testing.T) {
+		store := newTwoOpStorage()
+		b := NewFastBackend(1, 1, store, nil)
+
+		want := []string{"set:k=v0"}
+		if err := b.Put([]byte("k"), []byte("v0")); err != nil {
+			t.Fatalf("Put(v0): %v", err)
+		}
+		<-store.firstIn
+
+		// Writes, then the delete LAST. The delete is what must survive: an
+		// older Set landing after it resurrects the key.
+		for i := 1; i < followers; i++ {
+			v := fmt.Sprintf("v%d", i)
+			if err := b.Put([]byte("k"), []byte(v)); err != nil {
+				t.Fatalf("Put(%s): %v", v, err)
+			}
+			want = append(want, "set:k="+v)
+		}
+		if err := b.Delete([]byte("k")); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		want = append(want, "delete:k")
+
+		close(store.release)
+		if err := b.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		if got := store.snapshot(); !equalOrder(got, want) {
+			t.Errorf("storage saw %v,\nwant apply order %v (go-qrdb#224)", got, want)
+		}
 		// Read the map directly: Get would answer from the cache tombstone and
 		// hide what storage is actually left holding.
-		v, present := store.memStorage.data["k"]
-		if !present {
-			t.Fatalf("the key is absent from storage — go-qrdb#224 appears to be FIXED; "+
-				"see the sibling case for what to do. (value %q)", v)
-		}
-		if string(v) != "v" {
-			t.Fatalf("storage holds %q, want the resurrected %q", v, "v")
+		if v, present := store.memStorage.data["k"]; present {
+			t.Fatalf("storage still holds %q after the delete — a key retired through "+
+				"consensus came back, because an older pending Set landed after the "+
+				"delete (go-qrdb#224)", v)
 		}
 	})
 }
@@ -935,6 +1025,13 @@ type twoOpStorage struct {
 	firstIn  chan struct{}
 	secondIn chan struct{}
 	release  chan struct{}
+
+	// mu guards seen, the operations storage actually performed, in the order
+	// it performed them. The durable VALUE alone cannot distinguish "ordered
+	// correctly" from "inverted twice", and it says nothing at all for a
+	// delete followed by a set of the same bytes.
+	mu   sync.Mutex
+	seen []string
 }
 
 func newTwoOpStorage() *twoOpStorage {
@@ -967,6 +1064,7 @@ func (s *twoOpStorage) leave(n int32) {
 func (s *twoOpStorage) Set(key, value []byte) error {
 	n := s.enter()
 	err := s.memStorage.Set(key, value)
+	s.record("set:" + string(key) + "=" + string(value))
 	s.leave(n)
 	return err
 }
@@ -974,6 +1072,22 @@ func (s *twoOpStorage) Set(key, value []byte) error {
 func (s *twoOpStorage) Delete(key []byte) error {
 	n := s.enter()
 	err := s.memStorage.Delete(key)
+	s.record("delete:" + string(key))
 	s.leave(n)
 	return err
+}
+
+// record appends an operation AFTER it has been applied, so seen is the order
+// storage durably saw them rather than the order writers arrived in.
+func (s *twoOpStorage) record(op string) {
+	s.mu.Lock()
+	s.seen = append(s.seen, op)
+	s.mu.Unlock()
+}
+
+// snapshot returns a copy of the operations storage performed, in order.
+func (s *twoOpStorage) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.seen...)
 }

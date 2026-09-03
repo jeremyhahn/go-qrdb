@@ -510,20 +510,16 @@ and `node.EnableEncryption()`.
      previous value.
 
      That exemption reaches `FastStateMachine` and `ConcurrentStateMachine`,
-     which own their storage and order every write through `persistOrder`. It
-     does NOT reach `KVStateMachine` over `FastBackend` (`sm_type: fast`),
-     whose background persist is ordered against nothing and swallows its
-     error — so an acknowledged write there can be silently reversed by an
-     older pending one. Measured with ordinary writes: `Put(k,"old")` then
-     `Put(k,"new")` leaves `"old"` on disk, and `Put(k,"v")` then `Delete(k)`
-     leaves the key present. The guarded delete and swap therefore **refuse**
-     on that backend rather than executing (`GuardedWriteUnsupportedError`),
-     which is why `Backend` has the opt-in `GuardedWriteBackend` interface and
-     why it is opt-IN: a backend that has not thought about ordering fails
-     closed. `PutIfAbsent` still executes there, because it has been offered
-     since go-qrdb#86 and withdrawing it is the owner's call. Tracked as
-     **go-qrdb#216** (make it capable) and **go-qrdb#224** (the unordered write
-     path itself).
+     which own their storage. It does NOT reach `KVStateMachine` over
+     `FastBackend` (`sm_type: fast`), which acknowledges a write before it is
+     durable and logs a storage failure rather than returning it. The guarded
+     delete and swap therefore **refuse** on that backend rather than
+     executing (`GuardedWriteUnsupportedError`), which is why `Backend` has the
+     opt-in `GuardedWriteBackend` interface and why it is opt-IN: a backend
+     that has not thought the question through fails closed. `PutIfAbsent`
+     still executes there, because it has been offered since go-qrdb#86 and
+     withdrawing it is the owner's call. Supplying the missing promises is
+     **go-qrdb#216**.
   2. **Writes reach storage in apply order, per shard.** They did not
      originally: each write persisted on an independent goroutine, so
      `Delete(k)` followed by `PutIfAbsent(k, v)` could leave storage with no
@@ -533,8 +529,16 @@ and `node.EnableEncryption()`.
      ORDER is constrained. A key belongs to exactly one shard, so per-shard
      ordering is per-key ordering.
 
+     **`FastBackend` was missing this until go-qrdb#224.** It was written after
+     go-qrdb#86 and reproduced the pre-#86 write path, so `sm_type: fast` lost
+     writes and resurrected deleted keys on the ordinary `Put`/`Delete` path,
+     with no crash and no error. Every asynchronous storage writer in
+     `pkg/statemachine` now draws a ticket: there are six, and all six are
+     ordered. A fix applied writer-by-writer is a fix sized by whoever was in
+     the room, so the count is stated here rather than left to be rediscovered.
+
   Source: `pkg/statemachine/persist_order.go`, `pkg/statemachine/fast.go`,
-  `pkg/statemachine/concurrent.go`
+  `pkg/statemachine/concurrent.go`, `pkg/statemachine/backend_fast.go`
 
 - **Interface segregation across service boundaries.** Each feature domain
   has its own service interface (`KVService`, `MVCCKVService`,

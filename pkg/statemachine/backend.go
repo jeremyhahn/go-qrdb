@@ -80,20 +80,22 @@ type Backend interface {
 // backwards would make the next FastBackend silently unsafe instead of
 // silently unavailable.
 //
-// The third clause is the one with history. FastBackend satisfies neither the
-// first nor the third: it writes its cache synchronously and then persists on
-// an unordered background goroutine whose error it swallows. Measured
-// deterministically on that backend with ordinary writes: Put(k,"old")
-// followed by Put(k,"new") can leave storage holding "old", and Put(k,"v")
-// followed by Delete(k) can leave the key PRESENT — the value resurrected
-// after its own delete (go-qrdb#224). FastStateMachine and
-// ConcurrentStateMachine do not have this problem because they own their
-// storage and order every write through persistOrder (go-qrdb#86); the
-// Backend-based composition never received that fix.
+// The third clause is the one with history. FastBackend used to satisfy
+// NEITHER the first nor the third: it writes its cache synchronously and then
+// persisted on an unordered background goroutine whose error it swallows.
+// Measured deterministically on that backend with ordinary writes: Put(k,"old")
+// followed by Put(k,"new") left storage holding "old", and Put(k,"v") followed
+// by Delete(k) left the key PRESENT — the value resurrected after its own
+// delete. go-qrdb#224 fixed the ordering by giving it the same persistOrder
+// discipline FastStateMachine and ConcurrentStateMachine have had since
+// go-qrdb#86.
 //
-// So FastBackend deliberately does NOT implement this interface, and the
-// guarded verbs refuse on it with a typed GuardedWriteUnsupportedError.
-// Making it capable is tracked as go-qrdb#216.
+// It still does NOT implement this interface, because the first two clauses
+// are untouched: Put returns before the value is durable, and a storage
+// failure is logged rather than returned. The guarded verbs therefore continue
+// to refuse on it with a typed GuardedWriteUnsupportedError. Supplying the
+// remaining two promises needs a way for a Backend to express a synchronous
+// write, which is an interface change and the owner's call: go-qrdb#216.
 type GuardedWriteBackend interface {
 	Backend
 
