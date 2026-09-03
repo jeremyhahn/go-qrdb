@@ -313,11 +313,18 @@ func TestEmbeddedServerKVAdapter_BasicCRUD(t *testing.T) {
 		t.Fatal("expected key to exist")
 	}
 
-	// Exists for missing key — underlying mock returns KeyNotFoundError so
-	// adapter Exists returns false with that error.
+	// Exists for missing key → (false, nil), per the same KVStore contract
+	// Get honours two blocks up: absence is a VALUE on this interface, not an
+	// error.
+	//
+	// This block used to assert the opposite -- "adapter Exists returns false
+	// with that error" -- which described what the adapter did rather than
+	// what the interface promises, and so pinned the defect in place. A test
+	// that records the behaviour it found cannot report the behaviour being
+	// wrong.
 	exists, err = a.Exists(ctx, "missing")
-	if err == nil {
-		t.Fatal("expected error for missing key")
+	if err != nil {
+		t.Fatalf("Exists on a missing key returned an error: %v", err)
 	}
 	if exists {
 		t.Fatal("expected exists=false for missing key")

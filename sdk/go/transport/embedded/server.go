@@ -19,7 +19,6 @@ import (
 	"errors"
 	"log/slog"
 	"path/filepath"
-	"strings"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
@@ -803,13 +802,27 @@ func newServerKVAdapter(svc service.KVServicer) kvstore.KVStore {
 	return &serverKVAdapter{svc: svc}
 }
 
+// Get reports an absent key as (nil, nil), which is the kvstore.KVStore
+// contract: absence is a VALUE, not an error.
+//
+// It decides absence by TYPE. It used to decide it by substring, and that
+// worked only by coincidence of wording: the service wraps not-found as
+// (&ReadError{&KeyNotFoundError{}}), which renders as "service: read failed:
+// service: key not found: <key>" and happens to contain "not found". Nothing
+// pinned that phrasing, so any rewording of either error would have turned
+// every absent key into a hard error for pkg/user and pkg/role, which read
+// through this method and test the result with `if data == nil`.
+//
+// errors.As was available the whole time -- both types are exported from
+// pkg/service and ReadError has Unwrap -- and it is what the sibling adapter
+// over this same interface already used (pkg/server/lifecycle/kv_adapter.go).
+// Two adapters over one interface should not disagree about what absence is,
+// and neither should decide it by reading English.
 func (a *serverKVAdapter) Get(ctx context.Context, key string) ([]byte, error) {
 	val, err := a.svc.Get(ctx, key)
 	if err != nil {
-		// KVStore contract: return nil, nil for missing keys.
-		// The KV service may return a KeyNotFoundError — convert to nil.
-		errStr := err.Error()
-		if strings.Contains(errStr, "not found") || strings.Contains(errStr, "key not found") {
+		var knf *service.KeyNotFoundError
+		if errors.As(err, &knf) {
 			return nil, nil
 		}
 		return nil, err
@@ -842,9 +855,26 @@ func (a *serverKVAdapter) Scan(ctx context.Context, prefix string, fn func(key s
 	return nil
 }
 
+// Exists reports an absent key as (false, nil), not as an error.
+//
+// It returned (false, err) for an absent key, which is the commonest answer to
+// the question it is asked: a caller asking "is this key here?" was handed an
+// error for "no". That is the same contract Get honours, on the same seam, and
+// the two disagreed.
+//
+// It has no production caller today -- newServerKVAdapter has one construction
+// site, and neither pkg/user nor pkg/role calls Exists; they read through Get
+// and test for nil. This is fixed for the trap rather than for a live
+// incident: it is an exported-interface implementation, anything later wired
+// to this kvstore.KVStore inherits the behaviour, and it looked correct
+// sitting next to a Get that worked.
 func (a *serverKVAdapter) Exists(ctx context.Context, key string) (bool, error) {
 	val, err := a.svc.Get(ctx, key)
 	if err != nil {
+		var knf *service.KeyNotFoundError
+		if errors.As(err, &knf) {
+			return false, nil
+		}
 		return false, err
 	}
 	return val != nil, nil

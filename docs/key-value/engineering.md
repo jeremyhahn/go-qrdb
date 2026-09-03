@@ -147,6 +147,34 @@ library, and when a release carrying its fix is pinned here the second arm
 becomes redundant and can be removed. The code comment on `keyIsAbsent` carries
 the tracker reference.
 
+### Absence across the `kvstore.KVStore` adapter seam
+
+The user and role stores do not talk to the KV service directly. They talk to
+`kvstore.KVStore`, and something adapts one to the other — `kvStoreAdapter` in
+`pkg/server/lifecycle` for the server, `serverKVAdapter` in
+`sdk/go/transport/embedded` for the embedded transport.
+
+**The two interfaces disagree about how absence is spelled, which is what makes
+the adapter a seam rather than a pass-through.** The service reports a missing
+key as a `*service.KeyNotFoundError`; `kvstore.KVStore` reports it as a
+*value* — `(nil, nil)` from `Get`, `(false, nil)` from `Exists`. An adapter that
+lets the error through hands a caller asking "is this key here?" a failure for
+the commonest answer.
+
+**Absence is recognised by type, never by message.** `errors.As` against
+`*service.KeyNotFoundError`, which also unwraps the `*service.ReadError` a
+linearizable read wraps it in. The alternative — matching `"not found"` in the
+rendered string — works, right up until someone rewords an error: the wording
+is then load-bearing without saying so, and the failure is that every absent key
+becomes a hard error at a caller that was testing `if data == nil`. Both
+adapters use the type, and a test drives each with an absence whose message
+deliberately contains no recognisable wording, so the message cannot become
+load-bearing again without that test going red.
+
+**An error that is not absence still propagates.** The opposite mistake — a too
+eager adapter reporting a failed read as "the key is not there" — is the same
+lie in the other direction, and is asserted separately.
+
 ### The single-key guarded verbs — available on every state machine but `fast`
 
 `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are one primitive:
