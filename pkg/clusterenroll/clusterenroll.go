@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-truststrap/pkg/noiseproto"
@@ -185,23 +186,34 @@ type AdvertiseOptions struct {
 type Advertiser struct {
 	noiseSrv *noiseboot.Server
 	noiseKey *noiseproto.StaticKey
+
+	// stopOnce makes Stop idempotent. It has to be: the daemon now defers a
+	// Stop as soon as resolveTLS hands back a live advertiser AND still stops
+	// it explicitly on the signal-shutdown path, so the ordinary run calls it
+	// twice. Stop destroys the Noise static key's protected pages, and
+	// destroying them twice is not a no-op in the general case.
+	stopOnce sync.Once
 }
 
 // Stop gracefully shuts down the bootstrap server and releases the static
-// key's protected pages. It is safe to call on a nil receiver and on a
-// zero-value Advertiser (where the internal server was never started).
+// key's protected pages. It is safe to call on a nil receiver, on a
+// zero-value Advertiser (where the internal server was never started), and
+// MORE THAN ONCE.
 //
 // The key is destroyed only after the server has stopped: the running server
 // holds a noise.DHKey aliasing the protected region, and reading it after
-// Destroy would touch freed pages.
+// Destroy would touch freed pages. For the same reason the destroy runs once
+// and only once, whichever caller gets there first.
 func (a *Advertiser) Stop() {
 	if a == nil || a.noiseSrv == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = a.noiseSrv.Stop(ctx)
-	a.noiseKey.Destroy()
+	a.stopOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = a.noiseSrv.Stop(ctx)
+		a.noiseKey.Destroy()
+	})
 }
 
 // NoisePublicKey returns the Curve25519 public key as raw bytes. Returns nil
@@ -352,9 +364,14 @@ func (p *clusterBundleProvider) CABundle() ([]byte, error) {
 }
 
 // Resolve implements the 5-path cluster-TLS enrollment strategy and returns
-// the raw PEM material needed for mutual TLS. The returned Advertiser is
-// non-nil only for path 5 (first node of a multi-node cluster) and must be
-// stopped during graceful shutdown.
+// the raw PEM material needed for mutual TLS.
+//
+// The returned Advertiser is non-nil for a node whose recorded enrollment role
+// is RoleFirstNode -- both on the boot that generates the CA (path 5) and on
+// every later boot, which loads the CA from cache (path 2). It used to be
+// non-nil for path 5 alone, so a first node served enrollment on exactly one
+// boot in its life and came up silently unjoinable on every boot after that
+// (go-qrdb#241). It must be stopped during graceful shutdown.
 func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.Material, *Advertiser, error) {
 	// Path 1: explicit TLS files provided by the operator.
 	if opts.TLSCAFile != "" && opts.TLSCertFile != "" && opts.TLSKeyFile != "" {
@@ -377,7 +394,15 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 	}
 	if mat != nil {
 		logger.Info("loaded existing TLS certificates", "dir", opts.DataDir)
-		return mat, nil, nil
+		// The cached path is reached on every boot after the first, so it is
+		// where a first node's enrollment listener has to come back
+		// (go-qrdb#241). Returning nil here unconditionally is what made a
+		// first node silently unjoinable from its second boot onward.
+		adv, advErr := ResumeAdvertiser(opts, mat, logger)
+		if advErr != nil {
+			return nil, nil, advErr
+		}
+		return mat, adv, nil
 	}
 
 	// Path 3: single-node cluster generates its own CA and node certificate.
@@ -386,6 +411,9 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 		nodeURI := spiffe.NodeURI(opts.TrustDomain, opts.RaftAddress)
 		mat, err := clustertls.GenerateCABundle(nodeURI)
 		if err != nil {
+			return nil, nil, err
+		}
+		if err := persistRole(opts.DataDir, RoleSingleNode); err != nil {
 			return nil, nil, err
 		}
 		if err := clustertls.PersistMaterial(mat, opts.DataDir); err != nil {
@@ -397,6 +425,9 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 	// Path 4: joining node fetches the CA bundle from the existing cluster.
 	if opts.Bootstrap.HasFlags() {
 		logger.Info("bootstrap flags detected, fetching CA bundle from existing cluster")
+		if err := persistRole(opts.DataDir, RoleJoined); err != nil {
+			return nil, nil, err
+		}
 		mat, err := Join(ctx, opts, logger)
 		if err != nil {
 			return nil, nil, err
@@ -422,6 +453,11 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 	if err != nil {
 		return nil, nil, err
 	}
+	// Recorded BEFORE the material: see persistRole. It is what lets every
+	// later boot resume this node's listener instead of coming up quiet.
+	if err := persistRole(opts.DataDir, RoleFirstNode); err != nil {
+		return nil, nil, err
+	}
 	if err := clustertls.PersistMaterial(mat, opts.DataDir); err != nil {
 		return nil, nil, err
 	}
@@ -444,9 +480,11 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 //   - join:           fetch via truststrap AutoFetch, split bundle into
 //     caCertPEM+caKeyPEM, PersistCA.
 //
-// The returned Advertiser is non-nil only for the first-node path and must be
-// stopped during graceful shutdown. Returns (nil, nil, nil, ExplicitFilesError)
-// when any TLS*File option is set.
+// The returned Advertiser is non-nil for a node whose recorded enrollment role
+// is RoleFirstNode, on the boot that generates the CA and on every later boot
+// that loads it from cache (go-qrdb#241), and must be stopped during graceful
+// shutdown. Returns (nil, nil, nil, ExplicitFilesError) when any TLS*File
+// option is set.
 func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertPEM, caKeyPEM []byte, adv *Advertiser, err error) {
 	// Explicit TLS file mode is not supported: those paths supply a node
 	// cert/key pair, not a CA signing key.
@@ -461,7 +499,16 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 	}
 	if caCertPEM != nil && caKeyPEM != nil {
 		logger.Info("loaded existing CA from cache", "dir", opts.DataDir)
-		return caCertPEM, caKeyPEM, nil, nil
+		// Every boot after the first lands here, so this is where a first
+		// node's enrollment listener has to come back (go-qrdb#241).
+		adv, advErr := ResumeAdvertiser(opts, &clustertls.Material{
+			CACertPEM: caCertPEM,
+			CAKeyPEM:  caKeyPEM,
+		}, logger)
+		if advErr != nil {
+			return nil, nil, nil, advErr
+		}
+		return caCertPEM, caKeyPEM, adv, nil
 	}
 
 	// Join: fetch CA bundle from an existing cluster node via truststrap.
@@ -474,6 +521,9 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 		caCertPEM, caKeyPEM, err = splitCABundle(bundlePEM)
 		if err != nil {
 			return nil, nil, nil, &JoinError{Err: err}
+		}
+		if err := persistRole(opts.DataDir, RoleJoined); err != nil {
+			return nil, nil, nil, err
 		}
 		if err := clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
 			return nil, nil, nil, err
@@ -495,6 +545,14 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 	}
 	caCertPEM, caKeyPEM, _, _, err = clustertls.GenerateCA(clustertls.CAValidity)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Recorded BEFORE the material: see persistRole.
+	role := RoleFirstNode
+	if opts.SingleNode {
+		role = RoleSingleNode
+	}
+	if err := persistRole(opts.DataDir, role); err != nil {
 		return nil, nil, nil, err
 	}
 	if err := clustertls.PersistCA(caCertPEM, caKeyPEM, opts.DataDir); err != nil {
@@ -614,7 +672,13 @@ func startNoiseAdvertiser(provider noiseboot.BundleProvider, opts AdvertiseOptio
 			noiseKey.Destroy()
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}
-		if err := os.WriteFile(keyPath, hexEncoded, 0o600); err != nil {
+		// Atomic, for the reason persistRole is: os.WriteFile truncates in
+		// place, and a crash mid-write leaves a partial hex key that
+		// DecodeStaticKey refuses on every later boot. Since go-qrdb#241 this
+		// path runs on EVERY boot of a first node rather than only the one
+		// that generated the CA, so a truncated key file now bricks every
+		// start instead of one.
+		if err := clustertls.WriteFileAtomic(keyPath, hexEncoded, 0o600); err != nil {
 			noiseKey.Destroy()
 			return nil, &ServerError{Protocol: "noise", Err: err}
 		}

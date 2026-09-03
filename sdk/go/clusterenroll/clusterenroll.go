@@ -56,8 +56,46 @@ type BootstrapOptions = clusterenroll.BootstrapOptions
 type AdvertiseOptions = clusterenroll.AdvertiseOptions
 
 // Advertiser holds the running Noise NK bootstrap server started on the first
-// node for peer enrollment.
+// node for peer enrollment. It is started on every boot of a node whose
+// recorded enrollment role is RoleFirstNode, not only the boot that generated
+// the cluster CA.
 type Advertiser = clusterenroll.Advertiser
+
+// Role is the enrollment role a node was started in, decided on the run that
+// first put cluster CA material in the data directory and recorded in
+// RoleFile. It answers the one question the material itself cannot: whether
+// this node owes the cluster an enrollment listener.
+type Role = clusterenroll.Role
+
+const (
+	// RoleFirstNode generated the cluster CA and is the node peers enroll
+	// against. It runs an enrollment listener on every boot.
+	RoleFirstNode = clusterenroll.RoleFirstNode
+
+	// RoleSingleNode generated its own CA and has no peers to enroll.
+	RoleSingleNode = clusterenroll.RoleSingleNode
+
+	// RoleJoined fetched the cluster CA from an existing cluster; enrollment
+	// is served by the first node, not by this one.
+	RoleJoined = clusterenroll.RoleJoined
+)
+
+// RoleFile is the filename, inside the data directory, that records the
+// enrollment role.
+const RoleFile = clusterenroll.RoleFile
+
+// IncompleteFirstNodeMaterialError is returned when a node recorded as
+// RoleFirstNode has cached CA material that cannot back an enrollment
+// listener. It names that node's own data directory, because the symptom
+// otherwise appears on the JOINING node — an advertiser with no CA private key
+// answers and serves an unusable bundle.
+type IncompleteFirstNodeMaterialError = clusterenroll.IncompleteFirstNodeMaterialError
+
+// UnknownRoleError is returned when the role file exists but holds a value
+// this package did not write. It fails closed rather than defaulting: one
+// default opens an enrollment listener nobody asked for and the other
+// withholds one that was asked for.
+type UnknownRoleError = clusterenroll.UnknownRoleError
 
 // FetchError is returned when fetching the CA bundle from a bootstrap server
 // fails.
@@ -87,15 +125,18 @@ type ExplicitFilesError = clusterenroll.ExplicitFilesError
 
 // Resolve implements the 5-path cluster-TLS enrollment strategy and returns
 // the raw PEM material needed for mutual TLS. The returned Advertiser is
-// non-nil only for path 5 (first node of a multi-node cluster) and must be
-// stopped during graceful shutdown.
+// non-nil for a node whose recorded enrollment role is RoleFirstNode, on the
+// boot that generates the cluster CA and on every later boot that loads it
+// from cache, and must be stopped during graceful shutdown.
 var Resolve = clusterenroll.Resolve
 
 // ResolveCA resolves the cluster CA material (cert + key PEM) WITHOUT
 // generating a node leaf — for consumers that supply their own node key (e.g.
 // hardware-resident) and issue their own leaf via clustertls.IssueLeafForKey.
-// The returned Advertiser is non-nil only for the first-node path and must be
-// stopped during graceful shutdown.
+// The returned Advertiser is non-nil for a node whose recorded enrollment role
+// is RoleFirstNode, on the boot that generates the cluster CA and on every
+// later boot that loads it from cache, and must be stopped during graceful
+// shutdown.
 var ResolveCA = clusterenroll.ResolveCA
 
 // Join fetches the cluster CA bundle from an existing node via truststrap,
@@ -113,6 +154,17 @@ var NodeURI = spiffe.NodeURI
 // StartAdvertiser starts the Noise NK bootstrap server so that joining nodes
 // can securely fetch the cluster CA bundle.
 var StartAdvertiser = clusterenroll.StartAdvertiser
+
+// ResumeAdvertiser starts the enrollment listener for a node whose recorded
+// enrollment role is RoleFirstNode, on a boot that loaded its cluster CA from
+// cache rather than generating it. It returns (nil, nil) for a role that
+// serves no enrollment and for a data directory with no recorded role.
+//
+// Consumers that keep their own cached-material branch above Resolve -- as
+// cmd/qrdbd does, to preserve its own X.509 error types -- must call this from
+// that branch. Otherwise their cached boots never reach Resolve's resume and a
+// first node comes back with no enrollment listener.
+var ResumeAdvertiser = clusterenroll.ResumeAdvertiser
 
 // StartAnchorAdvertiser starts the Noise NK bootstrap server serving an
 // anchor-only bundle (trust-anchor certificates, never a private key) for

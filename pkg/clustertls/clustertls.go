@@ -613,7 +613,7 @@ func PersistMaterial(m *Material, dataDir string) error {
 
 	for _, f := range files {
 		path := filepath.Join(dataDir, f.name)
-		if err := writeFileAtomic(path, f.data, 0o600); err != nil {
+		if err := WriteFileAtomic(path, f.data, 0o600); err != nil {
 			return &WriteError{Path: path, Err: err}
 		}
 	}
@@ -639,7 +639,7 @@ func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 		{"ca-key.pem", caKeyPEM},
 	} {
 		path := filepath.Join(dataDir, f.name)
-		if err := writeFileAtomic(path, f.data, 0o600); err != nil {
+		if err := WriteFileAtomic(path, f.data, 0o600); err != nil {
 			return &WriteError{Path: path, Err: err}
 		}
 	}
@@ -647,10 +647,34 @@ func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 	return nil
 }
 
-// writeFileAtomic writes data to a uniquely named temporary file in the same
-// directory as path and renames it into place, so readers never observe a
-// partially written file. The temporary file is removed on any error.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// WriteFileAtomic writes data to a uniquely named temporary file in the same
+// directory as path, fsyncs it, renames it into place, and then FSYNCS THE
+// CONTAINING DIRECTORY. The temporary file is removed on any error.
+//
+// The directory sync is not belt-and-braces. Atomic visibility to a concurrent
+// reader and durability across a crash are different properties, and rename
+// gives only the first: a reader sees either the old file or the new one and
+// never a mix, but the new DIRECTORY ENTRY lives in the directory's own
+// metadata and is not on stable storage until the directory is synced. Without
+// it, a power loss can recover a set of files in an order the writer never
+// wrote them in.
+//
+// That ordering is load-bearing for callers here. clusterenroll writes the
+// enrollment role BEFORE the CA material precisely so that material-without-
+// role can only mean "written by an older version"; if the role's directory
+// entry can be lost while the later material entries survive, a first node
+// recovers looking like a legacy directory and comes up with no enrollment
+// listener -- the exact silent failure that ordering exists to prevent
+// (go-qrdb#241).
+//
+// It applies to every caller, not that one: PersistMaterial and PersistCA have
+// always written through here, so their material is now crash-durable too.
+//
+// syncDirFn is indirected so a test can fail the directory sync on a
+// filesystem that would otherwise always succeed. The post-state is identical
+// whether or not the sync happened, so a test has to observe the operation
+// rather than the result.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -675,7 +699,29 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return syncDirFn(dir)
+}
+
+// syncDirFn fsyncs a directory so a just-renamed entry is durable. Indirected
+// for fault injection; see WriteFileAtomic.
+var syncDirFn = fsyncDir
+
+// fsyncDir opens dir and fsyncs it, so a rename into it survives a crash. The
+// close error is reported when the sync itself succeeded, because a failed
+// close can mean the sync did not reach stable storage.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir) // #nosec G304 -- caller-owned data directory
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // fileExists returns true when path refers to an existing regular file.

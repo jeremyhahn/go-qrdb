@@ -84,7 +84,19 @@ func resolveTLS(f *startFlags, logger *slog.Logger) (*TLSBundle, *bootstrapServe
 	}
 	if bundle != nil {
 		logger.Info("loaded existing TLS certificates", "dir", f.dataDir)
-		return bundle, nil, nil
+		// Every restart of every node lands here, so this is where a first
+		// node's enrollment listener has to come back. This branch exists to
+		// keep the qrdbd-typed X.509 errors and returns BEFORE the delegation
+		// to clusterenroll.Resolve below, so the resume in Resolve's own
+		// cached path never runs for the daemon (go-qrdb#241).
+		adv, advErr := clusterenroll.ResumeAdvertiser(flagsToEnrollOptions(f), &clustertls.Material{
+			CACertPEM: bundle.CACertPEM,
+			CAKeyPEM:  bundle.CAKeyPEM,
+		}, logger)
+		if advErr != nil {
+			return nil, nil, advErr
+		}
+		return bundle, adv, nil
 	}
 
 	// Paths 3–5: delegate to clusterenroll.

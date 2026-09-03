@@ -939,6 +939,22 @@ func runStart(f *startFlags) error {
 	if err != nil {
 		return err
 	}
+	// Released on EVERY path out of runStart, not only the signal-shutdown
+	// branch far below. There are 34 returns between here and there, and
+	// before go-qrdb#241 none of them leaked anything: the cached path -- the
+	// one every restart takes -- handed back a nil advertiser, so the absence
+	// of the listener was also the absence of the leak. Resuming it gives this
+	// path a live resource it never owned, and the existing cleanup was
+	// written when it could not.
+	//
+	// What leaks is not only a socket and a goroutine: the Advertiser holds
+	// the Noise static key in protected memory, so an early error would keep
+	// cluster key material alive for the life of the process, and the held
+	// port would fail the next bind.
+	//
+	// Stop is nil-safe and idempotent, so this is safe both when no advertiser
+	// was started and alongside the explicit Stop on the shutdown path.
+	defer bootServers.Stop()
 
 	// Enable TLS certificate hot-reload when certs are file-backed.
 	// The CertReloader watches the data directory for cert changes and

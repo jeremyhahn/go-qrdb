@@ -46,6 +46,105 @@ func IsSingleNode(...) bool
 `BootstrapShard` runs, in order: **discover → validate addresses → add self →
 check quorum → build member map → `StartShard`.**
 
+### Enrollment role — `pkg/clusterenroll`
+
+`clusterenroll.Resolve` / `ResolveCA` decide, on the run that first puts
+cluster CA material in the data directory, which of three roles this node
+holds, and record it in `{DataDir}/enrollment-role`:
+
+| Role | Meaning | Enrollment listener |
+|---|---|---|
+| `first-node` | generated the cluster CA; peers enroll against it | started on **every** boot |
+| `single-node` | generated its own CA, has no peers | never |
+| `joined` | fetched the CA from an existing cluster | never |
+
+**The role is recorded because it cannot be recovered from the material.** A
+data directory left by a first node whose listener started and served, and one
+left by a first node whose listener failed to start, are identical file for
+file — measured 2026-09-03, both
+`[ca-key.pem ca.pem enrollment-role node-cert.pem node-key.pem noise-key.hex]`.
+So no ordering of generate/persist/start lets a later boot tell them apart;
+once the process exits the two leave the same bytes. The role is written
+**before** the CA material for the same reason: material present with no role
+file then means exactly one thing, a data directory written before this
+mechanism existed, rather than a state a fresh install can also reach through a
+badly timed crash.
+
+Reading the role is what makes the cached-material path able to restart the
+listener. Before it, the listener was started on exactly one boot in a node's
+life — the boot that generated the CA — so **every** later boot of a first
+node came up healthy, reported healthy, and served no enrollment at all, with
+nothing logging a problem. The failure was visible only to a peer trying to
+join, from a different machine.
+
+A data directory with CA material and no recorded role keeps that older
+behaviour and starts no listener, logging a warning that names the impact. The
+role is not inferred from `SingleNode`: that is configuration, it can differ
+from the value the node was first started with, and inferring a
+cluster-wide enrollment decision from it at read time would be a guess wearing
+the clothes of a recovery.
+
+Nor is it derived from the material, which was measured rather than assumed.
+Multi-node enrollment is the shared-CA-key mode, so a **joining** node receives
+the CA certificate *and the CA private key* — that is how it mints its own leaf
+— and persists both: `[ca-key.pem ca.pem enrollment-role node-cert.pem
+node-key.pem]`. "Holds the CA key and is not single-node" therefore does not
+mean "generated the CA", and acting on it would give every joined node in the
+cluster the first node's role, each opening an enrollment listener nobody asked
+for. The other candidate signal, `noise-key.hex`, does discriminate but is
+written by the advertiser start *after* the CA material, so a node killed
+between the two reads as "not a first node" — wrong on the exact case the
+recorded role exists to survive.
+
+A role file whose contents are not one of the three values is refused with
+`*UnknownRoleError` rather than defaulted, because both defaults are wrong: one
+opens an enrollment socket nobody asked for, the other withholds one that was.
+
+**A recorded role is not sufficient on its own; the material has to be able to
+back the listener.** "Material present" is four files written one at a time.
+`PersistMaterial` writes `ca.pem`, `node-cert.pem`, `node-key.pem` and then
+`ca-key.pem` — each atomically, the sequence not — and `LoadFromDir` treats
+`ca-key.pem` as optional, since a node holding only a leaf legitimately has
+none. A process that stopped after `node-key.pem` therefore leaves a cache that
+loads cleanly with no CA private key, and a first node would advertise an
+enrollment endpoint that answers and serves an unusable cert-only bundle, with
+every joining node failing in `splitCABundle` — in a different process, about a
+bundle it did not create.
+
+So the resume refuses with `*IncompleteFirstNodeMaterialError`, naming the
+**first node's** directory and the missing files rather than letting the
+symptom surface on the joiner. The check is derived from what the advertiser
+serves — `CABundle` concatenates `CACertPEM` and `CAKeyPEM` — not from the
+write order, so reordering `PersistMaterial` moves nothing.
+
+`ResolveCA` is not exposed to the same window: `LoadCAFromDir` requires both
+`ca.pem` and `ca-key.pem` and reports "no cache" when either is missing, so an
+interrupted `PersistCA` sends the next boot down the generate path. The
+asymmetry is deliberate and is pinned by a test.
+
+**Atomic visibility and crash durability are different properties, and the
+ordering claim needs the second.** `rename` gives a concurrent reader the old
+file or the new one and never a mix; it does not put the new *directory entry*
+on stable storage. Without an `fsync` of the containing directory, a power loss
+can recover a set of files in an order the writer never wrote them in — the CA
+material, written later, surviving while the role entry it was supposed to
+follow is gone. The node then reads as a directory written before the role
+existed and comes up with no enrollment listener, which is exactly what the
+ordering exists to prevent. `clustertls.WriteFileAtomic` therefore fsyncs the
+directory after the rename and does not report success until that succeeds.
+Every caller gets this, so `PersistMaterial` and `PersistCA` are crash-durable
+too.
+
+**A consumer that keeps its own cached-material branch must resume the listener
+from it.** `Resolve`'s cached path is not the only one: `qrdbd` keeps a
+cached-certificate branch above its delegation to `Resolve`, so that an X.509
+parse failure keeps its own typed error, and that branch returns before
+`Resolve` is reached. `clusterenroll.ResumeAdvertiser` is exported for exactly
+this, and the daemon's branch calls it. A resume placed only inside `Resolve`
+is fully exercised by the package's own tests and does nothing at all for the
+daemon, which is the only production consumer — so the assertion that pins this
+lives in `cmd/qrdbd`, against `resolveTLS`, not against `Resolve`.
+
 ### Dynamic membership — `pkg/cluster`
 
 `MembershipManager`, built against two narrow interfaces so it is testable and
@@ -152,6 +251,12 @@ type ImbalanceReport struct {
 
 - **Dynamic membership is off by default.** Raft reconfiguration occurs only
   when a `Reconfigurer` is supplied **and the local node is the leader**.
+- **A first node serves enrollment on every boot, not only its first.** The
+  node that generated the cluster CA owes peers a Noise NK enrollment listener
+  for as long as it runs. It is started on every boot, including boots that
+  load the CA from cache, and it comes back on the same persisted Noise static
+  key so a peer that pinned that key still enrolls — see
+  [Enrollment role](#enrollment-role).
 - **The quorum guard (`MinQuorum`) refuses to remove a replica** when doing so
   would drop active membership below quorum. A transient liveness blip cannot
   destroy the cluster.

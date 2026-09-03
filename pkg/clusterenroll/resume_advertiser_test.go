@@ -1,0 +1,725 @@
+// Copyright 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Tests for go-qrdb#241: a first node's enrollment listener comes back on
+// every boot, not only the boot that generated the cluster CA.
+//
+// Every assertion here is against a LIVE listener -- dialled, and its Noise
+// static key compared across boots -- rather than against a non-nil pointer.
+// A resumed advertiser that bound nothing, or that came back on a fresh key,
+// would satisfy "not nil" while leaving every peer that pinned the old key
+// unable to enroll, which is the failure this issue is about.
+package clusterenroll
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+)
+
+// dialable asserts something is accepting connections at the advertiser's
+// bound address.
+func dialable(t *testing.T, adv *Advertiser) {
+	t.Helper()
+	if adv == nil {
+		t.Fatal("no advertiser: the enrollment listener was not started")
+	}
+	conn, err := net.DialTimeout("tcp", adv.Addr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial %s: %v; the advertiser is non-nil but nothing is listening", adv.Addr(), err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close probe conn: %v", err)
+	}
+}
+
+func firstNodeOpts(t *testing.T, dir string, port int) *Options {
+	t.Helper()
+	return &Options{
+		RaftAddress: "127.0.0.1:63001",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		SingleNode:  false,
+		Advertise:   AdvertiseOptions{NoisePort: port, NoiseHost: "127.0.0.1"},
+	}
+}
+
+// TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart is the case that
+// needs no fault at all, and it is the one the issue did not have.
+//
+// Measured on 92fcc07 before the fix: boot 1 returned a live advertiser, the
+// process ended, and boot 2 -- same config, same data directory, nothing
+// failed anywhere -- returned (material, nil, nil). Every first node in
+// existence lost its enrollment listener on its second boot and never got it
+// back. The five error-triggered doors the issue enumerates are all narrower
+// than this one.
+func TestResolve_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
+	dir := t.TempDir()
+	opts := firstNodeOpts(t, dir, freePort(t))
+
+	_, adv1, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	dialable(t, adv1)
+	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
+	adv1.Stop() // the process exits
+
+	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 2: %v", err)
+	}
+	if adv2 == nil {
+		t.Fatal("boot 2 returned no advertiser: a first node that restarts is " +
+			"silently unjoinable, and nothing reports it (go-qrdb#241)")
+	}
+	t.Cleanup(adv2.Stop)
+	dialable(t, adv2)
+
+	// The resumed listener must carry the SAME Noise identity. A joining node
+	// pins this key; coming back on a fresh one would be a listener that is
+	// running and still unusable, which is why noise-key.hex is persisted
+	// "for reuse across restarts" in the first place.
+	if !bytes.Equal(key1, adv2.NoisePublicKey()) {
+		t.Error("the resumed listener came back on a DIFFERENT Noise static key; " +
+			"every peer pinned to the original key can no longer enroll")
+	}
+}
+
+// TestResolve_FirstNodeResumesAfterAnAdvertiserStartFailure is the issue's own
+// reproduction: the Noise port is held by something else on the first attempt,
+// the operator frees it and retries with identical configuration.
+func TestResolve_FirstNodeResumesAfterAnAdvertiserStartFailure(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	blocker, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("occupy the Noise port: %v", err)
+	}
+	opts := firstNodeOpts(t, dir, port)
+
+	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err == nil {
+		if adv != nil {
+			adv.Stop()
+		}
+		t.Fatal("attempt 1 must fail while the Noise port is occupied")
+	}
+	// The CA material is on disk now, so attempt 2 takes the cached path.
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); err != nil {
+		t.Fatalf("attempt 1 left no CA material, so this is no longer the case under test: %v", err)
+	}
+	if err := blocker.Close(); err != nil {
+		t.Fatalf("release the Noise port: %v", err)
+	}
+
+	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	if adv2 == nil {
+		t.Fatal("attempt 2 returned (material, nil, nil): the operator corrected the " +
+			"fault, the node came up healthy, and no peer can ever enroll (go-qrdb#241)")
+	}
+	t.Cleanup(adv2.Stop)
+	dialable(t, adv2)
+}
+
+// TestResolve_ResumesFromAStateBuiltDirectlyOnDisk starts from the bad state
+// rather than producing it by failing something.
+//
+// This is the trigger no error handling can cover: the process killed between
+// persisting the CA material and starting the advertiser. There is no error to
+// return and no code path to reorder -- the process simply stops -- so the
+// only way to test it is to construct the state the kill leaves behind. It is
+// also, byte for byte, the state left by a successful run whose process later
+// exited, which is why one mechanism answers both.
+func TestResolve_ResumesFromAStateBuiltDirectlyOnDisk(t *testing.T) {
+	dir := t.TempDir()
+
+	// Exactly what a first node writes before it reaches StartAdvertiser.
+	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	if err := persistRole(dir, RoleFirstNode); err != nil {
+		t.Fatalf("persistRole: %v", err)
+	}
+	if err := clustertls.PersistMaterial(mat, dir); err != nil {
+		t.Fatalf("PersistMaterial: %v", err)
+	}
+
+	_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
+	if err != nil {
+		t.Fatalf("boot from the constructed state: %v", err)
+	}
+	if adv == nil {
+		t.Fatal("no advertiser started from a data directory recorded as first-node; " +
+			"a node killed between the persist and the start stays unjoinable forever")
+	}
+	t.Cleanup(adv.Stop)
+	dialable(t, adv)
+}
+
+// TestResolve_SingleNodeNeverStartsAListener pins the other half. The fix must
+// not turn every cached boot into an advertiser: a single-node cluster has no
+// peers to enroll and correctly opens no enrollment socket. Without this the
+// fix would trade a silent missing listener for a silent extra one.
+func TestResolve_SingleNodeNeverStartsAListener(t *testing.T) {
+	dir := t.TempDir()
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63001",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		SingleNode:  true,
+	}
+	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil || adv != nil {
+		if adv != nil {
+			adv.Stop()
+		}
+		t.Fatalf("boot 1: adv=%v err=%v; a single node starts no enrollment listener", adv, err)
+	}
+	if got, found, err := loadRole(dir); err != nil || !found || got != RoleSingleNode {
+		t.Fatalf("recorded role = (%q, found=%v, err=%v); want single-node", got, found, err)
+	}
+	// The restart must not acquire one either.
+	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil || adv != nil {
+		if adv != nil {
+			adv.Stop()
+		}
+		t.Fatalf("boot 2: adv=%v err=%v; a single node starts no enrollment listener", adv, err)
+	}
+}
+
+// TestResolve_DataDirWithNoRecordedRoleKeepsTheOldBehaviour pins the
+// backward-compatibility branch: a data directory written before the role file
+// existed cannot have its role recovered, so it keeps the pre-fix behaviour
+// rather than inferring one from configuration that may have changed since.
+//
+// Constructed as an upgrade actually presents it: CA material present, no role
+// file.
+func TestResolve_DataDirWithNoRecordedRoleKeepsTheOldBehaviour(t *testing.T) {
+	dir := t.TempDir()
+	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	if err := clustertls.PersistMaterial(mat, dir); err != nil {
+		t.Fatalf("PersistMaterial: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, RoleFile)); !os.IsNotExist(err) {
+		t.Fatalf("the pre-upgrade fixture must have no role file, got err=%v", err)
+	}
+
+	_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
+	if err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if adv != nil {
+		adv.Stop()
+		t.Fatal("an advertiser was started for a data directory with no recorded role; " +
+			"the role is not recoverable from the material, so this would be inferring it")
+	}
+}
+
+// TestResolve_NoRecordedRoleWarnsOnEveryBootWithAnActionableRemedy.
+//
+// Two properties, and both are about the warning being useful rather than
+// present. It fires on EVERY boot, because the operator who needs it is the
+// one investigating why a peer cannot join weeks after the upgrade, reading a
+// current log -- a warning emitted once at upgrade is one nobody reads. And it
+// names the remedy, because "no recorded enrollment role" is a state, not
+// something an operator can act on.
+func TestResolve_NoRecordedRoleWarnsOnEveryBootWithAnActionableRemedy(t *testing.T) {
+	dir := t.TempDir()
+	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	if err := clustertls.PersistMaterial(mat, dir); err != nil {
+		t.Fatalf("PersistMaterial: %v", err)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	const boots = 3
+	for i := 0; i < boots; i++ {
+		_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), logger)
+		if err != nil {
+			t.Fatalf("boot %d: %v", i+1, err)
+		}
+		if adv != nil {
+			adv.Stop()
+			t.Fatalf("boot %d started an advertiser for a data directory with no recorded role", i+1)
+		}
+	}
+
+	out := logs.String()
+	if got := strings.Count(out, "no recorded enrollment role"); got != boots {
+		t.Errorf("the warning fired %d times over %d boots; it must fire on every boot, "+
+			"because the operator who needs it reads a current log weeks later, not the upgrade log",
+			got, boots)
+	}
+	// The remedy has to be actionable: where to write, what to write, and that
+	// a restart is needed.
+	for _, want := range []string{RoleFile, "first-node", "restart"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the warning does not mention %q; it states a condition without a remedy", want)
+		}
+	}
+	// And it must not invite the mistake the measurement rules out.
+	if !strings.Contains(out, "ca-key.pem is not evidence") {
+		t.Error("the warning does not caution that holding ca-key.pem is not evidence of being " +
+			"the first node; an operator following it would mis-record a joined node and stand " +
+			"up an enrollment listener that serves the CA bundle")
+	}
+}
+
+// TestLoadRole_UnrecognisedContentFailsClosed: a corrupt or hand-edited role
+// file is a question about whether this node serves enrollment to the whole
+// cluster. Guessing either opens a listener nobody asked for or withholds one
+// that was asked for, so it refuses.
+func TestLoadRole_UnrecognisedContentFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, RoleFile), []byte("leader"), 0o600); err != nil {
+		t.Fatalf("write role file: %v", err)
+	}
+	_, found, err := loadRole(dir)
+	if !found {
+		t.Error("the role file exists and must be reported as present")
+	}
+	var ure *UnknownRoleError
+	if !errors.As(err, &ure) {
+		t.Fatalf("loadRole error = %v; want *UnknownRoleError", err)
+	}
+	if ure.Value != "leader" {
+		t.Errorf("UnknownRoleError.Value = %q; want the file's contents", ure.Value)
+	}
+}
+
+// TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart: ResolveCA carries
+// the same defect through its own cached branch, so it gets the same
+// assertion. A consumer supplying its own node key reaches enrollment only
+// through here.
+func TestResolveCA_FirstNodeResumesListenerOnAnOrdinaryRestart(t *testing.T) {
+	dir := t.TempDir()
+	opts := firstNodeOpts(t, dir, freePort(t))
+
+	_, _, adv1, err := ResolveCA(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	dialable(t, adv1)
+	key1 := append([]byte(nil), adv1.NoisePublicKey()...)
+	adv1.Stop()
+
+	_, _, adv2, err := ResolveCA(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 2: %v", err)
+	}
+	if adv2 == nil {
+		t.Fatal("ResolveCA boot 2 returned no advertiser (go-qrdb#241)")
+	}
+	t.Cleanup(adv2.Stop)
+	dialable(t, adv2)
+	if !bytes.Equal(key1, adv2.NoisePublicKey()) {
+		t.Error("the resumed listener came back on a different Noise static key")
+	}
+}
+
+// TestPersistRole_ReportsAWriteFailureAsClustertlsWriteError pins the error
+// contract at the layer that owns it.
+//
+// Recording the role runs BEFORE PersistMaterial / PersistCA, so it is the
+// first thing to touch the data directory and the first to notice an unusable
+// one. A caller that distinguished "bootstrap material could not be written"
+// from other failures must keep getting the same answer for the same
+// condition; returning a raw *fs.PathError moved that boundary without saying
+// so, and cmd/qrdbd's BootstrapWriteError -- an alias of clustertls.WriteError
+// -- stopped matching.
+func TestPersistRole_ReportsAWriteFailureAsClustertlsWriteError(t *testing.T) {
+	// A regular file as a path component makes MkdirAll fail for root too,
+	// which a mode-0000 directory would not.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	err := persistRole(filepath.Join(blocker, "subdir"), RoleFirstNode)
+	if err == nil {
+		t.Fatal("persistRole succeeded with a file blocking the data directory")
+	}
+	var wErr *clustertls.WriteError
+	if !errors.As(err, &wErr) {
+		t.Fatalf("persistRole error = %v (%T); want *clustertls.WriteError, the type "+
+			"PersistMaterial and PersistCA already use for this condition", err, err)
+	}
+}
+
+// TestJoinedNodeAlsoHoldsTheCAKey pins the measurement that rules out deriving
+// the role from the material instead of recording it.
+//
+// The tempting derivation is "ca-key.pem present and !SingleNode, therefore
+// this node generated the cluster CA, therefore it was the first node." It
+// reads like a fact rather than a guess, which is what makes it dangerous. It
+// is false: qrdb's multi-node enrollment is the SHARED-CA-KEY mode, so a
+// joining node is handed the CA certificate AND the CA private key precisely
+// so it can mint its own leaf, and it persists both. Measured 2026-09-03:
+//
+//	Resolve   joined node: [ca-key.pem ca.pem enrollment-role node-cert.pem node-key.pem]
+//	ResolveCA joined node: [ca-key.pem ca.pem enrollment-role]
+//
+// Acting on that derivation would give every joined node in a cluster the
+// first node's role, so each of them would open an enrollment listener nobody
+// asked for, serving the CA bundle. The blast radius is the whole cluster, not
+// one node.
+//
+// noise-key.hex is the other tempting signal -- it is present for a first node
+// and absent for both single-node and joined -- and it fails on the exact case
+// that motivates this issue. It is written by the advertiser start, AFTER the
+// CA material is persisted, so a node killed between the two has CA material
+// and no noise key and would be read as "not a first node". The incidental
+// signal is wrong precisely where it is needed.
+//
+// Hence an explicitly recorded role. If this test ever fails because a joined
+// node stops receiving the CA key, that is a change to the enrollment mode
+// (see docs/clusterenroll-noise-gap.md) and not licence to start deriving the
+// role.
+func TestJoinedNodeAlsoHoldsTheCAKey(t *testing.T) {
+	bundle, _ := sharedCABundle(t)
+	dir := t.TempDir()
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63024",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		Bootstrap:   bundleServer(t, bundle),
+	}
+	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil {
+		t.Fatalf("join: %v", err)
+	} else if adv != nil {
+		adv.Stop()
+		t.Fatal("a joining node must not start an advertiser")
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); err != nil {
+		t.Fatalf("a joined node has no ca-key.pem (%v). The enrollment mode has changed; "+
+			"re-read this test's comment before concluding the role can now be derived", err)
+	}
+	role, found, err := loadRole(dir)
+	if err != nil || !found || role != RoleJoined {
+		t.Fatalf("recorded role = (%q, found=%v, err=%v); want joined -- holding the CA key "+
+			"is exactly why the role has to be recorded rather than derived", role, found, err)
+	}
+}
+
+// TestPersistRole_ReplacesByRenameSoAValidRoleCannotBeTruncated.
+//
+// The role file is the SOLE discriminator the cached path has, and this design
+// justifies itself by a crash window -- so a non-atomic role write would put a
+// second, worse window inside the one being designed around. os.WriteFile
+// opens with O_TRUNC and writes in place: a crash between the truncate and the
+// write leaves an empty or partial role, loadRole refuses it with
+// *UnknownRoleError, and the node then fails to boot permanently rather than
+// falling back to the warning.
+//
+// Asserted through a hard link rather than by racing a crash. A link pins the
+// original inode, so if the role were rewritten IN PLACE the link would see
+// the new bytes; because it is replaced by rename, the link still holds the
+// old value and the target holds the new one. That is exactly the property
+// that makes a partial role unobservable.
+func TestPersistRole_ReplacesByRenameSoAValidRoleCannotBeTruncated(t *testing.T) {
+	dir := t.TempDir()
+	if err := persistRole(dir, RoleFirstNode); err != nil {
+		t.Fatalf("persistRole: %v", err)
+	}
+	rolePath := filepath.Join(dir, RoleFile)
+
+	pin := filepath.Join(dir, "pinned-inode")
+	if err := os.Link(rolePath, pin); err != nil {
+		t.Skipf("hard links unavailable on this filesystem: %v", err)
+	}
+
+	if err := persistRole(dir, RoleSingleNode); err != nil {
+		t.Fatalf("persistRole (rewrite): %v", err)
+	}
+
+	pinned, err := os.ReadFile(pin)
+	if err != nil {
+		t.Fatalf("read pinned inode: %v", err)
+	}
+	if string(pinned) != string(RoleFirstNode) {
+		t.Errorf("the original role file was modified in place (pinned inode now %q). "+
+			"An in-place write has a window where the role is empty or partial, and the "+
+			"node then fails to boot with UnknownRoleError instead of warning", pinned)
+	}
+	got, found, err := loadRole(dir)
+	if err != nil || !found || got != RoleSingleNode {
+		t.Fatalf("after rewrite loadRole = (%q, %v, %v); want single-node", got, found, err)
+	}
+}
+
+// TestFirstNodeNeverLeavesCachedMaterialWithAnUnreadableRole is the pairing
+// the reviewer asked for, and it is the state that would have shipped: CA
+// material durable on disk next to a role file this version wrote that cannot
+// be read back.
+//
+// Every path that persists material records the role first, so after any of
+// them the two must agree. A role that loadRole refuses here means a boot
+// failure for a node that did nothing wrong.
+func TestFirstNodeNeverLeavesCachedMaterialWithAnUnreadableRole(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts func(dir string) *Options
+		want Role
+	}{
+		{"first node", func(dir string) *Options { return firstNodeOpts(t, dir, freePort(t)) }, RoleFirstNode},
+		{"single node", func(dir string) *Options {
+			return &Options{RaftAddress: "127.0.0.1:63001", TrustDomain: "test.cluster", DataDir: dir, SingleNode: true}
+		}, RoleSingleNode},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			_, adv, err := Resolve(context.Background(), tc.opts(dir), discardLogger())
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if adv != nil {
+				t.Cleanup(adv.Stop)
+			}
+
+			// Material is cached, so the next boot depends entirely on the role.
+			mat, err := clustertls.LoadFromDir(dir)
+			if err != nil || mat == nil {
+				t.Fatalf("material not cached: mat=%v err=%v", mat != nil, err)
+			}
+			role, found, err := loadRole(dir)
+			if err != nil {
+				t.Fatalf("cached material is paired with a role this version wrote that "+
+					"cannot be read back (%v); the next boot fails instead of resuming", err)
+			}
+			if !found {
+				t.Fatal("material was persisted with no role file at all")
+			}
+			if role != tc.want {
+				t.Errorf("recorded role = %q; want %q", role, tc.want)
+			}
+			if raw, rerr := os.ReadFile(filepath.Join(dir, RoleFile)); rerr != nil || len(raw) == 0 {
+				t.Errorf("role file is empty or unreadable: %q err=%v", raw, rerr)
+			}
+		})
+	}
+}
+
+// TestAdvertiserStopIsIdempotent pins a CONTRACT, and is deliberately not
+// claimed as a regression test.
+//
+// The daemon now defers a Stop the moment resolveTLS returns a live advertiser
+// AND still stops it on the signal-shutdown path, so the ordinary run calls it
+// twice. Stop destroys the Noise static key's protected pages.
+//
+// Measured: this passes with and without the sync.Once, because memguard
+// v0.23.0's LockedBuffer.Destroy is itself idempotent, so today a double Stop
+// is merely wasteful. The sync.Once is therefore defence against a dependency
+// whose destroy stops tolerating it, not a fix for an observed defect -- and
+// this test states the promise Stop's doc comment now makes rather than
+// proving the sync.Once is load-bearing. It is not.
+func TestAdvertiserStopIsIdempotent(t *testing.T) {
+	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: "127.0.0.1"}, t.TempDir(), discardLogger())
+	if err != nil {
+		t.Fatalf("StartAdvertiser: %v", err)
+	}
+	adv.Stop()
+	adv.Stop() // must not destroy the protected pages a second time
+	adv.Stop()
+
+	var nilAdv *Advertiser
+	nilAdv.Stop()
+	(&Advertiser{}).Stop()
+}
+
+// TestResumedAdvertiserReleasesItsPortOnStop asserts the socket is actually
+// free afterwards, not merely that Stop was called. A leaked listener still
+// owns the port, so the next bind fails -- which is how the leak surfaces in
+// practice rather than as a memory statistic.
+func TestResumedAdvertiserReleasesItsPortOnStop(t *testing.T) {
+	dir := t.TempDir()
+	port := freePort(t)
+	opts := firstNodeOpts(t, dir, port)
+
+	_, adv1, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	adv1.Stop()
+
+	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 2 (resume): %v", err)
+	}
+	if adv2 == nil {
+		t.Fatal("boot 2 started no listener")
+	}
+	adv2.Stop()
+
+	// The address must be rebindable by someone else.
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("rebind %d after Stop: %v; the resumed listener still owns the port", port, err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+// TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey.
+//
+// The state: a first node whose process stopped inside PersistMaterial, after
+// node-key.pem was durable and before ca-key.pem was. LoadFromDir treats
+// ca-key.pem as optional, so the cache loads cleanly with CAKeyPEM == nil and
+// the recorded role still says first-node.
+//
+// Before the check, that node started an enrollment listener with no CA
+// private key: it reported healthy, it answered, and every joining node failed
+// in splitCABundle -- in a different process, about a bundle it did not
+// create. Fail closed, and name THIS node's directory, so the operator is not
+// sent to the joiner.
+func TestResume_FailsClosedWhenTheFirstNodeCacheLacksTheCAKey(t *testing.T) {
+	dir := t.TempDir()
+	opts := firstNodeOpts(t, dir, freePort(t))
+
+	_, adv, err := Resolve(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	adv.Stop()
+
+	// Exactly what the interrupted write leaves behind: everything else
+	// durable, ca-key.pem never renamed into place.
+	if err := os.Remove(filepath.Join(dir, "ca-key.pem")); err != nil {
+		t.Fatalf("simulate the interrupted persist: %v", err)
+	}
+	// The cache must still look complete, or this is not the case under test.
+	mat, err := clustertls.LoadFromDir(dir)
+	if err != nil || mat == nil {
+		t.Fatalf("LoadFromDir no longer accepts the cache (mat=%v err=%v); the premise is gone", mat != nil, err)
+	}
+	if len(mat.CAKeyPEM) != 0 {
+		t.Fatal("the fixture still carries a CA key")
+	}
+	if role, _, _ := loadRole(dir); role != RoleFirstNode {
+		t.Fatalf("recorded role = %q; want first-node", role)
+	}
+
+	_, adv2, err := Resolve(context.Background(), opts, discardLogger())
+	if adv2 != nil {
+		adv2.Stop()
+		t.Error("an enrollment listener was started with no CA private key: it answers, " +
+			"serves a cert-only bundle, and every joining node fails in splitCABundle")
+	}
+	var incomplete *IncompleteFirstNodeMaterialError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("Resolve error = %v (%T); want *IncompleteFirstNodeMaterialError", err, err)
+	}
+	if incomplete.Dir != dir {
+		t.Errorf("error names %q; it must name THIS node's data directory, because the "+
+			"symptom shows up on the joining node", incomplete.Dir)
+	}
+	if len(incomplete.Missing) != 1 || incomplete.Missing[0] != "ca-key.pem" {
+		t.Errorf("Missing = %v; want exactly [ca-key.pem]", incomplete.Missing)
+	}
+}
+
+// TestResolveCA_RegeneratesRatherThanServingAnIncompleteCache records that the
+// ResolveCA path is NOT exposed to the same window, so the asymmetry is
+// deliberate rather than an oversight.
+//
+// LoadCAFromDir requires BOTH ca.pem and ca-key.pem and reports "no cache"
+// when either is missing, so an interrupted PersistCA sends the next boot down
+// the generate path instead of into a half-loaded cache. LoadFromDir cannot do
+// the same, because ca-key.pem is legitimately absent for a node that holds
+// only a leaf.
+func TestResolveCA_RegeneratesRatherThanServingAnIncompleteCache(t *testing.T) {
+	dir := t.TempDir()
+	opts := firstNodeOpts(t, dir, freePort(t))
+
+	_, _, adv, err := ResolveCA(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	adv.Stop()
+	if err := os.Remove(filepath.Join(dir, "ca-key.pem")); err != nil {
+		t.Fatalf("simulate the interrupted persist: %v", err)
+	}
+
+	caCert, caKey, adv2, err := ResolveCA(context.Background(), opts, discardLogger())
+	if err != nil {
+		t.Fatalf("boot 2: %v", err)
+	}
+	if adv2 != nil {
+		t.Cleanup(adv2.Stop)
+	}
+	if len(caCert) == 0 || len(caKey) == 0 {
+		t.Error("ResolveCA returned incomplete CA material instead of regenerating")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ca-key.pem")); err != nil {
+		t.Errorf("ca-key.pem was not restored by the generate path: %v", err)
+	}
+}
+
+// TestPersistRole_DoesNotReportSuccessBeforeTheRoleIsDurable.
+//
+// The role is written BEFORE the CA material so that material-without-role can
+// only mean "written by an older version". That ordering is only a guarantee
+// if the role's DIRECTORY ENTRY is durable when persistRole returns. rename
+// makes the file atomically visible to a concurrent reader; it does not put
+// the new directory entry on stable storage. Without the directory fsync a
+// power loss can recover the CA material -- written later -- while the role
+// entry is gone, and the node then reads as a legacy directory and comes up
+// with no enrollment listener: precisely the silent failure the ordering
+// exists to prevent.
+//
+// Observed at the operation rather than the result: the post-state is
+// byte-identical either way, so the sync is failed at its boundary and
+// persistRole must surface that instead of returning nil.
+func TestPersistRole_DoesNotReportSuccessBeforeTheRoleIsDurable(t *testing.T) {
+	sentinel := errors.New("directory sync refused")
+	restore := clustertls.SetSyncDirForTest(func(string) error { return sentinel })
+	t.Cleanup(restore)
+
+	err := persistRole(t.TempDir(), RoleFirstNode)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("persistRole = %v; want the directory-sync failure. Reporting success "+
+			"before the role's directory entry is durable means a crash can recover the CA "+
+			"material without the role, and the node comes up silently unjoinable", err)
+	}
+	var wErr *clustertls.WriteError
+	if !errors.As(err, &wErr) {
+		t.Errorf("persistRole error = %T; want it wrapped as *clustertls.WriteError, the "+
+			"type this condition already reports", err)
+	}
+}
