@@ -18,20 +18,12 @@ package mcp
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"math/big"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -1253,33 +1245,6 @@ func TestCeremonyCANotConfiguredError(t *testing.T) {
 	if err.Error() != "mcp: ceremony CA not configured" {
 		t.Errorf("error message: got %q", err.Error())
 	}
-}
-
-// ---------------------------------------------------------------------------
-// ctxWithFakeTLS — injects a self-signed cert as the mTLS peer cert in ctx
-// ---------------------------------------------------------------------------
-
-func ctxWithFakeTLS() context.Context {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		panic("ctxWithFakeTLS: generate key: " + err.Error())
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test-officer"},
-		NotBefore:    time.Now().Add(-time.Minute),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		panic("ctxWithFakeTLS: create cert: " + err.Error())
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		panic("ctxWithFakeTLS: parse cert: " + err.Error())
-	}
-	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
-	return auth.WithTLSState(context.Background(), state)
 }
 
 // ---------------------------------------------------------------------------
