@@ -150,77 +150,79 @@ func assertSingleKeyGuardedVerbsWork(t *testing.T, cl clients) {
 	assertKeyAbsent(t, cl, "claim", "key still present after a successful CompareAndDelete")
 }
 
-// assertKeyAbsent and assertKeyPresent observe existence through List, not
-// through Exists or Get.
+// assertKeyAbsent and assertKeyPresent check both point-read APIs after a
+// guarded operation, and check them against their TYPED contract rather than
+// against "some answer came back".
 //
-// Exists cannot answer this on every cell of the matrix. On raft/sm_type:disk
-// the adapter implements sm.NALookup, and go-quicraft's Lookup fast path boxes
-// its typed nil []byte into a NON-NIL interface{}, so service.KVService.Get
-// reports a missing key as a successful read of an empty value and Exists is
-// true for every key that was never written. Measured 2026-09-02 on
-// file/raft: Exists("never-written") = true, and Get on a deleted key returns
-// ("", nil) where the memory cells return not-found.
+// Absence requires a *transport.KeyNotFoundError, not merely a non-nil error.
+// "Get returned an error" is satisfied by an authorization failure, a timeout,
+// a closed transport or an internal fault — none of which say the key is
+// absent, and all of which would let a real regression through while the
+// assertion reported success. Measured: with Get returning an unrelated error
+// for absent keys, the previous version of this helper PASSED and this one
+// fails on all four memory cells.
 //
-// That is a real conformance defect and it is filed as go-qrdb#214, with the
-// restoration of the direct Exists assertions here as its acceptance test. It
-// is NOT what this battery measures — a plain Put/Delete/Get reproduces it
-// with no guarded verb involved — so asserting through it would make these
-// cells red for someone else's bug and hide whether the guarded verbs work.
+// Asserting Get and not only Exists matters for a reason worth stating exactly,
+// because the obvious reason is wrong. Every SDK transport derives Exists FROM
+// Get — embedded, gRPC, REST, unix, QUIC and MCP all call Get and map a
+// KeyNotFoundError to false — so the two cannot disagree here, and go-qrdb#214
+// was not a case of them disagreeing. It was a case of them failing TOGETHER:
+// Get reported an absent key as a successful read of an empty value, so Exists
+// derived "true" from it and was wrong in the same breath.
 //
-// List reads the state machine's key set rather than a boxed point-lookup
-// result, so it answers correctly on every cell and is a genuine observation
-// of the store rather than a weakened one.
+// That is precisely why Exists alone is the weaker assertion. It tests the
+// DERIVATION; Get's typed error tests the SOURCE the derivation reads. A
+// regression in the read path shows up in Get first and reaches Exists only
+// through whatever mapping the transport happens to apply.
 //
-// THIS IS A CONCESSION WITH AN EXPIRY, and the replacement is already written.
-// The moment go-qrdb#214 is on main, both helpers become a direct Exists check
-// corroborated by Get — Exists false AND Get returning not-found, because those
-// are the two ways a caller asks the same question and they have gone out of
-// step before. Measured on this branch with that replacement in place and #214
-// still unfixed, so the ordering is not a guess:
+// The Exists check on the presence side is kept, and Get corroborates it, as
+// cheap insurance against a transport that one day implements Exists natively
+// — a HEAD request, a server-side existence RPC — at which point the two CAN
+// diverge and this matrix is the gate that should see it.
 //
-//	--- FAIL: .../file/raft/embedded
-//	    CompareAndSwap CREATED an absent key: Exists("absent-key") = true
-//	    key still present after a successful CompareAndDelete: Get("claim") returned ""
-//	        with no error, want not-found — an absent key read back as an empty value
-//
-// Both file/raft cells, both transports. So this swap must land AFTER #214,
-// not alongside it.
+// These assertions previously went through List, as a deliberate concession
+// while #214 was open. #237 fixed it and the concession has expired; restoring
+// them is what that issue named as its acceptance test.
 func assertKeyAbsent(t *testing.T, cl clients, key, msg string) {
 	t.Helper()
-	if listContains(t, cl, key) {
-		t.Errorf("%s: %q is still listed", msg, key)
+	ctx := boundedCtx(t)
+
+	exists, err := cl.kv.Exists(ctx, key)
+	if err != nil {
+		t.Fatalf("%s: Exists(%q): %v", msg, key, err)
+	}
+	if exists {
+		t.Errorf("%s: Exists(%q) = true, want false", msg, key)
+	}
+
+	got, err := cl.kv.Get(ctx, key)
+	var knf *transport.KeyNotFoundError
+	if !errors.As(err, &knf) {
+		t.Errorf("%s: Get(%q) = %q err=%v; want a *transport.KeyNotFoundError — an "+
+			"absent key must be reported as not-found, not as a successful read of "+
+			"an empty value and not as an unrelated failure", msg, key, got, err)
 	}
 }
 
 func assertKeyPresent(t *testing.T, cl clients, key, msg string) {
 	t.Helper()
-	if !listContains(t, cl, key) {
-		t.Errorf("%s: %q is not listed", msg, key)
-	}
-}
+	ctx := boundedCtx(t)
 
-// listContains lists under the KEY ITSELF as the prefix rather than over the
-// whole keyspace.
-//
-// An unprefixed List is not usable here: the shared keyspace also holds
-// internal markers whose names are not valid UTF-8 (the on-disk state machine
-// writes its last-applied index under a leading NUL), and the gRPC transport
-// refuses to marshal those into a repeated string field — "grpc: error while
-// marshaling: string field contains invalid UTF-8", measured on three cells.
-// Scoping the list to the key answers the same question and touches nothing
-// else.
-func listContains(t *testing.T, cl clients, key string) bool {
-	t.Helper()
-	keys, err := cl.kv.List(boundedCtx(t), key)
+	exists, err := cl.kv.Exists(ctx, key)
 	if err != nil {
-		t.Fatalf("List(%q): %v", key, err)
+		t.Fatalf("%s: Exists(%q): %v", msg, key, err)
 	}
-	for _, k := range keys {
-		if k == key {
-			return true
-		}
+	if !exists {
+		t.Errorf("%s: Exists(%q) = false, want true", msg, key)
 	}
-	return false
+
+	// Get must agree. On today's transports it necessarily does, since Exists
+	// is derived from it; the check costs one call and becomes load-bearing the
+	// moment any transport serves Exists natively.
+	if _, err := cl.kv.Get(ctx, key); err != nil {
+		t.Errorf("%s: Get(%q) failed with %v while Exists reported the key present; "+
+			"the two point-read APIs disagree", msg, key, err)
+	}
 }
 
 // assertTransactionsWork covers the multi-key half of the plane: the value
