@@ -331,11 +331,6 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 
 	coord, _ := bootRaftNode(t)
 
-	l, err := coord.AcquireLease(ctx, "renewed/lock", 2*time.Second)
-	if err != nil {
-		t.Fatalf("AcquireLease: %v", err)
-	}
-
 	// Four cycles at 1.5s: each check happens at the moment of maximum time
 	// since the last renewal, which is when an early close is most likely.
 	//
@@ -353,48 +348,167 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 	// exists to catch. A longer TTL would make it pass more often and stop
 	// testing anything. Widening the margin here would be shortening the
 	// verification.
-	//
-	// What IS fixed is that the failure was undiagnosable: "Renew on cycle 4:
-	// lease lost" reads identically whether the monitor closed Done early (the
-	// bug) or the scheduler starved us past the TTL (the environment). The
-	// elapsed measurement below names which one happened. The durable fix is
-	// the injectable clock seam (go-qrdb#172), for which this is now a second
-	// concrete consumer alongside the MCP poll watcher.
 	const (
-		renewEvery = 1500 * time.Millisecond
-		leaseTTL   = 2 * time.Second
+		renewEvery  = 1500 * time.Millisecond
+		leaseTTL    = 2 * time.Second
+		cycles      = 4
+		maxAttempts = 5
 	)
-	for cycle := 1; cycle <= 4; cycle++ {
-		start := time.Now()
-		time.Sleep(renewEvery)
-		select {
-		case <-l.Done():
-			t.Fatalf("Done closed during renewal cycle %d after %v: the holder was "+
-				"told it lost a lease it was renewing correctly", cycle, time.Since(start))
-		default:
+
+	// THE PRECONDITION. This test can only make its assertion when each cycle
+	// actually completes inside the TTL. If the scheduler does not return
+	// within the cadence, the lease has genuinely expired and Done closing (or
+	// Renew failing) is CORRECT behaviour -- so a failure in that state would
+	// assert "the lease renewal is broken" on evidence that shows nothing of
+	// the kind.
+	//
+	// An earlier revision measured exactly that and failed anyway: it printed
+	// "the cycle took 2.344938979s against a 2s TTL, so the lease had genuinely
+	// expired ... This is host starvation, not a lease defect" and then called
+	// t.Fatalf. It computed the discriminator and did not act on it, which is
+	// the same defect class this repository has been closing elsewhere -- an
+	// assertion naming a cause it has explicitly disclaimed.
+	//
+	// RETRY, and FAIL when the retries are exhausted. Not skip: CLAUDE.md and
+	// AGENTS.md both say "NEVER use skip guards", and a measured precondition is
+	// not an exemption from a rule written as never -- the fips140 register is a
+	// documented carve-out for unreachable code, not a general licence.
+	//
+	// A starved attempt is discarded whole: once the deadline passes the lease is
+	// gone and every later cycle in that attempt is meaningless, so the run
+	// restarts on a fresh key. Exhausting every attempt is itself a real result
+	// -- the host could not give this test one clean window in maxAttempts tries
+	// -- and it fails naming every measured overrun. That is honest in a way both
+	// of the alternatives are not: it does not claim a lease defect it did not
+	// observe, and it does not disappear into a skip nobody counts.
+	//
+	// maxAttempts is 5 rather than 3 because a starved attempt is CHEAP: it
+	// aborts at the first overrunning cycle, so five starved attempts cost about
+	// as long as one successful run. Retries are the only lever left for how
+	// often a contended host takes this test down, so it is worth spending.
+	var overruns []time.Duration
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// A distinct key per attempt: the previous attempt's lease may or may
+		// not have expired yet, and re-acquiring the same key would race that
+		// rather than test anything.
+		key := fmt.Sprintf("renewed/lock/attempt-%d", attempt)
+
+		// The deadline ANCHOR, recorded before the call that establishes it.
+		// See runSubTTLRenewalCycles for why this instant and not another.
+		anchor := time.Now()
+		l, err := coord.AcquireLease(ctx, key, leaseTTL)
+		if err != nil {
+			t.Fatalf("AcquireLease(%s): %v", key, err)
 		}
-		if err := l.Renew(ctx); err != nil {
-			if elapsed := time.Since(start); elapsed >= leaseTTL {
-				t.Fatalf("Renew on cycle %d: %v -- but the cycle took %v against a %v "+
-					"TTL, so the lease had genuinely expired before the renewal was "+
-					"attempted. This is host starvation, not a lease defect: the "+
-					"scheduler did not return within the cadence. Re-run on a quiet "+
-					"machine (see go-qrdb#139, #171) and see go-qrdb#172 for the "+
-					"clock seam that removes the wall-clock dependency.",
-					cycle, err, elapsed, leaseTTL)
+
+		heldFor, starved := runSubTTLRenewalCycles(t, ctx, l, anchor, cycles, renewEvery, leaseTTL)
+		if !starved {
+			// The assertion path ran. Renewal stops here, and the lease must
+			// now actually expire and be reported -- the expiry half proves the
+			// confirming recheck did not cost the loss signal itself.
+			select {
+			case <-l.Done():
+			case <-time.After(30 * time.Second):
+				t.Fatal("Done did not close once renewal stopped: confirming an " +
+					"uncertain reading must not cost the loss signal")
 			}
-			t.Fatalf("Renew on cycle %d: %v (cycle took %v, within the %v TTL, so the "+
-				"lease should still have been held)", cycle, err, time.Since(start), leaseTTL)
+			return
 		}
+
+		overruns = append(overruns, heldFor)
+		t.Logf("attempt %d/%d starved: %v elapsed since the confirmation that set the "+
+			"deadline, against a %v TTL, so the lease expired before its renewal "+
+			"landed. Discarding this attempt -- the assertion's precondition did "+
+			"not hold.", attempt, maxAttempts, heldFor, leaseTTL)
+		_ = l.Release(ctx) // best effort; it may already have expired
 	}
 
-	// Renewal stops here. The lease must now actually expire and be reported.
-	select {
-	case <-l.Done():
-	case <-time.After(30 * time.Second):
-		t.Fatal("Done did not close once renewal stopped: confirming an uncertain " +
-			"reading must not cost the loss signal")
+	t.Fatalf("THE ENVIRONMENT COULD NOT VALIDATE the sub-TTL renewal property: %d "+
+		"attempts, every one of which exceeded the %v TTL before a renewal landed "+
+		"(overruns: %v). The assertion never ran, so this is not a lease-defect "+
+		"finding -- and it is not a clean bill of health either. TWO CAUSES PRODUCE "+
+		"THIS AND THIS TEST CANNOT TELL THEM APART: host contention (go-qrdb#139), or "+
+		"a renewal-path regression in which keepalive acknowledgements consistently "+
+		"miss the local deadline. Re-run on a quiet host; if it still cannot get a "+
+		"window there, suspect the second. go-qrdb#172's clock seam removes the "+
+		"wall-clock dependency that makes the two indistinguishable.",
+		maxAttempts, leaseTTL, overruns)
+}
+
+// runSubTTLRenewalCycles drives the renew-below-TTL cadence and reports whether
+// the host starved it.
+//
+// It returns (heldFor, true) when the lease's deadline had already passed -- the
+// lease genuinely expired and no conclusion about renewal is available. It calls
+// t.Fatal itself for a REAL failure: Done closing or Renew failing while the
+// deadline was still in the future, which is the property under test and must
+// still fail loudly.
+//
+// WHICH INTERVAL DECIDES THIS, because it is not the obvious one. sdk's lease
+// holds a deadline `heldUntil` and a renewal is refused once it has passed:
+//
+//	confirmHeld: if l.lost || !time.Now().Before(l.heldUntil) { return false }
+//	             ... heldUntil = sent.Add(ttl)
+//
+// `sent` is the instant the CONFIRMING REQUEST WAS SENT, not when it was
+// acknowledged -- dating the floor from the send keeps it on the conservative
+// side of the round trip. So the quantity that decides expiry is
+//
+//	now - (the instant the PREVIOUS confirmation was sent)   vs   ttl
+//
+// which is `previous renew's round trip + the sleep + this renew's round trip`.
+// The sleep alone is NOT that quantity, and neither is sleep-plus-this-renew:
+// both omit the previous round trip, which is precisely the part that eats the
+// 500ms of slack between a 1.5s cadence and a 2s TTL. A discriminator built on
+// the sleep will call a slow pair of raft proposals a lease-renewal defect.
+// That was observed here: a failure at exactly 1.500050042s of sleep, which the
+// sleep-based measure reports as comfortably inside the TTL.
+//
+// The anchor is taken just BEFORE each call rather than after, which is
+// conservative in the safe direction: it can only over-estimate how long the
+// lease has been held, so the test errs toward "the precondition did not hold"
+// rather than toward accusing the code.
+func runSubTTLRenewalCycles(
+	t *testing.T,
+	ctx context.Context,
+	l sdk.Lease,
+	anchor time.Time,
+	cycles int,
+	renewEvery, leaseTTL time.Duration,
+) (time.Duration, bool) {
+	t.Helper()
+
+	for cycle := 1; cycle <= cycles; cycle++ {
+		time.Sleep(renewEvery)
+
+		select {
+		case <-l.Done():
+			if heldFor := time.Since(anchor); heldFor >= leaseTTL {
+				return heldFor, true
+			}
+			t.Fatalf("Done closed during renewal cycle %d, %v after the confirmation "+
+				"that set the deadline and inside the %v TTL: the holder was told it "+
+				"lost a lease it was renewing correctly",
+				cycle, time.Since(anchor), leaseTTL)
+		default:
+		}
+
+		sentAt := time.Now()
+		err := l.Renew(ctx)
+		// Measured after Renew returns, which is when confirmHeld ran.
+		heldFor := time.Since(anchor)
+		if err != nil {
+			if heldFor >= leaseTTL {
+				return heldFor, true
+			}
+			t.Fatalf("Renew on cycle %d: %v (%v since the confirmation that set the "+
+				"deadline, within the %v TTL, so the lease should still have been held)",
+				cycle, err, heldFor, leaseTTL)
+		}
+		anchor = sentAt
 	}
+	return 0, false
 }
 
 // TestRaft_LeaseExclusive proves acquisition is exclusive: while one holder

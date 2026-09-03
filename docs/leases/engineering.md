@@ -128,6 +128,50 @@ lease bindings together.
 - **Fault injection**: the leader seam allows a leadership change to be forced
   between grant and expiry.
 
+### Reading a failure from the sub-TTL renewal test
+
+`sdk/go`'s `TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen` can fail for two
+different reasons and **says which**. Read the message before assuming a lease
+defect.
+
+| Message says | Meaning | What to do |
+|---|---|---|
+| `... within the 2s TTL, so the lease should still have been held` | The deadline had **not** passed and renewal failed anyway. A **real defect**. | Investigate the lease path. |
+| `THE ENVIRONMENT COULD NOT VALIDATE the sub-TTL renewal property` | Every attempt exceeded the TTL before a renewal landed. The assertion **never ran**. | Re-run on a quiet host. See below — this is **not** automatically the host's fault. |
+
+**The second message is not a clean bill of health.** Two causes produce it and
+this test cannot tell them apart:
+
+1. **host contention** — the machine could not schedule a 1.5 s cadence inside a
+   2 s deadline, five times running; or
+2. **a renewal-path regression** in which keepalive acknowledgements consistently
+   miss the local deadline.
+
+Both present as "every window overran". If a quiet host still cannot get a clean
+window, suspect the second. This is the sharpest reason the path must **fail**
+rather than skip: under a skip, cause 2 — a genuine regression — would fire the
+skip on every run and CI would report success. **This test is the only end-to-end
+coverage of the property**, so a non-failing silence there is the whole signal
+lost.
+
+**And skipping is forbidden regardless.** `CLAUDE.md` and `AGENTS.md` both say
+*"NEVER use skip guards or -short flags"*, and a measured precondition is not an
+exemption from a rule written as *never*.
+
+**Which interval decides it.** Not the sleep. The lease deadline is dated from
+the instant the **previous** confirmation was *sent* (`heldUntil = sent.Add(ttl)`
+in `sdk/go/coordination.go`), so the quantity that decides expiry is
+`previous renew's round trip + the sleep + this renew's round trip`. A
+discriminator built on the sleep omits the previous round trip — which is exactly
+what consumes the 500 ms of slack between a 1.5 s cadence and a 2 s TTL — and
+will report a slow pair of raft proposals as a lease-renewal defect.
+
+**Why the timing is not widened.** A 2 s TTL renewed at 1.5 s is the exact
+cadence that produces the ~0.999 s remainder the whole-second `RemainingTTL`
+truncation rounds to zero, which is the defect the test exists to catch. A longer
+TTL would make it pass more often and stop testing anything. The durable fix is
+the injectable clock seam, which this test is a named consumer of.
+
 ## Observability
 
 - Lease grant, keep-alive, revoke and expiry are audited through
