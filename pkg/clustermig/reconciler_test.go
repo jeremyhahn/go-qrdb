@@ -138,16 +138,12 @@ func TestReconciler_RetriesAfterFailure(t *testing.T) {
 	if st == nil || st.Phase != seal.PhaseFailed || st.Detail == "" {
 		t.Fatalf("after failure n1 status = %+v, want failed with detail", st)
 	}
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("scope must be incomplete after a failed recycle")
-	}
+	requireComplete(t, ctx, s, false, "after a failed recycle")
 	// Second pass: recycle succeeds, scope completes.
 	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
 		t.Fatalf("retry pass = %d, %v; want 1, nil", n, err)
 	}
-	if ok, _ := s.IsComplete(ctx, tid, db); !ok {
-		t.Fatal("scope must complete after the retry succeeds")
-	}
+	requireComplete(t, ctx, s, true, "after the retry succeeds")
 	if rec.count() != 2 {
 		t.Fatalf("recycler called %d times, want 2 (fail + retry)", rec.count())
 	}
@@ -307,9 +303,7 @@ func TestReconciler_BoundedRetry_StopsAfterMaxAttempts(t *testing.T) {
 		t.Fatalf("recycler called %d times after exhaustion, want still %d (no further retries)", rec.count(), MaxRecycleAttempts)
 	}
 	// The scope never reports complete: it failed, it did not silently vanish.
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("an abandoned (never-succeeded) migration must never report complete")
-	}
+	requireComplete(t, ctx, s, false, "an abandoned, never-succeeded migration")
 }
 
 // TestReconciler_BoundedRetry_PermanentErrorAbandonsImmediately proves a
@@ -340,7 +334,11 @@ func TestReconciler_BoundedRetry_PermanentErrorAbandonsImmediately(t *testing.T)
 	}
 
 	// A further pass must not retry.
-	if n, _ := r.ReconcileOnce(ctx); n != 0 {
+	n, err := r.ReconcileOnce(ctx)
+	if err != nil {
+		t.Fatalf("post-abandon pass: %v -- the pass failed, so it never established that nothing was recycled", err)
+	}
+	if n != 0 {
 		t.Fatalf("post-abandon pass recycled %d, want 0", n)
 	}
 	if rec.count() != 1 {
@@ -369,7 +367,11 @@ func TestReconciler_BoundedRetry_NewGenerationResetsAttempts(t *testing.T) {
 			t.Fatalf("gen1 pass %d: %v", i, err)
 		}
 	}
-	if n, _ := r.ReconcileOnce(ctx); n != 0 {
+	n, err := r.ReconcileOnce(ctx)
+	if err != nil {
+		t.Fatalf("gen1 post-exhaustion pass: %v -- the pass failed, so it never established that the budget was exhausted", err)
+	}
+	if n != 0 {
 		t.Fatalf("gen1 exhausted but still recycled %d", n)
 	}
 
@@ -378,7 +380,7 @@ func TestReconciler_BoundedRetry_NewGenerationResetsAttempts(t *testing.T) {
 	rec.failFirst = 0
 	rec.mu.Unlock()
 	seedMigration(t, s, 2, []string{"n1"})
-	n, err := r.ReconcileOnce(ctx)
+	n, err = r.ReconcileOnce(ctx)
 	if err != nil || n != 1 {
 		t.Fatalf("gen2 pass = %d, %v; want 1, nil (fresh retry budget)", n, err)
 	}
@@ -454,9 +456,7 @@ func TestReconciler_RollingTwoNodes(t *testing.T) {
 	if _, err := r1.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("n1 pass: %v", err)
 	}
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("scope must be incomplete with only n1 done")
-	}
+	requireComplete(t, ctx, s, false, "only n1 done of n1,n2")
 	if a, total, _ := s.Progress(ctx, tid, db); a != 1 || total != 2 {
 		t.Fatalf("Progress = %d/%d, want 1/2", a, total)
 	}

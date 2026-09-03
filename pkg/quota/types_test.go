@@ -78,8 +78,8 @@ func TestReplicasPerGroupCurrentUsageAlwaysZero(t *testing.T) {
 	if err := q.SetCurrentUsage(ResourceReplicasPerGroup, 7); err != nil {
 		t.Errorf("SetCurrentUsage(ResourceReplicasPerGroup) error = %v", err)
 	}
-	if got, _ := q.CurrentUsage(ResourceReplicasPerGroup); got != 0 {
-		t.Errorf("CurrentUsage(ResourceReplicasPerGroup) after set = %d, want 0 (no-op)", got)
+	if got, err := q.CurrentUsage(ResourceReplicasPerGroup); err != nil || got != 0 {
+		t.Errorf("CurrentUsage(ResourceReplicasPerGroup) after set = %d, %v; want 0, nil (no-op)", got, err)
 	}
 }
 

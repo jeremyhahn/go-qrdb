@@ -324,7 +324,12 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 			t.Fatalf("assertion (a): node %d: dedicated WAL dir for wal1 not found under %s",
 				i+1, volumePoolDirs[i])
 		}
-		if empty, _ := dirIsEmpty(walDir); empty {
+		empty, err := dirIsEmpty(walDir)
+		if err != nil {
+			t.Fatalf("assertion (a): node %d: dirIsEmpty(%q): %v -- the directory read failed, so this never established that a WAL was written",
+				i+1, walDir, err)
+		}
+		if empty {
 			t.Fatalf("assertion (a): node %d: dedicated WAL dir %q is empty (no WAL written)", i+1, walDir)
 		}
 		// shared1 must NOT have a per-tenant WAL directory (it uses the shared WAL).

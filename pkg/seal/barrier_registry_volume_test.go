@@ -24,6 +24,38 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
+// pebbleAbsent reports whether NO Pebble store exists at path, treating a
+// missing directory as absence and any other read failure as a failed
+// measurement.
+//
+// The distinction is what go-qrdb#236 is about. pebbleExists returns
+// (false, err) for every failure, so the previous form at these call sites --
+//
+//	if exists, _ := pebbleExists(p); exists { t.Error(...) }
+//
+// scored an UNREADABLE directory as "nothing was created", which is the exact
+// claim the assertion exists to make.
+//
+// But not every error means the measurement failed. A directory that does not
+// exist IS the expected success state here: the mount was never created, so
+// nothing could have been written to it. readDir propagates ENOENT rather than
+// swallowing it -- its own doc comment in barrier_registry_pool_test.go says it
+// "return[s] an empty slice when the directory does not exist", and the code
+// does not do that -- so ENOENT arrives here and must be read as absence.
+// Anything else (a permission failure, a corrupt mount) is a measurement that
+// did not happen, and fails the test.
+func pebbleAbsent(t *testing.T, path string) bool {
+	t.Helper()
+	exists, err := pebbleExists(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+		t.Fatalf("pebbleExists(%q): %v -- the directory read failed, so this never established whether a Pebble store was created", path, err)
+	}
+	return !exists
+}
+
 // TestRegisterVolumeTenant_AllocatesDataRootAndBarrier verifies the
 // IsolationVolume registration layout: DataRoot is allocated under a pool root
 // as {root}/{tenantID}, and the barrier IAM Pebble lands in the dedicated
@@ -53,7 +85,7 @@ func TestRegisterVolumeTenant_AllocatesDataRootAndBarrier(t *testing.T) {
 
 	// Barrier Pebble must live under {DataRoot}/barrier, not at DataRoot.
 	assertPebbleAtPath(t, filepath.Join(dataRoot, "barrier"))
-	if exists, _ := pebbleExists(dataRoot); exists {
+	if !pebbleAbsent(t, dataRoot) {
 		t.Errorf("barrier Pebble unexpectedly opened at DataRoot %q (want {DataRoot}/barrier)", dataRoot)
 	}
 
@@ -173,7 +205,7 @@ func assertMountMissing(t *testing.T, reg *seal.BarrierRegistry, tenantID, dataR
 	if _, gerr := reg.GetTenant(tenantID); gerr == nil {
 		t.Error("tenant must NOT be registered after a missing-mount failure")
 	}
-	if exists, _ := pebbleExists(filepath.Join(dataRoot, "barrier")); exists {
+	if !pebbleAbsent(t, filepath.Join(dataRoot, "barrier")) {
 		t.Error("a fresh barrier Pebble was created at the missing mount; must fail closed")
 	}
 }
@@ -229,7 +261,7 @@ func TestRestoreVolumeTenants_MissingMountSkipped(t *testing.T) {
 	if _, gerr := reg.GetTenant("ghost"); gerr == nil {
 		t.Error("tenant with a missing mount must NOT be registered after restore")
 	}
-	if exists, _ := pebbleExists(filepath.Join(missingRoot, "barrier")); exists {
+	if !pebbleAbsent(t, filepath.Join(missingRoot, "barrier")) {
 		t.Error("restore created a fresh empty barrier at the missing mount; must fail closed")
 	}
 }

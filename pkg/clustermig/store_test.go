@@ -83,6 +83,35 @@ const (
 	db  = "appdata"
 )
 
+// requireComplete asserts that IsComplete reports want for the fixture scope,
+// and fails DISTINCTLY when the store call itself failed.
+//
+// The distinction is the whole point (go-qrdb#236). IsComplete returns
+// (false, err) when it cannot read the store and (false, nil) when the scope is
+// genuinely incomplete, so the previous form here --
+//
+//	if ok, _ := s.IsComplete(ctx, tid, db); ok { t.Fatal(...) }
+//
+// scored a BROKEN STORE as "not complete yet", which is the answer every one of
+// these call sites was hoping for. The discarded error was the only thing that
+// separated the two, so the assertion could not fail for the reason it existed
+// to catch.
+//
+// Reporting them separately rather than as one combined condition is
+// deliberate: "the store call failed" and "the answer was wrong" need different
+// fixes, and a message that cannot tell you which you have is the defect one
+// rung up (go-qrdb#185, #229).
+func requireComplete(t *testing.T, ctx context.Context, s *Store, want bool, why string) {
+	t.Helper()
+	ok, err := s.IsComplete(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("IsComplete (%s): %v -- the store call failed, so completion was never determined", why, err)
+	}
+	if ok != want {
+		t.Fatalf("IsComplete (%s) = %v, want %v", why, ok, want)
+	}
+}
+
 func seedMigration(t *testing.T, s *Store, gen uint64, owners []string) {
 	t.Helper()
 	if err := s.PutMigration(context.Background(), &ClusterMigration{
@@ -133,28 +162,20 @@ func TestStore_Completion(t *testing.T) {
 	seedMigration(t, s, 1, []string{"n1", "n2", "n3"})
 
 	// No acks -> incomplete.
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("IsComplete with no acks must be false")
-	}
+	requireComplete(t, ctx, s, false, "no acks")
 	// Partial (2/3) -> incomplete; the cluster never blocks but isn't done.
 	ack(t, s, "n1", 1, seal.PhaseComplete)
 	ack(t, s, "n2", 1, seal.PhaseComplete)
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("IsComplete with 2/3 owners must be false")
-	}
+	requireComplete(t, ctx, s, false, "2/3 owners acked")
 	if a, total, _ := s.Progress(ctx, tid, db); a != 2 || total != 3 {
 		t.Fatalf("Progress = %d/%d, want 2/3", a, total)
 	}
 	// A laggard reporting a non-terminal phase doesn't count.
 	ack(t, s, "n3", 1, seal.PhaseVerifying)
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("IsComplete with n3 still verifying must be false")
-	}
+	requireComplete(t, ctx, s, false, "n3 still verifying")
 	// Final ack -> complete.
 	ack(t, s, "n3", 1, seal.PhaseComplete)
-	if ok, _ := s.IsComplete(ctx, tid, db); !ok {
-		t.Fatal("IsComplete with all owners complete must be true")
-	}
+	requireComplete(t, ctx, s, true, "all owners complete")
 }
 
 // TestStore_GenerationGuard proves a stale-generation ack does not count toward a
@@ -164,19 +185,13 @@ func TestStore_GenerationGuard(t *testing.T) {
 	s := NewStore(newMemKV())
 	seedMigration(t, s, 1, []string{"n1"})
 	ack(t, s, "n1", 1, seal.PhaseComplete)
-	if ok, _ := s.IsComplete(ctx, tid, db); !ok {
-		t.Fatal("gen 1 should be complete")
-	}
+	requireComplete(t, ctx, s, true, "gen-1 ack for a gen-1 migration")
 
 	// Re-issue as generation 2: the gen-1 ack must NOT satisfy gen 2.
 	seedMigration(t, s, 2, []string{"n1"})
-	if ok, _ := s.IsComplete(ctx, tid, db); ok {
-		t.Fatal("stale gen-1 ack must not complete gen-2 migration")
-	}
+	requireComplete(t, ctx, s, false, "stale gen-1 ack against a gen-2 migration")
 	ack(t, s, "n1", 2, seal.PhaseComplete)
-	if ok, _ := s.IsComplete(ctx, tid, db); !ok {
-		t.Fatal("gen-2 ack should complete gen-2 migration")
-	}
+	requireComplete(t, ctx, s, true, "gen-2 ack for a gen-2 migration")
 }
 
 // TestStore_Delete clears the intent + all node statuses.
@@ -193,8 +208,12 @@ func TestStore_Delete(t *testing.T) {
 	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
 		t.Fatal("migration record should be gone after Delete")
 	}
-	if st, _ := s.ListNodeStatuses(ctx, tid, db); len(st) != 0 {
-		t.Fatalf("statuses should be gone after Delete, got %d", len(st))
+	st, err := s.ListNodeStatuses(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("ListNodeStatuses after Delete: %v -- the scan failed, so it never established that the statuses were gone", err)
+	}
+	if len(st) != 0 {
+		t.Fatalf("statuses after Delete = %d, want 0", len(st))
 	}
 }
 
