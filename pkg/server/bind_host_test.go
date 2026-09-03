@@ -28,7 +28,7 @@ import (
 // landed there. Port 0 keeps the test cheap and independent of what else is
 // running; the host is what is under test.
 func TestStart_EveryListenerBindsConfiguredHost(t *testing.T) {
-	cfg := testConfigFull(protocolFlags{rest: true, grpc: true, quic: true, mcp: true}, "")
+	cfg := testConfigFull(t, protocolFlags{rest: true, grpc: true, quic: true, mcp: true}, "")
 	cfg.Server.Host = "127.0.0.1"
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))

@@ -56,7 +56,7 @@ func (m *mockRAGService) Close() error { return nil }
 // TestWithEmbedding verifies that WithEmbedding sets the embedding service option.
 func TestWithEmbedding(t *testing.T) {
 	embSvc := &mockEmbeddingService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithEmbedding(embSvc))
 
@@ -71,7 +71,7 @@ func TestWithEmbedding(t *testing.T) {
 // TestWithRAG verifies that WithRAG sets the RAG service option.
 func TestWithRAG(t *testing.T) {
 	ragSvc := &mockRAGService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithRAG(ragSvc))
 
@@ -87,7 +87,7 @@ func TestWithRAG(t *testing.T) {
 // sets the database service registry option.
 func TestWithDatabaseServiceRegistry(t *testing.T) {
 	reg := &DatabaseServiceRegistry{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithDatabaseServiceRegistry(reg))
 
@@ -104,7 +104,7 @@ func TestWithDatabaseServiceRegistry(t *testing.T) {
 // internal call site observes it, rather than handing back an empty resolver
 // that would silently answer for every (tenant, database).
 func TestServiceRegistry_NilWithoutDatabaseRegistry(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 
 	if reg := srv.ServiceRegistry(); reg != nil {
 		t.Fatalf("ServiceRegistry() = %#v, want nil when no database registry is configured", reg)
@@ -120,7 +120,7 @@ func TestServiceRegistry_ResolvesThroughDatabaseRegistry(t *testing.T) {
 	kv := newMockKVService()
 	dbReg.Register("system", &DatabaseServices{Name: "system", KV: kv})
 
-	srv := New(testConfig(false, false), kv, &mockAdminService{},
+	srv := New(testConfig(t, false, false), kv, &mockAdminService{},
 		WithDatabaseServiceRegistry(dbReg))
 
 	reg := srv.ServiceRegistry()

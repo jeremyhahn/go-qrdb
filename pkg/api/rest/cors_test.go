@@ -250,7 +250,7 @@ func TestWithCORS_IntegrationWithServer(t *testing.T) {
 		MaxAge:         3600,
 	}
 	tlsCfg, pool := generateTestTLSConfig(t)
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithCORS(corsConfig), WithTLS(tlsCfg))
+	srv := NewServer(kvSvc, adminSvc, dualStackAddr(t), WithCORS(corsConfig), WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -55,7 +55,7 @@ func TestWithUserAuthFactorService(t *testing.T) {
 // through New().
 func TestWithUserAuthFactorService_ViaNewServer(t *testing.T) {
 	svc := &wiringTestUserAuthFactorSvc{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithUserAuthFactorService(svc))
 	if srv.opts.userAuthFactorSvc != service.UserAuthFactorServicer(svc) {
 		t.Error("WithUserAuthFactorService not propagated via New()")
@@ -76,7 +76,7 @@ func TestWithUserAuthFactorService_ViaNewServer(t *testing.T) {
 func TestEnsureUserAuthFactorService_WithUserService(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false) // no protocols → Start() exits quickly
+	cfg := testConfig(t, false, false) // no protocols → Start() exits quickly
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithUserService(&stubUserServiceForFactorWiring{}),
 	)
@@ -98,7 +98,7 @@ func TestEnsureUserAuthFactorService_WithUserService(t *testing.T) {
 func TestEnsureUserAuthFactorService_NoUserService(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
@@ -118,7 +118,7 @@ func TestEnsureUserAuthFactorService_ExplicitServiceRetained(t *testing.T) {
 	t.Parallel()
 
 	explicit := &wiringTestUserAuthFactorSvc{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithUserAuthFactorService(explicit),
@@ -141,7 +141,7 @@ func TestEnsureUserAuthFactorService_ExplicitServiceRetained(t *testing.T) {
 func TestEnsureUserAuthFactorService_NilKVSkipsConstruction(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, nil, &mockAdminService{},
 		WithUserService(&stubUserServiceForFactorWiring{}),
 	)

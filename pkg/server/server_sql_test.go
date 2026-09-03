@@ -62,14 +62,14 @@ func saveSQLFns() func() {
 // ---------------------------------------------------------------------------
 
 func TestMySQLAddr_NilServer(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	if addr := srv.MySQLAddr(); addr != "" {
 		t.Fatalf("expected empty MySQLAddr when mysqlSrv is nil, got %q", addr)
 	}
 }
 
 func TestMySQLAddr_WithServer(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	srv.mysqlSrv = &mockSQLServer{addr: "127.0.0.1:3306"}
 
 	addr := srv.MySQLAddr()
@@ -83,14 +83,14 @@ func TestMySQLAddr_WithServer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPgSQLAddr_NilServer(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	if addr := srv.PgSQLAddr(); addr != "" {
 		t.Fatalf("expected empty PgSQLAddr when pgsqlSrv is nil, got %q", addr)
 	}
 }
 
 func TestPgSQLAddr_WithServer(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	srv.pgsqlSrv = &mockSQLServer{addr: "127.0.0.1:5432"}
 
 	addr := srv.PgSQLAddr()
@@ -118,7 +118,7 @@ func TestStart_MySQL_Success(t *testing.T) {
 		}
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -155,7 +155,7 @@ func TestStart_MySQL_Failure_Rollback(t *testing.T) {
 
 	// Enable REST + MCP + MySQL so REST and MCP start first and get rolled back.
 	socketPath := filepath.Join(t.TempDir(), "mysql-rollback.sock")
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		unix: true,
 		mcp:  true,
@@ -203,7 +203,7 @@ func TestStart_PgSQL_Success(t *testing.T) {
 		}
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -253,7 +253,7 @@ func TestStart_PgSQL_Failure_Rollback(t *testing.T) {
 	}
 
 	// Enable REST + MySQL + PgSQL so MySQL gets rolled back on PgSQL failure.
-	cfg := testConfig(true, false)
+	cfg := testConfig(t, true, false)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
@@ -294,7 +294,7 @@ func TestStart_MySQL_Disabled(t *testing.T) {
 		return nil
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = false
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -319,7 +319,7 @@ func TestStart_MySQL_NilFn(t *testing.T) {
 	startMySQLFn = nil
 	stopMySQLFn = nil
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -348,7 +348,7 @@ func TestStart_PgSQL_Disabled(t *testing.T) {
 		return nil
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = false
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -373,7 +373,7 @@ func TestStart_PgSQL_NilFn(t *testing.T) {
 	startPgSQLFn = nil
 	stopPgSQLFn = nil
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -405,7 +405,7 @@ func TestStop_MySQL_WithFn(t *testing.T) {
 		}
 	}
 
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	srv.mysqlSrv = mock
 
 	srv.stopMySQL()
@@ -427,7 +427,7 @@ func TestStop_MySQL_NilFn(t *testing.T) {
 	defer restore()
 
 	stopMySQLFn = nil
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 
 	// Should not panic.
 	srv.stopMySQL()
@@ -450,7 +450,7 @@ func TestStop_PgSQL_WithFn(t *testing.T) {
 		}
 	}
 
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	srv.pgsqlSrv = mock
 
 	srv.stopPgSQL()
@@ -472,7 +472,7 @@ func TestStop_PgSQL_NilFn(t *testing.T) {
 	defer restore()
 
 	stopPgSQLFn = nil
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 
 	// Should not panic.
 	srv.stopPgSQL()
@@ -510,7 +510,7 @@ func TestStart_AllSevenProtocols(t *testing.T) {
 
 	socketPath := filepath.Join(t.TempDir(), "all7.sock")
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -604,7 +604,7 @@ func TestStop_AllSevenProtocols(t *testing.T) {
 
 	socketPath := filepath.Join(t.TempDir(), "stop7.sock")
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -681,7 +681,7 @@ func TestStart_MySQL_Failure_FullCascadeRollback(t *testing.T) {
 
 	socketPath := filepath.Join(t.TempDir(), "mysql-cascade.sock")
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -748,7 +748,7 @@ func TestStart_PgSQL_Failure_FullCascadeRollback(t *testing.T) {
 
 	socketPath := filepath.Join(t.TempDir(), "pgsql-cascade.sock")
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -811,7 +811,7 @@ func TestStop_BothSQL_BeforeStart(t *testing.T) {
 		pgsqlStopCalled = true
 	}
 
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 
 	// Stop before Start should not panic and should invoke registered stop fns.
 	srv.Stop()
@@ -854,7 +854,7 @@ func TestStart_SQLOnly(t *testing.T) {
 		}
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
@@ -908,7 +908,7 @@ func TestStop_MySQL_ActiveServer(t *testing.T) {
 		}
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -943,7 +943,7 @@ func TestStop_PgSQL_ActiveServer(t *testing.T) {
 		}
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -972,7 +972,7 @@ func TestStart_MySQL_Failure_RESTOnlyRollback(t *testing.T) {
 	}
 
 	// Only REST + MySQL enabled; MySQL failure should roll back REST.
-	cfg := testConfig(true, false)
+	cfg := testConfig(t, true, false)
 	cfg.Protocols.MySQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -1003,7 +1003,7 @@ func TestStart_PgSQL_Failure_NoRollbackNeeded(t *testing.T) {
 		return pgsqlErr
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -1039,7 +1039,7 @@ func TestStart_MySQL_Failure_GRPCRollback(t *testing.T) {
 	}
 
 	// Occupy a known port to verify gRPC started (port 0 auto-assigns).
-	cfg := testConfig(false, true)
+	cfg := testConfig(t, false, true)
 	cfg.Protocols.MySQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
@@ -1092,7 +1092,7 @@ func TestStart_PgSQL_Failure_VerifyAllStopsCalled(t *testing.T) {
 		return pgsqlErr
 	}
 
-	cfg := testConfig(true, true)
+	cfg := testConfig(t, true, true)
 	cfg.Protocols.MySQL = true
 	cfg.Protocols.PostgreSQL = true
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))

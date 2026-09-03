@@ -192,12 +192,12 @@ func TestTransportServiceRegistry_ModeSelection(t *testing.T) {
 
 	base := []ServerOption{WithDatabaseServiceRegistry(dbRegistry)}
 
-	raftSrv := New(testConfig(false, false), nil, nil, base...)
+	raftSrv := New(testConfig(t, false, false), nil, nil, base...)
 	if _, gated := raftSrv.transportServiceRegistry().(*raftOnlyGatedRegistry); gated {
 		t.Fatal("raft mode must hand transports the ungated registry")
 	}
 
-	saSrv := New(testConfig(false, false), nil, nil, append(base, WithStandaloneMode())...)
+	saSrv := New(testConfig(t, false, false), nil, nil, append(base, WithStandaloneMode())...)
 	if _, gated := saSrv.transportServiceRegistry().(*raftOnlyGatedRegistry); !gated {
 		t.Fatal("standalone mode must hand transports the gated registry")
 	}

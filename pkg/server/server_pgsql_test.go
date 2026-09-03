@@ -31,7 +31,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStartPgSQL_Success(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -73,7 +73,7 @@ func TestStartPgSQL_Failure_PortOccupied(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(blocker.Addr().String())
 	blockedPort, _ := strconv.Atoi(portStr)
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = blockedPort
 	cfg.SQL = config.SQLConfig{
@@ -96,7 +96,7 @@ func TestStartPgSQL_Failure_PortOccupied(t *testing.T) {
 
 func TestStartPgSQL_WithTLS(t *testing.T) {
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -122,7 +122,7 @@ func TestStartPgSQL_WithTLS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartPgSQL_EmptyDefaultDatabase(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{}
@@ -144,7 +144,7 @@ func TestStartPgSQL_EmptyDefaultDatabase(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopPgSQL_NilPgsqlSrv(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	// stopPgSQL should not panic when pgsqlSrv is nil.
 	stopPgSQL(srv)
 }
@@ -154,7 +154,7 @@ func TestStopPgSQL_NilPgsqlSrv(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopPgSQL_ActiveServer(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -192,7 +192,7 @@ func TestStartPgSQL_WithDatabaseManager(t *testing.T) {
 		t.Fatalf("failed to create database: %v", err)
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -218,7 +218,7 @@ func TestStartPgSQL_WithDatabaseManager(t *testing.T) {
 }
 
 func TestStartPgSQL_WithoutDatabaseManager(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -261,7 +261,7 @@ func TestStartPgSQL_WithoutDatabaseManager(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartPgSQL_WithServiceRegistryCollectionIndex(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -296,7 +296,7 @@ func TestStartPgSQL_WithServiceRegistryCollectionIndex(t *testing.T) {
 }
 
 func TestStart_PgSQLViaOrchestrator(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.PostgreSQL = true
 	cfg.Server.PgSQLPort = 0
 	cfg.SQL = config.SQLConfig{

@@ -31,7 +31,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStartMySQL_Success(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -73,7 +73,7 @@ func TestStartMySQL_Failure_PortOccupied(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(blocker.Addr().String())
 	blockedPort, _ := strconv.Atoi(portStr)
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = blockedPort
 	cfg.SQL = config.SQLConfig{
@@ -96,7 +96,7 @@ func TestStartMySQL_Failure_PortOccupied(t *testing.T) {
 
 func TestStartMySQL_WithTLS(t *testing.T) {
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -122,7 +122,7 @@ func TestStartMySQL_WithTLS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartMySQL_EmptyDefaultDatabase(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	// SQL.DefaultDatabase is empty, so WithDatabaseName should not be called.
@@ -145,7 +145,7 @@ func TestStartMySQL_EmptyDefaultDatabase(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopMySQL_NilMysqlSrv(t *testing.T) {
-	srv := New(testConfig(false, false), newMockKVService(), &mockAdminService{})
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
 	// stopMySQL should not panic when mysqlSrv is nil.
 	stopMySQL(srv)
 }
@@ -155,7 +155,7 @@ func TestStopMySQL_NilMysqlSrv(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopMySQL_ActiveServer(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -193,7 +193,7 @@ func TestStartMySQL_WithDatabaseManager(t *testing.T) {
 		t.Fatalf("failed to create database: %v", err)
 	}
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -219,7 +219,7 @@ func TestStartMySQL_WithDatabaseManager(t *testing.T) {
 }
 
 func TestStartMySQL_WithoutDatabaseManager(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -262,7 +262,7 @@ func TestStartMySQL_WithoutDatabaseManager(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartMySQL_WithServiceRegistryCollectionIndex(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{
@@ -297,7 +297,7 @@ func TestStartMySQL_WithServiceRegistryCollectionIndex(t *testing.T) {
 }
 
 func TestStart_MySQLViaOrchestrator(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	cfg.Protocols.MySQL = true
 	cfg.Server.MySQLPort = 0
 	cfg.SQL = config.SQLConfig{

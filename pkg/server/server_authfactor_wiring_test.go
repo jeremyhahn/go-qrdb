@@ -83,7 +83,7 @@ func TestEnsureAuthFactorService_WithFactorRegistry(t *testing.T) {
 	t.Parallel()
 
 	reg := newPopulatedRegistry()
-	cfg := testConfig(false, false) // no protocols → Start() exits quickly
+	cfg := testConfig(t, false, false) // no protocols → Start() exits quickly
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithFactorRegistry(reg),
@@ -108,7 +108,7 @@ func TestEnsureAuthFactorService_WithFactorRegistry(t *testing.T) {
 func TestEnsureAuthFactorService_NoRegistry(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	if err := srv.Start(); err != nil {
@@ -133,7 +133,7 @@ func TestEnsureAuthFactorService_ExplicitServiceRetained(t *testing.T) {
 
 	explicit := &wiringTestAuthFactorSvc{}
 	reg := newPopulatedRegistry()
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithAuthFactorService(explicit),

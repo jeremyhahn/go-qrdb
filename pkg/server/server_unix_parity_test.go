@@ -37,7 +37,7 @@ import (
 // it.
 func TestStart_UnixOnly_TenantBarrierServiceReachable(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
-	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
+	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 	svc := &mockTenantServicer{}
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTenantService(svc), WithCeremonyCA(testServerCA))
 
@@ -71,7 +71,7 @@ func TestStart_UnixOnly_TenantBarrierServiceReachable(t *testing.T) {
 // "encryption-migration: not configured".
 func TestStart_UnixOnly_EncryptionMigratorReachable(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
-	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
+	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 
 	invoked := make(chan service.BarrierScope, 1)
 	migrator := encMigratorFunc(func(_ context.Context, scope service.BarrierScope, _ seal.MigrationOptions) error {
@@ -127,7 +127,7 @@ func TestStart_UnixOnly_EncryptionMigratorReachable(t *testing.T) {
 // other half: authentication/authorization enforcement once TLS is up).
 func TestStart_UnixOnly_RequiresTLS(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
-	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
+	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 
 	tlsCfg := selfSignedTLSConfig(t)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
@@ -158,7 +158,7 @@ func TestStart_UnixOnly_RequiresTLS(t *testing.T) {
 // handler, exactly as it would be over TCP gRPC.
 func TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qrdb.sock")
-	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
+	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 
 	tlsCfg := selfSignedTLSConfig(t)
 	authMW := authmw.New(&auth.NoopAuthorizer{}, authmw.WithAuthenticator(auth.NewMTLSAuthenticator()))

@@ -66,7 +66,7 @@ func TestNewSQLServiceFn_CalledPerTransport(t *testing.T) {
 				return &stubSQLService{}
 			}
 
-			cfg := testConfig(tc.rest, tc.grpc)
+			cfg := testConfig(t, tc.rest, tc.grpc)
 			srv := New(cfg, newMockKVService(), &mockAdminService{},
 				WithCeremonyCA(testServerCA),
 				WithDatabaseService(&stubDatabaseService{}))
@@ -89,7 +89,7 @@ func TestNewSQLServiceFn_NilFn(t *testing.T) {
 
 	newSQLServiceFn = nil
 
-	cfg := testConfig(true, true)
+	cfg := testConfig(t, true, true)
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithCeremonyCA(testServerCA),
 		WithDatabaseService(&stubDatabaseService{}))
@@ -112,7 +112,7 @@ func TestNewSQLServiceFn_NotCalledWithoutDatabaseService(t *testing.T) {
 		return &stubSQLService{}
 	}
 
-	cfg := testConfig(true, true)
+	cfg := testConfig(t, true, true)
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithCeremonyCA(testServerCA))
 

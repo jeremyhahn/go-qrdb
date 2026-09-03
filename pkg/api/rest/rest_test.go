@@ -294,7 +294,7 @@ func TestServer_StartAndStop(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
 	tlsCfg, _ := generateTestTLSConfig(t)
-	srv := NewServer(kvSvc, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
+	srv := NewServer(kvSvc, adminSvc, dualStackAddr(t), WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() returned error: %v", err)
@@ -372,7 +372,7 @@ func TestServer_Start_NoTLS_FailsClosed(t *testing.T) {
 func TestServer_Start_WeakTLS_Rejected(t *testing.T) {
 	cfg, _ := generateTestTLSConfig(t)
 	cfg.MinVersion = tls.VersionTLS12
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0", WithTLS(cfg))
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, dualStackAddr(t), WithTLS(cfg))
 	err := srv.Start()
 	if err == nil {
 		srv.Stop()
@@ -1539,7 +1539,7 @@ func TestServer_Integration_HealthViaHTTP(t *testing.T) {
 		},
 	}
 	tlsCfg, pool := generateTestTLSConfig(t)
-	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
+	srv := NewServer(&mockKVService{}, adminSvc, dualStackAddr(t), WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -1591,7 +1591,7 @@ func TestServer_Integration_PutGetDelete(t *testing.T) {
 	}
 
 	tlsCfg, pool := generateTestTLSConfig(t)
-	srv := NewServer(kvSvc, &mockAdminService{}, "127.0.0.1:0", WithTLS(tlsCfg))
+	srv := NewServer(kvSvc, &mockAdminService{}, dualStackAddr(t), WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -2195,7 +2195,7 @@ func TestServer_StartWithTLS(t *testing.T) {
 			return &service.HealthStatus{Status: "ok", Leader: false}, nil
 		},
 	}
-	srv := NewServer(&mockKVService{}, adminSvc, "127.0.0.1:0", WithTLS(tlsCfg))
+	srv := NewServer(&mockKVService{}, adminSvc, dualStackAddr(t), WithTLS(tlsCfg))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() with TLS error: %v", err)
 	}

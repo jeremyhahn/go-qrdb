@@ -356,7 +356,7 @@ func TestEmbeddable_Status_NilAdminService(t *testing.T) {
 // lifecycle of an embeddable deployment that only uses the barrier service.
 func TestEmbeddable_ServerStart_NilServices(t *testing.T) {
 	tlsCfg, _ := generateTestTLSConfig(t)
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithBarrierService(&embeddableBarrierService{}), WithTLS(tlsCfg))
+	srv := NewServer(nil, nil, dualStackAddr(t), WithBarrierService(&embeddableBarrierService{}), WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() with nil KV/admin services returned error: %v", err)
@@ -375,7 +375,7 @@ func TestEmbeddable_ServerStart_NilServices(t *testing.T) {
 // minimum viable embeddable configuration.
 func TestEmbeddable_ServerStart_AllNilServices(t *testing.T) {
 	tlsCfg, _ := generateTestTLSConfig(t)
-	srv := NewServer(nil, nil, "127.0.0.1:0", WithTLS(tlsCfg))
+	srv := NewServer(nil, nil, dualStackAddr(t), WithTLS(tlsCfg))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() with all nil services returned error: %v", err)

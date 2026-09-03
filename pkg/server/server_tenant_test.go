@@ -269,7 +269,7 @@ func TestTenantOptionsCombined(t *testing.T) {
 func TestWithTenantDEKManager_ServerIntegration(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	mgr := &mockTenantDEKManager{}
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
@@ -289,7 +289,7 @@ func TestWithTenantDEKManager_ServerIntegration(t *testing.T) {
 func TestWithTenantService_ServerIntegration(t *testing.T) {
 	t.Parallel()
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	svc := &mockTenantServicer{}
 
 	srv := New(cfg, newMockKVService(), &mockAdminService{},

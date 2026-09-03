@@ -40,6 +40,48 @@ func startTLSServerOn(t *testing.T, addr string) *Server {
 	return srv
 }
 
+// TestDualStackAddrOn_ProbesAtTheCallersScope pins the property the helper
+// exists for: the address it returns must be bindable, on BOTH protocols, AT
+// THE SCOPE THE CALLER ASKED FOR.
+//
+// A helper that probed loopback and handed back a port for a wildcard bind
+// would pass every assertion in this file and still let the wildcard test fail
+// during setup, because a port free on 127.0.0.1 can be held on another local
+// address. That is a check that cannot answer being reported as an answer.
+func TestDualStackAddrOn_ProbesAtTheCallersScope(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
+		t.Run(host, func(t *testing.T) {
+			addr := dualStackAddrOn(t, host)
+
+			// Same SCOPE, not the same string. Go normalises a "0.0.0.0:0"
+			// bind to "[::]:port" on a dual-stack host, and both name every
+			// interface. sameBindHost is the production rule for exactly this
+			// equivalence, so the test asserts by the same rule the server
+			// enforces rather than inventing a second one.
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("SplitHostPort(%q): %v", addr, err)
+			}
+			want := net.JoinHostPort(host, port)
+			if mismatch := sameBindHost(stubAddr(want), stubAddr(addr)); mismatch != nil {
+				t.Fatalf("returned %q for a %q request: %v", addr, host, mismatch)
+			}
+
+			// Both protocols must actually bind there, right now.
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				t.Fatalf("TCP bind at %q failed: %v", addr, err)
+			}
+			defer func() { _ = ln.Close() }()
+			pc, err := net.ListenPacket("udp", addr)
+			if err != nil {
+				t.Fatalf("UDP bind at %q failed: %v", addr, err)
+			}
+			_ = pc.Close()
+		})
+	}
+}
+
 // TestHTTP3_BindsSameHostAsTCPListener is the #165 assertion: with the REST
 // server contained to loopback, the QUIC socket must be on loopback too. A
 // wildcard UDP socket here is the reported exposure -- the same handler with
@@ -51,7 +93,7 @@ func startTLSServerOn(t *testing.T, addr string) *Server {
 // 127.0.0.2 to be bindable, which is not true on every host, and a regression
 // test for an exposure must not be the kind that can decline to run.
 func TestHTTP3_BindsSameHostAsTCPListener(t *testing.T) {
-	srv := startTLSServerOn(t, "127.0.0.1:0")
+	srv := startTLSServerOn(t, dualStackAddr(t))
 
 	if srv.http3Conn == nil {
 		t.Fatal("HTTP/3 socket was not opened; the QUIC listener is what this test is about")
@@ -87,7 +129,12 @@ func TestHTTP3_BindsSameHostAsTCPListener(t *testing.T) {
 // asked for every interface must get QUIC on every interface too, or traffic
 // the operator asked to serve is silently dropped on one transport.
 func TestHTTP3_WildcardBindStaysWildcard(t *testing.T) {
-	srv := startTLSServerOn(t, "0.0.0.0:0")
+	// Probed AT WILDCARD SCOPE, because that is where this test binds. Taking
+	// a port proven free on 127.0.0.1 and re-joining it to 0.0.0.0 would
+	// prove the wrong thing: the port can be held on another local address
+	// while loopback is free, and the wildcard bind would then fail during
+	// setup and be reported as this test failing.
+	srv := startTLSServerOn(t, dualStackAddrOn(t, "0.0.0.0"))
 
 	if srv.http3Conn == nil {
 		t.Fatal("HTTP/3 socket was not opened")
@@ -101,34 +148,136 @@ func TestHTTP3_WildcardBindStaysWildcard(t *testing.T) {
 	}
 }
 
+// portAttempts bounds every port search in this file.
+const portAttempts = 20
+
+// errNoDualStackPort reports that no candidate was free on both protocols.
+var errNoDualStackPort = errors.New("rest: no port free on both TCP and UDP")
+
+// dualStackAddrOn returns an address on host whose port is free on BOTH TCP
+// and UDP, for a server whose REST listener takes the port on TCP and whose
+// HTTP/3 sibling takes the same number on UDP.
+//
+// THE PROBE BINDS AT THE HOST THE CALLER WILL BIND AT, and that is the point.
+// A port proven free on 127.0.0.1 says nothing about the same port at
+// wildcard scope: another process can hold it on a non-loopback local address
+// while loopback stays free, so a wildcard bind then fails on a port the probe
+// called free. That is go-qrdb#248's own thesis one axis over -- a free port
+// in one protocol says nothing about another, and a free port at one bind
+// SCOPE says nothing about a wider one (go-qrdb#253 review).
+//
+// The failure it prevents is not a wrong assertion; it is a setup failure
+// that reads as a test failure -- a check that could not answer, reported as
+// an answer.
+func dualStackAddrOn(t *testing.T, host string) string {
+	t.Helper()
+	for i := 0; i < portAttempts; i++ {
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+		if err != nil {
+			continue
+		}
+		addr := ln.Addr().String()
+		pc, uerr := net.ListenPacket("udp", addr)
+		_ = ln.Close()
+		if uerr != nil {
+			continue // UDP side taken at this scope; the number is unusable
+		}
+		_ = pc.Close()
+		return addr
+	}
+	t.Fatalf("dualStackAddrOn(%q): %v after %d attempts", host, errNoDualStackPort, portAttempts)
+	return ""
+}
+
+// dualStackAddr is dualStackAddrOn for the loopback scope, which is what most
+// tests in this file bind.
+func dualStackAddr(t *testing.T) string {
+	t.Helper()
+	return dualStackAddrOn(t, "127.0.0.1")
+}
+
+// reserveUDPLeavingTCPFree holds the UDP side of a port whose TCP side it has
+// just proven free, and returns the held socket and the address.
+//
+// The proof is the point. The previous version bound UDP on :0 and commented
+// that this left "its TCP side free" -- an assumption it never measured, and
+// on a loaded host the TCP side of that number can already be held by another
+// process (go-qrdb#253). Here the TCP side is bound first, which establishes
+// it was free, and only then is UDP taken on the same number.
+func reserveUDPLeavingTCPFree(t *testing.T) (net.PacketConn, string) {
+	t.Helper()
+	for i := 0; i < portAttempts; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		addr := ln.Addr().String()
+		pc, uerr := net.ListenPacket("udp", addr)
+		_ = ln.Close() // release TCP; the server under test will take it
+		if uerr != nil {
+			continue
+		}
+		return pc, addr
+	}
+	t.Fatalf("reserveUDPLeavingTCPFree: %v after %d attempts", errNoDualStackPort, portAttempts)
+	return nil, ""
+}
+
 // TestHTTP3_BindFailureIsAStartError: the UDP socket is opened synchronously,
 // so a port already taken by another process surfaces to the caller of Start
 // instead of one slog line inside a goroutine. Under the old code the REST
 // server reported success with no QUIC listener at all.
+//
+// The fixture has a race it cannot remove: between releasing the TCP side and
+// the server binding it, another process can take it. That is not a reason to
+// fail -- and crucially, the test does NOT have to guess whether it happened,
+// because the error already says which socket lost:
+//
+//	*StartError      -> the TCP listener lost. The precondition did not hold,
+//	                    so this run establishes nothing; retry.
+//	*HTTP3StartError -> the TCP listener won and the QUIC bind failed, which
+//	                    is exactly the property under test.
+//
+// go-qrdb#253 was this test reporting the first case as a failure of the
+// second. The discriminator was sitting in the error the assertion already
+// had.
 func TestHTTP3_BindFailureIsAStartError(t *testing.T) {
-	// Hold the UDP side of a port while leaving its TCP side free, so the
-	// TCP listener succeeds and only the QUIC bind can fail.
-	blocker, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve UDP port: %v", err)
-	}
-	defer func() { _ = blocker.Close() }()
-	_, port, err := net.SplitHostPort(blocker.LocalAddr().String())
-	if err != nil {
-		t.Fatalf("SplitHostPort(%q): %v", blocker.LocalAddr(), err)
-	}
+	for attempt := 1; attempt <= portAttempts; attempt++ {
+		blocker, addr := reserveUDPLeavingTCPFree(t)
 
-	tlsCfg, _ := generateTestTLSConfig(t)
-	srv := NewServer(&mockKVService{}, &mockAdminService{}, net.JoinHostPort("127.0.0.1", port), WithTLS(tlsCfg))
-	startErr := srv.Start()
-	if startErr == nil {
-		srv.Stop()
-		t.Fatal("Start() returned nil with the HTTP/3 port already held")
+		tlsCfg, _ := generateTestTLSConfig(t)
+		srv := NewServer(&mockKVService{}, &mockAdminService{}, addr, WithTLS(tlsCfg))
+		startErr := srv.Start()
+		_ = blocker.Close()
+
+		if startErr == nil {
+			srv.Stop()
+			t.Fatal("Start() returned nil with the HTTP/3 port already held; the QUIC bind failure was not reported")
+		}
+
+		var h3Err *HTTP3StartError
+		if errors.As(startErr, &h3Err) {
+			return // the property under test held
+		}
+
+		var tcpErr *StartError
+		if errors.As(startErr, &tcpErr) {
+			// The TCP side was taken between our release and the bind. The
+			// precondition never held, so there was nothing to observe.
+			t.Logf("attempt %d: TCP side of %s lost the race (%v); retrying", attempt, addr, startErr)
+			continue
+		}
+
+		t.Fatalf("Start() error = %v (%T), want *HTTP3StartError or *StartError", startErr, startErr)
 	}
-	var h3Err *HTTP3StartError
-	if !errors.As(startErr, &h3Err) {
-		t.Fatalf("Start() error = %v (%T), want *HTTP3StartError", startErr, startErr)
-	}
+	// Not a skip. AGENTS.md forbids skip guards, and a regression test for a
+	// silent-failure path must not be able to decline to run -- reaching here
+	// needs portAttempts independent losses of the TCP race, which means
+	// something is wrong with the host, and saying so is more useful than
+	// passing quietly.
+	t.Fatalf("could not establish the precondition (TCP free, UDP held) in %d attempts: "+
+		"every candidate port had its TCP side taken between release and bind, "+
+		"which is a host problem rather than a failure of the behaviour under test", portAttempts)
 }
 
 // TestSameBindHost covers the invariant the runtime check enforces: the two

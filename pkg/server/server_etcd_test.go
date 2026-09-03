@@ -29,7 +29,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStartEtcd_Success(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdCfg := &database.EtcdConfig{
@@ -69,7 +69,7 @@ func TestStartEtcd_Failure_PortOccupied(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(blocker.Addr().String())
 	blockedPort, _ := strconv.Atoi(portStr)
 
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdCfg := &database.EtcdConfig{
@@ -90,7 +90,7 @@ func TestStartEtcd_Failure_PortOccupied(t *testing.T) {
 
 func TestStartEtcd_WithTLS(t *testing.T) {
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithTLS(tlsCfg))
 
 	etcdCfg := &database.EtcdConfig{
@@ -114,7 +114,7 @@ func TestStartEtcd_WithTLS(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartEtcd_WithServices(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithMVCC(nil),
 		WithTransaction(nil),
@@ -143,7 +143,7 @@ func TestStartEtcd_WithServices(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartEtcd_NilConfig(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdSrv, err := startEtcd(srv, "testdb", nil)
@@ -158,7 +158,7 @@ func TestStartEtcd_NilConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartEtcd_MissingListenAddr(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdCfg := &database.EtcdConfig{
@@ -178,7 +178,7 @@ func TestStartEtcd_MissingListenAddr(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStopEtcd_Active(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdCfg := &database.EtcdConfig{
@@ -200,7 +200,7 @@ func TestStopEtcd_Active(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEtcdAddr_Running(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	etcdCfg := &database.EtcdConfig{
@@ -228,7 +228,7 @@ func TestEtcdAddr_Running(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEtcdAddr_NotRunning(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 
 	addr := srv.EtcdAddr("nonexistent")

@@ -162,7 +162,7 @@ func TestWithLockService(t *testing.T) {
 func TestWithKVService_OptionOverridesPositionalParam(t *testing.T) {
 	t.Parallel()
 	kvSvc := newMockKVService()
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, nil, &mockAdminService{}, WithKVService(kvSvc))
 	if srv.kvSvc != kvSvc {
@@ -190,7 +190,7 @@ func TestWithKVService_StoresOnOpts(t *testing.T) {
 func TestWithAdminService_OptionOverridesPositionalParam(t *testing.T) {
 	t.Parallel()
 	adminSvc := &mockAdminService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, newMockKVService(), nil, WithAdminService(adminSvc))
 	if srv.adminSvc != adminSvc {
@@ -253,7 +253,7 @@ func TestWithAuditLogger(t *testing.T) {
 // TestWithAuditLogger_ViaNewServer verifies the option propagates through New().
 func TestWithAuditLogger_ViaNewServer(t *testing.T) {
 	logger := &stubAuditLogger{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithAuditLogger(logger))
 	if srv.opts.auditLogger != logger {
 		t.Error("WithAuditLogger not propagated via New()")
@@ -279,7 +279,7 @@ func TestWithAuthFactorService(t *testing.T) {
 // TestWithAuthFactorService_ViaNewServer verifies the option propagates through New().
 func TestWithAuthFactorService_ViaNewServer(t *testing.T) {
 	svc := &stubAuthFactorService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithAuthFactorService(svc))
 	if srv.opts.authFactorSvc != svc {
 		t.Error("WithAuthFactorService not propagated via New()")
@@ -305,7 +305,7 @@ func TestWithCustodianService(t *testing.T) {
 // TestWithCustodianService_ViaNewServer verifies the option propagates through New().
 func TestWithCustodianService_ViaNewServer(t *testing.T) {
 	svc := &stubCustodianServicer{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCustodianService(svc))
 	if srv.opts.custodianSvc != svc {
 		t.Error("WithCustodianService not propagated via New()")
@@ -331,7 +331,7 @@ func TestWithSOAuthenticator_NilIsAccepted(t *testing.T) {
 // TestWithSOAuthenticator_ViaNewServer verifies nil SOAuthenticator propagates
 // cleanly through New() without panicking.
 func TestWithSOAuthenticator_ViaNewServer(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithSOAuthenticator(nil))
 	if srv.opts.soAuthenticator != nil {
 		t.Error("expected nil soAuthenticator after nil WithSOAuthenticator")

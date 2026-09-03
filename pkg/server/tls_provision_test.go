@@ -35,7 +35,7 @@ import (
 // a client dialing it negotiates TLS 1.3 and receives a leaf certificate that
 // chains to (is issued by) the node's internal CA.
 func TestAutoProvision_GRPC_ServesTLS13ChainedToCA(t *testing.T) {
-	cfg := testConfig(false, true) // gRPC only
+	cfg := testConfig(t, false, true) // gRPC only
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -74,7 +74,7 @@ func TestAutoProvision_GRPC_ServesTLS13ChainedToCA(t *testing.T) {
 // is auto-provisioned with TLS, a plaintext (non-TLS) dial to the same listener
 // is refused rather than served in the clear.
 func TestAutoProvision_GRPC_RefusesPlaintext(t *testing.T) {
-	cfg := testConfig(false, true) // gRPC only
+	cfg := testConfig(t, false, true) // gRPC only
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -103,7 +103,7 @@ func TestAutoProvision_GRPC_RefusesPlaintext(t *testing.T) {
 // a TLS handshake negotiates TLS 1.3 and verifies a leaf chained to the CA.
 func TestAutoProvision_Unix_ServesTLS13ChainedToCA(t *testing.T) {
 	socketPath := tempUnixSocket(t)
-	cfg := testConfigFull(protocolFlags{unix: true}, socketPath)
+	cfg := testConfigFull(t, protocolFlags{unix: true}, socketPath)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -145,7 +145,7 @@ func TestAutoProvision_Unix_ServesTLS13ChainedToCA(t *testing.T) {
 // config nor a CeremonyCA is available, a transport start fails closed with a
 // *TLSUnavailableError rather than binding a plaintext listener.
 func TestAutoProvision_NoCA_FailsClosed(t *testing.T) {
-	cfg := testConfig(false, true) // gRPC only, no TLS, no CeremonyCA
+	cfg := testConfig(t, false, true) // gRPC only, no TLS, no CeremonyCA
 	srv := New(cfg, newMockKVService(), &mockAdminService{})
 	err := srv.Start()
 	var unavailable *TLSUnavailableError
@@ -160,7 +160,7 @@ func TestAutoProvision_NoCA_FailsClosed(t *testing.T) {
 // transport's *WeakTLSVersionError — auto-provision never relaxes the TLS 1.3
 // floor for an operator-supplied config.
 func TestAutoProvision_WeakExplicitTLS_StillRejected(t *testing.T) {
-	cfg := testConfig(false, true) // gRPC only
+	cfg := testConfig(t, false, true) // gRPC only
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
 	err := srv.Start()

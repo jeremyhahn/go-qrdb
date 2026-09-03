@@ -887,7 +887,7 @@ func TestWithSealedWindowProbe_UnsealeValue(t *testing.T) {
 
 func TestWithSealedWindowProbe_ViaNewServer(t *testing.T) {
 	probe := &extraSealedWindowProbe{sealed: false}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithSealedWindowProbe(probe))
 	if srv.opts.sealedWindowProbe != probe {
 		t.Error("WithSealedWindowProbe not propagated via New()")
@@ -910,7 +910,7 @@ func TestExtraWithLockService_Applied(t *testing.T) {
 
 func TestExtraWithLockService_ViaNewServer(t *testing.T) {
 	svc := &extraLockImpl{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithLockService(svc))
 	if srv.opts.lockSvc != svc {
 		t.Error("WithLockService not propagated via New()")
@@ -934,7 +934,7 @@ func TestExtraWithKVService_StoresOnOpts(t *testing.T) {
 func TestExtraWithKVService_OverridesNilPositionalParam(t *testing.T) {
 	t.Parallel()
 	kvSvc := newMockKVService()
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, nil, &mockAdminService{}, WithKVService(kvSvc))
 	if srv.kvSvc != kvSvc {
 		t.Error("WithKVService: kvSvc should be the option value, not nil")
@@ -958,7 +958,7 @@ func TestExtraWithAdminService_StoresOnOpts(t *testing.T) {
 func TestExtraWithAdminService_OverridesNilPositionalParam(t *testing.T) {
 	t.Parallel()
 	adminSvc := &mockAdminService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), nil, WithAdminService(adminSvc))
 	if srv.adminSvc != adminSvc {
 		t.Error("WithAdminService: adminSvc should be the option value, not nil")
@@ -990,7 +990,7 @@ func TestExtraWithWebUI_NilIsAccepted(t *testing.T) {
 
 func TestExtraWithWebUI_ViaNewServer(t *testing.T) {
 	ui := &extraWebUI{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithWebUI(ui))
 	if srv.opts.webUI != ui {
 		t.Error("WithWebUI not propagated via New()")
@@ -1013,7 +1013,7 @@ func TestExtraWithAuditLogger_StoresOnOpts(t *testing.T) {
 
 func TestExtraWithAuditLogger_ViaNewServer(t *testing.T) {
 	logger := &extraAuditLogger{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithAuditLogger(logger))
 	if srv.opts.auditLogger != logger {
 		t.Error("WithAuditLogger not propagated via New()")
@@ -1036,7 +1036,7 @@ func TestExtraWithAuthFactorService_StoresOnOpts(t *testing.T) {
 
 func TestExtraWithAuthFactorService_ViaNewServer(t *testing.T) {
 	svc := &extraAuthFactorService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithAuthFactorService(svc))
 	if srv.opts.authFactorSvc != svc {
 		t.Error("WithAuthFactorService not propagated via New()")
@@ -1059,7 +1059,7 @@ func TestExtraWithCustodianService_StoresOnOpts(t *testing.T) {
 
 func TestExtraWithCustodianService_ViaNewServer(t *testing.T) {
 	svc := &extraCustodianService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCustodianService(svc))
 	if srv.opts.custodianSvc != svc {
 		t.Error("WithCustodianService not propagated via New()")
@@ -1081,7 +1081,7 @@ func TestExtraWithSOAuthenticator_NilAccepted(t *testing.T) {
 }
 
 func TestExtraWithSOAuthenticator_ViaNewServer(t *testing.T) {
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithSOAuthenticator(nil))
 	if srv.opts.soAuthenticator != nil {
 		t.Error("expected nil soAuthenticator after nil WithSOAuthenticator")
@@ -1261,7 +1261,7 @@ func TestExtraNew_BothPositionalNilWithOptions(t *testing.T) {
 	t.Parallel()
 	kvSvc := newMockKVService()
 	adminSvc := &mockAdminService{}
-	cfg := testConfig(false, false)
+	cfg := testConfig(t, false, false)
 
 	srv := New(cfg, nil, nil, WithKVService(kvSvc), WithAdminService(adminSvc))
 	if srv == nil {
@@ -1286,7 +1286,7 @@ func TestExtraNew_BothPositionalNilWithOptions(t *testing.T) {
 func TestStart_AllFiveProtocols_WithRemainingBranchOptions(t *testing.T) {
 	socketPath := t.TempDir() + "/extra.sock"
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -1359,7 +1359,7 @@ type fakeBarrierRegistry = seal.BarrierRegistry
 func TestStart_AllFiveProtocols_WithPINBackend(t *testing.T) {
 	socketPath := t.TempDir() + "/pin.sock"
 	tlsCfg := selfSignedTLSConfig(t)
-	cfg := testConfigFull(protocolFlags{
+	cfg := testConfigFull(t, protocolFlags{
 		rest: true,
 		grpc: true,
 		quic: true,
@@ -1442,7 +1442,7 @@ func TestStart_REST_WithSOAuthenticator(t *testing.T) {
 		t.Fatalf("NewSOAuthenticator: %v", err)
 	}
 
-	cfg := testConfig(true, false) // REST only
+	cfg := testConfig(t, true, false) // REST only
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithSOAuthenticator(soAuth),
 		WithCeremonyCA(testServerCA),

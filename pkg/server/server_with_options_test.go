@@ -27,7 +27,7 @@ import (
 // to consume at barrier-initialization time.
 func TestWithSealStrategy_Applied(t *testing.T) {
 	strategy := seal.NewNoneStrategy()
-	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
 		WithSealStrategy(strategy),
 	)
 	if srv.opts.sealStrategy != strategy {
@@ -40,7 +40,7 @@ func TestWithSealStrategy_Applied(t *testing.T) {
 // the daemon can resolve names through it.
 func TestWithStrategyRegistry_Applied(t *testing.T) {
 	reg := seal.NewDefaultStrategyRegistry()
-	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
 		WithStrategyRegistry(reg),
 	)
 	if srv.opts.strategyRegistry != reg {
@@ -59,7 +59,7 @@ func TestWithPINBackend_Applied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSoftwareBackend: %v", err)
 	}
-	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
 		WithPINBackend(backend),
 	)
 	if srv.opts.pinBackend == nil {
@@ -75,7 +75,7 @@ func TestWithPINBackend_Applied(t *testing.T) {
 // is reachable from the server's serverOptions for the AuthFactorService.
 func TestWithFactorRegistry_Applied(t *testing.T) {
 	reg := authfactors.NewFactorRegistry()
-	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
 		WithFactorRegistry(reg),
 	)
 	if srv.opts.factorRegistry != reg {
@@ -94,7 +94,7 @@ func TestWithAllInjections_Compose(t *testing.T) {
 	backend, _ := pin.NewSoftwareBackend(nil, pin.DefaultHashConfig())
 	factors := authfactors.NewFactorRegistry()
 
-	srv := New(testConfig(true, true), newMockKVService(), &mockAdminService{},
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{},
 		WithSealStrategy(strategy),
 		WithStrategyRegistry(reg),
 		WithPINBackend(backend),
