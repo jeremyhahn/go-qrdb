@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -386,7 +387,7 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 	// aborts at the first overrunning cycle, so five starved attempts cost about
 	// as long as one successful run. Retries are the only lever left for how
 	// often a contended host takes this test down, so it is worth spending.
-	var overruns []time.Duration
+	var overruns []renewalOverrun
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// A distinct key per attempt: the previous attempt's lease may or may
@@ -402,8 +403,13 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 			t.Fatalf("AcquireLease(%s): %v", key, err)
 		}
 
-		heldFor, starved := runSubTTLRenewalCycles(t, ctx, l, anchor, cycles, renewEvery, leaseTTL)
-		if !starved {
+		// The acquire's own round trip is what set the first deadline, so it is
+		// part of the first cycle's budget exactly as a renewal's would be.
+		acquireTook := time.Since(anchor)
+
+		over, overran := runSubTTLRenewalCycles(
+			t, ctx, l, anchor, acquireTook, cycles, renewEvery, leaseTTL)
+		if !overran {
 			// The assertion path ran. Renewal stops here, and the lease must
 			// now actually expire and be reported -- the expiry half proves the
 			// confirming recheck did not cost the loss signal itself.
@@ -416,24 +422,36 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 			return
 		}
 
-		overruns = append(overruns, heldFor)
-		t.Logf("attempt %d/%d starved: %v elapsed since the confirmation that set the "+
-			"deadline, against a %v TTL, so the lease expired before its renewal "+
-			"landed. Discarding this attempt -- the assertion's precondition did "+
-			"not hold.", attempt, maxAttempts, heldFor, leaseTTL)
+		overruns = append(overruns, over)
+		t.Logf("attempt %d/%d overran the %v TTL -- %s. Discarding this attempt: the "+
+			"assertion's precondition did not hold.", attempt, maxAttempts, leaseTTL, over)
 		_ = l.Release(ctx) // best effort; it may already have expired
 	}
 
+	var sleepTotal, renewTotal time.Duration
+	for _, o := range overruns {
+		sleepTotal += o.sleepOver
+		renewTotal += o.renewTook + o.prevRenew
+	}
+	blame := "neither interval dominates across the attempts, so this does not say which cause it was"
+	switch {
+	case sleepTotal > 2*renewTotal:
+		blame = "the SLEEP dominated: the scheduler did not return within the cadence. " +
+			"That is host starvation, and a quiet host should fix it"
+	case renewTotal > 2*sleepTotal:
+		blame = "the RENEW ROUND TRIPS dominated, NOT the scheduler. A quiet host may " +
+			"not help -- suspect the keepalive path (go-qrdb#139)"
+	}
+
 	t.Fatalf("THE ENVIRONMENT COULD NOT VALIDATE the sub-TTL renewal property: %d "+
-		"attempts, every one of which exceeded the %v TTL before a renewal landed "+
-		"(overruns: %v). The assertion never ran, so this is not a lease-defect "+
-		"finding -- and it is not a clean bill of health either. TWO CAUSES PRODUCE "+
-		"THIS AND THIS TEST CANNOT TELL THEM APART: host contention (go-qrdb#139), or "+
-		"a renewal-path regression in which keepalive acknowledgements consistently "+
-		"miss the local deadline. Re-run on a quiet host; if it still cannot get a "+
-		"window there, suspect the second. go-qrdb#172's clock seam removes the "+
-		"wall-clock dependency that makes the two indistinguishable.",
-		maxAttempts, leaseTTL, overruns)
+		"attempts, every one of which exceeded the %v TTL before a renewal landed. "+
+		"The assertion never ran, so this is not a lease-defect finding -- and it is "+
+		"not a clean bill of health either.\n  %s\nAcross attempts: %v of sleep "+
+		"overrun against %v of renew round trips -- %s. go-qrdb#172's clock seam "+
+		"removes the wall-clock dependency entirely.",
+		maxAttempts, leaseTTL,
+		strings.Join(overrunLines(overruns), "\n  "),
+		sleepTotal.Round(time.Millisecond), renewTotal.Round(time.Millisecond), blame)
 }
 
 // runSubTTLRenewalCycles drives the renew-below-TTL cadence and reports whether
@@ -469,23 +487,82 @@ func TestRaft_LeaseRenewedOnSubTTLCadenceKeepsDoneOpen(t *testing.T) {
 // conservative in the safe direction: it can only over-estimate how long the
 // lease has been held, so the test errs toward "the precondition did not hold"
 // rather than toward accusing the code.
+// overrunLines renders each attempt's breakdown for the terminal message.
+func overrunLines(os []renewalOverrun) []string {
+	out := make([]string, 0, len(os))
+	for i, o := range os {
+		out = append(out, fmt.Sprintf("attempt %d -- %s", i+1, o))
+	}
+	return out
+}
+
+// renewalOverrun is what a cycle that lost its lease actually spent, broken
+// into the two intervals that can consume the budget.
+//
+// The split is the point (go-qrdb#273). `heldFor` alone spans sleep + Done
+// check + the whole renew round trip, so a message built on it can report THAT
+// the budget was consumed but not BY WHAT -- and every prose attempt to say
+// which is then an assertion the instrument cannot support. Measured over 32
+// cycles at 96-98% CPU pressure on a 24-core host, the two differ by orders of
+// magnitude: the sleep overran by at most 1.3ms while the renew round trip
+// ranged 2.3ms to 265ms. Reporting them separately is what lets the message
+// name a cause it has actually observed.
+type renewalOverrun struct {
+	cycle     int
+	sleepOver time.Duration // beyond the requested cadence
+	renewTook time.Duration // this cycle's keepalive round trip
+	prevRenew time.Duration // the previous one, which set the deadline
+	heldFor   time.Duration // total since the confirmation that set the deadline
+}
+
+// String reports the breakdown and names the dominant consumer, or declines to
+// when no single interval dominates.
+func (o renewalOverrun) String() string {
+	s := fmt.Sprintf("cycle %d: sleep overran by %v, this renew took %v, "+
+		"the previous renew took %v, total held %v",
+		o.cycle, o.sleepOver.Round(time.Millisecond),
+		o.renewTook.Round(time.Millisecond),
+		o.prevRenew.Round(time.Millisecond),
+		o.heldFor.Round(time.Millisecond))
+
+	// Attribute only when one interval plainly dominates. "Plainly" is 2x the
+	// rest, which is deliberately coarse: the point is to refuse an attribution
+	// that the numbers do not force, not to adjudicate close cases.
+	rt := o.renewTook + o.prevRenew
+	switch {
+	case o.sleepOver > 2*rt:
+		s += " -- the SLEEP consumed the budget: the scheduler did not return " +
+			"within the cadence, which is host starvation"
+	case rt > 2*o.sleepOver:
+		s += " -- the RENEW ROUND TRIPS consumed the budget, NOT the scheduler. " +
+			"A quiet host will not necessarily help; suspect the keepalive path"
+	default:
+		s += " -- no single interval dominates, so this does not say which cause it was"
+	}
+	return s
+}
+
 func runSubTTLRenewalCycles(
 	t *testing.T,
 	ctx context.Context,
 	l sdk.Lease,
 	anchor time.Time,
+	prevRenew time.Duration,
 	cycles int,
 	renewEvery, leaseTTL time.Duration,
-) (time.Duration, bool) {
+) (renewalOverrun, bool) {
 	t.Helper()
 
 	for cycle := 1; cycle <= cycles; cycle++ {
+		// The two intervals, measured apart. Neither is inferred from the other.
+		sleepStart := time.Now()
 		time.Sleep(renewEvery)
+		sleepOver := time.Since(sleepStart) - renewEvery
 
 		select {
 		case <-l.Done():
 			if heldFor := time.Since(anchor); heldFor >= leaseTTL {
-				return heldFor, true
+				return renewalOverrun{cycle, sleepOver, 0, prevRenew, heldFor}, true
 			}
 			t.Fatalf("Done closed during renewal cycle %d, %v after the confirmation "+
 				"that set the deadline and inside the %v TTL: the holder was told it "+
@@ -496,19 +573,22 @@ func runSubTTLRenewalCycles(
 
 		sentAt := time.Now()
 		err := l.Renew(ctx)
+		renewTook := time.Since(sentAt)
 		// Measured after Renew returns, which is when confirmHeld ran.
 		heldFor := time.Since(anchor)
 		if err != nil {
 			if heldFor >= leaseTTL {
-				return heldFor, true
+				return renewalOverrun{cycle, sleepOver, renewTook, prevRenew, heldFor}, true
 			}
 			t.Fatalf("Renew on cycle %d: %v (%v since the confirmation that set the "+
-				"deadline, within the %v TTL, so the lease should still have been held)",
-				cycle, err, heldFor, leaseTTL)
+				"deadline, within the %v TTL, so the lease should still have been held; "+
+				"sleep overran by %v, the renew itself took %v)",
+				cycle, err, heldFor, leaseTTL, sleepOver.Round(time.Millisecond),
+				renewTook.Round(time.Millisecond))
 		}
-		anchor = sentAt
+		anchor, prevRenew = sentAt, renewTook
 	}
-	return 0, false
+	return renewalOverrun{}, false
 }
 
 // TestRaft_LeaseExclusive proves acquisition is exclusive: while one holder
@@ -589,5 +669,77 @@ func TestRaft_WatchDelivery(t *testing.T) {
 	}
 	if !errors.Is(w.Err(), context.Canceled) {
 		t.Fatalf("after caller cancellation Err()=%v, want context.Canceled", w.Err())
+	}
+}
+
+// The attribution logic gets its own tests, on constructed observations, for the
+// same reason the wait-diagnostic tests in pkg/server do: the branches that
+// matter are only reachable when the environment misbehaves, and a test that
+// needs a starved host to run cannot be trusted to report starvation correctly.
+//
+// What is being asserted is that the message names a cause ONLY when the split
+// forces it. go-qrdb#273 exists because the previous instrument could not see
+// the two intervals apart, so every attribution it made was unsupported; an
+// attribution that fires regardless of the numbers would be the same defect.
+func TestRenewalOverrun_AttributesOnlyWhatTheSplitShows(t *testing.T) {
+	ms := time.Millisecond
+	cases := []struct {
+		name       string
+		over       renewalOverrun
+		wantPhrase string
+		denyPhrase string
+	}{
+		{
+			name: "sleep dominating is host starvation",
+			over: renewalOverrun{cycle: 1, sleepOver: 600 * ms, renewTook: 5 * ms,
+				prevRenew: 5 * ms, heldFor: 2110 * ms},
+			wantPhrase: "SLEEP consumed the budget",
+			denyPhrase: "RENEW ROUND TRIPS",
+		},
+		{
+			// The shape measured on this fleet: 32 cycles pinned to two real
+			// cores at 95% CPU pressure overran the sleep by at most 5.58ms
+			// while renew round trips reached 330ms.
+			name: "renew round trips dominating is NOT the scheduler",
+			over: renewalOverrun{cycle: 3, sleepOver: 1 * ms, renewTook: 330 * ms,
+				prevRenew: 265 * ms, heldFor: 2096 * ms},
+			wantPhrase: "RENEW ROUND TRIPS consumed the budget, NOT the scheduler",
+			denyPhrase: "SLEEP consumed",
+		},
+		{
+			name: "comparable intervals must refuse to attribute",
+			over: renewalOverrun{cycle: 2, sleepOver: 300 * ms, renewTook: 200 * ms,
+				prevRenew: 100 * ms, heldFor: 2100 * ms},
+			wantPhrase: "does not say which cause it was",
+			denyPhrase: "consumed the budget",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.over.String()
+			if !strings.Contains(got, tc.wantPhrase) {
+				t.Errorf("message must contain %q.\ngot: %s", tc.wantPhrase, got)
+			}
+			if strings.Contains(got, tc.denyPhrase) {
+				t.Errorf("message must NOT contain %q -- the attribution would be "+
+					"unsupported by the split.\ngot: %s", tc.denyPhrase, got)
+			}
+		})
+	}
+}
+
+// Whatever it concludes, it must always show the numbers the conclusion rests
+// on -- that is the difference between a diagnosis and an assertion.
+func TestRenewalOverrun_AlwaysReportsBothIntervals(t *testing.T) {
+	over := renewalOverrun{cycle: 4, sleepOver: 7 * time.Millisecond,
+		renewTook: 123 * time.Millisecond, prevRenew: 45 * time.Millisecond,
+		heldFor: 2075 * time.Millisecond}
+	got := over.String()
+	for _, want := range []string{"cycle 4", "7ms", "123ms", "45ms", "2.075s"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("message must carry %q so the reader can check the verdict.\ngot: %s",
+				want, got)
+		}
 	}
 }
