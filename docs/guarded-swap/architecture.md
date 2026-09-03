@@ -114,5 +114,8 @@ raw bytes rather than inventing an encoding it would then have to version.
 
 - `docs/distributed-locks/` and `docs/18-distributed-locking.md` — the lock
   primitives built on the same transaction plane.
-- go-qrdb#44 (this feature), go-qrdb#56 (`CompareAndSwap` on the KV plane,
-  which serves TENANT-plane records and is a different surface).
+- `kvstore.AtomicKVStore.CompareAndSwap` — compare-and-swap on the KV plane.
+  It is a different surface, not an alternative to this one: it guards a store
+  write to a TENANT-plane record, while this helper guards a transaction on the
+  transport plane. Adding it to the store interface meant implementing it in
+  every backend in the same change; see `docs/secondary-indexes/`.

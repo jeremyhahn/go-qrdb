@@ -135,6 +135,36 @@ jobs:
       - name: Test the tool-version guard
         run: make test-require-tool
 
+      # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
+      # property, so it is checked here rather than left to review: a reviewer
+      # sees one diff, and a violation can be contributed by neither side of a
+      # merge alone.
+      #
+      # WHAT THIS LEG ACTUALLY SCANS, measured rather than assumed. On a
+      # pull_request event this Gitea's actions/checkout resolves the BRANCH
+      # HEAD, not a merge ref -- Lint run 9735 logged
+      # "HEAD is now at ff4dc99", the branch tip, and `git log -1` agreed. So a
+      # PR-time run of this guard covers what the AUTHOR wrote, and cannot see
+      # a violation the merge would introduce. An earlier version of this
+      # comment claimed the merge ref; it was wrong, and a guard that
+      # overstates its coverage is worse than one that states it accurately,
+      # because the overstatement is what stops someone closing the gap.
+      #
+      # The gap is closed by the `push: branches: [main]` trigger at the top of
+      # this file rather than by the checkout: this job runs again on the
+      # merged tree the moment it lands, which catches strictly more than a
+      # merge-ref checkout would -- direct pushes included. It catches them
+      # AFTER the merge rather than before, which is the honest cost.
+      - name: Feature folders are publishable
+        run: make check-publication-bound
+
+      # The guard's rejecting branches, which the step above never reaches
+      # while the tree is clean. Runs after it, for the same reason the
+      # tool-version self-test does: a real violation should be the first
+      # failure a reader sees, not a self-test. No network, no Go build.
+      - name: Test the publication-bound guard
+        run: make test-publication-bound
+
       # Same reasoning, for the module sweep's guard. A healthy tree exercises
       # only vet-modules.sh's ACCEPTING path, so its rejecting branches — an
       # unmapped module, an empty or rootless discovery, a partial traversal —

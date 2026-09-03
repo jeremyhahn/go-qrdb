@@ -174,8 +174,8 @@ middle decided nowhere.
   `fast` is the single exception and it is a refusal, not a silent failure: its
   backend cannot keep the durability and ordering promises a guarded result
   makes, so the verbs decline rather than report a success the disk may
-  contradict. The next two bullets say why, and go-qrdb#216 tracks making it
-  capable. **Do not choose `sm_type: fast` for a workload that needs a guarded
+  contradict. The next two bullets say why; making it capable is tracked
+  separately and is an owner's call, not a doc's. **Do not choose `sm_type: fast` for a workload that needs a guarded
   delete or swap.**
 - **The comparison runs inside apply, never on the proposer.** Every replica
   evaluates the same entry against the state it has applied up to that entry's
@@ -225,15 +225,15 @@ middle decided nowhere.
   `sm_type: disk` writes through synchronously and returns its error; `memory`,
   `standard`, `concurrent` and `highperf` are in-memory, so a write has landed
   when it returns; `mvcc-fast` owns its storage and orders every write through
-  `persistOrder`. Making `fast` capable is **go-qrdb#216**; the unordered write
-  path itself is **go-qrdb#224**.
+  `persistOrder`. Making `fast` capable, and the unordered write path itself,
+  are tracked separately: both are backend changes, not guard changes.
 
   `PutIfAbsent` is the exception to the exception: it still executes on
   `sm_type: fast` despite having the same hole, because it has been offered
-  there since go-qrdb#86 and callers depend on it — the identity index claims
-  identities with it and first boot needs it. Withdrawing a capability people
-  already build on is a decision for the owner, not a side effect; it is
-  recorded on go-qrdb#216.
+  there since before the guarded verbs landed and callers depend on it — the
+  identity index claims identities with it and first boot needs it.
+  Withdrawing a capability people already build on is a decision for the
+  owner, not a side effect.
 - **They cannot appear inside a batch.** The batch encoding carries no expected
   value, so a batched operation cannot express a guard. Multi-key atomicity is
   [../transactions/](../transactions/), which does need `sm_type: mvcc`.
@@ -308,7 +308,7 @@ permission revocation.
 
 | Key | Values | Default | Effect |
 |---|---|---|---|
-| `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Only `mvcc` supports as-of reads, watch replay and selective restore. Every value supports the single-key guarded verbs EXCEPT `fast`, which refuses `CompareAndDelete`/`CompareAndSwap` (go-qrdb#216); only `mvcc`/`pebble` support transactions. |
+| `raft.sm_type` | `pebble`, `memory`, `mvcc`, `standard`, `concurrent`, `fast`, `disk`, `highperf`, `regular` | `pebble` | State-machine wrapper. Only `mvcc` supports as-of reads, watch replay and selective restore. Every value supports the single-key guarded verbs EXCEPT `fast`, which refuses `CompareAndDelete`/`CompareAndSwap`; only `mvcc`/`pebble` support transactions. |
 | `storage.backend` | `pebble`, `file`, `memory` | `pebble` | Underlying storage engine. |
 | `mvcc.compaction_retention` | integer | — | Minimum revisions retained; sets the compaction floor. |
 

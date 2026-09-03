@@ -55,9 +55,8 @@ The daemon selects the mode with `mode: standalone | raft` in YAML or
   stays mandatory.
 - **Every no-argument `*Node` accessor performs a race-free read** from any
   goroutine at any point — a fully constructed value or nil, never a torn one.
-  **`Close` itself is not synchronised against `Unseal` or `EnableEncryption`**
-  (go-qrdb#226); callers must not overlap them. See *Node accessor
-  concurrency* below.
+  **`Close` itself is not synchronised against `Unseal` or `EnableEncryption`**;
+  callers must not overlap them. See *Node accessor concurrency* below.
 
 ## Node accessor concurrency
 
@@ -96,10 +95,11 @@ and callers must not create them:
   can rebuild the data plane after shutdown.
 
 Neither is a torn read — the reads are still atomic — so this is an **ordering**
-gap, not the publication defect go-qrdb#176 fixed. Closing it needs an explicit
-lifecycle state plus a ruling on what `Close` means for an embedded `Node`
-(block on an in-flight `Unseal`, or start failing it and with which typed
-error). Tracked as **go-qrdb#226**, deliberately not fixed in #176.
+gap, not the publication defect the accessors fixed. Closing it needs an
+explicit lifecycle state plus a ruling on what `Close` means for an embedded
+`Node` (block on an in-flight `Unseal`, or start failing it and with which
+typed error). That ruling is the owner's, and the gap is deliberately left
+open until it is made.
 
 ### Mechanism
 
@@ -142,7 +142,7 @@ clears it directly instead, where no rebuild follows.
 
 The router does hold the pre-recycle `svcNode.Tenant` across that window. That
 is a separate defect — fixing it means rebuilding or lazily resolving the
-router, not nilling a pointer — tracked as go-qrdb#222.
+router, not nilling a pointer — and is tracked separately.
 
 ### What none of this promises
 
@@ -155,11 +155,11 @@ contract is likewise unchanged — this makes the transition safe, not different
 
 The regression tests enumerate the accessors by **reflection over the type**,
 not by hand. A hand-list stops covering the next accessor someone adds, which
-is exactly how `IsSealed` and `BarrierRegistry` were missed on the first pass
-at go-qrdb#176. `Node.encMigrator` has no no-argument accessor and so cannot be
-reached reflectively; it is asserted directly.
+is exactly how `IsSealed` and `BarrierRegistry` were missed on the first pass.
+`Node.encMigrator` has no no-argument accessor and so cannot be reached
+reflectively; it is asserted directly.
 
-Measured: go-qrdb#176 — two independent `-race` sightings from a consumer
+Measured: two independent `-race` sightings from a consumer
 (`Read at Client()` vs `Previous write at wireClientAndServer()`), the second
 reproduced at a clean base, which is what attributed the defect here rather
 than to the consumer.

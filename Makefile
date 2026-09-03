@@ -1162,7 +1162,18 @@ ci:
 # `security` is the full §8 suite (gosec, govulncheck, go mod verify, trivy fs)
 # and replaces the loose `gosec vuln` pair: devops.md §4 requires `make ci` to
 # include it.
-_ci: fmt vet lint security build-server test
+#
+# check-publication-bound AND its self-test are both here. `make ci` is a name
+# that claims a property -- "this is what CI runs" -- and it did not hold it:
+# a developer could run the advertised entrypoint, get green, and be blocked by
+# the pull-request job. Both steps run in the Lint job, so both run here.
+#
+# The self-test is included rather than left CI-only (which is where
+# test-require-tool and test-tag-lockstep sit) because this guard is the one
+# whose own defects are invisible by construction: it fails by staying silent,
+# and silence is what success looks like. A second of shell is a cheap way to
+# be told the guard still refuses what it claims to refuse.
+_ci: fmt vet lint check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1199,6 +1210,46 @@ lint:
 .PHONY: test-require-tool
 test-require-tool:
 	@./scripts/require-tool_test.sh
+
+# AGENTS.md: a feature folder is publication-bound -- it ships to GitHub when
+# the repo publishes -- so it must never carry an internal address, host name,
+# workstation path, agent principal name or internal issue reference.
+#
+# Until this target existed the rule's only enforcement was a reviewer
+# noticing, and the leak rate says what that was worth: five violations landed
+# in one afternoon from an author who had read AGENTS.md, and the review caught
+# two. That is not the reviewer's failing. A reviewer sees ONE DIFF, while the
+# violation is a property of the TREE -- the same shape as vet-tags above, and
+# the same reason a whole-repo scanner is the only thing that can see it.
+#
+# The failure is silent until it is public: nothing breaks, the docs read fine
+# internally, and it surfaces on the publishing push, where a reader hits an
+# internal issue number and finds nothing, or an unrelated public issue wearing
+# it.
+#
+# Six rules: an internal issue reference, an internal issue LINK (the
+# forge-relative `](../../issues/62)` form, where the reference is in the link
+# target and no `repo#123` pattern can see it), an RFC 1918 address, an
+# internal host name, a workstation path and an agent principal. Scope and
+# pattern choices, including what each rule deliberately does NOT match and
+# why, are documented at the top of the script.
+.PHONY: check-publication-bound
+check-publication-bound:
+	@./scripts/check-publication-bound.sh
+
+# The guard's own rejecting branches. This repository's feature folders are
+# clean, so running the check here exercises only its ACCEPTING branch and
+# every rejecting branch would otherwise ship untested -- same reasoning as
+# test-require-tool and test-tag-lockstep.
+#
+# `--mutate` re-loosens internal-issue-ref to the naive `#[0-9]+` and asserts
+# the near-miss cases go red: `PKCS#11`, a markdown anchor
+# (`api.md#403-and-405-...`), `#1` as a back-reference to a numbered list, and
+# a `#42` inside a fenced shell comment. All four are real text in this tree.
+# A suite that passes both with and without the narrowing proves nothing.
+.PHONY: test-publication-bound
+test-publication-bound:
+	@./scripts/check-publication-bound_test.sh
 
 .PHONY: vet
 vet:

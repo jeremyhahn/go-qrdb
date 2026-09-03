@@ -140,7 +140,7 @@ set will not.
 It matters more than it looks. `Train` clusters **once**, and every subsequent
 query searches that one centroid set — so recall is a property of the
 clustering, and a measurement taken without fixing the seed is one draw from a
-distribution however many queries it averages (go-qrdb#92).
+distribution however many queries it averages.
 
 ## Persistence
 

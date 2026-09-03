@@ -84,6 +84,6 @@ a nil record. A transport that reports absence as some other error makes every
 absent-record swap fail instead of creating the record.
 
 A transport that does not propagate `TransactionResponse.Revision` reports
-`Revision: 0` on success. The embedded transport did exactly that until
-go-qrdb#44 fixed it; if you are writing a new transport, copy the field on
-**every** response path.
+`Revision: 0` on success. The embedded transport did exactly that until this
+helper landed and the omission surfaced; if you are writing a new transport,
+copy the field on **every** response path.

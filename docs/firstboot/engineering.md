@@ -82,8 +82,7 @@ a second, unrelated credential bound instead.
   first-boot failure propagates with its own cause. It previously caught
   ANY error, so a local fault — a state machine unable to apply an op code,
   say — was reported 30 seconds later as `admin user not replicated`, a
-  message naming the symptom while the cause appeared only in a log line
-  (go-qrdb#86).
+  message naming the symptom while the cause appeared only in a log line.
 - **Ceremony runs before firstboot**, and both are safe to re-run on cluster
   nodes.
 

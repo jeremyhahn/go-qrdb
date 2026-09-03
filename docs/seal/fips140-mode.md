@@ -320,7 +320,7 @@ direction is one-way, and go-qrdb consumes the module as a tagged release.
 
 | Finding | Call sites | Effect on the suite | Tracking |
 |---|---|---|---|
-| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` and `cmd/qrdbd` fail with `crypto/ecdh: use of X25519 is not allowed` | `jeremyhahn/go-truststrap#5`, `#9` — open |
+| `go-truststrap` `pkg/noiseproto` performs the Noise_NK handshake over `noise.DH25519` | `session.go`, `keys.go` | `pkg/clusterenroll` and `cmd/qrdbd` fail with `crypto/ecdh: use of X25519 is not allowed` | open upstream in `go-truststrap`, against `pkg/noiseproto` — two findings, both unfixed as of the v0.8.0-alpha bump |
 
 **The `go-quicraft` AEAD finding is CLOSED.** It read, until the go-quicraft
 v0.8.0-alpha bump landed here:
