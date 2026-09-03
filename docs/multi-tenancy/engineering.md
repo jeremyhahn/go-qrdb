@@ -292,6 +292,41 @@ isolation gap.
 | Unknown tenant, tenant service configured | rejected | **yes** |
 | Unknown tenant, **no** tenant service | **accepted** — the documented gap above | **no** |
 | Tenant barrier sealed | tenant operations refused | **yes** |
+| Tenant shard elects no leader in 15s | `*ShardLeaderWaitError` (wraps `ErrTenantShardNoLeader`), host build refused | **yes** |
+
+### Why the no-leader error carries a measurement
+
+Building an `IsolationVolume` tenant host starts a single-node Raft shard and
+waits for it to elect itself leader before binding services; until it does,
+every proposal fails with "not leader". That wait is bounded at 15 seconds.
+
+When it expires the error does not merely say the shard did not elect. It
+reports what the wait **observed** — how many times the shard was actually
+asked, the real time spent, the longest gap between two consecutive polls, and
+the last error `GetLeaderID` returned — and names one of three causes:
+
+- **the shard could not be asked** — `GetLeaderID` kept failing, so that error
+  is the finding and the timeout is a symptom;
+- **the poller was starved** — some gap exceeded ten poll intervals, so the
+  scheduler consumed the budget and the election never received the wall time
+  the budget implies. This is host contention, not an election defect;
+- **the shard genuinely did not elect** — the poller ran on time for the whole
+  budget. This is a real failure.
+
+The distinction is not cosmetic. The bare sentinel that preceded it read
+identically whether the shard was broken or the machine was merely busy, and
+under CI load the second is common: a 20 ms poll sleep overruns by microseconds
+on an idle host, so ten consecutive missed intervals is direct evidence of
+descheduling rather than of anything raft did.
+
+**The 15 second budget is not a tuning knob.** It is already about seven times
+the election's configured cost — go-quicraft derives the election timeout as
+`ElectionRTT * RTTMillisecond`, and this shard takes the defaults (10 * 200 ms =
+2 s). Widening it to quiet a red suite would remove the tests' ability to fail
+for the right reason: a genuine regression that quintupled election time would
+still fit inside the larger budget, leaving tests that are red when the host is
+busy and green when the code regresses. If this wait times out, read the verdict
+in the error before changing the number.
 
 ## Test strategy
 

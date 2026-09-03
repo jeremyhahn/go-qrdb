@@ -154,27 +154,144 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 
 // tenantShardLeaderTimeout bounds how long newTenantHost waits for the
 // single-node tenant shard to elect a leader.
+//
+// This budget is NOT a tuning knob to widen when the suite goes red. It is
+// already ~7x the election's configured cost (go-quicraft computes the election
+// timeout as ElectionRTT * RTTMillisecond, and this shard takes the defaults:
+// 10 * 200ms = 2s), and a budget padded to survive a thrashing host is a budget
+// that can no longer fail for the right reason -- a genuine election regression
+// that quintupled the cost would still fit inside it. If this wait times out,
+// read the diagnostic on ShardLeaderWaitError before touching this number: it
+// says whether the host starved the poller or the shard genuinely never
+// elected, and only the second is a reason to change anything here.
 const tenantShardLeaderTimeout = 15 * time.Second
+
+// shardLeaderPollInterval is how long waitForShardLeader sleeps between polls.
+// It is also the yardstick the starvation discriminator measures against: on an
+// unloaded host a sleep of this length overruns by microseconds, so a gap of
+// many multiples means the goroutine lost the CPU rather than the shard losing
+// an election.
+const shardLeaderPollInterval = 20 * time.Millisecond
+
+// shardLeaderStarvationFactor is how many poll intervals must elapse between
+// two consecutive polls before the wait reports host starvation rather than a
+// failed election.
+//
+// Ten was chosen because it cannot be reached by ordinary timer slop: a 20ms
+// sleep would have to overrun to 200ms, i.e. the goroutine did not run for ten
+// consecutive scheduling opportunities. It is deliberately a statement about
+// the SCHEDULER, not about raft -- raising it would blur the two causes back
+// together, which is the whole thing this discriminator exists to separate.
+const shardLeaderStarvationFactor = 10
+
+// shardLeaderSource is the one thing waitForShardLeader needs from a Host: the
+// current leader of a shard. *quicraft.Host satisfies it.
+//
+// It exists so the wait's own failure paths are testable without booting a raft
+// group -- a wait whose three diagnostic branches were only reachable by
+// starving a real host could never be tested for the case it exists to report.
+// pkg/service.RaftHost is the same narrowing for the same reason.
+type shardLeaderSource interface {
+	GetLeaderID(shardID uint64) (uint64, bool, error)
+}
 
 // waitForTenantShardLeader polls the host until the tenant shard reports a
 // valid leader (the single local replica), or the timeout elapses.
-func waitForTenantShardLeader(host *quicraft.Host) error {
+func waitForTenantShardLeader(host shardLeaderSource) error {
 	return waitForShardLeader(host, tenantHostShardID)
 }
 
 // waitForShardLeader polls the host until the given shard reports a valid
 // leader (the single local replica), or the timeout elapses. It is shared by
 // the per-tenant volume Host and the dedicated per-database raft shards.
-func waitForShardLeader(host *quicraft.Host, shardID uint64) error {
-	deadline := time.Now().Add(tenantShardLeaderTimeout)
+//
+// On timeout it returns a *ShardLeaderWaitError describing what it OBSERVED
+// while waiting, not merely that it gave up. The bare sentinel this replaced
+// (ErrTenantShardNoLeader, still wrapped for errors.Is) sent every reader to
+// the job logs to answer the only question that matters: was the shard broken,
+// or was the host too busy to let the poller ask? Five CI incidents were
+// diagnosed by hand for want of that one line (go-qrdb#139).
+//
+// Three causes are distinguished, and the error says which one was measured:
+//
+//   - GetLeaderID ERRORED on one or more polls. Then the timeout is a symptom
+//     and that error is the finding. This loop previously discarded the error
+//     entirely (`err == nil && ok`), so a shard that answered "no such shard"
+//     750 times was reported as one that failed to elect -- an error collapsed
+//     into a plausible-looking benign answer. The error COUNT is carried too,
+//     because "could not be asked on 3 of 47 polls" and "on 47 of 47" are
+//     different problems with different investigations.
+//   - The poller was STARVED: some gap between consecutive polls exceeded
+//     shardLeaderStarvationFactor intervals, so the wall-clock budget was never
+//     really spent asking. The election may have been fine.
+//   - Neither: the poller ran attentively for the whole budget and the shard
+//     never elected. THAT is a real defect, and it is the case this wait exists
+//     to catch. Do not widen the budget to make it go away.
+func waitForShardLeader(host shardLeaderSource, shardID uint64) error {
+	return waitForShardLeaderWithin(host, shardID, tenantShardLeaderTimeout, shardLeaderPollInterval)
+}
+
+// waitForShardLeaderWithin is waitForShardLeader with the budget and poll
+// interval supplied, mirroring pkg/service.waitForShardLeaderKnown's shape.
+// Production callers go through waitForShardLeader and get the constants above;
+// taking them as parameters is what lets the timeout and starvation paths be
+// exercised in milliseconds instead of fifteen seconds.
+func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, interval time.Duration) error {
+	var (
+		start    = time.Now()
+		last     = start
+		polls    int
+		maxGap   time.Duration
+		errCount int
+		firstErr error
+		lastErr  error
+	)
+	deadline := start.Add(timeout)
 	for {
-		if _, ok, err := host.GetLeaderID(shardID); err == nil && ok {
+		now := time.Now()
+		if gap := now.Sub(last); gap > maxGap {
+			maxGap = gap
+		}
+		last = now
+
+		polls++
+		_, ok, err := host.GetLeaderID(shardID)
+		if err == nil && ok {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return ErrTenantShardNoLeader
+		// Kept rather than discarded: it is the difference between "the shard
+		// did not elect" and "the shard could not be asked".
+		//
+		// GUARDED ON err != nil, and that guard is load-bearing. An
+		// unconditional `lastErr = err` is ERASED by the very next poll that
+		// returns (ok=false, err=nil) -- so on the INTERMITTENT sequence
+		// (error, no-leader, no-leader, ... timeout) the query failure is lost
+		// and this wait reports "the shard genuinely did not elect", which is
+		// the exact class of wrong-cause reporting it exists to prevent. A
+		// fixture whose source errors on EVERY poll cannot catch that, because
+		// it keeps the field non-nil by luck.
+		if err != nil {
+			errCount++
+			if firstErr == nil {
+				firstErr = err
+			}
+			lastErr = err
 		}
-		time.Sleep(20 * time.Millisecond)
+
+		if time.Now().After(deadline) {
+			return &ShardLeaderWaitError{
+				ShardID:  shardID,
+				Timeout:  timeout,
+				Interval: interval,
+				Elapsed:  time.Since(start),
+				Polls:    polls,
+				MaxGap:   maxGap,
+				ErrCount: errCount,
+				FirstErr: firstErr,
+				LastErr:  lastErr,
+			}
+		}
+		time.Sleep(interval)
 	}
 }
 
