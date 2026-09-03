@@ -1146,6 +1146,26 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/kv/restore", permission.MVCCRestore, s.handleRestoreToRevision)
 	s.routeIf(s.kvSvc != nil, http.MethodGet, "/kv/scan", permission.KVList, s.handleKVScan)
 
+	// Guarded write verbs (go-qrdb#126). Registered unconditionally like the
+	// MVCC routes above: the handlers resolve the KV service themselves and
+	// report 501 when none is wired, matching the /kv data-plane guard.
+	//
+	// The permissions match the gRPC service's proto-declared options exactly
+	// (qrdb.proto: PutIfAbsent and CompareAndSwap are kv:put, CompareAndDelete
+	// is kv:delete) rather than introducing a guarded-specific permission: a
+	// guarded put is still a put and a guarded delete is still a delete, so a
+	// caller already trusted to write a key is trusted to write it
+	// conditionally. Diverging here would mean the same identity could reach
+	// the verb over gRPC and not over REST, which is the uniformity the
+	// GuardedKVClient capability exists to promise.
+	//
+	// These are static POST paths under /kv, which the router resolves ahead
+	// of the /kv/* wildcard below. No POST is registered on that wildcard, so
+	// nothing that used to route is displaced.
+	s.route(http.MethodPost, "/kv/put-if-absent", permission.KVPut, s.handleKVPutIfAbsent)
+	s.route(http.MethodPost, "/kv/compare-and-delete", permission.KVDelete, s.handleKVCompareAndDelete)
+	s.route(http.MethodPost, "/kv/compare-and-swap", permission.KVPut, s.handleKVCompareAndSwap)
+
 	// KV data plane: /kv (list / missing-key) and /kv/{key}. Without a KV
 	// service the routes still attach and report 501, preserving the legacy
 	// nil-service guard.

@@ -450,9 +450,19 @@ func TestQUIC_CallContext_WithTimeout(t *testing.T) {
 // AuthFactor unmarshal-error paths (VerifyFactor, ListFactors, RevokeFactor at 85-86%)
 // ---------------------------------------------------------------------------
 
+// The responder method names below are "authfactor.*", which is what
+// transport_authfactor.go actually calls. They read "factor.*" until
+// go-qrdb#124, so the responder never matched: the fake server fell through to
+// its unregistered-method default and these tests were exercising the
+// StatusUnimplemented path while claiming to exercise StatusError. That passed
+// only because both statuses mapped to *transport.RequestError. Giving
+// StatusUnimplemented its own typed error surfaced the mismatch, so the fix is
+// to make the tests call what they say they call rather than to loosen the
+// assertion.
+
 func TestE2E_AuthFactor_VerifyFactor_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("factor.Verify", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("authfactor.Verify", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("verify failed")
 	})
 	err := tr.VerifyFactor(context.Background(), &transport.VerifyFactorRequest{})
@@ -461,7 +471,7 @@ func TestE2E_AuthFactor_VerifyFactor_RPCError(t *testing.T) {
 
 func TestE2E_AuthFactor_ListFactors_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("factor.List", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("authfactor.List", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("list failed")
 	})
 	_, err := tr.ListFactors(context.Background(), &transport.ListFactorsRequest{})
@@ -470,7 +480,7 @@ func TestE2E_AuthFactor_ListFactors_RPCError(t *testing.T) {
 
 func TestE2E_AuthFactor_RevokeFactor_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	srv.SetResponder("factor.Revoke", func(_ []byte) (uint16, []byte) {
+	srv.SetResponder("authfactor.Revoke", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("revoke failed")
 	})
 	err := tr.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{})

@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
 
 ## Problem
 
@@ -105,6 +105,40 @@ configuration, steps 4–5 into a direct apply.
   decision belongs. The reasoning is recorded in full at
   `pkg/service/internal_keys.go`; do not "tighten" it into a write guard
   without re-reading it.
+
+## The guarded write plane
+
+Three verbs — `PutIfAbsent`, `CompareAndDelete`, `CompareAndSwap` — evaluate
+their condition **inside the state machine** rather than in the caller. They
+exist because the naive shape a consumer reaches for, read → decide → write, is
+not a conditional write: two callers read the same value, both decide, and both
+write, and the second silently discards the first. Under a distributed lock
+that is two holders.
+
+Because the condition travels with the write in one proposal, replicas cannot
+diverge on it and two proposers cannot both win. That property is the entire
+product, and it is why the verbs may never be emulated at a transport boundary:
+a client-side `Get` followed by a `Put` returns the same booleans and arbitrates
+nothing, and it does so across a network round trip that makes the window
+larger, not smaller.
+
+The transport surface is therefore a **capability sub-interface**,
+`transport.GuardedKVClient`, separate from `KVClient` and detected by type
+assertion. A transport gets the assertion only once its wire contract carries
+the verbs; until then `client.(GuardedKVClient)` correctly reports false and a
+consumer knows to look elsewhere. Answering the assertion without the atomicity
+would be worse than refusing it — the consumer would build a lock on top of
+something that never decided anything. Embedded, gRPC, unix, QUIC and REST
+carry them; MCP does not yet.
+
+A state machine with no handler for a guarded opcode **refuses and keeps
+serving**. The refusal is typed all the way to the caller
+(`transport.CapabilityUnsupportedError`) so a consumer can fall back to a
+different verb rather than retry something that can never succeed, and the
+refusal must not cost the shard its circuit breaker — an unimplemented verb
+that killed the group would take every later proposal with it, including plain
+`Put`. Both properties are asserted per engine, per mode and per transport by
+the conformance matrix in `sdk/go/conformance`.
 
 ## What this feature deliberately does not do
 

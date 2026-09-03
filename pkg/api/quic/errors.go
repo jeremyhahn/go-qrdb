@@ -182,6 +182,24 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusOK, nil
 	}
 
+	// Unimplemented, not Error. The node is healthy; it simply was not built
+	// with this verb on the configured state machine (an absent opcode, or a
+	// subsystem it was constructed without). Mapping it to the generic error
+	// status made a healthy node declining a verb indistinguishable from a
+	// server fault, so a QUIC client could not degrade gracefully the way its
+	// gRPC twin could against the identical server-side condition — the
+	// go-qrdb#141 split had reached gRPC and REST but never QUIC.
+	//
+	// Only this type, not service.SMNotConfiguredError: that sibling also
+	// covers refusals decided on the request's merits (an invalid lease TTL, a
+	// unique-index violation), which are client errors and must not be
+	// reported as "this node cannot do that". The clause sits first to mirror
+	// pkg/api/grpc.mapServiceError, whose first clause it is.
+	var cue *service.CapabilityUnsupportedError
+	if errors.As(err, &cue) {
+		return wire.StatusUnimplemented, []byte(err.Error())
+	}
+
 	var knf *service.KeyNotFoundError
 	if errors.As(err, &knf) {
 		return wire.StatusError, []byte(err.Error())

@@ -76,13 +76,43 @@ func (s *Server) buildHandlers() {
 	s.handlers = make(map[string]methodHandler)
 	s.methodPerms = authmw.NewQUICMethodRegistry()
 
-	// KV handlers are registered only when a KV service is provided.
-	kvOn := s.kvSvc != nil
+	// KV handlers are registered when a KV service is reachable — either the
+	// singleton, or a service registry that resolves one per (tenant,
+	// database).
+	//
+	// The registry half was missing, and it made a supported construction
+	// unusable: WithServiceRegistry's contract is that data-plane handlers
+	// resolve their servicer from the registry "when nil they use the
+	// singleton service fields", and every handler below already does exactly
+	// that through kvSvcFor. But gating registration on the singleton alone
+	// meant a server built with a registry and no singleton kvSvc — the
+	// multi-database shape — had NO kv method in the dispatch map at all, so
+	// the loop answered StatusUnimplemented before kvSvcFor could resolve
+	// anything. The mvcc and tx families never had this problem because they
+	// register unconditionally and self-resolve.
+	//
+	// Found by the local reviewer on the guarded verbs (go-qrdb#124) and fixed
+	// for the whole family: making only the three new methods registry-aware
+	// would leave a registry-backed server able to CompareAndSwap a key it
+	// cannot Put.
+	kvOn := s.kvSvc != nil || s.registry != nil
 	s.handleIf(kvOn, "kv.Put", permission.KVPut, s.handleKVPut)
 	s.handleIf(kvOn, "kv.Get", permission.KVGet, s.handleKVGet)
 	s.handleIf(kvOn, "kv.Delete", permission.KVDelete, s.handleKVDelete)
 	s.handleIf(kvOn, "kv.List", permission.KVList, s.handleKVList)
 	s.handleIf(kvOn, "kv.Scan", permission.KVRange, s.handleKVScan)
+
+	// Guarded write verbs (go-qrdb#124). The permissions match the gRPC
+	// service's proto-declared options exactly (qrdb.proto: PutIfAbsent and
+	// CompareAndSwap are kv:put, CompareAndDelete is kv:delete) rather than
+	// introducing a guarded-specific permission: a guarded put is still a put
+	// and a guarded delete is still a delete, so a caller already trusted to
+	// write a key is trusted to write it conditionally. Diverging here would
+	// mean the same identity could reach the verb over gRPC and not over QUIC,
+	// which is the uniformity the capability interface exists to promise.
+	s.handleIf(kvOn, "kv.PutIfAbsent", permission.KVPut, s.handleKVPutIfAbsent)
+	s.handleIf(kvOn, "kv.CompareAndDelete", permission.KVDelete, s.handleKVCompareAndDelete)
+	s.handleIf(kvOn, "kv.CompareAndSwap", permission.KVPut, s.handleKVCompareAndSwap)
 
 	// admin.Health is registered unconditionally: it is on the sealed-window
 	// allowlist (pkg/api/sealedwindow.Table VerbHealth) and reachable BEFORE

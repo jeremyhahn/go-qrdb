@@ -32,6 +32,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +57,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	grpctransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
+	quictransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
+	resttransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
+	unixtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix"
 )
 
 // callTimeout bounds every data-plane call the matrix makes.
@@ -92,7 +98,34 @@ type transportKind string
 const (
 	embeddedTransport transportKind = "embedded"
 	grpcTransport     transportKind = "grpc"
+	quicTransport     transportKind = "quic"
+	unixTransport     transportKind = "unix"
+	restTransport     transportKind = "rest"
 )
+
+// transportKinds is the transport axis of the matrix.
+//
+// go-qrdb#121 walked embedded and remote-gRPC because those were the only two
+// that carried transport.GuardedKVClient. go-qrdb#124/#125/#126 added the verbs
+// to QUIC, unix and REST, and the cells go here rather than into three
+// per-transport suites: the promise being tested is that the guarded plane
+// behaves IDENTICALLY however it is reached, and three parallel suites would
+// let three definitions of "works" drift apart, which is the exact failure the
+// matrix exists to prevent.
+var transportKinds = []transportKind{
+	embeddedTransport,
+	grpcTransport,
+	quicTransport,
+	unixTransport,
+	restTransport,
+}
+
+// remote reports whether this transport crosses a real listener and therefore
+// needs TLS material and a seeded RBAC identity. Only the embedded transport
+// does not.
+func (tk transportKind) remote() bool {
+	return tk != embeddedTransport
+}
 
 // outcome is what a cell is required to do with the guarded plane.
 type outcome int
@@ -177,8 +210,14 @@ func (c cell) name() string {
 	return fmt.Sprintf("%s/%s/%s", c.backend, c.mode, c.transport)
 }
 
-// matrix is the 12 cells go-qrdb#121 requires: {file, memory, pebble} x
-// {standalone, raft} x {embedded, remote-gRPC}.
+// matrix is the go-qrdb#121 grid: {file, memory, pebble} x {standalone, raft}
+// x {embedded, remote-gRPC, QUIC, unix, REST}.
+//
+// It was 12 cells when only embedded and gRPC carried transport.GuardedKVClient
+// and is 30 now that QUIC, unix and REST do (go-qrdb#124/#125/#126). The engine
+// and mode axes are unchanged; only the transport axis grew, so a new
+// transport's cells inherit the same expected outcome its siblings have and a
+// transport that quietly weakened a verb shows up as a difference from them.
 //
 // The expected outcome per cell follows the scope ruled for v0.12: the
 // guarded/transaction plane under raft is promised on the DEFAULT sm_type
@@ -194,7 +233,7 @@ func (c cell) name() string {
 // were missing. What remains for #136 is the multi-key transaction plane.
 func matrix() []cell {
 	var cells []cell
-	for _, tk := range []transportKind{embeddedTransport, grpcTransport} {
+	for _, tk := range transportKinds {
 		cells = append(cells,
 			// Standalone: databases[].backend selects the engine directly.
 			cell{backend: database.BackendMemory, mode: standalone, transport: tk, want: fullPassage},
@@ -247,6 +286,40 @@ func freeTCPPort(t *testing.T) int {
 	return port
 }
 
+// freeUDPPort is freeTCPPort's counterpart for the QUIC cells. QUIC rides UDP,
+// and a port free on TCP says nothing about the UDP port of the same number —
+// binding the TCP one and hoping would be a coin flip run under load, which is
+// how a matrix acquires a flake that looks like a transport bug.
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve udp port: %v", err)
+	}
+	port := conn.LocalAddr().(*net.UDPAddr).Port
+	if err := conn.Close(); err != nil {
+		t.Fatalf("release udp port: %v", err)
+	}
+	return port
+}
+
+// unixSocketPath returns a short-lived socket path for a unix cell.
+//
+// It deliberately does NOT use t.TempDir(). A sockaddr_un path is capped at
+// 108 bytes on Linux, and t.TempDir() embeds the full subtest name — here
+// something like "TestGuardedVerbConformanceMatrix/pebble/standalone/unix" —
+// which pushes the path over the cap and fails the bind with a message that
+// says nothing about length.
+func unixSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "qrdbsock")
+	if err != nil {
+		t.Fatalf("socket dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // raftPortSeed hands each raft cell a distinct advertised address. A
 // single-member group runs with the transport disabled so nothing binds, but
 // distinct addresses keep the node identities apart.
@@ -257,13 +330,23 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Server.Host = "127.0.0.1"
-	cfg.Protocols.REST = false
+	// Exactly one listener per cell. A cell tests ONE transport, and starting
+	// the others would spend ports and goroutines on paths this cell never
+	// calls — 30 cells' worth of them.
+	cfg.Protocols.REST = c.transport == restTransport
 	cfg.Protocols.GRPC = c.transport == grpcTransport
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
+	cfg.Protocols.QUIC = c.transport == quicTransport
+	cfg.Protocols.Unix = c.transport == unixTransport
 	cfg.Protocols.MCP = false
-	if c.transport == grpcTransport {
+	switch c.transport {
+	case grpcTransport:
 		cfg.Server.GRPCPort = freeTCPPort(t)
+	case quicTransport:
+		cfg.Server.QUICPort = freeUDPPort(t)
+	case restTransport:
+		cfg.Server.AdminPort = freeTCPPort(t)
+	case unixTransport:
+		cfg.Unix.SocketPath = unixSocketPath(t)
 	}
 
 	switch c.mode {
@@ -323,8 +406,8 @@ func (c cell) boot(t *testing.T) clients {
 	var serverOpts []server.ServerOption
 	var ca *qrdbdharness.CA
 	var clientKP *qrdbdharness.KeyPair
-	if c.transport == grpcTransport {
-		ca, clientKP, serverOpts = grpcServerTLS(t)
+	if c.transport.remote() {
+		ca, clientKP, serverOpts = remoteServerTLS(t)
 	}
 
 	var n *node.Node
@@ -351,9 +434,9 @@ func (c cell) boot(t *testing.T) clients {
 		awaitWritable(t, c, embeddedKV)
 	}
 
-	if c.transport == grpcTransport {
+	if c.transport.remote() {
 		seedGuardedIdentity(t, n)
-		return dialGRPC(t, n, ca, clientKP)
+		return dialRemote(t, c, n, ca, clientKP)
 	}
 
 	guarded, ok := embeddedKV.(transport.GuardedKVClient)
@@ -363,10 +446,12 @@ func (c cell) boot(t *testing.T) clients {
 	return clients{kv: embeddedKV, guarded: guarded, txn: n.Client().Transaction()}
 }
 
-// grpcServerTLS builds the mTLS material the gRPC listener needs. The gRPC
+// remoteServerTLS builds the mTLS material a remote listener needs. Every qrdb
 // transport is TLS-only by design — the client certificate IS the identity the
-// auth middleware authenticates — so there is no insecure shortcut here.
-func grpcServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
+// auth middleware authenticates — so there is no insecure shortcut here, and
+// server.WithTLS feeds REST, gRPC, QUIC and unix from this one config (the
+// QUIC listener appends its own "qrdb-quic" ALPN on top).
+func remoteServerTLS(t *testing.T) (*qrdbdharness.CA, *qrdbdharness.KeyPair, []server.ServerOption) {
 	t.Helper()
 	certDir := t.TempDir()
 
@@ -431,45 +516,97 @@ func seedGuardedIdentity(t *testing.T, n *node.Node) {
 	}
 }
 
-// dialGRPC connects a real SDK gRPC transport to the node's in-process
-// listener.
-func dialGRPC(t *testing.T, n *node.Node, ca *qrdbdharness.CA, kp *qrdbdharness.KeyPair) clients {
+// dialRemote connects a real SDK transport of the cell's kind to the node's
+// in-process listener, then asserts the KV client actually carries the guarded
+// capability.
+//
+// That assertion is the point of the remote cells and not a formality. The
+// capability is detected by type assertion, so a transport that gained the
+// verbs' NAMES without their atomicity would satisfy it and every consumer
+// would then build a lock on top; the batteries that follow are what prove the
+// atomicity is really there, and this line is what makes them run at all.
+func dialRemote(t *testing.T, c cell, n *node.Node, ca *qrdbdharness.CA, kp *qrdbdharness.KeyPair) clients {
 	t.Helper()
-	addr := n.Server().GRPCAddr()
-	if addr == "" {
-		t.Fatal("the node reports no gRPC address; the listener did not bind")
-	}
+
 	clientCert, err := kp.TLSCertificate()
 	if err != nil {
 		t.Fatalf("client TLS cert: %v", err)
 	}
-	tr, err := grpctransport.New(
-		transport.WithAddress(addr),
-		transport.WithTLSConfig(&tls.Config{
-			Certificates: []tls.Certificate{clientCert},
-			RootCAs:      ca.Pool,
-			ServerName:   "127.0.0.1",
-			MinVersion:   tls.VersionTLS13,
-		}),
-	)
-	if err != nil {
-		t.Fatalf("new gRPC transport: %v", err)
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{clientCert},
+		RootCAs:      ca.Pool,
+		ServerName:   "127.0.0.1",
+		MinVersion:   tls.VersionTLS13,
 	}
-	c, err := sdk.NewClient(tr)
+
+	tr := c.transport.dial(t, n, tlsCfg)
+
+	sdkClient, err := sdk.NewClient(tr)
 	if err != nil {
 		t.Fatalf("new SDK client: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Connect(boundedCtx(t)); err != nil {
-		t.Fatalf("gRPC connect: %v", err)
+	t.Cleanup(func() { _ = sdkClient.Close() })
+	if err := sdkClient.Connect(boundedCtx(t)); err != nil {
+		t.Fatalf("%s connect: %v", c.transport, err)
 	}
 
-	kv := c.KV()
+	kv := sdkClient.KV()
 	guarded, ok := kv.(transport.GuardedKVClient)
 	if !ok {
-		t.Fatal("the gRPC KV client does not implement transport.GuardedKVClient")
+		t.Fatalf("the %s KV client does not implement transport.GuardedKVClient", c.transport)
 	}
-	return clients{kv: kv, guarded: guarded, txn: c.Transaction()}
+	return clients{kv: kv, guarded: guarded, txn: sdkClient.Transaction()}
+}
+
+// dial constructs the SDK transport for this kind against the node's bound
+// listener. Each branch fails the cell when the listener did not bind rather
+// than dialing an empty address, so "the protocol never started" is never
+// reported as "the guarded verb failed".
+func (tk transportKind) dial(t *testing.T, n *node.Node, tlsCfg *tls.Config) transport.Transport {
+	t.Helper()
+
+	addr := func(got, protocol string) string {
+		if got == "" {
+			t.Fatalf("the node reports no %s address; the listener did not bind", protocol)
+		}
+		return got
+	}
+
+	var (
+		tr  transport.Transport
+		err error
+	)
+	switch tk {
+	case grpcTransport:
+		tr, err = grpctransport.New(
+			transport.WithAddress(addr(n.Server().GRPCAddr(), "gRPC")),
+			transport.WithTLSConfig(tlsCfg),
+		)
+	case quicTransport:
+		tr, err = quictransport.New(
+			transport.WithAddress(addr(n.Server().QUICAddr(), "QUIC")),
+			transport.WithTLSConfig(tlsCfg),
+		)
+	case unixTransport:
+		// ServerName must be the SAN the leaf actually carries: a unix socket
+		// has no host name to derive one from, and the harness CA issues for
+		// 127.0.0.1.
+		tr, err = unixtransport.New(
+			transport.WithAddress(addr(n.Server().UnixAddr(), "unix")),
+			transport.WithTLSConfig(tlsCfg),
+		)
+	case restTransport:
+		tr, err = resttransport.New(
+			transport.WithAddress("https://"+addr(n.Server().RESTAddr(), "REST")),
+			transport.WithTLSConfig(tlsCfg),
+		)
+	default:
+		t.Fatalf("transport kind %q has no remote dialer", tk)
+	}
+	if err != nil {
+		t.Fatalf("new %s transport: %v", tk, err)
+	}
+	return tr
 }
 
 // awaitWritable blocks until a freshly started raft shard has elected a leader
@@ -548,6 +685,38 @@ func grpcStatusOf(err error) (*status.Status, bool) {
 // be shown to reject anything, which is the same shape of gap it exists to
 // close.
 func classifyRefusal(err error) error {
+	return classifyRefusalWith(err, false)
+}
+
+// classifyRefusalWith is classifyRefusal with the go-qrdb#126 NAMED EXCLUSION
+// applied when untypedStatus501OK is set.
+//
+// REST cannot type this particular refusal today, and the reason is specific
+// rather than an oversight. The REST server maps BOTH
+// service.CapabilityUnsupportedError and its sibling
+// service.SMNotConfiguredError to 501 (pkg/api/rest.mapHTTPError), and that
+// sibling covers refusals decided on the REQUEST's merits — an invalid lease
+// TTL, a unique-index violation. So a REST client that promoted every 501 to
+// transport.CapabilityUnsupportedError would tell a caller "this node cannot
+// do leases" when the caller had simply passed a bad TTL, which is a worse
+// error than no type at all.
+//
+// The guarded verbs escape this because their endpoints are unambiguous: a 501
+// from /kv/put-if-absent, /kv/compare-and-delete or /kv/compare-and-swap can
+// only be the capability refusal, so the REST transport classifies it at the
+// call site — the same per-endpoint idiom REST already uses to type a lease
+// 404. /tx is not unambiguous in that way, and typing it needs either a
+// discriminator on the REST error body or a server-side split of the two
+// error families. Both are wider than go-qrdb#124/#125/#126 and belong with
+// the go-qrdb#169 error-typing sweep, which owns that surface.
+//
+// The exclusion is deliberately NARROW: it is granted per verb, not per
+// transport, so a REST guarded verb that stopped carrying its typed refusal
+// still fails this gate. And it keeps every property that makes the refusal
+// cells worth having — a wedged cell still returns DeadlineExceeded and an
+// authorization failure still returns 401/403, neither of which is 501 — so
+// the go-qrdb#129 regression these cells pin is still caught.
+func classifyRefusalWith(err error, untypedStatus501OK bool) error {
 	if err == nil {
 		return errors.New("no error at all; a silent success tells the caller it arbitrated " +
 			"a race that was never arbitrated")
@@ -590,8 +759,22 @@ func classifyRefusal(err error) error {
 	// transports, so the gate asserts identity rather than prose — which also
 	// means a refusal that changes its wording no longer silently stops being
 	// recognised.
+	message := ""
 	var unsupported *transport.CapabilityUnsupportedError
-	if !errors.As(err, &unsupported) {
+	switch {
+	case errors.As(err, &unsupported):
+		message = unsupported.Message
+	case untypedStatus501OK:
+		// The named exclusion. Only a REST 501 qualifies, and it still has to
+		// name what is missing below.
+		var reqErr *transport.RequestError
+		if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotImplemented {
+			return fmt.Errorf("%w is neither a transport.CapabilityUnsupportedError nor the "+
+				"501 this verb is excused to return; only one of those proves this cell "+
+				"lacks the verb rather than having hit an unrelated fault", err)
+		}
+		message = reqErr.Error()
+	default:
 		return fmt.Errorf("%w is not a transport.CapabilityUnsupportedError; only a typed "+
 			"capability refusal proves this cell lacks the verb rather than having hit an "+
 			"unrelated fault", err)
@@ -600,20 +783,27 @@ func classifyRefusal(err error) error {
 	// The message still has to say what is absent. A typed refusal carrying no
 	// account of WHICH capability is missing is not much better than an
 	// untyped one for whoever has to act on it.
-	if !strings.Contains(unsupported.Message, "not configured") &&
-		!strings.Contains(unsupported.Message, "unknown opcode") &&
-		!strings.Contains(unsupported.Message, "not supported") {
+	if !strings.Contains(message, "not configured") &&
+		!strings.Contains(message, "unknown opcode") &&
+		!strings.Contains(message, "not supported") {
 		return fmt.Errorf("capability refusal %q names neither an absent opcode nor an "+
-			"unwired subsystem, so it does not say what is missing", unsupported.Message)
+			"unwired subsystem, so it does not say what is missing", message)
 	}
 	return nil
 }
 
-func assertCapabilityRefusal(t *testing.T, verb string, err error) {
+func assertCapabilityRefusal(t *testing.T, verb string, err error, untypedStatus501OK bool) {
 	t.Helper()
-	if reason := classifyRefusal(err); reason != nil {
+	if reason := classifyRefusalWith(err, untypedStatus501OK); reason != nil {
 		t.Errorf("%s: %v", verb, reason)
 		return
+	}
+	if untypedStatus501OK {
+		var unsupported *transport.CapabilityUnsupportedError
+		if !errors.As(err, &unsupported) {
+			t.Logf("%s refused as required, UNTYPED under the go-qrdb#126 named exclusion: %v", verb, err)
+			return
+		}
 	}
 	t.Logf("%s refused as required: %v", verb, err)
 }

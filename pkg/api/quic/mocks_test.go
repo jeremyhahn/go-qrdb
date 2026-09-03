@@ -52,6 +52,15 @@ type mockKVService struct {
 	getWithConsistencyFn  func(ctx context.Context, key string, opts consistency.ReadOptions) ([]byte, error)
 	listWithConsistencyFn func(ctx context.Context, prefix string, opts consistency.ReadOptions) ([]string, error)
 	scanWithConsistencyFn func(ctx context.Context, prefix string, opts consistency.ReadOptions) (map[string][]byte, error)
+
+	// The guarded write verbs (go-qrdb#124). Injectable like every other
+	// method here: the handlers exist to DELEGATE, so a test has to be able to
+	// observe the arguments that arrived and choose the answer that goes back.
+	// Stubbed constants would let a handler that dropped its request, or sent
+	// `next` where `expected` belongs, return the same plausible boolean.
+	putIfAbsentFn      func(ctx context.Context, key string, value []byte) (bool, error)
+	compareAndDeleteFn func(ctx context.Context, key string, expected []byte) (bool, error)
+	compareAndSwapFn   func(ctx context.Context, key string, expected, next []byte) (bool, error)
 }
 
 func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error {
@@ -61,15 +70,21 @@ func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error
 	return nil
 }
 
-// PutIfAbsent reports a successful create. This mock keeps no state, so
-// there is nothing for the condition to consult.
-func (m *mockKVService) PutIfAbsent(_ context.Context, _ string, _ []byte) (bool, error) {
+// PutIfAbsent reports a successful create unless the test injects otherwise.
+// This mock keeps no state, so there is nothing for the condition to consult.
+func (m *mockKVService) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if m.putIfAbsentFn != nil {
+		return m.putIfAbsentFn(ctx, key, value)
+	}
 	return true, nil
 }
 
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
 // it removes the key only when the stored value still equals expected.
-func (m *mockKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+func (m *mockKVService) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if m.compareAndDeleteFn != nil {
+		return m.compareAndDeleteFn(ctx, key, expected)
+	}
 	return false, nil
 }
 
@@ -719,6 +734,9 @@ func (m *mockMVCCKVService) RestoreToRevision(ctx context.Context, req *service.
 }
 
 // CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+func (m *mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if m.compareAndSwapFn != nil {
+		return m.compareAndSwapFn(ctx, key, expected, next)
+	}
 	return false, nil
 }

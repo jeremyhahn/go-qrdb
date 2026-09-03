@@ -1213,7 +1213,23 @@ func TestGetTopology_OnClosedTransport(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap mirrors CompareAndDelete's guard on the edit side: it
+// replaces the value only when the stored one still equals expected, and
+// leaves an absent key absent because a swap is not a create.
+//
+// It used to be a stub returning (false, nil) unconditionally, which satisfied
+// the interface and proved nothing: a transport that dropped the request
+// entirely, or sent `next` where `expected` belongs, produced exactly the same
+// answer. A guarded verb's test needs a service that actually ENFORCES the
+// guard or the round trip is not being measured (go-qrdb#125).
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	current, ok := m.store[key]
+	if !ok {
+		return false, nil
+	}
+	if !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }

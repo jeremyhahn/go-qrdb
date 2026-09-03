@@ -16,6 +16,7 @@ package conformance
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -476,16 +477,22 @@ func assertGuardedWritesRefuseSafely(t *testing.T, c cell, cl clients) {
 	for _, r := range []struct {
 		verb string
 		call func() error
+
+		// untypedOn carries the go-qrdb#126 named exclusion, per VERB. The two
+		// single-key verbs have no entry and are held to the typed refusal on
+		// every transport; only /tx over REST is excused, for the reason
+		// classifyRefusalWith records.
+		untypedOn []transportKind
 	}{
-		{"CompareAndSwap", func() error {
+		{verb: "CompareAndSwap", call: func() error {
 			_, err := cl.guarded.CompareAndSwap(ctx, "claim", []byte("acme"), []byte("globex"))
 			return err
 		}},
-		{"CompareAndDelete", func() error {
+		{verb: "CompareAndDelete", call: func() error {
 			_, err := cl.guarded.CompareAndDelete(ctx, "claim", []byte("acme"))
 			return err
 		}},
-		{"ExecuteTransaction", func() error {
+		{verb: "ExecuteTransaction", untypedOn: []transportKind{restTransport}, call: func() error {
 			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
 				Compares:   []transport.Compare{valueEquals("before", "1")},
 				SuccessOps: []transport.Op{put("txn/x", "x")},
@@ -496,7 +503,7 @@ func assertGuardedWritesRefuseSafely(t *testing.T, c cell, cl clients) {
 		// The guard REFUSED, so the expected value it named must be untouched.
 		// Asserting only that an error came back would pass against an
 		// implementation that refused after writing.
-		assertCapabilityRefusal(t, r.verb, r.call())
+		assertCapabilityRefusal(t, r.verb, r.call(), slices.Contains(r.untypedOn, c.transport))
 	}
 
 	// The claim PutIfAbsent took is still exactly as it was: a refused swap did
@@ -566,8 +573,16 @@ func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
 	refusals := []struct {
 		verb string
 		call func() error
+
+		// untypedOn names the transports on which this verb's refusal is
+		// excused from carrying transport.CapabilityUnsupportedError, and is
+		// empty for every verb that has no excuse. See classifyRefusalWith for
+		// why /tx over REST is the one entry here, and why the exclusion is
+		// granted per VERB rather than per transport: the REST guarded verbs
+		// carry the typed refusal and are still held to it.
+		untypedOn []transportKind
 	}{
-		{"ExecuteTransaction", func() error {
+		{verb: "ExecuteTransaction", untypedOn: []transportKind{restTransport}, call: func() error {
 			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
 				Compares:   []transport.Compare{valueEquals("before", "1")},
 				SuccessOps: []transport.Op{put("txn/x", "x")},
@@ -584,7 +599,7 @@ func assertGuardedPlaneRefusesSafely(t *testing.T, c cell, cl clients) {
 		// pin — returns DeadlineExceeded on its bounded context and would be
 		// scored as "refused as required", so the gate would go green on the
 		// very defect it was written to catch.
-		assertCapabilityRefusal(t, r.verb, r.call())
+		assertCapabilityRefusal(t, r.verb, r.call(), slices.Contains(r.untypedOn, c.transport))
 	}
 
 	// The load-bearing assertion. A wedged shard fails these because the

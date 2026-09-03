@@ -191,3 +191,102 @@ func (s *Server) handleKVScan(ctx context.Context, payload []byte) ([]byte, erro
 	}
 	return resp, nil
 }
+
+// ---------------------------------------------------------------------------
+// Guarded write verbs (go-qrdb#124)
+// ---------------------------------------------------------------------------
+//
+// The three handlers below carry the guarded write plane over QUIC. Each one
+// unmarshals the request, resolves the scoped KV service, and calls the
+// service layer's ATOMIC method — the same service.KVServicer method the gRPC
+// service implementation calls, which encodes a single guarded command and
+// proposes it once.
+//
+// None of them reads the key first. That is the entire point: a guarded verb
+// emulated as get-then-put over a network transport is not a guarded verb, it
+// is a race with a longer window, and a consumer that detected the capability
+// by type assertion would build a distributed lock on top of it.
+
+// handleKVPutIfAbsent unmarshals a PutIfAbsentRequest, performs the guarded
+// store via the service layer, and returns a serialized PutIfAbsentResponse
+// reporting whether the value was stored.
+//
+// It takes no WriteMode: a conditional write must be linearizable to mean
+// anything, so PutIfAbsentRequest carries no mode field and the service layer
+// proposes it synchronously.
+func (s *Server) handleKVPutIfAbsent(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.PutIfAbsentRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	stored, err := kvSvc.PutIfAbsent(ctx, req.GetKey(), req.GetValue())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.PutIfAbsentResponse{Stored: stored})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleKVCompareAndDelete unmarshals a CompareAndDeleteRequest, performs the
+// guarded removal via the service layer, and returns a serialized
+// CompareAndDeleteResponse reporting whether the key was deleted. It is the
+// release half of PutIfAbsent.
+func (s *Server) handleKVCompareAndDelete(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.CompareAndDeleteRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	deleted, err := kvSvc.CompareAndDelete(ctx, req.GetKey(), req.GetExpected())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.CompareAndDeleteResponse{Deleted: deleted})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleKVCompareAndSwap unmarshals a CompareAndSwapRequest, performs the
+// guarded replacement via the service layer, and returns a serialized
+// CompareAndSwapResponse reporting whether the value was replaced. An absent
+// key is left absent — a swap is not a create.
+func (s *Server) handleKVCompareAndSwap(ctx context.Context, payload []byte) ([]byte, error) {
+	var req pb.CompareAndSwapRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	kvSvc, svcErr := s.kvSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
+
+	swapped, err := kvSvc.CompareAndSwap(ctx, req.GetKey(), req.GetExpected(), req.GetNext())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.CompareAndSwapResponse{Swapped: swapped})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}

@@ -1130,6 +1130,9 @@ func mapHTTPError(err error) int {
 	var cso *service.CompactSystemOnlyError
 	var tade *database.TenantAccessDeniedError
 	var mbr *service.MVCCBackendRequiredError
+	var rtl *RequestTooLargeError
+	var ptl *PayloadTooLargeError
+	var ktl *KeyTooLargeError
 	var rike *service.RestoreInternalKeyError
 	var rciu *service.RestoreChangeIndexUnavailableError
 	var rnre *service.RestoreNilRequestError
@@ -1279,6 +1282,11 @@ func mapHTTPError(err error) int {
 	case errors.As(err, &qent):
 		// Feature entitlement denied — surface as 403 Forbidden.
 		return http.StatusForbidden
+	case errors.As(err, &rtl), errors.As(err, &ptl), errors.As(err, &ktl):
+		// The body exceeded the endpoint's byte bound. 413, not 400: the
+		// request was well-formed enough to read, and the caller can act on it
+		// by sending less.
+		return http.StatusRequestEntityTooLarge
 	case errors.As(err, &smnc), errors.As(err, &cue):
 		// SM subsystem not configured, or a capability this state machine was
 		// not built with — surface as 501 Not Implemented so clients know the

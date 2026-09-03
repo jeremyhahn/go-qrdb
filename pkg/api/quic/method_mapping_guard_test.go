@@ -61,11 +61,18 @@ import (
 // parity with their gRPC proto options and REST routes; the old table omitted
 // them, leaving the two methods unconditionally denied over QUIC).
 var expectedMethodPerms = map[string]permission.Permission{
-	"kv.Put":                             permission.KVPut,
-	"kv.Get":                             permission.KVGet,
-	"kv.Delete":                          permission.KVDelete,
-	"kv.List":                            permission.KVList,
-	"kv.Scan":                            permission.KVRange,
+	"kv.Put":    permission.KVPut,
+	"kv.Get":    permission.KVGet,
+	"kv.Delete": permission.KVDelete,
+	"kv.List":   permission.KVList,
+	"kv.Scan":   permission.KVRange,
+	// The guarded write verbs (go-qrdb#124). They carry the SAME permissions
+	// their gRPC RPCs declare in qrdb.proto — a guarded put is still a put, a
+	// guarded delete is still a delete — so an identity that can reach the
+	// verb over gRPC reaches it over QUIC too.
+	"kv.PutIfAbsent":                     permission.KVPut,
+	"kv.CompareAndDelete":                permission.KVDelete,
+	"kv.CompareAndSwap":                  permission.KVPut,
 	"mvcc.PutWithLease":                  permission.MVCCPutWithLease,
 	"mvcc.GetRevision":                   permission.MVCCGetRevision,
 	"mvcc.GetAtRevision":                 permission.MVCCGetAtRevision,

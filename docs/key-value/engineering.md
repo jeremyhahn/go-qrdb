@@ -1,6 +1,6 @@
 # Key-Value Store — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
 
 ## Exported surface
 
@@ -37,8 +37,31 @@ type MVCCClient interface {
 }
 ```
 
+```go
+// GuardedKVClient is a CAPABILITY sub-interface, detected by type assertion.
+// It is deliberately NOT part of KVClient: a transport may only offer these
+// once its wire contract carries them.
+type GuardedKVClient interface {
+	KVClient
+	PutIfAbsent(ctx context.Context, key string, value []byte) (stored bool, err error)
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (deleted bool, err error)
+	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (swapped bool, err error)
+}
+```
+
 Every transport carries the compile-time proof that it implements both:
 `var _ transport.KVClient = (*Transport)(nil)`.
+
+`GuardedKVClient` carries the same proof on every transport that offers it —
+embedded, gRPC, unix, QUIC and REST — and deliberately does NOT on `mcp`, whose
+tool surface does not yet carry the verbs. **The assertion is the contract**:
+adding the line makes a consumer's type assertion start succeeding, so it may
+only be added alongside methods that carry the verb's atomicity. A single call
+per verb, no preceding read, no read-then-write fallback; the server handler
+calls `service.KVServicer`'s atomic method directly.
+
+The guarded verbs take **no `WriteOption`**. A conditional write must be
+linearizable to mean anything, so it is always synchronous.
 
 ### Consistency levels — `pkg/consistency`
 

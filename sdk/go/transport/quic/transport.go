@@ -761,11 +761,20 @@ func mapWireError(method string, statusCode uint16, payload []byte) error {
 			Err:        errors.New(msg),
 		}
 	case wire.StatusUnimplemented:
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New(msg),
-		}
+		// The node is healthy and does not implement this verb — an opcode its
+		// state machine has no handler for, a subsystem it was constructed
+		// without, or a method this server build does not register at all.
+		// Reconstituting the typed error here is what lets a consumer degrade
+		// gracefully over QUIC exactly as it can embedded, over gRPC and over
+		// unix, instead of matching message text (go-qrdb#141).
+		//
+		// This mirrors mapGRPCError's codes.Unimplemented case exactly,
+		// including its conflation of the two: gRPC returns Unimplemented both
+		// for a capability refusal and for an unregistered method, and a
+		// GuardedKVClient talking to an older server that does not carry the
+		// verbs needs precisely that answer — "this node cannot do that" — not
+		// a generic request failure it might retry forever (go-qrdb#124).
+		return &transport.CapabilityUnsupportedError{Message: msg}
 	case wire.StatusUnauthenticated:
 		return &transport.RequestError{
 			Method:     method,

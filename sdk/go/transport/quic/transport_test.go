@@ -501,14 +501,25 @@ func TestMapWireError_StatusError_Generic(t *testing.T) {
 	}
 }
 
+// StatusUnimplemented is a CAPABILITY refusal, not a generic request failure:
+// the node is healthy and simply was not built with this verb, or does not
+// register the method at all. It became *transport.CapabilityUnsupportedError
+// in go-qrdb#124, mirroring mapGRPCError's codes.Unimplemented case exactly.
+//
+// Before that a caller could not tell "this node cannot do that" from "this
+// node broke", so a client library that retries on failures would retry
+// something that can never succeed — the go-qrdb#52 shape that go-qrdb#141
+// removed from gRPC and REST but not from here. The message is carried
+// verbatim because a refusal that does not say WHAT is missing is little
+// better than an untyped one.
 func TestMapWireError_StatusUnimplemented(t *testing.T) {
 	err := mapWireError("ts.RichQuery", wire.StatusUnimplemented, []byte("not implemented"))
-	var reqErr *transport.RequestError
-	if !errors.As(err, &reqErr) {
-		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	var unsupported *transport.CapabilityUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected *transport.CapabilityUnsupportedError, got %T: %v", err, err)
 	}
-	if reqErr.StatusCode != int(wire.StatusUnimplemented) {
-		t.Errorf("expected status code %d, got %d", wire.StatusUnimplemented, reqErr.StatusCode)
+	if unsupported.Message != "not implemented" {
+		t.Errorf("message = %q, want the server's own account %q", unsupported.Message, "not implemented")
 	}
 }
 

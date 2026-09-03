@@ -22,12 +22,16 @@ import (
 // buildHandlers must register. Each entry corresponds to exactly one
 // handler registration in dispatch.go.
 var expectedMethods = []string{
-	// KV (5)
+	// KV (8)
 	"kv.Put",
 	"kv.Get",
 	"kv.Delete",
 	"kv.List",
 	"kv.Scan",
+	// The guarded write verbs (go-qrdb#124).
+	"kv.PutIfAbsent",
+	"kv.CompareAndDelete",
+	"kv.CompareAndSwap",
 
 	// Admin (12)
 	"admin.Health",
@@ -239,10 +243,12 @@ func TestBuildHandlers_RegistersAllMethods(t *testing.T) {
 func TestBuildHandlers_MethodCount(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
 
-	// 161 = 160 prior unary handlers + user.GetByEmail (the canonical
-	// login-key lookup, go-qrdb #190). The 2 watch methods remain on the
-	// streaming path, not the unary table.
-	const wantCount = 161
+	// 164 = 161 prior unary handlers + the 3 guarded write verbs
+	// (kv.PutIfAbsent, kv.CompareAndDelete, kv.CompareAndSwap — go-qrdb#124).
+	// The 161 was 160 plus user.GetByEmail, the canonical login-key lookup
+	// (go-qrdb #190). The 2 watch methods remain on the streaming path, not
+	// the unary table.
+	const wantCount = 164
 	if got := len(srv.handlers); got != wantCount {
 		t.Fatalf("handler count = %d, want %d", got, wantCount)
 	}
@@ -332,7 +338,7 @@ func TestBuildHandlers_CategoryCounts(t *testing.T) {
 	}
 
 	expectedCounts := map[string]int{
-		"kv":       5,
+		"kv":       8,
 		"admin":    12,
 		"mvcc":     7,
 		"tx":       1,

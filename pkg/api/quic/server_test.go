@@ -46,6 +46,7 @@ func TestNewServer_DefaultHandlers_CoreMethodsPresent(t *testing.T) {
 
 	coreMethods := []string{
 		"kv.Put", "kv.Get", "kv.Delete", "kv.List", "kv.Scan",
+		"kv.PutIfAbsent", "kv.CompareAndDelete", "kv.CompareAndSwap",
 		"admin.Health", "admin.Status", "admin.Peers",
 		"admin.AddMember", "admin.RemoveMember",
 		"admin.RequestSnapshot", "admin.Drain", "admin.Capabilities",
@@ -186,6 +187,8 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// KV
 		"kv.Put": true, "kv.Get": true, "kv.Delete": true,
 		"kv.List": true, "kv.Scan": true,
+		// The guarded write verbs (go-qrdb#124).
+		"kv.PutIfAbsent": true, "kv.CompareAndDelete": true, "kv.CompareAndSwap": true,
 		// Admin
 		"admin.Health": true, "admin.Status": true, "admin.Peers": true,
 		"admin.AddMember": true, "admin.RemoveMember": true,
@@ -424,7 +427,10 @@ func TestServer_Start_NoTLS_ErrorsAs(t *testing.T) {
 
 func TestBuildHandlers_KVMethods(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
-	kvMethods := []string{"kv.Put", "kv.Get", "kv.Delete", "kv.List", "kv.Scan"}
+	kvMethods := []string{
+		"kv.Put", "kv.Get", "kv.Delete", "kv.List", "kv.Scan",
+		"kv.PutIfAbsent", "kv.CompareAndDelete", "kv.CompareAndSwap",
+	}
 	for _, m := range kvMethods {
 		if _, ok := srv.handlers[m]; !ok {
 			t.Errorf("missing KV handler: %q", m)

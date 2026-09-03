@@ -278,6 +278,12 @@ func newWiredTransport(srv *httptest.Server) *Transport {
 		config:  &transport.Config{Address: srv.URL},
 		baseURL: srv.URL,
 		client:  srv.Client(),
+		// baseRT is what Connect sets and what scopedRoundTripper wraps, so a
+		// transport wired with a client but no baseRT panics the moment
+		// WithDatabase clones it — a nil RoundTripper inside a live
+		// http.Client. Setting it here keeps this helper's transports
+		// interchangeable with connected ones (go-qrdb#126).
+		baseRT: srv.Client().Transport,
 	}
 	return rt
 }

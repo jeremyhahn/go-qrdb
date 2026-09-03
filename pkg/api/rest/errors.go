@@ -16,6 +16,7 @@ package rest
 
 import (
 	"crypto/tls"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -394,4 +395,71 @@ func tlsVersionName(v uint16) string {
 	default:
 		return "unknown"
 	}
+}
+
+// RequestTooLargeError is returned when a request body exceeds the byte bound
+// its endpoint accepts. It is a 413, not a 400: the request was well-formed
+// enough to read, and the caller can act on it by sending less.
+//
+// It carries the bound rather than only saying "too large", because a caller
+// that cannot see the limit cannot choose a size that will be accepted.
+type RequestTooLargeError struct {
+	// Limit is the maximum body size in bytes the endpoint accepts.
+	Limit int64
+}
+
+// Error returns a human-readable description.
+func (e *RequestTooLargeError) Error() string {
+	return "rest: request body exceeds the " + strconv.FormatInt(e.Limit, 10) + "-byte limit for this endpoint"
+}
+
+// PayloadTooLargeError is returned when a request's DECODED content — its key
+// plus every value it carries, summed — exceeds what one Raft entry can hold.
+//
+// It is distinct from RequestTooLargeError, which reports the coarse bound on
+// the encoded body: a request can sit under the wire bound and still decode to
+// more content than can be proposed, and a caller told only "your body was too
+// big" would shrink the wrong thing.
+type PayloadTooLargeError struct {
+	// Size is the decoded content size in bytes.
+	Size int
+	// Limit is the maximum decoded content size in bytes.
+	Limit int
+}
+
+// Error returns a human-readable description.
+func (e *PayloadTooLargeError) Error() string {
+	return "rest: request key and values total " + strconv.Itoa(e.Size) +
+		" bytes, over the " + strconv.Itoa(e.Limit) + "-byte limit one proposal can carry"
+}
+
+// KeyTooLargeError is returned when a guarded request's key exceeds what the
+// protocol can frame. It is distinct from PayloadTooLargeError so a caller
+// learns WHICH field to shorten: the key ceiling is a two-byte length prefix
+// in the command encoding, not a share of the request budget.
+type KeyTooLargeError struct {
+	// Size is the key length in bytes.
+	Size int
+	// Limit is the maximum key length in bytes.
+	Limit int
+}
+
+// Error returns a human-readable description.
+func (e *KeyTooLargeError) Error() string {
+	return "rest: key is " + strconv.Itoa(e.Size) + " bytes, over the " +
+		strconv.Itoa(e.Limit) + "-byte limit the command encoding can frame"
+}
+
+// TrailingDataError is returned when a request body carries more than one
+// top-level JSON value.
+//
+// A JSON decoder stops at the end of the first value and leaves the rest
+// unread, so without this check a body like `{...}{...}` would perform the
+// first operation and report success on malformed input — a fail-open parse
+// path on a write endpoint.
+type TrailingDataError struct{}
+
+// Error returns a human-readable description.
+func (e *TrailingDataError) Error() string {
+	return "rest: request body carries data after the first JSON value"
 }
