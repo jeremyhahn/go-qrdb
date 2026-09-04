@@ -155,8 +155,15 @@ ifeq ($(WITH_QRDB_PGSQL),1)
   override WITH_QRDB_SQL := 1
 endif
 
+# REQUIRED_TAGS are the tags no WITH_* flag can turn off, so EVERY
+# configuration this Makefile can produce contains them. They are named here
+# rather than spelled out again in SUPPORTED_TAG_SETS because they are that
+# declaration's `minimal` rung, and a floor with two definitions is a floor
+# that drifts (#263).
+REQUIRED_TAGS := codec_json raft
+
 # Compute build tags from feature flags
-BUILD_TAGS := codec_json raft
+BUILD_TAGS := $(REQUIRED_TAGS)
 ifeq ($(WITH_QRDB_TS),1)
   BUILD_TAGS += qrdb_ts
 endif
@@ -1193,6 +1200,8 @@ _ci: fmt vet lint check-publication-bound test-publication-bound security build-
 comma      := ,
 space      := $(subst ,, )
 LINT_TAGS  := $(subst $(space),$(comma),$(strip $(BUILD_TAGS)))
+# The same join applied to the mandatory floor. Used by SUPPORTED_TAG_SETS.
+MIN_TAGS   := $(subst $(space),$(comma),$(strip $(REQUIRED_TAGS)))
 
 .PHONY: lint
 lint:
@@ -1255,60 +1264,133 @@ test-publication-bound:
 vet:
 	$(GOVET) $(TAG_FLAG) ./...
 
-# vet-tags sweeps go vet over EVERY build-tag combination this repo ships,
-# not just the one `make vet` above happens to use.
+# ----------------------------------------------------------------------------
+# THE SUPPORTED BUILD-TAG COMBINATIONS
+# ----------------------------------------------------------------------------
 #
-# `go vet ./...` is scoped to the tag set it is given, so a package that is
-# clean under one combination says NOTHING about the others -- and `make vet`
-# asks about exactly one. That blindness is not theoretical: pkg/statemachine
-# failed to typecheck under three of four combinations for weeks, on two
-# undefined symbols, invisible because the only combination anyone ran was the
-# fourth (#178).
+# SUPPORTED_TAG_SETS below is THE declaration, and there is no other. Every
+# consumer of it -- `make vet-tags`, scripts/vet-modules.sh, `make
+# print-tag-sets` -- reads this variable rather than restating its contents.
 #
-# The two sets below are not new policy. They are the configurations the repo
-# already builds and tests: BUILD_TAGS (the `test` target) and BUILD_TAGS plus
-# `integration` (the integration suites under test/). A combination nothing
-# builds is not swept, because a red leg for an unsupported configuration
-# teaches people to ignore this target.
+# WHY A DECLARATION AT ALL (#263, owner-ruled 2026-09-03). A build constraint
+# is a CLAIM that the file compiles under the tags it names, and for a build
+# constraint compilation IS the check. Before this, the sweep ran exactly two
+# combinations and BOTH contained every default tag, so every constraint naming
+# a NARROWER set was unfalsifiable by construction -- the whole space between
+# two tags and thirteen went unexercised. That is not a hypothetical gap: #267
+# fixed a file declaring `codec_json && raft` that did not compile under only
+# those tags, because it called a helper constrained to seven, and no leg of
+# the gate could see it. The ruling was that an undeclared set is worse than
+# either answer, so the set is written down here and `vet-tags` exercises
+# exactly it.
 #
-# Untagged is deliberately NOT swept: whole packages legitimately fail to
-# typecheck without tags -- pkg/api/mcp's test mocks sit behind
+# The sweep itself predates the declaration, and its own motivating measurement
+# still stands: `go vet ./...` is scoped to the tag set it is given, so a
+# package clean under one combination says NOTHING about the others.
+# pkg/statemachine failed to typecheck under three of four combinations for
+# weeks, on two undefined symbols, invisible because the only combination
+# anyone ran was the fourth (#178). #263 is the same blindness one level up --
+# not "which packages does the sweep reach" but "which combinations does it
+# ask about".
+#
+# THE RUNGS, and why exactly these:
+#
+#   minimal              REQUIRED_TAGS -- the tags no WITH_* flag turns off, so
+#                        the FLOOR of the configuration space and what
+#                        `make build WITH_QRDB_TS=0 WITH_QRDB_VECTOR=0 ...`
+#                        produces. It is also the EXACT constraint 15 files in
+#                        this tree declare -- `//go:build codec_json && raft`
+#                        and nothing more -- and this rung is the only thing
+#                        that makes those 15 declarations checkable.
+#   minimal+integration  the same floor with the integration suites compiled in.
+#                        Not decoration: 102 files under test/ declare
+#                        `//go:build integration` and NOTHING else, so this rung
+#                        is the closest checkable approximation of the claim
+#                        they actually make. Before it, every one of them was
+#                        only ever compiled with all thirteen default tags
+#                        present.
+#   default              BUILD_TAGS as the WITH_* defaults compute it: what
+#                        `make build`, `make test` and `make lint` use.
+#   default+integration  what `make integration-test` runs.
+#
+# AND EVERY COMBINATION BETWEEN THEM IS DECLARED UNSUPPORTED. The WITH_* flags
+# are individually settable, so the space they span is thousands of
+# combinations; enumerating it is a combinatorial problem, not a budget one.
+# Two ENDS crossed with the integration axis is the bounded claim this project
+# is willing to keep true, and the consequence is stated rather than left to be
+# discovered: a file constrained `codec_json && raft && qrdb_ts` is compiled
+# only by the `default` rungs, so its narrower claim is NOT checked. That is a
+# declaration, not an oversight. The honest reading of a green sweep is "every
+# DECLARED combination typechecks", never "every combination does".
+#
+# AND WITHIN A RUNG, ONLY THE FILES THAT RUNG COMPILES ARE CHECKED. A rung does
+# not verify "the minimal configuration"; it verifies the files that configuration
+# admits. A test file whose own tag is outside the rung is not typechecked under
+# it AND does not fail it -- it is absent, which is silence, not a check. That is
+# the compile-time twin of `go test` printing `ok ... [no tests to run]` when a
+# tag-short invocation matches nothing, and it is why the sweep now prints a
+# PACKAGE COUNT beside every rung and fails closed on zero: a rung that checks
+# nothing is the failure that looks most like success.
+#
+# Measured 2026-09-03 so the size of the gap is known rather than assumed. The
+# `minimal` rung matches 121 of the root module's packages against `default`'s
+# 129, and 1,174 test files against 1,361 -- substantive, not vacuous. Exactly
+# ONE package sits in `minimal` while contributing zero test files to it:
+# pkg/vector/hnsw, whose 19 test files are all behind qrdb_vector. Eight more
+# packages (pkg/embedding, pkg/rag, pkg/rag/chunker, pkg/sql/mysql,
+# pkg/sql/pgsql, pkg/vector/bloom, pkg/vector/quantization, pkg/vector/scalar)
+# are outside `minimal` entirely. Those nine are covered by the `default` rungs
+# and by nothing narrower, and that is the honest extent of the claim.
+#
+# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS EITHER, AND ONE OF THEM IS ALREADY
+# BROKEN. qrdb_fts, gpu, qrdbd_webui and desktop are WITH_*=0, so they appear in
+# NEITHER rung and nothing in this repository compiles them -- not `make test`,
+# not `make lint`, not `make vet`. Measured 2026-09-03 while choosing these
+# rungs: `go vet -tags "codec_json,raft,qrdb_fts" ./pkg/fts/...` FAILS, because
+# a test double stopped satisfying storage.Batch when Batch gained an embedded
+# Reader, and no configuration anyone runs has compiled that package since
+# (#279). That is the argument FOR declaring a qrdb_fts rung eventually and the
+# argument AGAINST declaring one in the change that introduces the declaration:
+# a rung red on arrival teaches people to ignore this target, which is how the
+# blind spot got here. Add the rung in the change that fixes #279. gpu needs
+# CUDA and desktop needs webkit2, so neither belongs in a target every developer
+# is told to run before pushing.
+#
+# UNTAGGED IS DELIBERATELY NOT A RUNG. Whole packages legitimately fail to
+# typecheck with no tags -- pkg/api/mcp's test mocks sit behind
 # `codec_json && raft && qrdb_ts && ...` -- which is the same reason LINT_TAGS
-# exists (see the comment above `lint`).
+# exists (see the comment above `lint`). A no-tag load is a different tool for
+# a different question (#271), and its results are not comparable with these.
 #
-# STILL NOT WIRED INTO CI, but for a different reason than when #178 shipped it.
+# ADDING OR REMOVING A RUNG IS A POLICY CHANGE WITH A RUNTIME PRICE, and both
+# belong in the commit that makes it.
 #
-# #178's reason was the `+integration` leg being RED repo-wide. #203 cleared
-# that: eleven sites across seven packages in both modules, and both legs of
-# this target are green on `main` and on the tree merged with it.
+# The structural half of the price is exact and load-independent: this change
+# took the tagged modules from 2 combinations to 4, and the whole-tree sweep
+# from 6 `go vet` invocations to 10.
 #
-# What blocks arming now is a module this target does not yet reach.
-# `sdk/go/gorm/conformance` is one of SEVEN Go modules in the tree, and:
+# THE WALL-CLOCK HALF IS DELIBERATELY NOT RECORDED HERE. Every window available
+# while this landed had four or five concurrent `-race` suites on the host
+# (load average 98-160 on 24 cores, CPU PSI 88 at the worst of it), and a
+# before/after wall clock taken under that measures the CONTENTION, not the
+# change -- in the direction that makes this gate look expensive. A number
+# nobody can reproduce is worse than an admitted gap, because it gets quoted.
+# The one figure worth knowing is the shape of the measurement: run BOTH sweeps
+# back to back on the same cache in the same quiet window, and read the ratio,
+# never an absolute second count copied out of a comment.
 #
-#     cd sdk/go/gorm/conformance && go vet -tags gormconformance ./...
-#     go: updates to go.mod needed; to update it:
-#             go mod tidy
+# The alternative that was priced and rejected: a per-feature ladder, `minimal`
+# plus each optional tag on its own, which is what would make the in-between
+# constraints TRUE rather than merely undeclared. Twelve more rungs -- an order
+# of magnitude more work than the four here, on any host. The stronger claim is
+# available and this declaration deliberately does not buy it.
 #
-# That is pre-existing on `main` -- neither #203 nor #221 caused it -- and it has
-# gone unnoticed precisely because nothing has ever vetted that module. #221
-# extends this target to sweep all seven, which is what makes it visible, so
-# arming #203's fix and landing #221's sweep produces a tree where a REQUIRED job
-# is red on `main` and blocks every PR behind it, in either merge order. Neither
-# branch is red alone; the MERGE is (sdlc.md section 5).
-#
-# Tracked in #233, which carries the full measurement. Arm it once that go.mod is
-# tidy -- which belongs with the rest of the work on that module in #50 (lockstep
-# tag namespace, unresolved `replace ... => ../../../..`) -- and verify against
-# the MERGED tree, not against a branch, re-fetching first: #203's own merged-tree
-# check went stale within the day when #221 grew from two modules to seven. Run
-# this by hand meanwhile.
-#
-# Do NOT add an exclusion list or a baseline file here, and specifically do not
-# skip the conformance module to get this armed sooner. The entire value of this
-# target is that its green result means the whole tree typechecks under every
-# supported combination; a baseline would make it mean "the tree typechecks
-# except where it does not", which is what `make vet` alone already said.
-VET_TAG_SETS := "$(LINT_TAGS)" "$(LINT_TAGS),integration"
+# NEVER MERGE RESULTS FROM TWO RUNGS INTO ONE LIST. A symbol that exists only
+# under a tag is ABSENT from a build without it, and absence is silence, not a
+# finding -- so a union of runs hides exactly what the extra rungs were added
+# to expose. The sweep prints the tag set beside every invocation and beside
+# every failure for that reason; keep it that way.
+SUPPORTED_TAG_SETS := $(MIN_TAGS) $(MIN_TAGS),integration $(LINT_TAGS) $(LINT_TAGS),integration
 
 # vet-tags sweeps EVERY Go module in the tree, each with its own tag sets.
 #
@@ -1319,9 +1401,40 @@ VET_TAG_SETS := "$(LINT_TAGS)" "$(LINT_TAGS),integration"
 # something, and an inline recipe has nowhere to put the test. The script's
 # header lists all six; scripts/vet-modules_test.sh drives every rejecting
 # branch and has a --mutate mode, exactly as require-tool.sh does.
+#
+# STILL NOT WIRED INTO CI, and #263 does not change that. The blocker has moved
+# twice and is now a MODULE, not a tag set. #178 could not arm it because the
+# `+integration` leg was red repo-wide; #203 cleared that. What blocks it now is
+# `sdk/go/gorm/conformance`, one of the seven Go modules this target sweeps:
+#
+#     cd sdk/go/gorm/conformance && go vet -tags gormconformance ./...
+#     go: updates to go.mod needed; to update it:
+#             go mod tidy
+#
+# Pre-existing on `main` -- unnoticed precisely because nothing vetted that
+# module until #221 made it visible -- and tracked in #233, alongside the rest
+# of that module's work in #50 (lockstep tag namespace, unresolved
+# `replace ... => ../../../..`). Arming before it is tidy makes a REQUIRED job
+# red on `main` and blocks every PR behind it. Verify against the MERGED tree
+# when arming, re-fetching first: #203's own merged-tree check went stale within
+# the day. Run this by hand meanwhile.
+#
+# Do NOT add an exclusion list or a baseline file to get it armed sooner, and
+# specifically do not skip the conformance module. The whole value of this
+# target is that a green result means the tree typechecks under every DECLARED
+# combination; a baseline would make it mean "except where it does not", which
+# is what `make vet` alone already said.
 .PHONY: vet-tags
 vet-tags:
-	@GOVET="$(GOVET)" ./scripts/vet-modules.sh --vet "$(LINT_TAGS)" "$(GORM_TAGS)"
+	@GOVET="$(GOVET)" GOLIST="$(GO) list" ./scripts/vet-modules.sh --vet "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
+
+# print-tag-sets prints the declared combinations, one per line, so that
+# anything needing them -- a CI matrix, a doc, a one-off sweep -- READS the
+# declaration instead of restating it. A second copy of this list is the defect
+# #263 exists to close.
+.PHONY: print-tag-sets
+print-tag-sets:
+	@printf '%s\n' $(SUPPORTED_TAG_SETS)
 
 # The guard's own regression suite. Same reasoning as test-require-tool: a
 # healthy sweep only exercises the accepting path, so every rejecting branch --
@@ -1891,7 +2004,8 @@ help:
 	@echo "Linting:"
 	@echo "  lint                   Run golangci-lint"
 	@echo "  vet                    Run go vet"
-	@echo "  vet-tags               Run go vet over every supported build-tag combination"
+	@echo "  vet-tags               Run go vet over every DECLARED build-tag combination"
+	@echo "  print-tag-sets         Print the declared build-tag combinations, one per line"
 	@echo "  fmt                    Check gofmt formatting"
 	@echo ""
 	@echo "Release (see the release-alpha comment block for the full contract):"

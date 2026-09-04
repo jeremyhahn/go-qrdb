@@ -19,7 +19,19 @@
 #
 #   vet-modules.sh --list                 print the discovered modules, one per line
 #   vet-modules.sh --tags-for <module>    print that module's tag sets, one per line
-#   vet-modules.sh --vet <LINT_TAGS> <GORM_TAGS>   run the sweep
+#   vet-modules.sh --vet <TAG_SETS> <GORM_TAGS>    run the sweep
+#
+# TAG_SETS IS DATA THIS SCRIPT DOES NOT AUTHOR. The supported build-tag
+# combinations are declared once, in the Makefile's SUPPORTED_TAG_SETS
+# (go-qrdb#263), and arrive here as a space-separated list of comma-joined
+# sets. Adding a combination here instead of there would put the declaration in
+# two places, which is the defect #263 closed — the sweep's job is to exercise
+# the declared set exactly, not to have opinions about what it contains.
+#
+# EVERY LINE THIS SCRIPT PRINTS CARRIES ITS TAG SET, and results from different
+# sets are never merged into one list. A symbol declared only under a tag is
+# ABSENT from a build without it, so a union of runs reports silence where the
+# extra combinations were added to produce a finding (#271).
 #
 # WHY THIS IS A SCRIPT AND NOT A MAKEFILE RECIPE
 #
@@ -61,6 +73,10 @@ ROOT="${VET_MODULES_ROOT:-.}"
 # than what ships, which is this script's whole subject.
 GOVET="${GOVET:-go vet}"
 
+# The package enumerator, overridable for the same reason GOVET is. It answers
+# a question `go vet` cannot: HOW MANY packages a rung actually looked at.
+GOLIST="${GOLIST:-go list}"
+
 die() { printf '%s\n' "$@" >&2; exit 1; }
 
 # discover_modules prints one module directory per line.
@@ -75,12 +91,40 @@ discover_modules() {
 	printf '%s\n' "$_raw" | sed 's#/go\.mod$##' | sort
 }
 
+# packages_under prints how many packages a module matches under a tag set, or
+# "?" when the enumeration itself failed.
+#
+# WHY A COUNT IS PART OF THE RESULT. `go vet` exits 0 having looked at NOTHING
+# just as readily as it exits 0 having looked at everything: a tag set that
+# matches no packages prints "matched no packages" and is indistinguishable
+# from clean. That hazard is named at the top of this file for MODULES, and it
+# applies identically to a declared RUNG -- a rung that checks nothing is the
+# failure that looks most like success, and it is exactly what the #263
+# declaration would decay into if a tag were renamed underneath it.
+#
+# "?" and 0 are deliberately different answers. A `go list` that could not run
+# -- an untidy go.mod, an unreachable module proxy -- is an ABSENCE OF
+# MEASUREMENT, not a measurement of zero, and reporting it as zero would fail
+# the sweep for a reason that has nothing to do with the tags.
+packages_under() {
+	if [ "$2" = "-" ]; then
+		_out=$(cd "$1" && $GOLIST ./... 2>/dev/null) || { printf '?\n'; return 0; }
+	else
+		_out=$(cd "$1" && $GOLIST -tags "$2" ./... 2>/dev/null) || { printf '?\n'; return 0; }
+	fi
+	printf '%s\n' "$_out" | grep -c . || true
+}
+
 # tags_for prints the tag sets for a module, one per line. A lone "-" means
 # "no -tags flag". An unmapped module is a hard failure.
 tags_for() {
 	case "$1" in
 	"$ROOT"|"$ROOT"/sdk/go)
-		printf '%s\n%s,integration\n' "$LINT_TAGS" "$LINT_TAGS" ;;
+		# The two tagged modules carry the repository's own code, so they get
+		# the FULL declared set — every combination in SUPPORTED_TAG_SETS,
+		# verbatim and in order. This is the only place the declaration is
+		# consumed for them; it is not filtered or deduplicated here.
+		printf '%s\n' $TAG_SETS ;;
 	"$ROOT"/sdk/go/gorm/conformance)
 		printf '%s\n' "$GORM_TAGS" ;;
 	"$ROOT"/test/performance/qrdb|"$ROOT"/test/performance/etcd-benchmark|"$ROOT"/test/performance/tikv)
@@ -116,28 +160,39 @@ case "${1:---vet}" in
 	mods=$(discover_modules); assert_usable "$mods"; printf '%s\n' "$mods" ;;
 --tags-for)
 	[ $# -ge 2 ] || die "vet-modules: --tags-for needs a module"
-	LINT_TAGS="${LINT_TAGS:-}"; GORM_TAGS="${GORM_TAGS:-}"; tags_for "$2" ;;
+	TAG_SETS="${TAG_SETS:-}"; GORM_TAGS="${GORM_TAGS:-}"; tags_for "$2" ;;
 --vet)
-	LINT_TAGS="${2:-${LINT_TAGS:-}}"; GORM_TAGS="${3:-${GORM_TAGS:-}}"
-	[ -n "$LINT_TAGS" ] || die "vet-modules: LINT_TAGS is empty; make must pass it"
+	TAG_SETS="${2:-${TAG_SETS:-}}"; GORM_TAGS="${3:-${GORM_TAGS:-}}"
+	[ -n "$TAG_SETS" ] || die "vet-modules: TAG_SETS is empty; make must pass it"
 	[ -n "$GORM_TAGS" ] || die "vet-modules: GORM_TAGS is empty; make must pass it"
 	mods=$(discover_modules); assert_usable "$mods"
+	# Echo the declared set BEFORE sweeping. A green run means "these
+	# combinations typecheck" and nothing wider, so a log that does not say
+	# which combinations were asked about records a verdict without its
+	# question (#263).
+	echo "vet-modules: declared combinations for the tagged modules:"
+	printf '  %s\n' $TAG_SETS
 	rc=0; n=0
 	for m in $mods; do
 		sets=$(tags_for "$m")   # `set -e` aborts the sweep if this is unmapped
 		for t in $sets; do
 			n=$((n + 1))
+			pkgs=$(packages_under "$m" "$t")
 			if [ "$t" = "-" ]; then
-				echo "==> ($m) $GOVET ./..."
+				echo "==> ($m) [$pkgs packages] $GOVET ./..."
 				(cd "$m" && $GOVET ./...) || { rc=1; echo "    FAILED in $m"; }
 			else
-				echo "==> ($m) $GOVET -tags \"$t\" ./..."
+				echo "==> ($m) [$pkgs packages] $GOVET -tags \"$t\" ./..."
 				(cd "$m" && $GOVET -tags "$t" ./...) || { rc=1; echo "    FAILED in $m under [$t]"; }
+			fi
+			if [ "$pkgs" = 0 ]; then
+				rc=1
+				echo "    MATCHED NO PACKAGES in $m under [$t] -- vet exited having looked at nothing"
 			fi
 		done
 	done
-	[ $rc -eq 0 ] || die "vet-modules: at least one module/tag combination does not typecheck (#178, #221)"
-	echo "vet-modules: clean — $n sweeps across $(printf '%s\n' "$mods" | wc -l | tr -d ' ') modules" ;;
+	[ $rc -eq 0 ] || die "vet-modules: at least one module/tag combination does not typecheck, or matched no packages (#178, #221, #263)"
+	echo "vet-modules: clean — $n sweeps across $(printf '%s\n' "$mods" | wc -l | tr -d ' ') modules, under the DECLARED combinations only" ;;
 *)
-	die "usage: vet-modules.sh [--list | --tags-for <module> | --vet <LINT_TAGS> <GORM_TAGS>]" ;;
+	die "usage: vet-modules.sh [--list | --tags-for <module> | --vet <TAG_SETS> <GORM_TAGS>]" ;;
 esac
