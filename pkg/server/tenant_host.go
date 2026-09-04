@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -58,6 +59,38 @@ type tenantHost struct {
 	logger   *slog.Logger
 }
 
+// buildTenantRaftConfigs builds the Raft host and shard configuration for a
+// per-tenant volume Host rooted at dataRoot.
+//
+// Per-tenant Raft host state lives under {DataRoot}/databases so that the
+// "barrier" sibling directory (the IAM Pebble) stays disjoint. The addresses
+// are placeholders that quicraft's config validation requires but never uses:
+// the Host is built WithoutTransport and performs no network I/O.
+//
+// Both transport-less Raft tunings apply here without qualification. The Host
+// has no network, so go-quicraft's WAN RTT estimate sizes an election budget
+// for a link it does not have; and its single shard is started with a
+// one-entry member map on a host no peer can reach, so its voting membership
+// can never grow and its quorum is permanently itself. See
+// cluster.TransportlessRTTMillisecond and cluster.SingleNodeElectionRTT
+// (go-qrdb#250).
+func buildTenantRaftConfigs(dataRoot string) (quicraftconfig.HostConfig, quicraftconfig.Config) {
+	hostRoot := filepath.Join(dataRoot, "databases")
+	hostCfg := quicraftconfig.HostConfig{
+		WALDir:        filepath.Join(hostRoot, "wal"),
+		NodeHostDir:   filepath.Join(hostRoot, "nodehost"),
+		RaftAddress:   "127.0.0.1:63901", // unused: WithoutTransport disables network I/O
+		ListenAddress: "127.0.0.1:63901",
+		DeploymentID:  1,
+	}
+	cluster.ApplyTransportlessHostTuning(&hostCfg)
+
+	shardCfg := quicraftconfig.Config{ShardID: tenantHostShardID, ReplicaID: 1}
+	cluster.ApplyTransportlessShardTuning(&shardCfg)
+
+	return hostCfg, shardCfg
+}
+
 // newTenantHost builds and starts a per-tenant Raft Host rooted at the tenant's
 // DataRoot, encrypting all on-disk state under the tenant barrier's DEK, and
 // returns the host wrapper with its bound data-plane services.
@@ -71,16 +104,7 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 		logger = slog.Default()
 	}
 
-	// Per-tenant Raft host state lives under {DataRoot}/databases so that the
-	// "barrier" sibling directory (the IAM Pebble) stays disjoint.
-	hostRoot := filepath.Join(dataRoot, "databases")
-	hostCfg := quicraftconfig.HostConfig{
-		WALDir:        filepath.Join(hostRoot, "wal"),
-		NodeHostDir:   filepath.Join(hostRoot, "nodehost"),
-		RaftAddress:   "127.0.0.1:63901", // unused: WithoutTransport disables network I/O
-		ListenAddress: "127.0.0.1:63901",
-		DeploymentID:  1,
-	}
+	hostCfg, shardCfg := buildTenantRaftConfigs(dataRoot)
 
 	// Encrypt the Raft WAL/LogDB under the tenant barrier's epoch DEK so the
 	// dedicated volume is fully encrypted at rest: the state-machine Pebble is
@@ -103,7 +127,6 @@ func newTenantHost(tenantID, dataRoot string, tb *seal.TenantBarrier, logger *sl
 	hub := watch.NewHub()
 	createFn := newDataPlaneCreateFunc(tb, lessor, hub)
 
-	shardCfg := quicraftconfig.Config{ShardID: tenantHostShardID, ReplicaID: 1}
 	members := map[uint64]string{1: hostCfg.RaftAddress}
 	if err := host.StartShard(members, false, createFn, shardCfg); err != nil {
 		_ = host.Close()

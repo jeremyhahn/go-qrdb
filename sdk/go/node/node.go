@@ -102,6 +102,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -2542,6 +2543,34 @@ func buildClusteredHost(
 	createFn sm.CreateFunc,
 	mtls *quicraftconfig.MTLSConfig,
 ) (*quicraft.Host, error) {
+	hostCfg, shardCfg, hostOpts := buildClusteredRaftConfigs(cfg, members, mtls)
+
+	host, err := quicraft.NewHost(hostCfg, hostOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
+		_ = host.Close()
+		return nil, err
+	}
+
+	return host, nil
+}
+
+// buildClusteredRaftConfigs derives the quicraft host configuration, KV shard
+// configuration and host options from the qrdb config and the initial member
+// set. It performs no I/O.
+//
+// A single-entry members map means the host is built WithoutTransport and has
+// no network at all, which is the precondition for both transport-less Raft
+// tunings — see cluster.TransportlessRTTMillisecond and
+// cluster.SingleNodeElectionRTT (go-qrdb#250).
+func buildClusteredRaftConfigs(
+	cfg *qrdbconfig.Config,
+	members map[uint64]string,
+	mtls *quicraftconfig.MTLSConfig,
+) (quicraftconfig.HostConfig, quicraftconfig.Config, []quicraft.HostOption) {
 	dataDir := cfg.Raft.DataDir
 	if dataDir == "" {
 		dataDir = "./data"
@@ -2584,17 +2613,18 @@ func buildClusteredHost(
 	}
 
 	var hostOpts []quicraft.HostOption
-	if len(members) == 1 {
+	transportless := len(members) == 1
+	if transportless {
 		hostOpts = append(hostOpts, quicraft.WithoutTransport())
+
+		// A host with no network inherits go-quicraft's WAN RTT estimate
+		// (200 ms), sizing an election budget for a link it does not have.
+		// See cluster.TransportlessRTTMillisecond (go-qrdb#250).
+		cluster.ApplyTransportlessHostTuning(&hostCfg)
 	} else if mtls != nil {
 		// Multi-node: inject mTLS material into the transport config so all
 		// inter-node QUIC connections are mutually authenticated.
 		hostCfg.TransportConfig.MTLSConfig = mtls
-	}
-
-	host, err := quicraft.NewHost(hostCfg, hostOpts...)
-	if err != nil {
-		return nil, err
 	}
 
 	shardCfg := quicraftconfig.Config{
@@ -2610,13 +2640,17 @@ func buildClusteredHost(
 	if shardCfg.ReplicaID == 0 {
 		shardCfg.ReplicaID = 1
 	}
-
-	if err := host.StartShard(members, cfg.Raft.Join, createFn, shardCfg); err != nil {
-		_ = host.Close()
-		return nil, err
+	if transportless && !cfg.Raft.Join {
+		// No peer can reach a transport-less host, so this shard's voting
+		// membership can never grow and its quorum is permanently itself.
+		// See cluster.SingleNodeElectionRTT. Join is excluded even though it
+		// cannot succeed without a transport: the shorter election timeout is
+		// sound only for a shard that is single-node by intent, and a
+		// misconfiguration must not be the thing that grants it.
+		cluster.ApplyTransportlessShardTuning(&shardCfg)
 	}
 
-	return host, nil
+	return hostCfg, shardCfg, hostOpts
 }
 
 // buildNodeServerConfig constructs a *qrdbconfig.Config suitable for

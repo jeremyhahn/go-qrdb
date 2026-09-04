@@ -33,6 +33,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/engine"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
@@ -636,29 +637,13 @@ func (b *EmbeddedServerBinding) startRaftNode(cfg *EmbeddedConfig) (*quicraft.Ho
 		}
 	}
 
-	// Build host configuration. ListenAddress mirrors RaftAddress for
-	// embedded single-node mode where no real network listener is
-	// created (WithoutTransport). AllowZeroDeploymentID permits the
-	// default zero value since embedded mode has no cross-cluster risk.
-	hostCfg := quicraftconfig.HostConfig{
-		WALDir:                filepath.Join(dataDir, "wal"),
-		NodeHostDir:           filepath.Join(dataDir, "nodehost"),
-		RaftAddress:           raftAddr,
-		ListenAddress:         raftAddr,
-		AllowZeroDeploymentID: true,
-	}
+	hostCfg, shardCfg := buildEmbeddedRaftConfigs(dataDir, raftAddr, shardID, replicaID)
 
 	// Create the host. Single-node embedded mode disables the network
 	// transport since all communication is in-process.
 	host, err := quicraft.NewHost(hostCfg, quicraft.WithoutTransport())
 	if err != nil {
 		return nil, &HostCreateError{Err: err}
-	}
-
-	// Build shard configuration.
-	shardCfg := quicraftconfig.Config{
-		ShardID:   shardID,
-		ReplicaID: replicaID,
 	}
 
 	// Start the shard with a single-node initial member map.
@@ -757,4 +742,35 @@ func resolveStorageSM(bknd string) string {
 		return sm
 	}
 	return "pebble"
+}
+
+// buildEmbeddedRaftConfigs builds the Raft host and shard configuration for
+// embedded mode, which is unconditionally single-node and transport-less.
+//
+// ListenAddress mirrors RaftAddress because no real network listener is ever
+// created (WithoutTransport). AllowZeroDeploymentID permits the default zero
+// value since embedded mode has no cross-cluster risk.
+//
+// Both transport-less Raft tunings apply here without qualification: the host
+// has no network, so its WAN RTT inheritance is simply wrong for it, and its
+// single shard can never acquire a peer and so is permanently its own quorum.
+// See cluster.TransportlessRTTMillisecond and cluster.SingleNodeElectionRTT
+// (go-qrdb#250).
+func buildEmbeddedRaftConfigs(dataDir, raftAddr string, shardID, replicaID uint64) (quicraftconfig.HostConfig, quicraftconfig.Config) {
+	hostCfg := quicraftconfig.HostConfig{
+		WALDir:                filepath.Join(dataDir, "wal"),
+		NodeHostDir:           filepath.Join(dataDir, "nodehost"),
+		RaftAddress:           raftAddr,
+		ListenAddress:         raftAddr,
+		AllowZeroDeploymentID: true,
+	}
+	cluster.ApplyTransportlessHostTuning(&hostCfg)
+
+	shardCfg := quicraftconfig.Config{
+		ShardID:   shardID,
+		ReplicaID: replicaID,
+	}
+	cluster.ApplyTransportlessShardTuning(&shardCfg)
+
+	return hostCfg, shardCfg
 }

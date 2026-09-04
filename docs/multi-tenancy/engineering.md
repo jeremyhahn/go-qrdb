@@ -319,14 +319,32 @@ under CI load the second is common: a 20 ms poll sleep overruns by microseconds
 on an idle host, so ten consecutive missed intervals is direct evidence of
 descheduling rather than of anything raft did.
 
-**The 15 second budget is not a tuning knob.** It is already about seven times
-the election's configured cost — go-quicraft derives the election timeout as
-`ElectionRTT * RTTMillisecond`, and this shard takes the defaults (10 * 200 ms =
-2 s). Widening it to quiet a red suite would remove the tests' ability to fail
-for the right reason: a genuine regression that quintupled election time would
-still fit inside the larger budget, leaving tests that are red when the host is
-busy and green when the code regresses. If this wait times out, read the verdict
-in the error before changing the number.
+**The 15 second budget is not a tuning knob.** It already dwarfs the election's
+configured cost. go-quicraft derives the election timeout as
+`ElectionRTT * RTTMillisecond`, and this shard no longer takes the upstream
+defaults: the tenant Host is built `WithoutTransport()`, so it carries
+`cluster.TransportlessRTTMillisecond` (25 ms) and
+`cluster.SingleNodeElectionRTT` (5 ticks) — a **125 ms** election budget.
+Until those existed a transport-less host inherited go-quicraft's WAN defaults,
+10 * 200 ms = 2 s, and this wait was about seven times them. 25 ms rather than
+go-quicraft's documented LAN range was chosen by measurement: `RTTMillisecond`
+is also the engine tick interval, so it prices continuous CPU as well as
+election latency, and 25 ms captures 95% of the achievable boot latency for 32%
+of the CPU that 5 ms costs.
+
+Widening it to quiet a red suite would remove the tests' ability to fail for the
+right reason: a genuine regression that quintupled election time would still fit
+inside the larger budget, leaving tests that are red when the host is busy and
+green when the code regresses. If this wait times out, read the verdict in the
+error before changing the number.
+
+The budget is now roughly 120x the election it waits on, so whether it should be
+*tightened* is a live question — and a separate one from not widening it. The
+argument above establishes only that widening destroys the tests' ability to
+fail for the right reason. Tightening needs its own evidence, because what this
+wait absorbs is host descheduling rather than election time, and the two do not
+shrink together: the election budget fell by 16x, the scheduler's worst pause
+did not.
 
 ## Test strategy
 

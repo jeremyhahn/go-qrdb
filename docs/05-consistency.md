@@ -101,7 +101,18 @@ If no quorum ack before 150ms: lease expires, leader stops serving reads
 
 1. **go-quicraft config:** `LeaseRead: true`
 2. **Leader commitment:** `CheckQuorum: true` (leader steps down if it can't reach a quorum)
-3. **Timing:** `ElectionRTT >= 5` (lease duration must be meaningful)
+3. **Timing:** `ElectionRTT >= 5` (lease duration must be meaningful).
+   go-quicraft's own message on that check recommends 10, and the lease is
+   `ElectionRTT - 2` ticks — a **fixed** 2-tick margin, so lowering
+   `ElectionRTT` shrinks the lease disproportionately. Those 2 ticks absorb
+   goroutine scheduling jitter between the leader's lease check and followers'
+   election timeout, which is what prevents split-brain reads: a correctness
+   property, not a latency one. **Do not lower `ElectionRTT` on a multi-node
+   shard.** A single-node shard is exempt as a matter of fact rather than
+   prudence — its quorum is itself, so `hasValidLease` is unconditionally true
+   and the lease cannot be lost. That exemption is what
+   `cluster.SingleNodeElectionRTT` applies, and only to shards on
+   transport-less hosts (go-qrdb#250).
 
 **When to use:**
 

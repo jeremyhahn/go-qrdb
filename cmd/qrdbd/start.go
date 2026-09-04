@@ -2515,6 +2515,10 @@ func initializeNode(ctx context.Context, f *startFlags, bundle *TLSBundle) (*qui
 
 	// Determine host options based on peer count.
 	// Single-node (no remote peers) uses WithoutTransport.
+	//
+	// isSingleNode is the SAME predicate buildHostConfig and buildShardConfig
+	// use to decide the transport-less Raft tunings. The tunings are sound
+	// only for a host with no network, so the two must never diverge.
 	var hostOpts []quicraft.HostOption
 	if isSingleNode(f) {
 		hostOpts = append(hostOpts, quicraft.WithoutTransport())
@@ -2773,7 +2777,7 @@ func buildHostConfig(f *startFlags, mtls *quicraftconfig.MTLSConfig) quicraftcon
 	walDir := filepath.Join(f.dataDir, "wal")
 	nodeHostDir := filepath.Join(f.dataDir, "nodehost")
 
-	return quicraftconfig.HostConfig{
+	hc := quicraftconfig.HostConfig{
 		WALDir:               walDir,
 		NodeHostDir:          nodeHostDir,
 		RaftAddress:          f.raftAddress,
@@ -2788,6 +2792,15 @@ func buildHostConfig(f *startFlags, mtls *quicraftconfig.MTLSConfig) quicraftcon
 			Level:  quicraftconfig.LogLevel(f.logLevel),
 		},
 	}
+
+	// A single-node daemon builds its host WithoutTransport (initializeNode),
+	// so it would otherwise inherit go-quicraft's WAN RTT estimate (200 ms) —
+	// an election budget sized for a link this host does not have.
+	// See cluster.TransportlessRTTMillisecond (go-qrdb#250).
+	if isSingleNode(f) {
+		cluster.ApplyTransportlessHostTuning(&hc)
+	}
+	return hc
 }
 
 // buildShardConfig constructs a shard Config from the parsed start flags.
@@ -2802,6 +2815,20 @@ func buildShardConfig(f *startFlags) quicraftconfig.Config {
 	}
 	if !f.checkQuorum {
 		cfg.CheckQuorum = quicraftconfig.BoolPtr(false)
+	}
+
+	// No peer can reach a transport-less host, so a single-node daemon's
+	// system shard can never grow its voting membership and its quorum is
+	// permanently itself. See cluster.SingleNodeElectionRTT.
+	//
+	// --join is excluded even though it cannot succeed without a transport:
+	// the shorter election timeout is sound only for a shard that is
+	// single-node by intent, and a misconfiguration must not be what grants
+	// it. Dedicated per-database shards started later on this same host by
+	// RaftBackendFactory keep the go-quicraft default — that factory's host
+	// may be clustered, and the exemption is not sound there.
+	if isSingleNode(f) && !f.join {
+		cluster.ApplyTransportlessShardTuning(&cfg)
 	}
 	return cfg
 }
