@@ -689,3 +689,113 @@ func TestShardedStateMachines_GuardedVerbs_WithdrawRestoresThePriorValue(t *test
 		})
 	}
 }
+
+// Every Backend answers the durable pair, and the two backends that hold real
+// storage answer it with the disk rather than with a cache.
+//
+// This replaces a test that pinned which backends DECLARED they could carry a
+// guarded write, back when declaring was optional and FastBackend declined.
+// Declaring is gone: Backend requires PutDurable and DeleteDurable of every
+// implementation, so the question is no longer who claims the guarantee but
+// whether each one delivers it. The table is deliberately exhaustive — a new
+// backend that compiles but persists in the background has to be added here
+// and will fail.
+func TestBackends_DurableWritesLandBeforeTheyReturn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		new  func(store storage.Storage) Backend
+		// storageBacked backends are read through the STORE, with no drain and
+		// no Close, which is the only assertion that can tell a durable write
+		// from a cached one. The in-memory backends have no storage behind
+		// them; there, Get is the whole of the state.
+		storageBacked bool
+	}{
+		{"StandardBackend", func(storage.Storage) Backend { return NewStandardBackend() }, false},
+		{"ConcurrentBackend", func(storage.Storage) Backend { return NewConcurrentBackend() }, false},
+		{"HighPerfBackend", func(storage.Storage) Backend { return NewHighPerfBackend(nil) }, false},
+		{"DiskBackend", func(st storage.Storage) Backend { return NewDiskBackend(st) }, true},
+		{"FastBackend", func(st storage.Storage) Backend { return NewFastBackend(1, 1, st, nil) }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("PutDurable is durable when it returns", func(t *testing.T) {
+				store := newMemStorage()
+				b := tc.new(store)
+				t.Cleanup(func() { _ = b.Close() })
+
+				if err := b.PutDurable([]byte("k"), []byte("v")); err != nil {
+					t.Fatalf("PutDurable: %v", err)
+				}
+				if got, _ := b.Get([]byte("k")); !bytes.Equal(got, []byte("v")) {
+					t.Fatalf("Get = %q, want %q", got, "v")
+				}
+				if !tc.storageBacked {
+					return
+				}
+				got, gerr := store.Get([]byte("k"))
+				if gerr != nil {
+					t.Fatalf("storage.Get: %v", gerr)
+				}
+				if !bytes.Equal(got, []byte("v")) {
+					t.Fatalf("storage holds %q immediately after PutDurable returned, want %q — "+
+						"the write was acknowledged before it was durable", got, "v")
+				}
+			})
+
+			t.Run("DeleteDurable is durable when it returns", func(t *testing.T) {
+				store := newMemStorage()
+				b := tc.new(store)
+				t.Cleanup(func() { _ = b.Close() })
+
+				if err := b.PutDurable([]byte("k"), []byte("v")); err != nil {
+					t.Fatalf("seed PutDurable: %v", err)
+				}
+				if err := b.DeleteDurable([]byte("k")); err != nil {
+					t.Fatalf("DeleteDurable: %v", err)
+				}
+				if got, _ := b.Get([]byte("k")); got != nil {
+					t.Fatalf("Get = %q after DeleteDurable, want absent", got)
+				}
+				if !tc.storageBacked {
+					return
+				}
+				got, gerr := store.Get([]byte("k"))
+				if gerr != nil {
+					t.Fatalf("storage.Get: %v", gerr)
+				}
+				if got != nil {
+					t.Fatalf("storage still holds %q immediately after DeleteDurable returned — "+
+						"the release was acknowledged before it was durable, so a restart "+
+						"here resurrects a claim its owner has already given up", got)
+				}
+			})
+
+			if !tc.storageBacked {
+				// An in-memory backend has no storage that can fail, so there
+				// is no failure to report and no entry to withdraw. Asserting
+				// one would test the double, not the backend.
+				return
+			}
+
+			t.Run("a failed durable write is reported and withdrawn", func(t *testing.T) {
+				boom := stderrors.New("disk full")
+				store := newFailSetStorage(boom)
+				b := tc.new(store)
+				t.Cleanup(func() { _ = b.Close() })
+
+				store.failing.Store(true)
+				err := b.PutDurable([]byte("k"), []byte("v"))
+				if err == nil {
+					t.Fatal("PutDurable returned nil on a write that never reached storage")
+				}
+				if !stderrors.Is(err, boom) {
+					t.Errorf("error = %v, want it to wrap the storage fault", err)
+				}
+				if got, _ := b.Get([]byte("k")); got != nil {
+					t.Fatalf("the backend still advertises %q for a write that never landed; "+
+						"the next guarded write on this key would answer \"already exists\" "+
+						"for a value no reader will ever find", got)
+				}
+			})
+		})
+	}
+}

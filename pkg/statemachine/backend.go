@@ -14,14 +14,46 @@
 
 package statemachine
 
-import (
-	"io"
-	"reflect"
-)
+import "io"
 
 // Backend abstracts the underlying key-value storage for state machines.
 // Implementations handle get/put/delete/list/scan operations with their
 // own concurrency model (single-threaded, sharded, disk-backed, etc.).
+//
+// There are TWO write contracts here, and the difference is the whole reason
+// the interface carries four write methods instead of two.
+//
+// Put and Delete are the UNGUARDED pair. Their promise is "your write is
+// queued": an implementation may buffer them and persist in the background,
+// and a storage failure may be logged rather than returned. FastBackend exists
+// to provide exactly that, and nothing in this change alters it.
+//
+// PutDurable and DeleteDurable are the GUARDED pair, and every implementation
+// must satisfy three properties:
+//
+//   - DURABLE ON RETURN. A nil return means the write has taken effect, so a
+//     caller told "you won the claim" or "you released it" is not contradicted
+//     by a restart.
+//   - FAILURE RETURNED. A storage fault comes back as an error rather than
+//     reaching a log line nobody reads, so the guard can refuse instead of
+//     reporting a success that did not happen.
+//   - ORDERED. The write lands after every earlier write to the same key, so
+//     no pending older write can overwrite it.
+//
+// They are METHODS ON Backend rather than an optional interface a backend may
+// or may not implement (owner ruling 2026-09-03, go-qrdb#216, option 2). An
+// optional interface is the idiomatic Go shape and it is wrong here: a backend
+// that does not implement it falls back to the asynchronous path SILENTLY, and
+// silently degrading is the exact thing the guarded plane exists to refuse. An
+// opt-in guarantee is not a guarantee. On this interface a new backend — in
+// this repository or outside it — cannot compile without answering, and the
+// answer is visible in its source rather than inferred from a type assertion.
+//
+// A backend with no durability to promise satisfies the guarded pair by
+// delegating: for a pure in-memory map the write has landed when Put returns,
+// so the two contracts coincide. The pair is not redundant there — it is
+// trivially satisfied there, which is a different statement, and the one
+// FastBackend does not get to make.
 type Backend interface {
 	// Get retrieves the value for the given key. Returns nil, nil when
 	// the key does not exist.
@@ -34,6 +66,16 @@ type Backend interface {
 	// Delete removes a key. Implementations may buffer deletes and
 	// persist asynchronously.
 	Delete(key []byte) error
+
+	// PutDurable stores a key-value pair and returns only once the write
+	// has taken effect, reporting a failure instead of logging it. See the
+	// contract note above the interface.
+	PutDurable(key, value []byte) error
+
+	// DeleteDurable removes a key and returns only once the removal has
+	// taken effect, reporting a failure instead of logging it. See the
+	// contract note above the interface.
+	DeleteDurable(key []byte) error
 
 	// List returns all keys matching the given prefix. An empty prefix
 	// returns all keys.
@@ -59,73 +101,4 @@ type Backend interface {
 	// Close releases all resources held by the backend. It must wait
 	// for any in-flight asynchronous operations to complete.
 	Close() error
-}
-
-// GuardedWriteBackend is the OPT-IN declaration that a Backend's Put and
-// Delete can carry what a guarded verb's result promises:
-//
-//   - a write that returns nil has taken effect and is durable, so a caller
-//     told "you won the claim" or "you released it" is not contradicted by a
-//     restart;
-//   - a write that fails RETURNS its error rather than logging it, so the
-//     guard can refuse instead of reporting a success that did not happen;
-//   - a write is ordered after every earlier write to the same key, so no
-//     pending older write can overwrite it.
-//
-// It is a separate optional interface rather than a method on Backend so that
-// adding it breaks no existing implementation — including any outside this
-// repository — and it is OPT-IN rather than opt-out for the reason that
-// matters: a backend that does not declare it is REFUSED, so a new backend
-// whose author has not thought about ordering fails closed. Getting this
-// backwards would make the next FastBackend silently unsafe instead of
-// silently unavailable.
-//
-// The third clause is the one with history. FastBackend used to satisfy
-// NEITHER the first nor the third: it writes its cache synchronously and then
-// persisted on an unordered background goroutine whose error it swallows.
-// Measured deterministically on that backend with ordinary writes: Put(k,"old")
-// followed by Put(k,"new") left storage holding "old", and Put(k,"v") followed
-// by Delete(k) left the key PRESENT — the value resurrected after its own
-// delete. go-qrdb#224 fixed the ordering by giving it the same persistOrder
-// discipline FastStateMachine and ConcurrentStateMachine have had since
-// go-qrdb#86.
-//
-// It still does NOT implement this interface, because the first two clauses
-// are untouched: Put returns before the value is durable, and a storage
-// failure is logged rather than returned. The guarded verbs therefore continue
-// to refuse on it with a typed GuardedWriteUnsupportedError. Supplying the
-// remaining two promises needs a way for a Backend to express a synchronous
-// write, which is an interface change and the owner's call: go-qrdb#216.
-type GuardedWriteBackend interface {
-	Backend
-
-	// SupportsGuardedWrites reports the three promises above. It is a method
-	// rather than a bare marker so a backend whose guarantee depends on how it
-	// was constructed can answer for the instance rather than for the type.
-	SupportsGuardedWrites() bool
-}
-
-// backendSupportsGuardedWrites reports whether b can carry a guarded verb's
-// result. A backend that does not implement GuardedWriteBackend answers no.
-func backendSupportsGuardedWrites(b Backend) bool {
-	gw, ok := b.(GuardedWriteBackend)
-	return ok && gw.SupportsGuardedWrites()
-}
-
-// backendName is the backend's type name without its package qualifier, for
-// naming it in a refusal an operator has to act on.
-//
-// Reflection rather than a Name() method on Backend: this is a diagnostic
-// string and nothing branches on it, so it does not justify widening the
-// interface every implementation — including any outside this repository —
-// would then have to satisfy.
-func backendName(b Backend) string {
-	if b == nil {
-		return "nil"
-	}
-	t := reflect.TypeOf(b)
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	return t.Name()
 }

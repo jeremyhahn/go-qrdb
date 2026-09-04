@@ -42,17 +42,6 @@ type KVStateMachine struct {
 	handlers map[byte]updateHandler
 	logger   *slog.Logger
 
-	// guardedWrites records whether the backend can carry what a guarded
-	// verb's result promises — see GuardedWriteBackend. Resolved ONCE at
-	// construction rather than per apply: it is a property of the composition,
-	// it cannot change while the state machine runs, and the guarded verbs are
-	// on the apply path.
-	guardedWrites bool
-
-	// backendName names the backend in a refusal, so an operator reading
-	// "not supported on the fast backend" knows which knob to turn.
-	backendName string
-
 	// Optional subsystem managers.
 	watchManager WatchManager
 	indexManager IndexManager
@@ -72,9 +61,6 @@ func NewKVStateMachine(backend Backend, opts ...KVOption) *KVStateMachine {
 	for _, opt := range opts {
 		opt(k)
 	}
-
-	k.guardedWrites = backendSupportsGuardedWrites(backend)
-	k.backendName = backendName(backend)
 
 	k.handlers = map[byte]updateHandler{
 		// Basic KV

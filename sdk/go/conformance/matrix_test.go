@@ -53,8 +53,6 @@ func TestGuardedVerbConformanceMatrix(t *testing.T) {
 				assertGuardedPlaneWorks(t, c, cl)
 			case typedRefusal:
 				assertGuardedPlaneRefusesSafely(t, c, cl)
-			case guardedWriteRefusal:
-				assertGuardedWritesRefuseSafely(t, c, cl)
 			}
 		})
 	}
@@ -435,95 +433,6 @@ func assertAbsenceIsObservable(t *testing.T, cl clients) {
 // ---------------------------------------------------------------------------
 // typed refusal
 // ---------------------------------------------------------------------------
-
-// assertGuardedWritesRefuseSafely is the contract for a cell that DISPATCHES
-// the guarded delete and swap but whose backend cannot carry what their result
-// promises.
-//
-// Only sm_type "fast" is in this state: it is a KVStateMachine over
-// FastBackend, whose background persist is ordered against nothing and swallows
-// its error, so an acknowledged guarded write can be reversed by an older
-// pending one. Measured with ORDINARY writes in
-// pkg/statemachine/guarded_ops_test.go — Put(k,"old") then Put(k,"new") leaves
-// "old" durable, and Put(k,"v") then Delete(k) leaves the key present
-// (go-qrdb#224). Applied to CompareAndDelete that is a released lock coming
-// back, so the verbs refuse rather than report a success the disk can undo.
-//
-// The three assertions are all load-bearing and each rules out a different
-// wrong fix:
-//
-//   - PutIfAbsent still WORKS. A blanket "refuse everything guarded on fast"
-//     would also satisfy a refusal-only check, and it would break first boot —
-//     the identity index claims identities with PutIfAbsent. That it keeps
-//     working is deliberate and is recorded on go-qrdb#216.
-//   - The delete and swap refuse with a TYPED capability error, not an
-//     absent opcode. A caller must be able to tell "this backend will not do
-//     it" from "this build has no such verb"; only the first is fixed by
-//     changing raft.sm_type.
-//   - The node still serves afterwards, which is the go-qrdb#129 regression
-//     every refusing cell pins.
-func assertGuardedWritesRefuseSafely(t *testing.T, c cell, cl clients) {
-	t.Helper()
-	ctx := boundedCtx(t)
-
-	if err := cl.kv.Put(ctx, "before", []byte("1")); err != nil {
-		t.Fatalf("%s: plain Put failed before any guarded verb, so this cell never "+
-			"reached the state under test: %v", c.name(), err)
-	}
-
-	// The acquire half is unaffected and must stay that way.
-	assertPutIfAbsentWorks(t, cl)
-
-	for _, r := range []struct {
-		verb string
-		call func() error
-
-		// untypedOn carries the go-qrdb#126 named exclusion, per VERB. The two
-		// single-key verbs have no entry and are held to the typed refusal on
-		// every transport; only /tx over REST is excused, for the reason
-		// classifyRefusalWith records.
-		untypedOn []transportKind
-	}{
-		{verb: "CompareAndSwap", call: func() error {
-			_, err := cl.guarded.CompareAndSwap(ctx, "claim", []byte("acme"), []byte("globex"))
-			return err
-		}},
-		{verb: "CompareAndDelete", call: func() error {
-			_, err := cl.guarded.CompareAndDelete(ctx, "claim", []byte("acme"))
-			return err
-		}},
-		{verb: "ExecuteTransaction", untypedOn: []transportKind{restTransport}, call: func() error {
-			_, err := cl.txn.ExecuteTransaction(ctx, &transport.TransactionRequest{
-				Compares:   []transport.Compare{valueEquals("before", "1")},
-				SuccessOps: []transport.Op{put("txn/x", "x")},
-			})
-			return err
-		}},
-	} {
-		// The guard REFUSED, so the expected value it named must be untouched.
-		// Asserting only that an error came back would pass against an
-		// implementation that refused after writing.
-		assertCapabilityRefusal(t, r.verb, r.call(), slices.Contains(r.untypedOn, c.transport))
-	}
-
-	// The claim PutIfAbsent took is still exactly as it was: a refused swap did
-	// not edit it and a refused delete did not remove it.
-	if got, err := cl.kv.Get(ctx, "claim"); err != nil || string(got) != "acme" {
-		t.Errorf("%s: after two refused guarded verbs the claim reads %q err=%v, want %q "+
-			"untouched — a refusal that mutates is worse than one that executes",
-			c.name(), got, err, "acme")
-	}
-
-	if err := cl.kv.Put(ctx, "after", []byte("2")); err != nil {
-		t.Fatalf("%s: a plain Put FAILED after the guarded verbs were refused (%v). "+
-			"Refusing an unsupported verb must not cost the cluster its shard "+
-			"(go-qrdb#129)", c.name(), err)
-	}
-	if got, err := cl.kv.Get(ctx, "after"); err != nil || string(got) != "2" {
-		t.Fatalf("%s: a linearizable Get FAILED after the guarded verbs were refused "+
-			"(%q, %v)", c.name(), got, err)
-	}
-}
 
 // assertGuardedPlaneRefusesSafely is the contract for a cell whose state
 // machine does not carry the MULTI-KEY half of the plane: refusing is allowed,

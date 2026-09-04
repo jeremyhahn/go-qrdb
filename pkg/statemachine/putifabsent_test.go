@@ -477,6 +477,17 @@ type persistCloser interface {
 	Close(ctx context.Context) error
 }
 
+// ctxCloser adapts a Close() error to persistCloser.
+//
+// KVStateMachine and the Backend beneath it close without a context, while the
+// two sharded state machines take one. The alternative -- giving
+// shardedPersistTargets a second closer shape -- would let the KV target be
+// added without being drained, and the reordering tests below assert what
+// storage saw AFTER the drain.
+type ctxCloser func() error
+
+func (c ctxCloser) Close(context.Context) error { return c() }
+
 // applyResult carries an apply's outcome back from its own goroutine.
 type applyResult struct {
 	res sm.Result
@@ -544,6 +555,36 @@ func shardedPersistTargets() map[string]func(storage.Storage) (conformanceTarget
 				lookup:   lookupWithContext(c.Lookup),
 				handlers: c.handlers,
 			}, c
+		},
+		// The third target is a COMPOSITION rather than a state machine that
+		// owns its storage, and it is the one go-qrdb#216 is about: sm_type
+		// "fast" resolves to KVStateMachine over FastBackend, which reaches
+		// storage only through the Backend seam. Every assertion in this
+		// battery applied to the other two and none of them applied here,
+		// because Backend had no way to say "write this synchronously and tell
+		// me if it failed". It has one now, so the battery runs over all three
+		// unchanged -- which is the whole verification: the promises are the
+		// same promises, not a weaker set written for a weaker backend.
+		"KVStateMachine/FastBackend": func(store storage.Storage) (conformanceTarget, persistCloser) {
+			backend := NewFastBackend(1, 1, store, nil)
+			k := NewKVStateMachine(backend)
+			return conformanceTarget{
+				apply: func(t *testing.T, cmd []byte) (sm.Result, error) {
+					t.Helper()
+					results := make([]sm.Result, 1)
+					err := k.Update([]sm.Entry{{Index: 1, Cmd: cmd}}, results)
+					return results[0], err
+				},
+				lookup: func(t *testing.T, key []byte) []byte {
+					t.Helper()
+					v, err := backend.Get(key)
+					if err != nil {
+						t.Fatalf("backend.Get: %v", err)
+					}
+					return v
+				},
+				handlers: k.handlers,
+			}, ctxCloser(k.Close)
 		},
 	}
 }

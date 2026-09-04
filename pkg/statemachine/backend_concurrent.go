@@ -28,10 +28,7 @@ import (
 const kvConcurrentShardCount = 16
 
 // Compile-time interface assertion.
-var (
-	_ Backend             = (*ConcurrentBackend)(nil)
-	_ GuardedWriteBackend = (*ConcurrentBackend)(nil)
-)
+var _ Backend = (*ConcurrentBackend)(nil)
 
 // kvConcurrentShard is a single partition of the in-memory key-value data
 // for ConcurrentBackend, protected by its own read-write mutex.
@@ -305,7 +302,10 @@ func (b *ConcurrentBackend) Close() error {
 	return nil
 }
 
-// SupportsGuardedWrites reports true, for the same reason StandardBackend does:
-// sharding changes which mutex a key uses, not whether the write has landed by
-// the time Put or Delete returns.
-func (b *ConcurrentBackend) SupportsGuardedWrites() bool { return true }
+// PutDurable delegates to Put, and DeleteDurable to Delete, for the same
+// reason StandardBackend's do: sharding changes which mutex a key uses, not
+// whether the write has landed by the time Put or Delete returns.
+func (b *ConcurrentBackend) PutDurable(key, value []byte) error { return b.Put(key, value) }
+
+// DeleteDurable delegates to Delete — see PutDurable.
+func (b *ConcurrentBackend) DeleteDurable(key []byte) error { return b.Delete(key) }

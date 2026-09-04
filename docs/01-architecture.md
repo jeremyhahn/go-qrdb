@@ -474,10 +474,12 @@ and `node.EnableEncryption()`.
   `unknown opcode: 66` until go-qrdb#175. They need no MVCC store — the guard
   is evaluated against the state machine's own store inside apply — so unlike
   the multi-key transaction plane they are not confined to `sm_type: mvcc`.
-  They are available on every `sm_type` **except `fast`**, which refuses them
-  with a typed `GuardedWriteUnsupportedError` because its backend cannot keep
-  the durability and ordering promises a guarded result makes (below, and
-  go-qrdb#216).
+  They are available on **every `sm_type`**, `fast` included. Between
+  go-qrdb#175 and go-qrdb#216 `fast` refused them with a typed
+  `GuardedWriteUnsupportedError`, because `KVStateMachine` reaches storage only
+  through the `Backend` seam and `FastBackend` acknowledged a write before it
+  was durable; `Backend` now requires a durable write pair of every
+  implementation, so the refusal is gone along with the error type (below).
   `pkg/statemachine/guarded_ops_test.go` enforces their coverage the way
   `putifabsent_test.go` enforces the base set, and
   `sdk/go/conformance/matrix_test.go` walks them across every backend, mode and
@@ -509,17 +511,30 @@ and `node.EnableEncryption()`.
      restoring exactly the prior state — an absence, a delete tombstone, or the
      previous value.
 
-     That exemption reaches `FastStateMachine` and `ConcurrentStateMachine`,
-     which own their storage. It does NOT reach `KVStateMachine` over
-     `FastBackend` (`sm_type: fast`), which acknowledges a write before it is
-     durable and logs a storage failure rather than returning it. The guarded
-     delete and swap therefore **refuse** on that backend rather than
-     executing (`GuardedWriteUnsupportedError`), which is why `Backend` has the
-     opt-in `GuardedWriteBackend` interface and why it is opt-IN: a backend
-     that has not thought the question through fails closed. `PutIfAbsent`
-     still executes there, because it has been offered since go-qrdb#86 and
-     withdrawing it is the owner's call. Supplying the missing promises is
-     **go-qrdb#216**.
+     That exemption reached `FastStateMachine` and `ConcurrentStateMachine`
+     directly, because they own their storage. `KVStateMachine` reaches storage
+     only through the `Backend` seam, so it had no way to ask for a synchronous
+     write at all — and over `FastBackend` (`sm_type: fast`) it acknowledged a
+     claim before it was durable and logged the storage failure rather than
+     returning it.
+
+     **`Backend` now carries the durable pair itself** — `PutDurable` and
+     `DeleteDurable`, alongside the asynchronous `Put` and `Delete` (owner
+     ruling 2026-09-03, **go-qrdb#216**). The three guarded verbs write through
+     the durable pair; `Put`, `Delete` and the batch verbs keep the
+     asynchronous one. Every implementation must answer: the four in-memory
+     backends and `DiskBackend` satisfy it by delegating, since their writes
+     already land before the call returns, and `FastBackend` implements it as a
+     synchronous ordered write that returns its storage error and withdraws the
+     cache entry when the write does not land.
+
+     The methods are on the interface rather than in an optional one a backend
+     may implement. An optional interface is the idiomatic Go shape and it is
+     wrong here: a backend that skipped it would fall back to the asynchronous
+     path SILENTLY, which is the degradation the guarded plane exists to
+     refuse. An opt-in guarantee is not a guarantee. The interim opt-in
+     `GuardedWriteBackend` and its `GuardedWriteUnsupportedError` are removed —
+     a refusal path no backend can reach is an invitation to re-arm it.
   2. **Writes reach storage in apply order, per shard.** They did not
      originally: each write persisted on an independent goroutine, so
      `Delete(k)` followed by `PutIfAbsent(k, v)` could leave storage with no

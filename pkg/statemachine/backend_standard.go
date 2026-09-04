@@ -26,10 +26,7 @@ import (
 )
 
 // Compile-time interface assertion.
-var (
-	_ Backend             = (*StandardBackend)(nil)
-	_ GuardedWriteBackend = (*StandardBackend)(nil)
-)
+var _ Backend = (*StandardBackend)(nil)
 
 // StandardBackend is a simple in-memory key-value backend backed by a
 // single map protected by a read-write mutex. It mirrors the storage
@@ -252,10 +249,19 @@ func (b *StandardBackend) Close() error {
 	return nil
 }
 
-// SupportsGuardedWrites reports true. This backend is a plain map under a
-// mutex: Put and Delete take effect before they return, they cannot fail, and
-// there is no asynchronous path for an earlier write to arrive late on. There
-// is no durability to promise because there is no storage — which satisfies
-// the contract rather than dodging it, since nothing can contradict the
-// acknowledgement afterwards.
-func (b *StandardBackend) SupportsGuardedWrites() bool { return true }
+// PutDurable delegates to Put, and DeleteDurable to Delete.
+//
+// This backend is a plain map under a mutex: the write has taken effect before
+// Put returns, it cannot fail, and there is no asynchronous path for an
+// earlier write to arrive late on. All three properties Backend's guarded pair
+// asks for therefore already hold of the unguarded pair, so delegating is the
+// honest implementation rather than a shortcut.
+//
+// There is no durability to promise because there is no storage. That
+// SATISFIES the contract rather than dodging it: what the guarded caller needs
+// is that nothing can contradict the acknowledgement afterwards, and on a
+// process-local map nothing can.
+func (b *StandardBackend) PutDurable(key, value []byte) error { return b.Put(key, value) }
+
+// DeleteDurable delegates to Delete — see PutDurable.
+func (b *StandardBackend) DeleteDurable(key []byte) error { return b.Delete(key) }

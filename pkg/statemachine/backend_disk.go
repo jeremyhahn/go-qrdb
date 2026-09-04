@@ -27,10 +27,7 @@ import (
 )
 
 // Compile-time interface assertion.
-var (
-	_ Backend             = (*DiskBackend)(nil)
-	_ GuardedWriteBackend = (*DiskBackend)(nil)
-)
+var _ Backend = (*DiskBackend)(nil)
 
 // DiskBackend wraps a storage.Storage directly for synchronous disk I/O.
 // All operations delegate to the underlying storage without any caching.
@@ -295,9 +292,15 @@ func (b *DiskBackend) clearStorage() error {
 	return nil
 }
 
-// SupportsGuardedWrites reports true. Every write goes straight through to
-// storage on the CALLING goroutine and returns that storage's error, so an
-// acknowledgement means the write is durable, a failure is reported rather
-// than logged, and writes reach storage in the order the apply loop issued
-// them.
-func (b *DiskBackend) SupportsGuardedWrites() bool { return true }
+// PutDurable delegates to Put, and DeleteDurable to Delete.
+//
+// Every write on this backend already goes straight through to storage on the
+// CALLING goroutine and returns that storage's error, so an acknowledgement
+// means the write is durable, a failure is reported rather than logged, and
+// writes reach storage in the order the apply loop issued them. This is the
+// one backend that holds real storage and whose unguarded pair already answers
+// the guarded contract in full.
+func (b *DiskBackend) PutDurable(key, value []byte) error { return b.Put(key, value) }
+
+// DeleteDurable delegates to Delete — see PutDurable.
+func (b *DiskBackend) DeleteDurable(key []byte) error { return b.Delete(key) }

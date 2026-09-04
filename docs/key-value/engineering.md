@@ -220,14 +220,13 @@ middle decided nowhere.
   |---|---|---|
   | `pebble` (default), `mvcc`, `mvcc-fast` | yes | yes |
   | `memory`, `standard`, `concurrent`, `highperf`, `disk`, `regular` | yes | yes |
-  | `fast` | yes | **refused** — `GuardedWriteUnsupportedError`, see below |
+  | `fast` | yes | yes |
 
-  `fast` is the single exception and it is a refusal, not a silent failure: its
-  backend acknowledges a write before it is durable and logs a storage failure
-  rather than returning it, so the verbs decline rather than report a success
-  the disk may contradict. The next two bullets say why; making it capable is
-  tracked separately and is an owner's call, not a doc's. **Do not choose
-  `sm_type: fast` for a workload that needs a guarded delete or swap.**
+  There is no longer a row that declines. `fast` refused the guarded delete and
+  swap for one release, while its backend could not carry what their result
+  promised — see the durability bullet below for what changed, and why the fix
+  went into the `Backend` interface rather than into that backend's ordinary
+  write path.
 - **The comparison runs inside apply, never on the proposer.** Every replica
   evaluates the same entry against the state it has applied up to that entry's
   log position, so every replica reaches the same decision. Reading on the
@@ -257,44 +256,63 @@ middle decided nowhere.
   three distinct states and not interchangeable. No earlier write to the same
   key can land after it.
 
-- **`sm_type: fast` cannot keep those promises, so it REFUSES the guarded
-  delete and swap** with a typed `GuardedWriteUnsupportedError`, which reaches
-  the caller as a capability refusal. It is a refusal and not a silent absence
-  on purpose: "this backend will not do it" and "this build has no such verb"
-  are different facts, and only the first is fixed by changing `raft.sm_type`.
+- **`KVStateMachine` gets those promises from the `Backend` interface, which
+  carries a durable write pair.** `Backend` has four write methods, in two
+  contracts: `Put` and `Delete` are asynchronous — "your write is queued", a
+  failure may be logged — while `PutDurable` and `DeleteDurable` return only
+  once the write has taken effect, return the failure instead of logging it,
+  and land after every earlier write to the same key. The three guarded verbs
+  use the durable pair; `Put`, `Delete` and the batch verbs use the
+  asynchronous one.
 
-  That type is a `KVStateMachine` over `FastBackend`, which persists on a
-  background goroutine: `Put` returns once the cache holds the value, and a
-  storage error is logged rather than returned. So a caller told "you released
-  the claim" can still be contradicted by the disk, which is the failure this
-  plane exists to prevent — and advertising the verbs there would be worse than
-  not offering them.
+  **Every implementation must answer, and that is the design.** The methods are
+  on `Backend` itself rather than in an optional interface a backend may
+  implement. An optional interface is the idiomatic Go shape and it is wrong
+  here: a backend that skipped it would fall back to the asynchronous path
+  SILENTLY, which is the degradation the guarded plane exists to refuse. An
+  opt-in guarantee is not a guarantee. The cost this accepts is that `Backend`
+  is SDK-exported, so every implementation outside this repository must change
+  too.
 
-  The list used to carry a third reason, and it was the worst of the three:
-  those background writes were ordered against nothing, so an older pending
-  write could land after a newer one. Measured on the pre-fix code with
+  `DiskBackend` and the in-memory backends (`standard`, `concurrent`,
+  `highperf`) satisfy the pair by delegating, because their writes already land
+  before the call returns. `FastBackend` implements it as a synchronous ordered
+  write on the calling goroutine that returns its storage error and
+  **withdraws** the cache entry when the write does not land — the same
+  discipline `FastStateMachine` and `ConcurrentStateMachine` apply through
+  `persistClaimLocked`. Its ordinary `Put` and `Delete` are untouched and stay
+  asynchronous: that contract is what the backend exists to provide, and making
+  them synchronous was rejected for that reason.
+
+  **What this replaced.** `sm_type: fast` is a `KVStateMachine` over
+  `FastBackend`, which reaches storage only through this seam. Before the
+  interface change there was no way to ask it for a synchronous write, so a
+  caller told "you won the claim" could be contradicted by the disk: an
+  acknowledged `PutIfAbsent` that never landed leaves the key absent after a
+  restart and a second caller wins the same claim. For one release the guarded
+  delete and swap **refused** there rather than answering wrongly, while
+  `PutIfAbsent` kept executing with the hole open. Both are now answered
+  properly, and the refusal machinery is deleted rather than left disarmed — a
+  mechanism that can no longer fire is an invitation to re-arm it, and the
+  re-arming would look like a fix.
+
+  The narrative used to carry a third defect, and it was the worst of the
+  three: those background writes were ordered against nothing, so an older
+  pending write could land after a newer one. Measured on the pre-fix code with
   **ordinary unguarded writes** and no guarded verb involved, `Put(k,"old")`
   then `Put(k,"new")` left durable state holding `"old"`, and `Put(k,"v")` then
   `Delete(k)` left the key **present**, holding `"v"` — a lost write and a
-  resurrected key on the default path. **That is fixed**: `FastBackend` now
-  draws a `persistOrder` ticket under the same lock acquisition as its cache
-  write, the discipline `FastStateMachine` and `ConcurrentStateMachine` have
-  always had.
+  resurrected key on the default path. That is fixed independently:
+  `FastBackend` now draws a `persistOrder` ticket under the same lock
+  acquisition as its cache write, the discipline the two sharded state machines
+  have always had.
 
-  Every other state machine keeps the promises and executes the verbs:
-  `sm_type: disk` writes through synchronously and returns its error; `memory`,
-  `standard`, `concurrent` and `highperf` are in-memory, so a write has landed
-  when it returns; `mvcc-fast` owns its storage and orders every write through
-  `persistOrder`. Making `fast` capable is tracked separately: it is a backend
-  change, not a guard change. The unordered write path it also used to have is
-  already fixed.
+  The verification is that the durability battery in
+  `pkg/statemachine/guarded_persist_test.go` — written for `FastStateMachine`
+  and `ConcurrentStateMachine` — now runs over `KVStateMachine` + `FastBackend`
+  as a third target, unchanged. The promises are the same promises, not a
+  weaker set written for a weaker backend.
 
-  `PutIfAbsent` is the exception to the exception: it still executes on
-  `sm_type: fast` despite having the same hole, because it has been offered
-  there since before the guarded verbs landed and callers depend on it — the
-  identity index claims identities with it and first boot needs it.
-  Withdrawing a capability people already build on is a decision for the
-  owner, not a side effect.
 - **They cannot appear inside a batch.** The batch encoding carries no expected
   value, so a batched operation cannot express a guard. Multi-key atomicity is
   [../transactions/](../transactions/), which does need `sm_type: mvcc`.

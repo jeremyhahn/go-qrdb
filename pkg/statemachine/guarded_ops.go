@@ -94,40 +94,30 @@ import (
 // reported rather than logged, and that no earlier write to the same key can
 // still overwrite it.
 //
-// FastStateMachine and ConcurrentStateMachine provide all three — they own
-// their storage, persist synchronously through persistClaimLocked, and order
-// every write through persistOrder (the go-qrdb#94 ruling of 2026-08-23, and
-// go-qrdb#86 for the ordering). KVStateMachine inherits whatever its Backend
-// gives it, and every Backend qualifies except FastBackend (sm_type "fast"),
-// whose background persist is ordered against nothing and swallows its error.
+// FastStateMachine and ConcurrentStateMachine provide all three directly —
+// they own their storage, persist synchronously through persistClaimLocked,
+// and order every write through persistOrder (the go-qrdb#94 ruling of
+// 2026-08-23, and go-qrdb#86 for the ordering). KVStateMachine reaches storage
+// only through the Backend seam, so it gets them by ASKING for them:
+// Backend.PutDurable and Backend.DeleteDurable carry exactly those three
+// promises, and every Backend implements them (owner ruling 2026-09-03,
+// go-qrdb#216, option 2).
 //
-// So the guarded verbs REFUSE on FastBackend, with a typed
-// GuardedWriteUnsupportedError, rather than reporting a success the disk may
-// contradict.
+// The three guarded verbs here therefore call the durable pair while handlePut,
+// handleDelete and handleBatch keep the ordinary Put and Delete. That split is
+// the point: "your write is queued" and "your claim succeeded" are different
+// promises, and only the second is worth a disk wait on the apply path.
 //
-// The ORDERING half of that reasoning is now historical: go-qrdb#224 gave
-// FastBackend the persistOrder discipline it was missing, so an older pending
-// write can no longer land after a newer one. What it was, measured
-// deterministically with ordinary unguarded writes and no guarded verb
-// involved:
-//
-//	Put(k,"old"); Put(k,"new")  -> durable value "old"
-//	Put(k,"v");   Delete(k)     -> key PRESENT, holding "v"
-//
-// The refusal stands on the two promises that remain unmet: a write is
-// acknowledged before it is durable, and a storage failure is logged rather
-// than returned. Either alone is enough to make "your claim succeeded" a
-// statement the disk can contradict. Supplying them is go-qrdb#216.
-//
-// Two things are deliberately NOT done. Making FastBackend capable is
-// go-qrdb#216 and needs an owner ruling on the Backend seam — this file only
-// declines to ADD an advertisement, which is the status quo rather than a
-// policy change. And kv.OpPutIfAbsent is left alone on that backend although
-// it has the identical hole (it has stood on the same backend.Put since
-// go-qrdb#86): removing a capability callers already depend on — the identity
-// index claims identities with it, and first boot needs it — is a behaviour
-// change that is the owner's to make, not a side effect of this one. It is
-// recorded on go-qrdb#216.
+// What this replaced, and why the interface changed rather than the backend:
+// FastBackend acknowledged a guarded write before it was durable and logged
+// its storage failure instead of returning it, so an acknowledged PutIfAbsent
+// could leave the key absent across a restart and a second caller could win
+// the same claim. Between go-qrdb#175 and this change the verbs were REFUSED
+// there with a typed error rather than answered wrongly. Making Put and Delete
+// themselves synchronous was rejected — it discards the asynchronous contract
+// that backend exists to provide — and so was an optional interface, because a
+// backend that skipped it would fall back to the asynchronous path silently,
+// which is the degradation the guarded plane exists to refuse.
 
 // guardMatches reports whether the key's current state satisfies the caller's
 // expectation.
@@ -153,18 +143,12 @@ func guardMatches(current, expected []byte) bool {
 // Backend.Get documents a missing key as (nil, nil), so a non-nil error is a
 // real fault and is propagated rather than read as "the value differs".
 //
-// It REFUSES outright on a backend that cannot carry the result's promise —
-// see the durability-and-ordering note at the top of this file. The check
-// comes before the decode, so a refusal costs nothing and reads the same
-// whatever the payload is.
+// The removal goes through Backend.DeleteDurable, not Delete — see the
+// durability-and-ordering note at the top of this file. protocol.ResultDeleted
+// is the answer to "did I release the claim I was holding?", and a release
+// acknowledged but not durable is a key that comes back after a restart, still
+// holding a value its owner was told was gone.
 func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64) (sm.Result, error) {
-	if !k.guardedWrites {
-		return sm.Result{}, &GuardedWriteUnsupportedError{
-			Op:      protocol.OpCompareAndDelete,
-			Backend: k.backendName,
-		}
-	}
-
 	key, expected, err := protocol.DecodeCompareAndDelete(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_delete: " + err.Error()}
@@ -178,10 +162,12 @@ func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64)
 		return sm.Result{Value: protocol.ResultNotDeleted}, nil
 	}
 
-	if derr := k.backend.Delete(key); derr != nil {
+	if derr := k.backend.DeleteDurable(key); derr != nil {
 		return sm.Result{}, &StorageError{Op: "compare_and_delete", Inner: derr}
 	}
 
+	// Watchers are notified only AFTER the removal is durable, so no observer
+	// learns of a delete the caller was told had failed.
 	if k.watchManager != nil {
 		k.watchManager.Notify(string(key), nil, revision, true)
 	}
@@ -192,16 +178,11 @@ func (k *KVStateMachine) handleCompareAndDelete(payload []byte, revision uint64)
 // handleCompareAndSwap replaces the key's value only when the backend still
 // holds the expected one. An absent key is left absent.
 //
-// It refuses on a backend that cannot carry the result's promise, as the
-// guarded delete above does.
+// The replacement goes through Backend.PutDurable, as the guarded delete above
+// goes through DeleteDurable. protocol.ResultSwapped is the same promise about
+// a renewal: acknowledged but not durable, it reverts on restart and the
+// holder's next guarded verb is then refused.
 func (k *KVStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (sm.Result, error) {
-	if !k.guardedWrites {
-		return sm.Result{}, &GuardedWriteUnsupportedError{
-			Op:      protocol.OpCompareAndSwap,
-			Backend: k.backendName,
-		}
-	}
-
 	key, expected, next, err := protocol.DecodeCompareAndSwap(payload)
 	if err != nil {
 		return sm.Result{}, &IncompleteDataError{Reason: "compare_and_swap: " + err.Error()}
@@ -215,7 +196,7 @@ func (k *KVStateMachine) handleCompareAndSwap(payload []byte, revision uint64) (
 		return sm.Result{Value: protocol.ResultNotSwapped}, nil
 	}
 
-	if perr := k.backend.Put(key, next); perr != nil {
+	if perr := k.backend.PutDurable(key, next); perr != nil {
 		return sm.Result{}, &StorageError{Op: "compare_and_swap", Inner: perr}
 	}
 
@@ -504,16 +485,16 @@ func compareAndSetLocked(
 		return claim{}, nil
 	}
 
+	// cacheClaimLocked draws the ticket under the same lock as the cache write,
+	// so this write persists AFTER every write already accepted on this shard.
+	// Without that ordering an earlier Put could land last and undo a swap this
+	// call already reported as durable.
+	//
+	// deleting selects a nil TOMBSTONE over next; the two cannot be inferred
+	// from next alone, because a swap to an EMPTY value is legitimate and must
+	// store a non-nil zero-length slice.
 	if deleting {
-		data[key] = nil
-	} else {
-		data[key] = next
+		next = nil
 	}
-	// The ticket is drawn under the same lock as the cache write, so this
-	// write persists AFTER every write already accepted on this shard. Without
-	// that ordering an earlier Put could land last and undo a swap this call
-	// already reported as durable.
-	c := claim{stored: true, ticket: order.ticket(), prior: cached, priorFound: found}
-	claims[key] = c.ticket
-	return c, nil
+	return cacheClaimLocked(data, claims, order, key, next), nil
 }

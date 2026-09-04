@@ -108,9 +108,11 @@ type gapErrBackend struct {
 	getErr    error
 }
 
-func (b *gapErrBackend) Get(key []byte) ([]byte, error) { return nil, b.getErr }
-func (b *gapErrBackend) Put(key, value []byte) error    { return b.putErr }
-func (b *gapErrBackend) Delete(key []byte) error        { return b.deleteErr }
+func (b *gapErrBackend) Get(key []byte) ([]byte, error)     { return nil, b.getErr }
+func (b *gapErrBackend) Put(key, value []byte) error        { return b.putErr }
+func (b *gapErrBackend) Delete(key []byte) error            { return b.deleteErr }
+func (b *gapErrBackend) PutDurable(key, value []byte) error { return b.putErr }
+func (b *gapErrBackend) DeleteDurable(key []byte) error     { return b.deleteErr }
 func (b *gapErrBackend) List(prefix []byte) ([][]byte, error) {
 	if b.listErr != nil {
 		return nil, b.listErr

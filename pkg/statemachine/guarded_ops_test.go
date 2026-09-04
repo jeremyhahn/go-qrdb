@@ -18,8 +18,6 @@ import (
 	"bytes"
 	stderrors "errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -731,124 +729,106 @@ func watchingTargets() map[string]func(*testing.T) (conformanceTarget, *mockWatc
 }
 
 // ---------------------------------------------------------------------------
-// The FastBackend refusal (go-qrdb#175 review, go-qrdb#216/#221)
+// The durable write seam (go-qrdb#216)
 // ---------------------------------------------------------------------------
 
-// A guarded verb is REFUSED on a backend whose writes cannot carry what its
-// result promises, and refusing does not cost the shard.
+// durabilityRecorder records which of Backend's four write methods a handler
+// reached for, and delegates everything else to the wrapped backend.
 //
-// FastBackend persists on a background goroutine that is ordered against
-// nothing and swallows its error, so an acknowledged guarded write there can
-// be silently reversed by an older pending write. Measured on that backend
-// with ordinary unguarded writes and no guarded verb involved (go-qrdb#224,
-// and see TestFastBackend_UnguardedWritesCanLandOutOfOrder below):
+// It is a recorder rather than a stub because the handlers under test read
+// their own writes back: a stub that answered nothing would make every guarded
+// verb decline and record nothing.
+type durabilityRecorder struct {
+	Backend
+	calls []string
+}
+
+func (d *durabilityRecorder) Put(key, value []byte) error {
+	d.calls = append(d.calls, "Put")
+	return d.Backend.Put(key, value)
+}
+
+func (d *durabilityRecorder) Delete(key []byte) error {
+	d.calls = append(d.calls, "Delete")
+	return d.Backend.Delete(key)
+}
+
+func (d *durabilityRecorder) PutDurable(key, value []byte) error {
+	d.calls = append(d.calls, "PutDurable")
+	return d.Backend.PutDurable(key, value)
+}
+
+func (d *durabilityRecorder) DeleteDurable(key []byte) error {
+	d.calls = append(d.calls, "DeleteDurable")
+	return d.Backend.DeleteDurable(key)
+}
+
+// The three GUARDED verbs write through Backend's durable pair and the two
+// unguarded ones do not (owner ruling 2026-09-03, go-qrdb#216).
 //
-//	Put(k,"old"); Put(k,"new")  -> durable value "old"
-//	Put(k,"v");   Delete(k)     -> key PRESENT, holding "v"
+// This is the seam itself, and no durability assertion can stand in for it.
+// Every other test in this package measures the OUTCOME on a specific backend,
+// and on four of the five backends Put and PutDurable are the same code — so a
+// regression that quietly put handleCompareAndSwap back on backend.Put would
+// leave every one of those tests green and reintroduce the whole defect on the
+// one backend where the two differ. Here it fails.
 //
-// The second line applied to CompareAndDelete is a released lock that comes
-// back, which is the failure the guarded plane exists to prevent. So the verbs
-// refuse there rather than reporting a success the disk may contradict.
-//
-// This test is what makes re-advertising them a DELETION rather than an
-// addition: someone who makes FastBackend implement GuardedWriteBackend
-// without fixing the ordering has to remove an assertion that says why not.
-func TestKVStateMachine_GuardedVerbsRefuseOnAnUnorderedBackend(t *testing.T) {
+// The unguarded rows are not filler: they are the control the go-qrdb#94
+// ruling turns on. "Your write is queued" and "your claim succeeded" are
+// different promises, and a change that made every write durable would satisfy
+// the guarded rows while putting a disk wait on the path FastBackend exists to
+// keep it off.
+func TestKVStateMachine_GuardedVerbsUseTheDurableWritePath(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		// seed runs before the recording starts, so a verb that needs an
+		// existing value does not attribute its own setup to itself.
+		seed func(t *testing.T) []byte
 		cmd  func(t *testing.T) []byte
+		want string
 	}{
-		{"CompareAndDelete", func(t *testing.T) []byte {
-			return mustEncodeCAD(t, []byte("k"), []byte("v"))
-		}},
+		{"PutIfAbsent", nil, func(t *testing.T) []byte {
+			return buildKVCmd(kv.OpPutIfAbsent, []byte("k"), []byte("v"))
+		}, "PutDurable"},
 		{"CompareAndSwap", func(t *testing.T) []byte {
+			return buildKVCmd(kv.OpPut, []byte("k"), []byte("v"))
+		}, func(t *testing.T) []byte {
 			return mustEncodeCAS(t, []byte("k"), []byte("v"), []byte("v2"))
-		}},
+		}, "PutDurable"},
+		{"CompareAndDelete", func(t *testing.T) []byte {
+			return buildKVCmd(kv.OpPut, []byte("k"), []byte("v"))
+		}, func(t *testing.T) []byte {
+			return mustEncodeCAD(t, []byte("k"), []byte("v"))
+		}, "DeleteDurable"},
+		{"Put", nil, func(t *testing.T) []byte {
+			return buildKVCmd(kv.OpPut, []byte("k"), []byte("v"))
+		}, "Put"},
+		{"Delete", nil, func(t *testing.T) []byte {
+			return buildKVCmd(kv.OpDelete, []byte("k"), nil)
+		}, "Delete"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := newMemStorage()
-			backend := NewFastBackend(1, 1, store, nil)
-			k := NewKVStateMachine(backend)
-			t.Cleanup(func() { _ = backend.Close() })
+			rec := &durabilityRecorder{Backend: NewStandardBackend()}
+			k := NewKVStateMachine(rec)
 
-			// The opcode is DISPATCHED, not absent. A caller must be able to
-			// tell "this backend will not do it" from "this build has no such
-			// verb", and only a dispatched handler can say the first.
-			if _, ok := k.handlers[tc.cmd(t)[0]]; !ok {
-				t.Fatalf("opcode %d is not dispatched at all; the refusal must be a typed "+
-					"answer from the handler, not a missing map entry", tc.cmd(t)[0])
+			if tc.seed != nil {
+				results := make([]sm.Result, 1)
+				if err := k.Update([]sm.Entry{{Index: 1, Cmd: tc.seed(t)}}, results); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+				rec.calls = nil
 			}
 
 			results := make([]sm.Result, 1)
-			err := k.Update([]sm.Entry{{Index: 1, Cmd: tc.cmd(t)}}, results)
-			if err != nil {
-				t.Fatalf("Update returned %v; a backend that cannot honour a guarded verb is a "+
-					"COMPOSITION fault, not an infrastructure one, and returning it to Raft "+
-					"trips the shard's circuit breaker (go-qrdb#129)", err)
+			if err := k.Update([]sm.Entry{{Index: 2, Cmd: tc.cmd(t)}}, results); err != nil {
+				t.Fatalf("Update: %v", err)
 			}
 
-			msg, refused := protocol.DecodeAppError(results[0].Data)
-			if !refused {
-				t.Fatalf("results[0] = %+v, want an encoded application error; the guarded verb "+
-					"was EXECUTED on a backend whose acknowledged write can be silently "+
-					"reversed by an older pending one (go-qrdb#224)", results[0])
-			}
-			// The refusal has to be actionable: an operator reads it and has to
-			// know which knob to turn.
-			if !strings.Contains(msg, "FastBackend") {
-				t.Errorf("refusal %q does not name the backend, so it does not say what to change", msg)
-			}
-			if want := strconv.Itoa(int(tc.cmd(t)[0])); !strings.Contains(msg, want) {
-				t.Errorf("refusal %q does not name the refused opcode %s", msg, want)
-			}
-
-			// The shard must still take writes. This is the difference between
-			// a refused verb and a dead cluster.
-			putCmd := buildKVCmd(kv.OpPut, []byte("still-alive"), []byte("yes"))
-			next := make([]sm.Result, 1)
-			if err := k.Update([]sm.Entry{{Index: 2, Cmd: putCmd}}, next); err != nil {
-				t.Fatalf("a plain Put after the refused verb failed: %v", err)
-			}
-			if v, _ := backend.Get([]byte("still-alive")); string(v) != "yes" {
-				t.Errorf("Put after the refused verb stored %q, want %q", v, "yes")
-			}
-		})
-	}
-}
-
-// Every other backend in this package DOES carry the guarantee, and says so.
-//
-// The pair with the test above is the point: a blanket refusal would also pass
-// that one. This pins which side of the line each backend is on, so narrowing
-// the guarantee by accident — a new backend that forgets to declare it, or an
-// existing one that stops — fails here instead of silently removing a verb
-// from an sm_type that had it.
-func TestBackends_DeclareWhetherTheyCarryGuardedWrites(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		backend Backend
-		want    bool
-		why     string
-	}{
-		{"StandardBackend", NewStandardBackend(), true,
-			"a map under a mutex: the write has landed when Put returns"},
-		{"ConcurrentBackend", NewConcurrentBackend(), true,
-			"sharded in-memory; sharding changes the mutex, not when the write lands"},
-		{"HighPerfBackend", NewHighPerfBackend(nil), true,
-			"in-memory only"},
-		{"DiskBackend", NewDiskBackend(newMemStorage()), true,
-			"writes through synchronously on the calling goroutine and returns the error"},
-		{"FastBackend", NewFastBackend(1, 1, newMemStorage(), nil), false,
-			"persists on a goroutine ordered against nothing, and swallows the error (go-qrdb#216)"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := backendSupportsGuardedWrites(tc.backend); got != tc.want {
-				t.Errorf("backendSupportsGuardedWrites(%s) = %v, want %v — %s",
-					tc.name, got, tc.want, tc.why)
-			}
-			if got := backendName(tc.backend); got != tc.name {
-				t.Errorf("backendName = %q, want %q; the refusal names the backend and an "+
-					"operator acts on that name", got, tc.name)
+			if len(rec.calls) != 1 || rec.calls[0] != tc.want {
+				t.Fatalf("%s wrote through %v, want exactly [%s] — a guarded verb that "+
+					"writes through the asynchronous pair acknowledges a claim before it "+
+					"is durable, and an unguarded write that takes the durable pair puts "+
+					"a disk wait on the apply path", tc.name, rec.calls, tc.want)
 			}
 		})
 	}

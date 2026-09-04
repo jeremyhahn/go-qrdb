@@ -88,7 +88,15 @@ func (k *KVStateMachine) handlePutIfAbsent(payload []byte, revision uint64) (sm.
 		return sm.Result{Value: kv.ResultNotStored}, nil
 	}
 
-	if perr := k.backend.Put(key, value); perr != nil {
+	// DURABLE, not the backend's ordinary Put (owner ruling 2026-09-03,
+	// go-qrdb#216). kv.ResultStored is the answer to "did I win the claim?",
+	// and on a backend that persists in the background the answer was being
+	// given before the bytes reached disk: a restart left the key absent and a
+	// second caller won the same claim. Backend.PutDurable returns only once
+	// the write has taken effect and returns the failure instead of logging
+	// it. handlePut below keeps Put, deliberately — "your write is queued" and
+	// "your claim succeeded" are different promises.
+	if perr := k.backend.PutDurable(key, value); perr != nil {
 		return sm.Result{}, &StorageError{Op: "put_if_absent", Inner: perr}
 	}
 
@@ -248,28 +256,16 @@ func setIfAbsentLocked(
 	mu.Lock()
 	defer mu.Unlock()
 
-	// record marks the claim in flight so a rollback can tell whether the
-	// cache entry it would restore is still this claim's. Drawn under the same
-	// lock as the cache write, both for the ticket ordering described below
-	// and so no later write can slip between the two.
-	record := func(prior []byte, priorFound bool) claim {
-		c := claim{stored: true, ticket: order.ticket(), prior: prior, priorFound: priorFound}
-		claims[key] = c.ticket
-		return c
-	}
-
 	if cached, found := data[key]; found {
 		if cached != nil {
 			return claim{}, nil
 		}
 		// Tombstone: absent, and storage need not be consulted — the delete
-		// that wrote it is newer than anything storage holds.
-		data[key] = value
-		// The ticket is drawn under the same lock as the cache write, so this
-		// write persists AFTER the delete that tombstoned the key. Without
-		// that ordering the delete could land last and erase a write this call
-		// already reported as stored.
-		return record(nil, true), nil
+		// that wrote it is newer than anything storage holds. The write
+		// persists AFTER that delete because cacheClaimLocked draws its ticket
+		// under this same lock; without that ordering the delete could land
+		// last and erase a write this call already reported as stored.
+		return cacheClaimLocked(data, claims, order, key, value), nil
 	}
 
 	existing, rerr := readThrough([]byte(key))
@@ -280,8 +276,7 @@ func setIfAbsentLocked(
 		return claim{}, nil
 	}
 
-	data[key] = value
-	return record(nil, false), nil
+	return cacheClaimLocked(data, claims, order, key, value), nil
 }
 
 // claim is the outcome of setIfAbsentLocked: whether the guard admitted the
@@ -315,6 +310,40 @@ type claim struct {
 	//     could describe the first two states alone.
 	prior      []byte
 	priorFound bool
+}
+
+// cacheClaimLocked writes next into the shard cache and records the claim that
+// authorises it. Callers hold the shard's data lock.
+//
+// next is the value for a create or a swap and nil for a DELETE's tombstone —
+// the same convention the cache itself uses, so one helper serves all three
+// guarded verbs and FastBackend's durable pair.
+//
+// Two things happen here that must happen together, which is why they are one
+// function rather than five lines copied at each call site:
+//
+//   - The prior entry is captured BEFORE the write, with comma-ok, so a
+//     withdrawal can restore the exact one of the three states claim.prior
+//     documents. Reading it afterwards reads the write.
+//   - The persistence ticket is drawn under the SAME lock acquisition as the
+//     cache write, which is the point at which apply order is already
+//     established. Drawing it after releasing the lock would race exactly as
+//     the unordered goroutines this machinery replaced did.
+//
+// The claims entry marks the write in flight so a later write to the key can
+// retire it and a rollback can tell the entry is no longer its own.
+func cacheClaimLocked(
+	data map[string][]byte,
+	claims map[string]uint64,
+	order *persistOrder,
+	key string,
+	next []byte,
+) claim {
+	prior, priorFound := data[key]
+	data[key] = next
+	c := claim{stored: true, ticket: order.ticket(), prior: prior, priorFound: priorFound}
+	claims[key] = c.ticket
+	return c
 }
 
 // persistClaimLocked writes a guarded claim to storage SYNCHRONOUSLY, on the

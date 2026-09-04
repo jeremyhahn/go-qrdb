@@ -32,25 +32,25 @@ const kvFastShardCount = 256
 
 // Compile-time interface assertion.
 //
-// FastBackend still does NOT implement GuardedWriteBackend, and it remains the
-// one Backend in the tree that does not — but for FEWER reasons than before.
-// That interface asks for three promises, and go-qrdb#224 delivered the third:
+// FastBackend is the one Backend in this tree that holds real storage and
+// answers before using it, so it is the only one for which Backend's two write
+// contracts are genuinely different code:
 //
-//	durable when acknowledged  — NO.  Put returns once the cache holds the
-//	                                  value; storage is written afterwards.
-//	failure returned           — NO.  A storage error is logged, not returned.
-//	ordered against earlier
-//	writes to the same key     — YES, since go-qrdb#224.
+//	Put / Delete                — asynchronous. "Your write is queued."
+//	                              A storage failure is LOGGED. This is the
+//	                              contract the backend exists to provide and
+//	                              this change does not touch it.
+//	PutDurable / DeleteDurable  — synchronous on the calling goroutine, the
+//	                              storage error RETURNED, and the cache entry
+//	                              WITHDRAWN when the write does not land.
 //
-// Two of three is not two thirds of a guarantee, so the guarded verbs continue
-// to refuse here with a typed GuardedWriteUnsupportedError. Supplying the other
-// two means giving Backend a way to express a synchronous write, which is an
-// interface change and the owner's call: go-qrdb#216. Do NOT close that gap by
-// making Put synchronous, which would discard the asynchronous contract this
-// backend exists to provide.
+// It reached that pair in three steps, and the middle one is worth keeping
+// because a reader will otherwise assume the whole thing arrived at once.
 //
-// What go-qrdb#224 was, measured on the pre-fix code with ORDINARY writes and
-// no guarded verb involved:
+// go-qrdb#224 gave it ordering. Each write used to persist on its own
+// goroutine ordered against nothing, so storage could apply them in any order.
+// Measured on the pre-fix code with ORDINARY writes and no guarded verb
+// involved:
 //
 //	Put(k,"old"); Put(k,"new")  -> storage saw [set:k=new set:k=old], durable "old"
 //	Put(k,"v");   Delete(k)     -> storage saw [delete:k set:k=v], key PRESENT "v"
@@ -60,6 +60,15 @@ const kvFastShardCount = 256
 // persistOrder ticket under the shard lock, where apply order is already
 // established (go-qrdb#86). This backend was written later, reproduced the
 // pre-#86 write path, and did not receive the fix until #224.
+//
+// go-qrdb#175 then REFUSED the guarded verbs here, because ordering alone is
+// not the guarantee: the write was still acknowledged before it was durable
+// and its failure was still swallowed.
+//
+// go-qrdb#216 — this — supplies the remaining two promises, on the durable
+// pair only. Do NOT close the gap instead by making Put synchronous: that
+// discards the asynchronous contract the backend exists to provide, and it was
+// rejected on those grounds twice.
 var _ Backend = (*FastBackend)(nil)
 
 // kvFastShard is a single partition of the in-memory cache for
@@ -69,9 +78,17 @@ type kvFastShard struct {
 	mu   sync.RWMutex
 	data map[string][]byte
 
-	// order keeps this shard's asynchronous storage writes in apply order.
-	// See persistOrder — and go-qrdb#224 for why this field arrived late.
+	// order keeps this shard's storage writes in apply order, asynchronous and
+	// durable alike. See persistOrder — and go-qrdb#224 for why this field
+	// arrived late.
 	order persistOrder
+
+	// claims maps a key with an IN-FLIGHT durable write to that write's
+	// ticket. A durable write releases the shard lock while storage runs, so a
+	// later write to the same key can land in the window; this record is how a
+	// failed write can tell whether the entry it would roll back is still its
+	// own. See claim.withdraw.
+	claims map[string]uint64
 }
 
 // FastBackend is a 256-shard in-memory cache backed by persistent
@@ -101,6 +118,7 @@ func NewFastBackend(shardID, replicaID uint64, store storage.Storage, logger *sl
 	}
 	for i := range b.shards {
 		b.shards[i].data = make(map[string][]byte)
+		b.shards[i].claims = make(map[string]uint64)
 		b.shards[i].order.init()
 	}
 	return b
@@ -155,6 +173,11 @@ func (b *FastBackend) Put(key, value []byte) error {
 	s.mu.Lock()
 	s.data[k] = owned
 	ticket := s.order.ticket()
+	// A later write to this key retires any in-flight durable claim on it: the
+	// claim's rollback must not restore a value this write has superseded
+	// (go-qrdb#94, Codex review on PR #110). Done under the same lock as the
+	// cache write, so the retirement and the write are one step.
+	delete(s.claims, k)
 	s.mu.Unlock()
 
 	b.wg.Add(1)
@@ -187,6 +210,8 @@ func (b *FastBackend) Delete(key []byte) error {
 	s.mu.Lock()
 	s.data[k] = nil // tombstone
 	ticket := s.order.ticket()
+	// Retires an in-flight durable claim, for the reason Put's does.
+	delete(s.claims, k)
 	s.mu.Unlock()
 
 	b.wg.Add(1)
@@ -204,6 +229,82 @@ func (b *FastBackend) Delete(key []byte) error {
 	}()
 
 	return nil
+}
+
+// PutDurable writes the cache shard and then persists SYNCHRONOUSLY, on the
+// calling goroutine, returning the storage failure instead of logging it.
+//
+// It is the guarded half of this backend's two write contracts (see the note
+// above the interface assertion). kv.ResultStored is the answer to "did I win
+// the claim?" — the identity index uses it to decide that a role id, tenant id
+// or single-use token belongs to this caller and to nobody else — so a claim
+// acknowledged before it is durable is two holders after a restart, the exact
+// outcome the guard exists to prevent.
+//
+// A failed write WITHDRAWS the cache entry rather than leaving it advertising a
+// write that never landed, which is what persistClaimLocked does; see
+// claim.withdraw for why the entry is restored only while it is still this
+// write's.
+func (b *FastBackend) PutDurable(key, value []byte) error {
+	k := string(key)
+	owned := make([]byte, len(value))
+	copy(owned, value)
+
+	s := b.shardFor(k)
+	s.mu.Lock()
+	claimed := cacheClaimLocked(s.data, s.claims, &s.order, k, owned)
+	s.mu.Unlock()
+
+	return b.persistDurable(s, claimed, k, owned, b.storage.Set, "put_durable")
+}
+
+// DeleteDurable tombstones the cache shard and then removes the key from
+// storage SYNCHRONOUSLY, returning the failure instead of logging it.
+//
+// It is the delete twin of PutDurable and not a flag on it, because the two
+// differ in exactly one thing — storage.Delete rather than storage.Set — and
+// every other property must stay identical.
+func (b *FastBackend) DeleteDurable(key []byte) error {
+	k := string(key)
+
+	s := b.shardFor(k)
+	s.mu.Lock()
+	// nil is the TOMBSTONE this cache records a delete as, not an absence.
+	claimed := cacheClaimLocked(s.data, s.claims, &s.order, k, nil)
+	s.mu.Unlock()
+
+	return b.persistDurable(s, claimed, k,
+		nil, func(dk, _ []byte) error { return b.storage.Delete(dk) }, "delete_durable")
+}
+
+// persistDurable is the synchronous storage write shared by the durable pair.
+// The decision lives in persistClaimLocked, shared with the two sharded state
+// machines; this adds only the log line, which needs this replica's identity.
+//
+// The write waits for this shard's earlier ASYNCHRONOUS writes first, through
+// the same persistOrder ticket cacheClaimLocked drew. Skipping the wait would
+// let a Put or Delete accepted BEFORE this one land after it, so a write
+// reported durable could be overwritten by an older one. The wait cannot
+// stall: the writers ahead run on their own goroutines and need nothing this
+// one holds.
+func (b *FastBackend) persistDurable(
+	s *kvFastShard,
+	claimed claim,
+	key string,
+	value []byte,
+	write func(k, v []byte) error,
+	op string,
+) error {
+	err := persistClaimLocked(&s.mu, s.data, s.claims, &s.order, write, op, claimed, key, value)
+	if err != nil {
+		b.logger.Error("durable storage write failed; cache entry withdrawn",
+			"key", key,
+			"op", op,
+			"error", err,
+			"shard_id", b.shardID,
+			"replica_id", b.replicaID)
+	}
+	return err
 }
 
 // List returns all keys matching the given prefix by merging storage
@@ -389,6 +490,10 @@ func (b *FastBackend) RecoverSnapshot(r io.Reader, stopper <-chan struct{}) erro
 		s := &b.shards[i]
 		s.mu.Lock()
 		s.data = make(map[string][]byte)
+		// The in-flight records go with the cache they describe: a claim whose
+		// entry no longer exists cannot be withdrawn onto anything meaningful,
+		// and every writer that drew one has finished — b.wg.Wait() above.
+		s.claims = make(map[string]uint64)
 		s.mu.Unlock()
 	}
 

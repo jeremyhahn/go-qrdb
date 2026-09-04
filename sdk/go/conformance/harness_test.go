@@ -148,27 +148,20 @@ const (
 	// refusing does not cost the shard.
 	typedRefusal
 
-	// guardedWriteRefusal: this cell dispatches the guarded delete and swap but
-	// its BACKEND cannot carry what their result promises, so they refuse where
-	// every other sm_type executes them. Only sm_type "fast" is in this state.
-	//
-	// It is a third outcome rather than a variant of typedRefusal because the
-	// two refuse for opposite reasons, and conflating them would let either
-	// regression pass as the other. typedRefusal is "this state machine was
-	// never built with the multi-key plane"; this is "the verb is built, wired
-	// and reachable, and executing it would report a success the disk can
-	// silently reverse" (go-qrdb#175 review, go-qrdb#216/#224). PutIfAbsent
-	// still WORKS here, which is what makes the distinction observable rather
-	// than a label.
-	guardedWriteRefusal
+	// A third outcome, guardedWriteRefusal, existed here between go-qrdb#175
+	// and go-qrdb#216 for the one cell whose BACKEND could not carry a guarded
+	// result: sm_type "fast" is a KVStateMachine over FastBackend, which
+	// acknowledged a write before it was durable. Backend now requires a
+	// durable write pair of every implementation (owner ruling 2026-09-03), so
+	// no cell refuses for that reason and the outcome is DELETED rather than
+	// left unused — an outcome no cell can select is an invitation to select
+	// it, and the selection would look like a fix.
 )
 
 func (o outcome) String() string {
 	switch o {
 	case fullPassage:
 		return "full-passage"
-	case guardedWriteRefusal:
-		return "guarded-write-refusal"
 	default:
 		return "typed-refusal"
 	}
@@ -251,15 +244,20 @@ func matrix() []cell {
 			cell{backend: database.BackendFile, mode: raft, transport: tk, want: typedRefusal,
 				smType: "disk", smStorage: "file"},
 
-			// Raft, sm_type "fast": the one composition whose BACKEND cannot
-			// carry a guarded result. FastBackend persists on a goroutine
-			// ordered against nothing and swallows its error, so an
-			// acknowledged guarded write can be silently reversed by an older
-			// pending one — measured with ordinary writes in
-			// pkg/statemachine (go-qrdb#224). The verbs therefore refuse here
-			// and this cell is what pins that through the transports rather
-			// than only at the state machine.
-			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: guardedWriteRefusal,
+			// Raft, sm_type "fast": a KVStateMachine over FastBackend. It
+			// was the one composition whose BACKEND could not carry a guarded
+			// result — the write was acknowledged before it was durable and
+			// its storage failure was logged rather than returned — so the
+			// guarded delete and swap refused here while PutIfAbsent kept
+			// executing with the same hole open.
+			//
+			// go-qrdb#216 put the durable write pair on Backend itself, so
+			// this cell now carries the single-key guarded plane like every
+			// other non-default sm_type, and refuses only the MULTI-KEY
+			// transaction plane it has no MVCC store for. This cell is what
+			// pins that through all five transports rather than only at the
+			// state machine.
+			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: typedRefusal,
 				smType: "fast", smStorage: "memory"},
 		)
 	}
