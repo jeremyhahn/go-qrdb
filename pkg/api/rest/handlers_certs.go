@@ -167,9 +167,17 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleRevokeCert handles POST /certs/revoke -- marks a certificate
-// serial as revoked. Revoked certificates are rejected during mTLS
-// verification.
+// handleRevokeCert handles POST /certs/revoke -- marks a certificate serial as
+// revoked. Enforcement is on the authentication path of every transport, on
+// every request (pkg/auth.RevocationChecker), so a revoked peer is refused
+// even on an already-established connection.
+//
+// A serial this node holds no record for is still revoked -- the marker is
+// written -- and the response is 200, because that is a real CA operation
+// (revoking a peer-issued certificate). The caller therefore cannot tell it
+// from a mistyped serial today; that reporting gap needs a result type on
+// CertProvider.RevokeCert, not an error status, since both outcomes are
+// successes.
 func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	if s.certProv == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "cert"})

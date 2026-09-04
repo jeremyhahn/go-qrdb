@@ -43,6 +43,12 @@ type AuthMiddleware struct {
 	usersFallback  user.UserServicer
 	audit          audit.Logger
 
+	// revocation gates the ON-BEHALF forwarding path, which bypasses the
+	// authenticator chain entirely and therefore does not inherit the mTLS
+	// authenticator's own revocation check. Nil means revocation is not
+	// enforced, matching the authenticator.
+	revocation auth.RevocationChecker
+
 	// publicGRPCMethods holds the gRPC full method names ("/package.Service/
 	// Method") that bypass both authentication and authorization, declared by
 	// ServiceModules that implement apimodule.GRPCPublicMethodLister via
@@ -104,6 +110,20 @@ func WithUserService(u user.UserServicer) Option {
 func WithUserServiceFallback(u user.UserServicer) Option {
 	return func(m *AuthMiddleware) {
 		m.usersFallback = u
+	}
+}
+
+// WithRevocationChecker gates the on-behalf forwarding path on certificate
+// revocation.
+//
+// It is a SEPARATE wiring point from auth.WithRevocationChecker on purpose,
+// and production wiring passes the SAME checker to both: a forwarded
+// assertion is verified against the forwarding node's peer certificate
+// without ever running the authenticator chain, so a revoked cluster node
+// would otherwise keep forwarding writes on behalf of any user it names.
+func WithRevocationChecker(rc auth.RevocationChecker) Option {
+	return func(m *AuthMiddleware) {
+		m.revocation = rc
 	}
 }
 

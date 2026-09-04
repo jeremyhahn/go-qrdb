@@ -57,6 +57,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/clustermig"
@@ -155,8 +156,12 @@ type startFlags struct {
 	authEnabled          bool
 	separationOfDuties   bool
 	spiffeTrustDomain    string
-	abacEnabled          bool
-	abacPolicyDir        string
+	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
+	// Empty means the default. See qrdbconfig.AuthConfig.RevocationCacheTTL —
+	// it is the window during which a revoked certificate still authenticates.
+	revocationCacheTTL string
+	abacEnabled        bool
+	abacPolicyDir      string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
 	// node identity. It is encoded into auto-generated node certificates as
 	// a URI SAN (spiffe://<clusterTrustDomain>/node/<raftAddress>) and must
@@ -696,6 +701,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
+	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
 	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
 	// trust domain above.
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
@@ -1588,7 +1594,7 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir})
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3092,7 +3098,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3141,6 +3147,14 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	// fallbacks stay on the shared-store boot services: they exist for the
 	// system tenant's boot window, and for a barrier tenant a shared-store
 	// fallback answers not-found (deny), which is the fail-closed answer.
+	// The revocation cache TTL is the window during which a revoked
+	// certificate still authenticates, so an unparseable value aborts the boot
+	// rather than quietly reverting to a default the operator did not choose.
+	revocationTTL, err := qrdbconfig.ParseRevocationCacheTTL(revocationCacheTTL)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "auth.revocation_cache_ttl", Err: err}
+	}
+
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
@@ -3152,6 +3166,13 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		ABACEnabled:         abacCfg.Enabled,
 		ABACPolicyDir:       abacCfg.PolicyDir,
 		AuditLogger:         auditLogger,
+		// Certificate revocation is enforced on the authentication path, so
+		// the certificate authority has to reach the middleware and not only
+		// the cert API handlers. Without this the daemon records revocations,
+		// lists them, prints them, and lets the revoked certificate keep
+		// authenticating until it expires.
+		CertProvider:       certProv,
+		RevocationCacheTTL: revocationTTL,
 	})
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth middleware", Err: err}

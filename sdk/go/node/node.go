@@ -2037,6 +2037,15 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	if n.auditLogger != nil {
 		decisionAudit = audit.NewDecisionLogger(n.auditLogger)
 	}
+	// The revocation cache TTL is the window during which a revoked
+	// certificate still authenticates, so an unparseable value fails the boot
+	// rather than quietly reverting to a default the embedder did not choose.
+	revocationTTL, err := qrdbconfig.ParseRevocationCacheTTL(cfg.Auth.RevocationCacheTTL)
+	if err != nil {
+		_ = client.Close()
+		n.client.Store(nil)
+		return &AuthMiddlewareWiringError{Err: err}
+	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -2046,6 +2055,13 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		SPIFFETrustDomain:   cfg.Auth.SPIFFETrustDomain,
 		AuditLogger:         decisionAudit,
 		ExtraAuthenticators: n.extraAuthenticators,
+		// Certificate revocation is enforced on the authentication path, so
+		// the certificate authority reaches the middleware and not only the
+		// cert API handlers. An embedded node without this enforces nothing:
+		// it records revocations, lists them, and lets the revoked
+		// certificate keep authenticating until it expires.
+		CertProvider:       svcNode.CertProv,
+		RevocationCacheTTL: revocationTTL,
 	})
 	if err != nil {
 		_ = client.Close()

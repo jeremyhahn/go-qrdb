@@ -44,6 +44,9 @@ func hasOnBehalfAssertion(r *http.Request) bool {
 //
 //   - The mTLS peer must present a verified certificate; a request without a
 //     peer certificate can never carry an honored assertion.
+//   - That peer certificate must not be REVOKED. This path bypasses the
+//     authenticator chain, so it applies auth.EnforceRevocation itself rather
+//     than inheriting the mTLS authenticator's check.
 //   - forward.Verify requires that peer certificate to be a cluster-node SPIFFE
 //     certificate, verifies the assertion signature against it, and checks the
 //     assertion is unexpired and bound to THIS request (method, path, and body
@@ -60,6 +63,14 @@ func (m *AuthMiddleware) authenticateOnBehalf(ctx context.Context, r *http.Reque
 	peerCert, err := verifiedPeerCertificate(r.TLS)
 	if err != nil {
 		return ctx, nil, err
+	}
+
+	// A REVOKED forwarding node must not be able to forward. This path never
+	// runs the authenticator chain, so it does not inherit the mTLS
+	// authenticator's revocation check and has to apply the same policy
+	// itself — auth.EnforceRevocation is that policy, defined once.
+	if rerr := auth.EnforceRevocation(ctx, m.revocation, peerCert); rerr != nil {
+		return ctx, nil, rerr
 	}
 
 	body, err := drainAndRestoreBody(r)

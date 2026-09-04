@@ -730,6 +730,24 @@ type AuthConfig struct {
 	// Default: 30.
 	PermCacheTTL int `yaml:"perm_cache_ttl"`
 
+	// RevocationCacheTTL is how long the authentication path caches a
+	// NOT-REVOKED answer for a client certificate. Parsed as a Go duration
+	// string (e.g. "30s").
+	//
+	// READ IT AS A SECURITY WINDOW, NOT A PERFORMANCE KNOB: this is the
+	// maximum time a certificate that has JUST BEEN REVOKED continues to
+	// authenticate on a node that had already seen it. Raising it buys a
+	// cheaper authentication path and widens that window by exactly the same
+	// amount.
+	//
+	// "0" disables caching: every request consults replicated revocation
+	// state, which closes the window entirely at the cost of a key-value read
+	// per request. A REVOKED answer is never cached with an expiry and is
+	// unaffected by this setting, because revocation is a one-way door.
+	//
+	// Empty uses the default, "30s".
+	RevocationCacheTTL string `yaml:"revocation_cache_ttl"`
+
 	// SeparationOfDuties selects the RBAC posture. When false (default,
 	// "standard"), the bootstrap admin is granted a full operational
 	// owner capability so a single identity can run the entire database
@@ -804,6 +822,39 @@ type AuthConfig struct {
 	// RBAC allow, an explicit allow grants beyond RBAC, and unmatched
 	// requests fall through to RBAC. Default: disabled.
 	ABAC AuthABACConfig `yaml:"abac"`
+}
+
+// DefaultRevocationCacheTTLString is the default auth.revocation_cache_ttl
+// when unset.
+//
+// It is the window during which a certificate that has just been revoked
+// still authenticates on a node that had already seen it. Thirty seconds
+// keeps the per-request authentication cost off the replicated store in the
+// overwhelmingly common not-revoked case while bounding that window to
+// something an operator can state in an incident timeline.
+const DefaultRevocationCacheTTLString = "30s"
+
+// RevocationCacheTTLDuration returns the parsed RevocationCacheTTL, or the
+// default when unset. A returned zero means caching is disabled and every
+// request consults replicated revocation state.
+func (c AuthConfig) RevocationCacheTTLDuration() (time.Duration, error) {
+	return ParseRevocationCacheTTL(c.RevocationCacheTTL)
+}
+
+// ParseRevocationCacheTTL parses a revocation-cache TTL string, treating empty
+// as DefaultRevocationCacheTTLString.
+//
+// It is exported because the value has to be resolved at the auth-wiring site
+// as well as off the config struct, and this is a security window: resolving
+// it twice with two spellings of "what does empty mean" is how the configured
+// value and the enforced value drift apart. An unparseable value is an error,
+// never a silent fall back to the default.
+func ParseRevocationCacheTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = DefaultRevocationCacheTTLString
+	}
+	return parseDuration(s)
 }
 
 // IsEnabled reports whether authentication and authorization are active.
@@ -1099,6 +1150,9 @@ func DefaultConfig() *Config {
 			DefaultTenant: "system",
 			CertTTL:       "8760h",
 			PermCacheTTL:  30,
+			// The window during which a revoked certificate still
+			// authenticates. See AuthConfig.RevocationCacheTTL.
+			RevocationCacheTTL: DefaultRevocationCacheTTLString,
 		},
 		CORS: CORSConfig{
 			AllowedOrigins: []string{"*"},
@@ -1594,6 +1648,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.PermCacheTTL < 0 {
 		return &ValidationError{Field: "auth.perm_cache_ttl", Reason: "must not be negative"}
+	}
+	if c.Auth.RevocationCacheTTL != "" {
+		d, err := parseDuration(c.Auth.RevocationCacheTTL)
+		if err != nil {
+			return &ValidationError{Field: "auth.revocation_cache_ttl", Reason: "must be a valid Go duration string"}
+		}
+		if d < 0 {
+			return &ValidationError{Field: "auth.revocation_cache_ttl", Reason: "must not be negative"}
+		}
 	}
 	if c.Auth.ABAC.Enabled && strings.TrimSpace(c.Auth.ABAC.PolicyDir) == "" {
 		return &ValidationError{Field: "auth.abac.policy_dir", Reason: "must not be empty when abac is enabled"}

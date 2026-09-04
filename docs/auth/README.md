@@ -37,6 +37,33 @@ Extracts identity from TLS peer certificates:
 | `TenantID` | Certificate Subject OU[0] |
 | `Roles` | Not populated (external RBAC) |
 
+**It also enforces certificate revocation, on every request.** A peer
+certificate whose serial has been revoked is refused (`ErrCertificateRevoked`,
+401 / `UNAUTHENTICATED`) before any identity is derived from it.
+
+This lives here rather than in a TLS `VerifyConnection` callback on purpose: a
+handshake hook fires once per connection, so on QUIC — one long-lived
+connection carrying every request — a peer revoked mid-session would stay
+authorised for the life of that connection. The authenticator runs per request.
+
+| Outcome of the revocation check | Result |
+|---|---|
+| Revoked | 401 / `UNAUTHENTICATED`, no identity produced |
+| The lookup failed | 503 / `UNAVAILABLE` — fails **closed**, and tells a legitimate caller to retry rather than that its credential is bad |
+| No revocation state to read (barrier sealed) | admitted; the reachable surface is separately confined to the sealed-window allowlist |
+
+The REST **on-behalf forwarding** path — a follower forwarding a write to the
+leader under a signed assertion — verifies the forwarding node's certificate
+without running the authenticator chain, so it applies the identical policy
+itself. A revoked cluster node cannot forward.
+
+A NOT-REVOKED answer is cached for `auth.revocation_cache_ttl` (default `30s`),
+which makes that value **the window during which a freshly revoked certificate
+still authenticates** on a node that had already seen it; `0` disables caching.
+A REVOKED answer is cached without expiry, because revocation in go-qrdb is a
+one-way door. Detail:
+[certificate-authority/architecture.md](../certificate-authority/architecture.md).
+
 ## Middleware Integration
 
 The authenticator is wired into protocol middleware:

@@ -29,11 +29,14 @@
 package wiring
 
 import (
+	"time"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -172,6 +175,29 @@ type AuthMiddlewareConfig struct {
 	// tenant fallback.
 	SPIFFETrustDomain string
 
+	// CertProvider, when non-nil, turns on per-request certificate-revocation
+	// enforcement: the mTLS authenticator consults it on every request and
+	// refuses a peer whose serial has been revoked.
+	//
+	// Nil means revocation is RECORDED AND DISPLAYED BUT NOT ENFORCED — a
+	// revoked certificate keeps authenticating until it expires. That is the
+	// only posture available to a node with no certificate authority wired,
+	// and it is a field rather than an implicit default so the choice is
+	// visible at the wiring site.
+	CertProvider cert.CertProvider
+
+	// RevocationCacheTTL is how long a NOT-REVOKED answer is cached on the
+	// authentication path.
+	//
+	// IT IS A SECURITY WINDOW: the maximum time a certificate that has just
+	// been revoked continues to authenticate on a node that had already seen
+	// it. Zero or less disables caching of that answer, so every request
+	// consults replicated state. It has no effect when CertProvider is nil.
+	//
+	// A REVOKED answer is cached without expiry and is unaffected by this
+	// value, because revocation in go-qrdb is a one-way door (pkg/cert).
+	RevocationCacheTTL time.Duration
+
 	// ABACEnabled, ABACPolicyDir, and ABACPolicies configure the optional
 	// ABAC decorator. See AuthorizerConfig.
 	ABACEnabled   bool
@@ -204,6 +230,23 @@ type AuthMiddlewareConfig struct {
 	// Returning nil from the wrapper is a wiring bug and fails closed
 	// with *MissingServiceError.
 	WrapAuthorizer func(inner auth.Authorizer) auth.Authorizer
+}
+
+// revocationChecker returns the auth.RevocationChecker for the given
+// certificate provider, or a nil INTERFACE when there is no provider.
+//
+// The nil-interface return is the point of this function. cert.NewRevocationCache
+// returns a typed nil pointer for a nil provider, and a typed nil pointer stored
+// in an interface is not a nil interface: the authenticator's `revocation != nil`
+// guard would pass and every request would call through a nil receiver. Returning
+// the interface's own nil keeps "no provider" and "enforcement off" the same
+// statement.
+func revocationChecker(provider cert.CertProvider, ttl time.Duration) auth.RevocationChecker {
+	cache := cert.NewRevocationCache(provider, ttl)
+	if cache == nil {
+		return nil
+	}
+	return cache
 }
 
 // BuildAuthMiddleware constructs the production AuthMiddleware: an mTLS
@@ -251,9 +294,16 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	// authenticator derives the tenant from the peer certificate's
 	// tenant-scoped SPIFFE SAN and rejects foreign trust domains
 	// (fail-closed).
-	mtlsAuthenticator := auth.NewMTLSAuthenticator()
+	//
+	// It is also where certificate revocation is ENFORCED. cert.RevocationCache
+	// is nil when no CertProvider is wired, and auth.WithRevocationChecker of a
+	// nil checker leaves enforcement off — the same posture as before, reached
+	// explicitly.
+	revocation := revocationChecker(cfg.CertProvider, cfg.RevocationCacheTTL)
+	mtlsOpts := []auth.MTLSOption{auth.WithRevocationChecker(revocation)}
+	mtlsAuthenticator := auth.NewMTLSAuthenticator(mtlsOpts...)
 	if cfg.SPIFFETrustDomain != "" {
-		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain)
+		mtlsAuthenticator = auth.NewMTLSAuthenticatorWithTrustDomain(cfg.SPIFFETrustDomain, mtlsOpts...)
 	}
 
 	if cfg.WrapAuthorizer != nil {
@@ -266,6 +316,10 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	opts := []middleware.Option{
 		middleware.WithAuthenticator(mtlsAuthenticator),
 		middleware.WithUserService(cfg.UserService),
+		// The SAME checker on both, sharing one cache: the on-behalf
+		// forwarding path never runs the authenticator chain, so it needs the
+		// gate wired separately or a revoked cluster node keeps forwarding.
+		middleware.WithRevocationChecker(revocation),
 	}
 	for _, a := range cfg.ExtraAuthenticators {
 		if a == nil {

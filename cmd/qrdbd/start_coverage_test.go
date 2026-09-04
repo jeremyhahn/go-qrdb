@@ -1038,7 +1038,7 @@ func TestBootstrapAuth_Success(t *testing.T) {
 	require.NotNil(t, mgmt.userSvc)
 	require.NotNil(t, mgmt.roleSvc)
 
-	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
+	authResult, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, dataDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
 	require.NotNil(t, authResult.auditLogger)
@@ -1104,7 +1104,7 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, node, 1, 1, &mockTenantServicer{}, false, nil, "", nil)
 	require.NoError(t, err)
 
-	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{})
+	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, mock, &mockTxServicer{}, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, "")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 }

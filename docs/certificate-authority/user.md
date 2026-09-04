@@ -54,11 +54,18 @@ see the troubleshooting note below.
 qrdb ca list --tenant-id acme --output json
 ```
 
-**Revoke one.**
+**Revoke one.** The certificate stops authenticating against this system within
+`auth.revocation_cache_ttl` (default 30 seconds) — including for a client that
+already has an open connection. Revocation cannot be undone.
 
 ```bash
 qrdb ca revoke --serial 3f2a9c...
 ```
+
+Revoking a serial this system never issued also succeeds, and takes effect —
+that is how you revoke a certificate issued by a peer. The flip side is that a
+**mistyped serial succeeds too**, so check the serial against `qrdb ca list`;
+the command cannot currently tell you it matched nothing.
 
 **Package a certificate and key for a system that wants PKCS#12** — a browser,
 a Java keystore, a Windows certificate store.
@@ -99,9 +106,11 @@ the CA private key was destroyed in memory. Unseal, and it comes back. The CA
 would be unreachable rather than just inert.
 
 **You revoked a certificate and an external system still accepts it.** There is
-no CRL and no OCSP responder here. Revocation is an internal blocklist: this
-system stops accepting the certificate immediately, and nothing outside it
-notices. If your certificates are checked by external relying parties, the
+no CRL and no OCSP responder here, on purpose: every consumer of a certificate
+this CA issues is inside the cluster, where checking revocation is a local
+replicated read rather than a network round trip to the issuer. This system
+stops accepting the certificate within the revocation cache TTL, and nothing
+outside it notices. If your certificates are checked by external relying parties, the
 deployment needs the go-xkms certificate provider, which adds CRL and OCSP.
 Until then, short TTLs are the mitigation.
 
@@ -119,6 +128,11 @@ authorization are separate. Check the user binding and the role assignment.
 
 **A certificate expired.** Issue a new one and revoke the old. There is no
 renewal workflow.
+
+**You revoked a certificate by mistake and want it back.** You cannot. There is
+no unrevoke on any interface — revocation is a one-way door by construction, so
+that nobody who can reach the store can quietly reinstate a withdrawn identity.
+Issue a new certificate and bind it to the same user.
 
 **The certificate does not work as a server certificate.** By design — client
 certificates carry `ClientAuth` extended key usage only, so one cannot be used

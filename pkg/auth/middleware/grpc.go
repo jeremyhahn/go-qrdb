@@ -253,7 +253,7 @@ func mapGRPCAuthError(err error) error {
 	var authErr *auth.AuthError
 	if errors.As(err, &authErr) {
 		switch authErr.Code {
-		case "unauthenticated", "no_peer_cert", "invalid_cert":
+		case "unauthenticated", "no_peer_cert", "invalid_cert", "cert_revoked":
 			return status.Error(codes.Unauthenticated, authErr.Error())
 		case "unauthorized":
 			return status.Error(codes.PermissionDenied, authErr.Error())
@@ -263,6 +263,14 @@ func mapGRPCAuthError(err error) error {
 	var unavailable *StoreUnavailableError
 	if errors.As(err, &unavailable) {
 		return status.Error(codes.Unavailable, unavailable.Error())
+	}
+
+	// Unavailable, not Unauthenticated: the certificate may be perfectly good
+	// and this node could not read revocation state. The correct instruction
+	// to the client is "retry", not "your credential is bad".
+	var revocationErr *auth.RevocationCheckError
+	if errors.As(err, &revocationErr) {
+		return status.Error(codes.Unavailable, revocationErr.Error())
 	}
 
 	var disabled *UserDisabledError

@@ -59,21 +59,56 @@ type MTLSAuthenticator struct {
 	// trust domain. Any SPIFFE tenant SAN under a different trust domain is
 	// rejected.
 	pinnedTrustDomain string
+
+	// revocation, when non-nil, is consulted on EVERY authentication. Nil
+	// means no revocation checker was wired and revocation is not enforced —
+	// which is the posture a deployment with no certificate provider has, and
+	// it is visible here rather than implied.
+	revocation RevocationChecker
+}
+
+// MTLSOption configures an MTLSAuthenticator.
+type MTLSOption func(*MTLSAuthenticator)
+
+// WithRevocationChecker enables per-request certificate-revocation
+// enforcement.
+//
+// Without it a revoked certificate keeps authenticating until it expires: the
+// revocation is recorded, listed and displayed, and enforced nowhere. See
+// RevocationChecker for why this belongs on the authentication path rather
+// than in a TLS handshake callback.
+func WithRevocationChecker(rc RevocationChecker) MTLSOption {
+	return func(a *MTLSAuthenticator) {
+		a.revocation = rc
+	}
 }
 
 // NewMTLSAuthenticator creates a new mTLS authenticator with no SPIFFE trust
 // domain pin. SPIFFE SANs (if present) are still honored for tenant
 // derivation, but no trust-domain pinning is enforced. Use
 // NewMTLSAuthenticatorWithTrustDomain to pin a trust domain (recommended).
-func NewMTLSAuthenticator() *MTLSAuthenticator {
-	return &MTLSAuthenticator{}
+func NewMTLSAuthenticator(opts ...MTLSOption) *MTLSAuthenticator {
+	return newMTLSAuthenticator("", opts)
 }
 
 // NewMTLSAuthenticatorWithTrustDomain creates an mTLS authenticator that pins
 // the given SPIFFE trust domain. A SPIFFE tenant SAN under a different trust
 // domain is rejected (fail-closed).
-func NewMTLSAuthenticatorWithTrustDomain(trustDomain string) *MTLSAuthenticator {
-	return &MTLSAuthenticator{pinnedTrustDomain: trustDomain}
+func NewMTLSAuthenticatorWithTrustDomain(trustDomain string, opts ...MTLSOption) *MTLSAuthenticator {
+	return newMTLSAuthenticator(trustDomain, opts)
+}
+
+// newMTLSAuthenticator is the single constructor both exported forms delegate
+// to, so an option added here cannot reach one of them and miss the other.
+func newMTLSAuthenticator(trustDomain string, opts []MTLSOption) *MTLSAuthenticator {
+	a := &MTLSAuthenticator{pinnedTrustDomain: trustDomain}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(a)
+	}
+	return a
 }
 
 // Name returns "mtls".
@@ -127,6 +162,18 @@ func (a *MTLSAuthenticator) Authenticate(ctx context.Context) (*Identity, error)
 	}
 
 	cert := state.VerifiedChains[0][0]
+
+	// Revocation is enforced HERE, on every request, before any identity is
+	// derived from the certificate. A TLS handshake callback would not do: it
+	// fires once per connection, so on QUIC a peer revoked mid-session would
+	// stay authorised for the life of its connection.
+	//
+	// The three-way policy — refuse, fail closed, or admit when there is no
+	// state to read — lives in EnforceRevocation, because the middleware's
+	// on-behalf forwarding path applies the same one.
+	if err := EnforceRevocation(ctx, a.revocation, cert); err != nil {
+		return nil, err
+	}
 
 	id := &Identity{
 		Subject:  cert.Subject.CommonName,

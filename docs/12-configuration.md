@@ -130,6 +130,8 @@ auth:
   default_tenant: "system"
   cert_ttl: "8760h"
   perm_cache_ttl: 30
+  # The window during which a REVOKED certificate still authenticates.
+  revocation_cache_ttl: "30s"
   separation_of_duties: false
 
 audit:
@@ -572,6 +574,7 @@ Configures authentication and role-based access control (RBAC).
 | `default_tenant`   | string | `"system"`  | no       | N/A                | Bootstrap admin tenant ID (certificate OU)   |
 | `cert_ttl`         | string | `"8760h"`   | no       | N/A                | Default certificate TTL (1 year)             |
 | `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
+| `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
 
 **Validation rules:**
@@ -580,6 +583,10 @@ Configures authentication and role-based access control (RBAC).
 - `default_tenant` must not be empty when `enabled` is `true`.
 - `cert_ttl` must be a valid Go duration string (e.g., `"8760h"`, `"720h"`).
 - `perm_cache_ttl` must not be negative (>= 0).
+- `revocation_cache_ttl` must be a valid, non-negative Go duration string
+  (e.g. `"30s"`, `"0"`). An unparseable value fails the boot rather than
+  reverting to the default: it is a security window, and a value silently
+  different from the configured one is worse than a refusal to start.
 
 **Notes:**
 
@@ -587,6 +594,7 @@ Configures authentication and role-based access control (RBAC).
 - The `admin_username` is used as the CN for the auto-generated admin client certificate at first start.
 - The `default_tenant` is used as the OU for the admin certificate, establishing the bootstrap admin's membership in the structurally privileged `system` tenant.
 - The `perm_cache_ttl` controls how long resolved permissions are cached per user in the RBAC authorizer's `sync.Map`. Setting to `0` disables caching.
+- **`revocation_cache_ttl` is a security window, not a performance knob.** Certificate revocation is enforced on the authentication path of every transport, on every request. To keep that off the replicated store in the overwhelmingly common not-revoked case, a NOT-REVOKED answer is cached for this duration — which makes it the maximum time a certificate that has *just been revoked* continues to authenticate on a node that had already seen it. Setting it to `0` closes the window entirely, at the cost of one key-value read per authenticated request. A REVOKED answer is cached without expiry and is unaffected, because revocation in go-qrdb is a one-way door (nothing un-revokes). See [certificate-authority/architecture.md](certificate-authority/architecture.md).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.

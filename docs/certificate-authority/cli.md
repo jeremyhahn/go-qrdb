@@ -67,10 +67,24 @@ Revoke a certificate by serial number.
 qrdb ca revoke --serial 3f2a9c...
 ```
 
-Revocation is recorded in an internal blocklist. **No CRL is generated and no
-OCSP responder is served**, so external relying parties will not see it — see
-[architecture.md](architecture.md). Within this system, the revoked certificate
-stops authenticating.
+**No CRL is generated and no OCSP responder is served** — deliberately, see
+[architecture.md](architecture.md) — so external relying parties will not see
+it. Within this system the revoked certificate stops authenticating: every
+transport checks revocation on the authentication path, on every request, so a
+client already holding an open connection is refused too.
+
+There is a bounded lag. A node that has recently seen the certificate caches
+the not-revoked answer for `auth.revocation_cache_ttl` (default `30s`), and
+**that value is the window during which the revoked certificate still
+authenticates**. Set it to `0` to close the window entirely.
+
+**Revoking a serial this node holds no record for is allowed and reports
+success.** The marker is written and the serial is denied from then on;
+revoking a certificate issued by a peer is the case this behaviour exists for.
+The consequence is that a mistyped serial also reports success today — check
+the serial, because the command cannot tell you it matched nothing.
+
+**There is no unrevoke.** No verb removes a revocation, on any transport.
 
 ## `qrdb ca export-bundle`
 

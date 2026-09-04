@@ -23,6 +23,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"sync"
 	"time"
@@ -309,7 +310,7 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 	})
 	secure.Wipe(clientKeyDER)
 
-	serialHex := serialNumber.Text(16)
+	serialHex := FormatSerial(serialNumber)
 
 	// Persist the cert record.
 	record := &CertRecord{
@@ -354,8 +355,37 @@ func (p *DefaultCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []
 	return encodePKCS12(certPEM, keyPEM, caCertPEM, passphrase)
 }
 
-// RevokeCert marks a certificate serial as revoked by writing a
-// revocation entry to KVStore and updating the CertRecord.
+// RevokeCert marks a certificate serial as revoked by writing a revocation
+// marker to KVStore and updating the CertRecord this node holds for it, if
+// any.
+//
+// Revocation is DENY-BY-SERIAL: the marker is written whether or not this node
+// holds a certificate record for the serial, because revoking a certificate
+// issued by a peer — or one whose record has been pruned — is a real CA
+// operation. The marker is the authoritative state that IsRevoked reads;
+// CertRecord.Revoked is a display field updated best-effort beside it.
+//
+// It returns nil whether or not a local record matched, and the two cases are
+// currently indistinguishable to the caller. That is a REPORTING GAP, and it
+// is deliberately not closed with the error return: both outcomes are
+// successes, so reporting one of them as an error would tell a caller that a
+// revocation failed when the marker is durable and enforcement is already
+// reading it — and the case it would misreport is the deliberate revocation of
+// a peer-issued serial, the very operation deny-by-serial exists for. A caller
+// that saw an error would retry, alert and escalate over an operation that
+// worked. Closing the gap properly means widening the return to a result type
+// across every transport plus the proto, which is go-qrdb#287.
+//
+// The same rule governs the reaping call below, where it is already applied: a
+// completed revocation must not be reported as a failure, because the marker
+// is already durable. An earlier draft returned *CertNotFoundError here and
+// was reverted for contradicting that four lines later.
+//
+// The lookup happens BEFORE the marker is written, so a store failure during
+// the lookup leaves no marker behind.
+//
+// Every revocation also reaps expired markers (ReapExpiredRevocations), which
+// is what bounds the namespace without a background sweeper.
 func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) error {
 	if p.barrier.IsSealed() {
 		return &BarrierSealedError{}
@@ -365,30 +395,60 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) err
 		return &ValidationError{Field: "serial", Reason: "must not be empty"}
 	}
 
-	// Write revocation marker.
-	revokedKey := prefixCertsRevoked + serial
-	if err := p.kvStore.Put(ctx, revokedKey, []byte("1")); err != nil {
-		return &StoreError{Op: "put", Detail: revokedKey, Err: err}
-	}
-
-	// Update the cert record if it exists. We scan all tenants because
-	// the caller provides only the serial.
+	// Locate the certificate record for this serial. We scan all tenants
+	// because the caller provides only the serial. This runs first so that a
+	// scan failure aborts before anything is written.
+	var (
+		recordKey string
+		record    *CertRecord
+	)
 	if err := p.kvStore.Scan(ctx, prefixCerts, func(key string, value []byte) error {
-		if !hasSerialSuffix(key, serial) {
+		if record != nil || !hasSerialSuffix(key, serial) {
 			return nil
 		}
 		var rec CertRecord
 		if err := json.Unmarshal(value, &rec); err != nil {
 			return nil // skip corrupt records
 		}
-		rec.Revoked = true
-		updated, err := json.Marshal(&rec)
-		if err != nil {
-			return nil
-		}
-		return p.kvStore.Put(ctx, key, updated)
+		recordKey, record = key, &rec
+		return nil
 	}); err != nil {
 		return &StoreError{Op: "scan", Detail: prefixCerts, Err: err}
+	}
+
+	entry := revocationEntry{Serial: serial, RevokedAt: time.Now().UTC()}
+	if record != nil {
+		// Only a known certificate has a knowable expiry, and only a marker
+		// with an expiry is ever reaped.
+		entry.NotAfter = record.ExpiresAt
+	}
+	payload, err := json.Marshal(&entry)
+	if err != nil {
+		return &StoreError{Op: "marshal", Detail: prefixCertsRevoked + serial, Err: err}
+	}
+
+	revokedKey := prefixCertsRevoked + serial
+	if err := p.kvStore.Put(ctx, revokedKey, payload); err != nil {
+		return &StoreError{Op: "put", Detail: revokedKey, Err: err}
+	}
+
+	if record != nil {
+		record.Revoked = true
+		updated, err := json.Marshal(record)
+		if err != nil {
+			return &StoreError{Op: "marshal", Detail: recordKey, Err: err}
+		}
+		if err := p.kvStore.Put(ctx, recordKey, updated); err != nil {
+			return &StoreError{Op: "put", Detail: recordKey, Err: err}
+		}
+	}
+
+	// Best-effort: a reap failure must not turn a completed revocation into a
+	// reported failure. The marker for this serial is already durable.
+	if _, err := p.ReapExpiredRevocations(ctx); err != nil {
+		slog.Warn("qrdb/cert: reaping expired revocation markers failed",
+			"error", err,
+		)
 	}
 
 	return nil

@@ -234,13 +234,21 @@ func mapHTTPAuthError(err error) int {
 		switch authErr.Code {
 		case "unauthorized":
 			return http.StatusForbidden
-		case "unauthenticated", "no_peer_cert", "invalid_cert":
+		case "unauthenticated", "no_peer_cert", "invalid_cert", "cert_revoked":
 			return http.StatusUnauthorized
 		}
 	}
 
 	var unavailable *StoreUnavailableError
 	if errors.As(err, &unavailable) {
+		return http.StatusServiceUnavailable
+	}
+
+	// 503, not 401: the certificate may be perfectly good and this node could
+	// not read revocation state. Telling a legitimate caller its credential is
+	// bad would send it to re-enrol; telling it to retry is the truth.
+	var revocationErr *auth.RevocationCheckError
+	if errors.As(err, &revocationErr) {
 		return http.StatusServiceUnavailable
 	}
 

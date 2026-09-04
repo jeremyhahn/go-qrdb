@@ -160,7 +160,9 @@ func (s *Server) handleExportCert(ctx context.Context, payload []byte) ([]byte, 
 
 // handleRevokeCert unmarshals a JSON revoke cert request, marks the
 // certificate serial as revoked, and returns a serialized status response.
-// Revoked certificates are rejected during mTLS verification.
+// Enforcement is on the authentication path, per request -- which matters most
+// here: a QUIC client holds one long-lived connection, so a handshake-time
+// check would leave a revoked peer authorised for the life of that connection.
 func (s *Server) handleRevokeCert(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.certProv == nil {
 		return nil, &ServiceNotConfiguredError{Service: "cert"}

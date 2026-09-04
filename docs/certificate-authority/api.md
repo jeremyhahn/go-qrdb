@@ -87,11 +87,41 @@ than merely inert.
 | Success | 200 | `OK` |
 | Barrier sealed | 503 | `UNAVAILABLE` — `BarrierSealedError` |
 | CA key not loaded or destroyed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
-| Serial not found | 404 | `NOT_FOUND` — `CertNotFoundError` |
-| Operation targets a revoked certificate | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
+| Serial not found — declared and mapped, currently **produced by nothing** | 404 | `NOT_FOUND` — `CertNotFoundError` |
+| Operation targets a revoked certificate — declared and mapped, currently **produced by nothing**; revocation enforcement is an authentication failure, below | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
+
+`POST /certs/revoke` returns **200 / `OK` whether or not this node holds a
+record for the serial**: the marker is written either way (deny-by-serial), so
+both are successes. A caller therefore cannot currently tell a mistyped serial
+from a deliberate revocation of a peer-issued one. That is a known reporting
+gap, tracked separately; it is not closed with an error status, because
+reporting a success as a failure would send a caller retrying and escalating
+over a revocation that is already in force.
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError` |
 | Generation or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+
+## Authenticating with a revoked certificate
+
+Revocation is enforced on the **authentication path of every transport**, on
+every request — not in a TLS handshake callback, which would leave a client
+holding an established QUIC connection authorised indefinitely.
+
+| Condition | REST | gRPC / Unix |
+|---|---|---|
+| Peer certificate is revoked | 401 | `UNAUTHENTICATED` — `auth.ErrCertificateRevoked` |
+| Revocation status could not be read (store failure) | 503 | `UNAVAILABLE` — `auth.RevocationCheckError` |
+| Barrier sealed, so there is no revocation state to read | request is admitted; reachable surface is confined to the sealed-window allowlist |
+
+The 503 is the fail-closed case: the request is refused, and the status tells a
+legitimate caller to retry rather than that its credential is bad. Admitting a
+request whose revocation status is unknown would reinstate the defect
+enforcement exists to remove.
+
+A node caches a not-revoked answer for `auth.revocation_cache_ttl` (default
+`30s`); **that is the window during which a freshly revoked certificate still
+authenticates**. `0` disables caching. A revoked answer is cached without
+expiry, because revocation here is a one-way door.
 
 ## Revocation semantics
 

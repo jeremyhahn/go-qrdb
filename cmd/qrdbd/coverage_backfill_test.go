@@ -202,6 +202,8 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		false,
 		"spiffe://example.org", // non-empty trust domain triggers line 1907-1909
 		qrdbconfig.AuthABACConfig{},
+		nil, // no cert provider: revocation not enforced
+		"",  // revocation cache TTL: default
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -234,6 +236,8 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		nil, // nil complianceAudit
 		false, "",
 		qrdbconfig.AuthABACConfig{},
+		nil, // no cert provider: revocation not enforced
+		"",  // revocation cache TTL: default
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

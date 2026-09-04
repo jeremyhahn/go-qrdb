@@ -37,7 +37,53 @@ var (
 
 	// ErrInvalidCertificate is returned when the client certificate is malformed or unverified.
 	ErrInvalidCertificate = &AuthError{Code: "invalid_cert", Message: "client certificate is invalid or unverified"}
+
+	// ErrCertificateRevoked is returned when the client certificate verified
+	// against the CA but its serial has been revoked. The chain is sound and
+	// the certificate is inside its validity window; the issuer has withdrawn
+	// it.
+	//
+	// This is the error that makes revocation an access-control decision
+	// rather than a display flag. It is produced only by
+	// MTLSAuthenticator.Authenticate, on every request, and never from a
+	// handshake callback — see RevocationChecker for why.
+	ErrCertificateRevoked = &AuthError{Code: "cert_revoked", Message: "client certificate has been revoked"}
 )
+
+// RevocationCheckError reports that a certificate's revocation status could
+// not be determined.
+//
+// It is a REFUSAL, not a denial: the peer certificate may be perfectly good and
+// the node simply could not read replicated revocation state. Transports map it
+// to 503 / UNAVAILABLE so a client retries, rather than to 401, which would
+// tell a legitimate caller its certificate is bad.
+//
+// Failing closed here is deliberate. The alternative — admitting the request
+// when the check cannot run — is a fail-open that reinstates exactly the
+// property this whole mechanism exists to remove, and it does so precisely
+// during the degraded conditions in which an attacker most wants it. The one
+// stated exception is the sealed barrier, where there is no revocation state
+// to read at all; see MTLSAuthenticator.Authenticate.
+// It carries no serial of its own. The certificate serial has exactly one
+// canonical spelling and pkg/cert owns it (cert.FormatSerial); a second
+// rendering here would be a second definition, and the wrapped error already
+// names the key it could not read.
+type RevocationCheckError struct {
+	// Err is the underlying lookup failure.
+	Err error
+}
+
+// Error returns a human-readable description of the failed revocation check.
+func (e *RevocationCheckError) Error() string {
+	msg := "qrdb/auth: certificate revocation check failed"
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
+}
+
+// Unwrap returns the underlying lookup failure.
+func (e *RevocationCheckError) Unwrap() error { return e.Err }
 
 // OperationError wraps an auth store or key-derivation operation failure
 // together with its underlying cause. It preserves errors.Is/errors.As
