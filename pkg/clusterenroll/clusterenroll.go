@@ -423,11 +423,10 @@ func Resolve(ctx context.Context, opts *Options, logger *slog.Logger) (*clustert
 	}
 
 	// Path 4: joining node fetches the CA bundle from the existing cluster.
+	// Join records the role itself -- see its doc comment for why it has to be
+	// there rather than here.
 	if opts.Bootstrap.HasFlags() {
 		logger.Info("bootstrap flags detected, fetching CA bundle from existing cluster")
-		if err := persistRole(opts.DataDir, RoleJoined); err != nil {
-			return nil, nil, err
-		}
 		mat, err := Join(ctx, opts, logger)
 		if err != nil {
 			return nil, nil, err
@@ -581,6 +580,16 @@ func ResolveCA(ctx context.Context, opts *Options, logger *slog.Logger) (caCertP
 // opts.DataDir. This is the path 4 implementation; it is also exported so that
 // cmd/qrdbd can provide a thin bootstrapTLS wrapper that preserves the
 // qrdbd-specific TLSBundle type.
+//
+// It records RoleJoined itself, before the material, rather than leaving that
+// to Resolve. Once a data directory holding CA material with no role file is a
+// REFUSAL TO BOOT (*MissingRoleError, go-qrdb#264) rather than a warning, a
+// path that writes material without a role does not leave a latent defect for
+// somebody to notice later -- it leaves a node that will not start on its next
+// boot. Resolve path 4 wrote the role and this function did not, so every
+// caller reaching Join directly through the SDK produced exactly that. The
+// role belongs with the write it describes, so it cannot be omitted by a
+// caller that does not know it has to supply it.
 func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.Material, error) {
 	bundlePEM, err := autoFetchBundle(ctx, opts, logger)
 	if err != nil {
@@ -593,6 +602,18 @@ func Join(ctx context.Context, opts *Options, logger *slog.Logger) (*clustertls.
 		return nil, &JoinError{Err: err}
 	}
 
+	// Recorded here rather than at the top of this function, so that nothing
+	// touches the data directory until there is material to write: a join whose
+	// fetch or leaf issuance failed leaves no role file, and a caller that
+	// distinguished "the CA bundle could not be turned into material" from
+	// "the data directory is unusable" keeps getting the same answer for the
+	// same condition (cmd/qrdbd's TestBootstrapTLS_Noise_PersistError reaches
+	// this function with a data directory that is a regular file, and must
+	// still see the leaf failure). The ordering invariant requires only that
+	// the role reach stable storage BEFORE the material, which it does.
+	if err := persistRole(opts.DataDir, RoleJoined); err != nil {
+		return nil, err
+	}
 	if err := clustertls.PersistMaterial(mat, opts.DataDir); err != nil {
 		return nil, &JoinError{Err: err}
 	}

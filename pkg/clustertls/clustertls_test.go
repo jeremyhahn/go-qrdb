@@ -362,6 +362,38 @@ func TestLoadFromDir_PartialFilesReturnsError(t *testing.T) {
 	}
 }
 
+// TestPersistMaterial_CreatesTheDirectory0700 covers the directory it makes
+// when the data directory does not exist yet: cluster CA material including the
+// CA signing key lands there, so a mode that let another local account list or
+// traverse it would defeat the 0600 on the files themselves.
+//
+// This assertion moved here from cmd/qrdbd, which had it only as a side effect
+// of testing a wrapper that had no production caller and was deleted with
+// go-qrdb#264. The property belongs to PersistMaterial, so it is asserted
+// against PersistMaterial.
+func TestPersistMaterial_CreatesTheDirectory0700(t *testing.T) {
+	t.Parallel()
+
+	// A path that does not exist yet, so PersistMaterial has to create it.
+	dir := filepath.Join(t.TempDir(), "certs")
+
+	m, err := clustertls.GenerateCABundle()
+	if err != nil {
+		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	if err := clustertls.PersistMaterial(m, dir); err != nil {
+		t.Fatalf("PersistMaterial: %v", err)
+	}
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat %s: %v", dir, err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("data directory permissions = %o, want 0o700", info.Mode().Perm())
+	}
+}
+
 // TestPersistMaterial_WriteError verifies that PersistMaterial returns a
 // *WriteError when the target path cannot be created (e.g. it is a regular
 // file, not a directory).

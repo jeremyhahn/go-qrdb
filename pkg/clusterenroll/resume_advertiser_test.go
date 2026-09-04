@@ -26,7 +26,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -211,14 +210,11 @@ func TestResolve_SingleNodeNeverStartsAListener(t *testing.T) {
 	}
 }
 
-// TestResolve_DataDirWithNoRecordedRoleKeepsTheOldBehaviour pins the
-// backward-compatibility branch: a data directory written before the role file
-// existed cannot have its role recovered, so it keeps the pre-fix behaviour
-// rather than inferring one from configuration that may have changed since.
-//
-// Constructed as an upgrade actually presents it: CA material present, no role
-// file.
-func TestResolve_DataDirWithNoRecordedRoleKeepsTheOldBehaviour(t *testing.T) {
+// materialWithNoRole builds the fixture this issue is about, exactly as an
+// upgrade presents it: cluster CA material in the data directory and no role
+// file beside it.
+func materialWithNoRole(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
 	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
 	if err != nil {
@@ -228,71 +224,171 @@ func TestResolve_DataDirWithNoRecordedRoleKeepsTheOldBehaviour(t *testing.T) {
 		t.Fatalf("PersistMaterial: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, RoleFile)); !os.IsNotExist(err) {
-		t.Fatalf("the pre-upgrade fixture must have no role file, got err=%v", err)
+		t.Fatalf("the fixture must have no role file, got err=%v", err)
 	}
+	return dir
+}
+
+// TestResolve_DataDirWithNoRecordedRoleRefusesToBoot is go-qrdb#264.
+//
+// The role is not recoverable from the material (see RoleFile), so a node in
+// this state cannot know whether it owes the cluster an enrollment listener.
+// It used to come up anyway, serving none, with a warning -- and a first node
+// in that state is silently unjoinable for as long as it runs, reported by
+// nothing except a peer's join failing on a different machine, possibly weeks
+// later. Refusing puts the report on the node that has the defect at the
+// moment it has it (owner ruling 2026-09-03).
+func TestResolve_DataDirWithNoRecordedRoleRefusesToBoot(t *testing.T) {
+	dir := materialWithNoRole(t)
 
 	_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
-	if err != nil {
-		t.Fatalf("boot: %v", err)
-	}
 	if adv != nil {
 		adv.Stop()
-		t.Fatal("an advertiser was started for a data directory with no recorded role; " +
+		t.Error("an advertiser was started for a data directory with no recorded role; " +
 			"the role is not recoverable from the material, so this would be inferring it")
+	}
+	var mre *MissingRoleError
+	if !errors.As(err, &mre) {
+		t.Fatalf("Resolve error = %v; want *MissingRoleError -- the node must refuse to start "+
+			"rather than come up serving no enrollment", err)
+	}
+	if mre.Dir != dir {
+		t.Errorf("MissingRoleError.Dir = %q; want the data directory %q", mre.Dir, dir)
 	}
 }
 
-// TestResolve_NoRecordedRoleWarnsOnEveryBootWithAnActionableRemedy.
+// TestResolveCA_DataDirWithNoRecordedRoleRefusesToBoot: ResolveCA has its own
+// cached branch, so it gets the same assertion. A consumer that supplies its
+// own node key reaches enrollment only through here, and a refusal that fires
+// on one of the two cached paths is a refusal an upgrading deployment can walk
+// straight past.
+func TestResolveCA_DataDirWithNoRecordedRoleRefusesToBoot(t *testing.T) {
+	dir := materialWithNoRole(t)
+
+	_, _, adv, err := ResolveCA(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
+	if adv != nil {
+		adv.Stop()
+		t.Error("ResolveCA started an advertiser for a data directory with no recorded role")
+	}
+	var mre *MissingRoleError
+	if !errors.As(err, &mre) {
+		t.Fatalf("ResolveCA error = %v; want *MissingRoleError", err)
+	}
+}
+
+// TestMissingRoleError_NamesTheRemedyNotTheState.
 //
-// Two properties, and both are about the warning being useful rather than
-// present. It fires on EVERY boot, because the operator who needs it is the
-// one investigating why a peer cannot join weeks after the upgrade, reading a
-// current log -- a warning emitted once at upgrade is one nobody reads. And it
-// names the remedy, because "no recorded enrollment role" is a state, not
-// something an operator can act on.
-func TestResolve_NoRecordedRoleWarnsOnEveryBootWithAnActionableRemedy(t *testing.T) {
+// This is the WARN text #266 wrote, at the severity #264 ruled. It was written
+// for an operator investigating a failed join long after the upgrade, so every
+// property asserted here is about it being actionable rather than present: the
+// file to write, the three values it accepts, and that a restart is needed.
+//
+// The caution is not boilerplate. Multi-node enrollment is the shared-CA-key
+// mode, so a JOINED node holds ca-key.pem too -- an operator reaching for the
+// obvious evidence would record a joined node as first-node and stand up an
+// enrollment listener serving the CA bundle on a node that should never have
+// one. That is by hand the exact mistake the rejected derivation would have
+// made automatically, so the sentence that forestalls it is load-bearing.
+func TestMissingRoleError_NamesTheRemedyNotTheState(t *testing.T) {
+	dir := materialWithNoRole(t)
+
+	_, _, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
+	if err == nil {
+		t.Fatal("Resolve returned no error for a data directory with no recorded role")
+	}
+	msg := err.Error()
+
+	// Where to write, what to write, and that a restart is needed. All three
+	// accepted values, because the operator whose node is refusing may be
+	// holding a single-node or joined directory, not a first node's.
+	for _, want := range []string{
+		filepath.Join(dir, RoleFile),
+		string(RoleFirstNode),
+		string(RoleSingleNode),
+		string(RoleJoined),
+		"restart",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the error does not mention %q; it states a condition without a remedy:\n%s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "ca-key.pem is not evidence") {
+		t.Errorf("the error does not caution that holding ca-key.pem is not evidence of being "+
+			"the first node; an operator following it would mis-record a joined node and stand "+
+			"up an enrollment listener that serves the CA bundle:\n%s", msg)
+	}
+}
+
+// TestRecordedRoleBootsAndOnlyFirstNodeAdvertises is the other half of the
+// refusal, and the half a mutation of it silently keeps green: the refusal
+// must fire on the missing role and on NOTHING ELSE.
+//
+// All three recorded roles boot from cache, and only first-node comes back
+// with a listener. A refusal that also caught a single-node or joined node
+// with a role file would refuse the majority of the fleet.
+func TestRecordedRoleBootsAndOnlyFirstNodeAdvertises(t *testing.T) {
+	for _, tc := range []struct {
+		role      Role
+		advertise bool
+	}{
+		{RoleFirstNode, true},
+		{RoleSingleNode, false},
+		{RoleJoined, false},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			dir := materialWithNoRole(t)
+			if err := persistRole(dir, tc.role); err != nil {
+				t.Fatalf("persistRole: %v", err)
+			}
+
+			_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), discardLogger())
+			if err != nil {
+				t.Fatalf("boot with a recorded role of %q: %v; the refusal must fire on a MISSING "+
+					"role, not on a recorded one", tc.role, err)
+			}
+			if tc.advertise {
+				dialable(t, adv)
+				adv.Stop()
+				return
+			}
+			if adv != nil {
+				adv.Stop()
+				t.Fatalf("role %q started an enrollment listener", tc.role)
+			}
+		})
+	}
+}
+
+// TestJoinRecordsItsOwnRole.
+//
+// Join is exported and reachable through the SDK without going through
+// Resolve, and it persisted CA material while Resolve path 4 -- not Join --
+// wrote the role. Under the WARN that left a joined node warning forever;
+// under the refusal it leaves a freshly joined node that will not start on its
+// next boot, on a current version, with the message telling its operator to
+// hand-write a fact the code already knew. The role belongs with the write it
+// describes.
+func TestJoinRecordsItsOwnRole(t *testing.T) {
+	bundle, _ := sharedCABundle(t)
 	dir := t.TempDir()
-	mat, err := clustertls.GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
-	if err != nil {
-		t.Fatalf("GenerateCABundle: %v", err)
+	opts := &Options{
+		RaftAddress: "127.0.0.1:63025",
+		TrustDomain: "test.cluster",
+		DataDir:     dir,
+		Bootstrap:   bundleServer(t, bundle),
 	}
-	if err := clustertls.PersistMaterial(mat, dir); err != nil {
-		t.Fatalf("PersistMaterial: %v", err)
+	if _, err := Join(context.Background(), opts, discardLogger()); err != nil {
+		t.Fatalf("Join: %v", err)
 	}
-
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
-	const boots = 3
-	for i := 0; i < boots; i++ {
-		_, adv, err := Resolve(context.Background(), firstNodeOpts(t, dir, freePort(t)), logger)
-		if err != nil {
-			t.Fatalf("boot %d: %v", i+1, err)
-		}
-		if adv != nil {
-			adv.Stop()
-			t.Fatalf("boot %d started an advertiser for a data directory with no recorded role", i+1)
-		}
+	if role, found, err := loadRole(dir); err != nil || !found || role != RoleJoined {
+		t.Fatalf("recorded role after a direct Join = (%q, found=%v, err=%v); want joined", role, found, err)
 	}
-
-	out := logs.String()
-	if got := strings.Count(out, "no recorded enrollment role"); got != boots {
-		t.Errorf("the warning fired %d times over %d boots; it must fire on every boot, "+
-			"because the operator who needs it reads a current log weeks later, not the upgrade log",
-			got, boots)
-	}
-	// The remedy has to be actionable: where to write, what to write, and that
-	// a restart is needed.
-	for _, want := range []string{RoleFile, "first-node", "restart"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the warning does not mention %q; it states a condition without a remedy", want)
-		}
-	}
-	// And it must not invite the mistake the measurement rules out.
-	if !strings.Contains(out, "ca-key.pem is not evidence") {
-		t.Error("the warning does not caution that holding ca-key.pem is not evidence of being " +
-			"the first node; an operator following it would mis-record a joined node and stand " +
-			"up an enrollment listener that serves the CA bundle")
+	// And the node it just produced boots.
+	if _, adv, err := Resolve(context.Background(), opts, discardLogger()); err != nil {
+		t.Fatalf("the node Join produced refuses to boot: %v", err)
+	} else if adv != nil {
+		adv.Stop()
+		t.Fatal("a joined node started an enrollment listener")
 	}
 }
 

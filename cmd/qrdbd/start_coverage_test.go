@@ -1435,8 +1435,8 @@ func TestRunStart_TLSLoadError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // runStart: CA cert directory creation failure
 //
-// Exercises the resolveTLS -> persistFullBundle path where MkdirAll fails
-// because the data directory path traverses a regular file.
+// Exercises the resolveTLS -> clusterenroll.Resolve persist path where
+// MkdirAll fails because the data directory path traverses a regular file.
 // ---------------------------------------------------------------------------
 
 func TestRunStart_CACertMkdirAllError(t *testing.T) {
@@ -1463,8 +1463,9 @@ func TestRunStart_CACertMkdirAllError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // runStart: CA cert file write failure
 //
-// Exercises the resolveTLS -> persistFullBundle path where MkdirAll succeeds
-// but os.WriteFile fails because the data directory is read-only.
+// Exercises the resolveTLS -> clusterenroll.Resolve persist path where
+// MkdirAll succeeds but the file write fails because the data directory is
+// read-only.
 // ---------------------------------------------------------------------------
 
 func TestRunStart_CACertWriteFileError(t *testing.T) {

@@ -68,7 +68,9 @@ once the process exits the two leave the same bytes. The role is written
 **before** the CA material for the same reason: material present with no role
 file then means exactly one thing, a data directory written before this
 mechanism existed, rather than a state a fresh install can also reach through a
-badly timed crash.
+badly timed crash. That ordering is what makes the refusal below defensible —
+if an interrupted first boot could reach the same state, the refusal would be
+turning an ordinary crash into a node that will not start.
 
 Reading the role is what makes the cached-material path able to restart the
 listener. Before it, the listener was started on exactly one boot in a node's
@@ -77,10 +79,28 @@ node came up healthy, reported healthy, and served no enrollment at all, with
 nothing logging a problem. The failure was visible only to a peer trying to
 join, from a different machine.
 
-A data directory with CA material and no recorded role keeps that older
-behaviour and starts no listener, logging a warning that names the impact. The
-role is not inferred from `SingleNode`: that is configuration, it can differ
-from the value the node was first started with, and inferring a
+**A data directory with CA material and no recorded role refuses to boot**, with
+a `*MissingRoleError`. It is the state a directory written before the role file
+existed presents, and the node in it cannot know whether it owes the cluster an
+enrollment listener. Coming up anyway and serving none is the defect itself: a
+first node in that state is silently unjoinable for as long as it runs, nothing
+on the node reports it, and the only symptom is a peer's join failing on another
+machine — possibly weeks later, during an unrelated operation. Refusing puts the
+report on the node that has the defect, at the moment it has it.
+
+The refusal covers every such directory, not only a first node's, because the
+two are not distinguishable — that is exactly what the rest of this section
+measures. A `single-node` or `joined` directory written before the role file is
+refused too, and the message tells its operator which value to record.
+
+The error names the remedy rather than the state: the file to write, the three
+values it accepts, and that a restart is needed. It also carries the caution
+that **holding `ca-key.pem` is not evidence of having generated the CA**, since
+an operator following the remedy would otherwise reproduce by hand the
+derivation the next paragraph rules out.
+
+The role is not inferred from `SingleNode` either: that is configuration, it can
+differ from the value the node was first started with, and inferring a
 cluster-wide enrollment decision from it at read time would be a guess wearing
 the clothes of a recovery.
 
@@ -116,6 +136,12 @@ So the resume refuses with `*IncompleteFirstNodeMaterialError`, naming the
 symptom surface on the joiner. The check is derived from what the advertiser
 serves — `CABundle` concatenates `CACertPEM` and `CAKeyPEM` — not from the
 write order, so reordering `PersistMaterial` moves nothing.
+
+**Every path that writes CA material records the role, including `Join`.**
+`Join` is exported and reachable without going through `Resolve`, and it
+persists a joined node's material; the role write lives inside it rather than in
+its caller, so a consumer that calls it directly cannot produce a directory that
+will refuse to boot on its next start.
 
 `ResolveCA` is not exposed to the same window: `LoadCAFromDir` requires both
 `ca.pem` and `ca-key.pem` and reports "no cache" when either is missing, so an
@@ -257,6 +283,11 @@ type ImbalanceReport struct {
   load the CA from cache, and it comes back on the same persisted Noise static
   key so a peer that pinned that key still enrolls — see
   [Enrollment role](#enrollment-role).
+- **A node whose data directory holds cluster CA material with no recorded
+  enrollment role refuses to start.** The role cannot be recovered from the
+  material, so the node cannot know whether it owes the cluster a listener, and
+  starting anyway means being silently unjoinable with nothing on the node
+  reporting it. The error names the file, the three values, and the restart.
 - **The quorum guard (`MinQuorum`) refuses to remove a replica** when doing so
   would drop active membership below quorum. A transient liveness blip cannot
   destroy the cluster.

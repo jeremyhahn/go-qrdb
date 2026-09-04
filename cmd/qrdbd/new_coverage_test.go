@@ -32,6 +32,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -436,14 +438,29 @@ func TestGenerateLeafFromCA_InvalidCACertDERAdditional(t *testing.T) {
 func TestResolveTLS_Path2_CachedCertsWithCAKey(t *testing.T) {
 	dataDir := t.TempDir()
 
-	// Generate and persist a full bundle including the CA key.
+	// Generate and persist a full bundle including the CA key, through the
+	// storage primitive itself. cmd/qrdbd's persistFullBundle wrapper was
+	// deleted with go-qrdb#264: it had no production caller and, writing
+	// material without a role, could only ever produce a data directory the
+	// daemon now refuses to boot on.
 	bundle, err := generateCATLS()
 	require.NoError(t, err)
-	require.NoError(t, persistFullBundle(bundle, dataDir))
+	require.NoError(t, clustertls.PersistMaterial(&clustertls.Material{
+		CACertPEM: bundle.CACertPEM,
+		CAKeyPEM:  bundle.CAKeyPEM,
+		CertPEM:   bundle.CertPEM,
+		KeyPEM:    bundle.KeyPEM,
+	}, dataDir))
 
 	// Also write ca-key.pem so loadTLSFromDir picks it up.
 	caKeyPath := filepath.Join(dataDir, "ca-key.pem")
 	require.NoError(t, os.WriteFile(caKeyPath, bundle.CAKeyPEM, 0o600))
+
+	// And the enrollment role, which every path that writes CA material
+	// records. Without it this is the pre-role data directory go-qrdb#264
+	// refuses to boot on rather than a cache.
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, clusterenroll.RoleFile),
+		[]byte(clusterenroll.RoleSingleNode), 0o600))
 
 	f := &startFlags{
 		dataDir:         dataDir,

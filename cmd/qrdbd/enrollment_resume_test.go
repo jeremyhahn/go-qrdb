@@ -23,12 +23,15 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
 
 // freeEnrollPort reserves and releases a loopback port so the test knows an
@@ -139,5 +142,59 @@ func TestRunStart_ReleasesTheEnrollmentListenerOnAnEarlyError(t *testing.T) {
 	}
 	if err := ln.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+// TestResolveTLS_RefusesADataDirectoryWithNoRecordedRole is go-qrdb#264 at the
+// layer that ships, for the same reason the resume assertion above lives here:
+// resolveTLS keeps its own cached-certificate branch above the delegation to
+// clusterenroll.Resolve, so a refusal that only lands in pkg/clusterenroll is
+// fully tested, entirely green, and never reached by the daemon.
+//
+// The error has to reach the caller of runStart, not merely be returned by
+// resolveTLS, or "refuses to boot" is a claim about an internal function while
+// the daemon carries on.
+func TestResolveTLS_RefusesADataDirectoryWithNoRecordedRole(t *testing.T) {
+	dir := t.TempDir()
+	f := &startFlags{
+		dataDir:            dir,
+		discoveryMethod:    "static",
+		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		bootstrapNoisePort: 0,
+		host:               testBindHost,
+		smType:             "memory",
+	}
+
+	// Boot 1 writes the material and the role, exactly as a current version
+	// does. Removing the role file is what an upgraded pre-role data directory
+	// looks like, and it is the only way to build one: no path in this version
+	// leaves material without a role.
+	_, servers1, err := resolveTLS(f, testLogger())
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	if servers1 == nil {
+		t.Fatal("boot 1 started no bootstrap servers, so this is not the case under test")
+	}
+	servers1.Stop()
+	if err := os.Remove(filepath.Join(dir, clusterenroll.RoleFile)); err != nil {
+		t.Fatalf("age the data directory back to before the role file: %v", err)
+	}
+
+	_, servers2, err := resolveTLS(f, testLogger())
+	if servers2 != nil {
+		servers2.Stop()
+		t.Error("the daemon started an enrollment listener for a data directory with no " +
+			"recorded role; the role is not recoverable from the material")
+	}
+	var mre *clusterenroll.MissingRoleError
+	if !errors.As(err, &mre) {
+		t.Fatalf("resolveTLS error = %v; want *clusterenroll.MissingRoleError -- the daemon "+
+			"must refuse to start rather than come up serving no enrollment (go-qrdb#264)", err)
+	}
+
+	if err := runStart(f); !errors.As(err, &mre) {
+		t.Fatalf("runStart error = %v; want *clusterenroll.MissingRoleError. resolveTLS "+
+			"refusing is not the daemon refusing if something between them swallows it", err)
 	}
 }

@@ -164,19 +164,6 @@ func loadTLSFromDir(dataDir string) (*TLSBundle, error) {
 	return bundle, nil
 }
 
-// persistFullBundle writes the TLS bundle to standard file names in
-// dataDir: ca.pem, node-cert.pem, node-key.pem, and optionally
-// ca-key.pem if CAKeyPEM is populated. The directory is created with
-// 0o700 permissions and files with 0o600.
-func persistFullBundle(bundle *TLSBundle, dataDir string) error {
-	return clustertls.PersistMaterial(&clustertls.Material{
-		CACertPEM: bundle.CACertPEM,
-		CAKeyPEM:  bundle.CAKeyPEM,
-		CertPEM:   bundle.CertPEM,
-		KeyPEM:    bundle.KeyPEM,
-	}, dataDir)
-}
-
 // tlsBundleFromMaterial assembles a qrdbd TLSBundle from raw clustertls
 // Material by parsing the key pair and building the CA cert pool for the
 // admin HTTP server.

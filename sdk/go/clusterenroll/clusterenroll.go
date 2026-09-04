@@ -97,6 +97,16 @@ type IncompleteFirstNodeMaterialError = clusterenroll.IncompleteFirstNodeMateria
 // withholds one that was asked for.
 type UnknownRoleError = clusterenroll.UnknownRoleError
 
+// MissingRoleError is returned when the data directory holds cluster CA
+// material but no role file, so the node cannot know whether it owes the
+// cluster an enrollment listener. The node REFUSES TO START: a first node in
+// this state is silently unjoinable for as long as it runs, and the only thing
+// that ever reports it is a peer's join failing on a different machine. The
+// message names the file to write, the three values it accepts, the restart,
+// and the caution that holding ca-key.pem is not evidence of being the first
+// node — a joined node holds it too.
+type MissingRoleError = clusterenroll.MissingRoleError
+
 // FetchError is returned when fetching the CA bundle from a bootstrap server
 // fails.
 type FetchError = clusterenroll.FetchError
@@ -158,7 +168,8 @@ var StartAdvertiser = clusterenroll.StartAdvertiser
 // ResumeAdvertiser starts the enrollment listener for a node whose recorded
 // enrollment role is RoleFirstNode, on a boot that loaded its cluster CA from
 // cache rather than generating it. It returns (nil, nil) for a role that
-// serves no enrollment and for a data directory with no recorded role.
+// serves no enrollment, and *MissingRoleError for a data directory that holds
+// cluster CA material and no recorded role, which fails the boot.
 //
 // Consumers that keep their own cached-material branch above Resolve -- as
 // cmd/qrdbd does, to preserve its own X.509 error types -- must call this from

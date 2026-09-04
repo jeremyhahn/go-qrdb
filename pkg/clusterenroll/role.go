@@ -109,6 +109,53 @@ func (e *UnknownRoleError) Error() string {
 		" in " + RoleFile + "; expected first-node, single-node or joined"
 }
 
+// MissingRoleError is returned when the data directory holds cluster CA
+// material but no role file, so the node cannot know whether it owes the
+// cluster an enrollment listener.
+//
+// It REFUSES TO BOOT rather than continuing without a listener (go-qrdb#264,
+// owner ruling 2026-09-03). The alternative was a warning on every boot, and
+// the warning is the wrong severity for what this state is: a first node in it
+// is silently unjoinable for as long as it runs, and the only thing that ever
+// reports the fault is a peer's join failing on another machine, weeks later.
+// Refusing moves the report to the node that has the defect, at the moment it
+// has it.
+//
+// The refusal covers every data directory with material and no role, not just
+// a first node's, BECAUSE THE TWO ARE NOT DISTINGUISHABLE -- that
+// indistinguishability is the whole of go-qrdb#264 and is measured, not
+// assumed (see RoleFile). A single-node or joined directory written by an
+// older version is refused too, and the message tells its operator to record
+// the value that fits. Narrowing the refusal to "first nodes" would require
+// deciding which nodes those are, which is the derivation both measurements
+// rule out.
+//
+// The message is the text this state warned with before it was raised to an
+// error. It was written for an operator investigating a failed join long after
+// the upgrade, so it names the remedy rather than the state: the file to
+// write, the three values it accepts, and that a restart is needed. The
+// caution is not boilerplate -- multi-node enrollment is the shared-CA-key
+// mode, so a JOINED node holds ca-key.pem too, and an operator reaching for
+// the obvious evidence would record a joined node as first-node and stand up
+// an enrollment listener serving the CA bundle on a node that should never
+// have one. That is by hand the exact mistake the rejected derivation would
+// have made automatically.
+type MissingRoleError struct {
+	// Dir is the data directory holding CA material and no role file.
+	Dir string
+}
+
+// Error returns a human-readable description.
+func (e *MissingRoleError) Error() string {
+	return "clusterenroll: the cluster CA material in " + e.Dir +
+		" has no recorded enrollment role, so this node cannot know whether it owes the " +
+		"cluster an enrollment listener; if this node generated the cluster CA, no peer " +
+		"can enroll against it and nothing else reports that. Write one of first-node, " +
+		"single-node or joined to " + filepath.Join(e.Dir, RoleFile) + " and restart the " +
+		"node. Record first-node ONLY if this node generated the cluster CA; holding " +
+		"ca-key.pem is not evidence, a node that joined this cluster holds it too"
+}
+
 // IncompleteFirstNodeMaterialError is returned when a node recorded as
 // RoleFirstNode has cached material that cannot back an enrollment listener.
 //
@@ -142,8 +189,11 @@ func (e *IncompleteFirstNodeMaterialError) Error() string {
 // "role present" for anything this version wrote, so a data directory holding
 // CA material and NO role file means exactly one thing -- it was written by a
 // version that predates the role file -- rather than being a state a fresh
-// install can also land in through a badly timed crash. The backward-
-// compatibility branch in the cached path relies on that being unambiguous.
+// install can also land in through a badly timed crash. The cached path
+// REFUSES TO BOOT on that state (*MissingRoleError, go-qrdb#264), and a
+// refusal is only defensible while the state it refuses on is unambiguous: if
+// a fresh install could reach it by crashing, this ordering would be turning
+// an ordinary interrupted first boot into a node that will not start.
 //
 // Writing it first costs nothing on the failure side: a role file with no CA
 // material next to it sends the next boot down the generate path exactly as
@@ -204,7 +254,8 @@ func loadRole(dataDir string) (Role, bool, error) {
 // ResumeAdvertiser starts the enrollment listener for a node whose recorded
 // role owes the cluster one, on a boot that loaded its CA material from cache
 // rather than generating it. It returns (nil, nil) for a node whose role does
-// not serve enrollment, and for a data directory with no recorded role.
+// not serve enrollment, and *MissingRoleError -- which fails the boot -- for a
+// data directory that holds CA material and no recorded role.
 //
 // It is EXPORTED because Resolve is not the only cached path in the system.
 // cmd/qrdbd keeps its own cached-certificate branch above its delegation to
@@ -246,35 +297,14 @@ func ResumeAdvertiser(opts *Options, mat *clustertls.Material, logger *slog.Logg
 
 	if !found {
 		// A data directory written before the role file existed. The role is
-		// not recoverable from the material -- see RoleFile -- so this node's
-		// listener cannot be resumed, and it keeps the pre-go-qrdb#241
-		// behaviour rather than inferring a role from configuration that may
-		// have changed since. It is logged at WARN because a first node in
-		// this state is silently unjoinable, which is the defect itself, and
-		// an operator who can see it can fix it by re-recording the role.
-		// Logged on EVERY boot, not once at upgrade. A warning that appears
-		// only at the moment of upgrade is a warning nobody reads: the
-		// operator who needs it is the one investigating why a peer cannot
-		// join, weeks later, and they will be looking at a current log.
-		//
-		// It names the exact remedy rather than the state. "No recorded
-		// enrollment role" tells an operator nothing they can act on; a path,
-		// the three accepted values and the restart requirement do.
-		//
-		// The caution is not boilerplate. Multi-node enrollment is the
-		// shared-CA-key mode, so a JOINED node also holds ca-key.pem -- an
-		// operator reaching for the obvious evidence would mis-record a joined
-		// node as first-node and stand up an enrollment listener serving the
-		// CA bundle on a node that should never have one.
-		logger.Warn("cluster CA material has no recorded enrollment role; "+
-			"no enrollment listener will be started on this boot or any later one",
-			"dir", opts.DataDir,
-			"role_file", filepath.Join(opts.DataDir, RoleFile),
-			"impact", "if this node generated the cluster CA, no peer can enroll against it and nothing else reports that",
-			"remedy", "write one of first-node, single-node or joined to the role file and restart the node",
-			"caution", "record first-node ONLY if this node generated the cluster CA; holding ca-key.pem is not evidence, "+
-				"a node that joined this cluster holds it too")
-		return nil, nil
+		// not recoverable from the material -- see RoleFile -- so the node
+		// refuses to start rather than continuing as a node that may owe the
+		// cluster an enrollment listener and will not be serving one
+		// (go-qrdb#264). Inferring the role from configuration is not the
+		// alternative: SingleNode can differ from the value the node was first
+		// started with, so reading it here would be a guess wearing the
+		// clothes of a recovery.
+		return nil, &MissingRoleError{Dir: opts.DataDir}
 	}
 
 	if !role.advertises() {

@@ -54,6 +54,16 @@ func writeTLSFixtures(t *testing.T, dir string) *TLSBundle {
 	if err := os.WriteFile(filepath.Join(dir, "node-key.pem"), bundle.KeyPEM, 0o600); err != nil {
 		t.Fatalf("WriteFile node-key.pem: %v", err)
 	}
+	// Cluster CA material with no enrollment role beside it is the state
+	// go-qrdb#264 refuses to boot on, so a fixture that stopped here would not
+	// be a cached data directory -- it would be that defect, and every test
+	// using it would be asserting against a daemon that no longer starts.
+	// single-node because these fixtures assert the cached path starts no
+	// enrollment listener.
+	if err := os.WriteFile(filepath.Join(dir, clusterenroll.RoleFile),
+		[]byte(clusterenroll.RoleSingleNode), 0o600); err != nil {
+		t.Fatalf("WriteFile %s: %v", clusterenroll.RoleFile, err)
+	}
 
 	return bundle
 }
@@ -705,7 +715,7 @@ func TestBootstrapTLS_Noise_FetchError(t *testing.T) {
 
 func TestBootstrapTLS_Noise_PersistError(t *testing.T) {
 	// Start a real Noise server and set dataDir to a regular file so
-	// persistFullBundle would fail. However, since the bootstrap protocol
+	// clusterenroll.Join's persist would fail. However, since the bootstrap protocol
 	// strips non-CERTIFICATE PEM blocks, generateLeafFromCA fails first
 	// (before persist is reached). This test verifies the error is a
 	// BootstrapError, confirming the fetch succeeded but downstream
@@ -890,8 +900,8 @@ func TestResolveTLS_Path2_LoadError(t *testing.T) {
 }
 
 func TestResolveTLS_Path3_PersistError(t *testing.T) {
-	// Single-node: generateCATLS succeeds but persistFullBundle fails
-	// because dataDir is a regular file, not a directory.
+	// Single-node: the CA is generated but persisting it fails because
+	// dataDir is a regular file, not a directory.
 	tmpDir := t.TempDir()
 	badDataDir := filepath.Join(tmpDir, "blockfile")
 	if err := os.WriteFile(badDataDir, []byte("block"), 0o600); err != nil {
@@ -950,7 +960,7 @@ func TestResolveTLS_Path4_JoiningNode(t *testing.T) {
 
 func TestResolveTLS_Path5_PersistError(t *testing.T) {
 	// Path 5: multi-node, no bootstrap flags, no cached certs.
-	// persistFullBundle fails because dataDir is a regular file.
+	// The persist fails because dataDir is a regular file.
 	tmpDir := t.TempDir()
 	badDataDir := filepath.Join(tmpDir, "blockfile")
 	if err := os.WriteFile(badDataDir, []byte("block"), 0o600); err != nil {
@@ -975,7 +985,7 @@ func TestResolveTLS_Path5_PersistError(t *testing.T) {
 
 func TestResolveTLS_Path5_BootstrapServerStartError(t *testing.T) {
 	// Path 5: multi-node, no bootstrap flags, no cached certs.
-	// generateCATLS succeeds, persistFullBundle succeeds, but
+	// The CA is generated and persisted, but
 	// startBootstrapServers fails because noise-key.hex contains
 	// invalid data.
 	dir := t.TempDir()

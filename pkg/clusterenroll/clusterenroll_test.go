@@ -751,6 +751,12 @@ func TestResolveCA_CachedPath_ReturnsCachedCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateCABundle: %v", err)
 	}
+	// The role goes down first, as ResolveCA's own paths write it. Without it
+	// this is the pre-role data directory go-qrdb#264 refuses to boot on,
+	// not a cache.
+	if err := persistRole(dir, RoleSingleNode); err != nil {
+		t.Fatalf("persistRole: %v", err)
+	}
 	if err := clustertls.PersistCA(mat.CACertPEM, mat.CAKeyPEM, dir); err != nil {
 		t.Fatalf("PersistCA: %v", err)
 	}
@@ -854,6 +860,15 @@ func writeTestFixtures(t *testing.T, dir string) *clustertls.Material {
 	mat, err := clustertls.GenerateCABundle()
 	if err != nil {
 		t.Fatalf("GenerateCABundle: %v", err)
+	}
+	// The role, before the material, exactly as every path that writes CA
+	// material does. A cached data directory with no role file is the state
+	// go-qrdb#264 refuses to boot on, so a fixture that omits it is not a
+	// cached directory -- it is that defect, and any test using it would be
+	// asserting against a node that no longer starts. single-node because
+	// these fixtures assert that the cached path starts no advertiser.
+	if err := persistRole(dir, RoleSingleNode); err != nil {
+		t.Fatalf("persistRole: %v", err)
 	}
 	if err := clustertls.PersistMaterial(mat, dir); err != nil {
 		t.Fatalf("PersistMaterial: %v", err)
