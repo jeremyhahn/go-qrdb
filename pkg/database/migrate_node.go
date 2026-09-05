@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // keyedSuffix / backupSuffix name the transient staging directories created
@@ -239,13 +240,19 @@ func swapDir(dir string) error {
 			if rerr := os.RemoveAll(dir); rerr != nil {
 				return rerr
 			}
-		} else if rerr := os.Rename(dir, backupDir); rerr != nil {
+		} else if rerr := fsync.Rename(dir, backupDir); rerr != nil {
 			return rerr
 		}
 	}
-	// Move the keyed copy into place.
+	// Move the keyed copy into place. Both renames are durable: the pair is a
+	// two-step commit whose intermediate state (original moved aside, keyed
+	// copy not yet in place) has NO directory at dir. A crash there is
+	// recoverable only because the guard above reads it as "swap already
+	// completed" or the backup restores it -- and both readings depend on the
+	// directory entries surviving the crash in the order they were written
+	// (go-qrdb#268).
 	if _, err := os.Stat(keyedDir); err == nil {
-		if rerr := os.Rename(keyedDir, dir); rerr != nil {
+		if rerr := fsync.Rename(keyedDir, dir); rerr != nil {
 			return rerr
 		}
 	}
@@ -340,7 +347,10 @@ func RecoverInterruptedMigration(ctx context.Context, backend seal.StorageBacken
 		if _, berr := os.Stat(dir + backupSuffix); berr == nil {
 			// A backup exists (a swap began): restore it over any partial dir.
 			_ = os.RemoveAll(dir)
-			_ = os.Rename(dir+backupSuffix, dir)
+			// Best-effort like the rest of this rollback, but durable when it
+			// does succeed: a restore whose directory entry is lost leaves the
+			// node with neither the original nor the backup.
+			_ = fsync.Rename(dir+backupSuffix, dir)
 		}
 	}
 	if j.StagingRootKeyPath != "" {

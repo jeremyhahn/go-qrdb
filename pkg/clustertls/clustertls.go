@@ -38,6 +38,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 const (
@@ -670,10 +672,12 @@ func PersistCA(caCertPEM, caKeyPEM []byte, dataDir string) error {
 // It applies to every caller, not that one: PersistMaterial and PersistCA have
 // always written through here, so their material is now crash-durable too.
 //
-// syncDirFn is indirected so a test can fail the directory sync on a
-// filesystem that would otherwise always succeed. The post-state is identical
-// whether or not the sync happened, so a test has to observe the operation
-// rather than the result.
+// The rename and its directory sync are one operation, pkg/util/fsync.Rename.
+// That package owns the only implementation of the sync and the only seam for
+// failing it (fsync.SetForTest); this package had a second, identical copy of
+// both until go-qrdb#268 collapsed them. The post-state is identical whether
+// or not the sync happened, so a test has to observe the operation rather than
+// the result.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
@@ -699,29 +703,8 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return syncDirFn(dir)
-}
-
-// syncDirFn fsyncs a directory so a just-renamed entry is durable. Indirected
-// for fault injection; see WriteFileAtomic.
-var syncDirFn = fsyncDir
-
-// fsyncDir opens dir and fsyncs it, so a rename into it survives a crash. The
-// close error is reported when the sync itself succeeded, because a failed
-// close can mean the sync did not reach stable storage.
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- caller-owned data directory
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	// The temp file and the target share dir, so this syncs it exactly once.
+	return fsync.Rename(tmpName, path)
 }
 
 // fileExists returns true when path refers to an existing regular file.

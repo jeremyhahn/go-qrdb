@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // The commit journal gives the file backend atomic (all-or-nothing after
@@ -168,11 +169,11 @@ func (e *Engine) writeJournal(image []byte) error {
 		_ = os.Remove(tmpName)
 		return &JournalWriteError{Err: err}
 	}
-	if err := os.Rename(tmpName, filepath.Join(e.dir, journalFileName)); err != nil {
+	if err := fsync.Rename(tmpName, filepath.Join(e.dir, journalFileName)); err != nil {
 		_ = os.Remove(tmpName)
 		return &JournalWriteError{Err: err}
 	}
-	return fsyncDir(e.dir)
+	return nil
 }
 
 // clearJournal removes the committed journal after its operations have
@@ -181,7 +182,7 @@ func (e *Engine) clearJournal() error {
 	if err := os.Remove(filepath.Join(e.dir, journalFileName)); err != nil && !os.IsNotExist(err) {
 		return &JournalWriteError{Err: err}
 	}
-	return fsyncDir(e.dir)
+	return fsync.Dir(e.dir)
 }
 
 // recoverJournal completes an interrupted batch commit at Open time: a
@@ -216,18 +217,4 @@ func (e *Engine) recoverJournal() error {
 		return err
 	}
 	return e.clearJournal()
-}
-
-// fsyncDir fsyncs a directory so a just-renamed or just-removed entry is
-// durable.
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- internal storage directory
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }

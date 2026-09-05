@@ -21,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // TestWriteFileAtomic_DoesNotSucceedUntilTheDirectoryIsSynced.
@@ -43,12 +45,10 @@ func TestWriteFileAtomic_DoesNotSucceedUntilTheDirectoryIsSynced(t *testing.T) {
 
 	sentinel := errors.New("directory sync refused")
 	var syncedDirs []string
-	orig := syncDirFn
-	syncDirFn = func(d string) error {
+	t.Cleanup(fsync.SetForTest(func(d string) error {
 		syncedDirs = append(syncedDirs, d)
 		return sentinel
-	}
-	t.Cleanup(func() { syncDirFn = orig })
+	}))
 
 	err := WriteFileAtomic(path, []byte("payload"), 0o600)
 	if !errors.Is(err, sentinel) {
@@ -69,9 +69,10 @@ func TestWriteFileAtomic_SyncsTheDirectoryAfterEverySuccessfulWrite(t *testing.T
 	path := filepath.Join(dir, "durable.pem")
 
 	var count int
-	orig := syncDirFn
-	syncDirFn = func(d string) error { count++; return orig(d) }
-	t.Cleanup(func() { syncDirFn = orig })
+	// Count only; do not call fsync.Dir here -- Dir routes through the very
+	// seam this replaces, so calling it would recurse until the stack blows.
+	// The sync itself is exercised unseamed in pkg/util/fsync's own tests.
+	t.Cleanup(fsync.SetForTest(func(string) error { count++; return nil }))
 
 	for i := 0; i < 3; i++ {
 		if err := WriteFileAtomic(path, []byte{byte(i)}, 0o600); err != nil {
@@ -93,9 +94,7 @@ func TestWriteFileAtomic_SyncsTheDirectoryAfterEverySuccessfulWrite(t *testing.T
 func TestPersistMaterial_IsCrashDurable(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := errors.New("directory sync refused")
-	orig := syncDirFn
-	syncDirFn = func(string) error { return sentinel }
-	t.Cleanup(func() { syncDirFn = orig })
+	t.Cleanup(fsync.SetForTest(func(string) error { return sentinel }))
 
 	mat, err := GenerateCABundle("spiffe://test.cluster/node/127.0.0.1:63001")
 	if err != nil {

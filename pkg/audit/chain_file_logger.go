@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -29,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // ChainFileOption configures a ChainFileLogger.
@@ -287,18 +290,34 @@ func (l *ChainFileLogger) rotate() error {
 		return &FileError{Path: l.path, Err: err}
 	}
 
-	// Rename to archive.
+	// Rename to archive, durably. The rename IS the rotation's commit point:
+	// after it, the chain-anchor entry that closes the old file lives only
+	// under the archive name. A crash that loses the directory entry leaves the
+	// anchored file reachable under l.path, where openFile appends the new
+	// chain onto it -- two chains in one file, with the anchor in the middle
+	// claiming a boundary the reader cannot locate (go-qrdb#268).
 	archivePath := rotatedPath(l.path)
-	if err := os.Rename(l.path, archivePath); err != nil {
-		return &FileError{Path: l.path, Err: err}
-	}
+	rotErr := fsync.Rename(l.path, archivePath)
 
-	// Reset chain state for the new file.
+	// Reset chain state for the new file. openFile overwrites both from the
+	// file it finds, so this is correct whether the rename moved the old file
+	// away or left it in place.
 	var zero [sha256.Size]byte
 	l.prevDigest = zero
 	l.size = 0
 
-	return l.openFile()
+	// Reopen UNCONDITIONALLY. l.f was closed above, so returning early on a
+	// rotation failure would leave the logger with a nil file and every
+	// subsequent Emit silently failing to write -- an audit logger that stops
+	// auditing on a transient rename or fsync error. Report the rotation
+	// failure, but not by disabling the log.
+	openErr := l.openFile()
+	if rotErr != nil {
+		// Join rather than pick: when the reopen fails too, the logger is both
+		// undurable AND dead, and reporting only the first hides the second.
+		return &FileError{Path: l.path, Err: errors.Join(rotErr, openErr)}
+	}
+	return openErr
 }
 
 // pruneOldFiles deletes rotated audit files older than retentionDays.

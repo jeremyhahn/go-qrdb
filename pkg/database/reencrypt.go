@@ -36,6 +36,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // encfsMagic is the 4-byte sentinel that prefixes every encfs-encrypted file
@@ -482,11 +483,32 @@ func CommitStagedSnapshots(staged []StagedSnapshot) error {
 	for _, s := range staged {
 		if _, err := os.Stat(s.KeyedPath); err != nil {
 			if os.IsNotExist(err) {
-				continue // already committed
+				// Already renamed -- by a previous attempt, or by a previous
+				// run before a crash. That the rename HAPPENED says nothing
+				// about whether its directory entry is durable, and this branch
+				// is precisely where an interrupted commit lands: without the
+				// sync, an attempt whose rename succeeded and whose directory
+				// sync failed would be re-read here as "committed" and reported
+				// as success by CommitStagedSnapshotsWithRetry, turning the one
+				// error that means "the commit did not happen" into a nil
+				// return. A directory fsync is idempotent and cheap, so pay it
+				// rather than infer durability from a missing file
+				// (go-qrdb#268).
+				if serr := fsync.Dir(filepath.Dir(s.FinalPath)); serr != nil {
+					return &SnapshotStageError{Op: "commit-sync", Path: s.FinalPath, Err: serr}
+				}
+				continue
 			}
 			return &SnapshotStageError{Op: "stat", Path: s.KeyedPath, Err: err}
 		}
-		if err := os.Rename(s.KeyedPath, s.FinalPath); err != nil {
+		// Durable: this rename is the point past which the snapshot is read
+		// under the destination barrier, and it runs AFTER the store-dir swaps
+		// are committed. A crash that loses the directory entry restores the
+		// source-encrypted original under FinalPath while the rest of the node
+		// is keyed to the destination barrier -- data the node can no longer
+		// decrypt, and the idempotence guard above then reads the missing
+		// KeyedPath as "already committed" and skips it forever (go-qrdb#268).
+		if err := fsync.Rename(s.KeyedPath, s.FinalPath); err != nil {
 			return &SnapshotStageError{Op: "commit", Path: s.FinalPath, Err: err}
 		}
 	}

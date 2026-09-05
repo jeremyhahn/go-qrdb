@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // timeSeriesPrefixes are the key prefixes used by the time-series engine.
@@ -68,8 +70,14 @@ func MigrateIfNeeded(logger *slog.Logger, dataDir string) error {
 		return &MigrationError{Step: "create default db dir", Err: err}
 	}
 
+	// Durable move: this rename is the migration's commit point for the KV
+	// data, and it crosses directories. If the source's loss of "pebble/" is
+	// durable but the destination's gain of "default/data" is not, a crash
+	// recovers a data dir with no name at all; if the reverse, MigrateIfNeeded
+	// re-runs, finds databases/ present, and returns early -- leaving the old
+	// layout beside the new one (go-qrdb#268).
 	defaultDataDir := filepath.Join(defaultDBDir, dataSubDir)
-	if err := os.Rename(oldPebbleDir, defaultDataDir); err != nil {
+	if err := fsync.Rename(oldPebbleDir, defaultDataDir); err != nil {
 		return &MigrationError{Step: "move pebble to default/data", Err: err}
 	}
 
@@ -95,7 +103,7 @@ func MigrateIfNeeded(logger *slog.Logger, dataDir string) error {
 		}
 
 		vectorDataDir := filepath.Join(vectorDBDir, dataSubDir)
-		if err := os.Rename(oldVectorDir, vectorDataDir); err != nil {
+		if err := fsync.Rename(oldVectorDir, vectorDataDir); err != nil {
 			return &MigrationError{Step: "move vectors to vectors/data", Err: err}
 		}
 

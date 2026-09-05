@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // dialable asserts something is accepting connections at the advertiser's
@@ -804,7 +805,7 @@ func TestResolveCA_RegeneratesRatherThanServingAnIncompleteCache(t *testing.T) {
 // persistRole must surface that instead of returning nil.
 func TestPersistRole_DoesNotReportSuccessBeforeTheRoleIsDurable(t *testing.T) {
 	sentinel := errors.New("directory sync refused")
-	restore := clustertls.SetSyncDirForTest(func(string) error { return sentinel })
+	restore := fsync.SetForTest(func(string) error { return sentinel })
 	t.Cleanup(restore)
 
 	err := persistRole(t.TempDir(), RoleFirstNode)

@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/fsync"
 )
 
 // Compile-time interface checks.
@@ -128,11 +129,15 @@ func (e *Engine) Set(key, value []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	// fsync.Rename is the rename and its directory sync as one operation. The
+	// temp file and the target share dir, so it is synced exactly once -- the
+	// same work the separate os.Rename + directory-fsync pair did, with no second
+	// place for the pairing to be got wrong (go-qrdb#268).
+	if err := fsync.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
 		return err
 	}
-	return fsyncDir(dir)
+	return nil
 }
 
 // Delete removes a key from storage.
@@ -153,7 +158,7 @@ func (e *Engine) Delete(key []byte) error {
 	}
 	// Make the removal durable: fsync the parent directory so a crash
 	// cannot resurrect the deleted key.
-	return fsyncDir(filepath.Dir(path))
+	return fsync.Dir(filepath.Dir(path))
 }
 
 // List returns all keys matching the given prefix.
@@ -233,7 +238,7 @@ func (e *Engine) Sync() error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
-	return fsyncDir(e.dir)
+	return fsync.Dir(e.dir)
 }
 
 // Close marks the engine as closed. Subsequent operations return ClosedError.
