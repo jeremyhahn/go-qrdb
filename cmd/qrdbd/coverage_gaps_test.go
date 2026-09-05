@@ -495,24 +495,6 @@ func TestGenerateReplicaID_Within48Bits(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// findFreeUDPPort / findFreeTCPPort: basic validation
-// ---------------------------------------------------------------------------
-
-func TestFindFreeUDPPort_ReturnsValidPort(t *testing.T) {
-	port, err := findFreeUDPPort()
-	require.NoError(t, err)
-	assert.Greater(t, port, 0)
-	assert.LessOrEqual(t, port, 65535)
-}
-
-func TestFindFreeTCPPort_ReturnsValidPort(t *testing.T) {
-	port, err := findFreeTCPPort()
-	require.NoError(t, err)
-	assert.Greater(t, port, 0)
-	assert.LessOrEqual(t, port, 65535)
-}
-
-// ---------------------------------------------------------------------------
 // newStatusCmd: mTLS branch (tls-cert-file + tls-key-file set)
 // ---------------------------------------------------------------------------
 
@@ -722,7 +704,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Use a free port so the host can bind successfully.
-	port, err := findFreeUDPPort()
+	port, err := freePortOn(testBindHost, networkUDP)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()
@@ -755,7 +737,7 @@ func TestInitializeNode_MultiNodeMTLSConfig(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInitializeNode_MultiNodeNilBundle(t *testing.T) {
-	port, err := findFreeUDPPort()
+	port, err := freePortOn(testBindHost, networkUDP)
 	require.NoError(t, err)
 
 	dataDir := t.TempDir()

@@ -513,7 +513,7 @@ func TestGenerateReplicaID_ConcurrentCallsDistinct(t *testing.T) {
 func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -555,7 +555,7 @@ func TestRunStart_AuthDisabled_ServerStartFails(t *testing.T) {
 func TestRunStart_VectorStorageFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -600,7 +600,7 @@ func TestRunStart_VectorStorageFails(t *testing.T) {
 func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -644,7 +644,7 @@ func TestRunStart_SealEnabled_AwaitUnsealFails(t *testing.T) {
 func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -683,11 +683,11 @@ func TestRunStart_PebbleSMType_ServerStartFails(t *testing.T) {
 func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -731,11 +731,11 @@ func TestRunStart_AuditFileLoggerFails(t *testing.T) {
 func TestRunStart_DynamicMembership_FailsAndReturns(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -775,11 +775,11 @@ func TestRunStart_WithVolumePool_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 	poolPath := filepath.Join(dir, "pool0")
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)

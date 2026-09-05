@@ -46,11 +46,11 @@ import (
 func TestRunStart_AuthDisabled_SingleNode_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -100,11 +100,11 @@ func TestRunStart_AuthDisabled_SingleNode_ThenSIGTERM(t *testing.T) {
 func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -160,11 +160,11 @@ func TestRunStart_AuthEnabled_SingleNode_ThenSIGTERM(t *testing.T) {
 func TestRunStart_MultiNode_FirstNode_BootstrapServers_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 	// Include a second peer address so isSingleNode returns false.
@@ -222,11 +222,11 @@ func TestRunStart_MultiNode_FirstNode_BootstrapServers_ThenSIGTERM(t *testing.T)
 func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -284,11 +284,11 @@ func TestRunStart_AuthDisabled_WithVolumePool_ThenSIGTERM(t *testing.T) {
 func TestRunStart_SIGHUPThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -352,11 +352,11 @@ func TestRunStart_SIGHUPThenSIGTERM(t *testing.T) {
 func TestRunStart_ServerStartFails_PortInUse(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -415,11 +415,11 @@ func TestRunStart_ServerStartFails_PortInUse(t *testing.T) {
 func TestRunStart_PebbleSMType_FullStartup_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -467,11 +467,11 @@ func TestRunStart_PebbleSMType_FullStartup_ThenSIGTERM(t *testing.T) {
 func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 	dir := t.TempDir()
 
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	require.NoError(t, err)
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	require.NoError(t, err)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 
@@ -538,7 +538,7 @@ func TestRunStart_SealEnabled_SoftwareStrategy_ThenSIGTERM(t *testing.T) {
 func TestRunStart_StandaloneMode_ServesStandardOpsRefusesRaftOnly(t *testing.T) {
 	dir := t.TempDir()
 
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	require.NoError(t, err)
 
 	f := &startFlags{

@@ -53,38 +53,6 @@ func TestGenerateReplicaID_Basic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// findFreeUDPPort / findFreeTCPPort – second-call paths
-// ---------------------------------------------------------------------------
-
-func TestFindFreeUDPPort_Multiple(t *testing.T) {
-	p1, err := findFreeUDPPort()
-	if err != nil {
-		t.Fatalf("first findFreeUDPPort: %v", err)
-	}
-	p2, err := findFreeUDPPort()
-	if err != nil {
-		t.Fatalf("second findFreeUDPPort: %v", err)
-	}
-	if p1 <= 0 || p2 <= 0 {
-		t.Errorf("expected valid ports, got %d and %d", p1, p2)
-	}
-}
-
-func TestFindFreeTCPPort_Multiple(t *testing.T) {
-	p1, err := findFreeTCPPort()
-	if err != nil {
-		t.Fatalf("first findFreeTCPPort: %v", err)
-	}
-	p2, err := findFreeTCPPort()
-	if err != nil {
-		t.Fatalf("second findFreeTCPPort: %v", err)
-	}
-	if p1 <= 0 || p2 <= 0 {
-		t.Errorf("expected valid ports, got %d and %d", p1, p2)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // generateCA – success and error paths
 // ---------------------------------------------------------------------------
 

@@ -55,17 +55,17 @@ func TestRunStart_UnsealCeremony_ProceedsToFullStartup(t *testing.T) {
 	// The daemon serves these, and the client below verifies against them.
 	bundle := writeTLSFixtures(t, dir)
 
-	adminPort, err := findFreeTCPPort()
+	adminPort, err := freePortOn(testBindHost, networkTCP, networkUDP)
 	if err != nil {
-		t.Fatalf("findFreeTCPPort: %v", err)
+		t.Fatalf("admin port: %v", err)
 	}
-	raftPort, err := findFreeUDPPort()
+	raftPort, err := freePortOn(raftListenHost, networkUDP)
 	if err != nil {
-		t.Fatalf("findFreeUDPPort: %v", err)
+		t.Fatalf("raft port: %v", err)
 	}
-	grpcPort, err := findFreeTCPPort()
+	grpcPort, err := freePortOn(testBindHost, networkTCP)
 	if err != nil {
-		t.Fatalf("findFreeTCPPort(grpc): %v", err)
+		t.Fatalf("grpc port: %v", err)
 	}
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
 

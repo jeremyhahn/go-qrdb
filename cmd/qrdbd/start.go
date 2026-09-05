@@ -809,6 +809,15 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.ragConfig = cfg.RAG
 }
 
+// raftListenHost is the host the auto-selected Raft listener BINDS at, and
+// raftAdvertiseHost is the host peers DIAL. They differ deliberately, and they
+// match the --listen / --raft-address flag defaults; the bind host is the one
+// a port probe must use, because it is the wider of the two.
+const (
+	raftListenHost    = "0.0.0.0"
+	raftAdvertiseHost = "127.0.0.1"
+)
+
 // resolveAutoConfig auto-generates replica-id, port, and data-dir for
 // non-static discovery methods when the user hasn't explicitly set them.
 // This allows users to run `qrdbd start --discovery multicast --multicast-secret <16+ byte psk>`
@@ -828,20 +837,36 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 		slog.Info("auto-generated replica ID", "replica_id", f.replicaID)
 	}
 
+	// Every auto-selected port below is probed AT THE HOST IT WILL BE BOUND
+	// AT and ON EVERY PROTOCOL ITS LISTENER FAMILY OCCUPIES. Both properties
+	// are required and neither implies the other: TCP and UDP are separate
+	// port namespaces, and a number free on 127.0.0.1 can be held by another
+	// process on a non-loopback address that a wildcard bind then collides
+	// with. See freePortOn (go-qrdb#257, go-qrdb#253).
+
 	// Auto-select a free port if listen/raft-address use the default port.
 	if !cmd.Flags().Changed("listen") && !cmd.Flags().Changed("raft-address") && f.configFile == "" {
-		port, err := findFreeUDPPort()
+		// The Raft transport is QUIC, so UDP alone. f.raftAddress is the
+		// loopback address peers DIAL, not a bind, so the wildcard f.listen
+		// is the whole bind surface and the scope to probe at -- and a free
+		// wildcard bind implies the loopback one, never the reverse.
+		port, err := freePortOn(raftListenHost, networkUDP)
 		if err != nil {
 			return err
 		}
-		f.listen = fmt.Sprintf("0.0.0.0:%d", port)
-		f.raftAddress = fmt.Sprintf("127.0.0.1:%d", port)
+		f.listen = net.JoinHostPort(raftListenHost, strconv.Itoa(port))
+		f.raftAddress = net.JoinHostPort(raftAdvertiseHost, strconv.Itoa(port))
 		slog.Info("auto-selected port", "port", port)
 	}
 
 	// Auto-select admin port if not explicitly set.
 	if !cmd.Flags().Changed("admin-port") && f.configFile == "" {
-		port, err := findFreeTCPPort()
+		// BOTH protocols: the REST listener takes this number on TCP and its
+		// HTTP/3 sibling co-binds the same number on UDP whenever TLS is
+		// configured (pkg/api/rest/server.go). A TCP-only probe is what
+		// go-qrdb#257 reports -- the daemon refusing to start on a port the
+		// probe called free, because a UDP holder had it all along.
+		port, err := freePortOn(f.host, networkTCP, networkUDP)
 		if err != nil {
 			return err
 		}
@@ -851,7 +876,10 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 
 	// Auto-select gRPC port if not explicitly set.
 	if !cmd.Flags().Changed("grpc-port") && f.configFile == "" {
-		port, err := findFreeTCPPort()
+		// gRPC is TCP-only and has no same-numbered UDP sibling, so the
+		// protocol here is right already. The HOST is what was wrong: this
+		// probed loopback while the listener binds f.host.
+		port, err := freePortOn(f.host, networkTCP)
 		if err != nil {
 			return err
 		}
@@ -861,7 +889,8 @@ func resolveAutoConfig(cmd *cobra.Command, f *startFlags) error {
 
 	// Auto-select QUIC port if not explicitly set and QUIC is enabled.
 	if f.enableQUIC && !cmd.Flags().Changed("quic-port") && f.configFile == "" {
-		port, err := findFreeUDPPort()
+		// UDP-only, and likewise probed at f.host rather than at loopback.
+		port, err := freePortOn(f.host, networkUDP)
 		if err != nil {
 			return err
 		}
@@ -892,28 +921,6 @@ func generateReplicaID() (uint64, error) {
 		id = 1
 	}
 	return id, nil
-}
-
-// findFreeUDPPort finds and returns an available UDP port on localhost.
-func findFreeUDPPort() (int, error) {
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := pc.LocalAddr().(*net.UDPAddr).Port //nolint:errcheck // type assertion on a value this container only ever holds
-	_ = pc.Close()
-	return port, nil
-}
-
-// findFreeTCPPort finds and returns an available TCP port on localhost.
-func findFreeTCPPort() (int, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	port := ln.Addr().(*net.TCPAddr).Port //nolint:errcheck // type assertion on a value this container only ever holds
-	_ = ln.Close()
-	return port, nil
 }
 
 // applyTLSClientAuth applies the operator-selected TLS client-auth mode

@@ -795,45 +795,6 @@ func TestCACertWriteError_ErrorAndUnwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// findFreePort tests
-// ---------------------------------------------------------------------------
-
-func TestFindFreeUDPPort(t *testing.T) {
-	port, err := findFreeUDPPort()
-	if err != nil {
-		t.Fatalf("findFreeUDPPort() error: %v", err)
-	}
-	if port <= 0 || port > 65535 {
-		t.Fatalf("findFreeUDPPort() = %d, want valid port", port)
-	}
-}
-
-func TestFindFreeTCPPort(t *testing.T) {
-	port, err := findFreeTCPPort()
-	if err != nil {
-		t.Fatalf("findFreeTCPPort() error: %v", err)
-	}
-	if port <= 0 || port > 65535 {
-		t.Fatalf("findFreeTCPPort() = %d, want valid port", port)
-	}
-}
-
-func TestFindFreePorts_Unique(t *testing.T) {
-	port1, err := findFreeTCPPort()
-	if err != nil {
-		t.Fatalf("findFreeTCPPort() first call error: %v", err)
-	}
-	port2, err := findFreeTCPPort()
-	if err != nil {
-		t.Fatalf("findFreeTCPPort() second call error: %v", err)
-	}
-	// Not guaranteed unique, but extremely likely with OS port allocation.
-	// This is a sanity check, not a strict assertion.
-	_ = port1
-	_ = port2
-}
-
-// ---------------------------------------------------------------------------
 // healthValue.String() test
 // ---------------------------------------------------------------------------
 
