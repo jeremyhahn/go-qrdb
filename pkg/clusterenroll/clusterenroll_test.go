@@ -447,6 +447,29 @@ func TestResolveServerURL_MissingAdminPort_DNSDomain(t *testing.T) {
 	}
 }
 
+// TestResolveServerURL_ExplicitAddrTakesPriority pins the precedence rule:
+// an explicit ServerAddr wins over both a static peer and a DNS domain, even
+// when all three are configured and an admin port is available to complete
+// either of the others. Ported here from cmd/qrdbd's resolveBootstrapServerURL
+// wrapper (go-qrdb#243), which was the only place this precedence was covered
+// and which had no production caller.
+func TestResolveServerURL_ExplicitAddrTakesPriority(t *testing.T) {
+	opts := BootstrapOptions{
+		ServerAddr:      "priority.example.com:9443",
+		DiscoveryMethod: "static",
+		Peers:           []string{"1=peer.example.com:63001"},
+		DNSDomain:       "dns.example.com",
+		AdminPort:       8443,
+	}
+	got, err := ResolveServerURL(opts)
+	if err != nil {
+		t.Fatalf("ResolveServerURL error = %v, want nil", err)
+	}
+	if got != "https://priority.example.com:9443" {
+		t.Errorf("got %q, want https://priority.example.com:9443", got)
+	}
+}
+
 // TestResolveServerURL_Empty covers "no address source at all", which is a
 // caller stating it has no bootstrap server rather than a misconfiguration:
 // empty URL, nil error.

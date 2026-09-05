@@ -563,7 +563,7 @@
         // Without this, the cached state would still be "needs-init" from
         // the initial connectProfile() call above (which happened before
         // seal.initialize), and clicking the server row would try to
-        // reconnect — hitting ConnectionAlreadyActiveError from the backend.
+        // reconnect — which the backend used to refuse as already active.
         const finalState: ConnectionState = {
           ...connState,
           status: "connected",

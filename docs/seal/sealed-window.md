@@ -159,11 +159,25 @@ The seal sub-store carries a one-key sentinel
 `__sys/barrier_format_version` written at first init. The daemon
 calls `seal.EnsureFormatSentinel(ctx, sealBackend, sealStoreEmpty)`
 before constructing the barrier; on a non-empty seal sub-store with
-no sentinel the daemon refuses to start with
-`seal.ErrLegacyDataDir` ("data dir was created with a
-pre-barrier-refactor version; in-place upgrade is not supported").
-There is no in-place upgrade from pre-encfs data dirs; operators
-must migrate data through application-level export/import.
+no sentinel the daemon refuses to start.
+
+The refusal is reported as `LegacyDataDirError`, which names the data
+directory the operator has to act on and states what was detected:
+
+```
+cli: refusing to start on legacy data dir /var/lib/qrdb (pre-encfs
+format detected): qrdb/seal: data dir was created with a
+pre-barrier-refactor version; in-place upgrade is not supported
+```
+
+The directory is part of the message because this refusal is not
+something the daemon can resolve on its own and not something a
+generic "seal barrier initialization failed" tells an operator how to
+act on: there is no in-place upgrade from pre-encfs data dirs, so the
+only remedy is migrating data through application-level export/import,
+and the operator needs to know which directory to migrate. The error
+unwraps to `seal.ErrLegacyDataDir`, so callers matching the sentinel
+with `errors.Is` are unaffected.
 
 ## Pre-host listener (boot-time sealed window)
 

@@ -182,28 +182,6 @@ func resolveNoiseHost(f *startFlags) string {
 	return f.host
 }
 
-// resolveBootstrapServerURL derives the HTTPS URL of the bootstrap server
-// from available flag values. It checks, in order: explicit bootstrapAddr,
-// first static peer address, and DNS domain. It returns an empty URL when no
-// address source is configured, and an error when one is configured but the
-// admin port needed to complete it is not.
-func resolveBootstrapServerURL(f *startFlags) (string, error) {
-	return clusterenroll.ResolveServerURL(clusterenroll.BootstrapOptions{
-		ServerAddr:      f.bootstrapAddr,
-		DiscoveryMethod: f.discoveryMethod,
-		Peers:           f.peers,
-		DNSDomain:       f.dnsDomain,
-		AdminPort:       f.adminPort,
-	})
-}
-
-// extractHostFromPeer extracts the host portion from a peer specification
-// in the format "id=host:port". Returns an empty string if the format is
-// invalid.
-func extractHostFromPeer(peer string) string {
-	return clusterenroll.ExtractHostFromPeer(peer)
-}
-
 // startBootstrapServers starts the Noise NK bootstrap server so that
 // joining nodes can securely fetch the cluster CA bundle. The server's
 // static key is persisted to {data-dir}/noise-key.hex for reuse across

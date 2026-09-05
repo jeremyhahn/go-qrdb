@@ -536,7 +536,7 @@ func TestConnectionManager_Connect_ExternalBadAddress(t *testing.T) {
 
 // TestConnectionManager_Connect_Idempotent_ReprobeExistingConnection verifies
 // that a second Connect call for an already-connected profile re-probes the
-// barrier status instead of returning ConnectionAlreadyActiveError. This
+// barrier status instead of refusing the already-active connection. This
 // prevents the "Connection failed" toast the GUI would show when a sidebar
 // click arrived after the cached connection state drifted from the actual
 // server state (e.g., barrier initialized after the initial connect).
@@ -568,14 +568,32 @@ func TestConnectionManager_Connect_Idempotent_ReprobeExistingConnection(t *testi
 	conn.client = nil
 	m.connections.Store(profile.ID, conn)
 
-	// Second Connect should NOT return ConnectionAlreadyActiveError. With a
-	// nil client, the code path falls through to building a fresh connection
-	// (which will fail without an embedded build). We only assert the error
-	// is NOT ConnectionAlreadyActiveError.
-	_, err := m.Connect(profile.ID)
-	var already *ConnectionAlreadyActiveError
-	if errors.As(err, &already) {
-		t.Fatalf("Connect should be idempotent (not return ConnectionAlreadyActiveError), got: %v", err)
+	// With a nil client the re-probe guard must NOT fire: Connect has to fall
+	// through and build a fresh connection.
+	//
+	// The discriminator is the stored connection pointer, not an error type
+	// (go-qrdb#243 removed the refusal type, and "no error of type X" is
+	// unfalsifiable once X cannot exist). The two paths are distinguishable
+	// because only one of them replaces the map entry:
+	//
+	//   re-probe guard  -> calls conn.storeState on the EXISTING conn and
+	//                      returns; the seeded pointer stays in the map.
+	//   fall-through    -> builds a new *managedConnection and Stores it,
+	//                      on both the success and the build-failure path.
+	//
+	// So a surviving seeded pointer means the guard fired on a nil client.
+	// This holds under every build-tag combination, because the failure path
+	// stores the new connection too.
+	if _, err := m.Connect(profile.ID); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	v, loaded := m.connections.Load(profile.ID)
+	if !loaded {
+		t.Fatal("Connect: no connection stored for the profile")
+	}
+	if v == any(conn) {
+		t.Fatal("Connect took the re-probe path on a nil client: the seeded " +
+			"connection is still in the map, so no fresh connection was built")
 	}
 }
 
@@ -756,14 +774,6 @@ func TestProfileNotFoundError_Message(t *testing.T) {
 func TestProfileValidationError_Message(t *testing.T) {
 	err := &ProfileValidationError{Field: "name", Reason: "must not be empty"}
 	expected := "qrdb: invalid profile name: must not be empty"
-	if err.Error() != expected {
-		t.Fatalf("expected %q, got %q", expected, err.Error())
-	}
-}
-
-func TestConnectionAlreadyActiveError_Message(t *testing.T) {
-	err := &ConnectionAlreadyActiveError{ID: "xyz"}
-	expected := "qrdb: connection already active: xyz"
 	if err.Error() != expected {
 		t.Fatalf("expected %q, got %q", expected, err.Error())
 	}

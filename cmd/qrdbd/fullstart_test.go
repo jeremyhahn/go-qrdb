@@ -29,6 +29,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
@@ -343,9 +344,29 @@ func TestInitSealSubsystem_LegacyDataDir_ReturnsError(t *testing.T) {
 
 	_, err = initSealSubsystem(f, context.Background())
 	require.Error(t, err)
-	// The error must be a SealBarrierError wrapping ErrLegacyDataDir.
-	var barrierErr *SealBarrierError
-	require.True(t, errors.As(err, &barrierErr))
+
+	// A pre-encfs data dir is an operator-actionable refusal, not a generic
+	// barrier failure. This used to assert SealBarrierError, which is what the
+	// daemon returned: an operator saw "seal barrier initialization failed"
+	// with no directory and no statement of the cause, for a condition with no
+	// in-place upgrade path (go-qrdb#243).
+	//
+	// Both halves are asserted, because a wrapper that kept the sentinel
+	// matchable while dropping the directory would still satisfy errors.Is.
+	var legacy *LegacyDataDirError
+	require.True(t, errors.As(err, &legacy),
+		"a pre-encfs data dir must be refused with *LegacyDataDirError, got %T: %v", err, err)
+	assert.Equal(t, dir, legacy.DataDir,
+		"the refusal must name the data dir the operator has to act on")
+	assert.Contains(t, err.Error(), dir,
+		"the operator-facing message must contain the data dir")
+	assert.Contains(t, err.Error(), "pre-encfs format detected",
+		"the operator-facing message must say what was detected")
+
+	// The sentinel stays matchable through Unwrap, so any caller written
+	// against seal.ErrLegacyDataDir keeps working.
+	assert.True(t, errors.Is(err, seal.ErrLegacyDataDir),
+		"LegacyDataDirError must unwrap to seal.ErrLegacyDataDir")
 }
 
 func TestSealSubsystem_Close_WithRealSealStore(t *testing.T) {

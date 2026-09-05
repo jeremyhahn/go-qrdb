@@ -25,8 +25,8 @@
  * `client.seal.initialize(passphrase)` in Phase 3, which raised
  * `ErrAlreadyInitialized` — surfacing to the user as a generic
  * "couldn't connect" toast and leaving the new profile stuck with an
- * orphaned running server that caused `ConnectionAlreadyActiveError`
- * on retry (infinite spinner on the Connect link).
+ * orphaned running server that the backend then refused to reconnect to
+ * as already active (infinite spinner on the Connect link).
  *
  * Fix
  * ---
@@ -239,9 +239,9 @@ test.describe("Embedded wizard - barrier already initialized", () => {
 
       // The store must have cleared the "connecting" state — the mock's
       // disconnect was called via the wizard's catch block. We verify by
-      // checking that calling Connect a second time does NOT raise
-      // ConnectionAlreadyActiveError. We do this by reading the store via
-      // a page.evaluate hook.
+      // checking that calling Connect a second time succeeds rather than
+      // being refused as already active. We do this by reading the store
+      // via a page.evaluate hook.
       const stuckInConnecting = await page.evaluate(() => {
         const w = window as unknown as Record<string, unknown>;
         // connManagerStore is exported by the bundle; we don't have

@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 	encoding_hex "encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -312,155 +311,6 @@ func TestHasBootstrapFlags_MultipleFlags(t *testing.T) {
 	}
 	if !hasBootstrapFlags(f) {
 		t.Error("expected true when multiple bootstrap flags are set")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// resolveBootstrapServerURL tests
-// ---------------------------------------------------------------------------
-
-func TestResolveBootstrapServerURL_ExplicitAddr(t *testing.T) {
-	f := &startFlags{
-		bootstrapAddr: "10.0.0.1:9443",
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if err != nil {
-		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
-	}
-	want := "https://10.0.0.1:9443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestResolveBootstrapServerURL_StaticPeers(t *testing.T) {
-	f := &startFlags{
-		discoveryMethod: "static",
-		peers:           []string{"1=192.168.1.10:63001", "2=192.168.1.11:63001"},
-		adminPort:       8443,
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if err != nil {
-		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
-	}
-	want := "https://192.168.1.10:8443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// TestResolveBootstrapServerURL_StaticPeers_MissingAdminPort: with a peer to
-// derive the host from but no admin port, there is no URL. The old code
-// completed it with 8443 and the enroll client dialed a port this system
-// never listens on (go-qrdb#167 item 4).
-func TestResolveBootstrapServerURL_StaticPeers_MissingAdminPort(t *testing.T) {
-	f := &startFlags{
-		discoveryMethod: "static",
-		peers:           []string{"1=192.168.1.10:63001"},
-		adminPort:       0,
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if got != "" {
-		t.Errorf("resolveBootstrapServerURL = %q, want empty", got)
-	}
-	var missing *clusterenroll.MissingAdminPortError
-	if !errors.As(err, &missing) {
-		t.Fatalf("error = %v (%T), want *clusterenroll.MissingAdminPortError", err, err)
-	}
-}
-
-func TestResolveBootstrapServerURL_DNSDomain(t *testing.T) {
-	f := &startFlags{
-		discoveryMethod: "dns",
-		dnsDomain:       "cluster.example.com",
-		adminPort:       9443,
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if err != nil {
-		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
-	}
-	want := "https://cluster.example.com:9443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestResolveBootstrapServerURL_DNSDomain_MissingAdminPort(t *testing.T) {
-	f := &startFlags{
-		discoveryMethod: "dns",
-		dnsDomain:       "cluster.example.com",
-		adminPort:       0,
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if got != "" {
-		t.Errorf("resolveBootstrapServerURL = %q, want empty", got)
-	}
-	var missing *clusterenroll.MissingAdminPortError
-	if !errors.As(err, &missing) {
-		t.Fatalf("error = %v (%T), want *clusterenroll.MissingAdminPortError", err, err)
-	}
-}
-
-func TestResolveBootstrapServerURL_Empty(t *testing.T) {
-	f := &startFlags{
-		discoveryMethod: "multicast",
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if err != nil {
-		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
-	}
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
-	}
-}
-
-func TestResolveBootstrapServerURL_ExplicitAddrTakesPriority(t *testing.T) {
-	f := &startFlags{
-		bootstrapAddr:   "priority.example.com:9443",
-		discoveryMethod: "static",
-		peers:           []string{"1=peer.example.com:63001"},
-		dnsDomain:       "dns.example.com",
-		adminPort:       8443,
-	}
-	got, err := resolveBootstrapServerURL(f)
-	if err != nil {
-		t.Fatalf("resolveBootstrapServerURL error = %v, want nil", err)
-	}
-	want := "https://priority.example.com:9443"
-	if got != want {
-		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// extractHostFromPeer tests
-// ---------------------------------------------------------------------------
-
-func TestExtractHostFromPeer_Valid(t *testing.T) {
-	tests := []struct {
-		name string
-		peer string
-		want string
-	}{
-		{name: "ip_with_port", peer: "1=192.168.1.10:63001", want: "192.168.1.10"},
-		{name: "hostname_with_port", peer: "2=node2.cluster.local:63001", want: "node2.cluster.local"},
-		{name: "ipv6_with_port", peer: "3=[::1]:63001", want: "::1"},
-		{name: "no_port", peer: "4=192.168.1.10", want: "192.168.1.10"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractHostFromPeer(tt.peer)
-			if got != tt.want {
-				t.Errorf("extractHostFromPeer(%q) = %q, want %q", tt.peer, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractHostFromPeer_Invalid(t *testing.T) {
-	got := extractHostFromPeer("invalid-no-equals")
-	if got != "" {
-		t.Errorf("expected empty string for invalid peer, got %q", got)
 	}
 }
 
@@ -799,8 +649,9 @@ func TestBootstrapTLS_DANE_ConfigBuilt(t *testing.T) {
 func TestBootstrapTLS_DANE_EmptyServerURL(t *testing.T) {
 	// DANE DNS is set but no address can be resolved (no bootstrapAddr,
 	// no peers, no domain). The DANE config is skipped because
-	// resolveBootstrapServerURL returns "". With no other methods
-	// configured, AutoFetch should fail with no methods configured error.
+	// clusterenroll.ResolveServerURL returns "" for that combination.
+	// With no other methods configured, AutoFetch should fail with no
+	// methods configured error.
 	f := &startFlags{
 		dataDir:          t.TempDir(),
 		bootstrapDANEDNS: "8.8.8.8:53",

@@ -121,10 +121,3 @@ func TestProfileValidationError_Error(t *testing.T) {
 		t.Error("expected non-empty error message")
 	}
 }
-
-func TestConnectionAlreadyActiveError_Error(t *testing.T) {
-	e := &ConnectionAlreadyActiveError{ID: "conn-1"}
-	if e.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-}

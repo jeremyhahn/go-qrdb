@@ -113,6 +113,28 @@ can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
   on every call.
 - **The software backend has no lockout.** Its protection is the hash.
 
+## The seam's error contract
+
+Because the `Factor` implementations live outside this repository, the errors
+they return are part of the seam and every one of them has an `sdk/go` surface:
+
+| Condition | SDK name |
+|---|---|
+| Enrolment input invalid | `AuthFactorEnrollmentInvalidError` |
+| Challenge expired | `AuthFactorChallengeExpiredError` |
+| Signature did not verify | `AuthFactorVerificationFailedError` |
+| Device unreachable | `AuthFactorHardwareUnavailableError`, or the sentinel `ErrAuthFactorHardwareUnavailable` |
+
+The last row is the reason this table exists. Both transports map a
+hardware-unavailable condition to 503, but the type and its sentinel were the
+only members of the contract with no SDK surface, so no out-of-repo factor
+could construct the error the handler was waiting for and the arm was
+unreachable in a deployed system rather than merely unused here.
+
+An error on this seam that has no SDK alias is a handler arm that can never
+fire. When a condition is added to the contract, export it here in the same
+change.
+
 ## What this feature deliberately does not do
 
 - **No hardware factor implementations.**

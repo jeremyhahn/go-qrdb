@@ -28,7 +28,7 @@ import (
 // the user-reported regression: after creating a Local Server profile with
 // barrier mode "none" and clicking the server row in the sidebar, the UI
 // would show "Connection failed" because the second Connect call returned
-// ConnectionAlreadyActiveError. This test exercises the same sequence the
+// an already-active refusal. This test exercises the same sequence the
 // GUI performs and asserts the idempotent Connect path.
 func TestConnectionFlow_LocalDatabase_NoBarrier_ClickReconnectSucceeds(t *testing.T) {
 	m := newTestConnectionManager(t)
@@ -60,16 +60,15 @@ func TestConnectionFlow_LocalDatabase_NoBarrier_ClickReconnectSucceeds(t *testin
 	t.Cleanup(func() { _ = m.Disconnect(profile.ID) })
 
 	// Second Connect — simulates the user clicking the server row after the
-	// wizard completed. Before the fix this returned ConnectionAlreadyActiveError;
-	// after the fix it re-probes and returns the current state.
+	// wizard completed. Before the fix this refused an already-active
+	// connection; after the fix it re-probes and returns the current state.
+	// Asserted as the property itself (a second Connect succeeds and returns
+	// state) rather than against a refusal type, so the guard still holds when
+	// no such type exists — go-qrdb#243.
 	secondState, err := m.Connect(profile.ID)
 	if err != nil {
-		var already *ConnectionAlreadyActiveError
-		if errors.As(err, &already) {
-			t.Fatalf("regression: second Connect returned ConnectionAlreadyActiveError — "+
-				"sidebar click would show 'Connection failed' toast: %v", err)
-		}
-		t.Fatalf("second Connect: %v", err)
+		t.Fatalf("regression: second Connect must be idempotent and re-probe, but it "+
+			"failed — a sidebar click would show a 'Connection failed' toast: %v", err)
 	}
 	if secondState == nil {
 		t.Fatal("second Connect returned nil state on re-probe")
@@ -270,12 +269,16 @@ func TestConnectionFlow_LocalDatabase_BarrierModeMatrix(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = m.Disconnect(profile.ID) })
 
-			// Re-probe (simulated sidebar click). Must not return
-			// ConnectionAlreadyActiveError for any mode.
-			_, reerr := m.Connect(profile.ID)
-			var already *ConnectionAlreadyActiveError
-			if errors.As(reerr, &already) {
-				t.Fatalf("mode=%s: reconnect returned ConnectionAlreadyActiveError", tc.mode)
+			// Re-probe (simulated sidebar click). Must succeed for every
+			// mode. Asserting success rather than the absence of one refusal
+			// type also catches a re-probe that fails some other way, which
+			// the old form accepted — go-qrdb#243.
+			restate, reerr := m.Connect(profile.ID)
+			if reerr != nil {
+				t.Fatalf("mode=%s: re-probe must be idempotent, got: %v", tc.mode, reerr)
+			}
+			if restate == nil {
+				t.Fatalf("mode=%s: re-probe returned nil state with nil error", tc.mode)
 			}
 		})
 	}
@@ -333,7 +336,7 @@ func TestConnectionFlow_LocalDatabase_StorageBackendMatrix(t *testing.T) {
 // transport the wizard exposes. Each case uses an unreachable address so the
 // test stays hermetic; the assertion is that Connect either (a) returns an
 // error-state ConnectionState, or (b) returns a Go error — but MUST NOT
-// panic and MUST NOT return ConnectionAlreadyActiveError on retry.
+// panic and MUST re-probe successfully on retry.
 func TestConnectionFlow_RemoteDatabase_TransportMatrix(t *testing.T) {
 	cases := []struct {
 		transport string
@@ -374,11 +377,14 @@ func TestConnectionFlow_RemoteDatabase_TransportMatrix(t *testing.T) {
 			if state == nil {
 				t.Fatalf("transport=%s: nil state with nil error", tc.transport)
 			}
-			// State stored. A retry must NOT return ConnectionAlreadyActiveError.
-			_, reerr := m.Connect(profile.ID)
-			var already *ConnectionAlreadyActiveError
-			if errors.As(reerr, &already) {
-				t.Fatalf("transport=%s: retry returned ConnectionAlreadyActiveError", tc.transport)
+			// State stored. A retry must re-probe and succeed rather than
+			// refuse the active connection — go-qrdb#243.
+			restate, reerr := m.Connect(profile.ID)
+			if reerr != nil {
+				t.Fatalf("transport=%s: retry must be idempotent, got: %v", tc.transport, reerr)
+			}
+			if restate == nil {
+				t.Fatalf("transport=%s: retry returned nil state with nil error", tc.transport)
 			}
 		})
 	}

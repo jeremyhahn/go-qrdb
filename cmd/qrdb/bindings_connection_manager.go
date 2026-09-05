@@ -83,16 +83,6 @@ func (e *ProfileValidationError) Error() string {
 	return "qrdb: invalid profile " + e.Field + ": " + e.Reason
 }
 
-// ConnectionAlreadyActiveError is returned when a profile is already connected.
-type ConnectionAlreadyActiveError struct {
-	ID string
-}
-
-// Error returns a human-readable description.
-func (e *ConnectionAlreadyActiveError) Error() string {
-	return "qrdb: connection already active: " + e.ID
-}
-
 // ConnectionProfile stores the persistent configuration for a saved connection.
 type ConnectionProfile struct {
 	ID        string            `json:"id"`

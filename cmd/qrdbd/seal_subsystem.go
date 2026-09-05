@@ -213,6 +213,17 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context) (*sealSubsystem, e
 	}
 	if sentinelErr := seal.EnsureFormatSentinel(sigCtx, sealBackend, len(sentinelKeys) == 0); sentinelErr != nil {
 		_ = sealStore.Close()
+		// A legacy (pre-encfs) data dir is an operator-actionable refusal, not
+		// a generic barrier failure. There is no in-place upgrade path, so the
+		// message has to name the directory the operator must act on and say
+		// what was detected; SealBarrierError replaced all of that with
+		// "seal barrier initialization failed", which tells an operator at 3am
+		// nothing they can use. LegacyDataDirError was declared for exactly
+		// this and nothing returned it (go-qrdb#243). It unwraps to the
+		// sentinel, so errors.Is(err, seal.ErrLegacyDataDir) still matches.
+		if errors.Is(sentinelErr, seal.ErrLegacyDataDir) {
+			return nil, &LegacyDataDirError{DataDir: f.dataDir, Err: sentinelErr}
+		}
 		return nil, &SealBarrierError{Err: sentinelErr}
 	}
 

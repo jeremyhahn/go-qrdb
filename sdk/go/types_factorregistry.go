@@ -66,6 +66,23 @@ type AuthFactorChallengeExpiredError = authfactors.ChallengeExpiredError
 // fails. (Aliases pkg/authfactors.VerificationFailedError.)
 type AuthFactorVerificationFailedError = authfactors.VerificationFailedError
 
+// AuthFactorHardwareUnavailableError is returned when the underlying hardware
+// device (HSM, smart card reader, FIDO2 authenticator) cannot be reached.
+// (Aliases pkg/authfactors.HardwareUnavailableError.)
+//
+// qrdb ships no Factor implementation: hardware verification is performed by
+// an injected out-of-repo factor (go-xkms), which is therefore the only thing
+// that can produce this condition. Both transports already map it to 503, but
+// until go-qrdb#243 it was the one error on the Factor seam with no SDK
+// surface, so no consumer could construct the error the handler was waiting
+// for. Exported here beside its three siblings for that reason.
+type AuthFactorHardwareUnavailableError = authfactors.HardwareUnavailableError
+
+// ErrAuthFactorHardwareUnavailable is the sentinel form of the same condition,
+// for a factor that has no per-device detail to report. Both transports match
+// it alongside the struct type. (Aliases pkg/authfactors.ErrHardwareUnavailable.)
+var ErrAuthFactorHardwareUnavailable = authfactors.ErrHardwareUnavailable
+
 // NewAuthFactorEnrollmentID generates a new unique enrollment identifier.
 var NewAuthFactorEnrollmentID = authfactors.NewEnrollmentID
 
