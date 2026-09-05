@@ -218,6 +218,44 @@ type shardLeaderSource interface {
 	GetLeaderID(shardID uint64) (uint64, bool, error)
 }
 
+// shardLeaderClock is the time source waitForShardLeaderWithin reads. It is
+// exactly the two operations the poll loop performs on time and no more:
+// reading the instant, and pausing between polls.
+//
+// It exists because the loop's own diagnostics are FUNCTIONS OF THE POLL
+// SEQUENCE -- how many polls happened, which of them errored, and the longest
+// gap between two of them -- while the loop decides when to stop by consulting
+// a wall clock. On an unloaded host those two agree closely enough that a test
+// can pick a budget and get the poll count it wanted. On a loaded one they do
+// not: go-qrdb#312 is a CI run in which a 30ms budget at a 1ms interval bought
+// TWO polls instead of the thirty-two an idle host delivers, so a test that
+// scripted a failure onto poll 3 never reached poll 3. Scaling the budget up
+// moves that flake to a busier host rather than removing it; making the loop's
+// clock injectable removes the wall clock from the test's premises entirely.
+//
+// Production is unchanged: waitForShardLeader passes realShardLeaderClock, so
+// every number the error reports -- elapsed, longest gap -- is still measured
+// against real wall time, which is the whole point of the starvation verdict.
+// A fake clock that reported starvation in production would destroy the one
+// discriminator this wait exists to provide.
+type shardLeaderClock interface {
+	// Now returns the current instant. The loop calls it to start the budget,
+	// to measure the gap between consecutive polls, and to test the deadline.
+	Now() time.Time
+	// Sleep pauses for d before the next poll.
+	Sleep(d time.Duration)
+}
+
+// realShardLeaderClock is the production clock: real wall time and a real
+// sleep. It is the only implementation outside the package's own tests.
+type realShardLeaderClock struct{}
+
+// Now returns the current wall-clock instant.
+func (realShardLeaderClock) Now() time.Time { return time.Now() }
+
+// Sleep blocks the calling goroutine for d.
+func (realShardLeaderClock) Sleep(d time.Duration) { time.Sleep(d) }
+
 // waitForTenantShardLeader polls the host until the tenant shard reports a
 // valid leader (the single local replica), or the timeout elapses.
 func waitForTenantShardLeader(host shardLeaderSource) error {
@@ -251,17 +289,22 @@ func waitForTenantShardLeader(host shardLeaderSource) error {
 //     never elected. THAT is a real defect, and it is the case this wait exists
 //     to catch. Do not widen the budget to make it go away.
 func waitForShardLeader(host shardLeaderSource, shardID uint64) error {
-	return waitForShardLeaderWithin(host, shardID, tenantShardLeaderTimeout, shardLeaderPollInterval)
+	return waitForShardLeaderWithin(host, shardID, tenantShardLeaderTimeout, shardLeaderPollInterval, realShardLeaderClock{})
 }
 
-// waitForShardLeaderWithin is waitForShardLeader with the budget and poll
-// interval supplied, mirroring pkg/service.waitForShardLeaderKnown's shape.
-// Production callers go through waitForShardLeader and get the constants above;
-// taking them as parameters is what lets the timeout and starvation paths be
-// exercised in milliseconds instead of fifteen seconds.
-func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, interval time.Duration) error {
+// waitForShardLeaderWithin is waitForShardLeader with the budget, poll interval
+// and clock supplied, mirroring pkg/service.waitForShardLeaderKnown's shape.
+// Production callers go through waitForShardLeader and get the constants above
+// plus realShardLeaderClock; taking them as parameters is what lets the timeout
+// and starvation paths be exercised in milliseconds instead of fifteen seconds.
+//
+// The clock is a parameter rather than a package-level variable ON PURPOSE. A
+// mutable package global shared by every test in pkg/server is a data race the
+// moment two of them run concurrently, and this function's tests are the ones
+// that must survive -race -count=50 under load -- see shardLeaderClock.
+func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, interval time.Duration, clock shardLeaderClock) error {
 	var (
-		start    = time.Now()
+		start    = clock.Now()
 		last     = start
 		polls    int
 		maxGap   time.Duration
@@ -271,7 +314,7 @@ func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, i
 	)
 	deadline := start.Add(timeout)
 	for {
-		now := time.Now()
+		now := clock.Now()
 		if gap := now.Sub(last); gap > maxGap {
 			maxGap = gap
 		}
@@ -301,12 +344,19 @@ func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, i
 			lastErr = err
 		}
 
-		if time.Now().After(deadline) {
+		// Deliberately a FRESH read rather than the `now` taken above the
+		// poll: GetLeaderID is a call into raft and can itself consume the
+		// budget, so a loop that judged the deadline on a pre-poll timestamp
+		// would run one extra poll past it and under-report Elapsed by the
+		// duration of the call that overran. Reading the same clock the
+		// deadline came from is what keeps that honest under a fake one.
+		end := clock.Now()
+		if end.After(deadline) {
 			return &ShardLeaderWaitError{
 				ShardID:  shardID,
 				Timeout:  timeout,
 				Interval: interval,
-				Elapsed:  time.Since(start),
+				Elapsed:  end.Sub(start),
 				Polls:    polls,
 				MaxGap:   maxGap,
 				ErrCount: errCount,
@@ -314,7 +364,7 @@ func waitForShardLeaderWithin(host shardLeaderSource, shardID uint64, timeout, i
 				LastErr:  lastErr,
 			}
 		}
-		time.Sleep(interval)
+		clock.Sleep(interval)
 	}
 }
 

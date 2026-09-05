@@ -338,6 +338,32 @@ inside the larger budget, leaving tests that are red when the host is busy and
 green when the code regresses. If this wait times out, read the verdict in the
 error before changing the number.
 
+### The wait reads time through a seam, and production still reads the real clock
+
+The poll loop takes its clock as a parameter (`shardLeaderClock`: `Now` and
+`Sleep`, and nothing else). Production passes `realShardLeaderClock`, so every
+number in the error above — elapsed, longest gap — is measured against real wall
+time. That is not incidental: the starvation verdict *is* a statement about wall
+time, and a wait that measured virtual time in production would report
+"the shard genuinely did not elect" on a host that never let it ask.
+
+The seam exists for the tests, and for a reason that is the same defect one
+level up from the one the error type was built to fix. Those tests script the
+fake shard **by poll number** — fail on poll 1, fail again on poll 3 — while the
+loop stops on a **wall-clock budget**. Those are the same quantity only on an
+idle host, and on a shared CI runner they diverged: a 30 ms budget at a 1 ms
+interval bought **two** polls where an idle host delivers thirty-two, so poll 3
+never ran and a test failed asserting on an error its fixture had never been
+asked to produce. The message it was checking was *correct*; `budget 30ms, 2
+polls, longest gap 36ms` is the starvation verdict, reported accurately about
+the starvation that broke the test.
+
+The fix is not a larger budget — that moves the flake to a busier host. Under a
+virtual clock, time advances only when the loop sleeps and by exactly the
+interval it asked for, so the poll count is arithmetic rather than a bet on the
+scheduler. **Do not respond to a future red here by enlarging a budget:** under
+that clock a budget cannot be missed, so a failure is a real defect.
+
 The budget is now roughly 120x the election it waits on, so whether it should be
 *tightened* is a live question — and a separate one from not widening it. The
 argument above establishes only that widening destroys the tests' ability to
