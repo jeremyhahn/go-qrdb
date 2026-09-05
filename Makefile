@@ -811,6 +811,7 @@ integration-image:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
 	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  $(SCANNER_BUILD_ARGS) \
 	  --target integration \
 	  -f .devcontainer/Dockerfile \
 	  -t $(INT_IMAGE) .
@@ -1692,16 +1693,74 @@ endef
 # job on every branch, main included, on code nobody had touched since April.
 # A hint that says `@latest` would hand a developer exactly that.
 #
-# THESE FOUR LITERALS ARE HAND-SYNCED and nothing asserts they agree. Their
-# authorities are `.github/workflows/ci.yml`'s env block (gosec, govulncheck)
-# and `.devcontainer/Dockerfile`'s TRIVY_VERSION build arg, which cannot read a
-# make variable. go-quicraft solves this with a `check-tool-versions` target;
-# this repo has none yet. Until it does: change the pin here and there together.
-GOSEC_VERSION       := v2.29.0
-GOVULNCHECK_VERSION := v1.7.0
-TRIVY_VERSION       := v0.74.0
+# THESE FOUR LITERALS ARE WHAT EVERY `make` ENTRYPOINT BUILDS THE IMAGE WITH
+# (#322). They were three, they were hand-synced, and the Dockerfiles restated
+# their own -- gosec and govulncheck at `@latest`, golangci-lint at v2.7.2
+# against ci.yml's v2.13.2, so the gate image and CI could analyse one commit
+# with different analysers and neither result would say so.
+#
+# The Dockerfiles now take these as build ARGs, and their ARG DEFAULTS ARE
+# THESE SAME NUMBERS. That is a deliberate second copy: a build that goes
+# around make -- VS Code "Reopen in Container", a bare `docker compose build`
+# -- has to keep working (#302, ruled 2026-09-05), and it can only do that if
+# the Dockerfile can supply a version on its own. The copy is guarded by a
+# check rather than by its absence: #323 asserts the Makefile, ci.yml and the
+# Dockerfile defaults agree. Changing a pin means changing it in all three.
+#
+# `export` rather than passing them per-recipe: every `docker compose` call in
+# this file builds one of those Dockerfiles, directly or through a service that
+# shares the `go-qrdb-dev:latest` tag, and compose reads these from its own
+# environment. Exporting covers all of them, including the ones added after
+# this comment -- naming the call sites instead would leave the next one to be
+# found by a failed build. The compose files take them through the
+# environment-PASSTHROUGH form (`GOSEC_VERSION:` with no value), so an unset
+# variable omits the arg and the Dockerfile default applies; `${GOSEC_VERSION}`
+# there would pass an empty string and defeat the default. Measured, and
+# written up in .devcontainer/docker-compose.yml.
+#
+# WHAT IS STILL NOT ASSERTED: that these agree with
+# `.github/workflows/ci.yml`'s env block, which is the authority for the three
+# Go analysers and which neither a Makefile nor a Dockerfile can read. That is
+# #323. Until it lands: change the pin here, in ci.yml, and in both Dockerfiles
+# together.
+GOLANGCI_LINT_VERSION := v2.13.2
+GOSEC_VERSION         := v2.29.0
+GOVULNCHECK_VERSION   := v1.7.0
+TRIVY_VERSION         := v0.74.0
 
-GOSEC_INSTALL       := go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+export GOLANGCI_LINT_VERSION
+export GOSEC_VERSION
+export GOVULNCHECK_VERSION
+export TRIVY_VERSION
+
+# The two `docker build` entrypoints get no compose interpolation, so they pass
+# the same four explicitly. One variable rather than four flags at each site,
+# for the same reason `export` beats per-recipe passing.
+SCANNER_BUILD_ARGS := \
+  --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
+  --build-arg GOSEC_VERSION=$(GOSEC_VERSION) \
+  --build-arg GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION) \
+  --build-arg TRIVY_VERSION=$(TRIVY_VERSION)
+
+# gosec's install hint carries the same -ldflags the images use. Without it a
+# developer who follows the hint gets a binary that self-reports `dev`, which
+# is not a version anything can check -- the hint would satisfy `command -v`
+# and defeat the attribution the pin exists for.
+#
+# SINGLE quotes around the -X, and they are load-bearing. `require-scanner`
+# renders this through `echo "  Install: $(2)"`, so double quotes inside it are
+# consumed by that echo and the hint prints as `-ldflags -X main.Version=...`,
+# which a developer who pastes it runs as an ldflags value of `-X` and a package
+# path of `main.Version=v2.29.0`. Measured: it printed exactly that. A hint that
+# does not survive being printed is worse than no hint, because it fails at the
+# paste rather than at the read.
+#
+# There is no GOLANGCI_LINT_INSTALL hint, deliberately. `require-scanner` exists
+# because trivy SKIPPED when absent and the suite still printed a pass (#299);
+# `lint` has never skipped -- an absent golangci-lint fails the recipe outright
+# -- so guarding it would add a hint for a failure mode that does not exist,
+# and the variable would be the only thing keeping the guard alive.
+GOSEC_INSTALL       := go install -ldflags '-X main.Version=$(GOSEC_VERSION)' github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # The release tarball, which is how devops.md 8 has both CI legs install it and
 # how .devcontainer/Dockerfile bakes it into the image. The script is fetched at
@@ -1798,6 +1857,7 @@ docker-build-integration:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
 	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  $(SCANNER_BUILD_ARGS) \
 	  -t go-qrdb-integration:$(DOCKER_TAG) -f .devcontainer/Dockerfile .
 
 .PHONY: docker-run

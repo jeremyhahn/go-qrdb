@@ -114,11 +114,62 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CI and protobuf tooling.
-RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && \
-    go install github.com/securego/gosec/v2/cmd/gosec@latest && \
-    go install golang.org/x/vuln/cmd/govulncheck@latest && \
+#
+# THE SAME PINS AS .devcontainer/Dockerfile, FOR THE SAME REASON (#322). This
+# file was the sixth site of the defect and is named in neither #322 nor #323:
+# it installed gosec and govulncheck at `@latest` and golangci-lint at v2.7.2,
+# so a developer who reopens this project in the GPU container linted and
+# scanned with different analysers from both CI and the CPU image. The full
+# argument — owner ruling #154, what the ARG defaults are for, and which clause
+# of devops.md §9 is being relied on — is written once, next to the ARGs in
+# .devcontainer/Dockerfile. Read it there rather than restating it here; the
+# two files are kept in step by the Makefile, which exports these to every
+# compose invocation.
+#
+# trivy is deliberately NOT here. `make security` is gated by the CPU image,
+# which `make ci` builds and runs `_ci` inside; nothing runs the security suite
+# in this one. Adding a fourth scanner to a GPU image that never scans would
+# cost every GPU rebuild an install for no result. If `make ci` is ever taught
+# to run in this image, trivy and the trivy half of the assertion come with it.
+ARG GOLANGCI_LINT_VERSION=v2.13.2
+ARG GOSEC_VERSION=v2.29.0
+ARG GOVULNCHECK_VERSION=v1.7.0
+
+# Defaults equal the Makefile's pins and #323 asserts they are equal; an
+# EXPLICITLY empty value is still an error. Both rules, and the reason the
+# compose files must use the passthrough form rather than `${VAR}`, are argued
+# once next to the ARGs in .devcontainer/Dockerfile.
+RUN set -eu; \
+    empty=''; \
+    [ -n "${GOLANGCI_LINT_VERSION:-}" ] || empty="$empty GOLANGCI_LINT_VERSION"; \
+    [ -n "${GOSEC_VERSION:-}" ]         || empty="$empty GOSEC_VERSION"; \
+    [ -n "${GOVULNCHECK_VERSION:-}" ]   || empty="$empty GOVULNCHECK_VERSION"; \
+    [ -z "$empty" ] || { \
+        echo "ERROR: this image pins its analysers and was passed an EMPTY version for:$empty" >&2; \
+        echo "  These ARGs have defaults, so something passed the empty string" >&2; \
+        echo "  explicitly -- a bare '--build-arg X=', or a compose arg written" >&2; \
+        echo "  X: \${X} while that variable is unset. See .devcontainer/Dockerfile." >&2; \
+        exit 1; \
+    }
+
+# The -ldflags on gosec is load-bearing, not decoration: gosec takes its
+# version string from ldflags rather than from the module path, so a plain
+# `go install ...@v2.29.0` yields a binary that self-reports `dev` and the
+# assertion below cannot pass.
+RUN go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} && \
+    go install -ldflags "-X main.Version=${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} && \
+    go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} && \
     go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+# Assert what was installed, with the same script ci.yml uses. A pin that is
+# not checked is a request, and gosec is the reason the distinction matters:
+# an unchecked one self-reports `dev` while looking pinned in the Dockerfile.
+COPY scripts/require-tool.sh /usr/local/bin/require-tool.sh
+RUN set -eu; \
+    require-tool.sh golangci-lint "${GOLANGCI_LINT_VERSION}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint; \
+    require-tool.sh gosec "${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec; \
+    require-tool.sh govulncheck "${GOVULNCHECK_VERSION}" golang.org/x/vuln/cmd/govulncheck
 
 WORKDIR /workspace/go-qrdb
 

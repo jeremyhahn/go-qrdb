@@ -12,6 +12,23 @@
 # port. Nothing referenced those names: the tests address the servers by compose
 # SERVICE name (https://qrdbd:63002). The Makefile supplies a per-run project
 # name so containers, networks and volumes are namespaced together.
+# The analyser pins .devcontainer/Dockerfile bakes in (#322). These three
+# services build that same Dockerfile into the same `go-qrdb-dev:latest` tag the
+# devcontainer uses, so they take the same args, or an integration build and a
+# gate build would bake different analysers into one tag.
+#
+# THE KEYS CARRY NO VALUE ON PURPOSE -- compose's environment-passthrough form,
+# which takes the value from the environment when set and OMITS the arg when it
+# is not, letting the Dockerfile's ARG default apply. `${VAR}` would pass an
+# empty string instead and trip the Dockerfile's guard. The reasoning, and the
+# measurement behind it, is in .devcontainer/docker-compose.yml next to the same
+# block; the Makefile `export`s the variables so `make` builds win.
+x-scanner-pins: &scanner-pins
+  GOLANGCI_LINT_VERSION:
+  GOSEC_VERSION:
+  GOVULNCHECK_VERSION:
+  TRIVY_VERSION:
+
 services:
   # QRDB server with all protocols enabled.
   # Uses the devcontainer image and mounts source + sibling repos so the
@@ -21,6 +38,7 @@ services:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
       target: integration
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -140,6 +158,7 @@ services:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
       target: integration
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -327,6 +346,7 @@ services:
       context: ../../..
       dockerfile: .devcontainer/Dockerfile
       target: integration
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest

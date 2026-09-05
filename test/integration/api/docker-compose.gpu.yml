@@ -29,6 +29,19 @@
 # `go mod download` in it now fails loudly rather than swallowing its own
 # error, so a service that ever DID lose this inheritance would say so at the
 # download instead of at the first import.
+#
+# SCANNER PINS: the same merge brings the base's `build.args` (#322) onto both
+# services, and that set carries TRIVY_VERSION because the base builds the CPU
+# Dockerfile, which bakes trivy. Dockerfile.gpu declares no TRIVY_VERSION ARG,
+# because nothing runs `make security` in the GPU image, so buildx prints
+# "one or more build-args were not consumed" for this stack. That warning is
+# correct and is the cheapest of the available answers: compose merges `args`
+# as a UNION, so an overlay cannot subtract a key, and the alternatives are to
+# declare an ARG in Dockerfile.gpu that nothing installs -- a pin that pins
+# nothing, which is worse than a warning -- or to stop sharing the base's args
+# and restate three of them here, which is the second copy this file's own
+# credential note argues against. Recorded so the warning is not read as a
+# defect and 'fixed' by one of those.
 
 services:
   qrdbd:

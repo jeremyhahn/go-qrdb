@@ -12,11 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# The analyser pins this image bakes in (#322). `make ci` runs the whole gate
+# INSIDE the devcontainer, so these four binaries are what judge a developer's
+# tree, and `.github/workflows/ci.yml`'s env block declares what judges CI's.
+# They were allowed to differ: gosec and govulncheck installed at `@latest` and
+# golangci-lint at v2.7.2 against ci.yml's v2.13.2, so one commit could be
+# analysed by two different analysers with nothing in either result saying so.
+#
+# THE KEYS BELOW CARRY NO VALUE ON PURPOSE. That is compose's
+# environment-passthrough form: the arg is taken from the environment if the
+# variable is set, and OMITTED ENTIRELY if it is not, so the Dockerfile's ARG
+# default applies. Writing `GOSEC_VERSION: ${GOSEC_VERSION}` instead would pass
+# an EMPTY STRING when the variable is unset, and an explicitly empty build arg
+# overrides a default and trips the Dockerfile's guard.
+#
+# Measured 2026-09-05 on a two-service probe, because the two forms are one
+# character apart in appearance and opposite in effect:
+#
+#   args: {FOO: }          FOO unset -> RUN sees FOO=[defaultvalue]
+#   args: {FOO: ${FOO}}    FOO unset -> RUN sees FOO=[]
+#
+# So this form is what keeps VS Code "Reopen in Container" and a bare
+# `docker compose build` working (#302, ruled 2026-09-05), while `make`
+# entrypoints still win: the Makefile `export`s the four variables, so a build
+# through make uses the Makefile's values and a build around it falls back to
+# the Dockerfile defaults, which #323 asserts are the same numbers.
+#
+# Do not "fix" these into `${VAR}`. It looks more explicit and it silently
+# removes the fallback.
+x-go-scanner-pins: &go-scanner-pins
+  GOLANGCI_LINT_VERSION:
+  GOSEC_VERSION:
+  GOVULNCHECK_VERSION:
+
+# devcontainer-gpu builds Dockerfile.gpu, which runs no security suite and
+# therefore bakes no trivy; passing it TRIVY_VERSION would declare a build arg
+# that file does not consume.
+x-scanner-pins: &scanner-pins
+  <<: *go-scanner-pins
+  TRIVY_VERSION:
+
 services:
   devcontainer:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -33,6 +74,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest
@@ -53,6 +95,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-e2e:latest
@@ -74,6 +117,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile.gpu
+      args: *go-scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-gpu-dev:latest
@@ -100,6 +144,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      args: *scanner-pins
       secrets:
         - gomodauth
     image: go-qrdb-dev:latest

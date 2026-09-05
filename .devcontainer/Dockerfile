@@ -87,25 +87,117 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # devops.md §8 names as proven (go-quicraft's .devcontainer/Dockerfile) and the
 # form nightly.yml's Gitea leg uses — the same binary in all three places.
 #
-# PINNED, and BOTH halves: the script is fetched at the tag rather than from
-# `main`, so what runs during this build is a fixed artifact and not whatever
-# the default branch says today. ci.yml pins gosec (owner ruling #154,
-# fleet-wide) and govulncheck for one reason — "a new finding cannot be
-# distinguished from a scanner that moved" — and a scanner in the gate image
-# deserves the same. devops.md §9's no-pin rule is aimed at staleness, and for
-# trivy specifically that rule does not bite: findings come from the
-# vulnerability DB, which is fetched at scan time, not from the binary. So a
-# pin here buys reproducibility and costs no CVE currency, which is not true of
-# gosec or govulncheck.
+# ---------------------------------------------------------------------------
+# EVERY ANALYSER IS PINNED, AND NO VERSION LITERAL LIVES IN THIS FILE (#322)
+# ---------------------------------------------------------------------------
 #
-# Bumping it is a deliberate act. TRIVY_VERSION in the Makefile carries the same
-# version for the install hint a developer follows; a Dockerfile cannot read a
-# make variable, so those two are kept in step by hand. Change both.
+# `make ci` runs the whole gate INSIDE this image, so these four binaries are
+# the ones that judge a developer's tree. `.github/workflows/ci.yml`'s env block
+# declares what CI judges with, and `scripts/require-tool.sh` makes its jobs
+# refuse anything else. Until #322 this file installed gosec and govulncheck at
+# `@latest` and golangci-lint at v2.7.2, so the two gates could analyse one
+# commit with different analysers and neither result would say so.
+#
+# Measured 2026-09-05 in an image built from this file at dev/main 57d868b4:
+#
+#   gosec           Version: dev     ci.yml requires v2.29.0
+#   govulncheck     v1.7.0           ci.yml requires v1.7.0
+#   golangci-lint   2.7.2            ci.yml requires v2.13.2
+#
+# gosec is the sharp one: `@latest` produced a binary that cannot say what it
+# is, so a scan could not be attributed to a version AT ALL. govulncheck agreed
+# only because `@latest` happened to resolve to the pinned version that day — a
+# coincidence, not a guarantee, and precisely the state that reads as fine.
+#
+# golangci-lint's v2.7.2 was not a considered pin. It entered on 2026-04-10 in
+# `50b7526 Sync local changes to dev server`, months BEFORE #42 (the v2.13.0
+# nilness panic under Go 1.26), so it never protected against that panic and
+# was never chosen to. #42's remedy landed in ci.yml — v2.12.2, then v2.13.2 on
+# measurement — and never reached this file, which is the same "the ruling did
+# not reach here" shape as gosec's `@latest` above.
+#
+# THE VERSIONS ARRIVE AS BUILD ARGS. THE DEFAULTS BELOW ARE THE MAKEFILE'S
+# PINS, AND #323 ASSERTS THE TWO ARE EQUAL. Read that as one sentence: the
+# defaults are a second copy, the second copy is the thing that drifts, and the
+# answer to a drifting copy is a check, not the absence of a copy.
+#
+# Ruled 2026-09-05, against an earlier revision of this file that omitted the
+# defaults and refused any build that supplied no version. That refusal closed
+# the drift hole and broke VS Code "Reopen in Container" and a bare
+# `docker compose build`, which #302 established must keep working unchanged.
+# A workflow regression for the owner is not a defect fix, and the drift it was
+# guarding against is exactly what #323 asserts.
+#
+# So the roles are: the Makefile holds the literals and exports them, and every
+# `make` entrypoint therefore builds with the Makefile's values; a build that
+# goes around make gets these defaults; ci.yml holds the authority for the
+# three Go analysers; #323 checks the Makefile against ci.yml. Changing a pin
+# means changing it in ci.yml, in the Makefile, and here, and #323 is what tells
+# you when you missed one.
+#
+# The compose files pass these through the ENVIRONMENT-PASSTHROUGH form
+# (`GOSEC_VERSION:` with no value), never `${GOSEC_VERSION}`. Measured
+# 2026-09-05, and the difference decides whether the defaults work at all: with
+# the variable unset, the passthrough form omits the arg and the default below
+# applies, while the interpolated form passes an EMPTY STRING that overrides
+# the default and trips the guard. Do not "tidy" those into `${...}`.
+#
+# Pinning at all follows owner ruling #154, fleet-wide and measured: an
+# `@latest` gosec self-updated mid-day, introduced G703, and reddened the
+# Security job on every branch including main, on code nobody had touched since
+# 2026-04-10. devops.md §9's header permits a pin that is "specifically
+# documented, in place, with the reason" — this comment — while its tools
+# bullet forbids pins outright; §9's own preamble records that contradiction as
+# unresolved and asks that the clause be cited rather than the section number.
+# The clause relied on is the header, and above it ruling #154, which outranks
+# both.
+#
+# protoc-gen-go and protoc-gen-go-grpc stay at `@latest` and are NOT part of
+# this: they generate code, they are not analysers, and no gate compares their
+# output between here and CI. §9's tools bullet applies to them unmodified.
+ARG GOLANGCI_LINT_VERSION=v2.13.2
+ARG GOSEC_VERSION=v2.29.0
+ARG GOVULNCHECK_VERSION=v1.7.0
 ARG TRIVY_VERSION=v0.74.0
+
+# An EXPLICITLY EMPTY version is still an error, and the defaults above do not
+# make this dead code: `--build-arg GOSEC_VERSION=` overrides a default with
+# the empty string (measured), as does the `${GOSEC_VERSION}` interpolation
+# form in a compose file when the variable is unset. Either way an empty ARG
+# reaches `go install` as `module@`, which fails complaining about an invalid
+# version and says nothing about where the empty value came from -- naming the
+# symptom and hiding the cause. This refuses first and names the arg.
+RUN set -eu; \
+    empty=''; \
+    [ -n "${GOLANGCI_LINT_VERSION:-}" ] || empty="$empty GOLANGCI_LINT_VERSION"; \
+    [ -n "${GOSEC_VERSION:-}" ]         || empty="$empty GOSEC_VERSION"; \
+    [ -n "${GOVULNCHECK_VERSION:-}" ]   || empty="$empty GOVULNCHECK_VERSION"; \
+    [ -n "${TRIVY_VERSION:-}" ]         || empty="$empty TRIVY_VERSION"; \
+    [ -z "$empty" ] || { \
+        echo "ERROR: this image pins its analysers and was passed an EMPTY version for:$empty" >&2; \
+        echo "  These ARGs have defaults, so an empty value did not come from" >&2; \
+        echo "  omitting them -- something passed the empty string explicitly." >&2; \
+        echo "  The two ways that happens:" >&2; \
+        echo "    * --build-arg GOSEC_VERSION=   with nothing after the '='" >&2; \
+        echo "    * a compose build arg written GOSEC_VERSION: \${GOSEC_VERSION}" >&2; \
+        echo "      while that variable is unset. Use the passthrough form" >&2; \
+        echo "      'GOSEC_VERSION:' with no value, which omits the arg instead" >&2; \
+        echo "      and lets the default apply." >&2; \
+        echo "  The pins live in the Makefile, which exports them; ci.yml is the" >&2; \
+        echo "  authority and #323 checks the two agree." >&2; \
+        exit 1; \
+    }
+
+# gosec takes its version string from ldflags rather than from the module path,
+# so `go install ...@v2.29.0` on its own yields a binary that self-reports
+# `dev` — measured, and exactly what this image carried. ci.yml's runner image
+# builds it with the same -X, which is why require-tool.sh can check it there.
+# Without this flag the assertion below cannot pass, by construction, and the
+# scan could not be attributed to a version at all.
 RUN for i in 1 2 3; do \
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && \
-        go install github.com/securego/gosec/v2/cmd/gosec@latest && \
-        go install golang.org/x/vuln/cmd/govulncheck@latest && \
+        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION} && \
+        go install -ldflags "-X main.Version=${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} && \
+        go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} && \
         go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
         curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" \
@@ -115,13 +207,35 @@ RUN for i in 1 2 3; do \
     done; \
     echo "tool install failed after 3 attempts"; exit 1
 
-# Every scanner `make security` runs must be present, or the suite is a claim
-# nobody checked (#299). Failing the BUILD here is cheaper than discovering it
-# 50 minutes into a gate, and it is the only place that can distinguish "the
-# scanner is missing" from "the scanner found nothing".
-RUN for t in golangci-lint gosec govulncheck trivy; do \
-        command -v "$t" >/dev/null 2>&1 || { echo "ERROR: $t is not on PATH after the tool install" >&2; exit 1; }; \
-    done; \
+# Every scanner `make security` runs must be present AND be the version this
+# repo gates on, or the suite is a claim nobody checked (#299, #322). Failing
+# the BUILD is cheaper than discovering it 50 minutes into a gate, and this is
+# the only place that can tell "the scanner is missing" from "the scanner found
+# nothing" and both from "a different scanner ran".
+#
+# The three Go analysers are checked by scripts/require-tool.sh — the same
+# script, byte for byte, that ci.yml's jobs use — rather than by a grep written
+# here. It already knows each tool's documented version line; it already
+# refuses the near-misses a substring test accepts (a `v1.7.0` pin matching a
+# `v11.7.0` report, which its comments record as a defect that had to be fixed
+# once already); and it carries its own regression suite. Reusing it means the
+# image and CI cannot disagree about what "is the pinned version" MEANS, which
+# is the subject of #322 one level up.
+#
+# trivy is not routed through it, and that boundary is deliberate rather than
+# an omission. require-tool.sh's contract is a GO tool named by module path:
+# its recovery branch is `go install <module>@<pin>` and its parser refuses any
+# binary whose output format it has not read. trivy comes from a release
+# tarball and has no module path, so putting it through that script would mean
+# inventing an argument for a branch that would then do the wrong thing. Its
+# check stays inline, in the form #299 wrote it.
+COPY scripts/require-tool.sh /usr/local/bin/require-tool.sh
+RUN set -eu; \
+    require-tool.sh golangci-lint "${GOLANGCI_LINT_VERSION}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint; \
+    require-tool.sh gosec "${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec; \
+    require-tool.sh govulncheck "${GOVULNCHECK_VERSION}" golang.org/x/vuln/cmd/govulncheck; \
+    command -v trivy >/dev/null 2>&1 || { \
+        echo "ERROR: trivy is not on PATH after the tool install" >&2; exit 1; }; \
     trivy --version | grep -q "^Version: ${TRIVY_VERSION#v}$" || { \
         echo "ERROR: trivy is not at the pinned ${TRIVY_VERSION}:" >&2; trivy --version >&2; exit 1; }; \
     trivy --version
