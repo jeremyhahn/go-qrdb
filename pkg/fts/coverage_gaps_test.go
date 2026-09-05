@@ -19,26 +19,47 @@ import (
 // ============================================================
 
 // errBatch is a Batch whose Set and Delete return configurable errors.
+//
+// Its Reader half (Get, NewIterator) reports an empty batch: storage.Batch
+// embeds storage.Reader, but InvertedIndex only ever writes through a batch,
+// so no test reaches these methods.
 type errBatch struct {
 	setErr    error
 	deleteErr error
 	commitErr error
 }
 
-func (b *errBatch) Set(_, _ []byte) error { return b.setErr }
-func (b *errBatch) Delete(_ []byte) error { return b.deleteErr }
-func (b *errBatch) Commit() error         { return b.commitErr }
-func (b *errBatch) Rollback() error       { return nil }
-func (b *errBatch) Close() error          { return nil }
+func (b *errBatch) Set(_, _ []byte) error        { return b.setErr }
+func (b *errBatch) Delete(_ []byte) error        { return b.deleteErr }
+func (b *errBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
+func (b *errBatch) Commit() error                { return b.commitErr }
+func (b *errBatch) Rollback() error              { return nil }
+func (b *errBatch) Close() error                 { return nil }
+func (b *errBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
+	return newStaticIterator(nil)
+}
 
-// nopBatch succeeds silently for all operations.
+// nopBatch succeeds silently for all operations. Its Reader half reports an
+// empty batch, for the same reason as errBatch above.
 type nopBatch struct{}
 
-func (b *nopBatch) Set(_, _ []byte) error { return nil }
-func (b *nopBatch) Delete(_ []byte) error { return nil }
-func (b *nopBatch) Commit() error         { return nil }
-func (b *nopBatch) Rollback() error       { return nil }
-func (b *nopBatch) Close() error          { return nil }
+func (b *nopBatch) Set(_, _ []byte) error        { return nil }
+func (b *nopBatch) Delete(_ []byte) error        { return nil }
+func (b *nopBatch) Get(_ []byte) ([]byte, error) { return nil, nil }
+func (b *nopBatch) Commit() error                { return nil }
+func (b *nopBatch) Rollback() error              { return nil }
+func (b *nopBatch) Close() error                 { return nil }
+func (b *nopBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
+	return newStaticIterator(nil)
+}
+
+// Compile-time proof that both doubles satisfy the full storage.Batch
+// contract. Without these, an interface method added to Batch is only caught
+// at the use site -- which is how the missing Get went unnoticed.
+var (
+	_ storage.Batch = (*errBatch)(nil)
+	_ storage.Batch = (*nopBatch)(nil)
+)
 
 // staticIterator iterates over a fixed slice of keys.
 type staticIterator struct {

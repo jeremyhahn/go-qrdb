@@ -1342,19 +1342,32 @@ vet:
 # are outside `minimal` entirely. Those nine are covered by the `default` rungs
 # and by nothing narrower, and that is the honest extent of the claim.
 #
-# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS EITHER, AND ONE OF THEM IS ALREADY
-# BROKEN. qrdb_fts, gpu, qrdbd_webui and desktop are WITH_*=0, so they appear in
-# NEITHER rung and nothing in this repository compiles them -- not `make test`,
-# not `make lint`, not `make vet`. Measured 2026-09-03 while choosing these
-# rungs: `go vet -tags "codec_json,raft,qrdb_fts" ./pkg/fts/...` FAILS, because
-# a test double stopped satisfying storage.Batch when Batch gained an embedded
-# Reader, and no configuration anyone runs has compiled that package since
-# (#279). That is the argument FOR declaring a qrdb_fts rung eventually and the
-# argument AGAINST declaring one in the change that introduces the declaration:
-# a rung red on arrival teaches people to ignore this target, which is how the
-# blind spot got here. Add the rung in the change that fixes #279. gpu needs
-# CUDA and desktop needs webkit2, so neither belongs in a target every developer
-# is told to run before pushing.
+# OFF-BY-DEFAULT FEATURE TAGS ARE NOT RUNGS EITHER. qrdb_fts, gpu, qrdbd_webui
+# and desktop are WITH_*=0, so they appear in NEITHER rung and nothing in this
+# repository compiles them -- not `make test`, not `make lint`, not `make vet`.
+# That remains true, and it is the argument FOR declaring a qrdb_fts rung
+# eventually. gpu needs CUDA and desktop needs webkit2, so neither belongs in a
+# target every developer is told to run before pushing.
+#
+# qrdb_fts WAS ALSO BROKEN. IT IS NOT ANY MORE -- corrected here because #279
+# is what made the sentence false. Measured 2026-09-03 while choosing these
+# rungs, `go vet -tags "codec_json,raft,qrdb_fts" ./pkg/fts/...` FAILED: a test
+# double stopped satisfying storage.Batch when Batch gained an embedded Reader
+# (2026-08-13), and no target had compiled that package's tests since. Fixed in
+# #279 and re-measured on that branch, root module, read by exit code:
+#
+#     go vet -tags "codec_json,raft,qrdb_fts" ./...    EXIT=0
+#     go vet -tags "<LINT_TAGS>,qrdb_fts" ./...        EXIT=0
+#
+# sdk/go has no qrdb_fts-gated files. So the argument AGAINST declaring the rung
+# in the declaration's own commit -- a rung red on arrival teaches people to
+# ignore this target, which is how the blind spot got here -- no longer applies
+# to qrdb_fts on the evidence above.
+#
+# The rung is still NOT declared here. Adding one is a policy change carrying
+# the runtime price this block describes below, and #279 was a test-compile fix;
+# it corrected the stale measurement and left the declaration to the owner
+# rather than taking it on a lane's own judgment.
 #
 # UNTAGGED IS DELIBERATELY NOT A RUNG. Whole packages legitimately fail to
 # typecheck with no tags -- pkg/api/mcp's test mocks sit behind
