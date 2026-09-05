@@ -123,6 +123,17 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
   boundary means `attestation_root` is not reserved. See
   [architecture.md](architecture.md#trust-boundaries) for why this is a trust
   boundary and not a validation nicety.
+- **The server stamps `attest_level=none` on every `Add` and `Rotate`**
+  (`auth.Unattested().Stamp`), so a factor that proved nothing is positively
+  marked. **A verified attestation is recorded through
+  `service.AttestationRecorder`** — assert the servicer to it — with a typed
+  `auth.VerifiedAttestation{Level, AAGUID}`; `Level` must be one of
+  `auth.AttestationLevelNone` / `Software` / `Hardware` or the call fails with
+  `ErrInvalidAttestation` before any write. The recorder is deliberately not
+  on `UserAuthFactorServicer` and not on any transport: a transport client
+  cannot be asserted to it (pinned by a test in `sdk/go/transport/embedded`).
+  Read the keys back by name: `auth.MetadataAttestLevel`,
+  `auth.MetadataAttestAAGUID`. All of it is re-exported by `sdk/go`.
 - **qrdb never interprets `FactorEnrollment.Data`.**
 - **The qrdb CLI performs no hardware verification.** `auth login` resolves a
   `(method, lookup key)` tuple to a user through the `LoginAuthFactor` RPC.
@@ -158,6 +169,7 @@ Factor sentinels (`pkg/auth/factors_errors.go`), relevant here:
 | Sentinel | Meaning |
 |---|---|
 | `ErrReservedMetadata` | caller-supplied metadata carried a key inside the server-owned `attest_` namespace; carried by `*ReservedMetadataKeyError`, which names the key and the prefix |
+| `ErrInvalidAttestation` | an `AttestationRecorder` call named a level outside `none` / `software` / `hardware`; carried by `*InvalidAttestationError`, which names the level. Never crosses a wire — the recorder is in-process only |
 
 Typed errors carrying payload:
 

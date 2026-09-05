@@ -110,3 +110,48 @@ func TestEmbedded_AllowsOrdinaryMetadata(t *testing.T) {
 		t.Errorf("ordinary metadata not round-tripped: %v", resp.Factor.Metadata)
 	}
 }
+
+// TestEmbedded_UserAuthFactorClientIsStampedUnattested is the go-qrdb#342
+// half: the in-process client surface is an ordinary write, so the server
+// records attest_level=none on it -- the same as every wire transport -- and
+// the response carries what was persisted, not what was sent.
+func TestEmbedded_UserAuthFactorClientIsStampedUnattested(t *testing.T) {
+	tr := &Transport{userAuthFactorSvc: realUserFactorService(t)}
+
+	resp, err := tr.AddAuthFactor(context.Background(), &transport.AuthFactorAddRequest{
+		UserID:     42,
+		Type:       "mtls",
+		Credential: []byte("cred"),
+		Metadata:   map[string]string{"vendor": "yubico"},
+	})
+	if err != nil {
+		t.Fatalf("AddAuthFactor: %v", err)
+	}
+	md := resp.Factor.Metadata
+	if md[auth.MetadataAttestLevel] != string(auth.AttestationLevelNone) {
+		t.Errorf("response attest_level = %q, want none: %v", md[auth.MetadataAttestLevel], md)
+	}
+	if md["vendor"] != "yubico" {
+		t.Errorf("ordinary metadata lost from the response: %v", md)
+	}
+
+	got, err := tr.GetAuthFactor(context.Background(), &transport.AuthFactorGetRequest{FactorID: resp.Factor.ID})
+	if err != nil {
+		t.Fatalf("GetAuthFactor: %v", err)
+	}
+	if got.Factor.Metadata[auth.MetadataAttestLevel] != "none" {
+		t.Errorf("persisted attest_level = %q, want none", got.Factor.Metadata[auth.MetadataAttestLevel])
+	}
+}
+
+// TestEmbedded_TransportDoesNotExposeTheRecorder pins that the trusted path
+// is a SERVICE capability, not a transport one: the embedded transport's
+// client projection cannot be asserted to it, so a consumer holding only a
+// transport client has no route to the attest_* namespace.
+func TestEmbedded_TransportDoesNotExposeTheRecorder(t *testing.T) {
+	tr := &Transport{userAuthFactorSvc: realUserFactorService(t)}
+	var client transport.UserAuthFactorClient = tr
+	if _, ok := client.(service.AttestationRecorder); ok {
+		t.Fatal("the embedded transport implements service.AttestationRecorder; the trusted path must not be reachable through a transport client")
+	}
+}

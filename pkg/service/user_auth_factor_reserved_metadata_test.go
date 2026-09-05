@@ -169,3 +169,292 @@ func TestReservedPrefix_Boundary(t *testing.T) {
 		t.Errorf("nil metadata must be allowed; got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// go-qrdb#342: the server stamps what was proved; the trusted path records it.
+// ---------------------------------------------------------------------------
+
+// attestedFactor reads a factor back through every read path and returns its
+// metadata, so a test asserts on what is PERSISTED rather than on the value
+// the service left in the caller's struct.
+func persistedMetadata(t *testing.T, svc UserAuthFactorServicer, factorID string) map[string]string {
+	t.Helper()
+	got, err := svc.Get(context.Background(), factorID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", factorID, err)
+	}
+	return got.Metadata
+}
+
+// TestAdd_StampsUnattested: an ordinary write proved nothing, and the server
+// says so rather than leaving the field absent -- absent is what a record
+// written before the field existed looks like.
+func TestAdd_StampsUnattested(t *testing.T) {
+	t.Run("nil metadata", func(t *testing.T) {
+		svc, _ := newUserAuthFactorService(t, nil)
+		if err := svc.Add(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred"))); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		md := persistedMetadata(t, svc, "f1")
+		if md[auth.MetadataAttestLevel] != string(auth.AttestationLevelNone) {
+			t.Errorf("attest_level = %q, want none: %v", md[auth.MetadataAttestLevel], md)
+		}
+		if _, ok := md[auth.MetadataAttestAAGUID]; ok {
+			t.Errorf("attest_aaguid present on an unattested factor: %v", md)
+		}
+	})
+
+	t.Run("ordinary metadata is kept beside the stamp", func(t *testing.T) {
+		svc, _ := newUserAuthFactorService(t, nil)
+		f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{"vendor": "yubico"})
+		if err := svc.Add(context.Background(), 7, f); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		md := persistedMetadata(t, svc, "f1")
+		if md["vendor"] != "yubico" || md[auth.MetadataAttestLevel] != "none" {
+			t.Errorf("metadata = %v, want vendor kept and attest_level=none", md)
+		}
+	})
+}
+
+// TestRotate_StampsUnattested: rotation is a new factor the server never
+// verified, so it is stamped none too.
+func TestRotate_StampsUnattested(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	ctx := context.Background()
+	if err := svc.Add(ctx, 7, mtlsFactor("old", 7, []byte("cred-old"))); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	if err := svc.Rotate(ctx, "old", mtlsFactor("new", 7, []byte("cred-new"))); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if md := persistedMetadata(t, svc, "new"); md[auth.MetadataAttestLevel] != "none" {
+		t.Errorf("rotated factor attest_level = %q, want none", md[auth.MetadataAttestLevel])
+	}
+}
+
+// TestRotate_DoesNotInheritAttestation is the downgrade check: a factor the
+// ceremony proved hardware, rotated through the ordinary path, comes out
+// none. The old record's proof is about the OLD key.
+func TestRotate_DoesNotInheritAttestation(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+
+	hardware := auth.VerifiedAttestation{Level: auth.AttestationLevelHardware, AAGUID: "ee882879"}
+	if err := rec.AddAttested(ctx, 7, fido2Factor("old", 7, []byte("cred-old")), hardware); err != nil {
+		t.Fatalf("AddAttested: %v", err)
+	}
+	if err := svc.Rotate(ctx, "old", fido2Factor("new", 7, []byte("cred-new"))); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	md := persistedMetadata(t, svc, "new")
+	if md[auth.MetadataAttestLevel] != "none" {
+		t.Errorf("rotated factor inherited attest_level=%q", md[auth.MetadataAttestLevel])
+	}
+	if _, ok := md[auth.MetadataAttestAAGUID]; ok {
+		t.Errorf("rotated factor inherited attest_aaguid: %v", md)
+	}
+}
+
+// TestAttestationRecorder_ReachableFromTheServicer: the trusted path is
+// reached by type assertion on the servicer a host already holds, the same
+// way ActiveFactorChecker is.
+func TestAttestationRecorder_ReachableFromTheServicer(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	if _, ok := svc.(AttestationRecorder); !ok {
+		t.Fatalf("%T does not implement AttestationRecorder", svc)
+	}
+}
+
+// TestAddAttested_RecordsWhatTheCeremonyProved is the positive half of #342:
+// the host that verified the attestation can record it, and every read path
+// -- Get, List, and the login resolver's LookupByCredentialKey -- sees it.
+func TestAddAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+
+	f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{"transports": "usb"})
+	att := auth.VerifiedAttestation{Level: auth.AttestationLevelHardware, AAGUID: "ee882879721c491397753dfcce97072a"}
+	if err := rec.AddAttested(ctx, 7, f, att); err != nil {
+		t.Fatalf("AddAttested: %v", err)
+	}
+
+	check := func(name string, md map[string]string) {
+		t.Helper()
+		if md[auth.MetadataAttestLevel] != "hardware" {
+			t.Errorf("%s: attest_level = %q, want hardware", name, md[auth.MetadataAttestLevel])
+		}
+		if md[auth.MetadataAttestAAGUID] != att.AAGUID {
+			t.Errorf("%s: attest_aaguid = %q, want %q", name, md[auth.MetadataAttestAAGUID], att.AAGUID)
+		}
+		if md["transports"] != "usb" {
+			t.Errorf("%s: ordinary metadata lost: %v", name, md)
+		}
+	}
+	check("Get", persistedMetadata(t, svc, "f1"))
+
+	listed, err := svc.List(ctx, 7)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("List = %d, %v", len(listed), err)
+	}
+	check("List", listed[0].Metadata)
+
+	byKey, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("cred"))
+	if err != nil {
+		t.Fatalf("LookupByCredentialKey: %v", err)
+	}
+	check("LookupByCredentialKey", byKey.Metadata)
+}
+
+// TestAddAttested_SoftwareWithoutModel: a level with no attested model records
+// the level and no aaguid key at all.
+func TestAddAttested_SoftwareWithoutModel(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	err := rec.AddAttested(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred")),
+		auth.VerifiedAttestation{Level: auth.AttestationLevelSoftware})
+	if err != nil {
+		t.Fatalf("AddAttested: %v", err)
+	}
+	md := persistedMetadata(t, svc, "f1")
+	if md[auth.MetadataAttestLevel] != "software" {
+		t.Errorf("attest_level = %q", md[auth.MetadataAttestLevel])
+	}
+	if _, ok := md[auth.MetadataAttestAAGUID]; ok {
+		t.Errorf("attest_aaguid present with no model: %v", md)
+	}
+}
+
+// TestAddAttested_RefusesCallerSuppliedReservedKeys: the trusted path is not
+// a second way to hand the server a map with attest_* in it. The typed
+// attestation is the ONLY input, and #234's refusal holds on this path too.
+func TestAddAttested_RefusesCallerSuppliedReservedKeys(t *testing.T) {
+	svc, kv := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+
+	f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{"attest_level": "hardware"})
+	err := rec.AddAttested(context.Background(), 7, f, auth.VerifiedAttestation{Level: auth.AttestationLevelHardware})
+	assertReservedRejected(t, err, "attest_level")
+	if n := len(kv.store); n != 0 {
+		t.Fatalf("%d KV entries after a refused AddAttested, want 0", n)
+	}
+}
+
+// TestAddAttested_RefusesUndefinedLevel: an unset or misspelled level is
+// refused before anything is written. Stored, it would fail login policy
+// silently.
+func TestAddAttested_RefusesUndefinedLevel(t *testing.T) {
+	for _, level := range []auth.AttestationLevel{"", "hardwre", "HARDWARE"} {
+		t.Run(string(level), func(t *testing.T) {
+			svc, kv := newUserAuthFactorService(t, nil)
+			rec := svc.(AttestationRecorder)
+
+			err := rec.AddAttested(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred")),
+				auth.VerifiedAttestation{Level: level})
+			var invalid *auth.InvalidAttestationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("error = %v (%T), want *auth.InvalidAttestationError", err, err)
+			}
+			if !errors.Is(err, auth.ErrInvalidAttestation) {
+				t.Error("errors.Is(err, auth.ErrInvalidAttestation) is false")
+			}
+			if n := len(kv.store); n != 0 {
+				t.Fatalf("%d KV entries after a refused AddAttested, want 0", n)
+			}
+		})
+	}
+}
+
+// TestAddAttested_SharesAddValidation: the trusted path is Add with a
+// different stamp, not a looser Add. The checks that precede the stamp are
+// the same ones.
+func TestAddAttested_SharesAddValidation(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+	hardware := auth.VerifiedAttestation{Level: auth.AttestationLevelHardware}
+
+	if err := rec.AddAttested(ctx, 7, nil, hardware); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Errorf("nil factor: %v, want ErrInvalidFactor", err)
+	}
+	if err := rec.AddAttested(ctx, 0, mtlsFactor("f1", 0, []byte("cred")), hardware); !errors.Is(err, auth.ErrInvalidFactor) {
+		t.Errorf("zero userID: %v, want ErrInvalidFactor", err)
+	}
+	if err := rec.AddAttested(ctx, 7, mtlsFactor("f1", 7, []byte("cred")), hardware); err != nil {
+		t.Fatalf("first AddAttested: %v", err)
+	}
+	if err := rec.AddAttested(ctx, 7, mtlsFactor("f2", 7, []byte("cred")), hardware); !errors.Is(err, auth.ErrFactorAlreadyExists) {
+		t.Errorf("duplicate credential: %v, want ErrFactorAlreadyExists", err)
+	}
+}
+
+// TestRotateAttested_RecordsWhatTheCeremonyProved: the rotation twin.
+func TestRotateAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+
+	if err := svc.Add(ctx, 7, fido2Factor("old", 7, []byte("cred-old"))); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	att := auth.VerifiedAttestation{Level: auth.AttestationLevelHardware, AAGUID: "ee882879"}
+	if err := rec.RotateAttested(ctx, "old", fido2Factor("new", 7, []byte("cred-new")), att); err != nil {
+		t.Fatalf("RotateAttested: %v", err)
+	}
+
+	md := persistedMetadata(t, svc, "new")
+	if md[auth.MetadataAttestLevel] != "hardware" || md[auth.MetadataAttestAAGUID] != "ee882879" {
+		t.Errorf("rotated factor metadata = %v", md)
+	}
+	old, err := svc.Get(ctx, "old")
+	if err != nil {
+		t.Fatalf("Get old: %v", err)
+	}
+	if old.RevokedAt == nil {
+		t.Error("RotateAttested did not revoke the old factor")
+	}
+}
+
+// TestRotateAttested_RefusesUndefinedLevel: refused before the old factor is
+// touched -- a refused rotation that revoked the old factor would be a denial
+// of service on top of the bad input.
+func TestRotateAttested_RefusesUndefinedLevel(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+
+	if err := svc.Add(ctx, 7, mtlsFactor("old", 7, []byte("cred-old"))); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	err := rec.RotateAttested(ctx, "old", mtlsFactor("new", 7, []byte("cred-new")),
+		auth.VerifiedAttestation{Level: "hardwre"})
+	if !errors.Is(err, auth.ErrInvalidAttestation) {
+		t.Fatalf("error = %v, want ErrInvalidAttestation", err)
+	}
+	got, err := svc.List(ctx, 7)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "old" || got[0].RevokedAt != nil {
+		t.Fatalf("a refused RotateAttested changed the factor set: %+v", got)
+	}
+}
+
+// TestRotateAttested_RefusesCallerSuppliedReservedKeys mirrors the Add case.
+func TestRotateAttested_RefusesCallerSuppliedReservedKeys(t *testing.T) {
+	svc, _ := newUserAuthFactorService(t, nil)
+	rec := svc.(AttestationRecorder)
+	ctx := context.Background()
+
+	if err := svc.Add(ctx, 7, mtlsFactor("old", 7, []byte("cred-old"))); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	newFactor := reservedMetadataFactor("new", 7, []byte("cred-new"), map[string]string{"attest_aaguid": "x"})
+	err := rec.RotateAttested(ctx, "old", newFactor, auth.VerifiedAttestation{Level: auth.AttestationLevelHardware})
+	assertReservedRejected(t, err, "attest_aaguid")
+	if old, err := svc.Get(ctx, "old"); err != nil || old.RevokedAt != nil {
+		t.Fatalf("old factor after refused RotateAttested: %+v, %v", old, err)
+	}
+}

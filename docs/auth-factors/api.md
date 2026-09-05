@@ -107,6 +107,31 @@ from an ordinary naming collision.
 Note the boundary is the literal prefix: `attestation_root` is *not* reserved,
 because it does not begin `attest_`.
 
+### What the server records in it
+
+The namespace is refused as *input* and always written as *output*:
+
+- **Every `Add` and `Rotate`, over every transport, records
+  `attest_level=none`.** A factor written without a ceremony proved nothing
+  about where its key lives, and the server says so positively rather than
+  leaving the key absent — absent is what a record written before the field
+  existed looks like, and login policy must be able to tell the two apart.
+  The response carries the persisted metadata, so a caller sees the stamp.
+- **A verified attestation is recorded through `service.AttestationRecorder`
+  (`sdk.AttestationRecorder`), and only there.** It is a service-layer
+  interface the production user auth-factor service implements alongside
+  `UserAuthFactorServicer`, reached by type assertion by the process that
+  hosts the service — the composer that ran the WebAuthn or PIV ceremony and
+  verified the attestation chain. `AddAttested` / `RotateAttested` take a
+  typed `VerifiedAttestation{Level, AAGUID}` and stamp `attest_level` and
+  `attest_aaguid` from it. **No transport carries this verb.** There is no
+  RPC, no header and no flag that produces a `VerifiedAttestation`; a wire
+  caller has exactly one path, and it records `none`.
+- The trusted path refuses caller-supplied `attest_*` keys in `metadata`
+  exactly as `Add` does, and refuses a `Level` outside the defined vocabulary
+  (`none`, `software`, `hardware`) with `ErrInvalidAttestation` before
+  anything is written. The typed attestation is the only input.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |

@@ -129,5 +129,15 @@ type UserAuthFactorServiceConfig = service.UserAuthFactorServiceConfig
 // consumes it. Assert the servicer to this interface when wiring.
 type ActiveFactorChecker = service.ActiveFactorChecker
 
+// AttestationRecorder is the trusted-server path for recording what an
+// enrollment ceremony PROVED about a factor -- the ONE writer of the
+// server-owned attest_* metadata namespace. The production user auth-factor
+// service implements it alongside UserAuthFactorServicer; the in-process host
+// that ran the ceremony reaches it by asserting the servicer to this
+// interface. It is deliberately absent from UserAuthFactorServicer and from
+// every transport: a factor written through Add or Rotate on any wire is
+// recorded as Unattested, and no handler maps to this interface (go-qrdb#342).
+type AttestationRecorder = service.AttestationRecorder
+
 // NewUserAuthFactorService creates a new UserAuthFactorServicer.
 var NewUserAuthFactorService = service.NewUserAuthFactorService

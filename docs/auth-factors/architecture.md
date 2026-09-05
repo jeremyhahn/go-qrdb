@@ -107,6 +107,15 @@ can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
   claim another system's login policy trusts: qrdb performs no hardware
   verification itself, so the only thing protecting the claim is that no wire
   path can write it.
+- **The server writes the attestation namespace; a trusted host says what
+  was proved.** Every `Add` and `Rotate` stamps `attest_level=none` — the
+  factor proved nothing, and the record says so rather than staying silent.
+  A ceremony-verified attestation is recorded only through
+  `service.AttestationRecorder` (`AddAttested` / `RotateAttested`, taking a
+  typed `auth.VerifiedAttestation`), a service-layer interface no transport
+  handler maps to. The boundary is in-process versus wire, not a permission:
+  the process hosting the service is the one that verified the chain, and
+  nothing arriving over any listener can construct the typed value.
 - **Minimum PIN length is 6 characters**, enforced in `Service` before
   delegation, so every backend gets the same floor.
 - **Verification is constant-time** (`crypto/subtle`) and hashes are re-derived

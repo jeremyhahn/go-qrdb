@@ -117,6 +117,38 @@ type ActiveFactorChecker interface {
 	HasActiveFactor(ctx context.Context, userID uint64) (bool, error)
 }
 
+// AttestationRecorder is the trusted-server path for recording what an
+// enrollment ceremony PROVED about a factor. It is the ONE way a value inside
+// the server-owned attest_* metadata namespace is written (go-qrdb#342).
+//
+// It is deliberately NOT part of UserAuthFactorServicer. Every network
+// transport -- REST, gRPC, MCP, QUIC, the Unix socket -- reaches the service
+// through a handler that calls Add or Rotate, both of which refuse a
+// caller-supplied attest_* key and stamp auth.Unattested. No handler maps to
+// this interface, so nothing on any wire can reach it; only code running in
+// the process that hosts the service can, and that process is the composer
+// that ran the ceremony and verified the attestation chain. The production
+// service implements it alongside UserAuthFactorServicer; a host holding the
+// servicer reaches it by type assertion, exactly as ActiveFactorChecker is
+// reached.
+//
+// Both methods refuse caller-supplied attest_* keys in the factor's Metadata
+// just as Add and Rotate do: the typed attestation is the only input, so
+// there is never a second place the same claim could arrive from.
+type AttestationRecorder interface {
+	// AddAttested persists a new factor for the user, recording attestation
+	// as what the ceremony proved. Returns *auth.InvalidAttestationError when
+	// the attestation does not name a defined level; otherwise the contract
+	// is Add's.
+	AddAttested(ctx context.Context, userID uint64, factor *auth.AuthFactor, attestation auth.VerifiedAttestation) error
+
+	// RotateAttested atomically adds newFactor, recorded with attestation,
+	// and revokes the old factor. Returns *auth.InvalidAttestationError when
+	// the attestation does not name a defined level; otherwise the contract
+	// is Rotate's.
+	RotateAttested(ctx context.Context, oldID string, newFactor *auth.AuthFactor, attestation auth.VerifiedAttestation) error
+}
+
 // UserStateUpdater optionally receives a callback whenever a user's last
 // active factor is force-removed, so the embedding system can mark the
 // user inactive. The interface is satisfied by any user store that
@@ -146,6 +178,7 @@ type UserAuthFactorServiceConfig struct {
 // checker; consumers holding a UserAuthFactorServicer reach the checker via
 // type assertion.
 var _ ActiveFactorChecker = (*userAuthFactorService)(nil)
+var _ AttestationRecorder = (*userAuthFactorService)(nil)
 
 type userAuthFactorService struct {
 	kv      KVServicer
@@ -176,8 +209,29 @@ func NewUserAuthFactorService(cfg UserAuthFactorServiceConfig) (UserAuthFactorSe
 	}, nil
 }
 
-// Add persists the factor along with its secondary indexes.
+// Add persists the factor along with its secondary indexes, recorded as
+// auth.Unattested: this is the path every transport handler reaches, and a
+// factor written through it proved nothing about where its key lives. The
+// server stamps that fact rather than leaving the key absent, so a record
+// that proved nothing is distinguishable from one written before the field
+// existed (go-qrdb#342).
 func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *auth.AuthFactor) error {
+	return s.add(ctx, userID, factor, auth.Unattested())
+}
+
+// AddAttested implements AttestationRecorder.
+func (s *userAuthFactorService) AddAttested(ctx context.Context, userID uint64, factor *auth.AuthFactor, attestation auth.VerifiedAttestation) error {
+	if err := attestation.Validate(); err != nil {
+		return err
+	}
+	return s.add(ctx, userID, factor, attestation)
+}
+
+// add is the single write path behind Add and AddAttested. The only
+// difference between the two is the attestation that is stamped; every
+// validation, including the refusal of caller-supplied attest_* keys, is
+// shared so the trusted path cannot drift looser than the wire path.
+func (s *userAuthFactorService) add(ctx context.Context, userID uint64, factor *auth.AuthFactor, attestation auth.VerifiedAttestation) error {
 	if factor == nil {
 		return &auth.InvalidFactorError{Reason: "factor is nil"}
 	}
@@ -222,6 +276,11 @@ func (s *userAuthFactorService) Add(ctx context.Context, userID uint64, factor *
 			return &auth.FactorAlreadyExistsError{Type: factor.Type, FactorID: existingID}
 		}
 	}
+
+	// The server, not the caller, says what was proved. ValidateMetadata has
+	// already established the caller supplied nothing in the namespace, so
+	// this never overwrites anything.
+	factor.Metadata = attestation.Stamp(factor.Metadata)
 
 	data, err := json.Marshal(factor)
 	if err != nil {
@@ -395,8 +454,23 @@ func (s *userAuthFactorService) Remove(ctx context.Context, factorID string, for
 	return nil
 }
 
-// Rotate atomically adds newFactor and revokes the old factor.
+// Rotate atomically adds newFactor and revokes the old factor. The new
+// factor is recorded as auth.Unattested for the same reason Add's is: a
+// rotation is the other way a factor the server never verified is written.
 func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error {
+	return s.rotate(ctx, oldID, newFactor, auth.Unattested())
+}
+
+// RotateAttested implements AttestationRecorder.
+func (s *userAuthFactorService) RotateAttested(ctx context.Context, oldID string, newFactor *auth.AuthFactor, attestation auth.VerifiedAttestation) error {
+	if err := attestation.Validate(); err != nil {
+		return err
+	}
+	return s.rotate(ctx, oldID, newFactor, attestation)
+}
+
+// rotate is the single write path behind Rotate and RotateAttested; see add.
+func (s *userAuthFactorService) rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor, attestation auth.VerifiedAttestation) error {
 	if newFactor == nil {
 		return &auth.InvalidFactorError{Reason: "newFactor is nil"}
 	}
@@ -452,6 +526,9 @@ func (s *userAuthFactorService) Rotate(ctx context.Context, oldID string, newFac
 	}
 
 	now := s.nowFunc()
+
+	// The server, not the caller, says what was proved; see add.
+	newFactor.Metadata = attestation.Stamp(newFactor.Metadata)
 
 	// Persist new factor first so a partial failure leaves the user with
 	// at least one active factor (graceful degradation).

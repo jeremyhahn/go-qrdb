@@ -11,6 +11,36 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`service.AttestationRecorder` — the trusted-server path for recording
+  what an enrollment ceremony proved** (#342). `AddAttested` / `RotateAttested`
+  take a typed `auth.VerifiedAttestation{Level, AAGUID}` and are the ONE
+  writer of the server-owned `attest_*` factor-metadata namespace. The
+  production user auth-factor service implements it alongside
+  `UserAuthFactorServicer`; the in-process host that verified the attestation
+  reaches it by type assertion, as it reaches `ActiveFactorChecker`. It is
+  deliberately absent from the servicer interface and from every transport —
+  no handler maps to it, so nothing on any wire can produce a verified
+  attestation. Caller-supplied `attest_*` keys are refused on this path
+  exactly as on `Add` (#234's protection is intact), and a level outside
+  `none` / `software` / `hardware` is refused with `ErrInvalidAttestation`
+  before anything is written. Re-exported by `sdk/go`: `AttestationRecorder`,
+  `VerifiedAttestation`, `AttestationLevel` and its three values,
+  `Unattested`, `MetadataAttestLevel`, `MetadataAttestAAGUID`,
+  `ReservedMetadataPrefix`, `InvalidAttestationError` / `ErrInvalidAttestation`,
+  and — missing since #234 — `ReservedMetadataKeyError` / `ErrReservedMetadata`.
+
+### Changed
+
+- **Every `Add` and `Rotate` on the user auth-factor service now records
+  `attest_level=none`** (#342). A factor written without a ceremony proved
+  nothing, and the server says so rather than leaving the key absent, so a
+  record that proved nothing is distinguishable from one written before the
+  field existed. The response carries the persisted metadata, stamp included.
+  Callers that stamped `none` themselves to get this distinction must stop:
+  the key is now refused as input on every path and written by the server.
+
 ## [0.16.1-alpha] - 2026-09-05
 
 ### Added

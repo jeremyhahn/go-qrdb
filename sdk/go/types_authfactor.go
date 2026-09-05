@@ -55,6 +55,70 @@ const (
 // for a stored credential factor. (Aliases pkg/auth.CredentialKey.)
 var CredentialKey = auth.CredentialKey
 
+// ---------------------------------------------------------------------------
+// Attestation (the server-owned attest_* metadata namespace)
+// ---------------------------------------------------------------------------
+
+// ReservedMetadataPrefix is the AuthFactor.Metadata namespace only the server
+// writes. Caller-supplied keys under it are refused on Add and Rotate over
+// every transport; see ReservedMetadataKeyError.
+const ReservedMetadataPrefix = auth.ReservedMetadataPrefix
+
+// Metadata keys inside ReservedMetadataPrefix that the server writes. Read
+// them with these names; never write them -- AttestationRecorder is the one
+// path that records them.
+const (
+	// MetadataAttestLevel holds the AttestationLevel a factor proved at
+	// enrollment. Every factor written since the server began stamping it
+	// carries one (AttestationLevelNone when nothing was proved).
+	MetadataAttestLevel = auth.MetadataAttestLevel
+
+	// MetadataAttestAAGUID holds the attested authenticator model, present
+	// only when a ceremony verified one.
+	MetadataAttestAAGUID = auth.MetadataAttestAAGUID
+)
+
+// AttestationLevel is what an enrollment ceremony proved about where a
+// factor's private key lives.
+type AttestationLevel = auth.AttestationLevel
+
+// AttestationLevel values.
+const (
+	// AttestationLevelNone records that no attestation was verified.
+	AttestationLevelNone = auth.AttestationLevelNone
+
+	// AttestationLevelSoftware records a verified but self-signed attestation.
+	AttestationLevelSoftware = auth.AttestationLevelSoftware
+
+	// AttestationLevelHardware records an attestation chained to a
+	// manufacturer trust anchor the operator configured.
+	AttestationLevelHardware = auth.AttestationLevelHardware
+)
+
+// VerifiedAttestation is what an enrollment ceremony proved about an
+// authenticator, handed to AttestationRecorder by the in-process host that
+// ran the ceremony. Nothing on any wire can produce one.
+type VerifiedAttestation = auth.VerifiedAttestation
+
+// Unattested is the attestation the server records for a factor written
+// without a ceremony: AttestationLevelNone, no model.
+var Unattested = auth.Unattested
+
+// InvalidAttestationError is returned by AttestationRecorder when the
+// attestation does not name a defined AttestationLevel.
+type InvalidAttestationError = auth.InvalidAttestationError
+
+// ErrInvalidAttestation is the sentinel InvalidAttestationError unwraps to.
+var ErrInvalidAttestation = auth.ErrInvalidAttestation
+
+// ReservedMetadataKeyError is returned by Add and Rotate when caller-supplied
+// factor metadata carries a key inside ReservedMetadataPrefix. It names the
+// key and the prefix.
+type ReservedMetadataKeyError = auth.ReservedMetadataKeyError
+
+// ErrReservedMetadata is the sentinel ReservedMetadataKeyError unwraps to.
+var ErrReservedMetadata = auth.ErrReservedMetadata
+
 // Principal is an authenticated subject resolved during login.
 type Principal = auth.Principal
 
