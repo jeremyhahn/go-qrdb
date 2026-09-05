@@ -128,11 +128,25 @@ WORKDIR /workspace/go-qrdb
 # value never reaches a command line either. The mount is optional by design --
 # on GitHub no secret is supplied and these modules resolve from the public
 # proxy once tags are mirrored (dependency-resolution.md section 6).
+#
+# The echo before the download states which of those two worlds this build is
+# in. It changes no behaviour in either -- an empty or absent secret still
+# falls through to the proxy exactly as before -- it only puts the one fact a
+# reader needs at the top of the failure instead of leaving them to infer it
+# from 80 lines of `unknown revision` further down (#302). Deciding to REFUSE
+# here rather than report needs a way to tell an internal build from a GitHub
+# one, and no such discriminator has been designed; that is the owner's call,
+# so this stops at saying what happened.
 COPY go.mod go.sum* ./
 COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
 RUN --mount=type=secret,id=gomodauth \
     set -eu; \
-    if [ -f /run/secrets/gomodauth ]; then . /run/secrets/gomodauth; fi; \
+    if [ -s /run/secrets/gomodauth ]; then \
+      . /run/secrets/gomodauth; \
+      echo "==> go mod download: Gitea module credentials MOUNTED"; \
+    else \
+      echo "==> go mod download: NO Gitea module credentials mounted -- github.com/jeremyhahn/* can resolve from the public proxy ONLY (correct on GitHub; on an internal host this build cannot see unmirrored tags). See dependency-resolution.md section 6."; \
+    fi; \
     go mod download
 
 COPY . .

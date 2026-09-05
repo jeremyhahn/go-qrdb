@@ -17,6 +17,8 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      secrets:
+        - gomodauth
     image: go-qrdb-dev:latest
     volumes:
       - ..:/workspace/go-qrdb
@@ -31,6 +33,8 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      secrets:
+        - gomodauth
     image: go-qrdb-dev:latest
     volumes:
       - ..:/workspace/go-qrdb
@@ -49,6 +53,8 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      secrets:
+        - gomodauth
     image: go-qrdb-e2e:latest
     volumes:
       - ..:/workspace/go-qrdb
@@ -92,6 +98,8 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      secrets:
+        - gomodauth
     image: go-qrdb-dev:latest
     volumes:
       - ..:/workspace/go-qrdb
@@ -101,3 +109,21 @@ services:
     working_dir: /workspace/go-qrdb
     cap_add:
       - NET_ADMIN
+
+# The BuildKit secret that carries the internal Gitea module credentials into
+# `go mod download`. Every service above that builds .devcontainer/Dockerfile
+# declares it, so the compose entrypoints authenticate exactly the way
+# `make integration-image`'s `docker build --secret` does -- before #302 they
+# did not, and `make ci` therefore died inside the image build with an
+# `unknown revision` that read like a gate failure.
+#
+# GOMODAUTH_FILE is staged by the Makefile's $(stage-gomodauth) prelude. The
+# /dev/null default is the unprovisioned path and is deliberate, not a
+# fallback added here: it mounts an EMPTY secret, which is byte-for-byte what
+# the Dockerfile already saw when no secret was supplied at all, so a bare
+# `docker compose build` and the VS Code devcontainer behave exactly as they
+# did. A GOMODAUTH_FILE naming a file that does not exist fails the build
+# loudly, which is the right answer for a caller that meant to provision one.
+secrets:
+  gomodauth:
+    file: ${GOMODAUTH_FILE:-/dev/null}
