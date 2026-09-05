@@ -41,6 +41,22 @@ are not reconstructed here — their history is in the git log.
   Callers that stamped `none` themselves to get this distinction must stop:
   the key is now refused as input on every path and written by the server.
 
+### Fixed
+
+- **`sdk.UserServicer` now returns `sdk.UserNotFoundError`** (#343).
+  go-qrdb#289 (v0.16.1-alpha) moved `sdk.UserNotFoundError` from an alias of
+  `pkg/user.UserNotFoundError` to an alias of `transport.UserNotFoundError`
+  so every wire transport matched one type — but the re-exported servicer
+  kept returning the service type, which the SDK no longer exported, so a
+  servicer consumer honouring the `sdk/go` boundary could not classify a
+  missing user at all (go-quicbaas's first-boot admin creation failed on
+  its email-uniqueness check). `pkg/user.UserNotFoundError` is now an alias
+  of the transport type: ONE type, returned by the servicer in-process and
+  by every transport, matched by one `errors.As` against
+  `sdk.UserNotFoundError`. The embedded transport's service-to-transport
+  translation is deleted — there is nothing left to translate. The message
+  is `user: not found: <id|lookup>` whichever layer returns it.
+
 ## [0.16.1-alpha] - 2026-09-05
 
 ### Added

@@ -15,9 +15,12 @@
 package user
 
 import (
+	"context"
 	"errors"
 	"io"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -194,5 +197,27 @@ func TestValidationError_As(t *testing.T) {
 	}
 	if target.Field != "id" {
 		t.Fatalf("Field: got %q, want %q", target.Field, "id")
+	}
+}
+
+// TestUserNotFoundError_IsTheSDKTransportType pins go-qrdb#343: the service's
+// not-found IS the SDK's, so a servicer consumer that imports only sdk/go
+// classifies it with the exported type. The compile-time assignment is the
+// contract; the errors.As through a real store is the proof it holds for
+// what the store actually returns.
+func TestUserNotFoundError_IsTheSDKTransportType(t *testing.T) {
+	var _ *transport.UserNotFoundError = (*UserNotFoundError)(nil)
+
+	svc := newTestStore(t)
+	_, err := svc.GetUserByEmail(context.Background(), "acme", "nobody@acme.example")
+	if err == nil {
+		t.Fatal("GetUserByEmail on a missing user returned nil")
+	}
+	var viaTransport *transport.UserNotFoundError
+	if !errors.As(err, &viaTransport) {
+		t.Fatalf("errors.As(err, *transport.UserNotFoundError) = false for %T: %v", err, err)
+	}
+	if viaTransport.Lookup != "acme/nobody@acme.example" {
+		t.Errorf("Lookup = %q", viaTransport.Lookup)
 	}
 }

@@ -196,14 +196,14 @@ func TestUserNotFoundError_Message(t *testing.T) {
 		err  *UserNotFoundError
 		want string
 	}{
-		{"by id", &UserNotFoundError{ID: 42}, "transport: user not found: 42"},
-		{"by lookup", &UserNotFoundError{Lookup: "acme/alice"}, "transport: user not found: acme/alice"},
+		{"by id", &UserNotFoundError{ID: 42}, "user: not found: 42"},
+		{"by lookup", &UserNotFoundError{Lookup: "acme/alice"}, "user: not found: acme/alice"},
 		{
 			// Lookup wins when both are set, so a non-id lookup never renders
 			// as the zero id it did not fail on.
 			"lookup wins over a zero id",
 			&UserNotFoundError{Lookup: "cert_spki/abc"},
-			"transport: user not found: cert_spki/abc",
+			"user: not found: cert_spki/abc",
 		},
 	}
 	for _, tc := range tests {

@@ -322,17 +322,19 @@ func (e *NotImplementedError) Error() string {
 // carries the numeric identifier and Lookup is empty; for any other key,
 // Lookup carries a descriptor of the key that failed and ID is zero.
 //
-// EVERY transport that can carry it returns this one type for this one
-// condition, so errors.As against it is a transport-independent predicate. It
-// is the type a consumer classifying "this user does not exist" matches, and
-// the SDK re-exports it as sdk.UserNotFoundError.
+// It is the ONE type for this ONE condition across the whole SDK surface:
+// every transport that can carry it returns it, and the user SERVICE returns
+// it too — pkg/user.UserNotFoundError is an alias of this type (go-qrdb#343),
+// so a consumer holding a UserServicer in-process and a consumer calling over
+// a wire classify a missing user with the same errors.As against
+// sdk.UserNotFoundError. There is no second type to match and no translation
+// step to forget.
 //
-// The fields mirror pkg/user.UserNotFoundError exactly so the embedded
-// transport can present the server-side error without losing information. The
-// two remain SEPARATE types rather than an alias because sdk/go is its own Go
-// module and this package imports nothing from pkg/ — root packages import
-// sdk/go/transport, so aliasing would reverse that dependency. Unifying them
-// is an architecture change, not a scoped one.
+// It is declared here rather than in pkg/user because sdk/go is its own Go
+// module and this package imports nothing from pkg/: root packages import
+// sdk/go/transport, so the alias runs in that direction. The message names
+// the user subsystem, not this package, because the condition originates
+// there and the same text is produced whichever layer returns it.
 type UserNotFoundError struct {
 	// ID is the numeric user id that was not found. Zero when the lookup was
 	// not by id (see Lookup).
@@ -346,9 +348,9 @@ type UserNotFoundError struct {
 // Error returns a human-readable description.
 func (e *UserNotFoundError) Error() string {
 	if e.Lookup != "" {
-		return "transport: user not found: " + e.Lookup
+		return "user: not found: " + e.Lookup
 	}
-	return "transport: user not found: " + strconv.FormatUint(e.ID, 10)
+	return "user: not found: " + strconv.FormatUint(e.ID, 10)
 }
 
 // UserLookupKey formats the descriptor UserNotFoundError.Lookup carries for a

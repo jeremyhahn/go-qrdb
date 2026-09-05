@@ -49,12 +49,14 @@ type EmailExistsError = user.EmailExistsError
 // UserNotFoundError is returned when a user lookup (by id, username, email, or
 // cert thumbprint) does not resolve.
 //
-// It aliases the TRANSPORT type, not pkg/user's server-side one. Before
-// go-qrdb#289 it aliased pkg/user.UserNotFoundError, which no remote transport
-// ever returns: a consumer matching sdk.UserNotFoundError succeeded in-process
-// and failed over every wire, and the compiler could not see the difference
-// because the two types share a name in different packages. There is now one
-// name bound to one type, and every transport returns it.
+// It is the ONE not-found type for users: every transport returns it, and so
+// does UserServicer — pkg/user.UserNotFoundError is an alias of the same
+// transport type (go-qrdb#343). A consumer classifies a missing user with a
+// single errors.As against this name whether it called a servicer in-process
+// or a client over REST, gRPC, QUIC, MCP, Unix or the embedded transport.
+// Before go-qrdb#289 this aliased pkg/user's own type, which no remote
+// transport returned; after #289 it aliased the transport's, which the
+// servicer did not return. Now there is one type, and both return it.
 type UserNotFoundError = transport.UserNotFoundError
 
 // ---------------------------------------------------------------------------

@@ -17,29 +17,24 @@ package user
 import (
 	"errors"
 	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // UserNotFoundError is returned when a user does not exist. For a lookup by
 // ID, ID carries the numeric identifier. For a lookup by a non-numeric key
-// (username or cert thumbprint), Lookup carries a human-readable descriptor of
-// the key that failed to resolve and ID is zero.
-type UserNotFoundError struct {
-	// ID is the numeric user id that was not found. Zero when the lookup was
-	// not by id (see Lookup).
-	ID uint64
-
-	// Lookup is a descriptor of a non-id lookup that failed (e.g.
-	// "tenant/username" or "cert_spki/<thumbprint>"). Empty for id lookups.
-	Lookup string
-}
-
-// Error returns a human-readable description of the not-found condition.
-func (e *UserNotFoundError) Error() string {
-	if e.Lookup != "" {
-		return "user: not found: " + e.Lookup
-	}
-	return "user: not found: " + strconv.FormatUint(e.ID, 10)
-}
+// (username, email or cert thumbprint), Lookup carries a human-readable
+// descriptor of the key that failed to resolve and ID is zero.
+//
+// It IS the SDK's not-found type -- an alias of transport.UserNotFoundError --
+// so a consumer that holds a UserServicer through sdk/go classifies a
+// not-found with the one exported type whether the call ran in-process or
+// crossed any wire (go-qrdb#343). Before this, the service returned its own
+// type and the SDK exported the transport's, and a servicer consumer that
+// honoured the boundary had no exported name to match. The dependency
+// direction is the established one: root packages import sdk/go/transport,
+// which imports nothing from pkg/.
+type UserNotFoundError = transport.UserNotFoundError
 
 // UsernameExistsError is returned when a username is already taken
 // within the tenant.

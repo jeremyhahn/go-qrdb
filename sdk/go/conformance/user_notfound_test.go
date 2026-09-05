@@ -234,7 +234,8 @@ func TestUserNotFound_Matrix(t *testing.T) {
 }
 
 // TestUserNotFound_AmbiguousMethods pins that AssignRole and UnassignRole are
-// NOT typed, on any transport, and says why.
+// NOT typed on any REMOTE transport, and says why — and that they ARE typed
+// in-process, which is the same fact seen from the side that has it.
 //
 // This is not a lowered bar. Measured on every remote transport, assigning a
 // role fails with the identical status whether the USER or the ROLE is
@@ -244,9 +245,15 @@ func TestUserNotFound_Matrix(t *testing.T) {
 // report a missing ROLE as a missing USER, which is the same class of defect
 // as the substring matching, arrived at from the other direction.
 //
-// The information exists at the server: embedded returns *user.UserNotFoundError
-// and *role.RoleNotFoundError correctly. It is the wire that loses it, which is
-// why the fix belongs with the QUIC/MCP protocol work rather than here.
+// The information exists at the server: the role service returns the user
+// store's not-found for a missing user and *role.RoleNotFoundError for a
+// missing role. It is the wire that loses it, which is why the fix belongs
+// with the QUIC/MCP protocol work rather than here. The embedded transport
+// has no wire to lose it on, and since go-qrdb#343 the user store's not-found
+// IS transport.UserNotFoundError, so in-process the missing-user case is
+// correctly typed — asserted positively below, with
+// TestUserNotFound_MissingRoleIsNotAMissingUser proving the missing-role
+// case is not.
 func TestUserNotFound_AmbiguousMethods(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
 		t.Run(string(tk), func(t *testing.T) {
@@ -264,7 +271,20 @@ func TestUserNotFound_AmbiguousMethods(t *testing.T) {
 					t.Fatalf("%s/%s: a missing user returned no error", tk, tc.name)
 				}
 				var unf *transport.UserNotFoundError
-				if errors.As(tc.err, &unf) {
+				typed := errors.As(tc.err, &unf)
+				if tk == embeddedTransport {
+					if !typed {
+						t.Fatalf("%s/%s: in-process, a missing user must be a typed "+
+							"user-not-found — the service returns transport.UserNotFoundError "+
+							"and nothing between it and the caller can lose that (go-qrdb#343); "+
+							"got %T: %v", tk, tc.name, tc.err, tc.err)
+					}
+					if unf.ID != missingUserID {
+						t.Errorf("%s/%s: ID = %d, want %d", tk, tc.name, unf.ID, missingUserID)
+					}
+					continue
+				}
+				if typed {
 					t.Fatalf("%s/%s: classified as a typed user-not-found. If that is now "+
 						"correct, the server must distinguish a missing user from a missing "+
 						"role on the wire — see this test's comment before relaxing it",
