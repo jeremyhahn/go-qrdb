@@ -81,6 +81,9 @@ func TestStartAnchorAdvertiser_RejectsKeyBearingBundle(t *testing.T) {
 	caCertPEM, caKeyPEM := anchorTestCA(t)
 	bundle := append(append([]byte{}, caCertPEM...), caKeyPEM...)
 
+	// 63106 is a literal on purpose: the bundle is rejected before any
+	// listener opens, so this test never binds and cannot collide. Every
+	// test in this file that DOES bind takes freePort(t) instead (#314).
 	_, err := StartAnchorAdvertiser(bundle, AdvertiseOptions{NoisePort: 63106, NoiseHost: testBindHost}, t.TempDir(), discardLogger())
 	if err == nil {
 		t.Fatal("expected anchor advertiser to reject a key-bearing bundle")
@@ -95,7 +98,7 @@ func TestStartAnchorAdvertiser_ServesAnchorRoundTrip(t *testing.T) {
 	caCertPEM, _ := anchorTestCA(t)
 	dir := t.TempDir()
 
-	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: 63107, NoiseHost: testBindHost}, dir, discardLogger())
+	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, dir, discardLogger())
 	if err != nil {
 		t.Fatalf("StartAnchorAdvertiser: %v", err)
 	}
@@ -108,11 +111,15 @@ func TestStartAnchorAdvertiser_ServesAnchorRoundTrip(t *testing.T) {
 		t.Fatal("expected a Noise public key")
 	}
 
-	// Joiner side: fetch the anchor over the Noise NK channel.
+	// Joiner side: fetch the anchor over the Noise NK channel. Dial where the
+	// advertiser actually bound rather than a second copy of the port number:
+	// a literal here has to be kept in sync with the one above by hand, and
+	// keeping it in sync is what stops being possible once the port is drawn
+	// at run time.
 	opts := &Options{
 		Bootstrap: BootstrapOptions{
 			NoiseKey:  hex.EncodeToString(adv.NoisePublicKey()),
-			NoiseAddr: "127.0.0.1:63107",
+			NoiseAddr: adv.Addr(),
 		},
 	}
 	fetched, err := FetchAnchor(context.Background(), opts, discardLogger())
@@ -149,7 +156,7 @@ func TestFetchAnchor_SharedKeyModeServerYieldsCertOnly(t *testing.T) {
 	caCertPEM, caKeyPEM := anchorTestCA(t)
 	mat := &clustertls.Material{CACertPEM: caCertPEM, CAKeyPEM: caKeyPEM}
 
-	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: 63108, NoiseHost: testBindHost}, t.TempDir(), discardLogger())
+	adv, err := StartAdvertiser(mat, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatalf("StartAdvertiser: %v", err)
 	}
@@ -158,7 +165,7 @@ func TestFetchAnchor_SharedKeyModeServerYieldsCertOnly(t *testing.T) {
 	opts := &Options{
 		Bootstrap: BootstrapOptions{
 			NoiseKey:  hex.EncodeToString(adv.NoisePublicKey()),
-			NoiseAddr: "127.0.0.1:63108",
+			NoiseAddr: adv.Addr(),
 		},
 	}
 	fetched, err := FetchAnchor(context.Background(), opts, discardLogger())
