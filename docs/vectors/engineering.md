@@ -142,6 +142,55 @@ query searches that one centroid set — so recall is a property of the
 clustering, and a measurement taken without fixing the seed is one draw from a
 distribution however many queries it averages.
 
+### A test that asserts on the clustering must set a seed
+
+An unseeded test of a randomised algorithm is a gate that flips a coin on every
+run. `TestKMeans_Cluster` asserted that three centroids on twelve planted points
+end up more than 1.0 apart and set no seed; measured over 60,000 seeds on that
+dataset, **28 land in a local minimum where two centroids collapse to within
+1.0** — about 1 in 2,143. One of them reached CI and reddened the gate on a pull
+request whose diff could not touch this package, which is how the rate below
+came to be measured at all.
+
+The rule is about the assertion, not the test. Asserting an **invariant** —
+that an error came back, that the centroid slice has the requested length, that
+every assignment is in range — is safe unseeded, because it holds for every
+initialisation. Asserting an **outcome** — where the centroids landed, which
+vectors share a cluster, which vector a search returns first — needs a seed,
+because it is a property of the one clustering that draw happened to find.
+
+### The empty-cluster repair reads stale counts, and that is load-bearing
+
+`Cluster` hands `handleEmptyClusters` the assignments and cluster sizes the
+refinement loop left behind. On the `!changed` exit those describe the centroids
+being returned. On the other two exits — convergence by centroid movement, and
+the iteration bound — the update step replaced the centroids after the counts
+were measured, so they describe the previous set.
+
+That reads like a defect and the correction is obvious, so it was measured
+before being applied, over 60,000 seeds:
+
+| Config | Runs with stale counts | Degenerate as shipped | Degenerate if recomputed |
+|---|---|---|---|
+| `maxIter=100, conv=1e-4, kmeans++` | 0 | 28 | 28 |
+| `maxIter=2, conv=0, random` | 2,162 | 16,356 | 17,394 |
+
+The first row is the shipped configuration and it cannot discriminate: all
+60,000 runs take the `!changed` exit, where the counts are already consistent,
+so recomputing is a no-op there. The second row forces the other exits, and
+recomputing is **worse by 1,038 runs in 60,000**.
+
+The reason is that a fresh recount finds no empty cluster at all — 1,894 drops
+to 0 — so the repair stops firing, and a zero-size cluster is returned holding
+the all-zero vector `recomputeCentroids` leaves for a cluster it could not
+average. That is a centroid at the origin no vector chose, which then attracts
+every query near the origin for the life of the index. The stale counts are what
+let the repair run.
+
+So the inconsistency stays, deliberately. It is pinned by
+`TestKMeans_Cluster_EmptyClusterRepairIsLoadBearing`, which goes red on exactly
+that origin centroid if the recompute is added.
+
 ## Persistence
 
 Vectors, their metadata and the namespace index are stored through

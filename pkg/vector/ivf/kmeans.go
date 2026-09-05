@@ -115,6 +115,30 @@ func (km *KMeans) Cluster(vectors [][]float32) ([][]float32, []int, error) {
 		}
 	}
 
+	// assignments/clusterSizes are handed over AS THE LOOP LEFT THEM, and that
+	// is deliberate. On the !changed exit they describe the returned centroids.
+	// On the other two exits — convergence by movement, and the iteration bound
+	// — the update step replaced centroids after these counts were measured, so
+	// they describe the PREVIOUS centroid set. Recomputing them here to match
+	// the returned set is the obvious tidy-up and it was measured (go-qrdb#291)
+	// before being rejected:
+	//
+	//	60,000 seeds, the twelve points of TestKMeans_Cluster
+	//	shipped config (maxIter=100, conv=1e-4): 60,000/60,000 runs take the
+	//	   !changed exit, 0 carry stale counts — recomputing changes nothing
+	//	forcing config (maxIter=2, conv=0, random): 2,162 runs carry stale
+	//	   counts; degenerate clusterings 16,356 shipped vs 17,394 recomputed
+	//
+	// Recomputing is worse by 1,038 in 60,000. A fresh recount finds no empty
+	// cluster at all (1,894 -> 0), so the repair below stops firing and a
+	// zero-size cluster is returned holding the all-zero vector that
+	// recomputeCentroids leaves behind — a centroid at the origin that no
+	// vector chose, which then attracts every query near the origin. The stale
+	// counts are what let the repair run.
+	//
+	// TestKMeans_Cluster_EmptyClusterRepairIsLoadBearing pins this: apply the
+	// recompute and it goes red on exactly that origin centroid.
+	//
 	// Handle empty clusters by redistributing
 	centroids = km.handleEmptyClusters(vectors, assignments, clusterSizes, centroids)
 

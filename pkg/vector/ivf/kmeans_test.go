@@ -24,6 +24,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The seed is REQUIRED, not decorative. This test asserts that the three
+// returned centroids are more than 1.0 apart, which is a property of the
+// clustering k-means happened to find — and k-means++ on twelve points lands in
+// a local minimum often enough to redden CI. Measured over 60,000 seeds on this
+// exact dataset and config: 28 produce two centroids within 1.0 of each other
+// (1 in 2,143). Seed 1 in that set reached CI run 11336 on an unrelated PR and
+// failed with "0.15811394 is not greater than 1" (go-qrdb#291).
+//
+// Seed 291 is verified: minimum pairwise centroid separation 7.071067, a margin
+// of 6.07 over the threshold. The distribution is bimodal — 59,972 of the first
+// 60,000 seeds give exactly 7.071067 (the true centroids of the three planted
+// clusters) and the remaining 28 collapse — so there is no marginal seed to
+// pick, only a correct one or a degenerate one.
 func TestKMeans_Cluster(t *testing.T) {
 	config := &Config{
 		NumCentroids:   3,
@@ -33,6 +46,7 @@ func TestKMeans_Cluster(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           291,
 	}
 
 	// Create three distinct clusters in 2D space
@@ -122,6 +136,10 @@ func TestKMeans_RandomInit(t *testing.T) {
 	assert.Len(t, assignments, len(vectors))
 }
 
+// Seeded because the assertion is on the clustering OUTCOME (centroid
+// separation), not on an invariant. Measured 0 failures in 60,000 seeds, which
+// bounds the rate at roughly 1 in 20,000 rather than establishing zero — the
+// seed removes the class instead of relying on that bound (go-qrdb#291).
 func TestKMeans_KMeansPlusPlusInit(t *testing.T) {
 	config := &Config{
 		NumCentroids:   2,
@@ -131,6 +149,7 @@ func TestKMeans_KMeansPlusPlusInit(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           291,
 	}
 
 	vectors := [][]float32{
@@ -149,6 +168,8 @@ func TestKMeans_KMeansPlusPlusInit(t *testing.T) {
 	assert.Greater(t, dist, float32(5.0))
 }
 
+// Seeded: asserts where the centroids landed and how the vectors split, both
+// outcome properties. Measured 0 failures in 60,000 seeds (go-qrdb#291).
 func TestKMeans_Convergence(t *testing.T) {
 	config := &Config{
 		NumCentroids:   2,
@@ -158,6 +179,7 @@ func TestKMeans_Convergence(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           291,
 	}
 
 	// Perfect clusters that should converge immediately
@@ -204,6 +226,9 @@ func TestKMeans_Convergence(t *testing.T) {
 	}
 }
 
+// Seeded: asserts the returned centroids are all within 0.1 of each other,
+// which is an outcome property. Measured 0 failures in 60,000 seeds
+// (go-qrdb#291).
 func TestKMeans_HandleEmptyClusters(t *testing.T) {
 	config := &Config{
 		NumCentroids:   3,
@@ -213,6 +238,7 @@ func TestKMeans_HandleEmptyClusters(t *testing.T) {
 		InitMethod:     "random",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           291,
 	}
 
 	// All vectors are identical - will create empty clusters
@@ -231,6 +257,103 @@ func TestKMeans_HandleEmptyClusters(t *testing.T) {
 	for i := 1; i < len(centroids); i++ {
 		dist := L2(centroids[0], centroids[i])
 		assert.Less(t, dist, float32(0.1))
+	}
+}
+
+// The empty-cluster repair is reachable from Cluster and it is LOAD-BEARING.
+//
+// go-qrdb#291 proposed recomputing assignments/clusterSizes against the
+// centroid set actually returned, before handleEmptyClusters runs, because on
+// two of Cluster's three exit paths those counts describe the PREVIOUS
+// centroids. The control-flow reading is correct. The change was measured
+// rather than assumed, and the measurement refused it:
+//
+//	dataset: the twelve points of TestKMeans_Cluster, 60,000 seeds
+//	shipped config (maxIter=100, conv=1e-4): all 60,000 runs exit on the
+//	   !changed path, where the counts are consistent by construction —
+//	   0 runs carry stale counts, so the proposed change is a no-op there
+//	forcing config (maxIter=2, conv=0, random): 2,162 runs carry stale
+//	   counts; degenerate clusterings 16,356 as shipped vs 17,394 recomputed
+//
+// Recomputing is WORSE by 1,038 runs in 60,000. The reason is visible in this
+// test: a fresh recount finds no empty cluster (1,894 -> 0), so the repair
+// stops firing and the coincident centroid it would have separated is returned
+// as-is. The stale counts are what let the repair run at all.
+//
+// This test pins that. Seed 75 with the config below deterministically leaves
+// cluster 1 empty at the exit, holding the all-zero placeholder that
+// recomputeCentroids leaves for a zero-size cluster; the repair overwrites it
+// with a training vector. Apply the recompute and this test goes red, because
+// cluster 1 is no longer empty under the fresh counts and centroid 1 stays at
+// the origin.
+func TestKMeans_Cluster_EmptyClusterRepairIsLoadBearing(t *testing.T) {
+	config := &Config{
+		NumCentroids:   3,
+		Dimensions:     2,
+		MaxIterations:  2,   // stops before assignments settle, so the loop
+		Convergence:    0.0, // exits on the iteration bound, not on !changed
+		InitMethod:     "random",
+		DefaultNProbe:  1,
+		DistanceMetric: L2Distance,
+		Seed:           75,
+	}
+
+	vectors := [][]float32{
+		{0.0, 0.0}, {0.1, 0.1}, {-0.1, 0.1}, {0.1, -0.1},
+		{5.0, 5.0}, {5.1, 5.1}, {4.9, 5.1}, {5.1, 4.9},
+		{10.0, 0.0}, {10.1, 0.1}, {9.9, 0.1}, {10.1, -0.1},
+	}
+
+	km := NewKMeans(config)
+	centroids, assignments, err := km.Cluster(vectors)
+	require.NoError(t, err)
+	require.Len(t, centroids, 3)
+	require.Len(t, assignments, len(vectors))
+
+	// Emit the inputs so a reader can audit this at rest without re-running it.
+	t.Logf("seed=%d maxIterations=%d convergence=%v init=%q centroids=%v assignments=%v",
+		config.Seed, config.MaxIterations, config.Convergence, config.InitMethod,
+		centroids, assignments)
+
+	// Cluster 1 was empty at the exit. recomputeCentroids divides by the
+	// cluster size only when it is nonzero, so an unrepaired empty cluster is
+	// returned as the zero vector — a centroid at the origin that no vector
+	// chose, which then attracts queries near the origin for the life of the
+	// index.
+	placeholder := []float32{0.0, 0.0}
+	assert.NotEqual(t, placeholder, centroids[1],
+		"centroid 1 is the all-zero placeholder recomputeCentroids leaves for an "+
+			"empty cluster, so handleEmptyClusters did not repair it. Either the "+
+			"repair stopped running, or assignments/clusterSizes were recomputed "+
+			"against the returned centroids before it ran — which go-qrdb#291 "+
+			"measured as 1,038 MORE degenerate clusterings in 60,000, not fewer")
+
+	// The repair moves the farthest point of the largest cluster into the empty
+	// centroid, so the centroid must now BE one of the training vectors.
+	isTrainingVector := false
+	for _, vec := range vectors {
+		if L2(centroids[1], vec) == 0 {
+			isTrainingVector = true
+			break
+		}
+	}
+	assert.True(t, isTrainingVector,
+		"centroid 1 is %v, which is not any training vector: the repair is "+
+			"supposed to seed an empty cluster from the farthest point of the "+
+			"largest one", centroids[1])
+
+	// And every cluster is non-empty under the assignments returned alongside
+	// it, which is the property the repair exists to restore.
+	sizes := make([]int, config.NumCentroids)
+	for _, a := range assignments {
+		require.GreaterOrEqual(t, a, 0)
+		require.Less(t, a, config.NumCentroids)
+		sizes[a]++
+	}
+	for i, size := range sizes {
+		assert.Positive(t, size,
+			"cluster %d is empty in the returned assignments (sizes %v): the "+
+				"repair left a centroid no vector belongs to", i, sizes)
 	}
 }
 

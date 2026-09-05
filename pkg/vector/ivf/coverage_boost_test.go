@@ -234,6 +234,8 @@ func TestIndex_Save_MarshalPath(t *testing.T) {
 }
 
 // TestKMeans_Cluster_AssignmentNoChange tests early exit when assignments don't change
+// Seeded: asserts which vectors share a cluster, an outcome property.
+// Measured 0 failures in 60,000 seeds (go-qrdb#291).
 func TestKMeans_Cluster_AssignmentNoChange(t *testing.T) {
 	config := &Config{
 		NumCentroids:   2,
@@ -243,6 +245,7 @@ func TestKMeans_Cluster_AssignmentNoChange(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           291,
 	}
 
 	// Well-separated clusters that will converge quickly
