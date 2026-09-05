@@ -74,6 +74,8 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile.gpu
+      secrets:
+        - gomodauth
     image: go-qrdb-gpu-dev:latest
     volumes:
       - ..:/workspace/go-qrdb
@@ -112,10 +114,12 @@ services:
 
 # The BuildKit secret that carries the internal Gitea module credentials into
 # `go mod download`. Every service above that builds .devcontainer/Dockerfile
-# declares it, so the compose entrypoints authenticate exactly the way
-# `make integration-image`'s `docker build --secret` does -- before #302 they
-# did not, and `make ci` therefore died inside the image build with an
-# `unknown revision` that read like a gate failure.
+# OR .devcontainer/Dockerfile.gpu declares it, so the compose entrypoints
+# authenticate exactly the way `make integration-image`'s `docker build
+# --secret` does -- before #302 they did not, and `make ci` therefore died
+# inside the image build with an `unknown revision` that read like a gate
+# failure. devcontainer-gpu was added to that set by #305, which gave
+# Dockerfile.gpu the same secret mount the other Dockerfile already had.
 #
 # GOMODAUTH_FILE is staged by the Makefile's $(stage-gomodauth) prelude. The
 # /dev/null default is the unprovisioned path and is deliberate, not a

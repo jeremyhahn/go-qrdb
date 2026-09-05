@@ -10,6 +10,25 @@
 # injects the environment variables required by the CUDA/NVIDIA runtime.
 # Build tags gain the "gpu" constraint so that GPU-gated code paths are
 # compiled and exercised during the test run.
+#
+# CREDENTIALS: this overlay declares no `secrets:` of its own, and must not
+# gain one. Both services below carry the names of services in the base file,
+# so compose merges the base's `build.secrets: [gomodauth]` and its top-level
+# `secrets:` block onto them; overriding `dockerfile:` does not drop either.
+# Measured on this revision, stacked as documented:
+#
+#   $ GOMODAUTH_FILE=/tmp/x docker compose -f docker-compose.yml \
+#       -f docker-compose.gpu.yml config
+#     dockerfile: .devcontainer/Dockerfile.gpu
+#     secrets:
+#       - source: gomodauth        <- inherited, not declared here
+#
+# Declaring it again here is not an error -- buildx accepts the duplicate the
+# merge then produces -- but it is a second copy of one fact, and the copy is
+# what goes stale. The credential path Dockerfile.gpu needs is #305's: the
+# `go mod download` in it now fails loudly rather than swallowing its own
+# error, so a service that ever DID lose this inheritance would say so at the
+# download instead of at the first import.
 
 services:
   qrdbd:

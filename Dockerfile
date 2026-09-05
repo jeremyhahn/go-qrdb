@@ -20,19 +20,56 @@ FROM golang:1.26.6-bookworm AS builder
 WORKDIR /build
 
 # Cache dependency downloads.
-# The go.mod has replace directives pointing to sibling repos (../go-quicraft,
-# ../go-truststrap) and ./sdk/go. We stub the sibling repos and copy the SDK
-# module manifest so go mod download can cache all remote dependencies.
+#
+# go.mod pins first-party modules -- go-quicraft, go-truststrap, go-objstore,
+# go-codec -- published only to the internal Gitea, and a docker build inherits
+# nothing from its caller's environment. The four variables from
+# dependency-resolution.md section 6 therefore arrive as a BuildKit secret,
+# never a build arg and never an ENV: an arg is recoverable from image metadata
+# with `docker history`, while a secret is a tmpfs mount for this RUN alone. It
+# is sourced rather than exported, so the token never reaches a command line a
+# `ps` could show. The mount is optional by design -- on GitHub no secret is
+# supplied and these modules resolve from the public proxy once tags are
+# mirrored.
+#
+# This step used to end `go mod download 2>/dev/null || true`, which threw away
+# the diagnostic AND the exit code (#305). A credential-less build therefore
+# SUCCEEDED here with an empty module cache and died in the `go build` below,
+# reporting a missing package rather than a missing credential -- cause and
+# symptom separated by the one thing the `|| true` was there to avoid. The
+# download now fails the build at the download, carrying its real stderr, and
+# the line printed above it says which of the two worlds this build is in.
+#
+# Refusing on the not-mounted branch rather than reporting it would need a way
+# to tell an internal build from a GitHub one. No such discriminator has been
+# designed -- the four properties one would have to satisfy are recorded on
+# #302 -- and choosing one is the owner's call, so this stops at saying what
+# happened, exactly as .devcontainer/Dockerfile does.
+#
+# The stub modules stand in for any sibling `replace => ../go-quicraft`
+# directive, whose path does not exist inside the build. Measured on this
+# revision: go.mod carries no such directive (`grep -c '=> \.\./' go.mod` is
+# 0), so both `sed` calls are no-ops today. They are kept because the
+# standalone-build note below still describes that arrangement, and a sed that
+# matches nothing costs nothing.
 COPY go.mod go.sum ./
 COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
-RUN mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap && \
-    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.1\n' > /tmp/stubs/go-quicraft/go.mod && \
-    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.1\n' > /tmp/stubs/go-truststrap/go.mod && \
-    cp go.mod go.mod.orig && \
-    sed -i 's|=> \.\./go-quicraft|=> /tmp/stubs/go-quicraft|' go.mod && \
-    sed -i 's|=> \.\./go-truststrap|=> /tmp/stubs/go-truststrap|' go.mod && \
+RUN --mount=type=secret,id=gomodauth \
+    set -eu; \
+    mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap; \
+    printf 'module github.com/jeremyhahn/go-quicraft\n\ngo 1.26.1\n' > /tmp/stubs/go-quicraft/go.mod; \
+    printf 'module github.com/jeremyhahn/go-truststrap\n\ngo 1.26.1\n' > /tmp/stubs/go-truststrap/go.mod; \
+    cp go.mod go.mod.orig; \
+    sed -i 's|=> \.\./go-quicraft|=> /tmp/stubs/go-quicraft|' go.mod; \
+    sed -i 's|=> \.\./go-truststrap|=> /tmp/stubs/go-truststrap|' go.mod; \
+    if [ -s /run/secrets/gomodauth ]; then \
+      . /run/secrets/gomodauth; \
+      echo "==> go mod download: Gitea module credentials MOUNTED"; \
+    else \
+      echo "==> go mod download: NO Gitea module credentials mounted -- github.com/jeremyhahn/* can resolve from the public proxy ONLY (correct on GitHub; on an internal host this build cannot see unmirrored tags). See dependency-resolution.md section 6."; \
+    fi; \
     GONOSUMCHECK='github.com/jeremyhahn/*' GONOSUMDB='github.com/jeremyhahn/*' \
-    GOFLAGS=-mod=mod go mod download 2>/dev/null || true && \
+    GOFLAGS=-mod=mod go mod download; \
     mv go.mod.orig go.mod
 
 # Copy source and build.

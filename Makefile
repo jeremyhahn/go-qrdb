@@ -874,10 +874,17 @@ INT_GPU_COMPOSE := test/integration/api/docker-compose.gpu.yml
 HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 
 .PHONY: integration-test-gpu
+# `--build` here builds .devcontainer/Dockerfile.gpu, so this needs the same
+# credential prelude as every other entrypoint that builds an image (#305); the
+# overlay's services declare build.secrets and read $$GOMODAUTH_FILE from it.
+# `set +e` because the prelude leaves the shell under `set -eu` and this recipe
+# captures its own exit code to run `down -v` after a failure.
 integration-test-gpu:
 	@echo "==> Running GPU integration tests (qrdbd + all protocols + NVIDIA GPU)..."
 	@cd test/integration/api && docker compose -p $(INT_PROJECT) down -v 2>/dev/null; true
-	@cd test/integration/api && \
+	@$(stage-gomodauth) \
+	set +e; \
+	cd test/integration/api && \
 		docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
 			up --build --abort-on-container-exit integration-tests; \
 		rc=$$?; \
@@ -1703,9 +1710,18 @@ security: gosec vuln mod-verify trivy
 # Docker
 # ============================================================================
 
+# docker-build builds the release image from the root Dockerfile, whose
+# `go mod download` needs the same internal Gitea credentials every other image
+# build here does -- so it opens with the same $(stage-gomodauth) prelude and
+# passes the same secret id. Before #305 it passed none and the Dockerfile
+# swallowed the resulting failure, so this target produced an image-less build
+# error naming a missing package instead of a missing token.
 .PHONY: docker-build
 docker-build:
-	docker build -t qrdbd:$(BUILD_VERSION) .
+	@$(stage-gomodauth) \
+	DOCKER_BUILDKIT=1 docker build \
+	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  -t qrdbd:$(BUILD_VERSION) .
 
 .PHONY: docker-build-integration
 docker-build-integration:
