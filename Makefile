@@ -63,30 +63,71 @@ GOVULNCHECK   := govulncheck
 #   G103: unsafe calls (test reflect/unsafe access for unexported fields)
 #   G104: unhandled errors (false positive on hash.Write)
 #   G115: integer overflow conversions (protocol-spec bounded shard/replica IDs)
-#   G304: file path via variable (config paths constructed internally)
 #   G704: SSRF taint analysis (leader forwarding URL from internal peer registry, not user input)
 #   G705: XSS taint analysis (KV GET returns application/octet-stream, not HTML)
 #   G118: context.Background in goroutine / cancel returned to caller (intentional patterns)
 #   G122: filepath.Walk TOCTOU (internal storage directories only)
-#   G703: path-traversal taint analysis. The single site is
-#         pkg/system/openssl.go:106, and all three legs of the justification
-#         were checked against that code path before excluding (#154):
-#         (1) it is the taint analogue of G304, already excluded above for
-#             this class, alongside its siblings G704 and G705;
-#         (2) the taint source is os.Getenv("OPENSSL_CONF") -- the documented
-#             OpenSSL operator mechanism. It is never a request parameter, so
-#             setting it requires control of the process environment, which
-#             already implies code execution as that user. This holds even
-#             though LoadOpenSSLConfig is re-exported through
-#             sdk/go/types_system.go: a downstream caller still reads ITS OWN
-#             process environment, not caller-supplied input;
-#         (3) the path is only os.Stat'd here and os.Open'd read-only in
-#             parseOpenSSLConfig, then scanned. pkg/system/openssl.go contains
-#             no Create/WriteFile/OpenFile/Remove/Rename/Chmod/Mkdir and no
-#             exec.Command -- verified, not assumed.
-#         If any of those three stops being true, this entry is wrong and the
-#         finding is real: re-arm the rule rather than widening the exclusion.
-GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G703,G704,G705
+#   G304: file path via variable. NOT a claim that every path is safe -- it is
+#         the residue of a repo-wide audit (#181, measured 2026-09-04 against
+#         the pinned gosec v2.29.0 with BUILD_TAGS applied). THE PREDICATE the
+#         audit used, so the next reader can re-derive rather than trust it:
+#
+#           a G304/G703 finding is a REAL containment defect iff a value an
+#           unprivileged remote caller can choose -- one entering the process
+#           through an API request (r.PathValue, r.URL.Path/Query, r.FormValue,
+#           r.Header.Get, any field decoded from a REST/gRPC/QUIC/unix/MCP
+#           request body, a KV key, or SQL text) rather than through
+#           operator-controlled config, a CLI flag, or the process environment
+#           -- can reach the path argument of a filesystem operation without a
+#           separator-aware containment check against a fixed root.
+#
+#         49 G304 sites were enumerated and classified against it and NONE
+#         satisfies it: 27 in cmd/ (CLI flags and positional arguments), 9 TLS
+#         material paths in pkg/clustertls, 4 in pkg/database (catalog paths
+#         built from a name that passed namePattern), 2 audit-log paths, and
+#         one each in pkg/storage/file, pkg/vector/ivf and pkg/system.
+#
+#         THIS LEG IS STILL BLANKET AND THE LINT LEG IS NOT. gosec's CLI takes
+#         no per-path rule scoping, so narrowing here would mean 49 inline
+#         `#nosec` annotations -- and a `#nosec` line is the easiest thing in
+#         this repository to copy onto a new site. .golangci.yml carries the
+#         narrowing instead: there G304 is suppressed per-file at exactly these
+#         packages and stays ARMED over every request-facing one, so a new
+#         file-open site in pkg/api goes red in the Lint job. Verified by
+#         mutation on 2026-09-04: a handler doing
+#         `os.ReadFile(filepath.Join(root, r.PathValue("path")))` is silent
+#         under the old blanket config and reports G304 under the new one.
+#
+#   G703 is NOT EXCLUDED ON EITHER LEG ANY MORE. Its single site --
+#         findOpenSSLConfig in pkg/system/openssl.go -- carries an inline
+#         `#nosec G703` with the reasoning next to the code (#154, #181), and
+#         both gosec and golangci-lint honour it, so the justification exists
+#         exactly once and neither config file claims anything about it. A
+#         SECOND environment-or-request-to-path flow added anywhere in the
+#         tree now fails this scan instead of inheriting that justification.
+#         Verified by mutation: removing the annotation makes this leg report
+#         the finding again (HIGH/HIGH, CWE-22).
+#
+#         .golangci.yml's G703 entry was DELETED rather than rescoped because
+#         it was INERT -- golangci-lint v2.13.2 bundles gosec v2.28.0, whose
+#         G703 treats filepath.Clean as a sanitizer, so it never fired at that
+#         site while this leg's v2.29.0 reports it. An exclusion that fires on
+#         nothing reads as a decision the gate made and is not falsifiable by
+#         re-running the gate. The general divergence -- 49 G304 + 1 G703 here
+#         against 18 G304 + 0 G703 there -- is filed separately (#295); which
+#         of the OTHER exclusions above are similarly inert is NOT established.
+#
+#   TWO COVERAGE LIMITS OF THIS LEG, measured the same day, both real and
+#   neither fixed here:
+#     - it runs with NO build tags, so tag-gated files are never scanned. The
+#       audit ran gosec a second time with $(BUILD_TAGS) and found 4 further
+#       G304 sites invisible to this target. Adding -tags here is not free: the
+#       tagged run also surfaces 2 G404 findings in pkg/vector that need their
+#       own triage.
+#     - it scans only the root module. sdk/go is a separate module and `./...`
+#       does not reach it; a tagged scan there found 4 more G304 sites
+#       (transport/tls.go and the test harness).
+GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G704,G705
 
 # Coverage
 COVER_MIN     := 91

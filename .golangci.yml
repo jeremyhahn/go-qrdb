@@ -115,13 +115,16 @@ linters:
         - name: increment-decrement
           severity: warning
     gosec:
+      # G304 (file path via variable) and G703 (path-traversal taint) are NOT
+      # here. They are suppressed per-path under `exclusions.rules` below, at
+      # the files an audit actually enumerated, so they stay ARMED everywhere
+      # else -- including every request-facing package. See that block for the
+      # predicate, the enumeration and what the narrowing is protecting.
       excludes:
         - G115  # Integer overflow in byte conversions (intentional low-level bit manipulation)
         - G117  # Exported struct fields matching secret patterns (legitimate auth/credential types)
         - G204
-        - G304
         - G602  # Slice bounds check (false positive on validated indices)
-        - G703  # Path traversal (paths constructed from validated config)
         - G704  # SSRF via taint analysis (intentional HTTP requests)
         - G122  # Filesystem TOCTOU in WalkDir callbacks (internal storage paths, not user-supplied)
     forbidigo:
@@ -138,6 +141,107 @@ linters:
       - comments
       - std-error-handling
     rules:
+      # ---------------------------------------------------------------------
+      # gosec G304 / G703 -- path traversal. NARROWED FROM A REPO-WIDE
+      # SUPPRESSION AFTER A REPO-WIDE AUDIT (#181, measured 2026-09-04).
+      #
+      # THE PREDICATE, so a reader can re-derive this rather than trust a list:
+      #
+      #   A G304/G703 finding here is a REAL containment defect iff a value an
+      #   unprivileged remote caller can choose -- one entering the process
+      #   through an API request (r.PathValue, r.URL.Path/Query, r.FormValue,
+      #   r.Header.Get, any field decoded from a REST/gRPC/QUIC/unix/MCP
+      #   request body, a KV key, or SQL text) rather than through
+      #   operator-controlled config, a CLI flag, or the process environment --
+      #   can reach the path argument of a filesystem operation (os.Open,
+      #   OpenFile, ReadFile, WriteFile, Stat, Create, Remove, RemoveAll,
+      #   Mkdir(All), ReadDir, Rename, http.ServeFile, or a filepath.Join
+      #   feeding one) WITHOUT a separator-aware containment check against a
+      #   fixed root.
+      #
+      # NO SITE IN THIS REPOSITORY SATISFIES THAT PREDICATE TODAY. Every
+      # request-derived value that gets near a path is either mapped through a
+      # total encoder or stopped by a containment check at the sink:
+      #
+      #   - KV keys -> pkg/storage/file: encodeKeyToPath percent-encodes a
+      #     leading "." of every segment, so no segment can be "." or "..".
+      #   - tenant ids -> pkg/seal.containedTenantPath: filepath.Rel against
+      #     the pool root, rejecting ".", "..", a "../" prefix AND any
+      #     remaining separator, so the id is exactly one component.
+      #   - database names -> pkg/database.Manager.dbDir is reached only after
+      #     a sync.Map hit on a name that passed namePattern (^[a-zA-Z0-9_-]+$)
+      #     at create; Manager.Open, the one unguarded dbDir caller, has no
+      #     caller in this repository.
+      #   - the SPA handler -> its fs.FS is an embed.FS (cmd/qrdbd), never
+      #     os.DirFS; the repository contains no os.DirFS at all.
+      #
+      # WHY THE SUPPRESSION IS NOT SIMPLY DELETED: the sites below are real and
+      # were checked one at a time. WHY IT IS NO LONGER REPO-WIDE: the previous
+      # blanket entry read "paths constructed from validated config" -- a claim
+      # about code nobody had enumerated, which silenced the rule in packages
+      # where the claim was never examined. That is exactly how a sibling repo
+      # shipped a reproduced containment failure under a green lint leg. Scoped
+      # by file, a new file-open site anywhere else goes RED and gets audited.
+      #
+      # G703 IS NOT SUPPRESSED HERE AT ALL, and the reason is the second finding
+      # of that audit. The entry this replaces was INERT: golangci-lint v2.13.2
+      # bundles gosec v2.28.0, whose G703 treats filepath.Clean as a sanitizer,
+      # so it reports nothing at pkg/system/openssl.go:106 -- while `make gosec`
+      # on the pinned gosec v2.29.0 reports it HIGH/HIGH. Reproduced on a
+      # two-file probe, not inferred from version numbers.
+      #
+      # An exclusion that fires on nothing is worse than an unexamined one: it
+      # reads as "the lint gate considered path traversal and cleared it" and
+      # nothing you can run will tell you otherwise. So it is deleted rather
+      # than rescoped, and the one real site carries an inline `#nosec G703`
+      # that both scanners honour. G703 is now ARMED across this entire
+      # repository on this leg, and stays armed when the bundled gosec moves.
+      #
+      # The two scanners disagreeing about this tree at their pinned versions
+      # (49 G304 + 1 G703 under gosec v2.29.0; 18 G304 + 0 G703 here) is filed
+      # separately -- it outlives this rule and is not specific to it.
+      - path: ^pkg/system/openssl\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # parseOpenSSLConfig opens a path that findOpenSSLConfig resolved from
+        # OPENSSL_CONF or a compiled-in standard location. G703 is NOT listed
+        # here: its one site carries an inline `#nosec G703` with the reasoning
+        # next to the code, which BOTH gosec and golangci-lint honour, so the
+        # justification exists once and this file makes no claim about it.
+      - path: ^pkg/clustertls/clustertls\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # CA/cert/key PEM paths, all from TLS config or a caller-owned data
+        # directory. No transport handler reaches these with a request value.
+      - path: ^pkg/database/(manager|reencrypt)\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # Internal catalog paths: filepath.Join(dataDir, "databases", name)
+        # for a name already validated by namePattern, plus the re-encrypt
+        # copy which walks paths the manager produced.
+      - path: ^pkg/audit/chain_file_logger\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # Audit log and rotated-archive paths under the operator-configured
+        # audit directory; scanFile/verifyChainFile only ever receive names
+        # this logger itself emitted.
+      - path: ^pkg/storage/file/iterator\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # Reads back a path produced by filepath.Walk over the engine's own
+        # directory, whose leaves encodeKeyToPath wrote.
+      - path: ^pkg/vector/ivf/index\.go$
+        text: "G304"
+        linters:
+          - gosec
+        # ivfIndex.Save/Load take an explicit path from the embedding caller.
+        # No transport handler and no in-repository caller reaches them; see
+        # the PR for the guard proposed if one is ever added.
       # Exclude deprecated grpc.DialContext warnings (still supported in 1.x)
       - text: "SA1019.*grpc\\.DialContext.*deprecated"
         linters:

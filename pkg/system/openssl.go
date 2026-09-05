@@ -100,10 +100,30 @@ func LoadOpenSSLConfig() (*OpenSSLConfig, error) {
 // Returns the path to the first existing configuration file found,
 // or an empty string if no configuration file is found.
 func findOpenSSLConfig() string {
-	// Check environment variable first
+	// Check environment variable first.
+	//
+	// This is the repository's only flow from an environment variable to a
+	// filesystem path, and the only G703 (path-traversal taint) site gosec
+	// reports anywhere in the tree. The suppression is annotated HERE rather
+	// than excluded repo-wide (#181) so a second such flow, added anywhere,
+	// fails the scan instead of inheriting this justification:
+	//
+	//   - the taint source is OPENSSL_CONF, the documented OpenSSL operator
+	//     mechanism, never a request parameter. Setting it requires control of
+	//     the process environment, which already implies code execution as this
+	//     user -- true even though LoadOpenSSLConfig is re-exported through
+	//     sdk/go/types_system.go, since a downstream caller still reads ITS OWN
+	//     process environment;
+	//   - the path is only os.Stat'd here and os.Open'd read-only in
+	//     parseOpenSSLConfig, then scanned. This file contains no
+	//     Create/WriteFile/OpenFile/Remove/Rename/Chmod/Mkdir and no
+	//     exec.Command.
+	//
+	// If either stops holding, this annotation is wrong and the finding is
+	// real: fix the flow rather than widening the suppression.
 	if envPath := os.Getenv("OPENSSL_CONF"); envPath != "" {
 		cleanPath := filepath.Clean(envPath)
-		if _, err := os.Stat(cleanPath); err == nil {
+		if _, err := os.Stat(cleanPath); err == nil { // #nosec G703 -- taint source is the operator's process environment; read-only sink
 			return cleanPath
 		}
 	}
