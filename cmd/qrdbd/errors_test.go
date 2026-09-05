@@ -76,22 +76,3 @@ func TestSealedListenerStartupError_Roundtrip(t *testing.T) {
 		t.Error("errors.Is failed to unwrap")
 	}
 }
-
-func TestDataPlaneStartupError_PhaseAndUnwrap(t *testing.T) {
-	root := errors.New("host init failed")
-	e := &DataPlaneStartupError{Phase: "initializeNode", Err: root}
-	if !strings.Contains(e.Error(), "initializeNode") {
-		t.Errorf("message %q lacks phase", e.Error())
-	}
-	if !errors.Is(e, root) {
-		t.Error("errors.Is failed to unwrap")
-	}
-}
-
-func TestUnsealWaitError_Unwrap(t *testing.T) {
-	root := errors.New("context cancelled")
-	e := &UnsealWaitError{Err: root}
-	if !errors.Is(e, root) {
-		t.Error("errors.Is failed to unwrap")
-	}
-}

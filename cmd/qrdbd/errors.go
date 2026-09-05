@@ -126,52 +126,6 @@ func (e *UnknownSMError) Error() string {
 	return "cli: unknown state machine type " + strconv.Quote(e.Name)
 }
 
-// AdminFetchError is returned when an HTTP request to the admin server
-// fails.
-type AdminFetchError struct {
-	URL string
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *AdminFetchError) Error() string {
-	return "cli: failed to fetch " + e.URL + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *AdminFetchError) Unwrap() error {
-	return e.Err
-}
-
-// AdminResponseError is returned when the admin server returns a
-// non-200 status code.
-type AdminResponseError struct {
-	URL        string
-	StatusCode int
-}
-
-// Error returns a human-readable description.
-func (e *AdminResponseError) Error() string {
-	return "cli: admin server returned status " + strconv.Itoa(e.StatusCode) + " for " + e.URL
-}
-
-// ConfigApplyError is returned when a YAML configuration file cannot be
-// applied to the start flags.
-type ConfigApplyError struct {
-	Field string
-	Err   error
-}
-
-// Error returns a human-readable description.
-func (e *ConfigApplyError) Error() string {
-	return "cli: config apply failed for " + strconv.Quote(e.Field) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *ConfigApplyError) Unwrap() error {
-	return e.Err
-}
-
 // TLSGenerateError is returned when TLS certificate generation fails.
 // Aliased from pkg/clustertls so that type assertions across qrdbd and its
 // tests share the canonical error type from the clustertls library.
@@ -180,23 +134,6 @@ type TLSGenerateError = clustertls.GenerateError
 // TLSLoadError is returned when loading TLS certificate material from a file
 // fails. Aliased from pkg/clustertls.
 type TLSLoadError = clustertls.LoadError
-
-// CACertWriteError is returned when writing the CA certificate to disk
-// fails.
-type CACertWriteError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *CACertWriteError) Error() string {
-	return "cli: failed to write CA certificate to " + strconv.Quote(e.Path) + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CACertWriteError) Unwrap() error {
-	return e.Err
-}
 
 // AuthBootstrapError is returned when authentication infrastructure
 // initialization fails during the bootstrap sequence.
@@ -291,15 +228,6 @@ type BootstrapWriteError = clustertls.WriteError
 // tests share the canonical error type from the clustertls library.
 type BootstrapKeyError = clustertls.KeyError
 
-// NoBootstrapAddrError is returned when no bootstrap address can be
-// determined.
-type NoBootstrapAddrError struct{}
-
-// Error returns a human-readable description.
-func (e *NoBootstrapAddrError) Error() string {
-	return "cli: no bootstrap address available, use --bootstrap-addr or --bootstrap-noise-addr"
-}
-
 // CertReloadError is returned when hot-reloading a TLS certificate
 // from disk fails.
 type CertReloadError struct {
@@ -382,54 +310,6 @@ func (e *CredentialServiceError) Unwrap() error {
 	return e.Err
 }
 
-// CeremonyServiceError is returned when the ceremony service fails
-// to initialize.
-type CeremonyServiceError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *CeremonyServiceError) Error() string {
-	return "cli: ceremony service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CeremonyServiceError) Unwrap() error {
-	return e.Err
-}
-
-// VectorStorageError is returned when the vector storage backend
-// fails to initialize.
-type VectorStorageError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *VectorStorageError) Error() string {
-	return "cli: vector storage initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *VectorStorageError) Unwrap() error {
-	return e.Err
-}
-
-// VectorServiceError is returned when the vector service fails to
-// initialize.
-type VectorServiceError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *VectorServiceError) Error() string {
-	return "cli: vector service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *VectorServiceError) Unwrap() error {
-	return e.Err
-}
-
 // BarrierRegistryError is returned when the barrier registry fails to
 // initialize. This prevents per-tenant encryption isolation from
 // being established.
@@ -496,22 +376,6 @@ func (e *TenantDEKError) Unwrap() error {
 	return e.Err
 }
 
-// TenantServiceError is returned when the tenant lifecycle service fails
-// to initialize.
-type TenantServiceError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *TenantServiceError) Error() string {
-	return "cli: tenant service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *TenantServiceError) Unwrap() error {
-	return e.Err
-}
-
 // LegacyDataDirError is returned when the daemon refuses to start
 // because the data dir was created by a pre-encfs build whose seal
 // sub-store lacks a format-version sentinel. There is no in-place
@@ -564,41 +428,6 @@ func (e *CeremonyCAError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *CeremonyCAError) Unwrap() error {
-	return e.Err
-}
-
-// DataPlaneStartupError is returned when post-unseal data-plane
-// initialization fails (state machine factory, host construction,
-// or lifecycle.BuildServices).
-type DataPlaneStartupError struct {
-	Phase string
-	Err   error
-}
-
-// Error returns a human-readable description.
-func (e *DataPlaneStartupError) Error() string {
-	return "cli: data-plane startup failed during " + e.Phase + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *DataPlaneStartupError) Unwrap() error {
-	return e.Err
-}
-
-// UnsealWaitError is returned when the daemon's unseal-wait loop
-// terminates abnormally (context cancellation other than clean
-// shutdown).
-type UnsealWaitError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *UnsealWaitError) Error() string {
-	return "cli: unseal wait aborted: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *UnsealWaitError) Unwrap() error {
 	return e.Err
 }
 

@@ -45,14 +45,3 @@ type PendingBootstrapBackendError struct {
 func (e *PendingBootstrapBackendError) Error() string {
 	return "bootstrap " + e.Mode + " is owned by xkms; invoke via xkmsctl bootstrap " + e.Mode + " or platformctl bootstrap " + e.Mode
 }
-
-// PendingCredentialBackendError is emitted by "credential" subcommand
-// handlers before the credential service surface ships in the SDK.
-type PendingCredentialBackendError struct {
-	Op string
-}
-
-// Error returns a human-readable description.
-func (e *PendingCredentialBackendError) Error() string {
-	return e.Op + " is not yet wired to the SDK CredentialService"
-}

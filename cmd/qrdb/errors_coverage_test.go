@@ -167,44 +167,6 @@ func TestInvalidLogLevelError_ErrorsAs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// LogFileError
-// ---------------------------------------------------------------------------
-
-func TestLogFileError_Error(t *testing.T) {
-	inner := errors.New("no such file or directory")
-	e := &LogFileError{Path: "/var/log/qrdb.log", Err: inner}
-	expected := "qrdb: log file error: /var/log/qrdb.log: no such file or directory"
-	if got := e.Error(); got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestLogFileError_Error_DifferentPath(t *testing.T) {
-	inner := errors.New("permission denied")
-	e := &LogFileError{Path: "/tmp/qrdb.log", Err: inner}
-	expected := "qrdb: log file error: /tmp/qrdb.log: permission denied"
-	if got := e.Error(); got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-func TestLogFileError_Unwrap(t *testing.T) {
-	inner := errors.New("no such file or directory")
-	e := &LogFileError{Path: "/var/log/qrdb.log", Err: inner}
-	if unwrapped := e.Unwrap(); unwrapped != inner {
-		t.Fatalf("expected unwrapped error %v, got %v", inner, unwrapped)
-	}
-}
-
-func TestLogFileError_Unwrap_ErrorsIs(t *testing.T) {
-	sentinel := errors.New("sentinel")
-	e := &LogFileError{Path: "/test", Err: sentinel}
-	if !errors.Is(e, sentinel) {
-		t.Fatal("expected errors.Is to match sentinel via Unwrap")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ErrorsAs type matching for all remaining types
 // ---------------------------------------------------------------------------
 
@@ -238,17 +200,5 @@ func TestPKCS12DecodeError_ErrorsAs(t *testing.T) {
 	e := &PKCS12DecodeError{Err: inner}
 	if !errors.As(e, &target) {
 		t.Fatal("expected errors.As to match *PKCS12DecodeError")
-	}
-}
-
-func TestLogFileError_ErrorsAs(t *testing.T) {
-	inner := errors.New("fail")
-	var target *LogFileError
-	e := &LogFileError{Path: "/z", Err: inner}
-	if !errors.As(e, &target) {
-		t.Fatal("expected errors.As to match *LogFileError")
-	}
-	if target.Path != "/z" {
-		t.Fatalf("expected Path %q, got %q", "/z", target.Path)
 	}
 }

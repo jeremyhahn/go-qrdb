@@ -104,22 +104,6 @@ func (e *VectorServiceError) Unwrap() error {
 	return e.Err
 }
 
-// BarrierRegistryError is returned when the barrier registry fails to
-// initialize.
-type BarrierRegistryError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *BarrierRegistryError) Error() string {
-	return "lifecycle: barrier registry initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *BarrierRegistryError) Unwrap() error {
-	return e.Err
-}
-
 // CeremonyServiceError is returned when the ceremony service fails to
 // initialize.
 type CeremonyServiceError struct {
@@ -165,22 +149,6 @@ func (e *ShareServiceError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *ShareServiceError) Unwrap() error {
-	return e.Err
-}
-
-// CredentialServiceError is returned when the credential service fails
-// to initialize.
-type CredentialServiceError struct {
-	Err error
-}
-
-// Error returns a human-readable description.
-func (e *CredentialServiceError) Error() string {
-	return "lifecycle: credential service initialization failed: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *CredentialServiceError) Unwrap() error {
 	return e.Err
 }
 

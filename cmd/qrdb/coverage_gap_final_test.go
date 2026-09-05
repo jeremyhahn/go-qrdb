@@ -295,21 +295,6 @@ func TestPendingBootstrapBackendError_ErrorsAs(t *testing.T) {
 	}
 }
 
-func TestPendingCredentialBackendError_Error(t *testing.T) {
-	e := &PendingCredentialBackendError{Op: "credential submit"}
-	got := e.Error()
-	if !strings.Contains(got, "credential submit") {
-		t.Fatalf("expected Op in message: %q", got)
-	}
-}
-
-func TestPendingCredentialBackendError_ErrorsAs(t *testing.T) {
-	var target *PendingCredentialBackendError
-	if !errors.As(&PendingCredentialBackendError{Op: "list"}, &target) {
-		t.Fatal("expected errors.As to match")
-	}
-}
-
 // ===========================================================================
 // errors.go — UserAbortError and EmbeddedTransportUnavailableError (0 %)
 // ===========================================================================

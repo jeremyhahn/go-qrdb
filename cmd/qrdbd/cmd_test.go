@@ -29,7 +29,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -726,38 +725,6 @@ func TestUnknownDiscoveryError(t *testing.T) {
 	}
 }
 
-func TestAdminFetchError(t *testing.T) {
-	inner := errors.New("conn refused")
-	err := &AdminFetchError{URL: "https://localhost:63002/status", Err: inner}
-	want := "cli: failed to fetch https://localhost:63002/status: conn refused"
-	if err.Error() != want {
-		t.Fatalf("AdminFetchError.Error() = %q, want %q", err.Error(), want)
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("AdminFetchError.Unwrap() did not return inner error")
-	}
-}
-
-func TestAdminResponseError(t *testing.T) {
-	err := &AdminResponseError{URL: "https://localhost/status", StatusCode: 503}
-	want := "cli: admin server returned status 503 for https://localhost/status"
-	if err.Error() != want {
-		t.Fatalf("AdminResponseError.Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-func TestConfigApplyError(t *testing.T) {
-	inner := errors.New("invalid value")
-	err := &ConfigApplyError{Field: "raft.shard_id", Err: inner}
-	want := `cli: config apply failed for "raft.shard_id": invalid value`
-	if err.Error() != want {
-		t.Fatalf("ConfigApplyError.Error() = %q, want %q", err.Error(), want)
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("ConfigApplyError.Unwrap() did not return inner error")
-	}
-}
-
 func TestTLSGenerateError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("random source failed")
 	err := &TLSGenerateError{Err: inner}
@@ -779,18 +746,6 @@ func TestTLSLoadError_ErrorAndUnwrap(t *testing.T) {
 	}
 	if err.Unwrap() != inner {
 		t.Fatal("TLSLoadError.Unwrap() did not return inner error")
-	}
-}
-
-func TestCACertWriteError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("disk full")
-	err := &CACertWriteError{Path: "/data/ca.pem", Err: inner}
-	want := `cli: failed to write CA certificate to "/data/ca.pem": disk full`
-	if err.Error() != want {
-		t.Fatalf("CACertWriteError.Error() = %q, want %q", err.Error(), want)
-	}
-	if err.Unwrap() != inner {
-		t.Fatal("CACertWriteError.Unwrap() did not return inner error")
 	}
 }
 
@@ -915,28 +870,6 @@ func TestVersionVariables(t *testing.T) {
 	}
 	if buildDate == "" {
 		t.Fatal("buildDate should not be empty")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// AdminResponseError.Error uses strconv.Itoa path
-// ---------------------------------------------------------------------------
-
-func TestAdminResponseError_StatusCodes(t *testing.T) {
-	tests := []struct {
-		code int
-		want string
-	}{
-		{200, "cli: admin server returned status 200 for /test"},
-		{404, "cli: admin server returned status 404 for /test"},
-		{500, "cli: admin server returned status 500 for /test"},
-	}
-	for _, tt := range tests {
-		err := &AdminResponseError{URL: "/test", StatusCode: tt.code}
-		want := "cli: admin server returned status " + strconv.Itoa(tt.code) + " for /test"
-		if err.Error() != want {
-			t.Fatalf("AdminResponseError(%d).Error() = %q, want %q", tt.code, err.Error(), want)
-		}
 	}
 }
 
@@ -2996,22 +2929,6 @@ func TestBootstrapKeyError_ErrorsIs(t *testing.T) {
 	}
 }
 
-func TestNoBootstrapAddrError(t *testing.T) {
-	err := &NoBootstrapAddrError{}
-	want := "cli: no bootstrap address available, use --bootstrap-addr or --bootstrap-noise-addr"
-	if err.Error() != want {
-		t.Fatalf("NoBootstrapAddrError.Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-func TestNoBootstrapAddrError_ErrorsAs(t *testing.T) {
-	var target *NoBootstrapAddrError
-	err := &NoBootstrapAddrError{}
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As() should match *NoBootstrapAddrError")
-	}
-}
-
 func TestCertReloadError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("file not found")
 	err := &CertReloadError{Path: "/etc/certs/node.pem", Err: inner}
@@ -3598,18 +3515,6 @@ func TestStartBootstrapServers_KeyWriteError(t *testing.T) {
 	var serverErr *BootstrapServerError
 	assert.True(t, errors.As(err, &serverErr),
 		"startBootstrapServers with directory as noise-key.hex must return *BootstrapServerError, got %T", err)
-}
-
-// ---------------------------------------------------------------------------
-// Phase 9: NoBootstrapAddrError (additional format test)
-// ---------------------------------------------------------------------------
-
-func TestNoBootstrapAddrError_Error_ContainsExpectedMessage(t *testing.T) {
-	e := &NoBootstrapAddrError{}
-	msg := e.Error()
-	assert.Contains(t, msg, "no bootstrap address available")
-	assert.Contains(t, msg, "--bootstrap-addr")
-	assert.Contains(t, msg, "--bootstrap-noise-addr")
 }
 
 // ---------------------------------------------------------------------------

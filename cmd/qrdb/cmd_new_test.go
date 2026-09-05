@@ -1273,25 +1273,6 @@ func TestInvalidLeaseIDErrorFormatting(t *testing.T) {
 	}
 }
 
-func TestInvalidRevisionErrorFormatting(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"abc", "qrdb: invalid revision: abc: must be a positive integer"},
-		{"", "qrdb: invalid revision: : must be a positive integer"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			err := &InvalidRevisionError{Input: tt.input}
-			if err.Error() != tt.want {
-				t.Errorf("got %q, want %q", err.Error(), tt.want)
-			}
-		})
-	}
-}
-
 func TestInvalidAggFuncErrorFormatting(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1331,25 +1312,6 @@ func TestFileReadErrorUnwrapChain(t *testing.T) {
 
 	if !errors.Is(err, inner) {
 		t.Error("errors.Is should match the inner error")
-	}
-}
-
-func TestInvalidTimestampErrorFormatting(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"not-a-timestamp", "qrdb: invalid timestamp: not-a-timestamp: must be a nanosecond Unix timestamp"},
-		{"", "qrdb: invalid timestamp: : must be a nanosecond Unix timestamp"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			err := &InvalidTimestampError{Input: tt.input}
-			if err.Error() != tt.want {
-				t.Errorf("got %q, want %q", err.Error(), tt.want)
-			}
-		})
 	}
 }
 

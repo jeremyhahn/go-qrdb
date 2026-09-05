@@ -37,13 +37,6 @@ import (
 // errors.go: SealStorageError (lines 316-323)
 // ---------------------------------------------------------------------------
 
-func TestUnsealWaitError_Error(t *testing.T) {
-	inner := errors.New("context deadline exceeded")
-	e := &UnsealWaitError{Err: inner}
-	want := "cli: unseal wait aborted: context deadline exceeded"
-	assert.Equal(t, want, e.Error())
-}
-
 // ---------------------------------------------------------------------------
 // errors.go: VolumePoolStorageError (lines 586-591)
 // ---------------------------------------------------------------------------

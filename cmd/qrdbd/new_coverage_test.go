@@ -113,23 +113,6 @@ func TestTenantDEKError_Unwrap(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// errors.go: TenantServiceError (lines 517-523) - not covered yet
-// ---------------------------------------------------------------------------
-
-func TestTenantServiceError_Error(t *testing.T) {
-	inner := errors.New("tenant not initialized")
-	e := &TenantServiceError{Err: inner}
-	assert.Equal(t, "cli: tenant service initialization failed: tenant not initialized", e.Error())
-}
-
-func TestTenantServiceError_Unwrap(t *testing.T) {
-	inner := errors.New("bootstrap incomplete")
-	e := &TenantServiceError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-// ---------------------------------------------------------------------------
 // kvstore_adapter.go: RegisterEntityIndexes (lines 111-116) - not covered yet
 // ---------------------------------------------------------------------------
 

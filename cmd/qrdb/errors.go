@@ -102,17 +102,6 @@ func (e *InvalidLeaseIDError) Error() string {
 	return "qrdb: invalid lease ID: " + e.Input + ": must be a positive integer"
 }
 
-// InvalidRevisionError is returned when a revision argument cannot
-// be parsed as an int64.
-type InvalidRevisionError struct {
-	Input string
-}
-
-// Error returns a human-readable description.
-func (e *InvalidRevisionError) Error() string {
-	return "qrdb: invalid revision: " + e.Input + ": must be a positive integer"
-}
-
 // InvalidAggFuncError is returned when an aggregation function name
 // is not recognized.
 type InvalidAggFuncError struct {
@@ -138,17 +127,6 @@ func (e *FileReadError) Error() string {
 // Unwrap returns the underlying error.
 func (e *FileReadError) Unwrap() error {
 	return e.Err
-}
-
-// InvalidTimestampError is returned when a timestamp argument cannot
-// be parsed as an int64 nanosecond value.
-type InvalidTimestampError struct {
-	Input string
-}
-
-// Error returns a human-readable description.
-func (e *InvalidTimestampError) Error() string {
-	return "qrdb: invalid timestamp: " + e.Input + ": must be a nanosecond Unix timestamp"
 }
 
 // FileWriteError is returned when a file cannot be written.
@@ -207,22 +185,6 @@ type InvalidLogLevelError struct {
 // Error returns a human-readable description.
 func (e *InvalidLogLevelError) Error() string {
 	return "qrdb: unknown log level: " + e.Level
-}
-
-// LogFileError is returned when the log file cannot be opened.
-type LogFileError struct {
-	Path string
-	Err  error
-}
-
-// Error returns a human-readable description.
-func (e *LogFileError) Error() string {
-	return "qrdb: log file error: " + e.Path + ": " + e.Err.Error()
-}
-
-// Unwrap returns the underlying error.
-func (e *LogFileError) Unwrap() error {
-	return e.Err
 }
 
 // TenantUnsealInputError is returned when neither --share nor --key is

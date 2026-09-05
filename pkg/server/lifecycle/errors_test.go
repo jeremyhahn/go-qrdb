@@ -69,32 +69,10 @@ func TestVectorServiceError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestBarrierRegistryError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("registry failed")
-	err := &lifecycle.BarrierRegistryError{Err: inner}
-	if !strings.Contains(err.Error(), "barrier registry") {
-		t.Errorf("unexpected message: %q", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Error("Unwrap did not return inner error")
-	}
-}
-
 func TestCeremonyServiceError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("ceremony failed")
 	err := &lifecycle.CeremonyServiceError{Err: inner}
 	if !strings.Contains(err.Error(), "ceremony service") {
-		t.Errorf("unexpected message: %q", err.Error())
-	}
-	if !errors.Is(err, inner) {
-		t.Error("Unwrap did not return inner error")
-	}
-}
-
-func TestCredentialServiceError_ErrorAndUnwrap(t *testing.T) {
-	inner := errors.New("cred failed")
-	err := &lifecycle.CredentialServiceError{Err: inner}
-	if !strings.Contains(err.Error(), "credential service") {
 		t.Errorf("unexpected message: %q", err.Error())
 	}
 	if !errors.Is(err, inner) {
@@ -161,25 +139,9 @@ func TestVectorServiceError_ErrorsAs(t *testing.T) {
 	}
 }
 
-func TestBarrierRegistryError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.BarrierRegistryError{Err: errors.New("x")}
-	var target *lifecycle.BarrierRegistryError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
 func TestCeremonyServiceError_ErrorsAs(t *testing.T) {
 	err := &lifecycle.CeremonyServiceError{Err: errors.New("x")}
 	var target *lifecycle.CeremonyServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestCredentialServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.CredentialServiceError{Err: errors.New("x")}
-	var target *lifecycle.CredentialServiceError
 	if !errors.As(err, &target) {
 		t.Error("errors.As failed")
 	}

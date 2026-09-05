@@ -125,69 +125,6 @@ func TestCredentialServiceError_ErrorsAs(t *testing.T) {
 	assert.Same(t, inner, target.Err)
 }
 
-func TestCeremonyServiceError_Error(t *testing.T) {
-	inner := errors.New("ceremony not initialized")
-	e := &CeremonyServiceError{Err: inner}
-	assert.Equal(t, "cli: ceremony service initialization failed: ceremony not initialized", e.Error())
-}
-
-func TestCeremonyServiceError_Unwrap(t *testing.T) {
-	inner := errors.New("missing quorum")
-	e := &CeremonyServiceError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-func TestCeremonyServiceError_ErrorsAs(t *testing.T) {
-	inner := errors.New("quorum not reached")
-	e := &CeremonyServiceError{Err: inner}
-	var target *CeremonyServiceError
-	require.True(t, errors.As(e, &target))
-	assert.Same(t, inner, target.Err)
-}
-
-func TestVectorStorageError_Error(t *testing.T) {
-	inner := errors.New("hnswlib init failed")
-	e := &VectorStorageError{Err: inner}
-	assert.Equal(t, "cli: vector storage initialization failed: hnswlib init failed", e.Error())
-}
-
-func TestVectorStorageError_Unwrap(t *testing.T) {
-	inner := errors.New("out of memory")
-	e := &VectorStorageError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-func TestVectorStorageError_ErrorsAs(t *testing.T) {
-	inner := errors.New("invalid dimension")
-	e := &VectorStorageError{Err: inner}
-	var target *VectorStorageError
-	require.True(t, errors.As(e, &target))
-	assert.Same(t, inner, target.Err)
-}
-
-func TestVectorServiceError_Error(t *testing.T) {
-	inner := errors.New("index not built")
-	e := &VectorServiceError{Err: inner}
-	assert.Equal(t, "cli: vector service initialization failed: index not built", e.Error())
-}
-
-func TestVectorServiceError_Unwrap(t *testing.T) {
-	inner := errors.New("nil storage")
-	e := &VectorServiceError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
-	assert.True(t, errors.Is(e, inner))
-}
-
-func TestVectorServiceError_ErrorsAs(t *testing.T) {
-	inner := errors.New("space limit exceeded")
-	e := &VectorServiceError{Err: inner}
-	var target *VectorServiceError
-	require.True(t, errors.As(e, &target))
-	assert.Same(t, inner, target.Err)
-}
-
 // ---------------------------------------------------------------------------
 // kvstore_adapter.go: Exists method (0% coverage)
 // ---------------------------------------------------------------------------
