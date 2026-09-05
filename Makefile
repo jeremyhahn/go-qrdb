@@ -1266,7 +1266,14 @@ ci:
 # whose own defects are invisible by construction: it fails by staying silent,
 # and silence is what success looks like. A second of shell is a cheap way to
 # be told the guard still refuses what it claims to refuse.
-_ci: fmt vet lint check-publication-bound test-publication-bound security build-server test
+#
+# check-tool-versions and its self-test are here for the same two reasons.
+# It runs FIRST, before anything installs or invokes an analyser: when the pins
+# disagree, every later step in this pipeline is scanning with a tool whose
+# version nobody can name, so a lint or security result produced after the drift
+# is not evidence either way. Failing at the top says so in a second instead of
+# after the suite.
+_ci: check-tool-versions test-tool-versions fmt vet lint check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1345,6 +1352,27 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# The four analyser pins are written in four files, and a Dockerfile cannot read
+# a make variable (#323). #322 first removed the duplication outright, by giving
+# the ARGs no defaults; that broke VS Code "Reopen in Container" and a bare
+# `docker compose build`, which #302 requires keep working, and the owner ruled
+# on 2026-09-05 that a workflow regression is not a defect fix. The defaults are
+# therefore a DELIBERATE second copy, and this check is the whole of what makes
+# that safe -- without it the ruling reintroduces #154's defect one level down.
+.PHONY: check-tool-versions
+check-tool-versions:
+	@./scripts/check-tool-versions.sh
+
+# This repository's pins agree permanently, so running the check here exercises
+# only its accepting branch. The rejecting branches include the DISCOVERY FLOOR
+# -- the cases where a pattern stops matching and the comparison would run over
+# empty strings, which always agree. A gate that has quietly become a comparison
+# of nothing against nothing is the exact defect this check was written to
+# prevent, so it is the one that must not ship untested.
+.PHONY: test-tool-versions
+test-tool-versions:
+	@./scripts/check-tool-versions_test.sh
 
 .PHONY: vet
 vet:
@@ -1718,11 +1746,22 @@ endef
 # there would pass an empty string and defeat the default. Measured, and
 # written up in .devcontainer/docker-compose.yml.
 #
-# WHAT IS STILL NOT ASSERTED: that these agree with
-# `.github/workflows/ci.yml`'s env block, which is the authority for the three
-# Go analysers and which neither a Makefile nor a Dockerfile can read. That is
-# #323. Until it lands: change the pin here, in ci.yml, and in both Dockerfiles
-# together.
+# THAT THESE AGREE WITH `.github/workflows/ci.yml` IS NOW ASSERTED, by
+# `make check-tool-versions`, which runs first in `_ci` (#323). ci.yml's env
+# block is the authority for the three Go analysers -- it is what the runner
+# installs, so it is what actually judges a pull request -- and neither a
+# Makefile nor a Dockerfile can read it. trivy is the exception: ci.yml carries
+# no trivy pin, so for that one the value here is the authority and the CPU
+# Dockerfile is held to it.
+#
+# Changing a pin still means changing it in ci.yml, here, and in both
+# Dockerfiles. The difference is that forgetting one is now a red gate naming
+# the file, rather than two images wearing one tag.
+#
+# WHAT IS STILL NOT ASSERTED BY THAT CHECK: that the version pinned is the
+# version INSTALLED. A pin says which analyser should be in the image, not which
+# one is; require-tool.sh answers that, inside both Dockerfiles at build time
+# and again in ci.yml. The two halves together are the guarantee.
 GOLANGCI_LINT_VERSION := v2.13.2
 GOSEC_VERSION         := v2.29.0
 GOVULNCHECK_VERSION   := v1.7.0

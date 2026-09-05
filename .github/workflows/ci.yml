@@ -135,6 +135,33 @@ jobs:
       - name: Test the tool-version guard
         run: make test-require-tool
 
+      # The four analyser pins are written in four files and nothing but this
+      # step keeps them in step (#323): a Dockerfile cannot read a make
+      # variable, and THIS FILE's env block -- the authority, because it is what
+      # the runner installs -- is visible to neither.
+      #
+      # It runs in the Lint job rather than only inside `make ci` because the
+      # devcontainer image is where `make ci` executes, so a drifted pin is
+      # already baked in by the time that path could complain. Here it is read
+      # off the tree, before any image exists.
+      #
+      # #322 first closed the drift by removing the duplication outright. That
+      # broke VS Code "Reopen in Container", #302 requires it keep working, and
+      # the owner ruled on 2026-09-05 that a workflow regression is not a defect
+      # fix -- so the ARG defaults are a deliberate second copy and this step is
+      # what makes that safe.
+      - name: Scanner pins agree across ci.yml, Makefile and the Dockerfiles
+        run: make check-tool-versions
+
+      # The guard's rejecting branches, which the step above never reaches while
+      # the pins agree. Runs after it for the same reason the others do. The
+      # cases that matter most are the discovery floor: a pattern that stops
+      # matching turns the check into a comparison over empty strings, which
+      # always agree -- a green gate verifying nothing, which is the shape of
+      # the defect it exists to catch. No network, no Go build.
+      - name: Test the scanner-pin guard
+        run: make test-tool-versions
+
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
       # sees one diff, and a violation can be contributed by neither side of a
