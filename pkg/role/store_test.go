@@ -1784,12 +1784,13 @@ func TestBuiltInRoles_OperatorHasDataPlanePerms(t *testing.T) {
 		permission.ObjStoreReadPolicy, permission.ObjStoreReadBackend,
 		permission.ObjStoreReadStats, permission.ObjStoreTenantUsage,
 		permission.ObjStoreTenantQuotaRead,
-		// orchestrator (all 32 concrete verbs — full data plane)
+		// orchestrator (all 34 concrete verbs — full data plane)
 		permission.OrchestratorSpawn, permission.OrchestratorPrompt,
 		permission.OrchestratorStatus, permission.OrchestratorClose,
 		permission.OrchestratorList, permission.OrchestratorTaskCreate,
 		permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
-		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskReadmit,
+		permission.OrchestratorTaskBlock, permission.OrchestratorTaskComplete,
 		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
 		permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
 		permission.OrchestratorJobRead, permission.OrchestratorJobList,
@@ -1855,7 +1856,7 @@ func TestBuiltInRoles_OperatorExcludesAdminDataPlaneVerbs(t *testing.T) {
 		permission.DynamicSecretsRoleCreate, permission.DynamicSecretsRoleRead,
 		permission.DynamicSecretsRoleList, permission.DynamicSecretsRoleDelete,
 		// Governance verbs excluded per the audit. NOTE: the orchestrator family
-		// is fully granted to operator (all 32 concrete verbs incl.
+		// is fully granted to operator (all 34 concrete verbs incl.
 		// workflow_write/agent_remove/broadcast, which are operational not
 		// governance); only the orchestrator:* wildcard remains forbidden below.
 		permission.ObjStoreWritePolicy, permission.ObjStoreTenantQuotaWrite,
@@ -1882,7 +1883,7 @@ func TestBuiltInRoles_OperatorExcludesAdminDataPlaneVerbs(t *testing.T) {
 	}
 }
 
-// allOrchestratorVerbs is the canonical set of all 32 concrete orchestrator
+// allOrchestratorVerbs is the canonical set of all 34 concrete orchestrator
 // data-plane verbs. It is the test fixture used to assert per-role grants of
 // the orchestrator family.
 var allOrchestratorVerbs = []permission.Permission{
@@ -1890,7 +1891,8 @@ var allOrchestratorVerbs = []permission.Permission{
 	permission.OrchestratorStatus, permission.OrchestratorClose,
 	permission.OrchestratorList, permission.OrchestratorTaskCreate,
 	permission.OrchestratorTaskRead, permission.OrchestratorTaskList,
-	permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+	permission.OrchestratorTaskClaim, permission.OrchestratorTaskReadmit,
+	permission.OrchestratorTaskBlock, permission.OrchestratorTaskComplete,
 	permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
 	permission.OrchestratorArtifactRead, permission.OrchestratorJobStart,
 	permission.OrchestratorJobRead, permission.OrchestratorJobList,
@@ -1926,7 +1928,7 @@ func orchestratorVerbsIn(set map[permission.Permission]struct{}) []permission.Pe
 }
 
 // TestBuiltInRoles_OperatorHasAllOrchestratorVerbs asserts the Operator role
-// holds every one of the 32 concrete orchestrator verbs — the full data plane
+// holds every one of the 34 concrete orchestrator verbs — the full data plane
 // — but never the orchestrator:* wildcard (so future admin-only verbs do not
 // silently accrue to operator).
 func TestBuiltInRoles_OperatorHasAllOrchestratorVerbs(t *testing.T) {
@@ -1940,8 +1942,8 @@ func TestBuiltInRoles_OperatorHasAllOrchestratorVerbs(t *testing.T) {
 			t.Errorf("operator missing orchestrator verb: %q", v)
 		}
 	}
-	if got := len(orchestratorVerbsIn(set)); got != 32 {
-		t.Errorf("operator: expected all 32 orchestrator verbs, got %d", got)
+	if got := len(orchestratorVerbsIn(set)); got != 34 {
+		t.Errorf("operator: expected all 34 orchestrator verbs, got %d", got)
 	}
 	if _, ok := set[permission.OrchestratorAll]; ok {
 		t.Error("operator must NOT hold the orchestrator:* wildcard")
@@ -1987,7 +1989,8 @@ func TestBuiltInRoles_UserOrchestratorConsumerSlice(t *testing.T) {
 
 	// None of the excluded orchestrator verbs.
 	excludedOrch := []permission.Permission{
-		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskReadmit,
+		permission.OrchestratorTaskBlock, permission.OrchestratorTaskComplete,
 		permission.OrchestratorArtifactSubmit,
 		permission.OrchestratorAgentRegister, permission.OrchestratorAgentRead,
 		permission.OrchestratorAgentList, permission.OrchestratorAgentRemove,
@@ -2057,7 +2060,8 @@ func TestBuiltInRoles_AuditorOrchestratorMetadataSlice(t *testing.T) {
 		permission.OrchestratorCacheWrite, permission.OrchestratorInference,
 		permission.OrchestratorPrompt, permission.OrchestratorSpawn,
 		permission.OrchestratorClose, permission.OrchestratorTaskCreate,
-		permission.OrchestratorTaskClaim, permission.OrchestratorTaskComplete,
+		permission.OrchestratorTaskClaim, permission.OrchestratorTaskReadmit,
+		permission.OrchestratorTaskBlock, permission.OrchestratorTaskComplete,
 		permission.OrchestratorTaskDecompose, permission.OrchestratorArtifactSubmit,
 		permission.OrchestratorJobStart, permission.OrchestratorJobCancel,
 		permission.OrchestratorWorkflowWrite, permission.OrchestratorAgentRegister,

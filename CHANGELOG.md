@@ -11,6 +11,19 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **`orchestrator:task_readmit` and `orchestrator:task_block`** (#339), beside
+  `orchestrator:task_claim` in the broker data-plane `orchestrator` family.
+  `task_readmit` returns a blocked orchestration task to the pending queue;
+  `task_block` parks a task as blocked (`needs_info` / `blocked` / `escalated`)
+  with a reason. Both are `ScopeTenantOnly` like every other verb in the family
+  — denied to the system tenant, confined to the identity's own tenant — and are
+  placed exactly where `task_claim` is: Operator holds them (and Admin through
+  `orchestrator:*`); User and Auditor do not. The family stays qrdb-owned, which
+  is what lets go-quicbaas register the two verbs it maps on its own transports
+  without forking the resource.
+
 ## [0.16.0-alpha] - 2026-09-02
 
 ### Added

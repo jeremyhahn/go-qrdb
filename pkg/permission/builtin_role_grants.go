@@ -327,7 +327,7 @@ func registerOperatorGrants() {
 		ObjStoreReadPolicy, ObjStoreReadBackend,
 		ObjStoreReadStats, ObjStoreTenantUsage,
 		ObjStoreTenantQuotaRead,
-		// Orchestrator: all 32 concrete verbs. Operators run the full
+		// Orchestrator: all 34 concrete verbs. Operators run the full
 		// orchestration data plane day-to-day — spawning/observing sessions,
 		// authoring workflows, dispatching and completing tasks, managing the
 		// agent fleet (including removing dead/stuck agents), reading/writing the
@@ -342,7 +342,8 @@ func registerOperatorGrants() {
 		OrchestratorStatus, OrchestratorClose,
 		OrchestratorList, OrchestratorTaskCreate,
 		OrchestratorTaskRead, OrchestratorTaskList,
-		OrchestratorTaskClaim, OrchestratorTaskComplete,
+		OrchestratorTaskClaim, OrchestratorTaskReadmit,
+		OrchestratorTaskBlock, OrchestratorTaskComplete,
 		OrchestratorTaskDecompose, OrchestratorArtifactSubmit,
 		OrchestratorArtifactRead, OrchestratorJobStart,
 		OrchestratorJobRead, OrchestratorJobList,
@@ -422,7 +423,8 @@ func registerUserGrants() {
 		// own-work slice, NOT the operator/fleet slice.
 		//
 		// Deliberately EXCLUDED from user (these are operator+ verbs):
-		//   - Worker verbs: task_claim, task_complete, artifact_submit (a user
+		//   - Worker verbs: task_claim, task_readmit, task_block, task_complete,
+		//     artifact_submit (a user
 		//     submits work, it does not execute the worker side of the queue).
 		//   - Agent fleet verbs: agent_register/read/list/remove/heartbeat (fleet
 		//     membership and lifecycle are operations, not consumption).

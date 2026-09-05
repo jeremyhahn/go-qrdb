@@ -529,7 +529,9 @@ func TestAll_TotalCount(t *testing.T) {
 	// + 3 SSH key vault perms (ssh:read/write/delete) = 358 total.
 	// + 1 elastic-scaling perm (databases:scale) = 359 total.
 	// + 1 selective point-in-time restore perm (mvcc:restore) = 360 total.
-	const expectedTotal = 360
+	// + 2 orchestrator task-lifecycle perms (orchestrator:task_readmit,
+	//   orchestrator:task_block) = 362 total.
+	const expectedTotal = 362
 	all := All()
 	if len(all) != expectedTotal {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)

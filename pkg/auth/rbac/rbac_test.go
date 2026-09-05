@@ -1444,6 +1444,97 @@ func TestAuthorize_TenantOnly_OperatorDataPlane_CrossTenantDenied(t *testing.T) 
 	}
 }
 
+// TestAuthorize_TenantOnly_OperatorTaskLifecycle_OwnTenantAllowed proves the
+// end-to-end RBAC decision for the two orchestrator task-lifecycle verbs the
+// Operator role holds beside task_claim: an Operator in its own tenant may
+// readmit a blocked task and block a task, exactly as it may claim one.
+func TestAuthorize_TenantOnly_OperatorTaskLifecycle_OwnTenantAllowed(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"operator-role": operatorBuiltInPerms(t),
+	})
+	authz := New(svc)
+
+	operator := &auth.Identity{
+		Subject:  "acme-operator",
+		TenantID: "acme",
+		Roles:    []string{"operator-role"},
+	}
+
+	for _, action := range []string{"task_claim", "task_readmit", "task_block"} {
+		if err := authz.Authorize(ctxFor("acme"), operator, "orchestrator", action); err != nil {
+			t.Errorf("operator should be allowed orchestrator:%s on own tenant, got: %v", action, err)
+		}
+	}
+}
+
+// TestAuthorize_TenantOnly_OperatorTaskLifecycle_SystemTenantDenied verifies
+// that orchestrator:task_readmit and orchestrator:task_block are
+// ScopeTenantOnly like every other broker data-plane verb: an identity in the
+// system tenant is structurally denied them even when its role grants them,
+// and the denial names the tenant-only rule rather than a missing grant.
+func TestAuthorize_TenantOnly_OperatorTaskLifecycle_SystemTenantDenied(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"operator-role": operatorBuiltInPerms(t),
+	})
+	authz := New(svc)
+
+	sysOperator := &auth.Identity{
+		Subject:  "sys-operator",
+		TenantID: tenant.SystemTenantID,
+		Roles:    []string{"operator-role"},
+	}
+
+	for _, action := range []string{"task_readmit", "task_block"} {
+		for _, target := range []string{"acme", tenant.SystemTenantID} {
+			err := authz.Authorize(ctxFor(target), sysOperator, "orchestrator", action)
+			if err == nil {
+				t.Errorf("system tenant must NOT exercise orchestrator:%s on %q", action, target)
+				continue
+			}
+			var denied *PermissionDeniedError
+			if !errors.As(err, &denied) {
+				t.Errorf("orchestrator:%s on %q: expected *PermissionDeniedError, got %T: %v", action, target, err, err)
+				continue
+			}
+			if !strings.Contains(denied.Reason, "denied to system tenant") {
+				t.Errorf("orchestrator:%s on %q: expected system-tenant denial reason, got %q", action, target, denied.Reason)
+			}
+		}
+	}
+}
+
+// TestAuthorize_TenantOnly_OperatorTaskLifecycle_CrossTenantDenied verifies
+// the ScopeTenantOnly confinement on the two task-lifecycle verbs: an
+// Operator at acme cannot readmit or block a task in another tenant.
+func TestAuthorize_TenantOnly_OperatorTaskLifecycle_CrossTenantDenied(t *testing.T) {
+	svc := newMockRoleService(map[string][]permission.Permission{
+		"operator-role": operatorBuiltInPerms(t),
+	})
+	authz := New(svc)
+
+	operator := &auth.Identity{
+		Subject:  "acme-operator",
+		TenantID: "acme",
+		Roles:    []string{"operator-role"},
+	}
+
+	for _, action := range []string{"task_readmit", "task_block"} {
+		err := authz.Authorize(ctxFor("bob-corp"), operator, "orchestrator", action)
+		if err == nil {
+			t.Errorf("operator@acme must NOT exercise orchestrator:%s on bob-corp", action)
+			continue
+		}
+		var denied *PermissionDeniedError
+		if !errors.As(err, &denied) {
+			t.Errorf("orchestrator:%s: expected *PermissionDeniedError, got %T: %v", action, err, err)
+			continue
+		}
+		if !strings.Contains(denied.Reason, "identity not in target tenant") {
+			t.Errorf("orchestrator:%s: expected cross-tenant denial reason, got %q", action, denied.Reason)
+		}
+	}
+}
+
 // TestAuthorize_TenantOnly_UnsealAndSeal verifies the seal/unseal
 // tenant_barrier permissions carry the same ScopeTenantOnly semantics.
 func TestAuthorize_TenantOnly_UnsealAndSeal(t *testing.T) {

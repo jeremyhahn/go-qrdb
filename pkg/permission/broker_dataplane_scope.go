@@ -114,6 +114,12 @@ const (
 	OrchestratorTaskList Permission = "orchestrator:task_list"
 	// OrchestratorTaskClaim grants access to claim an orchestration task.
 	OrchestratorTaskClaim Permission = "orchestrator:task_claim"
+	// OrchestratorTaskReadmit grants access to return a blocked orchestration
+	// task to the pending queue.
+	OrchestratorTaskReadmit Permission = "orchestrator:task_readmit"
+	// OrchestratorTaskBlock grants access to park an orchestration task as
+	// blocked (needs_info / blocked / escalated) with a reason.
+	OrchestratorTaskBlock Permission = "orchestrator:task_block"
 	// OrchestratorTaskComplete grants access to complete an orchestration task.
 	OrchestratorTaskComplete Permission = "orchestrator:task_complete"
 	// OrchestratorTaskDecompose grants access to decompose an orchestration task.
@@ -308,6 +314,7 @@ func brokerDataPlaneScopePermissions() []Permission {
 		OrchestratorSpawn, OrchestratorPrompt, OrchestratorStatus,
 		OrchestratorClose, OrchestratorList, OrchestratorTaskCreate,
 		OrchestratorTaskRead, OrchestratorTaskList, OrchestratorTaskClaim,
+		OrchestratorTaskReadmit, OrchestratorTaskBlock,
 		OrchestratorTaskComplete, OrchestratorTaskDecompose,
 		OrchestratorArtifactSubmit, OrchestratorArtifactRead,
 		OrchestratorJobStart, OrchestratorJobRead, OrchestratorJobList,
@@ -372,7 +379,8 @@ func brokerDataPlaneCategories() []Category {
 				OrchestratorSpawn, OrchestratorPrompt, OrchestratorStatus,
 				OrchestratorClose, OrchestratorList, OrchestratorTaskCreate,
 				OrchestratorTaskRead, OrchestratorTaskList,
-				OrchestratorTaskClaim, OrchestratorTaskComplete,
+				OrchestratorTaskClaim, OrchestratorTaskReadmit,
+				OrchestratorTaskBlock, OrchestratorTaskComplete,
 				OrchestratorTaskDecompose, OrchestratorArtifactSubmit,
 				OrchestratorArtifactRead, OrchestratorJobStart,
 				OrchestratorJobRead, OrchestratorJobList, OrchestratorJobCancel,

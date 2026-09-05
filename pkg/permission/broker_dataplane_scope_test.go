@@ -57,6 +57,8 @@ var brokerDataPlaneExpectations = []struct {
 	{OrchestratorTaskRead, "orchestrator", "task_read", "Orchestrator", "AI Services"},
 	{OrchestratorTaskList, "orchestrator", "task_list", "Orchestrator", "AI Services"},
 	{OrchestratorTaskClaim, "orchestrator", "task_claim", "Orchestrator", "AI Services"},
+	{OrchestratorTaskReadmit, "orchestrator", "task_readmit", "Orchestrator", "AI Services"},
+	{OrchestratorTaskBlock, "orchestrator", "task_block", "Orchestrator", "AI Services"},
 	{OrchestratorTaskComplete, "orchestrator", "task_complete", "Orchestrator", "AI Services"},
 	{OrchestratorTaskDecompose, "orchestrator", "task_decompose", "Orchestrator", "AI Services"},
 	{OrchestratorArtifactSubmit, "orchestrator", "artifact_submit", "Orchestrator", "AI Services"},
