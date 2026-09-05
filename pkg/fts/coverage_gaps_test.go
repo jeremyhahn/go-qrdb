@@ -53,12 +53,16 @@ func (b *nopBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
 	return newStaticIterator(nil)
 }
 
-// Compile-time proof that both doubles satisfy the full storage.Batch
-// contract. Without these, an interface method added to Batch is only caught
-// at the use site -- which is how the missing Get went unnoticed.
+// Compile-time proof that the doubles satisfy the full storage.Batch and
+// storage.Storage contracts. Without these, an interface method added to Batch
+// is only caught at the use site -- which is how the missing Get went
+// unnoticed.
 var (
-	_ storage.Batch = (*errBatch)(nil)
-	_ storage.Batch = (*nopBatch)(nil)
+	_ storage.Batch   = (*errBatch)(nil)
+	_ storage.Batch   = (*nopBatch)(nil)
+	_ storage.Batch   = (*mapBatch)(nil)
+	_ storage.Storage = (*baseStorage)(nil)
+	_ storage.Storage = (*getErrStorage)(nil)
 )
 
 // staticIterator iterates over a fixed slice of keys.
@@ -116,12 +120,11 @@ func newBaseStorage() *baseStorage {
 	return &baseStorage{data: make(map[string][]byte)}
 }
 
+// Get honours the storage.Reader contract: a missing key is (nil, nil), not an
+// error. A double that reports absence as an error makes fail-open error
+// handling in the code under test look like a working not-found path.
 func (s *baseStorage) Get(key []byte) ([]byte, error) {
-	v, ok := s.data[string(key)]
-	if !ok {
-		return nil, errors.New("not found")
-	}
-	return v, nil
+	return s.data[string(key)], nil
 }
 func (s *baseStorage) Set(key, value []byte) error {
 	s.data[string(key)] = value
@@ -147,6 +150,79 @@ type batchStorage struct {
 }
 
 func (s *batchStorage) Batch() storage.Batch { return s.b }
+
+// getErrStorage fails every Get with a fixed error, modelling a backend that
+// reports a real read failure (ClosedError, OpError, ErrEmptyKey) rather than a
+// missing key.
+type getErrStorage struct {
+	*baseStorage
+	err error
+	b   storage.Batch
+}
+
+func (s *getErrStorage) Get(_ []byte) ([]byte, error) { return nil, s.err }
+func (s *getErrStorage) Batch() storage.Batch         { return s.b }
+
+// mapBatch applies its buffered writes to a baseStorage on Commit, so a test
+// can assert what a code path did and did not write. A batch double that
+// discards writes would make any "nothing was written" assertion vacuous.
+type mapBatch struct {
+	store *baseStorage
+	sets  map[string][]byte
+	dels  map[string]struct{}
+}
+
+func newMapBatch(store *baseStorage) *mapBatch {
+	return &mapBatch{
+		store: store,
+		sets:  make(map[string][]byte),
+		dels:  make(map[string]struct{}),
+	}
+}
+
+func (b *mapBatch) Set(key, value []byte) error {
+	b.sets[string(key)] = value
+	delete(b.dels, string(key))
+	return nil
+}
+
+func (b *mapBatch) Delete(key []byte) error {
+	b.dels[string(key)] = struct{}{}
+	delete(b.sets, string(key))
+	return nil
+}
+
+func (b *mapBatch) Get(key []byte) ([]byte, error) {
+	if _, ok := b.dels[string(key)]; ok {
+		return nil, nil
+	}
+	if v, ok := b.sets[string(key)]; ok {
+		return v, nil
+	}
+	return b.store.Get(key)
+}
+
+func (b *mapBatch) NewIterator(_ *storage.IteratorOptions) storage.Iterator {
+	return newStaticIterator(nil)
+}
+
+func (b *mapBatch) Commit() error {
+	for k := range b.dels {
+		delete(b.store.data, k)
+	}
+	for k, v := range b.sets {
+		b.store.data[k] = v
+	}
+	return b.Rollback()
+}
+
+func (b *mapBatch) Rollback() error {
+	b.sets = make(map[string][]byte)
+	b.dels = make(map[string]struct{})
+	return nil
+}
+
+func (b *mapBatch) Close() error { return nil }
 
 // iterBatchStorage overrides both NewIterator and Batch.
 type iterBatchStorage struct {
@@ -261,14 +337,19 @@ func TestInvertedIndex_IndexOnlyStopWords(t *testing.T) {
 // TestIndex_BatchSetError covers the batch.Set error path when writing term keys.
 func TestIndex_BatchSetError(t *testing.T) {
 	sentinel := errors.New("batch set failed")
+	entityKey := []byte("doc/1")
 	store := &batchStorage{
 		baseStorage: newBaseStorage(),
 		b:           &errBatch{setErr: sentinel},
 	}
-	// Get must return not-found so that Remove returns nil (no doc indexed yet).
 	idx := NewInvertedIndex(store, "test", nil)
 
-	err := idx.Index([]byte("doc/1"), "hello world")
+	// Precondition, asserted rather than assumed: the doc is not indexed, so
+	// Remove short-circuits and Index reaches the term-key writes. Stating it
+	// here is what keeps the test pinned to batch.Set as the failing call.
+	require.NoError(t, idx.Remove(entityKey))
+
+	err := idx.Index(entityKey, "hello world")
 	require.Error(t, err)
 	assert.Equal(t, sentinel, err)
 }
@@ -336,6 +417,58 @@ func TestInvertedIndex_RemoveNotIndexed(t *testing.T) {
 	idx := newTestInvertedIndex(t)
 	err := idx.Remove([]byte("nonexistent"))
 	require.NoError(t, err)
+}
+
+// TestRemove_GetError_Propagates pins the fail-open defect from #298: a real
+// storage read error on the doc-metadata lookup must surface from Remove, not
+// be reported as "not indexed, nothing to remove".
+func TestRemove_GetError_Propagates(t *testing.T) {
+	sentinel := errors.New("storage closed during remove")
+	base := newBaseStorage()
+	store := &getErrStorage{baseStorage: base, err: sentinel, b: newMapBatch(base)}
+	idx := NewInvertedIndex(store, "geterr", nil)
+
+	err := idx.Remove([]byte("doc/1"))
+	require.Error(t, err)
+	assert.Equal(t, sentinel, err)
+}
+
+// TestIndex_GetError_NoDuplicateTermWrite is the consequence of the same
+// defect. Index calls Remove first, so a swallowed read error would let the
+// old postings survive while new ones are written for the new text. The batch
+// here really applies to the backing map, so the "nothing was written"
+// assertion is not vacuous.
+func TestIndex_GetError_NoDuplicateTermWrite(t *testing.T) {
+	sentinel := errors.New("storage closed during reindex")
+	entityKey := []byte("doc/1")
+	indexName := "geterr"
+
+	// The doc is already indexed under its original text.
+	base := newBaseStorage()
+	pos := []byte{0, 0, 0, 0}
+	require.NoError(t, base.Set(buildTestDocKey(indexName, entityKey), []byte{0, 0, 0, 2}))
+	require.NoError(t, base.Set(buildTestTermKey(indexName, "hello", entityKey), pos))
+	require.NoError(t, base.Set(buildTestTermKey(indexName, "world", entityKey), pos))
+	before := len(base.data)
+
+	store := &getErrStorage{baseStorage: base, err: sentinel, b: newMapBatch(base)}
+	idx := NewInvertedIndex(store, indexName, nil)
+
+	err := idx.Index(entityKey, "goodbye moon")
+	require.Error(t, err)
+	assert.Equal(t, sentinel, err)
+
+	// Nothing was written: no postings for the new text, and the old ones are
+	// untouched. A fail-open Remove leaves all four terms indexed at once.
+	assert.Len(t, base.data, before)
+	for _, token := range []string{"goodbye", "moon"} {
+		_, ok := base.data[string(buildTestTermKey(indexName, token, entityKey))]
+		assert.False(t, ok, "term %q must not be indexed after a failed reindex", token)
+	}
+	for _, token := range []string{"hello", "world"} {
+		_, ok := base.data[string(buildTestTermKey(indexName, token, entityKey))]
+		assert.True(t, ok, "term %q must survive a failed reindex", token)
+	}
 }
 
 // TestRemove_IteratorError covers the iter.Error() propagation in Remove.

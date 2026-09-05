@@ -88,10 +88,18 @@ func (idx *InvertedIndex) Index(entityKey []byte, text string) error {
 
 // Remove deletes all index entries for an entity key.
 func (idx *InvertedIndex) Remove(entityKey []byte) error {
-	// Check if doc exists.
+	// Check if doc exists. storage.Reader.Get reports a missing key as
+	// (nil, nil), so absence is a nil value and a non-nil error is a real
+	// storage failure. Treating that error as "not indexed" would be
+	// fail-open: Index calls Remove first, so a swallowed read error turns a
+	// re-index into a duplicate-term write, leaving postings for the old text
+	// behind while the new ones are added.
 	docKey := idx.buildDocKey(entityKey)
-	_, err := idx.storage.Get(docKey)
+	docMeta, err := idx.storage.Get(docKey)
 	if err != nil {
+		return err
+	}
+	if docMeta == nil {
 		return nil // not indexed; nothing to remove
 	}
 
