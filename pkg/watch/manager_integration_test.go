@@ -20,11 +20,17 @@ package watch
 import (
 	"sync"
 	"testing"
-	"time"
 )
 
-// All tests in this file use time.Sleep for goroutine synchronization,
-// making them integration tests rather than pure unit tests.
+// These tests drive Manager's real per-watch delivery goroutines, which is what
+// makes them integration tests rather than pure unit tests. They synchronise on
+// the mock stream's sent signal (waitResponses, testing_manager_wait_test.go) —
+// never on elapsed time. Where a test asserts that something was NOT delivered,
+// it does so by waiting for a later event that WAS: delivery for one watch is a
+// single goroutine draining one channel in order, so the arrival of the second
+// event proves the first was already processed and dropped. That barrier also
+// makes each of these tests fail if the watch was never registered, which the
+// sleeps they replaced did not.
 // The mockManagerWatchStream helper is defined in testing_manager.go for use by both
 // integration tests and benchmarks.
 
@@ -42,11 +48,8 @@ func TestWatchManagerExactMatch(t *testing.T) {
 	// Notify PUT event
 	mgr.NotifyPut([]byte("test-key"), nil, []byte("test-value"), 1, 1)
 
-	// Give event delivery time to complete
-	time.Sleep(50 * time.Millisecond)
-
 	// Verify event was delivered
-	responses := stream.getResponses()
+	responses := waitResponses(t, stream, 1)
 	if len(responses) != 1 {
 		t.Fatalf("Expected 1 response, got %d", len(responses))
 	}
@@ -88,13 +91,19 @@ func TestWatchManagerNoMatchDifferentKey(t *testing.T) {
 	// Notify PUT event for "key-b" (should not match)
 	mgr.NotifyPut([]byte("key-b"), nil, []byte("value-b"), 1, 1)
 
-	// Give event delivery time to complete
-	time.Sleep(50 * time.Millisecond)
+	// Barrier: a matching event issued after the non-matching one. The watch has
+	// one delivery goroutine draining one channel in order, so once this arrives
+	// "key-b" has already been offered to the watch and rejected. Waiting for it
+	// also proves the watch is live, which a bare sleep-then-assert-empty could
+	// not distinguish from a watch that was never registered.
+	mgr.NotifyPut([]byte("key-a"), nil, []byte("value-a"), 2, 2)
 
-	// Verify no events were delivered
-	responses := stream.getResponses()
-	if len(responses) != 0 {
-		t.Errorf("Expected 0 responses for non-matching key, got %d", len(responses))
+	responses := waitResponses(t, stream, 1)
+	if len(responses) != 1 {
+		t.Fatalf("Expected only the barrier response, got %d", len(responses))
+	}
+	if got := string(responses[0].Events[0].Kv.Key); got != "key-a" {
+		t.Errorf("Expected 0 responses for non-matching key; first delivered key was '%s'", got)
 	}
 }
 
@@ -118,14 +127,19 @@ func TestWatchManagerPrefixMatch(t *testing.T) {
 	// Notify event for key without matching prefix (should not match)
 	mgr.NotifyPut([]byte("/other/key"), nil, []byte("v3"), 3, 3)
 
-	// Give event delivery time to complete
-	time.Sleep(100 * time.Millisecond)
+	// Barrier, issued last and in range: its arrival means "/other/key" has
+	// already been offered to the watch, so a third response here would be the
+	// non-matching key rather than a delivery still in flight.
+	mgr.NotifyPut([]byte("/config/zz"), nil, []byte("v4"), 4, 4)
 
-	// Verify 2 events were delivered (matching prefix)
-	responses := stream.getResponses()
-	if len(responses) != 2 {
-		t.Fatalf("Expected 2 responses for prefix match, got %d", len(responses))
+	responses := waitResponses(t, stream, 3)
+	if len(responses) != 3 {
+		t.Fatalf("Expected 2 prefix matches plus the barrier, got %d", len(responses))
 	}
+	if got := string(responses[2].Events[0].Kv.Key); got != "/config/zz" {
+		t.Fatalf("Expected the barrier '/config/zz' third; got '%s' — a non-matching key was delivered", got)
+	}
+	responses = responses[:2]
 
 	// Verify watch ID
 	for _, resp := range responses {
@@ -165,11 +179,8 @@ func TestWatchManagerDeleteEvent(t *testing.T) {
 	// Notify DELETE event
 	mgr.NotifyDelete([]byte("test-key"), []byte("old-value"), 1, 1)
 
-	// Give event delivery time to complete
-	time.Sleep(50 * time.Millisecond)
-
 	// Verify event was delivered
-	responses := stream.getResponses()
+	responses := waitResponses(t, stream, 1)
 	if len(responses) != 1 {
 		t.Fatalf("Expected 1 response, got %d", len(responses))
 	}
@@ -206,22 +217,19 @@ func TestWatchManagerFilters(t *testing.T) {
 			t.Fatalf("Failed to add watch: %v", err)
 		}
 
-		// Send PUT event (should be filtered)
+		// Send PUT event (should be filtered), then a DELETE that must pass. The
+		// DELETE is the barrier: it is enqueued after the PUT and drained by the
+		// same goroutine, so its arrival means the PUT was already offered and
+		// dropped. Exactly one response total is the whole assertion.
 		mgr.NotifyPut([]byte("test-key"), nil, []byte("value"), 1, 1)
-		time.Sleep(50 * time.Millisecond)
-
-		responses := stream.getResponses()
-		if len(responses) != 0 {
-			t.Errorf("Expected PUT event to be filtered, got %d responses", len(responses))
-		}
-
-		// Send DELETE event (should not be filtered)
 		mgr.NotifyDelete([]byte("test-key"), []byte("value"), 2, 2)
-		time.Sleep(50 * time.Millisecond)
 
-		responses = stream.getResponses()
+		responses := waitResponses(t, stream, 1)
 		if len(responses) != 1 {
-			t.Errorf("Expected DELETE event to pass through, got %d responses", len(responses))
+			t.Fatalf("Expected only the DELETE to pass the NoPut filter, got %d responses", len(responses))
+		}
+		if got := responses[0].Events[0].Type; got != DELETE {
+			t.Errorf("Expected PUT event to be filtered; first delivered event was %v", got)
 		}
 	})
 
@@ -233,22 +241,16 @@ func TestWatchManagerFilters(t *testing.T) {
 			t.Fatalf("Failed to add watch: %v", err)
 		}
 
-		// Send DELETE event (should be filtered)
+		// Mirror of the NoPut case: the PUT is the barrier for the filtered DELETE.
 		mgr.NotifyDelete([]byte("test-key-2"), []byte("value"), 1, 1)
-		time.Sleep(50 * time.Millisecond)
-
-		responses := stream.getResponses()
-		if len(responses) != 0 {
-			t.Errorf("Expected DELETE event to be filtered, got %d responses", len(responses))
-		}
-
-		// Send PUT event (should not be filtered)
 		mgr.NotifyPut([]byte("test-key-2"), nil, []byte("value"), 2, 2)
-		time.Sleep(50 * time.Millisecond)
 
-		responses = stream.getResponses()
+		responses := waitResponses(t, stream, 1)
 		if len(responses) != 1 {
-			t.Errorf("Expected PUT event to pass through, got %d responses", len(responses))
+			t.Fatalf("Expected only the PUT to pass the NoDelete filter, got %d responses", len(responses))
+		}
+		if got := responses[0].Events[0].Type; got != PUT {
+			t.Errorf("Expected DELETE event to be filtered; first delivered event was %v", got)
 		}
 	})
 }
@@ -267,11 +269,22 @@ func TestWatchManagerRemove(t *testing.T) {
 	// Remove watch
 	mgr.Remove(watch.ID)
 
+	// A second watch on the same key, registered after the removal, is the
+	// witness: one notification now reaches it and must not reach the removed
+	// watch's stream. Without it, an empty stream would be equally consistent
+	// with a notification that never matched anything at all.
+	witness := newMockManagerWatchStream()
+	if _, err := mgr.Add([]byte("test-key"), nil, 0, WatchFilters{}, witness); err != nil {
+		t.Fatalf("Failed to add witness watch: %v", err)
+	}
+
 	// Notify event after removal (should not be delivered)
 	mgr.NotifyPut([]byte("test-key"), nil, []byte("value"), 1, 1)
-	time.Sleep(50 * time.Millisecond)
+	waitResponses(t, witness, 1)
 
-	// Verify no events were delivered
+	// The removed watch was deregistered under the shard lock before the notify
+	// ran, so it could not even have been enqueued: the witness having been
+	// served is the proof that the notify itself happened.
 	responses := stream.getResponses()
 	if len(responses) != 0 {
 		t.Errorf("Expected 0 responses after watch removal, got %d", len(responses))
@@ -298,18 +311,17 @@ func TestWatchManagerMultipleWatches(t *testing.T) {
 	// Notify event
 	mgr.NotifyPut([]byte("shared-key"), nil, []byte("value"), 1, 1)
 
-	// Give event delivery time to complete
-	time.Sleep(50 * time.Millisecond)
-
+	// Each watch has its own delivery goroutine and its own stream, so each is
+	// waited for on its own signal; there is no ordering between the two.
 	// Verify both watches received the event
-	responses1 := stream1.getResponses()
+	responses1 := waitResponses(t, stream1, 1)
 	if len(responses1) != 1 {
 		t.Errorf("Expected 1 response for watch1, got %d", len(responses1))
 	} else if responses1[0].WatchID != int64(watch1.ID) {
 		t.Errorf("Expected watch ID %d for watch1, got %d", watch1.ID, responses1[0].WatchID)
 	}
 
-	responses2 := stream2.getResponses()
+	responses2 := waitResponses(t, stream2, 1)
 	if len(responses2) != 1 {
 		t.Errorf("Expected 1 response for watch2, got %d", len(responses2))
 	} else if responses2[0].WatchID != int64(watch2.ID) {
@@ -373,11 +385,9 @@ func TestWatchManagerConcurrentNotifications(t *testing.T) {
 
 	wg.Wait()
 
-	// Give event delivery time to complete
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify all events were delivered
-	responses := stream.getResponses()
+	// Verify all events were delivered. waitResponses returns as soon as the
+	// count is reached, so the equality check below still catches an over-count.
+	responses := waitResponses(t, stream, numEvents)
 	if len(responses) != numEvents {
 		t.Errorf("Expected %d responses, got %d", numEvents, len(responses))
 	}

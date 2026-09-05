@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-05
 
 ## Exported surface
 
@@ -71,6 +71,37 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
   event.
 - **Cancellation is in-band, never a silent close.** Every abnormal termination
   carries `Canceled: true` and a reason.
+- **Closing a watcher is synchronous with deregistration.** When `Close`
+  returns, the watcher is out of the hub registry and `Hub.WatchCount` no
+  longer counts it, so no further event can be dispatched to it. A caller may
+  act on that immediately — assert the count, reuse the key, tear down the
+  surrounding stream — without waiting for anything to catch up.
+
+## Watcher lifecycle
+
+`Close` cancels the watcher's context and then blocks until the hub's cleanup
+has removed it from the registry. It is idempotent, and *every* caller returns
+only after deregistration, not just the one that won the race to cancel.
+
+What `Close` deliberately does **not** wait for is the event channel closing.
+That step has one extra dependency: an in-flight historical replay must stop
+touching the channel before anything may close it, and a replay observes
+cancellation only between the events it matches, so a scan over a wide range
+with few matches notices late. Waiting for the channel would hand `Close` the
+duration of an arbitrary history scan — and callers close watchers from places
+that must not stall, including a cancel path that holds the mutex serialising a
+whole multiplexed watch stream. Deregistration costs one shard write lock and
+nothing else, so that is where the boundary sits.
+
+The channel is still closed exactly once, immediately after the replay
+releases it. A caller that needs it drained ranges over `Events()`; a caller
+that only needs the watcher gone calls `Close` and proceeds.
+
+The registry count is maintained by whoever actually removes an entry.
+`Hub.Close` empties the registry and zeroes the count itself, so the per-watcher
+cleanup that follows finds nothing to remove and does not decrement a second
+time — an unconditional decrement there wraps the unsigned counter to its
+maximum instead of reaching zero.
 
 ## Error semantics
 

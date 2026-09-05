@@ -1,6 +1,6 @@
 # Watch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-05
 
 ## Problem
 
@@ -35,6 +35,17 @@ replayed from a caller-named revision.
   server went away", "your revision was compacted", and "this store cannot
   replay". Each of those needs a different response from the caller, so the
   reason travels in the final message.
+- **A fully asynchronous `Close`** — cancel the context and let a goroutine
+  deregister whenever it is scheduled. Rejected: it gives the caller no moment
+  at which the watcher is known to be gone, so every caller that cares has to
+  invent one, and the only thing available to invent it from is elapsed time.
+  A close that waits for deregistration turns that into a fact.
+- **A `Close` that also waits for the event channel to close.** Rejected: the
+  channel cannot close until an in-flight replay stops writing to it, and a
+  replay notices cancellation only between the events it matches. That would
+  make the cost of closing a watcher depend on the width of a history scan
+  nobody is reading. The two guarantees are separated instead: `Close` means
+  deregistered, and ranging over `Events()` means drained.
 
 ## Component boundaries
 

@@ -122,6 +122,11 @@ func (h *Hub) Watch(ctx context.Context, key string, opts ...WatchOption) (Watch
 	if replay {
 		w.beginReplay()
 	}
+	// Arm the deregistration signal before the watcher is reachable from any
+	// other goroutine: from here on this hub owns its teardown, so Close waits
+	// for cleanupOnCancel rather than returning while the watcher is still
+	// registered.
+	w.beginCleanup()
 
 	sh := h.getShard([]byte(key))
 	sh.mu.Lock()
@@ -162,6 +167,7 @@ func (h *Hub) WatchPrefix(ctx context.Context, prefix string, opts ...WatchOptio
 	if replay {
 		w.beginReplay()
 	}
+	w.beginCleanup()
 
 	// Prefix watchers are stored in the shard for the prefix key itself.
 	sh := h.getShard([]byte(prefix))
@@ -391,14 +397,21 @@ func (h *Hub) sendEvent(w *watcher, eventType EventType, kvVal, prevKv *kv.KeyVa
 func (h *Hub) cleanupOnCancel(w *watcher) {
 	<-w.ctx.Done()
 
-	// Wait until the replay goroutine has stopped touching the event channel
-	// before closing it, so a replay in flight can never send on a closed
-	// channel. For a live-only watcher replayDone is pre-closed, so this is a
-	// no-op. removeWatcher (shard write lock) then blocks new notify sends, and
-	// live sends already in flight hold the shard read lock it waits on.
-	<-w.replayDone
-
+	// Deregister FIRST, then release Close. removeWatcher takes the shard write
+	// lock, so once it returns no new notify can reach this watcher and every
+	// live send already in flight has completed under the read lock it waited
+	// on — which is exactly the state Close publishes to its caller.
 	h.removeWatcher(w)
+	w.markDeregistered()
+
+	// Closing the event channel additionally requires the replay goroutine to
+	// have stopped touching it, so a replay in flight can never send on a closed
+	// channel. For a live-only watcher replayDone is pre-closed and this is a
+	// no-op. It sits AFTER markDeregistered on purpose: a replay observes
+	// cancellation only between the events it matches, so a Close that waited
+	// here would inherit the duration of a history scan it has no reason to
+	// care about.
+	<-w.replayDone
 	close(w.events)
 }
 
@@ -411,11 +424,23 @@ func (w *watcher) matches(key []byte) bool {
 	return matchesRange(key, w.key, w.rangeEnd)
 }
 
-// removeWatcher removes a watcher from the shard registry.
+// removeWatcher removes a watcher from the shard registry and decrements the
+// watch count if — and only if — it was still registered.
+//
+// The decrement is conditional because Hub.Close empties the registry and
+// zeroes the count itself, and each cancelled watcher's cleanup goroutine then
+// arrives here with nothing left to remove. Decrementing unconditionally wrapped
+// the unsigned counter: measured on this tree before the fix, WatchCount()
+// returned 18446744073709551615 after a Hub.Close whose cleanup goroutines had
+// run. That was survivable only while Close was asynchronous, because the
+// goroutines usually landed after the caller had already read the count; making
+// Close wait for them (#309) puts the wrap on the path of every Hub.Close.
 func (h *Hub) removeWatcher(w *watcher) {
+	removed := false
+	sh := h.getShard(w.key)
+
 	if w.rangeEnd == nil {
 		// Exact watcher.
-		sh := h.getShard(w.key)
 		sh.mu.Lock()
 		keyStr := string(w.key)
 		watchers := sh.exactWatches[keyStr]
@@ -425,23 +450,27 @@ func (h *Hub) removeWatcher(w *watcher) {
 				if len(sh.exactWatches[keyStr]) == 0 {
 					delete(sh.exactWatches, keyStr)
 				}
+				removed = true
 				break
 			}
 		}
 		sh.mu.Unlock()
 	} else {
 		// Prefix watcher.
-		sh := h.getShard(w.key)
 		sh.mu.Lock()
 		for j, cw := range sh.prefixWatches {
 			if cw.id == w.id {
 				sh.prefixWatches = append(sh.prefixWatches[:j], sh.prefixWatches[j+1:]...)
+				removed = true
 				break
 			}
 		}
 		sh.mu.Unlock()
 	}
 
+	if !removed {
+		return
+	}
 	h.watchCount.Add(^uint64(0)) // atomic decrement
 }
 

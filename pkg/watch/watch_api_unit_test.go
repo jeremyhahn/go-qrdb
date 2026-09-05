@@ -34,11 +34,9 @@ func TestManagerWatch_ExactKey(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, eventCh)
 
-	// Trigger event in background
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("test-key"), nil, []byte("test-value"), 1, 1)
-	}()
+	// Trigger the event. Watch registers before it returns and notify only
+	// enqueues, so the receive below is the synchronisation.
+	mgr.NotifyPut([]byte("test-key"), nil, []byte("test-value"), 1, 1)
 
 	// Receive event
 	select {
@@ -62,11 +60,9 @@ func TestManagerWatch_WithPrefix(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, eventCh)
 
-	// Trigger event in background
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("/config/server"), nil, []byte("localhost"), 1, 1)
-	}()
+	// Trigger the event. Watch registers before it returns and notify only
+	// enqueues, so the receive below is the synchronisation.
+	mgr.NotifyPut([]byte("/config/server"), nil, []byte("localhost"), 1, 1)
 
 	// Receive event
 	select {
@@ -89,11 +85,8 @@ func TestManagerWatch_DeleteEvent(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "test-key")
 	require.NoError(t, err)
 
-	// Trigger DELETE event
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyDelete([]byte("test-key"), []byte("old-value"), 2, 2)
-	}()
+	// Trigger the DELETE event; the receive below is the synchronisation.
+	mgr.NotifyDelete([]byte("test-key"), []byte("old-value"), 2, 2)
 
 	// Receive event
 	select {
@@ -141,13 +134,10 @@ func TestManagerWatch_MultipleEvents(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "/data/", WithPrefix())
 	require.NoError(t, err)
 
-	// Send multiple events
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("/data/key1"), nil, []byte("value1"), 1, 1)
-		mgr.NotifyPut([]byte("/data/key2"), nil, []byte("value2"), 2, 2)
-		mgr.NotifyDelete([]byte("/data/key1"), []byte("value1"), 3, 3)
-	}()
+	// Send multiple events; the receives below are the synchronisation.
+	mgr.NotifyPut([]byte("/data/key1"), nil, []byte("value1"), 1, 1)
+	mgr.NotifyPut([]byte("/data/key2"), nil, []byte("value2"), 2, 2)
+	mgr.NotifyDelete([]byte("/data/key1"), []byte("value1"), 3, 3)
 
 	// Receive events
 	receivedEvents := []ManagerEvent{}
@@ -326,11 +316,8 @@ func TestManagerWatch_NoMatchingEvents(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "/config/server")
 	require.NoError(t, err)
 
-	// Notify different key
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("/config/client"), nil, []byte("value"), 1, 1)
-	}()
+	// Notify a different key.
+	mgr.NotifyPut([]byte("/config/client"), nil, []byte("value"), 1, 1)
 
 	// Should not receive event
 	select {
@@ -351,11 +338,8 @@ func TestManagerWatch_EmptyPrefix(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "", WithPrefix())
 	require.NoError(t, err)
 
-	// Notify any key
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("any-key"), nil, []byte("any-value"), 1, 1)
-	}()
+	// Notify any key.
+	mgr.NotifyPut([]byte("any-key"), nil, []byte("any-value"), 1, 1)
 
 	// Should receive event
 	select {

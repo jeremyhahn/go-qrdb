@@ -534,9 +534,8 @@ func TestHub_Close_CancelsAllWatchers(t *testing.T) {
 
 	h.Close()
 
-	// Allow cleanup goroutines to run.
-	time.Sleep(100 * time.Millisecond)
-
+	// No wait here: the receive below blocks until the cleanup goroutine closes
+	// the channel, which is the event being asserted.
 	// Event channels should be closed after cleanup goroutines complete.
 	for name, w := range map[string]Watcher{"exact": w1, "prefix": w2} {
 		select {
@@ -621,7 +620,7 @@ func TestHub_WatchCount_DecrementsOnCancel(t *testing.T) {
 	h := NewHub()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	_, err := h.Watch(ctx, "cancel-me")
+	w, err := h.Watch(ctx, "cancel-me")
 	if err != nil {
 		t.Fatalf("Watch returned error: %v", err)
 	}
@@ -631,7 +630,7 @@ func TestHub_WatchCount_DecrementsOnCancel(t *testing.T) {
 	}
 
 	cancel()
-	time.Sleep(100 * time.Millisecond) // Allow cleanup goroutine to run.
+	waitDeregistered(t, w)
 
 	if got := h.WatchCount(); got != 0 {
 		t.Fatalf("WatchCount() = %d, want 0 after cancel", got)
@@ -652,7 +651,7 @@ func TestHub_CleanupOnCancel_ExactWatcher(t *testing.T) {
 	}
 
 	cancel()
-	time.Sleep(100 * time.Millisecond)
+	waitDeregistered(t, w)
 
 	// Channel should be closed after cleanup.
 	select {
@@ -678,7 +677,7 @@ func TestHub_CleanupOnCancel_PrefixWatcher(t *testing.T) {
 	}
 
 	cancel()
-	time.Sleep(100 * time.Millisecond)
+	waitDeregistered(t, w)
 
 	select {
 	case _, ok := <-w.Events():
@@ -917,10 +916,10 @@ func TestHub_WatcherClose_RemovesFromRegistry(t *testing.T) {
 		t.Fatalf("WatchCount() = %d, want 1", got)
 	}
 
+	// No wait: Close does not return until the watcher is out of the registry.
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close returned error: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond) // Allow cleanup goroutine to run.
 
 	if got := h.WatchCount(); got != 0 {
 		t.Fatalf("WatchCount() = %d, want 0 after Close", got)
@@ -941,7 +940,6 @@ func TestHub_PrefixWatcherClose_RemovesFromRegistry(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close returned error: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
 
 	if got := h.WatchCount(); got != 0 {
 		t.Fatalf("WatchCount() = %d, want 0 after prefix Close", got)
@@ -1046,5 +1044,245 @@ func TestHub_WatchResponse_WatchIDMatchesWatcher(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("w2: timed out")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Close is synchronous with deregistration (#309)
+// ---------------------------------------------------------------------------
+
+// waitDeregistered blocks until the hub's cleanup goroutine has removed w from
+// the registry. It is the same signal watcher.Close waits on, used directly by
+// the tests that trigger cleanup by cancelling the parent context instead of
+// calling Close. The deadline is a failure report, not synchronisation: the
+// test waits on the signal, and the bound only turns a hang into a named
+// failure with the count that was actually observed.
+func waitDeregistered(t *testing.T, w Watcher) {
+	t.Helper()
+	select {
+	case <-w.(*watcher).deregistered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("watcher %d not deregistered within 10s", w.WatchID())
+	}
+}
+
+// TestHub_WatcherClose_DeregistersUnderConcurrentNotify is the load-bearing
+// version of TestHub_WatcherClose_RemovesFromRegistry: it asserts the count
+// immediately after Close while the notify path is running flat out against the
+// same shard, which is the condition #309 was reported under (a loaded host
+// that had not scheduled the cleanup goroutine). Every iteration that read a
+// non-zero count under the old cancel-only Close is a failure here.
+func TestHub_WatcherClose_DeregistersUnderConcurrentNotify(t *testing.T) {
+	h := NewHub()
+
+	stop := make(chan struct{})
+	notifying := make(chan struct{})
+	go func() {
+		close(notifying)
+		kvVal := &kv.KeyValue{Key: []byte("busy"), Value: []byte("v"), ModRevision: 1}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				h.NotifyPut([]byte("busy"), kvVal, nil)
+			}
+		}
+	}()
+	<-notifying
+	defer close(stop)
+
+	for i := 0; i < 200; i++ {
+		w, err := h.Watch(context.Background(), "busy")
+		if err != nil {
+			t.Fatalf("iteration %d: Watch returned error: %v", i, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("iteration %d: Close returned error: %v", i, err)
+		}
+		if got := h.WatchCount(); got != 0 {
+			t.Fatalf("iteration %d: WatchCount() = %d, want 0 immediately after Close", i, got)
+		}
+	}
+}
+
+// TestHub_WatcherClose_FromEventConsumer_DoesNotDeadlock closes the watcher
+// from inside the goroutine that is draining its events, while the notify path
+// keeps dispatching. Close waits for the cleanup goroutine, which takes the
+// shard write lock; notify holds the shard read lock while it sends. The send
+// is non-blocking and never waits on the consumer, so the two cannot form a
+// cycle — this test is what says so out loud.
+func TestHub_WatcherClose_FromEventConsumer_DoesNotDeadlock(t *testing.T) {
+	h := NewHub()
+
+	w, err := h.Watch(context.Background(), "consume")
+	if err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		kvVal := &kv.KeyValue{Key: []byte("consume"), Value: []byte("v"), ModRevision: 1}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				h.NotifyPut([]byte("consume"), kvVal, nil)
+			}
+		}
+	}()
+	defer close(stop)
+
+	closed := make(chan error, 1)
+	go func() {
+		// Take one event, then close from inside the delivery loop.
+		<-w.Events()
+		closed <- w.Close()
+	}()
+
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close called from the event consumer did not return within 10s")
+	}
+
+	if got := h.WatchCount(); got != 0 {
+		t.Fatalf("WatchCount() = %d, want 0 after Close", got)
+	}
+}
+
+// TestHub_WatcherClose_AfterHubClose_DoesNotDeadlock covers the second ordering
+// a caller can produce: the hub tore the watcher down first, and the owner
+// closes it afterwards anyway (every API handler does this from a defer). Close
+// must observe the teardown that already happened rather than wait for one that
+// will never be scheduled.
+func TestHub_WatcherClose_AfterHubClose_DoesNotDeadlock(t *testing.T) {
+	h := NewHub()
+
+	exact, err := h.Watch(context.Background(), "hub-closed")
+	if err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+	prefix, err := h.WatchPrefix(context.Background(), "hub-closed/")
+	if err != nil {
+		t.Fatalf("WatchPrefix returned error: %v", err)
+	}
+
+	h.Close()
+
+	for name, w := range map[string]Watcher{"exact": exact, "prefix": prefix} {
+		done := make(chan error, 1)
+		go func(w Watcher) { done <- w.Close() }(w)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: Close returned error: %v", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: Close after Hub.Close did not return within 10s", name)
+		}
+	}
+
+	// Hub.Close empties the registry and zeroes the count itself, so the cleanup
+	// goroutines that ran above must not have decremented it a second time. An
+	// unconditional decrement wrapped this to 18446744073709551615.
+	if got := h.WatchCount(); got != 0 {
+		t.Fatalf("WatchCount() = %d, want 0 after Hub.Close plus watcher Close", got)
+	}
+}
+
+// TestHub_WatcherClose_Idempotent_AllCallersWaitForDeregistration pins the
+// contract for the losers of the CAS as well as the winner: Close means "the
+// watcher is gone" for every caller, so the late ones cannot return early and
+// read a stale count.
+func TestHub_WatcherClose_Idempotent_AllCallersWaitForDeregistration(t *testing.T) {
+	h := NewHub()
+
+	w, err := h.Watch(context.Background(), "idempotent")
+	if err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+
+	const closers = 8
+	counts := make(chan uint64, closers)
+	start := make(chan struct{})
+	for i := 0; i < closers; i++ {
+		go func() {
+			<-start
+			if err := w.Close(); err != nil {
+				counts <- 1 // non-zero fails the assertion below with the error visible
+				return
+			}
+			counts <- h.WatchCount()
+		}()
+	}
+	close(start)
+
+	for i := 0; i < closers; i++ {
+		select {
+		case got := <-counts:
+			if got != 0 {
+				t.Fatalf("closer %d observed WatchCount() = %d after its own Close returned, want 0", i, got)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d of %d concurrent Close calls returned within 10s", i, closers)
+		}
+	}
+}
+
+// TestHub_WatcherClose_DuringReplay_DoesNotAwaitScan is the reason Close waits
+// for deregistration and not for the event channel. fakeHistory's gate holds
+// Replay open indefinitely; cleanup cannot close the event channel until that
+// goroutine lets go, but deregistration does not depend on it, so Close returns.
+// If Close ever moves behind replayDone this test hangs and reports it.
+func TestHub_WatcherClose_DuringReplay_DoesNotAwaitScan(t *testing.T) {
+	gate := make(chan struct{})
+	fh := &fakeHistory{
+		current: 3,
+		changes: []fakeChange{
+			{rev: 1, key: "replay-close", value: "a"},
+			{rev: 2, key: "replay-close", value: "b"},
+			{rev: 3, key: "replay-close", value: "c"},
+		},
+		gate:   gate,
+		firstN: 1,
+	}
+
+	h := NewHub()
+	h.SetHistory(fh)
+
+	w, err := h.Watch(context.Background(), "replay-close", WithStartRevision(1))
+	if err != nil {
+		t.Fatalf("Watch returned error: %v", err)
+	}
+
+	// Wait until the replay goroutine is parked on the gate, so Close is racing
+	// a scan that genuinely cannot finish rather than one that already has.
+	collectN(t, w, 2) // Created response, then the first replayed event.
+
+	closed := make(chan error, 1)
+	go func() { closed <- w.Close() }()
+
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		close(gate)
+		t.Fatal("Close blocked on the in-flight history scan; it must only await deregistration")
+	}
+
+	if got := h.WatchCount(); got != 0 {
+		t.Fatalf("WatchCount() = %d, want 0 after Close during replay", got)
+	}
+
+	// Release the scan so the cleanup goroutine can finish and close the channel.
+	close(gate)
+	for range w.Events() {
 	}
 }

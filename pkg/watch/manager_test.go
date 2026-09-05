@@ -14,10 +14,13 @@
 
 package watch
 
-// All watch manager tests use time.Sleep for goroutine synchronization and
-// real goroutine spawning, making them integration tests rather than pure unit tests.
+// The watch manager tests drive Manager's real per-watch delivery goroutines,
+// which is what makes them integration tests rather than pure unit tests. They
+// live in manager_integration_test.go behind the integration build tag.
 //
-// These tests have been moved to manager_integration_test.go with proper build tags.
+// They no longer synchronise on time.Sleep: each waits on the mock stream's
+// sent signal via waitResponses, and each assertion that something was NOT
+// delivered is ordered behind a later event that WAS (#309).
 //
 // To run these tests:
 //   go test -tags=integration ./pkg/watch/...

@@ -57,6 +57,15 @@ type watcher struct {
 	staging    []WatchResponse
 	replayDone chan struct{}
 
+	// deregistered is closed by the hub's cleanup goroutine once the watcher is
+	// out of the shard registry and no longer counted by WatchCount. Close blocks
+	// on it, which is what makes "after Close returns, the watcher is gone" a
+	// contract rather than a race the caller has to sleep around (#309). A
+	// watcher that no hub owns keeps the pre-closed channel newWatcher installs,
+	// so its Close returns immediately; the hub re-arms it (beginCleanup) before
+	// it publishes the watcher to any other goroutine.
+	deregistered chan struct{}
+
 	// didReplay marks a watcher that performed a start-revision replay, so the
 	// dedup guard applies. deliverFloor is the highest revision already accounted
 	// for: the replay goroutine advances it to the last revision it actually
@@ -91,13 +100,31 @@ func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, parentCtx co
 		progressNotify: opts.ProgressNotify,
 		filters:        opts.Filters,
 		replayDone:     make(chan struct{}),
+		deregistered:   make(chan struct{}),
 	}
 	// Default: live-only (unsynced == false). A replaying watcher is switched to
 	// unsynced by the hub before it is registered (beginReplay); here replayDone
 	// is pre-closed so cleanup for a live-only watcher never blocks.
 	close(w.replayDone)
+	// Default: no hub owns this watcher's teardown, so Close has nothing to wait
+	// for and returns immediately. The hub calls beginCleanup to re-arm the
+	// signal before it registers the watcher.
+	close(w.deregistered)
 	return w
 }
+
+// beginCleanup re-arms the deregistration signal so Close blocks until the
+// hub's cleanup goroutine has removed the watcher from the registry. The hub
+// calls it before the watcher is published to any other goroutine — before
+// registration and before cleanupOnCancel starts — so the field write needs no
+// synchronisation of its own.
+func (w *watcher) beginCleanup() {
+	w.deregistered = make(chan struct{})
+}
+
+// markDeregistered releases Close: the watcher is out of the shard registry and
+// WatchCount no longer includes it.
+func (w *watcher) markDeregistered() { close(w.deregistered) }
 
 // beginReplay marks the watcher as unsynced and re-arms replayDone so live
 // events are staged until the replay goroutine finishes. Called by the hub
@@ -137,13 +164,31 @@ func (w *watcher) WatchID() int64 {
 	return int64(w.id)
 }
 
-// Close cancels the watcher and releases its resources. After Close
-// returns, the Events channel will be closed. Close is idempotent.
+// Close cancels the watcher and blocks until it has been removed from the Hub
+// registry. After Close returns the watcher is gone: no further event can be
+// dispatched to it and Hub.WatchCount no longer counts it, so a caller may
+// assert on the count immediately. Before #309 Close only cancelled the
+// context and deregistration happened later on the cleanup goroutine, which
+// left every caller — the tests included — synchronising on a sleep that a
+// loaded host outran.
+//
+// Close deliberately does NOT wait for the Events channel to close. That step
+// additionally waits for an in-flight historical replay to stop touching the
+// channel, and a replay only observes cancellation between the events it
+// matches, so waiting here would let an arbitrarily long history scan block
+// Close — and pkg/api/etcd's cancel path calls Close while holding the mutex
+// that serialises its whole watch stream. Deregistration costs one shard write
+// lock and nothing else. A caller that needs the channel drained ranges over
+// Events(); it is still closed exactly once, immediately after the replay
+// releases it.
+//
+// Close is idempotent, and every caller returns only after deregistration —
+// not just the one that won the race to cancel.
 func (w *watcher) Close() error {
-	if !w.closed.CompareAndSwap(false, true) {
-		return nil
+	if w.closed.CompareAndSwap(false, true) {
+		w.cancel()
 	}
-	w.cancel()
+	<-w.deregistered
 	return nil
 }
 

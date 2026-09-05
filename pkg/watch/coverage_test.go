@@ -53,11 +53,10 @@ func TestDeliverEvents_ReceivesEvent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, w)
 
-	// Trigger an event.
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyPut([]byte("deliver-key"), nil, []byte("v1"), 1, 1)
-	}()
+	// Trigger an event. Add registered the watch before it returned and notify
+	// only enqueues, so this needs no goroutine and no delay; the receive below
+	// is the synchronisation.
+	mgr.NotifyPut([]byte("deliver-key"), nil, []byte("v1"), 1, 1)
 
 	select {
 	case resp := <-stream.ch:
@@ -80,19 +79,27 @@ func TestDeliverEvents_StreamError(t *testing.T) {
 	stream := newMockStream(ctx)
 	stream.sendErr = &WatchCreateError{Cause: context.Canceled}
 
-	_, err := mgr.Add([]byte("err-key"), nil, 0, WatchFilters{}, stream)
+	w, err := mgr.Add([]byte("err-key"), nil, 0, WatchFilters{}, stream)
 	require.NoError(t, err)
 
 	// Trigger an event; deliverEvents should handle the Send error and cancel the watch.
 	mgr.NotifyPut([]byte("err-key"), nil, []byte("v"), 1, 1)
 
-	// Give deliverEvents time to process and exit.
-	time.Sleep(50 * time.Millisecond)
+	// The cancellation IS the thing under test, so it is also the signal: wait
+	// for it rather than for a duration. The sleeps this replaced were also the
+	// only reason the emptiness check below looked meaningful — this stream's
+	// Send always fails, so nothing can ever reach its channel and that
+	// assertion cannot fail on its own. The cancellation assertion can.
+	select {
+	case <-w.ctx.Done():
+	case <-ctx.Done():
+		t.Fatal("deliverEvents did not cancel the watch after Send returned an error")
+	}
 
 	// After the send error the watch is cancelled. A second notification must
-	// not appear on the stream channel (the goroutine has exited).
+	// not appear on the stream channel: the goroutine that is the only writer
+	// to it has returned.
 	mgr.NotifyPut([]byte("err-key"), nil, []byte("v2"), 2, 2)
-	time.Sleep(20 * time.Millisecond)
 
 	assert.Empty(t, stream.ch, "no events should be delivered after a send error cancels the watch")
 }
@@ -107,10 +114,7 @@ func TestConvertEvents_DeleteEvent(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "del-key")
 	require.NoError(t, err)
 
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyDelete([]byte("del-key"), []byte("old-value"), 2, 1)
-	}()
+	mgr.NotifyDelete([]byte("del-key"), []byte("old-value"), 2, 1)
 
 	select {
 	case event := <-eventCh:
@@ -199,10 +203,7 @@ func TestWatch_DeleteEventNilPrevKv(t *testing.T) {
 	eventCh, err := mgr.Watch(ctx, "nil-prevkv")
 	require.NoError(t, err)
 
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		mgr.NotifyDelete([]byte("nil-prevkv"), nil, 3, 1)
-	}()
+	mgr.NotifyDelete([]byte("nil-prevkv"), nil, 3, 1)
 
 	select {
 	case event := <-eventCh:
