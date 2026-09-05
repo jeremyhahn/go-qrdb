@@ -1654,8 +1654,63 @@ test-release-alpha:
 # Security scanning
 # ============================================================================
 
+# Every scanner in `security` refuses when its binary is absent, and none of
+# them skips.
+#
+# `trivy` used to skip: `command -v trivy || echo "not found - skipping"`, which
+# exits 0, so `security` went on to print "Security suite passed" having run
+# three scanners out of four. Measured 2026-09-05 (#299): trivy was absent from
+# the workstation AND from the devcontainer image every lane runs `make ci` in,
+# so that is what every green Security leg on this host had meant, and the
+# output was identical either way. A ruling to spend a 6.5 GB image rebuild
+# (#294) to "get a trivy result" was made on the strength of a scan that does
+# not run.
+#
+# The guard has to be here rather than in `security` because the question is
+# "did this scanner run", and only the recipe that would have run it can answer
+# it -- in the environment where it would have run. `make ci` executes `_ci`
+# INSIDE the devcontainer (see `ci`), so a check made anywhere else reports on a
+# PATH that decides nothing: trivy present on the host and absent from the image
+# would report a scan that never happened, which is the defect wearing its own
+# remedy. This is why there is no "which scanners ran" summary assembled outside
+# the container.
+#
+# An install hint is part of the message: a gate that refuses without saying how
+# to satisfy it is a gate people route around.
+define require-scanner
+	@command -v $(1) >/dev/null 2>&1 || { \
+		echo "ERROR: $(1) is not installed, and this suite does not skip scanners." >&2; \
+		echo "  A scanner that did not run is not a scanner that passed (#299)." >&2; \
+		echo "  Install: $(2)" >&2; \
+		exit 1; \
+	}
+endef
+
+# Every hint installs the version this repo actually gates on, never `@latest`.
+# gosec is pinned fleet-wide by owner ruling #154 for a measured reason: an
+# `@latest` that self-updated mid-day introduced G703 and reddened the Security
+# job on every branch, main included, on code nobody had touched since April.
+# A hint that says `@latest` would hand a developer exactly that.
+#
+# THESE FOUR LITERALS ARE HAND-SYNCED and nothing asserts they agree. Their
+# authorities are `.github/workflows/ci.yml`'s env block (gosec, govulncheck)
+# and `.devcontainer/Dockerfile`'s TRIVY_VERSION build arg, which cannot read a
+# make variable. go-quicraft solves this with a `check-tool-versions` target;
+# this repo has none yet. Until it does: change the pin here and there together.
+GOSEC_VERSION       := v2.29.0
+GOVULNCHECK_VERSION := v1.7.0
+TRIVY_VERSION       := v0.74.0
+
+GOSEC_INSTALL       := go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+# The release tarball, which is how devops.md 8 has both CI legs install it and
+# how .devcontainer/Dockerfile bakes it into the image. The script is fetched at
+# the tag too, so the hint and the image run the same fixed artifact.
+TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | sh -s -- -b /usr/local/bin $(TRIVY_VERSION)
+
 .PHONY: gosec
 gosec:
+	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
 	$(GOSEC) -concurrency 4 -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
@@ -1671,9 +1726,15 @@ gosec-sarif:
 # section exists to prevent.
 .PHONY: vuln
 vuln:
+	$(call require-scanner,$(GOVULNCHECK),$(GOVULNCHECK_INSTALL))
 	$(GOVULNCHECK) ./...
 	cd sdk/go && $(GOVULNCHECK) ./...
 
+# No `require-scanner` guard: this one runs the Go toolchain, not a separately
+# installed scanner. Every other target in this file needs `go` too, so its
+# absence cannot produce the failure #299 is about -- a suite that reports a
+# pass having silently run less than it says. Do not add a guard here for
+# symmetry; it would assert something that is never in doubt.
 .PHONY: mod-verify
 mod-verify:
 	$(GO) mod verify
@@ -1692,19 +1753,28 @@ TRIVY_SKIP_DIRS := --skip-dirs test,cmd/qrdbd/data
 
 .PHONY: trivy
 trivy:
-	@if command -v trivy >/dev/null 2>&1; then \
-		trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 $(TRIVY_SKIP_DIRS) . ; \
-	else \
-		echo "trivy not found - skipping (install: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b \$$(go env GOPATH)/bin)"; \
-	fi
+	$(call require-scanner,trivy,$(TRIVY_INSTALL))
+	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 $(TRIVY_SKIP_DIRS) .
 
 # The contract CI calls (devops.md §8): gosec, govulncheck, go mod verify and
-# trivy fs, in the same form a developer runs locally. trivy carries its own
-# `command -v` guard so a developer without it installed still gets the Go half
-# of the suite; CI installs the CLI, so nothing is skipped there.
+# trivy fs, in the same form a developer runs locally.
+#
+# The summary line names its prerequisites through `$^` rather than spelling
+# them out, so it cannot drift from the list it is summarising -- a claim that
+# four scanners passed is only worth reading if adding a fifth updates it. It is
+# printed by the devcontainer, which is where they ran.
+#
+# What this line used to say: "trivy carries its own `command -v` guard so a
+# developer without it installed still gets the Go half of the suite; CI
+# installs the CLI, so nothing is skipped there." Both halves were false. The
+# guard skipped for everyone, not only for developers, because the image had no
+# trivy either; and `ci.yml` has not run trivy since ruling #48 moved it to
+# `nightly.yml` (ci.yml:491 says so), so there was no CI install to make the
+# local skip harmless. That is how a suite came to be missing a quarter of
+# itself with nothing to read that would say so.
 .PHONY: security
 security: gosec vuln mod-verify trivy
-	@echo "Security suite passed"
+	@echo "Security suite passed: $^"
 
 # ============================================================================
 # Docker

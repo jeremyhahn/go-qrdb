@@ -74,16 +74,57 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # would trade a flake for a supply-chain hole. Bounded retry is inert on a
 # healthy network: it only fires on failure, and a local build gets the same
 # three attempts a runner does. Durable fix: bake these into the base image.
+#
+# trivy is here because `make ci` runs `_ci` -> `security` -> `trivy` INSIDE
+# this image, so the image's PATH is what decides whether the scan happens.
+# Measured 2026-09-05 (#299): it was absent here, the recipe skipped it, and
+# `security` printed "Security suite passed" having run three scanners of four.
+# The recipe now refuses instead of skipping, which makes this line load-bearing:
+# without it every `make ci` fails at the security step rather than passing while
+# scanning less than it claims. Both are honest; only one lets work continue.
+#
+# Installed from the release tarball via the upstream script, which is the form
+# devops.md §8 names as proven (go-quicraft's .devcontainer/Dockerfile) and the
+# form nightly.yml's Gitea leg uses — the same binary in all three places.
+#
+# PINNED, and BOTH halves: the script is fetched at the tag rather than from
+# `main`, so what runs during this build is a fixed artifact and not whatever
+# the default branch says today. ci.yml pins gosec (owner ruling #154,
+# fleet-wide) and govulncheck for one reason — "a new finding cannot be
+# distinguished from a scanner that moved" — and a scanner in the gate image
+# deserves the same. devops.md §9's no-pin rule is aimed at staleness, and for
+# trivy specifically that rule does not bite: findings come from the
+# vulnerability DB, which is fetched at scan time, not from the binary. So a
+# pin here buys reproducibility and costs no CVE currency, which is not true of
+# gosec or govulncheck.
+#
+# Bumping it is a deliberate act. TRIVY_VERSION in the Makefile carries the same
+# version for the install hint a developer follows; a Dockerfile cannot read a
+# make variable, so those two are kept in step by hand. Change both.
+ARG TRIVY_VERSION=v0.74.0
 RUN for i in 1 2 3; do \
         go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.7.2 && \
         go install github.com/securego/gosec/v2/cmd/gosec@latest && \
         go install golang.org/x/vuln/cmd/govulncheck@latest && \
         go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
+        curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" \
+          | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" && \
         exit 0; \
         echo "tool install attempt $i failed; retrying"; sleep 10; \
     done; \
     echo "tool install failed after 3 attempts"; exit 1
+
+# Every scanner `make security` runs must be present, or the suite is a claim
+# nobody checked (#299). Failing the BUILD here is cheaper than discovering it
+# 50 minutes into a gate, and it is the only place that can distinguish "the
+# scanner is missing" from "the scanner found nothing".
+RUN for t in golangci-lint gosec govulncheck trivy; do \
+        command -v "$t" >/dev/null 2>&1 || { echo "ERROR: $t is not on PATH after the tool install" >&2; exit 1; }; \
+    done; \
+    trivy --version | grep -q "^Version: ${TRIVY_VERSION#v}$" || { \
+        echo "ERROR: trivy is not at the pinned ${TRIVY_VERSION}:" >&2; trivy --version >&2; exit 1; }; \
+    trivy --version
 
 WORKDIR /workspace/go-qrdb
 
