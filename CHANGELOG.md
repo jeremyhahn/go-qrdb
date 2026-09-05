@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.16.1-alpha] - 2026-09-05
+
 ### Added
 
 - **`orchestrator:task_readmit` and `orchestrator:task_block`** (#339), beside
