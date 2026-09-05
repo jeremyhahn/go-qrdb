@@ -1373,6 +1373,44 @@ check-tool-versions:
 .PHONY: test-tool-versions
 test-tool-versions:
 	@./scripts/check-tool-versions_test.sh
+# Symbols no production path can reach (#337). #243's sweep measures
+# CONSTRUCTION -- a type built anywhere outside a test counts as produced -- so a
+# type constructed only inside a function nothing calls scored "produced" and
+# never entered the set. Its 103 is a lower bound; this asks the larger question.
+#
+# TWO TIERS, and only one of them gates. A symbol with an unexported component
+# cannot be named from another package, so unreachable-from-main means it is
+# reached from tests or from nothing: that tier FAILS the build when it grows.
+# An exported symbol may be called by go-xkms or go-quicbaas, which import
+# go-qrdb/pkg/... directly and are invisible here, so those are recorded and
+# counted but never fail. Failing on them would make every downstream-facing API
+# addition a build error, and the gate would be off within a week.
+#
+# THE REFLECT-ROOTS PATTERN IS A DECLARATION. cmd/qrdb is a Wails application
+# whose *Binding methods are invoked from JavaScript; `main` reaches the struct
+# and never names a method on it. Without the declaration the report was 3296
+# symbols and mostly that. The tool warns rather than passes if the pattern ever
+# matches nothing, so a renamed binding type cannot silently widen the exemption.
+DEADCODE_REFLECT_ROOTS := go-qrdb/cmd/qrdb\.[A-Za-z]*Binding\.[A-Z]
+DEADCODE_BASELINE      := test/tools/deadcode/baseline.txt
+
+.PHONY: dead-code
+dead-code:
+	@go run ./test/tools/deadcode -mod . -name . -tags "$(LINT_TAGS)" \
+		-reflect-roots '$(DEADCODE_REFLECT_ROOTS)' -baseline $(DEADCODE_BASELINE)
+	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -tags "$(LINT_TAGS)" \
+		-baseline $(DEADCODE_BASELINE)
+
+# Accepting findings is deliberate and reviewable: the baseline is a tracked
+# file, so growing it shows up in the diff and the commit message has to say
+# which of the four legitimate reasons applies. Shrinking it is the point and is
+# never a failure.
+.PHONY: dead-code-baseline
+dead-code-baseline:
+	@go run ./test/tools/deadcode -mod . -name . -tags "$(LINT_TAGS)" \
+		-reflect-roots '$(DEADCODE_REFLECT_ROOTS)' -baseline $(DEADCODE_BASELINE) -write-baseline
+	@go run ./test/tools/deadcode -mod ./sdk/go -name sdk/go -tags "$(LINT_TAGS)" \
+		-baseline $(DEADCODE_BASELINE) -write-baseline
 
 .PHONY: vet
 vet:

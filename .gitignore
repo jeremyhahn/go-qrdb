@@ -52,6 +52,9 @@ go.work.sum
 
 # compiled binaries never enter the module tree
 /bin/
+# `go build ./test/tools/deadcode` drops its binary at the module root, named
+# for the package. It was committed once (#337) before this line existed.
+/deadcode
 
 # devcontainer secrets (Gitea module-fetch token)
 .devcontainer/.env
