@@ -378,7 +378,7 @@ func TestKMeans_RecomputeCentroids_EmptyCluster(t *testing.T) {
 
 	centroids, err := km.recomputeCentroids(vectors, assignments, clusterSizes)
 	require.NoError(t, err)
-	assert.Len(t, centroids, 3)
+	require.Len(t, centroids, 3)
 
 	// Empty cluster should have zero centroid
 	assert.Equal(t, float32(0.0), centroids[2][0])

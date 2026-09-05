@@ -161,7 +161,7 @@ func TestKMeans_KMeansPlusPlusInit(t *testing.T) {
 	centroids, _, err := km.Cluster(vectors)
 
 	require.NoError(t, err)
-	assert.Len(t, centroids, 2)
+	require.Len(t, centroids, 2)
 
 	// K-means++ should choose well-separated initial centroids
 	dist := L2(centroids[0], centroids[1])
@@ -442,7 +442,7 @@ func TestFindNearestCentroids_Ordering(t *testing.T) {
 	query := []float32{1.0, 1.0}
 	result := FindNearestCentroids(query, centroids, 4, L2)
 
-	assert.Len(t, result, 4)
+	require.Len(t, result, 4)
 
 	// Should be in order: [3, 0, 1, 2] based on distances
 	assert.Equal(t, 3, result[0]) // Closest

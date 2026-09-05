@@ -259,7 +259,7 @@ func TestKMeans_Cluster_AssignmentNoChange(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, centroids, 2)
-	assert.Len(t, assignments, len(vectors))
+	require.Len(t, assignments, len(vectors))
 
 	// Verify first 3 are in one cluster, last 3 in another
 	assert.Equal(t, assignments[0], assignments[1])

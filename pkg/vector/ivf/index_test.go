@@ -185,6 +185,23 @@ func TestIndex_Add_DuplicateID(t *testing.T) {
 	assert.Contains(t, err.Error(), "already exists")
 }
 
+// A pinned Seed is load-bearing here, not decoration.
+//
+// The assertions below are EXACT -- two results, "a" first -- and the search
+// they are asserted against is APPROXIMATE: nprobe=2 visits two of the four
+// inverted lists, so a query is answered from the clusters nearest the QUERY,
+// which need not be the clusters holding the nearest VECTORS. Whether all four
+// added vectors land in four distinct lists is a property of the k-means
+// initialisation, and with a clock-seeded initialisation that property does not
+// always hold: measured over 200,000 seeds, 48 of them (2.4e-4) cluster such
+// that only ONE result is reachable within nprobe=2, and `Len(results, 2)`
+// fails. That is not bad luck, it is the assertion being stronger than the
+// algorithm guarantees.
+//
+// Seed makes the initialisation reproducible (see kmeans_seed_test.go, #92), so
+// the clustering is fixed and the exact assertions are legitimate. If the
+// clustering ever changes, this test fails on every run rather than one run in
+// four thousand.
 func TestIndex_Search(t *testing.T) {
 	config := &Config{
 		NumCentroids:   4,
@@ -194,6 +211,7 @@ func TestIndex_Search(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  2,
 		DistanceMetric: L2Distance,
+		Seed:           288,
 	}
 
 	idx, _ := NewIndex(config)
@@ -224,7 +242,7 @@ func TestIndex_Search(t *testing.T) {
 	results, err := idx.Search(query, 2, 2)
 
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
+	require.Len(t, results, 2)
 
 	// First result should be "a" (closest)
 	assert.Equal(t, "a", results[0].ID)
@@ -343,6 +361,27 @@ func TestIndex_Remove_NotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found")
 }
 
+// Save/Load is a PERSISTENCE contract, so what is asserted is that the loaded
+// index answers exactly as the source index did -- not that either of them
+// achieves any particular recall.
+//
+// The distinction matters because this test used to conflate the two. It
+// searched the loaded index with nprobe=1 and asserted `Len(results, 1)`, which
+// is a recall claim about an approximate index: nprobe=1 visits the single
+// cluster nearest the QUERY, and that cluster can legitimately be empty when
+// the nearest VECTOR sits in a neighbouring one. Measured over 60,000 seeds,
+// 3 of them (5.0e-5) cluster such that the list nearest (0,0) holds nothing and
+// the search correctly returns zero results. Those same seeds return zero
+// results BEFORE the save as well -- centroids, inverted lists, size and the
+// trained flag all round-trip byte-identically -- so the failure was never
+// about persistence at all (#288).
+//
+// Two changes make the assertions match the guarantee:
+//   - Seed pins the k-means initialisation (see kmeans_seed_test.go, #92), so
+//     the clustering is fixed rather than drawn from the clock.
+//   - The search is compared against the SOURCE index's answer to the same
+//     query. That is the round-trip property Save/Load actually owns, and it
+//     holds for every clustering, degenerate ones included.
 func TestIndex_SaveLoad(t *testing.T) {
 	config := &Config{
 		NumCentroids:   4,
@@ -352,6 +391,7 @@ func TestIndex_SaveLoad(t *testing.T) {
 		InitMethod:     "kmeans++",
 		DefaultNProbe:  1,
 		DistanceMetric: L2Distance,
+		Seed:           288,
 	}
 
 	idx, _ := NewIndex(config)
@@ -368,26 +408,42 @@ func TestIndex_SaveLoad(t *testing.T) {
 	require.NoError(t, idx.Add("vec1", []float32{0.2, 0.2}, map[string]interface{}{"label": "a"}))
 	require.NoError(t, idx.Add("vec2", []float32{5.2, 5.2}, map[string]interface{}{"label": "b"}))
 
+	// The source index's answer, taken BEFORE the save, is the reference the
+	// loaded index is held to.
+	query := []float32{0.0, 0.0}
+	want, err := idx.Search(query, 1, 1)
+	require.NoError(t, err)
+
 	// Save
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "index.json")
-	err := idx.Save(path)
-	require.NoError(t, err)
+	require.NoError(t, idx.Save(path))
 
 	// Load into new index
 	idx2, _ := NewIndex(config)
-	err = idx2.Load(path)
-	require.NoError(t, err)
+	require.NoError(t, idx2.Load(path))
 
 	assert.True(t, idx2.IsTrained())
 	assert.Equal(t, 2, idx2.Size())
 
-	// Search should work
-	query := []float32{0.0, 0.0}
-	results, err := idx2.Search(query, 1, 1)
+	// The round trip preserved every vector, its cluster assignment and its
+	// metadata -- so the same query returns the same answer.
+	got, err := idx2.Search(query, 1, 1)
 	require.NoError(t, err)
-	assert.Len(t, results, 1)
-	assert.Equal(t, "vec1", results[0].ID)
+	assert.Equal(t, want, got,
+		"the loaded index answered differently from the source index: Save/Load "+
+			"did not preserve the centroids, the inverted lists or the metadata")
+
+	// Probing every cluster makes the search exhaustive, so this assertion is
+	// about which vectors survived the round trip rather than about which
+	// cluster the query happened to land in.
+	exhaustive, err := idx2.Search(query, 2, config.NumCentroids)
+	require.NoError(t, err)
+	require.Len(t, exhaustive, 2)
+	assert.Equal(t, "vec1", exhaustive[0].ID, "vec1 is nearest (0,0) and must rank first")
+	assert.Equal(t, "vec2", exhaustive[1].ID)
+	assert.Equal(t, "a", exhaustive[0].Metadata["label"])
+	assert.Equal(t, "b", exhaustive[1].Metadata["label"])
 }
 
 func TestIndex_Save_Untrained(t *testing.T) {
