@@ -51,6 +51,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 )
 
 const (
@@ -401,7 +403,20 @@ func (ca *CA) Issue(dir string, opts ...CertOption) (*KeyPair, error) {
 	var ips []net.IP
 	if cfg.serverAuth {
 		extKeyUsage = append(extKeyUsage, x509.ExtKeyUsageServerAuth)
-		dnsNames, ips = localSANs()
+		// There is exactly ONE local-SAN implementation in this repository, and
+		// it is the production one. The harness carried a copy for a while; the
+		// copy drifted (it kept 0.0.0.0 and :: after clustertls dropped them),
+		// and the drift let a "len(ips) >= 4" assertion be copied from this
+		// package into cmd/qrdbd, where it was wrong and reddened every
+		// container gate for three weeks (#297, #304).
+		//
+		// Resist adding wildcards back "so any bind address validates". A
+		// wildcard is a BIND address, and TLS verification never sees one: the
+		// client verifies the name it DIALED. Every caller of this harness was
+		// enumerated for #304 and every one of them dials 127.0.0.1 or
+		// localhost, both of which clustertls.LocalSANs already covers. The
+		// tests bind qrdbd to 0.0.0.0 and still connect to 127.0.0.1.
+		dnsNames, ips = clustertls.LocalSANs()
 	}
 
 	var uris []*url.URL
@@ -488,27 +503,4 @@ func validateCommonName(commonName string) error {
 // newSerial draws a random 128-bit certificate serial number.
 func newSerial() (*big.Int, error) {
 	return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-}
-
-// localSANs returns the DNS names and IP addresses a node certificate must
-// cover to be reachable however a test addresses the daemon.
-func localSANs() ([]string, []net.IP) {
-	dnsNames := []string{"localhost"}
-	ips := []net.IP{
-		net.IPv4(127, 0, 0, 1),
-		net.IPv6loopback,
-		net.IPv4zero,
-		net.IPv6zero,
-	}
-	if hostname, err := os.Hostname(); err == nil && hostname != "" {
-		dnsNames = append(dnsNames, hostname)
-	}
-	if addrs, err := net.InterfaceAddrs(); err == nil {
-		for _, addr := range addrs {
-			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
-				ips = append(ips, ipNet.IP)
-			}
-		}
-	}
-	return dnsNames, ips
 }

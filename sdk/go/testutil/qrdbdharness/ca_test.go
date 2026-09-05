@@ -20,8 +20,10 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -249,8 +251,14 @@ func TestIssueServerCertificate(t *testing.T) {
 	if !loopback {
 		t.Error("node certificate has no loopback SAN")
 	}
-	if !unspecified {
-		t.Error("node certificate has no unspecified-address SAN")
+	// The unspecified addresses must be ABSENT. This assertion used to require
+	// them, back when the harness kept its own copy of localSANs; the copy had
+	// stopped matching clustertls.LocalSANs, which dropped them deliberately.
+	// Nothing verifies a certificate against an unspecified address: those are
+	// bind addresses, and a client checks the name it dialed, not the address
+	// the server bound to. See the note at the LocalSANs call in ca.go.
+	if unspecified {
+		t.Errorf("node certificate carries an unspecified-address SAN: %v", cert.IPAddresses)
 	}
 }
 
@@ -546,12 +554,89 @@ func TestCATLSFlags(t *testing.T) {
 	}
 }
 
-func TestLocalSANs(t *testing.T) {
-	dnsNames, ips := localSANs()
-	if len(dnsNames) == 0 || dnsNames[0] != "localhost" {
-		t.Errorf("dnsNames = %v, want localhost first", dnsNames)
+// TestIssueServerCertificateSANSet pins the SAN set a harness node certificate
+// carries, as a set equality in both directions rather than as a count.
+//
+// A count is a claim about how many NICs the host happens to have -- true on a
+// workstation, false in a single-interface container. The version of this test
+// that asserted `len(ips) >= 4` was copied verbatim into cmd/qrdbd, where the
+// production function excludes the two unspecified addresses, and it was
+// deterministically red in every container gate for three weeks (#297, #310).
+//
+// It asserts against the ISSUED CERTIFICATE rather than against a SAN helper,
+// because the certificate is what a caller verifies. That also means the
+// assertion survives the helper being replaced, which is what #304 did.
+//
+// Known limit, stated rather than papered over: the interface half of the
+// expected set is derived the same way the implementation derives it, so that
+// half MIRRORS the implementation rather than checking it independently. The
+// loopback half and the exclusion half are genuine checks, and the exclusion
+// half is the one that catches the divergence this test exists for. Making the
+// interface half independent needs an enumerator seam in pkg/clustertls, which
+// is an API change and not this fix (same reasoning as #310).
+func TestIssueServerCertificateSANSet(t *testing.T) {
+	ca := newTestCA(t)
+	kp, err := ca.Issue(t.TempDir(), nodeSubject("test-node"), WithServerAuth())
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
 	}
-	if len(ips) < 4 {
-		t.Errorf("ips = %v, want at least the loopback and unspecified addresses", ips)
+	cert := parseLeaf(t, kp.CertPEM)
+
+	wantDNS := map[string]bool{"localhost": true}
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		wantDNS[hostname] = true
 	}
+	gotDNS := make(map[string]bool, len(cert.DNSNames))
+	for _, name := range cert.DNSNames {
+		gotDNS[name] = true
+	}
+	if !equalStringSet(wantDNS, gotDNS) {
+		t.Errorf("DNS SANs = %v, want %v", cert.DNSNames, keysOf(wantDNS))
+	}
+
+	// The contract: the two loopbacks plus every non-loopback interface
+	// address, and nothing else. Missing entries catch a dropped loopback or a
+	// dropped interface address; EXTRA entries catch 0.0.0.0 and ::, which
+	// clustertls.LocalSANs excludes because nothing dials them.
+	wantIP := map[string]bool{"127.0.0.1": true, "::1": true}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("InterfaceAddrs: %v", err)
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			wantIP[ipNet.IP.String()] = true
+		}
+	}
+	gotIP := make(map[string]bool, len(cert.IPAddresses))
+	for _, ip := range cert.IPAddresses {
+		gotIP[ip.String()] = true
+	}
+	if !equalStringSet(wantIP, gotIP) {
+		t.Errorf("IP SANs = %v, want the loopbacks plus every non-loopback interface address %v",
+			cert.IPAddresses, keysOf(wantIP))
+	}
+}
+
+// equalStringSet reports whether two string sets hold the same members.
+func equalStringSet(want, got map[string]bool) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for k := range want {
+		if !got[k] {
+			return false
+		}
+	}
+	return true
+}
+
+// keysOf returns a set's members, for a failure message that names them.
+func keysOf(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

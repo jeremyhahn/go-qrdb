@@ -161,6 +161,29 @@ directory after the rename and does not report success until that succeeds.
 Every caller gets this, so `PersistMaterial` and `PersistCA` are crash-durable
 too.
 
+**There is one local-SAN implementation, and the unspecified addresses are not
+in it.** `clustertls.LocalSANs` returns `localhost`, the machine hostname, the
+two loopbacks, and every non-loopback unicast interface address. `0.0.0.0` and
+`::` are excluded: they are *bind* addresses, and a TLS client verifies the name
+it **dialed**, never the address the server bound to. `pkg/cluster` refuses to
+advertise them to peers for the same reason (`AdvertisableHost`). Listing them
+widens the certificate's stated identity and verifies nothing.
+
+The test harness that mints certificates for the integration and conformance
+suites — `sdk/go/testutil/qrdbdharness` — calls that same function rather than
+keeping its own. It used to keep a copy, and the copy drifted: it retained the
+two unspecified addresses after `clustertls` dropped them. Nothing disagreed
+with the drift, because the exclusion was documented in prose and asserted by no
+test, so an assertion written against the harness copy (`len(ips) >= 4`) was
+copied into `cmd/qrdbd`, where it was wrong and reddened every container gate
+for three weeks. Both halves of the contract are now pinned by tests in
+`pkg/clustertls` — the inclusion half and the exclusion half.
+
+The harness is not a special case in need of wildcards. Every suite that uses
+it binds `qrdbd` to `0.0.0.0` and then connects to `127.0.0.1` or `localhost`;
+the bind address and the verified name are different values, and only the second
+one has to be a SAN.
+
 **A consumer that keeps its own cached-material branch must resume the listener
 from it.** `Resolve`'s cached path is not the only one: `qrdbd` keeps a
 cached-certificate branch above its delegation to `Resolve`, so that an X.509
@@ -301,6 +324,10 @@ type ImbalanceReport struct {
   re-subscribe the manager reconciles against a full `ListMembers` snapshot, so
   members that joined or left while it was not watching converge in **both**
   directions. This is O(cluster size) and deliberate.
+- **One implementation of the local SAN set, and it excludes `0.0.0.0` and
+  `::`.** Production code and the `qrdbdharness` test CA both call
+  `clustertls.LocalSANs`. A wildcard is a bind address; nothing verifies a
+  certificate against one — see [Enrollment role](#enrollment-role).
 - **Multicast requires an operator-chosen PSK.** There is no default secret;
   announcements are HMAC-SHA256 authenticated.
 - **Member entries live at `__sys:cluster/members/{nodeID}`**, lease-backed and

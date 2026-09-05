@@ -392,3 +392,26 @@ func TestLocalSANsAlwaysIncludesLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalSANs_ExcludesUnspecified pins the OTHER half of the doc comment.
+//
+// Until #304 the inclusion half was tested here and the exclusion half was only
+// asserted in prose, so a copy of this function that kept 0.0.0.0 and :: could
+// live in sdk/go/testutil/qrdbdharness for months without any test disagreeing
+// with it -- and an assertion written against that copy was then pasted into
+// cmd/qrdbd, where it reddened every container gate for three weeks (#297).
+//
+// The addresses are excluded because nothing dials them. They are BIND
+// addresses; a TLS client verifies the name it dialed, and pkg/cluster refuses
+// to advertise them to peers for the same reason (AdvertisableHost). Listing
+// them widens the certificate's stated identity and verifies nothing.
+func TestLocalSANs_ExcludesUnspecified(t *testing.T) {
+	_, ips := clustertls.LocalSANs()
+
+	for _, ip := range ips {
+		if ip.IsUnspecified() {
+			t.Errorf("IP SANs %v include the unspecified address %s; "+
+				"LocalSANs excludes 0.0.0.0 and :: deliberately", ips, ip)
+		}
+	}
+}
