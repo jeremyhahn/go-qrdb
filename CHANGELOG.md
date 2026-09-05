@@ -11,6 +11,8 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.16.2-alpha] - 2026-09-05
+
 ### Added
 
 - **`service.AttestationRecorder` — the trusted-server path for recording
