@@ -14,7 +14,7 @@ require (
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/quic-go/quic-go v0.61.0
 	github.com/stretchr/testify v1.11.1
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12
 	gorm.io/gorm v1.31.2
 )
