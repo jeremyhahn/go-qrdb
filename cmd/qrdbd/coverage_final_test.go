@@ -362,10 +362,13 @@ func TestStartBootstrapServers_InvalidNoiseKeyFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(keyPath, []byte("this-is-not-a-valid-hex-noise-key"), 0o600))
 
 	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir: dir,
+		host:    testBindHost,
 	}
+	// DecodeStaticKey refuses the garbage key before the listener opens;
+	// reserved anyway, for the reason given in
+	// TestStartBootstrapServers_InvalidExistingKey (go-qrdb#313).
+	reserveNoisePort(t, f)
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
 	require.Error(t, err)

@@ -34,19 +34,35 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterenroll"
 )
 
-// freeEnrollPort reserves and releases a loopback port so the test knows an
-// address the enrollment listener will take.
-func freeEnrollPort(t *testing.T) int {
+// reserveNoisePort gives the caller's flags a Noise port nothing else on this
+// host holds, probed AT THE HOST THE LISTENER WILL BIND.
+//
+// clusterenroll.Options.NoisePort documents zero as "defaults to
+// DefaultNoisePort" -- 63006, a fixed number -- and NOT as the ":0" the Go
+// convention would read it as. So `bootstrapNoisePort: 0` is not an ephemeral
+// port, it is THE most contended port in the package, and every concurrent
+// copy of these tests wants exactly it. Gitea runs pull_request CI on
+// refs/pull/N/head across five runners sharing one host, so concurrent copies
+// are the normal case rather than the exception: this reddened main's CI on
+// 0676e9af with two of these tests failing 40 ms apart on
+//
+//	listen tcp 127.0.0.1:63006: bind: address already in use
+//
+// and it was the THIRD sighting -- see the comment above
+// TestNewStartCmd_ValidConfigFileApplied in coverage_gaps_test.go for the
+// first, which was misread as a config-loading bug and filed as go-qrdb#84.
+//
+// The host is read back off the flags through resolveNoiseHost rather than
+// assumed to be testBindHost, because a port proven free at one address says
+// nothing about the same number at another -- that is go-qrdb#253, and probing
+// where you actually bind is the whole lesson of go-qrdb#313.
+func reserveNoisePort(t *testing.T, f *startFlags) {
 	t.Helper()
-	l, err := net.Listen("tcp", net.JoinHostPort(testBindHost, "0"))
+	port, err := freePortOn(resolveNoiseHost(f), networkTCP)
 	if err != nil {
-		t.Fatalf("reserve port: %v", err)
+		t.Fatalf("reserve a Noise port at %s: %v", resolveNoiseHost(f), err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	if err := l.Close(); err != nil {
-		t.Fatalf("release reserved port: %v", err)
-	}
-	return port
+	f.bootstrapNoisePort = port
 }
 
 // TestResolveTLS_FirstNodeResumesEnrollmentOnRestart: a first node that boots,
@@ -58,12 +74,15 @@ func freeEnrollPort(t *testing.T) int {
 func TestResolveTLS_FirstNodeResumesEnrollmentOnRestart(t *testing.T) {
 	dir := t.TempDir()
 	f := &startFlags{
-		dataDir:            dir,
-		discoveryMethod:    "static",
-		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir:         dir,
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
 	}
+	// Both boots bind, and boot 2 binds the same number boot 1 released, so
+	// one reservation serves the pair. See reserveNoisePort for why a zero
+	// here is the fixed default rather than an ephemeral port.
+	reserveNoisePort(t, f)
 
 	_, servers1, err := resolveTLS(f, testLogger())
 	if err != nil {
@@ -113,7 +132,6 @@ func TestResolveTLS_FirstNodeResumesEnrollmentOnRestart(t *testing.T) {
 // statistic.
 func TestRunStart_ReleasesTheEnrollmentListenerOnAnEarlyError(t *testing.T) {
 	dir := t.TempDir()
-	port := freeEnrollPort(t)
 
 	// A regular file where the databases directory belongs fails database
 	// setup, which runs after resolveTLS has already started the listener.
@@ -122,19 +140,22 @@ func TestRunStart_ReleasesTheEnrollmentListenerOnAnEarlyError(t *testing.T) {
 	}
 
 	f := &startFlags{
-		dataDir:            dir,
-		discoveryMethod:    "static",
-		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoisePort: port,
-		host:               testBindHost,
-		smType:             "memory",
+		dataDir:         dir,
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
+		smType:          "memory",
 	}
+	reserveNoisePort(t, f)
+	port := f.bootstrapNoisePort
 
 	if err := runStart(f); err == nil {
 		t.Fatal("runStart must fail: the databases path is a regular file")
 	}
 
-	ln, err := net.Listen("tcp", net.JoinHostPort(testBindHost, strconv.Itoa(port)))
+	// The rebind probes the same address the listener took, for the same
+	// reason the reservation did.
+	ln, err := net.Listen("tcp", net.JoinHostPort(resolveNoiseHost(f), strconv.Itoa(port)))
 	if err != nil {
 		t.Fatalf("rebind the enrollment port %d after runStart returned an error: %v. "+
 			"The resumed listener, its goroutine and the Noise static key's protected "+
@@ -157,13 +178,14 @@ func TestRunStart_ReleasesTheEnrollmentListenerOnAnEarlyError(t *testing.T) {
 func TestResolveTLS_RefusesADataDirectoryWithNoRecordedRole(t *testing.T) {
 	dir := t.TempDir()
 	f := &startFlags{
-		dataDir:            dir,
-		discoveryMethod:    "static",
-		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
-		smType:             "memory",
+		dataDir:         dir,
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
+		smType:          "memory",
 	}
+	// Boot 1 binds; see reserveNoisePort.
+	reserveNoisePort(t, f)
 
 	// Boot 1 writes the material and the role, exactly as a current version
 	// does. Removing the role file is what an upgraded pre-role data directory

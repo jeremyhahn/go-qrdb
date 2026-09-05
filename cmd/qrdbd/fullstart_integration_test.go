@@ -189,6 +189,11 @@ func TestRunStart_MultiNode_FirstNode_BootstrapServers_ThenSIGTERM(t *testing.T)
 		// → resolveTLS Path 5 → startBootstrapServers called.
 		host: testBindHost,
 	}
+	// Path 5 opens the enrollment listener. Every other port in this test is
+	// reserved; leaving the Noise one unset takes the fixed default 63006,
+	// which is the one number every concurrent copy of this package wants
+	// (go-qrdb#313). See reserveNoisePort in enrollment_resume_test.go.
+	reserveNoisePort(t, f)
 
 	done := make(chan error, 1)
 	go func() {

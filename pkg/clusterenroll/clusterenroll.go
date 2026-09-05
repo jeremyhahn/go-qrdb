@@ -164,6 +164,14 @@ func (b BootstrapOptions) HasFlags() bool {
 type AdvertiseOptions struct {
 	// NoisePort is the TCP port for the Noise bootstrap server.
 	// Zero defaults to DefaultNoisePort.
+	//
+	// ZERO IS NOT ":0". It does not ask the kernel for an ephemeral port the
+	// way a bare Go listener address would; it binds the fixed 63006. A
+	// caller that wants a port nobody else holds -- a test, above all --
+	// must reserve one and pass the number, because 63006 is the single
+	// most contended port this package has: every concurrent copy of the
+	// daemon or its tests on one host wants exactly it, and CI runs five
+	// pipelines per host (go-qrdb#313, and go-qrdb#84 before it).
 	NoisePort int
 
 	// NoiseHost is the bind host for the Noise bootstrap server. It is

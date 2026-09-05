@@ -201,15 +201,18 @@ func TestResolveTLS_FirstNode(t *testing.T) {
 	dir := t.TempDir()
 
 	f := &startFlags{
-		dataDir:            dir,
-		discoveryMethod:    "static",
-		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoisePort: 0, // will use default
+		dataDir:         dir,
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
 		// The Noise listener has no default bind host of its own: it
 		// follows --host, which cobra always populates in production but
 		// a hand-built startFlags does not.
 		host: testBindHost,
 	}
+	// Path 5 opens the enrollment listener, so this test owns a port rather
+	// than taking the fixed default 63006 every concurrent copy wants
+	// (go-qrdb#313). See reserveNoisePort in enrollment_resume_test.go.
+	reserveNoisePort(t, f)
 
 	got, servers, err := resolveTLS(f, testLogger())
 	if err != nil {
@@ -490,12 +493,13 @@ func TestStartBootstrapServers_GeneratesKey(t *testing.T) {
 	}
 
 	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: 0, // OS-assigned port
-		host:               testBindHost,
+		dataDir: dir,
+		host:    testBindHost,
 	}
+	// A zero here is NOT an OS-assigned port -- it is the fixed default
+	// 63006 (go-qrdb#313). See reserveNoisePort in enrollment_resume_test.go.
+	reserveNoisePort(t, f)
 
-	// Use port 0 for OS-assigned port to avoid conflicts.
 	servers, err := startBootstrapServers(bundle, f, testLogger())
 	if err != nil {
 		t.Fatalf("startBootstrapServers: %v", err)
@@ -533,10 +537,12 @@ func TestStartBootstrapServers_LoadsExistingKey(t *testing.T) {
 
 	// Pre-generate and persist a key.
 	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir: dir,
+		host:    testBindHost,
 	}
+	// Both starts bind, the second after the first has stopped, so one
+	// reservation serves the pair (go-qrdb#313).
+	reserveNoisePort(t, f)
 
 	servers1, err := startBootstrapServers(bundle, f, testLogger())
 	if err != nil {
@@ -573,10 +579,18 @@ func TestStartBootstrapServers_InvalidExistingKey(t *testing.T) {
 	}
 
 	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir: dir,
+		host:    testBindHost,
 	}
+	// DecodeStaticKey refuses the planted key before the listener is opened,
+	// so this test does not bind today. It reserves anyway: whether a zero
+	// here is harmless depends on which failure happens to come first, and
+	// that is exactly the kind of boundary a later edit moves without
+	// noticing. Reserving at every site makes "no test in this package leaves
+	// the Noise port at its default" a property a reader can check by
+	// grepping for the field, rather than one that has to be re-derived from
+	// control flow site by site (go-qrdb#313).
+	reserveNoisePort(t, f)
 
 	_, err = startBootstrapServers(bundle, f, testLogger())
 	if err == nil {
@@ -998,12 +1012,14 @@ func TestResolveTLS_Path5_BootstrapServerStartError(t *testing.T) {
 	}
 
 	f := &startFlags{
-		dataDir:            dir,
-		discoveryMethod:    "static",
-		peers:              []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir:         dir,
+		discoveryMethod: "static",
+		peers:           []string{"1=127.0.0.1:63001", "2=127.0.0.2:63001"},
+		host:            testBindHost,
 	}
+	// Fails on the planted key before the listener opens; reserved anyway,
+	// for the reason given in TestStartBootstrapServers_InvalidExistingKey.
+	reserveNoisePort(t, f)
 
 	_, _, err := resolveTLS(f, testLogger())
 	if err == nil {

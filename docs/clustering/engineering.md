@@ -353,6 +353,8 @@ Discovery lives under the `discovery` block — see
 | `discovery.min_peers` | `--cluster-min-peers` | auto-removal quorum floor (`MinQuorum`) |
 | `raft.peers` | — | `id=address` specs for the `static` method |
 | DNS SRV target | — | `{service}.{proto}.{domain}`, default `_raft._udp` |
+| `bootstrap.noise_port` | `--bootstrap-noise-port` | TCP port of the first node's enrollment listener; **zero means the fixed default 63006, not an ephemeral port** |
+| `bootstrap.noise_host` | `--bootstrap-noise-host` | bind host for that listener; falls back to `server.host` so a node confined to one interface does not expose enrollment on all of them |
 
 ## Test strategy
 
@@ -364,6 +366,17 @@ Discovery lives under the `discovery` block — see
   they are what stops automatic reconfiguration destroying a cluster.
 - **No `time.Sleep`**: lease expiry and the keepalive are driven through the
   clock seam.
+- **A test that opens the enrollment listener reserves its own Noise port, at
+  the host the listener will bind.** `AdvertiseOptions.NoisePort` reads zero as
+  *the default 63006*, not as the `":0"` a Go reader expects, so the natural
+  spelling of "give me any free port" is in fact the spelling of "give me the
+  one port every other copy of this package is also asking for". CI runs
+  pull-request pipelines on five runners sharing one host, so concurrent copies
+  are the normal case; a fixed port there is a scheduled failure rather than a
+  race. The reservation probes at `resolveNoiseHost(f)` and not at a hardcoded
+  loopback, because a port proven free at one address says nothing about the
+  same number at another. This has reddened CI three times — see
+  `reserveNoisePort` in `cmd/qrdbd/enrollment_resume_test.go` for the history.
 - **Integration**: the 3-node Raft suites — `isolation_raft_cluster_test.go`,
   `isolation_raft_dedicated_wal_test.go`, `isolation_raft_rebalance_test.go`,
   `isolation_raft_scale_test.go`, `cluster_test.go`, `drain_test.go`,

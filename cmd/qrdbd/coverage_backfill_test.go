@@ -984,10 +984,13 @@ func TestStartBootstrapServers_WriteKeyFileFails(t *testing.T) {
 	require.NoError(t, os.MkdirAll(keyFilePath, 0o700))
 
 	f := &startFlags{
-		dataDir:            dir,
-		bootstrapNoisePort: 0,
-		host:               testBindHost,
+		dataDir: dir,
+		host:    testBindHost,
 	}
+	// The key write fails before the listener opens; reserved anyway, for the
+	// reason given in TestStartBootstrapServers_InvalidExistingKey
+	// (go-qrdb#313).
+	reserveNoisePort(t, f)
 
 	_, err = startBootstrapServers(bundle, f, newDiscardLogger())
 	require.Error(t, err)
