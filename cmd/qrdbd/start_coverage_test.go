@@ -23,6 +23,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1984,14 +1985,42 @@ func TestBootstrapTLS_SPKIPinWithNoAddr(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// localSANs: returns at least localhost and the required base IPs
+// localSANs: the SAN set is exactly the two loopbacks plus every non-loopback
+// interface address — no more, no less, on a host with any number of NICs
 // ---------------------------------------------------------------------------
 
 func TestLocalSANs_ReturnsLocalhostAndBaseIPs(t *testing.T) {
 	dnsNames, ips := localSANs()
+
 	assert.Contains(t, dnsNames, "localhost")
-	// At minimum: 127.0.0.1, ::1 (IPv6 loopback), 0.0.0.0, ::0 are present.
-	assert.GreaterOrEqual(t, len(ips), 4)
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		assert.Contains(t, dnsNames, hostname, "hostname must be a DNS SAN")
+	}
+
+	// The contract is a set equality, so measure the other half of it rather
+	// than asserting a count: a count is a claim about how many NICs the host
+	// happens to have, which is true on a workstation and false in a
+	// single-interface container.
+	want := map[string]bool{"127.0.0.1": true, "::1": true}
+	addrs, err := net.InterfaceAddrs()
+	require.NoError(t, err)
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			want[ipNet.IP.String()] = true
+		}
+	}
+
+	got := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		got[ip.String()] = true
+	}
+
+	// Set equality in both directions. Missing entries catch a dropped
+	// loopback or a dropped interface address; extra entries catch the
+	// unspecified addresses 0.0.0.0 and ::, which LocalSANs deliberately
+	// excludes because nothing dials them (pkg/cluster.AdvertisableHost
+	// refuses to advertise them for the same reason).
+	assert.Equal(t, want, got, "IP SANs must be the loopbacks plus every non-loopback interface address")
 }
 
 // ---------------------------------------------------------------------------
