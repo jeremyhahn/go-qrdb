@@ -317,14 +317,56 @@ func (e *NotImplementedError) Error() string {
 	return "transport: method not implemented: " + e.Method
 }
 
-// UserNotFoundError is returned when a user ID does not exist.
+// UserNotFoundError is returned when a user lookup does not resolve — by id,
+// username, email or certificate SPKI thumbprint. For a lookup by id, ID
+// carries the numeric identifier and Lookup is empty; for any other key,
+// Lookup carries a descriptor of the key that failed and ID is zero.
+//
+// EVERY transport that can carry it returns this one type for this one
+// condition, so errors.As against it is a transport-independent predicate. It
+// is the type a consumer classifying "this user does not exist" matches, and
+// the SDK re-exports it as sdk.UserNotFoundError.
+//
+// The fields mirror pkg/user.UserNotFoundError exactly so the embedded
+// transport can present the server-side error without losing information. The
+// two remain SEPARATE types rather than an alias because sdk/go is its own Go
+// module and this package imports nothing from pkg/ — root packages import
+// sdk/go/transport, so aliasing would reverse that dependency. Unifying them
+// is an architecture change, not a scoped one.
 type UserNotFoundError struct {
-	ID string
+	// ID is the numeric user id that was not found. Zero when the lookup was
+	// not by id (see Lookup).
+	ID uint64
+
+	// Lookup is a descriptor of a non-id lookup that failed (e.g.
+	// "tenant/username" or "cert_spki/<thumbprint>"). Empty for id lookups.
+	Lookup string
 }
 
 // Error returns a human-readable description.
 func (e *UserNotFoundError) Error() string {
-	return "transport: user not found: " + e.ID
+	if e.Lookup != "" {
+		return "transport: user not found: " + e.Lookup
+	}
+	return "transport: user not found: " + strconv.FormatUint(e.ID, 10)
+}
+
+// UserLookupKey formats the descriptor UserNotFoundError.Lookup carries for a
+// tenant-scoped lookup, so every transport spells the same failed lookup the
+// same way rather than each inventing a format. An empty tenantID selects the
+// server's default tenant and is omitted rather than rendered as an empty path
+// segment.
+//
+// A remote client knows only the tenant it PASSED, so when it passes none this
+// descriptor names the key alone while the embedded transport — which sees the
+// server's resolved tenant — names both. That difference is information the
+// wire does not carry, not a formatting inconsistency: match on the type and
+// on ID, and treat Lookup as a diagnostic.
+func UserLookupKey(tenantID, key string) string {
+	if tenantID == "" {
+		return key
+	}
+	return tenantID + "/" + key
 }
 
 // UserExistsError is returned when a username already exists within

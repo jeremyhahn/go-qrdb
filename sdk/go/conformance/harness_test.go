@@ -101,6 +101,14 @@ const (
 	quicTransport     transportKind = "quic"
 	unixTransport     transportKind = "unix"
 	restTransport     transportKind = "rest"
+
+	// mcpTransport is in the NOT-FOUND matrix (user_notfound_test.go) but not
+	// in transportKinds below, which is the guarded-verb axis: the MCP
+	// transport does not implement transport.GuardedKVClient, so a guarded
+	// cell for it would fail dialRemote's capability assertion rather than
+	// test anything. The two matrices deliberately have different transport
+	// axes; adding this to transportKinds would break the guarded suite.
+	mcpTransport transportKind = "mcp"
 )
 
 // transportKinds is the transport axis of the matrix.

@@ -361,9 +361,9 @@ func TestGetUser_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var unf *user.UserNotFoundError
+	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
-		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
 	}
 	if unf.ID != 9999 {
 		t.Errorf("expected ID 9999, got %d", unf.ID)
@@ -414,9 +414,9 @@ func TestGetUserByUsername_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var unf *user.UserNotFoundError
+	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
-		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
 	}
 	if unf.Lookup != "missing" {
 		t.Errorf("expected Lookup 'missing', got %q", unf.Lookup)
@@ -474,9 +474,9 @@ func TestUpdateUser_ServiceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var unf *user.UserNotFoundError
+	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
-		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
 	}
 }
 
@@ -670,9 +670,9 @@ func TestEnableUser_ServiceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var unf *user.UserNotFoundError
+	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
-		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
 	}
 }
 
@@ -715,9 +715,9 @@ func TestDisableUser_ServiceError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	var unf *user.UserNotFoundError
+	var unf *transport.UserNotFoundError
 	if !errors.As(err, &unf) {
-		t.Errorf("expected *user.UserNotFoundError, got %T", err)
+		t.Errorf("expected *transport.UserNotFoundError, got %T", err)
 	}
 }
 

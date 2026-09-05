@@ -18,6 +18,8 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -34,6 +36,39 @@ var (
 // ---------------------------------------------------------------------------
 // UserClient implementation
 // ---------------------------------------------------------------------------
+
+// mapUserNotFound is mapGRPCError for the single-user endpoints: it turns the
+// server's codes.NotFound into the typed not-found every transport returns for
+// this condition, so a consumer's errors.As is the same predicate here as it
+// is over REST and embedded (go-qrdb#289). Everything else falls through to
+// mapGRPCError unchanged.
+//
+// It is a SEPARATE function rather than a new case in mapGRPCError on purpose.
+// mapGRPCError sees only a code and a message and cannot know which subject
+// was missing, so a NotFound case there could only guess — and it already
+// guesses, mapping every NotFound to KeyNotFoundError. The call site knows,
+// because it knows which user it asked for. Keeping the shared mapper
+// untouched also leaves go-qrdb#169's edits to it conflict-free.
+//
+// It is wired ONLY where a NotFound can mean exactly one thing. AssignRole and
+// UnassignRole are deliberately excluded: their NotFound carries either a
+// missing user or a missing role, and measured on every remote transport the
+// two differ only in message text — which is the substring classification #289
+// exists to delete, not to relocate.
+func mapUserNotFound(method string, id uint64, err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		return &transport.UserNotFoundError{ID: id}
+	}
+	return mapGRPCError(method, err)
+}
+
+// mapUserLookupNotFound is mapUserNotFound for a lookup by a non-numeric key.
+func mapUserLookupNotFound(method, lookup string, err error) error {
+	if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		return &transport.UserNotFoundError{Lookup: lookup}
+	}
+	return mapGRPCError(method, err)
+}
 
 // CreateUser creates a new passwordless user.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
@@ -68,7 +103,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 
 	resp, err := t.client.GetUser(ctx, &pb.GetUserRequest{Id: id})
 	if err != nil {
-		return nil, mapGRPCError("GetUser", err)
+		return nil, mapUserNotFound("GetUser", id, err)
 	}
 
 	return protoToUser(resp), nil
@@ -85,7 +120,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 		Username: username,
 	})
 	if err != nil {
-		return nil, mapGRPCError("GetUserByUsername", err)
+		return nil, mapUserLookupNotFound("GetUserByUsername", transport.UserLookupKey(tenantID, username), err)
 	}
 
 	return protoToUser(resp), nil
@@ -103,7 +138,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 		Email:    email,
 	})
 	if err != nil {
-		return nil, mapGRPCError("GetUserByEmail", err)
+		return nil, mapUserLookupNotFound("GetUserByEmail", transport.UserLookupKey(tenantID, email), err)
 	}
 
 	return protoToUser(resp), nil
@@ -120,7 +155,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 		Thumbprint: thumbprint,
 	})
 	if err != nil {
-		return nil, mapGRPCError("GetUserByCertThumbprint", err)
+		return nil, mapUserLookupNotFound("GetUserByCertThumbprint", "cert_spki/"+thumbprint, err)
 	}
 
 	return protoToUser(resp), nil
@@ -139,7 +174,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 		NotAfterUnix: notAfterUnix,
 	})
 	if err != nil {
-		return nil, mapGRPCError("AddCertBinding", err)
+		return nil, mapUserNotFound("AddCertBinding", userID, err)
 	}
 
 	return protoToUser(resp), nil
@@ -181,7 +216,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 	resp, err := t.client.UpdateUser(ctx, pbReq)
 	if err != nil {
-		return nil, mapGRPCError("UpdateUser", err)
+		return nil, mapUserNotFound("UpdateUser", req.ID, err)
 	}
 
 	return protoToUser(resp), nil
@@ -195,7 +230,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 
 	_, err := t.client.DeleteUser(ctx, &pb.DeleteUserRequest{Id: id})
 	if err != nil {
-		return mapGRPCError("DeleteUser", err)
+		return mapUserNotFound("DeleteUser", id, err)
 	}
 
 	return nil
@@ -236,7 +271,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 
 	_, err := t.client.EnableUser(ctx, &pb.EnableUserRequest{Id: id})
 	if err != nil {
-		return mapGRPCError("EnableUser", err)
+		return mapUserNotFound("EnableUser", id, err)
 	}
 
 	return nil
@@ -250,7 +285,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 
 	_, err := t.client.DisableUser(ctx, &pb.DisableUserRequest{Id: id})
 	if err != nil {
-		return mapGRPCError("DisableUser", err)
+		return mapUserNotFound("DisableUser", id, err)
 	}
 
 	return nil

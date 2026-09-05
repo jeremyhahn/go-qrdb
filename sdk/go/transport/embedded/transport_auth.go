@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
@@ -36,6 +37,29 @@ var (
 // ---------------------------------------------------------------------------
 // UserClient implementation
 // ---------------------------------------------------------------------------
+
+// userNotFound translates the SERVICE's not-found into the transport's, so an
+// in-process consumer matches the same type a remote one does (go-qrdb#289).
+//
+// Every other transport reaches the SDK across a wire and reconstitutes a
+// transport error on the far side; the embedded transport had no wire and so
+// handed pkg/user's type straight out, which is why sdk.UserNotFoundError used
+// to match in-process and nothing else. The SDK's promise is that its surface
+// is identical embedded, standalone and clustered, and an error type is part of
+// that surface.
+//
+// ID and Lookup are carried across unchanged: embedded is the one caller that
+// sees the server's RESOLVED tenant, and discarding that would make the
+// in-process diagnostic worse than the remote one for no gain. Any other error
+// — a role not found, a validation failure, a storage fault — passes through
+// untouched.
+func userNotFound(err error) error {
+	var unf *user.UserNotFoundError
+	if errors.As(err, &unf) {
+		return &transport.UserNotFoundError{ID: unf.ID, Lookup: unf.Lookup}
+	}
+	return err
+}
 
 // CreateUser creates a new passwordless user via the embedded user service.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
@@ -67,7 +91,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 	}
 	u, err := t.userSvc.GetUser(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -80,7 +104,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	}
 	u, err := t.userSvc.GetUserByUsername(ctx, tenantID, username)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -92,7 +116,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 	}
 	u, err := t.userSvc.GetUserByEmail(ctx, tenantID, email)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -105,7 +129,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	}
 	u, err := t.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -118,7 +142,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	}
 	u, err := t.userSvc.AddCertBinding(ctx, userID, thumbprint, notAfterUnix)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -148,7 +172,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	}
 	u, err := t.userSvc.UpdateUser(ctx, updateReq)
 	if err != nil {
-		return nil, err
+		return nil, userNotFound(err)
 	}
 	return userToTransport(u), nil
 }
@@ -158,7 +182,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteUser"}
 	}
-	return t.userSvc.DeleteUser(ctx, id)
+	return userNotFound(t.userSvc.DeleteUser(ctx, id))
 }
 
 // ListUsers returns a paginated user list via the embedded user service.
@@ -190,7 +214,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "EnableUser"}
 	}
-	return t.userSvc.EnableUser(ctx, id)
+	return userNotFound(t.userSvc.EnableUser(ctx, id))
 }
 
 // DisableUser deactivates a user account via the embedded user service.
@@ -198,7 +222,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DisableUser"}
 	}
-	return t.userSvc.DisableUser(ctx, id)
+	return userNotFound(t.userSvc.DisableUser(ctx, id))
 }
 
 // ---------------------------------------------------------------------------

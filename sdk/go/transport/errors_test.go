@@ -191,10 +191,49 @@ func TestNotImplementedError_Message(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserNotFoundError_Message(t *testing.T) {
-	err := &UserNotFoundError{ID: "user-42"}
-	want := "transport: user not found: user-42"
-	if got := err.Error(); got != want {
-		t.Errorf("got %q, want %q", got, want)
+	tests := []struct {
+		name string
+		err  *UserNotFoundError
+		want string
+	}{
+		{"by id", &UserNotFoundError{ID: 42}, "transport: user not found: 42"},
+		{"by lookup", &UserNotFoundError{Lookup: "acme/alice"}, "transport: user not found: acme/alice"},
+		{
+			// Lookup wins when both are set, so a non-id lookup never renders
+			// as the zero id it did not fail on.
+			"lookup wins over a zero id",
+			&UserNotFoundError{Lookup: "cert_spki/abc"},
+			"transport: user not found: cert_spki/abc",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.Error(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUserLookupKey(t *testing.T) {
+	tests := []struct {
+		name     string
+		tenantID string
+		key      string
+		want     string
+	}{
+		{"tenant scoped", "acme", "alice", "acme/alice"},
+		// An empty tenant means "the server's default", which the client
+		// cannot name. Rendering it as "/alice" would invent a tenant whose
+		// id is the empty string.
+		{"no tenant", "", "alice", "alice"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UserLookupKey(tc.tenantID, tc.key); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

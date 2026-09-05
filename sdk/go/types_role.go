@@ -17,6 +17,7 @@ package sdk
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,14 @@ type EmailExistsError = user.EmailExistsError
 
 // UserNotFoundError is returned when a user lookup (by id, username, email, or
 // cert thumbprint) does not resolve.
-type UserNotFoundError = user.UserNotFoundError
+//
+// It aliases the TRANSPORT type, not pkg/user's server-side one. Before
+// go-qrdb#289 it aliased pkg/user.UserNotFoundError, which no remote transport
+// ever returns: a consumer matching sdk.UserNotFoundError succeeded in-process
+// and failed over every wire, and the compiler could not see the difference
+// because the two types share a name in different packages. There is now one
+// name bound to one type, and every transport returns it.
+type UserNotFoundError = transport.UserNotFoundError
 
 // ---------------------------------------------------------------------------
 // Role IAM types

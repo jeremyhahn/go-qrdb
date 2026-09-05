@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -36,6 +37,27 @@ var (
 // ---------------------------------------------------------------------------
 // UserClient implementation
 // ---------------------------------------------------------------------------
+
+// userNotFound converts a 404 from a single-user endpoint into the typed
+// not-found that every transport returns for this condition, so a REST
+// consumer's errors.As is the same predicate it is over gRPC, unix and
+// embedded (go-qrdb#289). Before this the write endpoints returned a bare
+// RequestError carrying only a status code, so REST was not even consistent
+// with itself: its read methods were typed and its write methods were not.
+//
+// It is applied ONLY where a 404 can mean exactly one thing. AssignRole and
+// UnassignRole are deliberately NOT routed through it: their 404 carries
+// either a missing user or a missing role, and measured on every remote
+// transport the two are indistinguishable except by message text — which is
+// the substring classification #289 exists to delete, not to relocate. Typing
+// those needs the server to say which subject was missing.
+func userNotFound(id uint64, err error) error {
+	var reqErr *transport.RequestError
+	if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusNotFound {
+		return &transport.UserNotFoundError{ID: id}
+	}
+	return err
+}
 
 // CreateUser creates a new passwordless user. Maps to POST /users.
 func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserRequest) (*transport.User, error) {
@@ -70,7 +92,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &transport.UserNotFoundError{ID: idStr}
+		return nil, &transport.UserNotFoundError{ID: id}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -113,7 +135,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &transport.UserNotFoundError{ID: username}
+		return nil, &transport.UserNotFoundError{Lookup: transport.UserLookupKey(tenantID, username)}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -157,7 +179,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &transport.UserNotFoundError{ID: email}
+		return nil, &transport.UserNotFoundError{Lookup: transport.UserLookupKey(tenantID, email)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, t.decodeErrorResponse("GetUserByEmail", resp)
@@ -191,7 +213,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, &transport.UserNotFoundError{ID: "cert_spki/" + thumbprint}
+		return nil, &transport.UserNotFoundError{Lookup: "cert_spki/" + thumbprint}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -221,7 +243,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	var user transport.User
 	path := "/users/" + strconv.FormatUint(userID, 10) + "/cert-bindings"
 	if err := t.postJSONDecode(ctx, "AddCertBinding", path, payload, &user); err != nil {
-		return nil, err
+		return nil, userNotFound(userID, err)
 	}
 
 	return &user, nil
@@ -236,7 +258,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 	var user transport.User
 	if err := t.putJSONDecode(ctx, "UpdateUser", "/users/"+strconv.FormatUint(req.ID, 10), req, &user); err != nil {
-		return nil, err
+		return nil, userNotFound(req.ID, err)
 	}
 	return &user, nil
 }
@@ -266,7 +288,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 		return nil
 	}
 
-	return t.decodeErrorResponse("DeleteUser", resp)
+	return userNotFound(id, t.decodeErrorResponse("DeleteUser", resp))
 }
 
 // ListUsers returns a paginated list of users for the given tenant.
@@ -321,7 +343,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 		return &transport.ClosedError{}
 	}
 
-	return t.postJSON(ctx, "EnableUser", "/users/"+strconv.FormatUint(id, 10)+"/enable", nil)
+	return userNotFound(id, t.postJSON(ctx, "EnableUser", "/users/"+strconv.FormatUint(id, 10)+"/enable", nil))
 }
 
 // DisableUser deactivates a user account. Maps to POST /users/{id}/disable.
@@ -330,7 +352,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 		return &transport.ClosedError{}
 	}
 
-	return t.postJSON(ctx, "DisableUser", "/users/"+strconv.FormatUint(id, 10)+"/disable", nil)
+	return userNotFound(id, t.postJSON(ctx, "DisableUser", "/users/"+strconv.FormatUint(id, 10)+"/disable", nil))
 }
 
 // ---------------------------------------------------------------------------

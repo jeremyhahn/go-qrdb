@@ -20,7 +20,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -195,7 +194,7 @@ func (m *mockUserClient) CreateUser(_ context.Context, req *transport.CreateUser
 func (m *mockUserClient) GetUser(_ context.Context, id uint64) (*transport.User, error) {
 	u, ok := m.users[id]
 	if !ok {
-		return nil, &transport.UserNotFoundError{ID: strconv.FormatUint(id, 10)}
+		return nil, &transport.UserNotFoundError{ID: id}
 	}
 	return u, nil
 }
@@ -203,7 +202,7 @@ func (m *mockUserClient) GetUser(_ context.Context, id uint64) (*transport.User,
 func (m *mockUserClient) UpdateUser(_ context.Context, req *transport.UpdateUserRequest) (*transport.User, error) {
 	u, ok := m.users[req.ID]
 	if !ok {
-		return nil, &transport.UserNotFoundError{ID: strconv.FormatUint(req.ID, 10)}
+		return nil, &transport.UserNotFoundError{ID: req.ID}
 	}
 	if req.Username != "" {
 		u.Username = req.Username
@@ -223,7 +222,7 @@ func (m *mockUserClient) UpdateUser(_ context.Context, req *transport.UpdateUser
 
 func (m *mockUserClient) DeleteUser(_ context.Context, id uint64) error {
 	if _, ok := m.users[id]; !ok {
-		return &transport.UserNotFoundError{ID: strconv.FormatUint(id, 10)}
+		return &transport.UserNotFoundError{ID: id}
 	}
 	delete(m.users, id)
 	return nil
@@ -244,7 +243,7 @@ func (m *mockUserClient) ListUsers(_ context.Context, _ *transport.ListUsersRequ
 func (m *mockUserClient) EnableUser(_ context.Context, id uint64) error {
 	u, ok := m.users[id]
 	if !ok {
-		return &transport.UserNotFoundError{ID: strconv.FormatUint(id, 10)}
+		return &transport.UserNotFoundError{ID: id}
 	}
 	u.Enabled = true
 	delete(m.disabled, id)
@@ -254,7 +253,7 @@ func (m *mockUserClient) EnableUser(_ context.Context, id uint64) error {
 func (m *mockUserClient) DisableUser(_ context.Context, id uint64) error {
 	u, ok := m.users[id]
 	if !ok {
-		return &transport.UserNotFoundError{ID: strconv.FormatUint(id, 10)}
+		return &transport.UserNotFoundError{ID: id}
 	}
 	u.Enabled = false
 	m.disabled[id] = true
