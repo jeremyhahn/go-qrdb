@@ -24,6 +24,29 @@ type Peer struct {
 
 Four shipped methods: `static`, `multicast`, `dns`, `token`.
 
+#### Multicast sockets are built by hand, and by platform
+
+`multicast` does not use `net.ListenMulticastUDP`. That helper sets
+`SO_REUSEPORT` on Linux, which makes the kernel load-balance arriving datagrams
+across the sockets bound to the group instead of delivering each datagram to all
+of them — so two nodes on one host would each see half the announcements.
+`pkg/discovery` therefore builds the descriptor itself: `SO_REUSEADDR` only,
+bound to the group address rather than the wildcard.
+
+Building the descriptor by hand means owning its flags. Close-on-exec is
+mandatory — a discovery socket must not survive into a child process — and the
+listener is also non-blocking. Where those flags come from is the one thing that
+differs by platform, and it is isolated behind `newDatagramSocket`:
+
+| File | Platforms | Mechanism |
+|---|---|---|
+| `socket.go` | everything except darwin | `SOCK_CLOEXEC` / `SOCK_NONBLOCK` as `socket(2)` type bits, set atomically with the descriptor |
+| `socket_darwin.go` | darwin | `socket(2)` takes no such flags; both are applied afterwards with `fcntl`, the socket and its `FD_CLOEXEC` held under `ForkLock` so no concurrent `fork`+`exec` can inherit the descriptor in between |
+
+Nothing above `newDatagramSocket` is platform-aware. Adding a platform means
+adding one file, not a branch in `multicast.go`.
+
+
 ### Cluster formation — `pkg/cluster`
 
 ```go

@@ -126,6 +126,19 @@ func resolveInterfaceIP(iface *net.Interface) net.IP {
 	return nil
 }
 
+// closeSocket closes a raw socket descriptor that is being abandoned because a
+// later setup step failed. The close error cannot be returned — the caller is
+// already returning the error that caused the abandonment — so it is recorded
+// with the setup stage that triggered it and otherwise dropped.
+func closeSocket(fd int, stage string) {
+	if err := syscall.Close(fd); err != nil {
+		slog.Debug("multicast socket close failed",
+			"fd", fd,
+			"stage", stage,
+			"error", err)
+	}
+}
+
 // newMulticastConn creates a UDP socket joined to the given multicast group
 // using SO_REUSEADDR without SO_REUSEPORT. Go's net.ListenMulticastUDP
 // sets SO_REUSEPORT on Linux, which causes the kernel to load-balance
@@ -133,17 +146,13 @@ func resolveInterfaceIP(iface *net.Interface) net.IP {
 // to the group address with SO_REUSEADDR alone allows multiple processes
 // to receive every multicast packet.
 func newMulticastConn(group *net.UDPAddr, iface *net.Interface) (net.PacketConn, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC|syscall.SOCK_NONBLOCK, 0)
+	fd, err := newDatagramSocket(true)
 	if err != nil {
 		return nil, err
 	}
 
 	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		if closeErr := syscall.Close(fd); closeErr != nil {
-			slog.Debug("multicast socket close failed after SO_REUSEADDR error",
-				"fd", fd,
-				"error", closeErr)
-		}
+		closeSocket(fd, "listener SO_REUSEADDR")
 		return nil, err
 	}
 
@@ -151,11 +160,7 @@ func newMulticastConn(group *net.UDPAddr, iface *net.Interface) (net.PacketConn,
 	sa := &syscall.SockaddrInet4{Port: group.Port}
 	copy(sa.Addr[:], group.IP.To4())
 	if err := syscall.Bind(fd, sa); err != nil {
-		if closeErr := syscall.Close(fd); closeErr != nil {
-			slog.Debug("multicast socket close failed after bind error",
-				"fd", fd,
-				"error", closeErr)
-		}
+		closeSocket(fd, "listener bind")
 		return nil, err
 	}
 
@@ -166,11 +171,7 @@ func newMulticastConn(group *net.UDPAddr, iface *net.Interface) (net.PacketConn,
 		copy(mreq.Interface[:], ip)
 	}
 	if err := syscall.SetsockoptIPMreq(fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, mreq); err != nil {
-		if closeErr := syscall.Close(fd); closeErr != nil {
-			slog.Debug("multicast socket close failed after IP_ADD_MEMBERSHIP error",
-				"fd", fd,
-				"error", closeErr)
-		}
+		closeSocket(fd, "listener IP_ADD_MEMBERSHIP")
 		return nil, err
 	}
 
@@ -190,7 +191,7 @@ func newMulticastConn(group *net.UDPAddr, iface *net.Interface) (net.PacketConn,
 // are sent on the same interface the listener joined, which is critical on
 // hosts with multiple network interfaces (Docker bridges, VPNs, etc.).
 func newMulticastSender(iface *net.Interface) (*net.UDPConn, error) {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
+	fd, err := newDatagramSocket(false)
 	if err != nil {
 		return nil, err
 	}
@@ -198,11 +199,7 @@ func newMulticastSender(iface *net.Interface) (*net.UDPConn, error) {
 	// Bind to an ephemeral port.
 	sa := &syscall.SockaddrInet4{Port: 0}
 	if err := syscall.Bind(fd, sa); err != nil {
-		if closeErr := syscall.Close(fd); closeErr != nil {
-			slog.Debug("multicast sender socket close failed after bind error",
-				"fd", fd,
-				"error", closeErr)
-		}
+		closeSocket(fd, "sender bind")
 		return nil, err
 	}
 
@@ -211,22 +208,14 @@ func newMulticastSender(iface *net.Interface) (*net.UDPConn, error) {
 		mreq := &syscall.IPMreq{}
 		copy(mreq.Interface[:], ip)
 		if err := syscall.SetsockoptIPMreq(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, mreq); err != nil {
-			if closeErr := syscall.Close(fd); closeErr != nil {
-				slog.Debug("multicast sender socket close failed after IP_MULTICAST_IF error",
-					"fd", fd,
-					"error", closeErr)
-			}
+			closeSocket(fd, "sender IP_MULTICAST_IF")
 			return nil, err
 		}
 	}
 
 	// Enable multicast loopback so nodes on the same host discover each other.
 	if err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_MULTICAST_LOOP, 1); err != nil {
-		if closeErr := syscall.Close(fd); closeErr != nil {
-			slog.Debug("multicast sender socket close failed after IP_MULTICAST_LOOP error",
-				"fd", fd,
-				"error", closeErr)
-		}
+		closeSocket(fd, "sender IP_MULTICAST_LOOP")
 		return nil, err
 	}
 
