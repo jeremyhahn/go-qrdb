@@ -11,6 +11,63 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+## [0.16.3-alpha] - 2026-09-06
+
+### Added
+
+- **`RoleServicer.ReconcileBuiltInRoles(ctx, tenantID)` — the ONE sanctioned
+  writer to a built-in role's permissions** (#354). A built-in role is
+  immutable by design, and the guard's own comment recorded the assumption it
+  rested on: "there is no built-in permission reconcile path on boot, so this
+  refusal costs no existing caller." That expired the first time a permission
+  was renamed. Roles are copied out of `BuiltInRoles()` when a tenant is
+  provisioned and never touched again, so a tenant created before the rename
+  keeps the retired verbs forever and never gains the live ones — while update
+  is refused, delete-and-reseed is refused, and create-over-the-top collides
+  with the name index. Reconciliation is admitted because its target is not
+  arbitrary: it is `BuiltInRoles()` itself, the definition the guard exists to
+  protect. Every other caller is still refused. It is idempotent (a converged
+  tenant costs ZERO store writes), touches only `IsSystemRoleName` names so
+  custom roles survive untouched, and repairs Owner when present without ever
+  creating it — Owner is posture-conditional. It must be called AFTER module
+  permission registration, because `BuiltInRoles()` reads the registry at call
+  time. Reported per role as `ReconcileReport` / `RoleReconcileResult`
+  (permissions added, permissions removed, created).
+- **`Role.RetiredPermissions` — drift visible on read, before the repair runs**
+  (#354). Derived on every read from the live permission registry, listing the
+  stored permissions this build no longer defines, and NEVER persisted:
+  `marshalRole` is the single seam every store write passes through and clears
+  it. Surfaced on `GetRole`, `GetRoleByName` and `ListRoles`, and on every
+  transport's role payload. `Role.RetiredPermissionError()` returns the typed
+  `*RetiredPermissionError`; no read path returns it as a failure, because a
+  listing that failed on drift would hide exactly the roles an operator needs
+  to see.
+- **`permission.Unregistered(perms)`** (#354) — screens a whole permission list
+  against the registry under ONE read lock. Every role read now screens its
+  permissions and Owner holds `All()`, so a loop over `IsRegistered` would take
+  a global RWMutex per permission on the authorization path.
+- **The reconcile verb on every transport and in the CLI** (#354): REST
+  `POST /roles/reconcile`, gRPC/Unix `ReconcileBuiltInRoles`, QUIC
+  `role.ReconcileBuiltIn`, MCP `qrdb_role_reconcile_builtin`, embedded, and
+  `qrdb roles reconcile [--tenant ID]`. It carries `roles:create` rather than a
+  permission of its own: reconciliation IS seeding applied to an existing
+  tenant, and a dedicated verb would be absent from every role seeded before it
+  existed — so nobody would hold the grant needed to repair that exact absence.
+  `qrdb roles get` prints a `Retired:` line. Re-exported by `sdk/go`:
+  `ReconcileReport`, `RoleReconcileResult`, `RetiredPermissionError`,
+  `RetiredPermissions`; and by `sdk/go/transport`:
+  `RoleClient.ReconcileBuiltInRoles`, `ReconcileRolesRequest`,
+  `ReconcileRolesResponse`, `RoleReconcileResult`, `Role.RetiredPermissions`.
+
+### Fixed
+
+- **`docs/identity-rbac/api.md`'s role capability matrix had drifted from the
+  code** (#354). `GET /roles/by-name/{name}`, `GET /roles`,
+  `POST /permissions/resolve`, `permission.List` and `permission.Resolve` named
+  routes and methods that do not exist; corrected to `GET /roles/by-name?…`,
+  `GET /roles/list`, `POST /roles/resolve-permissions`, `role.ListPermissions`
+  and `role.ResolvePermissions`.
+
 ## [0.16.2-alpha] - 2026-09-05
 
 ### Added
