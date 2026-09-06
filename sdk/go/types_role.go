@@ -112,6 +112,31 @@ type ReservedRoleNameError = role.ReservedRoleNameError
 // or "your write failed", and only the typed error separates them.
 type SystemRoleImmutableError = role.SystemRoleImmutableError
 
+// ReconcileReport is the outcome of a built-in role reconciliation for one
+// tenant: one entry per built-in role that CHANGED, so an empty report means
+// the tenant already agreed with the build and nothing was written.
+type ReconcileReport = role.ReconcileReport
+
+// RoleReconcileResult records what reconciliation changed for one built-in
+// role — created, permissions added, permissions removed.
+type RoleReconcileResult = role.RoleReconcileResult
+
+// RetiredPermissionError reports that a stored role carries permissions the
+// build's permission registry no longer defines.
+//
+// It is a SIGNAL rather than a failure: no read path returns it, because a
+// listing that failed on drift would hide exactly the roles an operator needs
+// to see in order to repair them. Role.RetiredPermissionError produces it on
+// demand from a role read through any transport, so a consumer classifies the
+// drift with one errors.As instead of re-deriving the comparison itself.
+type RetiredPermissionError = role.RetiredPermissionError
+
+// RetiredPermissions returns the members of perms the global permission
+// registry no longer defines, sorted. Whole-segment wildcards are never
+// retired — the RBAC authorizer expands them at authorization time, so there
+// is no registry entry for one to lose.
+var RetiredPermissions = role.RetiredPermissions
+
 // IsSystemRoleName reports whether a role name is one of the canonical system
 // role names — the six FIPS 140-3 / PCI-DSS roles or Owner.
 //

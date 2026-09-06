@@ -514,6 +514,18 @@ type RoleClient interface {
 	// ResolvePermissions returns the union of effective permissions for the
 	// given role IDs (sorted, deduplicated).
 	ResolvePermissions(ctx context.Context, req *ResolvePermissionsRequest) (*ResolvePermissionsResponse, error)
+
+	// ReconcileBuiltInRoles converges the tenant's stored built-in roles onto
+	// the server build's definitions: permissions the build now grants are
+	// added, permissions it no longer grants are removed, and custom roles are
+	// left untouched. It is the ONLY way to rewrite a built-in role's grants —
+	// UpdateRole refuses a system role by design — and it is idempotent: a
+	// converged tenant reports no changed roles and nothing is written.
+	//
+	// A consumer that contributes its own permissions to the server's registry
+	// calls this AFTER those permissions are registered, or it will converge
+	// every tenant onto a definition missing its own verbs.
+	ReconcileBuiltInRoles(ctx context.Context, req *ReconcileRolesRequest) (*ReconcileRolesResponse, error)
 }
 
 // ---------------------------------------------------------------------------

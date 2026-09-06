@@ -98,6 +98,7 @@ type mockRoleService struct {
 	deleteRoleFn         func(ctx context.Context, id string) error
 	listRolesFn          func(ctx context.Context, req *role.ListRolesRequest) (*role.ListRolesResponse, error)
 	resolvePermissionsFn func(ctx context.Context, roleIDs []string) ([]permission.Permission, error)
+	reconcileFn          func(ctx context.Context, tenantID string) (*role.ReconcileReport, error)
 }
 
 func (m *mockRoleService) CreateRole(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
@@ -197,4 +198,11 @@ func testRole(id, name, tenantID string) *role.Role {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+func (m *mockRoleService) ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*role.ReconcileReport, error) {
+	if m.reconcileFn != nil {
+		return m.reconcileFn(ctx, tenantID)
+	}
+	return &role.ReconcileReport{TenantID: tenantID}, nil
 }

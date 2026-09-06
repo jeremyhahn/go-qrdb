@@ -39,7 +39,8 @@ import (
 
 type fakeRoleServicerWithPerms struct {
 	fakeRoleServicer
-	permissions []permission.Permission
+	permissions  []permission.Permission
+	reconcileErr error
 }
 
 func (f *fakeRoleServicerWithPerms) GetRoleByName(_ context.Context, tenantID, name string) (*role.Role, error) {
@@ -156,5 +157,37 @@ func TestGRPCResolvePermissions_ClosedTransport(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+// ReconcileBuiltInRoles returns the reconciliation fixture the round-trip test
+// asserts on: one repaired role (added AND removed, the go-qrdb#354 shape) and
+// one seeded role.
+func (f *fakeRoleServicerWithPerms) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	if f.reconcileErr != nil {
+		return nil, f.reconcileErr
+	}
+	return reconcileFixture(tenantID), nil
+}
+
+// reconcileFixture is the report every gRPC reconcile assertion is written
+// against.
+func reconcileFixture(tenantID string) *role.ReconcileReport {
+	return &role.ReconcileReport{
+		TenantID: tenantID,
+		Roles: []role.RoleReconcileResult{
+			{
+				RoleID:  "r-admin",
+				Name:    role.RoleNameAdmin,
+				Added:   []permission.Permission{"sdlc:bind"},
+				Removed: []permission.Permission{"sdlc:register"},
+			},
+			{
+				RoleID:  "r-operator",
+				Name:    role.RoleNameOperator,
+				Created: true,
+				Added:   []permission.Permission{"orchestrator:task_block"},
+			},
+		},
 	}
 }

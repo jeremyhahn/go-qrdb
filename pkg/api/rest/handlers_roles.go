@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,6 +68,11 @@ type roleResponse struct {
 	System      bool     `json:"system"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
+
+	// RetiredPermissions are the members of Permissions this build no longer
+	// defines — drift between what the tenant was seeded with and what the
+	// server now grants, visible before POST /roles/reconcile repairs it.
+	RetiredPermissions []string `json:"retired_permissions,omitempty"`
 }
 
 // listRolesResponse is the JSON payload returned by GET /roles/list.
@@ -99,6 +105,28 @@ type resolvePermissionsRequest struct {
 // POST /roles/resolve-permissions.
 type resolvePermissionsResponse struct {
 	Permissions []string `json:"permissions"`
+}
+
+// reconcileRolesRequest is the JSON payload for POST /roles/reconcile.
+type reconcileRolesRequest struct {
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// roleReconcileResultResponse is the JSON representation of one built-in
+// role's reconciliation outcome.
+type roleReconcileResultResponse struct {
+	RoleID  string   `json:"role_id"`
+	Name    string   `json:"name"`
+	Created bool     `json:"created"`
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+}
+
+// reconcileRolesResponse is the JSON payload returned by
+// POST /roles/reconcile.
+type reconcileRolesResponse struct {
+	TenantID string                        `json:"tenant_id"`
+	Roles    []roleReconcileResultResponse `json:"roles,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +485,68 @@ func (s *Server) handleResolvePermissions(w http.ResponseWriter, r *http.Request
 	writeJSON(w, resolvePermissionsResponse{Permissions: out})
 }
 
+// handleReconcileRoles handles POST /roles/reconcile -- converges the
+// tenant's stored built-in roles onto this build's definitions.
+func (s *Server) handleReconcileRoles(w http.ResponseWriter, r *http.Request) {
+	if s.roleSvc == nil {
+		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "role"})
+		return
+	}
+
+	// An empty body means "my own tenant", which is the common case for a
+	// tenant administrator, so it is not a malformed request.
+	var req reconcileRolesRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	defer cancel()
+
+	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
+	if err != nil {
+		writeErrorJSON(w, mapRoleError(err), err)
+		return
+	}
+
+	writeJSON(w, reconcileReportToResponse(report))
+}
+
+// reconcileReportToResponse converts a role.ReconcileReport to its JSON
+// response representation.
+func reconcileReportToResponse(report *role.ReconcileReport) reconcileRolesResponse {
+	if report == nil {
+		return reconcileRolesResponse{}
+	}
+	out := reconcileRolesResponse{TenantID: report.TenantID}
+	out.Roles = make([]roleReconcileResultResponse, len(report.Roles))
+	for i, r := range report.Roles {
+		out.Roles[i] = roleReconcileResultResponse{
+			RoleID:  r.RoleID,
+			Name:    r.Name,
+			Created: r.Created,
+			Added:   permissionsToStrings(r.Added),
+			Removed: permissionsToStrings(r.Removed),
+		}
+	}
+	return out
+}
+
+// permissionsToStrings renders a permission slice for a JSON response.
+func permissionsToStrings(perms []permission.Permission) []string {
+	if len(perms) == 0 {
+		return nil
+	}
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Role conversion and error mapping
 // ---------------------------------------------------------------------------
@@ -473,13 +563,14 @@ func roleToResponse(rl *role.Role) *roleResponse {
 	}
 
 	return &roleResponse{
-		ID:          rl.ID,
-		Name:        rl.Name,
-		TenantID:    rl.TenantID,
-		Permissions: perms,
-		System:      rl.System,
-		CreatedAt:   rl.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   rl.UpdatedAt.Format(time.RFC3339),
+		ID:                 rl.ID,
+		Name:               rl.Name,
+		TenantID:           rl.TenantID,
+		Permissions:        perms,
+		System:             rl.System,
+		CreatedAt:          rl.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          rl.UpdatedAt.Format(time.RFC3339),
+		RetiredPermissions: permissionsToStrings(rl.RetiredPermissions),
 	}
 }
 

@@ -152,6 +152,7 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"role.Unassign":                      permission.RolesUnassign,
 	"role.ListPermissions":               permission.PermissionsList,
 	"role.ResolvePermissions":            permission.PermissionsResolve,
+	"role.ReconcileBuiltIn":              permission.RolesCreate,
 	"cert.Generate":                      permission.CertsGenerate,
 	"cert.Export":                        permission.CertsExport,
 	"cert.Revoke":                        permission.CertsRevoke,

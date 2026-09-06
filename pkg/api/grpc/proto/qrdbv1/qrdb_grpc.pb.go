@@ -132,6 +132,7 @@ const (
 	QRDBService_UnassignRole_FullMethodName                      = "/qrdb.v1.QRDBService/UnassignRole"
 	QRDBService_ListPermissions_FullMethodName                   = "/qrdb.v1.QRDBService/ListPermissions"
 	QRDBService_ResolveRolePermissions_FullMethodName            = "/qrdb.v1.QRDBService/ResolveRolePermissions"
+	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
 	QRDBService_GenerateCert_FullMethodName                      = "/qrdb.v1.QRDBService/GenerateCert"
 	QRDBService_ExportCert_FullMethodName                        = "/qrdb.v1.QRDBService/ExportCert"
 	QRDBService_RevokeCert_FullMethodName                        = "/qrdb.v1.QRDBService/RevokeCert"
@@ -452,6 +453,13 @@ type QRDBServiceClient interface {
 	// ResolveRolePermissions returns the union of effective permissions
 	// for the given role IDs (sorted, deduplicated).
 	ResolveRolePermissions(ctx context.Context, in *ResolveRolePermissionsRequest, opts ...grpc.CallOption) (*ResolveRolePermissionsResponse, error)
+	// ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
+	// this build's definitions. It carries roles:create rather than a
+	// permission of its own: reconciliation IS the seeding operation applied
+	// to an existing tenant, and a dedicated verb would be absent from every
+	// role seeded before it existed -- so nobody would hold the permission
+	// needed to repair that exact absence.
+	ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error)
 	// GenerateCert creates a client certificate.
 	GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error)
 	// ExportCert exports a certificate as PKCS#12.
@@ -1679,6 +1687,16 @@ func (c *qRDBServiceClient) ResolveRolePermissions(ctx context.Context, in *Reso
 	return out, nil
 }
 
+func (c *qRDBServiceClient) ReconcileBuiltInRoles(ctx context.Context, in *ReconcileBuiltInRolesRequest, opts ...grpc.CallOption) (*ReconcileBuiltInRolesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReconcileBuiltInRolesResponse)
+	err := c.cc.Invoke(ctx, QRDBService_ReconcileBuiltInRoles_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) GenerateCert(ctx context.Context, in *GenerateCertRequest, opts ...grpc.CallOption) (*CertBundleResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CertBundleResponse)
@@ -2852,6 +2870,13 @@ type QRDBServiceServer interface {
 	// ResolveRolePermissions returns the union of effective permissions
 	// for the given role IDs (sorted, deduplicated).
 	ResolveRolePermissions(context.Context, *ResolveRolePermissionsRequest) (*ResolveRolePermissionsResponse, error)
+	// ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
+	// this build's definitions. It carries roles:create rather than a
+	// permission of its own: reconciliation IS the seeding operation applied
+	// to an existing tenant, and a dedicated verb would be absent from every
+	// role seeded before it existed -- so nobody would hold the permission
+	// needed to repair that exact absence.
+	ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error)
 	// GenerateCert creates a client certificate.
 	GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error)
 	// ExportCert exports a certificate as PKCS#12.
@@ -3383,6 +3408,9 @@ func (UnimplementedQRDBServiceServer) ListPermissions(context.Context, *emptypb.
 }
 func (UnimplementedQRDBServiceServer) ResolveRolePermissions(context.Context, *ResolveRolePermissionsRequest) (*ResolveRolePermissionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResolveRolePermissions not implemented")
+}
+func (UnimplementedQRDBServiceServer) ReconcileBuiltInRoles(context.Context, *ReconcileBuiltInRolesRequest) (*ReconcileBuiltInRolesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReconcileBuiltInRoles not implemented")
 }
 func (UnimplementedQRDBServiceServer) GenerateCert(context.Context, *GenerateCertRequest) (*CertBundleResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GenerateCert not implemented")
@@ -5443,6 +5471,24 @@ func _QRDBService_ResolveRolePermissions_Handler(srv interface{}, ctx context.Co
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(QRDBServiceServer).ResolveRolePermissions(ctx, req.(*ResolveRolePermissionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_ReconcileBuiltInRoles_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReconcileBuiltInRolesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRoles(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_ReconcileBuiltInRoles_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).ReconcileBuiltInRoles(ctx, req.(*ReconcileBuiltInRolesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -7551,6 +7597,10 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveRolePermissions",
 			Handler:    _QRDBService_ResolveRolePermissions_Handler,
+		},
+		{
+			MethodName: "ReconcileBuiltInRoles",
+			Handler:    _QRDBService_ReconcileBuiltInRoles_Handler,
 		},
 		{
 			MethodName: "GenerateCert",

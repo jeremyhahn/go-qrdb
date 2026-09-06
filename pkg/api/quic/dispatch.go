@@ -247,6 +247,10 @@ func (s *Server) buildHandlers() {
 	s.handle("role.Unassign", permission.RolesUnassign, s.handleUnassignRole)
 	s.handle("role.ListPermissions", permission.PermissionsList, s.handleListPermissions)
 	s.handle("role.ResolvePermissions", permission.PermissionsResolve, s.handleResolvePermissions)
+	// roles:create, not a verb of its own — see the REST route comment: a
+	// dedicated permission would be missing from every role seeded before it
+	// existed, so nobody could hold the grant needed to repair that absence.
+	s.handle("role.ReconcileBuiltIn", permission.RolesCreate, s.handleReconcileRoles)
 
 	// Certificate management
 	s.handle("cert.Generate", permission.CertsGenerate, s.handleGenerateCert)

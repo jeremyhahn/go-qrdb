@@ -73,6 +73,53 @@ the permission matrix. The load-bearing one is the **Security Officer's explicit
 denial of crypto operations**: governance and key use are different people, and
 that is the FIPS 140-3 AS10.03 separation-of-duties control.
 
+### Reconciliation: the one sanctioned writer
+
+A built-in role is immutable — `UpdateRole` refuses to replace its permission
+set and `DeleteRole` refuses to remove it — so that an operator cannot widen
+`auditor` or re-permission `custodian` by hand.
+
+That invariant assumed nothing ever needed to rewrite a built-in's grants. The
+assumption expired the first time a permission was **renamed**. Roles are copied
+out of `BuiltInRoles()` when a tenant is provisioned and never touched again, so
+a tenant created before the rename keeps the retired verbs forever, never gains
+the live ones, and every write path that could repair it is closed: update is
+refused, delete-and-reseed is refused, and create-over-the-top collides with the
+name index. The symptom is a 403 on a live endpoint with nothing explaining it.
+
+`RoleServicer.ReconcileBuiltInRoles(ctx, tenantID)` is the seam. It is **not** a
+relaxation of the invariant, because its target is not arbitrary: it is
+`BuiltInRoles()` itself, by construction the definition the guard exists to
+protect. The caller chooses only WHICH tenant to converge, never what to
+converge it to, and every other caller is still refused. The guard was never
+about the write; it was about who chooses the value.
+
+Three properties make it safe to run unattended:
+
+- **Idempotent, and measurably so.** A built-in already in agreement is skipped
+  entirely — no write, no `UpdatedAt` bump, no audit record. A no-op `Put` would
+  still replicate a Raft entry on every boot of every node.
+- **Bounded blast radius.** Only names `IsSystemRoleName` recognises are read or
+  written. A custom role — including one an operator created to work around the
+  drift this repairs — survives untouched.
+- **Owner is repaired but never created.** Owner drifts for the same reason (its
+  grant is `permission.All()`) and is equally immutable, so it is converged when
+  the tenant already holds it. It is never seeded, because Owner is
+  posture-conditional: creating it would hand a strict separation-of-duties
+  deployment a superuser reconciliation was never asked to create.
+
+**Timing is part of the contract.** `BuiltInRoles()` resolves its permission
+sets through the global registry at call time, and a composing layer contributes
+permissions when its modules register. A composer must therefore call this
+AFTER module registration, or it will converge every tenant onto a definition
+missing the modules' own verbs and then report success.
+
+Drift is also visible **before** the repair runs: `Role.RetiredPermissions` is
+derived on every read from the live registry and lists the stored permissions
+the build no longer defines. It is never persisted — one marshal seam clears it
+— so it can only ever report the current disagreement, and it is the field an
+operator reads on a listing to see which tenants need converging.
+
 ## The canonical login key
 
 Identity in qrdb has two handles, and they answer different questions.

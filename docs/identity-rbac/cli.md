@@ -162,12 +162,53 @@ qrdb roles resolve-permissions "$ROLE_A" "$ROLE_B"
 Use this to answer "what would this user actually be able to do" before
 assigning.
 
+### `qrdb roles reconcile`
+
+Converge a tenant's **built-in** roles onto this build's definitions: add the
+permissions the build now grants, remove the ones it no longer grants, leave
+custom roles alone.
+
+| Flag | Meaning |
+|---|---|
+| `--tenant` | Tenant to reconcile. Defaults to the caller's own tenant. |
+
+```bash
+qrdb roles reconcile --tenant acme
+```
+
+```
+Tenant acme:
+  admin (5aee453e-…) updated
+    + sdlc:bind
+    - sdlc:register
+  operator (…) created
+    + orchestrator:task_block
+```
+
+A converged tenant prints `built-in roles already current` and writes nothing —
+the command is idempotent and safe to re-run.
+
+This is the **only** way to change a built-in role's permissions: `roles update`
+refuses a system role by design, and so does `roles delete`. Run it after a
+build that renamed or added a permission, otherwise every tenant created before
+that build keeps the old set and its administrators get a 403 on the new verb
+with nothing explaining it.
+
+Requires `roles:create` — the same grant as seeding, because reconciliation is
+seeding applied to an existing tenant.
+
+`qrdb roles get` prints a `Retired:` line when a role carries permissions this
+build no longer defines. That is the drift this command repairs; seeing it is
+how you know to run it.
+
 ## The built-in roles
 
 Six roles exist from bootstrap and **cannot be deleted**: Security Officer,
 Admin, Operator, User, Auditor, Custodian. Their identifiers are deterministic,
-so they are the same on every node. See
-[../firstboot/cli.md](../firstboot/cli.md).
+so they are the same on every node. Their permissions are fixed too — the one
+supported way to change them is `qrdb roles reconcile`, which converges them
+onto the build's own definitions rather than onto anything a caller supplies.
+See [../firstboot/cli.md](../firstboot/cli.md).
 
 ## A complete enrolment
 

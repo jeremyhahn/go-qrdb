@@ -27,14 +27,23 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 |---|---|---|---|---|---|---|
 | Create role | `POST /roles` | `CreateRole` | `role.Create` | `qrdb_role_create` | `CreateRole` | `roles:create` |
 | Get role | `GET /roles/{id}` | `GetRole` | `role.Get` | `qrdb_role_get` | `GetRole` | `roles:read` |
-| Get role by name | `GET /roles/by-name/{name}` | `GetRoleByName` | `role.GetByName` | `qrdb_role_get_by_name` | `GetRoleByName` | `roles:read` |
+| Get role by name | `GET /roles/by-name?tenant_id=&name=` | `GetRoleByName` | `role.GetByName` | `qrdb_role_get_by_name` | `GetRoleByName` | `roles:read` |
 | Update role | `PUT /roles/{id}` | `UpdateRole` | `role.Update` | `qrdb_role_update` | `UpdateRole` | `roles:update` |
 | Delete role | `DELETE /roles/{id}` | `DeleteRole` | `role.Delete` | `qrdb_role_delete` | `DeleteRole` | `roles:delete` |
-| List roles | `GET /roles` | `ListRoles` | `role.List` | `qrdb_role_list` | `ListRoles` | `roles:list` |
+| List roles | `GET /roles/list` | `ListRoles` | `role.List` | `qrdb_role_list` | `ListRoles` | `roles:list` |
 | Assign role | `POST /roles/assign` | `AssignRole` | `role.Assign` | `qrdb_role_assign` | `AssignRole` | `roles:assign` |
 | Unassign role | `POST /roles/unassign` | `UnassignRole` | `role.Unassign` | `qrdb_role_unassign` | `UnassignRole` | `roles:unassign` |
-| List permissions | `GET /permissions` | `ListPermissions` | `permission.List` | `qrdb_permissions_list` | `Client.Permissions()` | `permissions:list` |
-| Resolve role permissions | `POST /permissions/resolve` | `ResolveRolePermissions` | `permission.Resolve` | `qrdb_permissions_resolve` | `Client.RBAC()` | `permissions:resolve` |
+| List permissions | `GET /permissions` | `ListPermissions` | `role.ListPermissions` | `qrdb_permissions_list` | `Client.Permissions()` | `permissions:list` |
+| Resolve role permissions | `POST /roles/resolve-permissions` | `ResolveRolePermissions` | `role.ResolvePermissions` | `qrdb_permissions_resolve` | `ResolvePermissions` | `permissions:resolve` |
+| Reconcile built-in roles | `POST /roles/reconcile` | `ReconcileBuiltInRoles` | `role.ReconcileBuiltIn` | `qrdb_role_reconcile_builtin` | `ReconcileBuiltInRoles` | `roles:create` |
+
+The four route, method and tool names above the reconcile row were corrected
+against the code in the same change; the document had drifted.
+
+Reconcile carries **`roles:create`**, not a permission of its own. It IS the
+seeding operation applied to an existing tenant, and a dedicated verb would be
+absent from every role seeded before that verb existed — so nobody would hold
+the grant needed to repair that exact absence.
 
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not
@@ -59,6 +68,48 @@ presented certificate into a user. Because the thumbprint is over the public
 key, a renewed certificate for the same key resolves to the same user.
 
 ## Schemas
+
+`Role`:
+
+```json
+{ "id": "…", "name": "admin", "tenant_id": "acme",
+  "permissions": ["keys:create", "sdlc:bind"],
+  "system": true,
+  "retired_permissions": ["sdlc:register"],
+  "created_at": "…", "updated_at": "…" }
+```
+
+`retired_permissions` is **derived on read** from the server's live permission
+registry and is never stored: it lists the members of `permissions` that this
+build no longer defines. It is drift between what the tenant was seeded with and
+what the server now grants — visible on an ordinary listing, **before**
+`POST /roles/reconcile` is run to repair it. It is absent when there is none,
+and a whole-segment wildcard (`keys:*`) never appears in it, because the
+authorizer expands wildcards at authorization time and there is no registry
+entry for one to lose.
+
+`ReconcileRolesResponse` — the body of `POST /roles/reconcile`:
+
+```json
+{ "tenant_id": "acme",
+  "roles": [
+    { "role_id": "…", "name": "admin",  "created": false,
+      "added": ["sdlc:bind"], "removed": ["sdlc:register"] },
+    { "role_id": "…", "name": "operator", "created": true,
+      "added": ["orchestrator:task_block"] }
+  ] }
+```
+
+Only **changed** roles are reported, so `"roles"` absent or empty means the
+tenant already agreed with the build and **nothing was written**. Reconciliation
+is idempotent: a second call reports no roles and performs zero store writes.
+A `created` entry is a built-in the tenant did not hold at all; `added` then
+holds its whole permission set. Roles whose names are not built-in names are
+never read and never written — a custom role survives untouched.
+
+The request body is `{"tenant_id": "…"}`, and an **empty body** means the
+caller's own effective tenant. A normal tenant caller may converge only its own
+tenant; naming another returns the cross-tenant refusal.
 
 `User`:
 

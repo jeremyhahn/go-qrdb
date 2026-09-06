@@ -44,6 +44,7 @@ func newRolesCmd() *cobra.Command {
 		newRolesUnassignCmd(),
 		newRolesPermissionsCmd(),
 		newRolesResolvePermissionsCmd(),
+		newRolesReconcileCmd(),
 	)
 
 	return cmd
@@ -367,6 +368,59 @@ func newRolesResolvePermissionsCmd() *cobra.Command {
 	}
 }
 
+// newRolesReconcileCmd creates the "roles reconcile" subcommand, which
+// converges a tenant's stored built-in roles onto the server build's
+// definitions. It is the only way to repair a tenant seeded before a
+// permission was renamed or added: built-in roles are otherwise immutable.
+func newRolesReconcileCmd() *cobra.Command {
+	var tenantID string
+
+	cmd := &cobra.Command{
+		Use:   "reconcile",
+		Short: "Converge a tenant's built-in roles onto the server build's definitions",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client.Roles().ReconcileBuiltInRoles(cmd.Context(), &transport.ReconcileRolesRequest{
+				TenantID: tenantID,
+			})
+			if err != nil {
+				return err
+			}
+
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				if len(resp.Roles) == 0 {
+					_, _ = fmt.Fprintf(outputWriter, "Tenant %s: built-in roles already current\n", resp.TenantID)
+					return nil
+				}
+				_, _ = fmt.Fprintf(outputWriter, "Tenant %s:\n", resp.TenantID)
+				for _, r := range resp.Roles {
+					verb := "updated"
+					if r.Created {
+						verb = "created"
+					}
+					_, _ = fmt.Fprintf(outputWriter, "  %s (%s) %s\n", r.Name, r.RoleID, verb)
+					for _, p := range r.Added {
+						_, _ = fmt.Fprintf(outputWriter, "    + %s\n", p)
+					}
+					for _, p := range r.Removed {
+						_, _ = fmt.Fprintf(outputWriter, "    - %s\n", p)
+					}
+				}
+				return nil
+			}
+		},
+	}
+
+	cmd.Flags().StringVar(&tenantID, "tenant", "", "Tenant ID (defaults to the caller's own tenant)")
+
+	return cmd
+}
+
 // printRole prints a single Role in the current output format.
 func printRole(r *transport.Role) error {
 	switch outputFormat {
@@ -382,6 +436,11 @@ func printRole(r *transport.Role) error {
 		_, _ = fmt.Fprintf(outputWriter, "System:      %s\n", strconv.FormatBool(r.System))
 		_, _ = fmt.Fprintf(outputWriter, "CreatedAt:   %s\n", r.CreatedAt)
 		_, _ = fmt.Fprintf(outputWriter, "UpdatedAt:   %s\n", r.UpdatedAt)
+		if len(r.RetiredPermissions) > 0 {
+			// Drift, not an error: the role carries verbs this server build no
+			// longer defines. `qrdb roles reconcile` is the repair.
+			_, _ = fmt.Fprintf(outputWriter, "Retired:     %s\n", strings.Join(r.RetiredPermissions, ", "))
+		}
 		return nil
 	}
 }

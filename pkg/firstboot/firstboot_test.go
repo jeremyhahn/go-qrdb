@@ -1227,3 +1227,8 @@ func TestInitialize_RejectsConflictingAdminCertInputs(t *testing.T) {
 		t.Fatalf("err = %v, want ConflictingAdminCertInputsError", err)
 	}
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (f *fakeRoles) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

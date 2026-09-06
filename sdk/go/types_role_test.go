@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
@@ -126,5 +127,65 @@ func TestSystemRoleImmutableError_ReExported(t *testing.T) {
 	}
 	if target.ID != "role-id" || target.Op != "deleted" {
 		t.Errorf("fields not carried through the alias: %+v", target)
+	}
+}
+
+// TestRetiredPermissionError_ReExported checks the alias matches the error the
+// role package produces, which is the only property a consumer relies on:
+// errors.As against the SDK type must catch the pkg/role value.
+func TestRetiredPermissionError_ReExported(t *testing.T) {
+	stored := &role.Role{
+		ID:                 "role-id",
+		Name:               role.RoleNameAdmin,
+		TenantID:           "acme",
+		RetiredPermissions: []permission.Permission{"sdlc:register"},
+	}
+
+	var target *RetiredPermissionError
+	if !errors.As(stored.RetiredPermissionError(), &target) {
+		t.Fatal("errors.As via the SDK alias did not match the pkg/role error")
+	}
+	if target.RoleID != "role-id" || target.Name != role.RoleNameAdmin || target.TenantID != "acme" {
+		t.Errorf("fields not carried through the alias: %+v", target)
+	}
+	if len(target.Permissions) != 1 || target.Permissions[0] != "sdlc:register" {
+		t.Errorf("Permissions = %v, want [sdlc:register]", target.Permissions)
+	}
+}
+
+// TestRetiredPermissions_ReExported checks the SDK var resolves the registry at
+// call time: a registered permission is not drift, an unregistered one is, and
+// a whole-segment wildcard never is.
+func TestRetiredPermissions_ReExported(t *testing.T) {
+	got := RetiredPermissions([]permission.Permission{
+		permission.KVGet, "keys:*", "sdlc:register",
+	})
+	if len(got) != 1 || got[0] != "sdlc:register" {
+		t.Errorf("RetiredPermissions = %v, want [sdlc:register]", got)
+	}
+}
+
+// TestReconcileReport_ReExported checks the report aliases carry their fields,
+// so a consumer can read a reconciliation outcome through the SDK names alone.
+func TestReconcileReport_ReExported(t *testing.T) {
+	var report *ReconcileReport = &role.ReconcileReport{
+		TenantID: "acme",
+		Roles: []RoleReconcileResult{
+			{
+				RoleID:  "r-admin",
+				Name:    RoleNameAdmin,
+				Added:   []permission.Permission{"sdlc:bind"},
+				Removed: []permission.Permission{"sdlc:register"},
+			},
+		},
+	}
+	if !report.Changed() {
+		t.Fatal("populated report reports no change")
+	}
+	if report.Roles[0].Name != RoleNameAdmin || !report.Roles[0].Changed() {
+		t.Errorf("result did not carry through the alias: %+v", report.Roles[0])
+	}
+	if (&ReconcileReport{TenantID: "acme"}).Changed() {
+		t.Error("empty report reports a change")
 	}
 }

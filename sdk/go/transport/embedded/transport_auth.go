@@ -468,6 +468,19 @@ func userToTransport(u *user.User) *transport.User {
 }
 
 // roleToTransport converts a domain role to its transport representation.
+// permissionsToStrings renders a permission slice for the transport types. It
+// answers nil for an empty input so an omitempty field stays absent.
+func permissionsToStrings(perms []permission.Permission) []string {
+	if len(perms) == 0 {
+		return nil
+	}
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+	return out
+}
+
 func roleToTransport(rl *role.Role) *transport.Role {
 	if rl == nil {
 		return nil
@@ -477,13 +490,14 @@ func roleToTransport(rl *role.Role) *transport.Role {
 		perms[i] = p.String()
 	}
 	return &transport.Role{
-		ID:          rl.ID,
-		Name:        rl.Name,
-		TenantID:    rl.TenantID,
-		Permissions: perms,
-		System:      rl.System,
-		CreatedAt:   rl.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   rl.UpdatedAt.Format(time.RFC3339),
+		ID:                 rl.ID,
+		Name:               rl.Name,
+		TenantID:           rl.TenantID,
+		Permissions:        perms,
+		System:             rl.System,
+		CreatedAt:          rl.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          rl.UpdatedAt.Format(time.RFC3339),
+		RetiredPermissions: permissionsToStrings(rl.RetiredPermissions),
 	}
 }
 

@@ -86,6 +86,10 @@ type serverRole struct {
 	System      bool     `json:"system"`
 	CreatedAt   string   `json:"createdAt"`
 	UpdatedAt   string   `json:"updatedAt"`
+
+	// RetiredPermissions are the members of Permissions the server build no
+	// longer defines.
+	RetiredPermissions []string `json:"retiredPermissions,omitempty"`
 }
 
 // serverListRolesResponse mirrors role.ListRolesResponse for JSON decoding.
@@ -157,13 +161,14 @@ func serverUserToTransport(u *serverUser) *transport.User {
 // representation.
 func serverRoleToTransport(r *serverRole) *transport.Role {
 	return &transport.Role{
-		ID:          r.ID,
-		Name:        r.Name,
-		TenantID:    r.TenantID,
-		Permissions: r.Permissions,
-		System:      r.System,
-		CreatedAt:   r.CreatedAt,
-		UpdatedAt:   r.UpdatedAt,
+		ID:                 r.ID,
+		Name:               r.Name,
+		TenantID:           r.TenantID,
+		Permissions:        r.Permissions,
+		System:             r.System,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
+		RetiredPermissions: r.RetiredPermissions,
 	}
 }
 

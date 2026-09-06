@@ -206,6 +206,10 @@ type roleWireResponse struct {
 	System      bool     `json:"system"`
 	CreatedAt   string   `json:"createdAt"`
 	UpdatedAt   string   `json:"updatedAt"`
+
+	// RetiredPermissions are the members of Permissions the server build no
+	// longer defines.
+	RetiredPermissions []string `json:"retiredPermissions,omitempty"`
 }
 
 // listRolesWireResponse is the JSON wire payload returned by role.List.
@@ -957,13 +961,14 @@ func wireToRole(w *roleWireResponse) *transport.Role {
 		return nil
 	}
 	return &transport.Role{
-		ID:          w.ID,
-		Name:        w.Name,
-		TenantID:    w.TenantID,
-		Permissions: w.Permissions,
-		System:      w.System,
-		CreatedAt:   w.CreatedAt,
-		UpdatedAt:   w.UpdatedAt,
+		ID:                 w.ID,
+		Name:               w.Name,
+		TenantID:           w.TenantID,
+		Permissions:        w.Permissions,
+		System:             w.System,
+		CreatedAt:          w.CreatedAt,
+		UpdatedAt:          w.UpdatedAt,
+		RetiredPermissions: w.RetiredPermissions,
 	}
 }
 

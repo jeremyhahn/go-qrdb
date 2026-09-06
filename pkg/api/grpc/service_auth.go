@@ -479,6 +479,49 @@ func (s *qrdbServiceServer) ResolveRolePermissions(ctx context.Context, req *pb.
 	return &pb.ResolveRolePermissionsResponse{Permissions: out}, nil
 }
 
+// ReconcileBuiltInRoles converges a tenant's stored built-in roles onto this
+// build's definitions.
+func (s *qrdbServiceServer) ReconcileBuiltInRoles(ctx context.Context, req *pb.ReconcileBuiltInRolesRequest) (*pb.ReconcileBuiltInRolesResponse, error) {
+	if s.roleSvc == nil {
+		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "role"}).Error())
+	}
+
+	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.GetTenantId())
+	if err != nil {
+		return nil, mapAuthServiceError(err)
+	}
+
+	return reconcileReportToProto(report), nil
+}
+
+// reconcileReportToProto converts a role.ReconcileReport to its protobuf
+// representation.
+func reconcileReportToProto(report *role.ReconcileReport) *pb.ReconcileBuiltInRolesResponse {
+	if report == nil {
+		return nil
+	}
+	roles := make([]*pb.RoleReconcileResult, len(report.Roles))
+	for i, r := range report.Roles {
+		roles[i] = &pb.RoleReconcileResult{
+			RoleId:  r.RoleID,
+			Name:    r.Name,
+			Created: r.Created,
+			Added:   permissionsToStrings(r.Added),
+			Removed: permissionsToStrings(r.Removed),
+		}
+	}
+	return &pb.ReconcileBuiltInRolesResponse{TenantId: report.TenantID, Roles: roles}
+}
+
+// permissionsToStrings renders a permission slice for the wire.
+func permissionsToStrings(perms []permission.Permission) []string {
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Certificate management handlers
 // ---------------------------------------------------------------------------
@@ -606,14 +649,19 @@ func roleToProto(r *role.Role) *pb.RoleResponse {
 	for i, p := range r.Permissions {
 		perms[i] = p.String()
 	}
+	retired := make([]string, len(r.RetiredPermissions))
+	for i, p := range r.RetiredPermissions {
+		retired[i] = p.String()
+	}
 	return &pb.RoleResponse{
-		Id:          r.ID,
-		TenantId:    r.TenantID,
-		Name:        r.Name,
-		Permissions: perms,
-		System:      r.System,
-		CreatedAt:   r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   r.UpdatedAt.Format(time.RFC3339),
+		Id:                 r.ID,
+		TenantId:           r.TenantID,
+		Name:               r.Name,
+		Permissions:        perms,
+		System:             r.System,
+		CreatedAt:          r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          r.UpdatedAt.Format(time.RFC3339),
+		RetiredPermissions: retired,
 	}
 }
 

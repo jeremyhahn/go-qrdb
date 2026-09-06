@@ -135,6 +135,7 @@ type mockRoleSvc struct {
 	deleteFn    func(ctx context.Context, id string) error
 	listFn      func(ctx context.Context, req *role.ListRolesRequest) (*role.ListRolesResponse, error)
 	resolveFn   func(ctx context.Context, roleIDs []string) ([]permission.Permission, error)
+	reconcileFn func(ctx context.Context, tenantID string) (*role.ReconcileReport, error)
 }
 
 func (m *mockRoleSvc) CreateRole(ctx context.Context, req *role.CreateRoleRequest) (*role.Role, error) {
@@ -720,4 +721,11 @@ func TestUnixRT_NewIdentityFieldsRoundTrip(t *testing.T) {
 	if u.ID != 7 {
 		t.Fatalf("GetUserByEmail returned id %d, want 7", u.ID)
 	}
+}
+
+func (m *mockRoleSvc) ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*role.ReconcileReport, error) {
+	if m.reconcileFn != nil {
+		return m.reconcileFn(ctx, tenantID)
+	}
+	return &role.ReconcileReport{TenantID: tenantID}, nil
 }

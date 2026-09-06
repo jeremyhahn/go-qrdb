@@ -795,3 +795,8 @@ func TestCertBinding_List_ServiceError(t *testing.T) {
 		t.Fatal("expected error from List")
 	}
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (m *mockRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

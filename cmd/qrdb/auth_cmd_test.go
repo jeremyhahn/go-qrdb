@@ -115,6 +115,10 @@ func (m *mockAuthTransport) ResolvePermissions(ctx context.Context, req *transpo
 	return m.roles.ResolvePermissions(ctx, req)
 }
 
+func (m *mockAuthTransport) ReconcileBuiltInRoles(ctx context.Context, req *transport.ReconcileRolesRequest) (*transport.ReconcileRolesResponse, error) {
+	return m.roles.ReconcileBuiltInRoles(ctx, req)
+}
+
 // Cert client delegation.
 func (m *mockAuthTransport) GenerateCert(ctx context.Context, req *transport.GenerateCertRequest) (*transport.CertBundle, error) {
 	return m.certs.GenerateCert(ctx, req)
@@ -325,6 +329,35 @@ func (m *mockRoleClient) GetRoleByName(_ context.Context, req *transport.GetRole
 		}
 	}
 	return nil, &transport.RoleNotFoundError{ID: req.Name}
+}
+
+// ReconcileBuiltInRoles reports a fixed repair: one built-in that gained a
+// verb and lost a retired one, and one that was seeded — the go-qrdb#354 shape.
+func (m *mockRoleClient) ReconcileBuiltInRoles(_ context.Context, req *transport.ReconcileRolesRequest) (*transport.ReconcileRolesResponse, error) {
+	tenantID := ""
+	if req != nil {
+		tenantID = req.TenantID
+	}
+	if tenantID == "converged" {
+		return &transport.ReconcileRolesResponse{TenantID: tenantID}, nil
+	}
+	return &transport.ReconcileRolesResponse{
+		TenantID: tenantID,
+		Roles: []transport.RoleReconcileResult{
+			{
+				RoleID:  "role-admin",
+				Name:    "admin",
+				Added:   []string{"sdlc:bind"},
+				Removed: []string{"sdlc:register"},
+			},
+			{
+				RoleID:  "role-operator",
+				Name:    "operator",
+				Created: true,
+				Added:   []string{"orchestrator:task_block"},
+			},
+		},
+	}, nil
 }
 
 func (m *mockRoleClient) ResolvePermissions(_ context.Context, req *transport.ResolvePermissionsRequest) (*transport.ResolvePermissionsResponse, error) {

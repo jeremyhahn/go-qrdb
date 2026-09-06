@@ -108,6 +108,21 @@ Six exist from the first boot and cannot be deleted:
 The Security Officer's inability to use keys is the separation-of-duties
 control, not an oversight.
 
+You cannot edit them: their permissions are fixed, and so is their membership.
+What you *can* do is bring them back into line with the software you are
+running, after an upgrade renamed or added a permission:
+
+```bash
+qrdb roles reconcile --tenant acme
+```
+
+Your tenant was seeded from the built-in definitions on the day it was created
+and, before this command existed, never touched again — so a tenant older than
+an upgrade keeps verbs the software has retired and never gains the ones it
+added. Reconciling adds what is missing, removes what is retired, and leaves
+your own roles alone. Running it twice is harmless: the second run reports that
+everything is already current and changes nothing.
+
 ## Two ways to hold a role
 
 - **System-scoped** (`roleIDs`) — the role applies everywhere.
@@ -135,12 +150,20 @@ keeps the same binding. If you generated a new key, add a binding for it
 `resource:action` string. Effective permissions are the union of system-scoped
 roles and tenant-scoped bindings.
 
+**A built-in role is missing a verb the release notes say it has.** Your tenant
+predates the change. `qrdb roles get <id>` shows a `Retired:` line if the role
+also carries verbs the build has dropped — either way,
+`qrdb roles reconcile --tenant <id>` converges it. This is the one supported way
+to change a built-in role's permissions; `roles update` refuses.
+
 **Creating a role failed on a permission string.** The vocabulary is a fixed
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists
 what exists.
 
 **You cannot delete a user or a role.** Built-in users and the six built-in
-roles are undeletable. Disable the user instead.
+roles are undeletable, and a built-in role cannot be re-permissioned either.
+Disable the user instead; for a built-in role's permissions, use
+`qrdb roles reconcile`, which is the only writer the guard admits.
 
 **You are looking for the password field.** There isn't one. The user model is
 passwordless throughout; the credential is the certificate. For a second factor

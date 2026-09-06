@@ -16,6 +16,41 @@ func (c *Client) RBAC()        transport.RBACClient        // nil if unsupported
 `Permissions()` and `RBAC()` return **nil** when the transport does not
 implement the corresponding provider interface — nil-check them.
 
+Built-in role reconciliation, re-exported from `sdk/go` and carried by every
+transport's `RoleClient`:
+
+```go
+// pkg/role — the servicer surface.
+ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*ReconcileReport, error)
+
+type ReconcileReport struct {
+    TenantID string
+    Roles    []RoleReconcileResult // only CHANGED roles; empty means converged
+}
+func (r *ReconcileReport) Changed() bool
+
+type RoleReconcileResult struct {
+    RoleID, Name string
+    Created      bool
+    Added        []permission.Permission
+    Removed      []permission.Permission
+}
+func (r RoleReconcileResult) Changed() bool
+
+// Drift, visible on read.
+type RetiredPermissionError struct {
+    RoleID, Name, TenantID string
+    Permissions            []permission.Permission
+}
+func RetiredPermissions(perms []permission.Permission) []permission.Permission
+func (r *Role) RetiredPermissionError() error   // nil when there is no drift
+
+// sdk/go re-exports: ReconcileReport, RoleReconcileResult,
+// RetiredPermissionError, RetiredPermissions.
+// sdk/go/transport: RoleClient.ReconcileBuiltInRoles(ctx, *ReconcileRolesRequest)
+//                   (*ReconcileRolesResponse, error)
+```
+
 ### User entity — `pkg/user/types.go`
 
 ```go
@@ -169,6 +204,34 @@ wrong fails a test rather than passing a typed-in column.
 
 ## Invariants
 
+- **`ReconcileBuiltInRoles` is the ONLY writer to a built-in role's
+  permissions.** `UpdateRole` returns `SystemRoleImmutableError{Op:
+  "re-permissioned"}` and `DeleteRole` returns `SystemRoleImmutableError{Op:
+  "deleted"}` for every other caller, and that does not change. Reconciliation
+  is admitted because its target is not caller-supplied: it is `BuiltInRoles()`,
+  the definition the guard exists to protect. It writes the primary record
+  directly rather than going through `UpdateRole`, so the guard has no
+  bypass-flag to be set by mistake.
+- **Reconciliation is idempotent and writes nothing when converged.** A built-in
+  already in agreement is skipped entirely — no `Put`, no `UpdatedAt` bump, no
+  audit record. This runs on every boot of every node; a no-op write would
+  replicate a Raft entry each time. The test asserts on the store's write count,
+  not only on an empty report.
+- **Reconciliation touches only `IsSystemRoleName` names.** Custom roles are
+  never read and never written. Owner is converged when present but **never
+  created**: it is posture-conditional, so seeding it would give a strict
+  separation-of-duties deployment a superuser.
+- **`BuiltInRoles()` is resolved at CALL time**, from the global permission
+  registry. A composer that contributes permissions through its modules must
+  call `ReconcileBuiltInRoles` AFTER module registration, or it converges every
+  tenant onto a definition missing its own verbs and reports success.
+- **`Role.RetiredPermissions` is derived, never persisted.** `GetRole` populates
+  it from the live registry on every read; `marshalRole` — the single seam every
+  store write passes through — clears it before marshalling. The seam is
+  structural rather than a rule, because `UpdateRole` writes back the value
+  `GetRole` returned, so a plain `json.Marshal` at either call site would persist
+  one build's registry snapshot into the record and the next build would read it
+  back as stored grant data.
 - **`Username` is unique within a tenant**, not globally.
 - **`Email` is the canonical login key**, unique within a tenant and normalized
   by `NormalizeEmail` (lowercase, trimmed) on both the record and its index key.
@@ -307,6 +370,10 @@ wrong fails a test rather than passing a typed-in column.
 | Unregistered permission string | `Parse` error | **yes** |
 | Missing permission for the operation | permission denied | **yes** |
 | Deleting a `System: true` user or a built-in role | refused | **yes** |
+| Re-permissioning a built-in role through `UpdateRole` | `SystemRoleImmutableError{Op: "re-permissioned"}` | **yes** |
+| Reconciling another tenant's built-ins as a normal tenant caller | `tenant.CrossTenantDeniedError` | **yes** |
+| Reconciling a sealed barrier tenant | `tenant.ErrTenantSealed`, no fallback to the shared store | **yes** |
+| Stored role carries a permission this build does not define | reported on read via `RetiredPermissions`; **no read fails** | — |
 | Duplicate username within a tenant | refused | yes |
 | `Permissions()` / `RBAC()` on an unsupporting transport | returns **nil** — callers must nil-check | — |
 

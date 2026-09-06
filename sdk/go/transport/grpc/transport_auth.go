@@ -556,13 +556,14 @@ func protoToRole(resp *pb.RoleResponse) *transport.Role {
 		return nil
 	}
 	return &transport.Role{
-		ID:          resp.GetId(),
-		TenantID:    resp.GetTenantId(),
-		Name:        resp.GetName(),
-		Permissions: resp.GetPermissions(),
-		System:      resp.GetSystem(),
-		CreatedAt:   resp.GetCreatedAt(),
-		UpdatedAt:   resp.GetUpdatedAt(),
+		ID:                 resp.GetId(),
+		TenantID:           resp.GetTenantId(),
+		Name:               resp.GetName(),
+		Permissions:        resp.GetPermissions(),
+		System:             resp.GetSystem(),
+		CreatedAt:          resp.GetCreatedAt(),
+		UpdatedAt:          resp.GetUpdatedAt(),
+		RetiredPermissions: resp.GetRetiredPermissions(),
 	}
 }
 

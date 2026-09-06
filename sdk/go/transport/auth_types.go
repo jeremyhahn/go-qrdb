@@ -139,6 +139,13 @@ type Role struct {
 	System      bool     `json:"system"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
+
+	// RetiredPermissions lists the members of Permissions that the server's
+	// build no longer defines. It is derived on read from the live permission
+	// registry and never stored, so it reports drift between what the tenant
+	// was seeded with and what the server now grants — visible on an ordinary
+	// listing, BEFORE ReconcileBuiltInRoles is run to repair it.
+	RetiredPermissions []string `json:"retired_permissions,omitempty"`
 }
 
 // CreateRoleRequest holds parameters for creating a role.
@@ -217,6 +224,41 @@ type ResolvePermissionsRequest struct {
 // permissions for the requested roles.
 type ResolvePermissionsResponse struct {
 	Permissions []string `json:"permissions"`
+}
+
+// ReconcileRolesRequest names the tenant whose built-in roles are to be
+// converged onto the server build's definitions.
+type ReconcileRolesRequest struct {
+	// TenantID is the tenant to reconcile. Empty means the caller's own
+	// effective tenant.
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+// RoleReconcileResult records what reconciliation changed for one built-in
+// role. Only changed roles are reported.
+type RoleReconcileResult struct {
+	RoleID string `json:"role_id"`
+	Name   string `json:"name"`
+
+	// Created is true when the built-in was absent from the tenant and was
+	// seeded. Added then holds its whole permission set.
+	Created bool `json:"created"`
+
+	// Added lists the permissions the build grants that the stored role did
+	// not carry. Sorted.
+	Added []string `json:"added,omitempty"`
+
+	// Removed lists the permissions the stored role carried that the build no
+	// longer grants. Sorted.
+	Removed []string `json:"removed,omitempty"`
+}
+
+// ReconcileRolesResponse is the per-tenant reconciliation report. An empty
+// Roles slice means the tenant already agreed with the build and nothing was
+// written.
+type ReconcileRolesResponse struct {
+	TenantID string                `json:"tenant_id"`
+	Roles    []RoleReconcileResult `json:"roles,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

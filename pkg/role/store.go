@@ -215,7 +215,7 @@ func (s *kvRoleStore) CreateRole(ctx context.Context, req *CreateRoleRequest) (c
 		}
 	}()
 
-	data, err := json.Marshal(r)
+	data, err := marshalRole(r)
 	if err != nil {
 		return nil, &StoreError{Op: "create", Detail: "marshal", Err: err}
 	}
@@ -269,6 +269,11 @@ func (s *kvRoleStore) GetRole(ctx context.Context, id string) (*Role, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, &StoreError{Op: "get", Detail: "unmarshal", Err: err}
 	}
+	// DERIVED on every read, from the registry as it stands right now — see
+	// Role.RetiredPermissions. GetRoleByName, ListRoles and ResolvePermissions
+	// all funnel through here, so the drift signal reaches every read surface
+	// from one place.
+	r.RetiredPermissions = RetiredPermissions(r.Permissions)
 	// Tenant ownership: a non-system caller may only read roles in its own
 	// tenant. The system tenant (admin and internal RBAC permission
 	// resolution, which runs under the identity's own tenant) reads any role.
@@ -370,9 +375,18 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 	// single barrier:unseal-share grant, or widening Auditor past read-only,
 	// changes the compliance posture (FIPS 140-3 AS10.03/AS10.06/AS10.10)
 	// while the record still presents as a canonical system role to anything
-	// that inspects it. Nothing in the tree ever performs such an update —
-	// there is no built-in permission reconcile path on boot — so this
-	// refusal costs no existing caller.
+	// that inspects it.
+	//
+	// This comment used to add "nothing in the tree ever performs such an
+	// update — there is no built-in permission reconcile path on boot — so
+	// this refusal costs no existing caller." That stopped being true: a
+	// permission rename strands every tenant seeded before it, and repairing
+	// that requires writing a built-in's grants (go-qrdb#354). There is now
+	// exactly ONE caller that may, ReconcileBuiltInRoles, and it does not come
+	// through here — it writes the primary record directly, because its target
+	// is BuiltInRoles rather than anything a caller supplies. Every other
+	// caller is still refused, which is the whole point: the guard was never
+	// about the write, it was about who chooses the value.
 	if existing.System && req.Permissions != nil {
 		return nil, &SystemRoleImmutableError{ID: existing.ID, Op: "re-permissioned"}
 	}
@@ -411,7 +425,7 @@ func (s *kvRoleStore) UpdateRole(ctx context.Context, req *UpdateRoleRequest) (*
 
 	existing.UpdatedAt = time.Now().UTC()
 
-	data, err := json.Marshal(existing)
+	data, err := marshalRole(existing)
 	if err != nil {
 		return nil, &StoreError{Op: "update", Detail: "marshal", Err: err}
 	}
@@ -942,6 +956,20 @@ func validatePermissions(perms []permission.Permission) error {
 		}
 	}
 	return nil
+}
+
+// marshalRole serializes a role for storage.
+//
+// It clears RetiredPermissions first, and it is the ONLY path that writes a
+// role record, so that field cannot reach the store. That matters because
+// GetRole populates it on read and UpdateRole writes back the very value
+// GetRole returned: a plain json.Marshal at either call site would persist a
+// snapshot of one build's registry into the record, and the next build would
+// then read stale drift back out as if it were stored grant data.
+func marshalRole(r *Role) ([]byte, error) {
+	stored := *r
+	stored.RetiredPermissions = nil
+	return json.Marshal(&stored)
 }
 
 // primaryKey builds the primary record key for a role ID.

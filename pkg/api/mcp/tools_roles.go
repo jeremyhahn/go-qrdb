@@ -81,6 +81,43 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer) []serverToo
 			Perm:    permission.PermissionsResolve,
 			Handler: handlePermissionsResolve(roleSvc),
 		},
+		{
+			Tool: toolRoleReconcile(),
+			// roles:create, not a verb of its own — see the REST route
+			// comment: a dedicated permission would be missing from every role
+			// seeded before it existed, so nobody could hold the grant needed
+			// to repair that absence.
+			Perm:    permission.RolesCreate,
+			Handler: handleRoleReconcile(roleSvc),
+		},
+	}
+}
+
+// toolRoleReconcile defines the qrdb_role_reconcile_builtin tool schema.
+func toolRoleReconcile() mcp.Tool {
+	return mcp.NewTool("qrdb_role_reconcile_builtin",
+		mcp.WithDescription("Converge a tenant's stored built-in roles onto this build's definitions: add permissions the build now grants, remove ones it no longer grants, leave custom roles untouched. Idempotent."),
+		mcp.WithString("tenant_id",
+			mcp.Description("The tenant to reconcile. Defaults to the caller's own effective tenant when empty."),
+		),
+	)
+}
+
+// handleRoleReconcile returns a tool handler that delegates to
+// roleSvc.ReconcileBuiltInRoles.
+func handleRoleReconcile(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		report, err := roleSvc.ReconcileBuiltInRoles(ctx, mcp.ParseString(req, "tenant_id", ""))
+		if err != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin", Err: err}
+		}
+
+		data, jsonErr := json.Marshal(report)
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 

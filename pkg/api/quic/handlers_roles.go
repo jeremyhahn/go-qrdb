@@ -94,6 +94,33 @@ type roleWireResponse struct {
 	System      bool     `json:"system"`
 	CreatedAt   string   `json:"createdAt"`
 	UpdatedAt   string   `json:"updatedAt"`
+
+	// RetiredPermissions are the members of Permissions this build no longer
+	// defines — drift visible before role.ReconcileBuiltIn repairs it.
+	RetiredPermissions []string `json:"retiredPermissions,omitempty"`
+}
+
+// reconcileRolesWireRequest is the JSON wire payload for
+// role.ReconcileBuiltIn.
+type reconcileRolesWireRequest struct {
+	TenantID string `json:"tenantID"`
+}
+
+// roleReconcileResultWire is the JSON wire representation of one built-in
+// role's reconciliation outcome.
+type roleReconcileResultWire struct {
+	RoleID  string   `json:"roleID"`
+	Name    string   `json:"name"`
+	Created bool     `json:"created"`
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
+}
+
+// reconcileRolesWireResponse is the JSON wire payload returned by
+// role.ReconcileBuiltIn.
+type reconcileRolesWireResponse struct {
+	TenantID string                    `json:"tenantID"`
+	Roles    []roleReconcileResultWire `json:"roles,omitempty"`
 }
 
 // listRolesWireResponse is the JSON wire payload returned by role.List.
@@ -223,6 +250,53 @@ func (s *Server) handleResolvePermissions(ctx context.Context, payload []byte) (
 		return nil, &MarshalError{Err: err}
 	}
 	return data, nil
+}
+
+// handleReconcileRoles unmarshals a JSON reconcile request, converges the
+// tenant's stored built-in roles onto this build's definitions via the service
+// layer, and returns a serialized JSON report.
+func (s *Server) handleReconcileRoles(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.roleSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "role"}
+	}
+
+	var req reconcileRolesWireRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, &UnmarshalError{Err: err}
+		}
+	}
+
+	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := json.Marshal(reconcileReportToWire(report))
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return data, nil
+}
+
+// reconcileReportToWire converts a role.ReconcileReport to its wire
+// representation.
+func reconcileReportToWire(report *role.ReconcileReport) reconcileRolesWireResponse {
+	if report == nil {
+		return reconcileRolesWireResponse{}
+	}
+	out := reconcileRolesWireResponse{TenantID: report.TenantID}
+	out.Roles = make([]roleReconcileResultWire, len(report.Roles))
+	for i, r := range report.Roles {
+		out.Roles[i] = roleReconcileResultWire{
+			RoleID:  r.RoleID,
+			Name:    r.Name,
+			Created: r.Created,
+			Added:   permissionsToStrings(r.Added),
+			Removed: permissionsToStrings(r.Removed),
+		}
+	}
+	return out
 }
 
 // handleUpdateRole unmarshals a JSON update role request, applies partial
@@ -455,14 +529,28 @@ func roleToWireResponse(rl *role.Role) *roleWireResponse {
 	}
 
 	return &roleWireResponse{
-		ID:          rl.ID,
-		Name:        rl.Name,
-		TenantID:    rl.TenantID,
-		Permissions: perms,
-		System:      rl.System,
-		CreatedAt:   rl.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:   rl.UpdatedAt.Format(time.RFC3339),
+		ID:                 rl.ID,
+		Name:               rl.Name,
+		TenantID:           rl.TenantID,
+		Permissions:        perms,
+		System:             rl.System,
+		CreatedAt:          rl.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          rl.UpdatedAt.Format(time.RFC3339),
+		RetiredPermissions: permissionsToStrings(rl.RetiredPermissions),
 	}
+}
+
+// permissionsToStrings renders a permission slice for the wire. It answers nil
+// for an empty input so an omitempty field stays absent.
+func permissionsToStrings(perms []permission.Permission) []string {
+	if len(perms) == 0 {
+		return nil
+	}
+	out := make([]string, len(perms))
+	for i, p := range perms {
+		out[i] = p.String()
+	}
+	return out
 }
 
 // stringsToPermissions converts a slice of strings to permission.Permission

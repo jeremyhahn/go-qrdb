@@ -914,3 +914,8 @@ func TestGRPC_DatabaseUpdateConnection_Error(t *testing.T) {
 		t.Fatal("expected error from DatabaseUpdateConnection")
 	}
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (m *mockRoleServiceForGRPC) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

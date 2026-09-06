@@ -310,6 +310,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		{"GET", "/roles/list", permission.RolesList},
 		{"GET", "/roles/by-name", permission.RolesRead},
 		{"POST", "/roles/resolve-permissions", permission.PermissionsResolve},
+		{"POST", "/roles/reconcile", permission.RolesCreate},
 		{"POST", "/roles/assign", permission.RolesAssign},
 		{"POST", "/roles/unassign", permission.RolesUnassign},
 		{"GET", "/permissions", permission.PermissionsList},

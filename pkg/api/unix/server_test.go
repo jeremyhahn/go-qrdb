@@ -1700,3 +1700,8 @@ func (s *stubMVCCSvc) RestoreToRevision(context.Context, *service.RestoreRevisio
 func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (s *stubRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

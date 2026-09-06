@@ -98,6 +98,33 @@ func IsRegistered(p Permission) bool {
 	return ok
 }
 
+// Unregistered returns the members of perms that the global registry does not
+// define, in input order. Whole-segment wildcards are never reported: the RBAC
+// authorizer expands them against concrete checks at authorization time, so
+// there is no registry entry for one to lose.
+//
+// It exists rather than a loop over IsRegistered because the caller is on the
+// authorization read path — every role read screens its whole permission list —
+// and a role may hold the entire registry (Owner holds All()). One lock
+// acquisition for the list, not one per permission.
+func Unregistered(perms []Permission) []Permission {
+	if len(perms) == 0 {
+		return nil
+	}
+	mu.RLock()
+	defer mu.RUnlock()
+	var out []Permission
+	for _, p := range perms {
+		if IsWildcard(p) {
+			continue
+		}
+		if _, ok := registry[p]; !ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // IsWildcard reports whether p uses a whole-segment "*" wildcard in its
 // resource or action component (e.g. "keys:*", "*:read", "*:*"). Wildcard
 // permissions are matched against concrete resource:action checks by the

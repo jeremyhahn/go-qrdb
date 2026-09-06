@@ -537,3 +537,46 @@ func TestAll_TotalCount(t *testing.T) {
 		t.Fatalf("All() count: got %d, want %d", len(all), expectedTotal)
 	}
 }
+
+// TestUnregistered covers the bulk registry screen the role read path uses:
+// registered permissions and whole-segment wildcards are never reported,
+// unknown ones are, and input order is preserved.
+func TestUnregistered(t *testing.T) {
+	Register("unregtest:known", "unregtest:also")
+
+	got := Unregistered([]Permission{
+		"unregtest:known",
+		"unregtest:retired",
+		"unregtest:*",
+		"*:read",
+		"unregtest:also",
+		"unregtest:gone",
+	})
+
+	want := []Permission{"unregtest:retired", "unregtest:gone"}
+	if len(got) != len(want) {
+		t.Fatalf("Unregistered = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Unregistered[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestUnregistered_EmptyAndAllKnown covers the two no-work cases: an empty
+// input, and a list the registry fully defines. Both must answer nil, because
+// the caller renders the result as "there is no drift".
+func TestUnregistered_EmptyAndAllKnown(t *testing.T) {
+	if got := Unregistered(nil); got != nil {
+		t.Errorf("Unregistered(nil) = %v, want nil", got)
+	}
+	if got := Unregistered([]Permission{}); got != nil {
+		t.Errorf("Unregistered(empty) = %v, want nil", got)
+	}
+
+	Register("unregtest2:known")
+	if got := Unregistered([]Permission{"unregtest2:known", "keys:*"}); got != nil {
+		t.Errorf("Unregistered(all known) = %v, want nil", got)
+	}
+}

@@ -195,13 +195,15 @@ func (m *mockUserSvc) AddCertBinding(_ context.Context, _ uint64, _ string, _ in
 type mockRoleSvc struct {
 	mu sync.Mutex
 
-	createErr  error
-	getErr     error
-	getByErr   error
-	updateErr  error
-	deleteErr  error
-	listErr    error
-	resolveErr error
+	createErr     error
+	getErr        error
+	getByErr      error
+	updateErr     error
+	deleteErr     error
+	listErr       error
+	resolveErr    error
+	reconcileErr  error
+	reconcileResp *role.ReconcileReport
 
 	lastCreate     *role.CreateRoleRequest
 	lastGetID      string
@@ -1112,4 +1114,16 @@ func TestTransport_GetUserByEmail_NotFound(t *testing.T) {
 	if _, err := tr.GetUserByEmail(context.Background(), "t1", "nobody@example.com"); err == nil {
 		t.Fatal("expected a not-found error")
 	}
+}
+
+func (m *mockRoleSvc) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reconcileErr != nil {
+		return nil, m.reconcileErr
+	}
+	if m.reconcileResp != nil {
+		return m.reconcileResp, nil
+	}
+	return &role.ReconcileReport{TenantID: tenantID}, nil
 }

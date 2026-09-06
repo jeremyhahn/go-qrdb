@@ -88,6 +88,17 @@ type Role struct {
 	// System marks built-in roles that cannot be deleted.
 	System bool `json:"system"`
 
+	// RetiredPermissions lists the members of Permissions that the build's
+	// permission registry no longer defines. It is DERIVED on read from the
+	// live registry and is NEVER persisted — every store write goes through
+	// marshalRole, which clears it — so it reports drift between what this
+	// tenant was seeded with and what this build grants, and nothing else.
+	//
+	// It exists so a role listing shows the drift BEFORE
+	// ReconcileBuiltInRoles is run to repair it. See
+	// Role.RetiredPermissionError for the typed form.
+	RetiredPermissions []permission.Permission `json:"retiredPermissions,omitempty"`
+
 	// CreatedAt records when the role was created (UTC).
 	CreatedAt time.Time `json:"createdAt"`
 

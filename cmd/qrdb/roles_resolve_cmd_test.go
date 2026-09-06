@@ -118,3 +118,61 @@ func TestRolesResolvePermissionsCmd_MissingArg(t *testing.T) {
 		t.Fatal("expected error when no role IDs are provided")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// roles reconcile
+// ---------------------------------------------------------------------------
+
+// TestRolesReconcileCmd_Success checks the human output names each changed role
+// and both directions of the change: an operator running the repair must be
+// able to read what it did without re-querying.
+func TestRolesReconcileCmd_Success(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "roles", "reconcile", "--tenant", "t1")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	for _, want := range []string{"t1", "admin", "updated", "+ sdlc:bind", "- sdlc:register", "operator", "created"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output, got: %q", want, out)
+		}
+	}
+}
+
+// TestRolesReconcileCmd_AlreadyCurrent covers the idempotent case: a converged
+// tenant must say so rather than print an empty report an operator has to
+// interpret.
+func TestRolesReconcileCmd_AlreadyCurrent(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "roles", "reconcile", "--tenant", "converged")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "already current") {
+		t.Fatalf("expected an already-current line, got: %q", out)
+	}
+}
+
+func TestRolesReconcileCmd_SuccessJSON(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	out, err := executeCommand(root, "--output", "json", "roles", "reconcile", "--tenant", "t1")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, `"sdlc:register"`) || !strings.Contains(out, `"tenant_id"`) {
+		t.Fatalf("expected the report in JSON output, got: %q", out)
+	}
+}
+
+// TestRolesReconcileCmd_RejectsArgs: the tenant is a flag, so a positional
+// argument is a mistake the command must refuse rather than ignore.
+func TestRolesReconcileCmd_RejectsArgs(t *testing.T) {
+	root := newTestRootCmdAuth()
+
+	if _, err := executeCommand(root, "roles", "reconcile", "t1"); err == nil {
+		t.Fatal("expected an error for a positional argument")
+	}
+}

@@ -2320,3 +2320,8 @@ func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, 
 	m.store[key] = next
 	return true, nil
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (s *stubRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

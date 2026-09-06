@@ -2181,3 +2181,8 @@ func TestApplyConfigToFlags_PeerAdminURLsSkipsIncomplete(t *testing.T) {
 	// assigned when len(m) == 0).
 	assert.Nil(t, f.peerAdminURLs)
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (m *mockRoleServicer) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}

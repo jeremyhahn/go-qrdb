@@ -52,6 +52,9 @@ type mockRoleService struct {
 	listErr         error
 	resolveResult   []permission.Permission
 	resolveErr      error
+	reconcileResult *role.ReconcileReport
+	reconcileErr    error
+	reconcileTenant string
 }
 
 func (m *mockRoleService) CreateRole(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
@@ -2007,4 +2010,15 @@ func TestCreateAndUpdateUser_ProtoCarriesIdentityFields(t *testing.T) {
 	if svc.lastUpdateReq.LastAuth != nil {
 		t.Errorf("LastAuth = %v, want nil for last_auth_unix=0", svc.lastUpdateReq.LastAuth)
 	}
+}
+
+func (m *mockRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	m.reconcileTenant = tenantID
+	if m.reconcileErr != nil {
+		return nil, m.reconcileErr
+	}
+	if m.reconcileResult != nil {
+		return m.reconcileResult, nil
+	}
+	return &role.ReconcileReport{TenantID: tenantID}, nil
 }

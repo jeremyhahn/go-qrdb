@@ -45,4 +45,16 @@ type RoleServicer interface {
 	// ResolvePermissions returns the union of all permissions for the
 	// given role IDs. The result is sorted and deduplicated.
 	ResolvePermissions(ctx context.Context, roleIDs []string) ([]permission.Permission, error)
+
+	// ReconcileBuiltInRoles converges the tenant's stored built-in roles onto
+	// BuiltInRoles — the build's live projection of the permission registry —
+	// adding permissions it now grants, removing ones it no longer does, and
+	// leaving custom roles untouched. It is the ONE sanctioned writer to a
+	// system role's permissions; UpdateRole and DeleteRole still refuse every
+	// other caller. Idempotent: a converged tenant is reported unchanged and
+	// nothing is written.
+	//
+	// Call it AFTER module permission registration — BuiltInRoles reads the
+	// registry at call time.
+	ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*ReconcileReport, error)
 }

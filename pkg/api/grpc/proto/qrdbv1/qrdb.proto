@@ -585,6 +585,16 @@ service QRDBService {
         option (qrdb.v1.permission) = "permissions:resolve";
     }
 
+    // ReconcileBuiltInRoles converges a tenant's stored built-in roles onto
+    // this build's definitions. It carries roles:create rather than a
+    // permission of its own: reconciliation IS the seeding operation applied
+    // to an existing tenant, and a dedicated verb would be absent from every
+    // role seeded before it existed -- so nobody would hold the permission
+    // needed to repair that exact absence.
+    rpc ReconcileBuiltInRoles(ReconcileBuiltInRolesRequest) returns (ReconcileBuiltInRolesResponse) {
+        option (qrdb.v1.permission) = "roles:create";
+    }
+
     // -----------------------------------------------------------------------
     // Certificate management
     // -----------------------------------------------------------------------
@@ -2563,6 +2573,32 @@ message ResolveRolePermissionsResponse {
     repeated string permissions = 1;
 }
 
+// ReconcileBuiltInRolesRequest names the tenant to converge.
+message ReconcileBuiltInRolesRequest {
+    // tenant_id is the tenant to reconcile. Empty means the caller's own
+    // effective tenant.
+    string tenant_id = 1;
+}
+
+// RoleReconcileResult records what reconciliation changed for one built-in
+// role. Only changed roles are reported.
+message RoleReconcileResult {
+    string role_id = 1;
+    string name = 2;
+    // created is true when the built-in was absent and was seeded; added then
+    // holds its whole permission set.
+    bool created = 3;
+    repeated string added = 4;
+    repeated string removed = 5;
+}
+
+// ReconcileBuiltInRolesResponse is the per-tenant reconciliation report. An
+// empty roles list means the tenant already agreed with the build.
+message ReconcileBuiltInRolesResponse {
+    string tenant_id = 1;
+    repeated RoleReconcileResult roles = 2;
+}
+
 // UpdateRoleProtoRequest applies partial updates to an existing role.
 // Named with "Proto" suffix to avoid collision with the Go domain type.
 message UpdateRoleProtoRequest {
@@ -2611,6 +2647,11 @@ message RoleResponse {
     bool system = 5;
     string created_at = 6;
     string updated_at = 7;
+    // retired_permissions are the members of permissions this build no longer
+    // defines. Derived on read from the live permission registry, never
+    // stored: it is drift between what the tenant was seeded with and what the
+    // server now grants, visible before ReconcileBuiltInRoles repairs it.
+    repeated string retired_permissions = 8;
 }
 
 // PermissionCategory groups related permissions under a display name.

@@ -362,3 +362,8 @@ func TestBuildAuthMiddleware_SPIFFETrustDomain(t *testing.T) {
 	ctx := auth.WithIdentity(context.Background(), adminIdentity())
 	require.NoError(t, mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus))
 }
+
+// ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.
+func (f *fakeRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+	return &role.ReconcileReport{TenantID: tenantID}, nil
+}
