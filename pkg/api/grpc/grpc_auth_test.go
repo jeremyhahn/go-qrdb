@@ -35,75 +35,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Mock role service
-// ---------------------------------------------------------------------------
-
-type mockRoleService struct {
-	createResult    *role.Role
-	createErr       error
-	getResult       *role.Role
-	getErr          error
-	getByNameResult *role.Role
-	getByNameErr    error
-	updateResult    *role.Role
-	updateErr       error
-	deleteErr       error
-	listResult      *role.ListRolesResponse
-	listErr         error
-	resolveResult   []permission.Permission
-	resolveErr      error
-	reconcileResult *role.ReconcileReport
-	reconcileErr    error
-	reconcileTenant string
-}
-
-func (m *mockRoleService) CreateRole(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
-	if m.createErr != nil {
-		return nil, m.createErr
-	}
-	return m.createResult, nil
-}
-
-func (m *mockRoleService) GetRole(_ context.Context, _ string) (*role.Role, error) {
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	return m.getResult, nil
-}
-
-func (m *mockRoleService) GetRoleByName(_ context.Context, _, _ string) (*role.Role, error) {
-	if m.getByNameErr != nil {
-		return nil, m.getByNameErr
-	}
-	return m.getByNameResult, nil
-}
-
-func (m *mockRoleService) UpdateRole(_ context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) {
-	if m.updateErr != nil {
-		return nil, m.updateErr
-	}
-	return m.updateResult, nil
-}
-
-func (m *mockRoleService) DeleteRole(_ context.Context, _ string) error {
-	return m.deleteErr
-}
-
-func (m *mockRoleService) ListRoles(_ context.Context, _ *role.ListRolesRequest) (*role.ListRolesResponse, error) {
-	if m.listErr != nil {
-		return nil, m.listErr
-	}
-	return m.listResult, nil
-}
-
-func (m *mockRoleService) ResolvePermissions(_ context.Context, _ []string) ([]permission.Permission, error) {
-	if m.resolveErr != nil {
-		return nil, m.resolveErr
-	}
-	return m.resolveResult, nil
-}
-
-// ---------------------------------------------------------------------------
 // Mock cert provider
 // ---------------------------------------------------------------------------
 
@@ -2010,15 +1941,4 @@ func TestCreateAndUpdateUser_ProtoCarriesIdentityFields(t *testing.T) {
 	if svc.lastUpdateReq.LastAuth != nil {
 		t.Errorf("LastAuth = %v, want nil for last_auth_unix=0", svc.lastUpdateReq.LastAuth)
 	}
-}
-
-func (m *mockRoleService) ReconcileBuiltInRoles(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
-	m.reconcileTenant = tenantID
-	if m.reconcileErr != nil {
-		return nil, m.reconcileErr
-	}
-	if m.reconcileResult != nil {
-		return m.reconcileResult, nil
-	}
-	return &role.ReconcileReport{TenantID: tenantID}, nil
 }
