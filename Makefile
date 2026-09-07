@@ -140,6 +140,16 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # ---------------------------------------------------------------------------
 # Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
+# The forge's address, in ONE place. It moved once already (2026-09-07,
+# 198.51.100.91 -> 198.51.100.50) and broke every devcontainer target that
+# resolves a first-party module, because the same URL was written out three
+# times across this file and .devcontainer/docker-compose.yml. Compose reads the
+# same name with a ":-" default, and that default is load-bearing -- #322
+# measured that an interpolated compose value with nothing behind it expands to
+# the EMPTY STRING and overrides the fallback it was meant to have. Override the
+# variable; do not edit the literal.
+GITEA_HOST ?= git.example.internal
+
 # go.mod pins first-party modules published only to the internal Gitea, and a
 # docker build inherits nothing from its caller's environment. The four
 # variables from dependency-resolution.md section 6 therefore go into a file
@@ -194,7 +204,7 @@ elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
   . $(CURDIR)/.devcontainer/.env; \
   { echo "export GOPRIVATE=github.com/jeremyhahn/*"; \
     echo "export GIT_CONFIG_COUNT=1"; \
-    echo "export GIT_CONFIG_KEY_0=url.http://x:$${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf"; \
+    echo "export GIT_CONFIG_KEY_0=url.http://x:$${GITEA_GO_TOKEN}@$(GITEA_HOST)/jeremyhahn/.insteadOf"; \
     echo "export GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/"; } > "$$GOMODAUTH_FILE"; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \

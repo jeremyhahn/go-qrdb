@@ -87,7 +87,7 @@ services:
     environment:
       - GOPRIVATE=github.com/jeremyhahn/*
       - GIT_CONFIG_COUNT=1
-      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@${GITEA_HOST:-git.example.internal}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_build-client"]
 
@@ -109,7 +109,7 @@ services:
       - CI=true
       - GOPRIVATE=github.com/jeremyhahn/*
       - GIT_CONFIG_COUNT=1
-      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@198.51.100.91:3001/jeremyhahn/.insteadOf
+      - GIT_CONFIG_KEY_0=url.http://x:${GITEA_GO_TOKEN}@${GITEA_HOST:-git.example.internal}/jeremyhahn/.insteadOf
       - GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/
     command: ["make", "_test-e2e"]
 
