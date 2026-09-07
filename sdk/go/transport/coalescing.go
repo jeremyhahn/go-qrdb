@@ -182,7 +182,19 @@ func (c *CoalescingTransport) flush(items []batchItem) {
 	}
 	ctx, cancel := mergeDeadlines(items)
 	defer cancel()
-	resp, err := c.inner.(BatchClient).ExecuteBatch(ctx, ops)
+	var (
+		resp *BatchResponse
+		err  error
+	)
+	// A bare assertion here panics in a background goroutine -- flush runs on
+	// drainLoop, not on the caller -- if an embedder wraps a transport that
+	// does not implement BatchClient. Reported as the capability error the SDK
+	// already defines, and fanned out to every waiting caller below.
+	if batchClient, ok := c.inner.(BatchClient); ok {
+		resp, err = batchClient.ExecuteBatch(ctx, ops)
+	} else {
+		err = &CapabilityUnsupportedError{Message: "coalescing: inner transport is not a BatchClient"}
+	}
 	for i := range items {
 		if err != nil {
 			items[i].resultCh <- batchResult{err: err}
@@ -290,18 +302,30 @@ func (c *CoalescingTransport) Delete(ctx context.Context, key string, opts ...Wr
 // List passes through to the inner transport because range scans cannot
 // be expressed as a simple batch Op.
 func (c *CoalescingTransport) List(ctx context.Context, prefix string, opts ...ReadOption) ([]string, error) {
-	return c.inner.(KVClient).List(ctx, prefix, opts...)
+	kv, ok := c.inner.(KVClient)
+	if !ok {
+		return nil, &CapabilityUnsupportedError{Message: "coalescing: inner transport is not a KVClient"}
+	}
+	return kv.List(ctx, prefix, opts...)
 }
 
 // Scan passes through to the inner transport because prefix scans cannot
 // be expressed as a simple batch Op.
 func (c *CoalescingTransport) Scan(ctx context.Context, prefix string, opts ...ReadOption) (map[string][]byte, error) {
-	return c.inner.(KVClient).Scan(ctx, prefix, opts...)
+	kv, ok := c.inner.(KVClient)
+	if !ok {
+		return nil, &CapabilityUnsupportedError{Message: "coalescing: inner transport is not a KVClient"}
+	}
+	return kv.Scan(ctx, prefix, opts...)
 }
 
 // Exists passes through to the inner transport.
 func (c *CoalescingTransport) Exists(ctx context.Context, key string, opts ...ReadOption) (bool, error) {
-	return c.inner.(KVClient).Exists(ctx, key, opts...)
+	kv, ok := c.inner.(KVClient)
+	if !ok {
+		return false, &CapabilityUnsupportedError{Message: "coalescing: inner transport is not a KVClient"}
+	}
+	return kv.Exists(ctx, key, opts...)
 }
 
 // ---------------------------------------------------------------------------

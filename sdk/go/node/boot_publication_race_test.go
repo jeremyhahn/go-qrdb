@@ -63,7 +63,7 @@ func pollNodeAccessors(n *Node, accessors []reflect.Method) int {
 				if out.Bool() {
 					seen++
 				}
-			case reflect.Ptr, reflect.Interface:
+			case reflect.Pointer, reflect.Interface:
 				if !out.IsNil() {
 					seen++
 				}
@@ -89,7 +89,7 @@ func assertAllAccessorsNil(t *testing.T, n *Node, accessors []reflect.Method) {
 			switch out.Kind() {
 			case reflect.Bool:
 				assert.False(t, out.Bool(), "%s() must be false after Close", m.Name)
-			case reflect.Ptr, reflect.Interface:
+			case reflect.Pointer, reflect.Interface:
 				assert.True(t, out.IsNil(), "%s() must be nil after Close: a non-nil handle onto a stopped service graph is exactly the stale handle this contract forbids", m.Name)
 			default:
 				t.Fatalf("%s() returns %s, which this assertion does not know how to check; extend it rather than skipping the accessor", m.Name, out.Kind())

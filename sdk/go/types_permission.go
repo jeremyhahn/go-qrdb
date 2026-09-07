@@ -16,7 +16,6 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -314,6 +313,4 @@ type TenantScopeStore = permission.TenantScopeStore
 // NewTenantScopeStore constructs a TenantScopeStore over the given
 // TenantStoreResolver. The resolver must be non-nil. (Aliases
 // pkg/permission.NewTenantScopeStore.)
-var NewTenantScopeStore = func(resolver tenant.StoreResolver) (*permission.TenantScopeStore, error) {
-	return permission.NewTenantScopeStore(resolver)
-}
+var NewTenantScopeStore = permission.NewTenantScopeStore

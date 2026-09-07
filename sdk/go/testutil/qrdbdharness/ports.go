@@ -209,6 +209,8 @@ func (a *allocator) ephemeralLow() (int, error) {
 // readEphemeralLow parses the lower bound out of the kernel's
 // ip_local_port_range file.
 func readEphemeralLow(path string) (int, error) {
+	// #nosec G304 -- `path` is the package constant ephemeralRangePath in every
+	// non-test caller; the one test caller passes a fixture under t.TempDir().
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0, &EphemeralRangeError{Path: path, Reason: "read failed", Err: err}

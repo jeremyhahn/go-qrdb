@@ -43,6 +43,7 @@
 package driver
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
 )
@@ -71,7 +72,10 @@ func (d *Driver) Open(dsn string) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return connector.Connect(nil)
+	// context.Background(), not nil: database/sql's own Open path calls
+	// Connect with a real context, and a nil one is undefined behaviour for
+	// any connector that consults it.
+	return connector.Connect(context.Background())
 }
 
 // OpenConnector parses the DSN and returns a Connector that can be used

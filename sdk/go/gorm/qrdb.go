@@ -320,7 +320,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) error {
 // BindVarTo writes "?", the positional placeholder qrdb's go-mysql-server
 // engine and sdk/go/driver both expect.
 func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v interface{}) {
-	writer.WriteByte('?')
+	_ = writer.WriteByte('?')
 }
 
 // QuoteTo writes str to writer as a backtick-quoted identifier, splitting on
@@ -342,7 +342,7 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 		case '`':
 			continuousBacktick++
 			if continuousBacktick == 2 {
-				writer.WriteString("``")
+				_, _ = writer.WriteString("``")
 				continuousBacktick = 0
 			}
 		case '.':
@@ -350,13 +350,13 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 				shiftDelimiter = 0
 				underQuoted = false
 				continuousBacktick = 0
-				writer.WriteByte('`')
+				_ = writer.WriteByte('`')
 			}
-			writer.WriteByte(v)
+			_ = writer.WriteByte(v)
 			continue
 		default:
 			if shiftDelimiter-continuousBacktick <= 0 && !underQuoted {
-				writer.WriteByte('`')
+				_ = writer.WriteByte('`')
 				underQuoted = true
 				if selfQuoted = continuousBacktick > 0; selfQuoted {
 					continuousBacktick -= 1
@@ -364,18 +364,18 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 			}
 
 			for ; continuousBacktick > 0; continuousBacktick -= 1 {
-				writer.WriteString("``")
+				_, _ = writer.WriteString("``")
 			}
 
-			writer.WriteByte(v)
+			_ = writer.WriteByte(v)
 		}
 		shiftDelimiter++
 	}
 
 	if continuousBacktick > 0 && !selfQuoted {
-		writer.WriteString("``")
+		_, _ = writer.WriteString("``")
 	}
-	writer.WriteByte('`')
+	_ = writer.WriteByte('`')
 }
 
 // DefaultValueOf returns the expression GORM writes for a column omitted

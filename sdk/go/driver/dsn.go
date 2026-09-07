@@ -133,7 +133,8 @@ func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	path := u.Path
 
 	if host != "" {
-		// embedded://memory?database=mydb
+		// As in "embedded://memory?database=mydb", where the host names the
+		// backend rather than a network peer.
 		cfg.Host = host
 		if cfg.Backend == "" {
 			cfg.Backend = host
@@ -141,7 +142,8 @@ func ParseEmbeddedDSN(u *url.URL, cfg *DSNConfig) error {
 	}
 
 	if path != "" && path != "/" {
-		// embedded:///path/to/data?backend=pebble&database=mydb
+		// As in "embedded:///path/to/data?backend=pebble&database=mydb", where
+		// the empty host leaves the path to name the data directory.
 		cfg.DataDir = path
 	}
 

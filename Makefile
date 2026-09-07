@@ -1283,7 +1283,7 @@ ci:
 # version nobody can name, so a lint or security result produced after the drift
 # is not evidence either way. Failing at the top says so in a second instead of
 # after the suite.
-_ci: check-tool-versions test-tool-versions fmt vet lint check-publication-bound test-publication-bound security build-server test
+_ci: check-tool-versions test-tool-versions fmt vet vet-sdk lint lint-sdk check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1309,6 +1309,30 @@ MIN_TAGS   := $(subst $(space),$(comma),$(strip $(REQUIRED_TAGS)))
 .PHONY: lint
 lint:
 	$(GOLINT) run --build-tags "$(LINT_TAGS)" ./...
+
+# `./...` DOES NOT CROSS A MODULE BOUNDARY, so the target above reaches none of
+# sdk/go and neither does `vet` (#333). That left the one module downstream
+# repos actually import -- go-xkms and go-quicbaas import sdk/go, not this one --
+# as the only module in the tree with no linter at all, and it had five
+# pre-existing findings nobody had ever been shown.
+#
+# sdk/go/gorm/conformance is a module of its own nested inside sdk/go, so
+# `./...` here does not descend into it either and no exclusion is needed to
+# keep it out. That is a fact, not a preference: its go.mod is untidy on main
+# and `go vet` already refuses it (#233). When #233 lands, including it is a
+# one-line change here.
+#
+# --config is passed explicitly rather than relying on golangci-lint's upward
+# search from the working directory, so the SDK is linted by the SAME file as
+# the root module and cannot drift onto a different one without the drift being
+# visible in this recipe.
+.PHONY: lint-sdk
+lint-sdk:
+	cd $(SDK_DIR) && $(GOLINT) run --config $(CURDIR)/.golangci.yml --build-tags "$(LINT_TAGS)" ./...
+
+.PHONY: vet-sdk
+vet-sdk:
+	cd $(SDK_DIR) && $(GOVET) $(TAG_FLAG) ./...
 
 # scripts/require-tool.sh is what stands between this repository and a lint or
 # scan performed by an unknown analyser version (#179, #195). The pins in

@@ -24,6 +24,7 @@ import "github.com/jeremyhahn/go-qrdb/pkg/service"
 // importing pkg/service directly. ErrSharedBarrierImmutable maps to 403,
 // ErrMigrationProviderUnavailable to 501, ErrTenantBarrierNotFound to 404.
 // ---------------------------------------------------------------------------
+
 var (
 	// ErrSharedBarrierImmutable is returned when a tenant on the shared system
 	// barrier attempts to change its encryption; it must be isolated first.

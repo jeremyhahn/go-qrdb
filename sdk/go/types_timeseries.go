@@ -40,7 +40,11 @@ var NewTimeSeriesStorageWithDir = timeseries.NewWithDir
 // NewTimeSeriesStorageWithBarrier wraps the time series Pebble FS with the
 // given StorageBarrier so all on-disk files are encrypted at rest. The barrier
 // must be unsealed before calling this constructor.
+//
+// Deprecated: prefer NewTimeSeriesStorageWithEncryptor, which routes through
+// the single atrest.Encryptor authority. Retained for backward compatibility.
 func NewTimeSeriesStorageWithBarrier(dataDir string, barrier *seal.StorageBarrier) (*timeseries.Storage, error) {
+	//nolint:staticcheck // SA1019: the barrier form is this constructor's whole contract.
 	return timeseries.NewWithDir(dataDir, timeseries.WithBarrier(barrier))
 }
 
@@ -53,6 +57,12 @@ func NewTimeSeriesStorageWithEncryptor(dataDir string, enc *atrest.Encryptor) (*
 
 // TimeSeriesWithBarrier returns a TimeSeriesStorageOption that wraps the
 // Pebble vfs.FS with seal/encfs. A nil barrier is a no-op.
+//
+// Deprecated: prefer TimeSeriesWithEncryptor(atrest.New(barrier)), which routes
+// through the single atrest.Encryptor authority. Retained for backward
+// compatibility.
+//
+//nolint:staticcheck // SA1019: re-exporting the deprecated option is this var's purpose.
 var TimeSeriesWithBarrier = timeseries.WithBarrier
 
 // TimeSeriesWithEncryptor returns a TimeSeriesStorageOption that wraps the

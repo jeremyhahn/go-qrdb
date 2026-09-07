@@ -130,7 +130,7 @@ type ClusterClient struct {
 // operations. It requires a transport that implements AdminClient.
 func (c *Client) Cluster() *ClusterClient {
 	return &ClusterClient{
-		admin:        c.transport.(transport.AdminClient),
+		admin:        capability[transport.AdminClient](c, "Cluster"),
 		registry:     c.NewMembershipStore(),
 		pollInterval: DefaultMembershipPollInterval,
 	}

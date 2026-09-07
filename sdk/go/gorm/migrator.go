@@ -223,7 +223,10 @@ func (m Migrator) GetTypeAliases(databaseTypeName string) []string {
 // DSN's database query parameter (or that a MySQL/PostgreSQL wire
 // connection's own session tracks).
 func (m Migrator) CurrentDatabase() (name string) {
-	m.DB.Raw("SELECT DATABASE()").Row().Scan(&name)
+	// gorm.Migrator fixes this signature with no error return, so a failed
+	// scan leaves name "" -- which is what a caller that cannot be told about
+	// the failure has to act on anyway.
+	_ = m.DB.Raw("SELECT DATABASE()").Row().Scan(&name)
 	return
 }
 
@@ -232,7 +235,9 @@ func (m Migrator) CurrentDatabase() (name string) {
 // resolve a table name from, or a bare table name string.
 func (m Migrator) HasTable(dst interface{}) bool {
 	var count int64
-	m.RunWithValue(dst, func(stmt *gorm.Statement) error {
+	// No error return in gorm.Migrator's signature; count stays 0 and the
+	// answer is false, which is the safe direction for a "does it exist" probe.
+	_ = m.RunWithValue(dst, func(stmt *gorm.Statement) error {
 		return m.DB.Raw(
 			"SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ? AND table_type = ?",
 			m.CurrentDatabase(), stmt.Table, "BASE TABLE",
@@ -313,7 +318,9 @@ func (m Migrator) DropTable(values ...interface{}) error {
 // table, via information_schema.columns.
 func (m Migrator) HasColumn(dst interface{}, field string) bool {
 	var count int64
-	m.RunWithValue(dst, func(stmt *gorm.Statement) error {
+	// See HasTable: the interface has no error return and false is the safe
+	// answer when the probe itself failed.
+	_ = m.RunWithValue(dst, func(stmt *gorm.Statement) error {
 		name := field
 		if stmt.Schema != nil {
 			if f := stmt.Schema.LookUpField(field); f != nil {
@@ -475,7 +482,9 @@ func (m Migrator) ColumnTypes(dst interface{}) ([]gorm.ColumnType, error) {
 // DBName), via information_schema.statistics.
 func (m Migrator) HasIndex(dst interface{}, name string) bool {
 	var count int64
-	m.RunWithValue(dst, func(stmt *gorm.Statement) error {
+	// See HasTable: the interface has no error return and false is the safe
+	// answer when the probe itself failed.
+	_ = m.RunWithValue(dst, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {
 			if idx := stmt.Schema.LookIndex(name); idx != nil {
 				name = idx.Name
@@ -585,7 +594,9 @@ func (m Migrator) RenameIndex(dst interface{}, oldName, newName string) error {
 // never observe. See docs/sql/README.md.
 func (m Migrator) HasConstraint(dst interface{}, name string) bool {
 	var count int64
-	m.RunWithValue(dst, func(stmt *gorm.Statement) error {
+	// See HasTable: the interface has no error return and false is the safe
+	// answer when the probe itself failed.
+	_ = m.RunWithValue(dst, func(stmt *gorm.Statement) error {
 		constraintName, table := name, stmt.Table
 		if constraint, guessedTable := m.GuessConstraintInterfaceAndTable(stmt, name); constraint != nil {
 			constraintName, table = constraint.GetName(), guessedTable

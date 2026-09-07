@@ -110,7 +110,16 @@ func BuildBinary(pkg string, opts ...BuildOption) (string, error) {
 
 	key := cfg.root + "\x00" + pkg + "\x00" + cfg.tags + "\x00" + cfg.binaryName
 	entry, _ := builds.LoadOrStore(key, &buildResult{})
-	result := entry.(*buildResult)
+	result, ok := entry.(*buildResult)
+	if !ok {
+		// Unreachable: `builds` is written only by the LoadOrStore above, whose
+		// value is always a *buildResult. The assertion is checked rather than
+		// bare because .golangci.yml turns on errcheck's check-type-assertions,
+		// and it falls back to an uncached build rather than declaring an error
+		// no code path can return -- the defect #243 is about. A rebuild is a
+		// better failure than a panic in a harness shared by every consumer.
+		result = &buildResult{}
+	}
 	result.once.Do(func() {
 		result.path, result.err = build(pkg, cfg)
 	})
@@ -198,6 +207,11 @@ func Start(binary string, args []string, opts ...DaemonOption) (*Daemon, error) 
 		opt(&cfg)
 	}
 
+	// #nosec G204,G702 -- qrdbdharness is a test harness: `binary` is the path
+	// this package's own Build produced from a package path the test named, and
+	// `args` are the test's. Neither is reachable from a network peer. Both
+	// rules fire on the same call -- G204 on the subprocess, G702 on the taint
+	// path into it -- so both are named; suppressing one leaves the other red.
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = cfg.dir
 	if cfg.output != nil {

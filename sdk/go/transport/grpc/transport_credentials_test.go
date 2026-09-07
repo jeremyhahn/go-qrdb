@@ -543,11 +543,11 @@ func TestTransportCredential_GCExpired_AfterClose(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// errCredentialNilRequest
+// credentialNilRequestError
 // ---------------------------------------------------------------------------
 
 func TestErrCredentialNilRequest_Error(t *testing.T) {
-	if got := (errCredentialNilRequest{}).Error(); got != "credentials: nil request" {
+	if got := (credentialNilRequestError{}).Error(); got != "credentials: nil request" {
 		t.Errorf("unexpected error string: %q", got)
 	}
 }

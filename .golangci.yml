@@ -254,6 +254,29 @@ linters:
       - text: "QF1012"
         linters:
           - staticcheck
+      # QF1008 and QF1011 join QF1012 above on the same ground, and #333 --
+      # which first put sdk/go under a linter at all -- is where they surfaced.
+      # Both would make the code WORSE at every site in this tree:
+      #
+      #   QF1008 "could remove embedded field from selector" fires on
+      #   dialector.Config.X where the line above it is `dialector.Config !=
+      #   nil`. Dropping the field promotes X through the very pointer being
+      #   nil-checked and hides the connection between the two lines.
+      #
+      #   QF1011 "could omit type from declaration" fires on
+      #   `var svc service.XServicer = ctor()` whose address is then stored in
+      #   an atomic.Pointer[service.XServicer]. The annotation states the
+      #   pointer's element type at the site instead of sending the reader to
+      #   the constructor.
+      #
+      # These are the "quickfix" tier: staticcheck's own suggestions tier, not
+      # its correctness (SA) tier. Nothing here suppresses an SA check.
+      - text: "QF1008"
+        linters:
+          - staticcheck
+      - text: "QF1011"
+        linters:
+          - staticcheck
       # Exclude govet structtag warnings in test files with nolint
       - text: "structtag.*has json tag but is not exported"
         linters:

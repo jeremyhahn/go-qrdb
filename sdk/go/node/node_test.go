@@ -25,12 +25,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 )
 
 // ---------------------------------------------------------------------------

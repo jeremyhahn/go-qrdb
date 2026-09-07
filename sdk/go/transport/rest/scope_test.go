@@ -36,8 +36,12 @@ func TestDBHeaderRoundTripper_DataPlaneVsManagement(t *testing.T) {
 
 	// Data-plane path receives the header.
 	req, _ := http.NewRequest(http.MethodGet, "https://h/kv/foo", nil)
-	if _, err := rt.RoundTrip(req); err != nil {
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
 		t.Fatalf("roundtrip: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
 	}
 	if base.lastDB != "db2" {
 		t.Fatalf("data-plane: expected db2 header, got %q", base.lastDB)
@@ -50,8 +54,12 @@ func TestDBHeaderRoundTripper_DataPlaneVsManagement(t *testing.T) {
 	// Management path does NOT receive the header.
 	base.lastDB = ""
 	mreq, _ := http.NewRequest(http.MethodGet, "https://h/v1/databases", nil)
-	if _, err := rt.RoundTrip(mreq); err != nil {
+	resp, err = rt.RoundTrip(mreq)
+	if err != nil {
 		t.Fatalf("roundtrip: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
 	}
 	if base.lastDB != "" {
 		t.Fatalf("management path should not carry db header, got %q", base.lastDB)

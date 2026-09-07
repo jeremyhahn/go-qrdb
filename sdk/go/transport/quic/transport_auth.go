@@ -147,12 +147,6 @@ type listUsersWireResponse struct {
 	HasMore bool                `json:"hasMore"`
 }
 
-// statusWireResponse is the JSON wire payload for operations that return
-// a simple status acknowledgment.
-type statusWireResponse struct {
-	Status string `json:"status"`
-}
-
 // ---------------------------------------------------------------------------
 // Role wire types
 // ---------------------------------------------------------------------------

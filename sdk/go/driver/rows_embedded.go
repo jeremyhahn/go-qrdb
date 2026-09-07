@@ -19,6 +19,7 @@ package driver
 import (
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -73,7 +74,7 @@ func (r *embeddedRows) Next(dest []driver.Value) error {
 	}
 
 	row, err := r.iter.Next(r.ctx)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return io.EOF
 	}
 	if err != nil {

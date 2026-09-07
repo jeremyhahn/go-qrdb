@@ -332,6 +332,11 @@ func classifyWatchPollError(err error) (reason string, terminal bool) {
 	if err == nil {
 		return "", false
 	}
+	// Identity comparison, NOT error matching: ClassifyWatchError returns a new
+	// typed error when it recognises the reason and the SAME err when it does
+	// not, so "typed != err" asks whether it classified anything. errors.Is
+	// would answer a different question and be true in both cases.
+	//nolint:errorlint // deliberate identity comparison; see above
 	if typed := transport.ClassifyWatchError(err); typed != err {
 		return typed.Error(), true
 	}

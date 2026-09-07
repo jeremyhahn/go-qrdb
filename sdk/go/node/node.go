@@ -93,6 +93,10 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
+	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
+	"github.com/jeremyhahn/go-quicraft/pkg/sm"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -124,9 +128,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
-	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 )
 
 // WithAuthenticators appends embedder-supplied authenticators to the node's

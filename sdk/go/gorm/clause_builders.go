@@ -16,6 +16,18 @@
 
 package gorm
 
+// The `_, _ =` and `_ =` discards on builder.WriteString / WriteByte through
+// this file and qrdb.go are deliberate and are the reason stated once here
+// rather than at sixteen call sites. gorm's clause.Builder and clause.Writer
+// declare error returns their implementations never use -- gorm.Statement
+// writes into an in-memory buffer -- and every upstream gorm driver (mysql,
+// postgres) calls them unchecked for that reason.
+//
+// They are written out rather than excluded in .golangci.yml because TWO
+// linters see them: errcheck, and gosec as G104. An errcheck exclude-functions
+// entry silences only the first and leaves the build red on the second, so the
+// exclusion bought nothing and hid the reason from the file it applies to.
+
 import (
 	"strings"
 
@@ -69,7 +81,7 @@ func buildOnConflict(c clause.Clause, builder clause.Builder) {
 		return
 	}
 
-	builder.WriteString("ON DUPLICATE KEY UPDATE ")
+	_, _ = builder.WriteString("ON DUPLICATE KEY UPDATE ")
 
 	if len(onConflict.DoUpdates) == 0 {
 		if stmt, ok := builder.(*gorm.Statement); ok && stmt.Schema != nil {
@@ -90,17 +102,17 @@ func buildOnConflict(c clause.Clause, builder clause.Builder) {
 
 	for idx, assignment := range onConflict.DoUpdates {
 		if idx > 0 {
-			builder.WriteByte(',')
+			_ = builder.WriteByte(',')
 		}
 
 		builder.WriteQuoted(assignment.Column)
-		builder.WriteByte('=')
+		_ = builder.WriteByte('=')
 
 		if column, ok := assignment.Value.(clause.Column); ok && column.Table == "excluded" {
 			column.Table = ""
-			builder.WriteString("VALUES(")
+			_, _ = builder.WriteString("VALUES(")
 			builder.WriteQuoted(column)
-			builder.WriteByte(')')
+			_ = builder.WriteByte(')')
 		} else {
 			builder.AddVar(builder, assignment.Value)
 		}
@@ -114,7 +126,7 @@ func buildOnConflict(c clause.Clause, builder clause.Builder) {
 // parser rejects.
 func buildValues(c clause.Clause, builder clause.Builder) {
 	if values, ok := c.Expression.(clause.Values); ok && len(values.Columns) == 0 {
-		builder.WriteString("VALUES()")
+		_, _ = builder.WriteString("VALUES()")
 		return
 	}
 	c.Build(builder)
@@ -126,7 +138,7 @@ func buildValues(c clause.Clause, builder clause.Builder) {
 // the default builder.
 func buildFor(c clause.Clause, builder clause.Builder) {
 	if locking, ok := c.Expression.(clause.Locking); ok && strings.EqualFold(locking.Strength, "SHARE") {
-		builder.WriteString("LOCK IN SHARE MODE")
+		_, _ = builder.WriteString("LOCK IN SHARE MODE")
 		return
 	}
 	c.Build(builder)

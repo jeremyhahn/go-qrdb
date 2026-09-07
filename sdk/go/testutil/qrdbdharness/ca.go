@@ -216,10 +216,14 @@ func NewCA(dir string, opts ...CAOption) (*CA, error) {
 // supplied — so tests can issue client certificates the running daemon
 // already trusts instead of minting a second, unrelated CA.
 func LoadCA(certPath, keyPath string) (*CA, error) {
+	// #nosec G304 -- both paths are the test's own: LoadCA exists to adopt the
+	// CA qrdbd wrote into a data directory the harness created. No request
+	// value reaches either argument.
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, &CAError{Op: "read cert", Err: err}
 	}
+	// #nosec G304 -- see the note on certPath above.
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, &CAError{Op: "read key", Err: err}

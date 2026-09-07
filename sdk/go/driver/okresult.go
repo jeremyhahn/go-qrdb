@@ -17,6 +17,7 @@
 package driver
 
 import (
+	"errors"
 	"io"
 
 	gmssql "github.com/dolthub/go-mysql-server/sql"
@@ -58,7 +59,7 @@ func drainOkResult(ctx *gmssql.Context, schema gmssql.Schema, iter gmssql.RowIte
 	}
 
 	row, rowErr := iter.Next(ctx)
-	if rowErr == io.EOF {
+	if errors.Is(rowErr, io.EOF) {
 		return types.OkResult{}, false, nil
 	}
 	if rowErr != nil {
@@ -106,7 +107,7 @@ func okResultOfRow(row gmssql.Row) (types.OkResult, bool) {
 func drainRows(ctx *gmssql.Context, iter gmssql.RowIter) error {
 	for {
 		_, err := iter.Next(ctx)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {

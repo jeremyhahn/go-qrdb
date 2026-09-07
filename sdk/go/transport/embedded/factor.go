@@ -16,6 +16,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -313,19 +314,25 @@ func mapFactorError(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch e := err.(type) {
-	case *auth.FactorNotFoundError:
-		return &transport.FactorNotFoundError{FactorID: e.FactorID}
-	case *auth.FactorTypeUnsupportedError:
-		return &transport.FactorTypeUnsupportedError{Type: e.Type}
-	case *auth.FactorAlreadyExistsError:
-		return &transport.FactorAlreadyEnrolledError{
-			Type:     factorTypeFromDomain(e.Type),
-			FactorID: e.FactorID,
-		}
-	default:
-		return err
+	// errors.As rather than a type switch: a service that wraps its factor
+	// error for context would otherwise fall through to the default and reach
+	// the caller as an unmapped qrdb-package error.
+	var notFound *auth.FactorNotFoundError
+	if errors.As(err, &notFound) {
+		return &transport.FactorNotFoundError{FactorID: notFound.FactorID}
 	}
+	var unsupported *auth.FactorTypeUnsupportedError
+	if errors.As(err, &unsupported) {
+		return &transport.FactorTypeUnsupportedError{Type: unsupported.Type}
+	}
+	var exists *auth.FactorAlreadyExistsError
+	if errors.As(err, &exists) {
+		return &transport.FactorAlreadyEnrolledError{
+			Type:     factorTypeFromDomain(exists.Type),
+			FactorID: exists.FactorID,
+		}
+	}
+	return err
 }
 
 // FactorClient returns the embedded factor client projection.

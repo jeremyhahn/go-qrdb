@@ -425,7 +425,6 @@ func TestCoalescing_ErrorPropagation(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
-		i := i
 		go func() {
 			defer wg.Done()
 			errs[i] = ct.Put(context.Background(), "ek", []byte("ev"))
@@ -778,5 +777,68 @@ func TestMergeDeadlines_EarliestWins(t *testing.T) {
 	}
 	if dl.After(early.Add(time.Millisecond)) {
 		t.Errorf("expected earliest deadline %v, got %v", early, dl)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Capability-less inner transport
+// ---------------------------------------------------------------------------
+
+// bareTransport implements Transport and NOTHING else. WithCoalescing accepts
+// any Transport -- a four-method interface -- so this is a legal argument, and
+// before #333 every capability method below reached a bare type assertion and
+// panicked on it. The pass-through methods panicked on the caller's goroutine;
+// flush panicked on drainLoop, taking the process down from a background
+// goroutine no caller could recover.
+type bareTransport struct{}
+
+func (bareTransport) Connect(_ context.Context) error                     { return nil }
+func (bareTransport) Close() error                                        { return nil }
+func (bareTransport) Healthy(_ context.Context) bool                      { return true }
+func (bareTransport) Request(_ context.Context, _ string, _, _ any) error { return nil }
+
+var _ Transport = bareTransport{}
+
+func TestCoalescingRejectsInnerWithoutKVClient(t *testing.T) {
+	ct := WithCoalescing(bareTransport{})
+	defer func() {
+		if err := ct.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	var capErr *CapabilityUnsupportedError
+
+	if _, err := ct.List(ctx, "p"); !errors.As(err, &capErr) {
+		t.Errorf("List: got %v, want *CapabilityUnsupportedError", err)
+	}
+	if _, err := ct.Scan(ctx, "p"); !errors.As(err, &capErr) {
+		t.Errorf("Scan: got %v, want *CapabilityUnsupportedError", err)
+	}
+	ok, err := ct.Exists(ctx, "k")
+	if !errors.As(err, &capErr) {
+		t.Errorf("Exists: got %v, want *CapabilityUnsupportedError", err)
+	}
+	if ok {
+		t.Error("Exists reported true on a transport it could not ask")
+	}
+}
+
+// TestCoalescingRejectsInnerWithoutBatchClient drives the same defect through
+// flush, which runs on drainLoop rather than on the caller. The error has to
+// reach the caller through the result channel; a panic here would not.
+func TestCoalescingRejectsInnerWithoutBatchClient(t *testing.T) {
+	ct := WithCoalescing(bareTransport{})
+	defer func() {
+		if err := ct.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
+
+	err := ct.Put(context.Background(), "k", []byte("v"))
+	var capErr *CapabilityUnsupportedError
+	if !errors.As(err, &capErr) {
+		t.Fatalf("Put: got %v, want *CapabilityUnsupportedError", err)
 	}
 }

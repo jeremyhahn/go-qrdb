@@ -146,6 +146,11 @@ func BuildTLSConfig(opts TLSBuildOptions) (*tls.Config, error) {
 // be read and *CAParseError when the file contains no parsable CA
 // certificate.
 func LoadCertPool(caFile string) (*x509.CertPool, error) {
+	// #nosec G304 -- caFile is TLS configuration: it reaches here from a config
+	// file, a CLI flag or an embedder's Options struct, never from a request.
+	// A CA bundle path IS the operator's to choose; constraining it to a root
+	// would break the ordinary case of a system trust store outside the data
+	// directory.
 	pemData, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, &CAFileReadError{Path: caFile, Err: err}

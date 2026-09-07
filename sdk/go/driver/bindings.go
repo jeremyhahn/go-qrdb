@@ -256,7 +256,8 @@ func convertArgStruct(rv reflect.Value) (sqld.Value, bool) {
 	if !rv.Type().ConvertibleTo(timeType) {
 		return nil, false
 	}
-	return rv.Convert(timeType).Interface().(time.Time), true
+	t, ok := rv.Convert(timeType).Interface().(time.Time)
+	return t, ok
 }
 
 // valuerType is driver.Valuer's reflect.Type, used by callValuerValue.

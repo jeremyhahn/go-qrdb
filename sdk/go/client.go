@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"context"
+	"reflect"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -52,52 +53,78 @@ func (c *Client) Connect(ctx context.Context) error {
 	return c.transport.Connect(ctx)
 }
 
+// capability returns c's transport as T.
+//
+// Every accessor below asserts that the transport implements the capability
+// interface it projects, and a transport that does not is a construction-time
+// programming error -- NewClient takes a transport.Transport, a four-method
+// interface, so nothing stops a caller passing one that implements no
+// capability at all. This helper exists so that assertion is written once
+// instead of ~25 times, and so the panic names the client method the caller
+// actually called rather than only the interface it failed to satisfy.
+//
+// It PANICS, preserving exactly what the bare assertions it replaced did.
+// Returning the zero value instead would convert an immediate, located failure
+// into a nil-interface dereference somewhere later; UserAuthFactors is the one
+// accessor that deliberately returns nil, and it documents that contract and
+// asks callers to nil-check. Which of the two shapes the SDK should standardise
+// on is an API question, filed separately -- this helper does not decide it.
+func capability[T any](c *Client, method string) T {
+	v, ok := any(c.transport).(T)
+	if !ok {
+		var want T
+		panic("sdk: Client." + method + ": transport does not implement " +
+			reflect.TypeOf(&want).Elem().String())
+	}
+	return v
+}
+
 // KV returns a KVClient for data-plane key-value operations.
 func (c *Client) KV() transport.KVClient {
-	return c.transport.(transport.KVClient)
+	return capability[transport.KVClient](c, "KV")
 }
 
 // Admin returns an AdminClient for control-plane cluster operations.
 func (c *Client) Admin() transport.AdminClient {
-	return c.transport.(transport.AdminClient)
+	return capability[transport.AdminClient](c, "Admin")
 }
 
 // MVCC returns an MVCCClient for MVCC-aware key-value operations with
 // revision tracking, lease attachment, and range queries.
 func (c *Client) MVCC() transport.MVCCClient {
-	return c.transport.(transport.MVCCClient)
+	return capability[transport.MVCCClient](c, "MVCC")
 }
 
 // Transaction returns a TransactionClient for atomic compare-and-swap
 // transaction execution.
 func (c *Client) Transaction() transport.TransactionClient {
-	return c.transport.(transport.TransactionClient)
+	return capability[transport.TransactionClient](c, "Transaction")
 }
 
 // Batch returns a BatchClient for atomic batch operation execution.
 func (c *Client) Batch() transport.BatchClient {
-	return c.transport.(transport.BatchClient)
+	return capability[transport.BatchClient](c, "Batch")
 }
 
 // Watch returns a WatchClient for event streaming on key changes.
 func (c *Client) Watch() transport.WatchClient {
-	return c.transport.(transport.WatchClient)
+	return capability[transport.WatchClient](c, "Watch")
 }
 
 // Lease returns a LeaseClient for distributed lease management.
 func (c *Client) Lease() transport.LeaseClient {
-	return c.transport.(transport.LeaseClient)
+	return capability[transport.LeaseClient](c, "Lease")
 }
 
 // Lock returns a LockClient for distributed lock management with
 // fencing tokens for safe distributed coordination.
 func (c *Client) Lock() transport.LockClient {
-	return c.transport.(transport.LockClient)
+	return capability[transport.LockClient](c, "Lock")
 }
 
 // Index returns an IndexClient for secondary index operations.
 func (c *Client) Index() transport.IndexClient {
-	return c.transport.(transport.IndexClient)
+	return capability[transport.IndexClient](c, "Index")
 }
 
 // KVStore returns a kvstore.KVStore backed by the client's transport.
@@ -115,67 +142,67 @@ func (c *Client) KVStore() KVStore {
 // TimeSeries returns a TimeSeriesClient for time-series data ingestion
 // and querying.
 func (c *Client) TimeSeries() transport.TimeSeriesClient {
-	return c.transport.(transport.TimeSeriesClient)
+	return capability[transport.TimeSeriesClient](c, "TimeSeries")
 }
 
 // Vector returns a VectorClient for vector database operations including
 // namespace management, vector CRUD, similarity search, and index maintenance.
 func (c *Client) Vector() transport.VectorClient {
-	return c.transport.(transport.VectorClient)
+	return capability[transport.VectorClient](c, "Vector")
 }
 
 // Users returns a UserClient for user management operations.
 func (c *Client) Users() transport.UserClient {
-	return c.transport.(transport.UserClient)
+	return capability[transport.UserClient](c, "Users")
 }
 
 // Roles returns a RoleClient for role management operations.
 func (c *Client) Roles() transport.RoleClient {
-	return c.transport.(transport.RoleClient)
+	return capability[transport.RoleClient](c, "Roles")
 }
 
 // Certs returns a CertClient for certificate management operations.
 func (c *Client) Certs() transport.CertClient {
-	return c.transport.(transport.CertClient)
+	return capability[transport.CertClient](c, "Certs")
 }
 
 // Database returns a DatabaseClient for database management operations
 // including creation, inspection, listing, and deletion.
 func (c *Client) Database() transport.DatabaseClient {
-	return c.transport.(transport.DatabaseClient)
+	return capability[transport.DatabaseClient](c, "Database")
 }
 
 // DEK returns a DEKClient for data encryption key management operations.
 func (c *Client) DEK() transport.DEKClient {
-	return c.transport.(transport.DEKClient)
+	return capability[transport.DEKClient](c, "DEK")
 }
 
 // Barrier returns a BarrierClient for cryptographic barrier operations.
 func (c *Client) Barrier() transport.BarrierClient {
-	return c.transport.(transport.BarrierClient)
+	return capability[transport.BarrierClient](c, "Barrier")
 }
 
 // Ceremony returns a CeremonyClient for initialization ceremony operations
 // including M-of-N officer enrollment and share distribution.
 func (c *Client) Ceremony() transport.CeremonyClient {
-	return c.transport.(transport.CeremonyClient)
+	return capability[transport.CeremonyClient](c, "Ceremony")
 }
 
 // Credentials returns a CredentialClient for named credential management.
 func (c *Client) Credentials() transport.CredentialClient {
-	return c.transport.(transport.CredentialClient)
+	return capability[transport.CredentialClient](c, "Credentials")
 }
 
 // Collections returns a CollectionClient for document collection
 // management operations.
 func (c *Client) Collections() transport.CollectionClient {
-	return c.transport.(transport.CollectionClient)
+	return capability[transport.CollectionClient](c, "Collections")
 }
 
 // SealStore returns a SealStoreClient for managing platform-local
 // sealed credentials.
 func (c *Client) SealStore() transport.SealStoreClient {
-	return c.transport.(transport.SealStoreClient)
+	return capability[transport.SealStoreClient](c, "SealStore")
 }
 
 // AuthFactors returns an AuthFactorClient for custodian auth factor enrollment,
@@ -185,7 +212,7 @@ func (c *Client) SealStore() transport.SealStoreClient {
 // For the user-side N-factor model (User -> []AuthFactor) per
 // docs/08-bootstrap-auth-architecture.md §5e, use UserAuthFactors() instead.
 func (c *Client) AuthFactors() transport.AuthFactorClient {
-	return c.transport.(transport.AuthFactorClient)
+	return capability[transport.AuthFactorClient](c, "AuthFactors")
 }
 
 // UserAuthFactors returns the user-side N-factor client (M14 interface) per
@@ -210,18 +237,18 @@ func (c *Client) UserAuthFactors() transport.UserAuthFactorClient {
 // CustodianGroups returns a CustodianGroupClient for managing custodian
 // groups used in Shamir secret sharing.
 func (c *Client) CustodianGroups() transport.CustodianGroupClient {
-	return c.transport.(transport.CustodianGroupClient)
+	return capability[transport.CustodianGroupClient](c, "CustodianGroups")
 }
 
 // Shares returns a ShareClient for submitting and tracking Shamir shares.
 func (c *Client) Shares() transport.ShareClient {
-	return c.transport.(transport.ShareClient)
+	return capability[transport.ShareClient](c, "Shares")
 }
 
 // Tenants returns a TenantClient for multi-tenant operations and
 // per-tenant barrier management.
 func (c *Client) Tenants() transport.TenantClient {
-	return c.transport.(transport.TenantClient)
+	return capability[transport.TenantClient](c, "Tenants")
 }
 
 // WithTenant returns a KVClient that automatically prefixes all keys

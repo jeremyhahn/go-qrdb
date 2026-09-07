@@ -30,13 +30,13 @@ var _ transport.CredentialClient = (*Transport)(nil)
 // Local typed errors used by credential transport calls.
 // ---------------------------------------------------------------------------
 
-// errCredentialNilRequest is returned when a credential RPC receives a nil
+// credentialNilRequestError is returned when a credential RPC receives a nil
 // request struct. It exists so callers can distinguish a client-side
 // validation failure from a server-side error via errors.As.
-type errCredentialNilRequest struct{}
+type credentialNilRequestError struct{}
 
 // Error returns a fixed lowercase identifier consistent with Go error style.
-func (errCredentialNilRequest) Error() string { return "credentials: nil request" }
+func (credentialNilRequestError) Error() string { return "credentials: nil request" }
 
 // ---------------------------------------------------------------------------
 // CredentialClient implementation
@@ -49,7 +49,7 @@ func (t *Transport) CredentialSubmit(ctx context.Context, req *transport.Credent
 		return &transport.ClosedError{}
 	}
 	if req == nil {
-		return &transport.RequestError{Method: "CredentialSubmit", Err: errCredentialNilRequest{}}
+		return &transport.RequestError{Method: "CredentialSubmit", Err: credentialNilRequestError{}}
 	}
 	_, err := t.client.CredentialSubmit(ctx, &pb.CredentialSubmitRequest{
 		Name:  req.Name,
@@ -97,7 +97,7 @@ func (t *Transport) CredentialList(ctx context.Context, req *transport.Credentia
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialList", Err: errCredentialNilRequest{}}
+		return nil, &transport.RequestError{Method: "CredentialList", Err: credentialNilRequestError{}}
 	}
 	resp, err := t.client.CredentialList(ctx, &pb.CredentialListRequest{})
 	if err != nil {
@@ -116,7 +116,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRotate", Err: errCredentialNilRequest{}}
+		return nil, &transport.RequestError{Method: "CredentialRotate", Err: credentialNilRequestError{}}
 	}
 	resp, err := t.client.CredentialRotate(ctx, &pb.CredentialRotateRequest{
 		Name:               req.Name,
@@ -141,7 +141,7 @@ func (t *Transport) CredentialRetrieveVersion(ctx context.Context, req *transpor
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: errCredentialNilRequest{}}
+		return nil, &transport.RequestError{Method: "CredentialRetrieveVersion", Err: credentialNilRequestError{}}
 	}
 	resp, err := t.client.CredentialRetrieveVersion(ctx, &pb.CredentialRetrieveVersionRequest{
 		Name:    req.Name,
@@ -163,7 +163,7 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialListVersions", Err: errCredentialNilRequest{}}
+		return nil, &transport.RequestError{Method: "CredentialListVersions", Err: credentialNilRequestError{}}
 	}
 	resp, err := t.client.CredentialListVersions(ctx, &pb.CredentialListVersionsRequest{
 		Name: req.Name,
@@ -194,7 +194,7 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 		return nil, &transport.ClosedError{}
 	}
 	if req == nil {
-		return nil, &transport.RequestError{Method: "CredentialGCExpired", Err: errCredentialNilRequest{}}
+		return nil, &transport.RequestError{Method: "CredentialGCExpired", Err: credentialNilRequestError{}}
 	}
 	resp, err := t.client.CredentialGCExpired(ctx, &pb.CredentialGCRequest{
 		Name: req.Name,

@@ -265,6 +265,19 @@ jobs:
       - name: golangci-lint
         run: make lint
 
+      # Both steps above run `./...` in the ROOT module, and `./...` does not
+      # cross a module boundary — so before #333 neither reached a single
+      # package of sdk/go. That is the module go-xkms and go-quicbaas import,
+      # which makes it the one place a lint finding is a consumer-visible
+      # defect, and it was the only module in the tree with no linter at all.
+      #
+      # Two steps rather than one so the log says which analyser objected.
+      - name: go vet (sdk/go module)
+        run: make vet-sdk
+
+      - name: golangci-lint (sdk/go module)
+        run: make lint-sdk
+
   build:
     name: Build
     runs-on: ubuntu-latest
