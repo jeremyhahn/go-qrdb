@@ -1292,7 +1292,7 @@ ci:
 # version nobody can name, so a lint or security result produced after the drift
 # is not evidence either way. Failing at the top says so in a second instead of
 # after the suite.
-_ci: check-tool-versions test-tool-versions fmt vet vet-sdk lint lint-sdk check-publication-bound test-publication-bound security build-server test
+_ci: check-tool-versions test-tool-versions check-compose-targets test-compose-targets fmt vet vet-sdk lint lint-sdk check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1403,6 +1403,25 @@ test-publication-bound:
 # on 2026-09-05 that a workflow regression is not a defect fix. The defaults are
 # therefore a DELIBERATE second copy, and this check is the whole of what makes
 # that safe -- without it the ruling reintroduces #154's defect one level down.
+# #327: `make integration-test-gpu` could not build at all. The base compose
+# file sets `target: integration` on two services; the GPU overlay overrides
+# `dockerfile:` for those same services and compose merges keys individually,
+# so the target survived onto Dockerfile.gpu, whose final stage was unnamed.
+#
+# It went unnoticed because nothing runs that lane: the GPU path is on no CI
+# workflow, and a host without nvidia-smi never selects it (HAS_GPU=0). The
+# stage graph is decidable by READING, which is why this is a scanner and not a
+# build -- it needs no GPU, no CUDA image and no network.
+.PHONY: check-compose-targets
+check-compose-targets: ## Every compose `target:` names a real Dockerfile stage
+	@./scripts/check-compose-targets.sh
+
+# On a healthy tree the scanner only runs its accepting branch, so every
+# rejecting branch would ship untested. Same reasoning as test-tool-versions.
+.PHONY: test-compose-targets
+test-compose-targets: ## Test the compose-target guard
+	@./scripts/check-compose-targets_test.sh
+
 .PHONY: check-tool-versions
 check-tool-versions:
 	@./scripts/check-tool-versions.sh

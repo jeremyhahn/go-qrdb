@@ -47,7 +47,18 @@ RUN ARCH="${TARGETARCH:-amd64}" && \
 # The host NVIDIA driver and libcuda.so are injected at runtime via the
 # NVIDIA Container Toolkit when the container is started with --gpus.
 # ---------------------------------------------------------------------------
-FROM nvidia/cuda:13.2.0-devel-ubuntu24.04
+# AS integration, because the base compose file sets `target: integration` on
+# the two services this overlay redirects here, and compose merges by service
+# name: overriding `dockerfile:` does NOT drop the `target:` beside it. An
+# unnamed final stage therefore asked buildx for a stage that did not exist and
+# `make integration-test-gpu` could not build at all (#327).
+#
+# The name is not a formality. This stage already ends in the same
+# `CMD ["make", "_integration-test"]` as the base Dockerfile's integration
+# stage, after the same module download and `COPY . .` -- it IS the integration
+# image, built on CUDA. Naming it says so, and `make check-compose-targets`
+# now fails if any compose `target:` stops resolving to a real stage.
+FROM nvidia/cuda:13.2.0-devel-ubuntu24.04 AS integration
 
 # NVIDIA Container Toolkit runtime hints — consumed by the container runtime
 # to expose the requested GPU devices and driver capabilities.

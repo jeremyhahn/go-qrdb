@@ -195,6 +195,18 @@ jobs:
       - name: Test the scanner-pin guard
         run: make test-tool-versions
 
+      # #327: compose merges overlay keys individually, so an overlay that
+      # redirects `dockerfile:` inherits the base file's `target:`. That pointed
+      # the GPU lane at a stage Dockerfile.gpu did not declare, and
+      # `make integration-test-gpu` could not build. Nothing caught it because
+      # the GPU lane runs in no workflow and no host here has a GPU -- so the
+      # check is a static read of the stage graph, needing neither.
+      - name: Compose build targets resolve to real Dockerfile stages
+        run: make check-compose-targets
+
+      - name: Test the compose-target guard
+        run: make test-compose-targets
+
       # AGENTS.md: a feature folder is publication-bound. This is a whole-TREE
       # property, so it is checked here rather than left to review: a reviewer
       # sees one diff, and a violation can be contributed by neither side of a
