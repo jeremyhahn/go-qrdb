@@ -5,9 +5,14 @@
 # second.
 
 # Credentials. .devcontainer/.env carries the Gitea module-fetch token and is
-# gitignored; without this line the bake-in would put it in a layer. The
-# gomodauth* entry is defence in depth -- the CI credentials file is written
-# outside the build context on purpose, and this catches a future mistake.
+# gitignored; without this line the bake-in would put it in a layer.
+#
+# gomodauth* is KEPT although #326 removed the file it was named for -- the
+# secret is now sourced from the environment and nothing is written to disk.
+# It stays as defence in depth against a future change that reintroduces a
+# credentials file, which is what it was always for; a line that matches
+# nothing costs nothing, and deleting it would remove the guard exactly when
+# someone is adding the thing it guards against.
 .devcontainer/.env
 gomodauth*
 

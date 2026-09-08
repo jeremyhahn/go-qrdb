@@ -166,13 +166,19 @@ services:
 # failure. devcontainer-gpu was added to that set by #305, which gave
 # Dockerfile.gpu the same secret mount the other Dockerfile already had.
 #
-# GOMODAUTH_FILE is staged by the Makefile's $(stage-gomodauth) prelude. The
-# /dev/null default is the unprovisioned path and is deliberate, not a
-# fallback added here: it mounts an EMPTY secret, which is byte-for-byte what
-# the Dockerfile already saw when no secret was supplied at all, so a bare
-# `docker compose build` and the VS Code devcontainer behave exactly as they
-# did. A GOMODAUTH_FILE naming a file that does not exist fails the build
-# loudly, which is the right answer for a caller that meant to provision one.
+# GOMODAUTH is exported by the Makefile's $(stage-gomodauth) prelude and read
+# straight out of the environment -- there is no file (#326).
+#
+# The previous form was `file: ${GOMODAUTH_FILE:-/dev/null}`, staging the live
+# token into /tmp behind an EXIT trap that a SIGKILL does not run; a twelve-hour-old
+# copy was found on disk. An environment source writes nothing, so there is
+# nothing to leave behind.
+#
+# The unprovisioned path is preserved and is what makes a bare
+# `docker compose build` and the VS Code devcontainer work: an UNSET or EMPTY
+# GOMODAUTH mounts an empty secret rather than failing, which is byte-for-byte
+# what the Dockerfile saw when no secret was supplied at all. Measured both
+# ways on compose 2.40.3 before this replaced the /dev/null default.
 secrets:
   gomodauth:
-    file: ${GOMODAUTH_FILE:-/dev/null}
+    environment: GOMODAUTH

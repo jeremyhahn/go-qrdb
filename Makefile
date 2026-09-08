@@ -152,60 +152,69 @@ GITEA_HOST ?= git.example.internal
 
 # go.mod pins first-party modules published only to the internal Gitea, and a
 # docker build inherits nothing from its caller's environment. The four
-# variables from dependency-resolution.md section 6 therefore go into a file
-# that BuildKit mounts as a secret for the single `go mod download`.
+# variables from dependency-resolution.md section 6 therefore reach the single
+# `go mod download` as a BuildKit secret.
 #
 # Never a build arg -- an arg is recoverable from image metadata with
-# `docker history`, while a secret is a tmpfs mount for that one RUN. The file
-# is written under /tmp, deliberately OUTSIDE the build context, because the
-# Dockerfile ends with `COPY . .`; .dockerignore lists gomodauth* as a second
-# line of defence. The token is written by shell redirection rather than
-# passed as an argument, so it never reaches a command line `ps` could show.
-# It is removed on the way out, on success or failure.
+# `docker history`, while a secret is a tmpfs mount for that one RUN.
 #
-# Two sources, in order: a CI job, where the runner injects the variables into
-# the process environment; or a developer box, where the token lives in the
-# gitignored .devcontainer/.env. With neither, the file is left EMPTY and the
-# build resolves from the public proxy -- which is exactly what happens on
-# GitHub, where these modules resolve from the public proxy once tags are
-# mirrored.
+# THE SECRET IS SOURCED FROM THE ENVIRONMENT, NOT FROM A FILE (#326).
 #
-# GOMODAUTH_FILE is the one name both consumers read: `docker build --secret
-# id=gomodauth,src=` on the command line, and the compose services'
-# `build.secrets`, through the top-level `secrets:` block in
-# .devcontainer/docker-compose.yml and test/integration/api/docker-compose.yml.
-# Sharing it is the whole point (#302): `make ci` built this image with no
-# secret at all while `make integration-image` passed one, so two entrypoints
-# to the same image disagreed about how to authenticate, exporting
-# GITEA_GO_TOKEN fixed only one of them, and the other died inside the image
-# build with an `unknown revision` that read like a gate failure.
+# It used to be a `mktemp /tmp/qrdb-gomodauth.XXXXXX` removed by an EXIT trap.
+# A make recipe shell does NOT run EXIT traps when it dies on SIGKILL -- OOM,
+# `kill -9`, a session-scoped stop, or a harness tool timeout -- and all three
+# have happened to gate wrappers on this host. A file dated 2026-09-04 20:43
+# was found on 2026-09-05 09:20 holding the live token: mode 600, but twelve
+# hours on a world-listable directory that every backup, sync and debugging
+# `tar` picks up first, under a name that says exactly what it is.
 #
-# Paths are absolute ($(CURDIR)) because two callers `cd` into a subdirectory
-# before invoking compose.
+# `--secret id=gomodauth,env=GOMODAUTH` removes the file, the trap and the
+# question. Nothing is written to disk, so there is nothing for a SIGKILL to
+# leave behind -- this is not a shorter window, it is no window. Compose reads
+# the same variable through `secrets: gomodauth: environment: GOMODAUTH`.
+#
+# MEASURED before adopting, because the issue made it conditional on the
+# BuildKit floor (option 2 "if the floor allows it, else 1"):
+#   workstation      docker 29.1.3, compose 2.40.3
+#   gpu-host (runner) docker 29.1.3, buildx 0.30.1
+# and end to end on both shapes: set -> secret mounted; UNSET and EMPTY ->
+# build succeeds with no secret, which is the fall-through #302 requires so a
+# GitHub build resolves from the public proxy.
+#
+# The value is passed by EXPORTING a shell variable, never on a command line,
+# so it stays out of `ps` exactly as the redirection did.
+#
+# GOMODAUTH is the one name both consumers read: `docker build --secret
+# id=gomodauth,env=GOMODAUTH`, and the compose services' `build.secrets`
+# through the top-level `secrets:` block in .devcontainer/docker-compose.yml
+# and test/integration/api/docker-compose.yml. Sharing it is the whole point
+# (#302): `make ci` built this image with no secret at all while
+# `make integration-image` passed one, so two entrypoints to the same image
+# disagreed about how to authenticate.
 #
 # Usage: open the recipe with $(stage-gomodauth) and let the docker invocation
 # be the next continued line of that same recipe line. The prelude leaves the
 # shell under `set -eu`, so a recipe that captures its own exit code and tears
 # down after a failure must `set +e` before the command it means to survive --
 # otherwise set -e exits at the failure and the teardown never runs.
+# ONE LINE, `;`-separated, values single-quoted. The payload is consumed by
+# `. /run/secrets/gomodauth`, and a sourceable script does not need newlines --
+# which matters because make splits a recipe on them: an embedded newline ends
+# the shell command mid-string ("Syntax error: Unterminated quoted string",
+# measured before this form replaced it). Single quotes because the value is
+# assembled from a URL and a token; neither may contain a single quote, which
+# is true of a Gitea hex token and is the same constraint the previous
+# one-value-per-line form carried.
 define stage-gomodauth
 set -eu; \
-umask 077; \
-GOMODAUTH_FILE="$$(mktemp /tmp/qrdb-gomodauth.XXXXXX)"; \
-export GOMODAUTH_FILE; \
-trap 'rm -f "$$GOMODAUTH_FILE"' EXIT INT TERM; \
 if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
-  { echo "export GOPRIVATE=$${GOPRIVATE:-}"; \
-    echo "export GIT_CONFIG_COUNT=$${GIT_CONFIG_COUNT:-}"; \
-    echo "export GIT_CONFIG_KEY_0=$${GIT_CONFIG_KEY_0}"; \
-    echo "export GIT_CONFIG_VALUE_0=$${GIT_CONFIG_VALUE_0:-}"; } > "$$GOMODAUTH_FILE"; \
+  GOMODAUTH="export GOPRIVATE='$${GOPRIVATE:-}'; export GIT_CONFIG_COUNT='$${GIT_CONFIG_COUNT:-}'; export GIT_CONFIG_KEY_0='$${GIT_CONFIG_KEY_0}'; export GIT_CONFIG_VALUE_0='$${GIT_CONFIG_VALUE_0:-}'"; \
+  export GOMODAUTH; \
   echo "==> module credentials: from the job environment"; \
 elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
   . $(CURDIR)/.devcontainer/.env; \
-  { echo "export GOPRIVATE=github.com/jeremyhahn/*"; \
-    echo "export GIT_CONFIG_COUNT=1"; \
-    echo "export GIT_CONFIG_KEY_0=url.http://x:$${GITEA_GO_TOKEN}@$(GITEA_HOST)/jeremyhahn/.insteadOf"; \
-    echo "export GIT_CONFIG_VALUE_0=https://github.com/jeremyhahn/"; } > "$$GOMODAUTH_FILE"; \
+  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$(GITEA_HOST)/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
+  export GOMODAUTH; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
   echo "==> no Gitea credentials here; resolving from the public proxy"; \
@@ -820,7 +829,7 @@ INT_IMAGE   := go-qrdb-dev:latest
 integration-image:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
-	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  --secret id=gomodauth,env=GOMODAUTH \
 	  $(SCANNER_BUILD_ARGS) \
 	  --target integration \
 	  -f .devcontainer/Dockerfile \
@@ -887,7 +896,7 @@ HAS_GPU := $(shell command -v nvidia-smi >/dev/null 2>&1 && echo 1 || echo 0)
 .PHONY: integration-test-gpu
 # `--build` here builds .devcontainer/Dockerfile.gpu, so this needs the same
 # credential prelude as every other entrypoint that builds an image (#305); the
-# overlay's services declare build.secrets and read $$GOMODAUTH_FILE from it.
+# overlay's services declare build.secrets and read $$GOMODAUTH from it.
 # `set +e` because the prelude leaves the shell under `set -eu` and this recipe
 # captures its own exit code to run `down -v` after a failure.
 integration-test-gpu:
@@ -1960,14 +1969,14 @@ security: gosec vuln mod-verify trivy
 docker-build:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
-	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  --secret id=gomodauth,env=GOMODAUTH \
 	  -t qrdbd:$(BUILD_VERSION) .
 
 .PHONY: docker-build-integration
 docker-build-integration:
 	@$(stage-gomodauth) \
 	DOCKER_BUILDKIT=1 docker build \
-	  --secret id=gomodauth,src="$$GOMODAUTH_FILE" \
+	  --secret id=gomodauth,env=GOMODAUTH \
 	  $(SCANNER_BUILD_ARGS) \
 	  -t go-qrdb-integration:$(DOCKER_TAG) -f .devcontainer/Dockerfile .
 
