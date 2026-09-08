@@ -15,9 +15,10 @@
 package tenant
 
 import (
+	"errors"
 	"os"
-	"path/filepath"
-	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
 // validateExplicitDataRoot validates an operator-supplied dedicated-disk
@@ -46,14 +47,16 @@ func validateExplicitDataRoot(path string) error {
 	if path == "" {
 		return ErrEmptyDataRoot
 	}
-	if !filepath.IsAbs(path) {
-		return &InvalidDataRootError{DataRoot: path, Reason: "must be an absolute path"}
-	}
-	if cleaned := filepath.Clean(path); cleaned != path {
-		return &InvalidDataRootError{DataRoot: path, Reason: "must be a canonical path (no redundant separators or . / .. components)"}
-	}
-	if err := rejectSymlinkedDataRoot(path); err != nil {
-		return err
+	// The absolute / canonical / no-symlink trio lives in pkg/validation so
+	// this package and the volume pool cannot drift apart on it (#292). The
+	// reason string is carried through into this package's own typed error:
+	// callers switch on InvalidDataRootError, not on validation.PathError.
+	if err := validation.AbsoluteCanonicalPath(path); err != nil {
+		var pathErr *validation.PathError
+		if errors.As(err, &pathErr) {
+			return &InvalidDataRootError{DataRoot: path, Reason: pathErr.Reason}
+		}
+		return &InvalidDataRootError{DataRoot: path, Reason: err.Error()}
 	}
 
 	entries, err := os.ReadDir(path)
@@ -74,64 +77,9 @@ func validateExplicitDataRoot(path string) error {
 // first. The comparison is separator-aware so /data/foo and /data/foo2 do NOT
 // overlap: a naive strings.HasPrefix(b, a) would wrongly treat /data/foo2 as
 // nested under /data/foo.
-func dataRootsOverlap(a, b string) bool {
-	a = filepath.Clean(a)
-	b = filepath.Clean(b)
-	if a == b {
-		return true
-	}
-	return isPathAncestor(a, b) || isPathAncestor(b, a)
-}
+func dataRootsOverlap(a, b string) bool { return validation.PathsOverlap(a, b) }
 
 // isPathAncestor reports whether parent is a strict filesystem ancestor of
-// child (both assumed cleaned/absolute). It uses filepath.Rel so the check is
-// component-aware: a child sits under parent only when the relative path is
-// neither "." (equal), ".." (parent is below child), nor a "../"-prefixed path
-// (child escapes upward). This is what makes /data/foo2 NOT a child of
-// /data/foo — filepath.Rel yields "../foo2", which is rejected.
-func isPathAncestor(parent, child string) bool {
-	if parent == child {
-		return false
-	}
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return true
-}
-
-// rejectSymlinkedDataRoot fails if the path, or its deepest already-existing
-// ancestor, traverses a symlink. The canonical (filepath.Clean) check cannot
-// see symlinks — a canonical path like /mnt/disk-a/tenant can still be a
-// symlink to somewhere else — so this resolves the deepest existing prefix of
-// the path and requires it to equal itself. A path whose leaf does not yet
-// exist is fine: its existing ancestor is what gets checked, and the leaf will
-// be created (not followed) by the caller.
-func rejectSymlinkedDataRoot(path string) error {
-	probe := path
-	for {
-		if _, err := os.Lstat(probe); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return &InvalidDataRootError{DataRoot: path, Reason: "stat failed: " + err.Error()}
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			// Reached the filesystem root without finding an existing
-			// component; there is no symlink to resolve.
-			return nil
-		}
-		probe = parent
-	}
-	resolved, err := filepath.EvalSymlinks(probe)
-	if err != nil {
-		return &InvalidDataRootError{DataRoot: path, Reason: "resolve symlinks failed: " + err.Error()}
-	}
-	if resolved != probe {
-		return &InvalidDataRootError{DataRoot: path, Reason: "path traverses a symlink (" + probe + " resolves to " + resolved + ")"}
-	}
-	return nil
-}
+// child. See validation.IsPathAncestor for the component-aware reasoning that
+// makes /data/foo2 NOT a child of /data/foo.
+func isPathAncestor(parent, child string) bool { return validation.IsPathAncestor(parent, child) }

@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -71,7 +72,7 @@ func newVolumePoolTransport(t *testing.T, paths []string) (*Transport, objpool.M
 		_ = stored
 
 		// Use buildLocalCandidates from the package for parity.
-		bs, err := buildLocalCandidates(paths)
+		bs, err := buildLocalCandidates("t", paths)
 		if err != nil {
 			t.Fatalf("buildLocalCandidates: %v", err)
 		}
@@ -304,7 +305,7 @@ func TestVolumePoolClient_RegisterPool_MissingStateStore(t *testing.T) {
 // confirm the local-storage helper actually wires up.
 func TestVolumePool_BuildLocalCandidates_Direct(t *testing.T) {
 	dir := t.TempDir()
-	got, err := buildLocalCandidates([]string{filepath.Join(dir, "a")})
+	got, err := buildLocalCandidates("t", []string{filepath.Join(dir, "a")})
 	if err != nil {
 		t.Fatalf("buildLocalCandidates: %v", err)
 	}
@@ -317,12 +318,26 @@ func TestVolumePool_BuildLocalCandidates_Direct(t *testing.T) {
 	}
 }
 
-func TestVolumePool_BuildLocalCandidates_EmptyPathSkipped(t *testing.T) {
-	got, err := buildLocalCandidates([]string{""})
-	if err != nil {
-		t.Fatalf("buildLocalCandidates: %v", err)
+// TestVolumePool_BuildLocalCandidates_EmptyPathRejected replaces a test that
+// asserted the OPPOSITE: an empty path used to be skipped silently.
+//
+// That was this file's own second implementation of BuildLocalCandidates
+// drifting from the canonical one in pkg/storage/pool, which never skipped it.
+// #292 removed the duplicate rather than guarding it twice, so the canonical
+// behaviour is now the only behaviour, and #292's guard makes an empty path a
+// typed refusal.
+//
+// The change is deliberate and is a behaviour change, stated here so it is not
+// mistaken for a test that was simply deleted: a pool spec carrying "" is a
+// malformed request, and answering it beats registering a pool with fewer
+// volumes than the caller asked for and reporting success.
+func TestVolumePool_BuildLocalCandidates_EmptyPathRejected(t *testing.T) {
+	got, err := buildLocalCandidates("t", []string{""})
+	if err == nil {
+		t.Fatalf("empty path accepted, returned %d candidates", len(got))
 	}
-	if len(got) != 0 {
-		t.Errorf("expected 0 candidates for empty path, got %d", len(got))
+	var pathErr *qrdbpool.VolumePoolPathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("got %T (%v), want *pool.VolumePoolPathError", err, err)
 	}
 }

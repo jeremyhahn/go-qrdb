@@ -146,6 +146,18 @@ func (e *VolumePoolStrategyError) Error() string {
 // Unwrap returns the underlying error.
 func (e *VolumePoolStrategyError) Unwrap() error { return e.Err }
 
+// VolumePoolOverlapError reports that a pool was given two paths where one
+// contains the other. Such a pool is not two volumes; it is one volume counted
+// twice, and a placement strategy would report free space that does not exist.
+type VolumePoolOverlapError struct {
+	Other string
+}
+
+// Error implements the error interface.
+func (e *VolumePoolOverlapError) Error() string {
+	return "overlaps volume " + strconv.Quote(e.Other) + " already in this pool"
+}
+
 // VolumePoolPathError is returned when one of the configured local paths
 // cannot be created or wrapped as an objstore Backend.
 type VolumePoolPathError struct {

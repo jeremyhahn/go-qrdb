@@ -25,6 +25,7 @@ import (
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/validation"
 )
 
 // VolumePoolSubsystem aggregates the resources needed to run barrier-mode
@@ -190,9 +191,40 @@ func BuildPoolStrategy(name string, state objpool.StateStore) (objpool.Strategy,
 // BuildLocalCandidates configures one local-filesystem Storage per supplied
 // path. The path is created with 0700 permissions before objstore's Configure
 // is called so the caller owns the volume root.
+//
+// EVERY path is validated before it reaches os.MkdirAll (#292). The paths
+// arrive in a request type that is already wire-shaped -- every field of
+// RegisterVolumePoolRequest carries a json: tag, and its doc comment describes
+// the permission an authenticated remote principal needs -- so this creates
+// caller-named directories. It is not reachable from a transport handler
+// today; the guard is here so that the change which makes it reachable does
+// not also have to remember to add one.
+//
+// gosec cannot substitute for this: G304 covers os.Open/OpenFile/ReadFile and
+// says nothing about directory creation, so neither gosec leg sees this sink
+// at all.
+//
+// Overlap is checked across the request's OWN paths as well: two candidates in
+// one pool where one contains the other is not a pool, it is the same storage
+// counted twice, and the round-robin strategy would report free space it does
+// not have.
 func BuildLocalCandidates(poolName string, paths []string) ([]common.Storage, error) {
 	out := make([]common.Storage, 0, len(paths))
+	accepted := make([]string, 0, len(paths))
 	for _, p := range paths {
+		if err := validation.AbsoluteCanonicalPath(p); err != nil {
+			return nil, &VolumePoolPathError{Pool: poolName, Path: p, Err: err}
+		}
+		for _, prior := range accepted {
+			if validation.PathsOverlap(prior, p) {
+				return nil, &VolumePoolPathError{
+					Pool: poolName,
+					Path: p,
+					Err:  &VolumePoolOverlapError{Other: prior},
+				}
+			}
+		}
+		accepted = append(accepted, p)
 		if err := os.MkdirAll(p, 0o700); err != nil {
 			return nil, &VolumePoolPathError{Pool: poolName, Path: p, Err: err}
 		}

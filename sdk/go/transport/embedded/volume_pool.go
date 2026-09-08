@@ -17,12 +17,11 @@ package embedded
 import (
 	"context"
 	"errors"
-	"os"
 
 	"github.com/jeremyhahn/go-objstore/pkg/common"
-	"github.com/jeremyhahn/go-objstore/pkg/local"
 	objpool "github.com/jeremyhahn/go-objstore/pkg/pool"
 
+	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -148,7 +147,7 @@ func (c *volumePoolClient) RegisterPool(ctx context.Context, req transport.Regis
 		return err
 	}
 
-	candidates, err := buildLocalCandidates(req.Paths)
+	candidates, err := buildLocalCandidates(req.Name, req.Paths)
 	if err != nil {
 		return err
 	}
@@ -176,25 +175,19 @@ func buildPoolStrategy(name string, state objpool.StateStore) (objpool.Strategy,
 	}
 }
 
-// buildLocalCandidates configures one local-filesystem Storage per
-// supplied path. The path is created with 0700 permissions if it does
-// not exist before objstore's Configure is called.
-func buildLocalCandidates(paths []string) ([]common.Storage, error) {
-	out := make([]common.Storage, 0, len(paths))
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		if err := os.MkdirAll(p, 0o700); err != nil {
-			return nil, err
-		}
-		s := local.New()
-		if err := s.Configure(map[string]string{"path": p}); err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, nil
+// buildLocalCandidates delegates to pkg/storage/pool.BuildLocalCandidates,
+// which validates every path before creating it (#292).
+//
+// It used to be a second implementation of that function, and the two had
+// already drifted: this one silently SKIPPED an empty path while the canonical
+// one did not. #292 asked for one shared guard and specifically for it not to
+// become a third copy, so the duplicate is gone rather than guarded.
+//
+// The empty-path skip goes with it, deliberately. A pool spec carrying "" is a
+// malformed request, and answering it with a typed error beats registering a
+// pool with fewer volumes than the caller asked for and saying nothing.
+func buildLocalCandidates(name string, paths []string) ([]common.Storage, error) {
+	return qrdbpool.BuildLocalCandidates(name, paths)
 }
 
 // mapPoolError translates objstore pool errors into SDK transport

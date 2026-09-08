@@ -135,6 +135,24 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
 - **`barrier`, `volume` and `raft` require `storage.volume_pools`.** Without a
   pool, registering a barrier fails with
   `volume pool not configured on barrier registry`.
+- **Every volume-pool path is validated before it is created.** A pool's paths
+  reach `os.MkdirAll`, so `pool.BuildLocalCandidates` requires each one to be
+  non-empty, absolute, canonical (`filepath.Clean(p) == p`), free of any
+  symlinked component, and non-overlapping with the other paths in the same
+  request. Failures are `*VolumePoolPathError`, wrapping either a
+  `*validation.PathError` naming the predicate or a `*VolumePoolOverlapError`
+  naming the volume it collides with.
+
+  The symlink predicate is not redundant with the canonical one: `filepath.Clean`
+  reasons about a path lexically while the syscall follows it physically, so a
+  perfectly canonical `/mnt/disk-a/vol` can still be a symlink elsewhere. The
+  overlap predicate is separator-aware — `/data/foo2` is **not** inside
+  `/data/foo` — because two volumes where one contains the other are one volume
+  counted twice, and a placement strategy would report free space that does not
+  exist.
+
+  The five path predicates are shared with tenant `DataRoot` validation through
+  `pkg/validation`; neither package carries its own copy.
 - **A `volume` tenant's host is built lazily**, only after its barrier is
   unsealed.
 - **Entitlements are checked before quotas.** A plan that does not include a
