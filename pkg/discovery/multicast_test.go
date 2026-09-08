@@ -1295,7 +1295,67 @@ type panicTransport struct {
 	panicOnRead     atomic.Bool
 	panicOnWrite    atomic.Bool
 	readCallCount   atomic.Int64
+	writeCallCount  atomic.Int64
 	panicAfterReads int64
+}
+
+// discoverVerdict explains a failed Discover in the panic-recovery test: it
+// separates "the recovery path is broken" from "the host never scheduled the
+// listener" (#261).
+//
+// A bare `discovery: multicast: timed out` cannot tell those apart, and they
+// need opposite responses -- one is a defect to fix, the other a re-run. Every
+// instance of that conflation on this board so far (#248, #249, #259, #261) was
+// resolved by a person reading a red leg and proving it merit-free by hand.
+//
+// The discriminator is whether the listener read AT ALL after panicking was
+// switched off. No reads means the goroutine never ran; reads without a peer
+// means it ran and the path is wrong.
+//
+// It is a function rather than an inline branch so both verdicts can be
+// asserted directly, on constructed observations, without needing a starved
+// host -- a test for "reports starvation correctly" that only runs on a starved
+// machine is the same defect one level up
+// (see pkg/server/shard_leader_wait_test.go, which reached this the same way).
+func discoverVerdict(err error, readsWhenCleared, readsNow int64, budget time.Duration) string {
+	if readsNow == readsWhenCleared {
+		return fmt.Sprintf("HOST STARVATION, not a defect in the recovery path: the "+
+			"listener performed no read at all in the %v Discover budget after panicking "+
+			"was switched off (reads stuck at %d). The goroutine was never scheduled; "+
+			"re-run on an idle host. Underlying error: %v",
+			budget, readsWhenCleared, err)
+	}
+	return fmt.Sprintf("Discover after panic recovery failed: %v (the listener DID keep "+
+		"reading -- %d reads after panicking was switched off -- so this is a real defect "+
+		"in the recovery path, not host load)", err, readsNow-readsWhenCleared)
+}
+
+// awaitCounter blocks until counter exceeds from, and returns whether it did.
+//
+// It replaces `<-time.After(100 * time.Millisecond)` in the panic-recovery
+// tests below (#261). That sleep encoded two wall-clock assumptions a starved
+// scheduler breaks -- that 100ms is enough for the loop to panic, recover and
+// re-enter -- and when it broke, the test failed with `discovery: multicast:
+// timed out`, which cannot say whether the recovery path is broken or the host
+// was merely too busy to run the goroutine. Those need opposite responses.
+//
+// The counter is the recovery signal and needs no production change to expose:
+// listen() re-enters listenLoop() after a recovered panic, and listenLoop's
+// first act is another transport call. A SECOND call is therefore proof the
+// loop restarted, observed at the moment it happens rather than guessed at.
+//
+// The deadline is generous on purpose: it is a liveness bound, not a
+// measurement. Nothing here asserts how LONG recovery took, only that it
+// happened, so a slow host waits longer and still gets a correct answer.
+func awaitCounter(counter *atomic.Int64, from int64, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if counter.Load() > from {
+			return true
+		}
+		<-time.After(time.Millisecond)
+	}
+	return counter.Load() > from
 }
 
 func (p *panicTransport) ReadFrom(buf []byte) (int, error) {
@@ -1307,6 +1367,7 @@ func (p *panicTransport) ReadFrom(buf []byte) (int, error) {
 }
 
 func (p *panicTransport) WriteTo(data []byte) error {
+	p.writeCallCount.Add(1)
 	if p.panicOnWrite.Load() {
 		panic("simulated WriteTo panic")
 	}
@@ -1344,24 +1405,71 @@ func TestMulticastDiscovery_ListenPanicRecovery(t *testing.T) {
 		t.Fatalf("NewMulticastDiscovery error: %v", err)
 	}
 
-	// Wait for the panic to fire and recover.
-	<-time.After(100 * time.Millisecond)
+	// The panic fires on read #1. listen() re-enters listenLoop() after
+	// recovering, and listenLoop's first act is another ReadFrom -- so read #2
+	// IS the recovery, observed rather than slept for.
+	if !awaitCounter(&pt.readCallCount, 1, 5*time.Second) {
+		t.Fatalf("the listener did not re-enter ReadFrom after the panic (reads=%d): "+
+			"the recovery path never restarted the loop", pt.readCallCount.Load())
+	}
 
 	// Stop panicking and enqueue a discoverable peer.
 	pt.panicOnRead.Store(false)
+	readsWhenCleared := pt.readCallCount.Load()
 	peerMsg2, _ := EncodeMulticastMessage(100, 3, "10.0.0.3:5000", secret)
 	pt.Enqueue(peerMsg2)
 
 	// The listener should recover and discover the second peer.
 	peers, discoverErr := md.Discover(context.Background())
 	if discoverErr != nil {
-		t.Fatalf("Discover after panic recovery failed: %v", discoverErr)
+		t.Fatal(discoverVerdict(discoverErr, readsWhenCleared, pt.readCallCount.Load(), 2*time.Second))
 	}
 	if len(peers) == 0 {
 		t.Fatal("expected at least 1 peer after panic recovery")
 	}
 
 	_ = md.Stop()
+}
+
+// TestDiscoverVerdict asserts BOTH branches of the panic-recovery
+// discriminator directly, on constructed observations.
+//
+// This is the point of #261, not the wait: a red leg has to say which of two
+// opposite things happened. Asserting the branches here means neither depends
+// on reproducing a starved host, which is unreproducible on purpose -- the
+// test above passed 30/30 under 3x CPU oversubscription, so the starvation
+// branch would otherwise never execute in CI and would rot unnoticed.
+func TestDiscoverVerdict(t *testing.T) {
+	budget := 2 * time.Second
+	timedOut := errors.New("discovery: multicast: timed out")
+
+	t.Run("no reads after the flag cleared is starvation", func(t *testing.T) {
+		got := discoverVerdict(timedOut, 7, 7, budget)
+		if !strings.Contains(got, "HOST STARVATION") {
+			t.Errorf("verdict does not name starvation: %s", got)
+		}
+		if strings.Contains(got, "real defect") {
+			t.Errorf("verdict blames the code for a starved host: %s", got)
+		}
+		if !strings.Contains(got, timedOut.Error()) {
+			t.Errorf("verdict drops the underlying error: %s", got)
+		}
+	})
+
+	t.Run("reads after the flag cleared is a real defect", func(t *testing.T) {
+		got := discoverVerdict(timedOut, 7, 19, budget)
+		if !strings.Contains(got, "real defect") {
+			t.Errorf("verdict does not name a defect: %s", got)
+		}
+		if strings.Contains(got, "HOST STARVATION") {
+			t.Errorf("verdict blames the host for a real defect: %s", got)
+		}
+		// The count is the evidence for the claim, so it has to be in the
+		// message: 19-7 reads happened and still produced no peer.
+		if !strings.Contains(got, "12 reads") {
+			t.Errorf("verdict omits the read count that justifies it: %s", got)
+		}
+	})
 }
 
 // TestMulticastDiscovery_ListenPanicStopsCleanly verifies that when a panic
@@ -1422,8 +1530,18 @@ func TestMulticastDiscovery_AnnounceLoopPanicRecovery(t *testing.T) {
 
 	md.Start()
 
-	// Let the panic fire in the announce loop.
-	<-time.After(100 * time.Millisecond)
+	// Wait for the panic to actually FIRE, rather than sleeping and hoping.
+	// writeCallCount increments before the panic check, so a first write proves
+	// the announce loop reached WriteTo and blew up there (#261).
+	//
+	// The old fixed sleep failed in the vacuous direction, which is worse than
+	// a flake: if the announcer had not yet written when panicOnWrite was
+	// cleared, no panic ever occurred and the test asserted recovery from
+	// nothing while reporting success.
+	if !awaitCounter(&pt.writeCallCount, 0, 5*time.Second) {
+		t.Fatal("the announce loop never reached WriteTo, so no panic fired and " +
+			"there was no recovery to test")
+	}
 
 	// Stop panicking so announcements can succeed.
 	pt.panicOnWrite.Store(false)
