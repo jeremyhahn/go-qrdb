@@ -46,7 +46,10 @@ test-results/
 
 .serena
 .claude
-CLAUDE.md
+# CLAUDE.md is NOT listed here. It is repository content -- git has tracked it
+# since long before this line was written, so the entry was inert for the file
+# itself while still hiding it from every tool that honours .gitignore, and
+# silently refusing `git add` after a rename. Both bit during #262.
 go.work
 go.work.sum
 
