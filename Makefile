@@ -59,18 +59,40 @@ GOLINT        := golangci-lint
 GOSEC         := gosec
 GOVULNCHECK   := govulncheck
 
-# gosec exclusions (documented):
-#   G103: unsafe calls (test reflect/unsafe access for unexported fields)
-#   G104: unhandled errors (false positive on hash.Write)
-#   G115: integer overflow conversions (protocol-spec bounded shard/replica IDs)
-#   G704: SSRF taint analysis (leader forwarding URL from internal peer registry, not user input)
-#   G705: XSS taint analysis (KV GET returns application/octet-stream, not HTML)
-#   G118: context.Background in goroutine / cancel returned to caller (intentional patterns)
-#   G122: filepath.Walk TOCTOU (internal storage directories only)
+# GOSEC EXCLUSIONS, EACH WITH WHAT IT IS WORTH. Re-measured 2026-09-10 against
+# gosec v2.29.0 (GOSEC_VERSION) on both modules, with the corrected -tags this
+# file now passes (#295). The method is the one the issue asked for and anyone
+# can repeat: arm ONE rule at a time and count.
+#
+#   gosec -tags "$(LINT_TAGS)" -include=<RULE> \
+#         -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+#
+# An entry that changes no count is INERT and was DELETED, not rescoped. An
+# exclusion that fires on nothing is worse than an unexamined one: it reads as
+# "the gate considered this class and cleared it", and re-running the tool
+# cannot tell you otherwise, because a suppression and an inert rule look
+# identical in the output. That is how the .golangci.yml G703 entry survived
+# for months while suppressing nothing (#181).
+#
+#   rule   make gosec   make gosec-sdk   kept
+#   ----   ----------   --------------   ----
+#   G115      440            148          yes
+#   G304       48              0          yes
+#   G704        2              0          yes
+#   G103        0              0          no -- 8 findings, all LOW
+#   G104        0              0          no
+#   G118        0              0          no -- 5 sites carry #nosec G118
+#   G122        0              0          no -- 2 sites carry #nosec G122
+#   G705        0              0          no -- 1 site carries #nosec G705
+#
+# THE THREE THAT ARE KEPT:
+#
+#   G115: integer overflow in conversions. Protocol-spec bounded shard/replica
+#         IDs and length prefixes; 440 sites in the root module and 148 in
+#         sdk/go, which is why this is a list entry and not 588 annotations.
 #   G304: file path via variable. NOT a claim that every path is safe -- it is
-#         the residue of a repo-wide audit (#181, measured 2026-09-04 against
-#         the pinned gosec v2.29.0 with BUILD_TAGS applied). THE PREDICATE the
-#         audit used, so the next reader can re-derive rather than trust it:
+#         the residue of a repo-wide audit (#181). THE PREDICATE it used, so
+#         the next reader can re-derive rather than trust it:
 #
 #           a G304/G703 finding is a REAL containment defect iff a value an
 #           unprivileged remote caller can choose -- one entering the process
@@ -81,53 +103,61 @@ GOVULNCHECK   := govulncheck
 #           -- can reach the path argument of a filesystem operation without a
 #           separator-aware containment check against a fixed root.
 #
-#         49 G304 sites were enumerated and classified against it and NONE
-#         satisfies it: 27 in cmd/ (CLI flags and positional arguments), 9 TLS
-#         material paths in pkg/clustertls, 4 in pkg/database (catalog paths
-#         built from a name that passed namePattern), 2 audit-log paths, and
-#         one each in pkg/storage/file, pkg/vector/ivf and pkg/system.
+#         48 sites were enumerated and classified against it and NONE satisfies
+#         it: 30 in cmd/ (26 CLI flags and positional arguments, 4 TLS material
+#         paths in cmd/qrdbd/tls.go), 9 more TLS material paths in
+#         pkg/clustertls, 4 in pkg/database (catalog paths built from a name
+#         that passed namePattern), 2 audit-log paths, and one each in
+#         pkg/storage/file, pkg/vector/ivf and pkg/system. FOUR OF THEM ARE
+#         TAG-GATED and this target could not see any of them until the -tags
+#         fix below: cmd/qrdb/{bindings_server,timeseries_enabled,
+#         vector_enabled}.go and pkg/vector/ivf/index.go.
 #
-#         THIS LEG IS STILL BLANKET AND THE LINT LEG IS NOT. gosec's CLI takes
-#         no per-path rule scoping, so narrowing here would mean 49 inline
-#         `#nosec` annotations -- and a `#nosec` line is the easiest thing in
-#         this repository to copy onto a new site. .golangci.yml carries the
-#         narrowing instead: there G304 is suppressed per-file at exactly these
-#         packages and stays ARMED over every request-facing one, so a new
-#         file-open site in pkg/api goes red in the Lint job. Verified by
-#         mutation on 2026-09-04: a handler doing
-#         `os.ReadFile(filepath.Join(root, r.PathValue("path")))` is silent
-#         under the old blanket config and reports G304 under the new one.
+#         THIS LEG IS STILL BLANKET FOR G304 AND THE LINT LEG IS NOT. gosec's
+#         CLI takes no per-path rule scoping, so narrowing here would mean 48
+#         inline `#nosec` annotations -- and a `#nosec` line is the easiest
+#         thing in this repository to copy onto a new site. .golangci.yml
+#         carries the narrowing instead: there G304 is suppressed per-file at
+#         exactly these packages and stays ARMED over every request-facing one,
+#         so a new file-open site in pkg/api goes red in the Lint job.
+#   G704: SSRF taint analysis. Two sites, both the leader-forwarding client in
+#         pkg/api/rest/handlers.go, whose target URL comes from the internal
+#         peer registry rather than from a request.
 #
-#   G703 is NOT EXCLUDED ON EITHER LEG ANY MORE. Its single site --
-#         findOpenSSLConfig in pkg/system/openssl.go -- carries an inline
-#         `#nosec G703` with the reasoning next to the code (#154, #181), and
-#         both gosec and golangci-lint honour it, so the justification exists
-#         exactly once and neither config file claims anything about it. A
-#         SECOND environment-or-request-to-path flow added anywhere in the
-#         tree now fails this scan instead of inheriting that justification.
-#         Verified by mutation: removing the annotation makes this leg report
-#         the finding again (HIGH/HIGH, CWE-22).
+# THE FIVE THAT WERE DELETED, and what makes each zero -- because "it measured
+# zero" is not the same claim as "it can never fire", and a reader deciding
+# whether to re-add one needs to know which:
 #
-#         .golangci.yml's G703 entry was DELETED rather than rescoped because
-#         it was INERT -- golangci-lint v2.13.2 bundles gosec v2.28.0, whose
-#         G703 treats filepath.Clean as a sanitizer, so it never fired at that
-#         site while this leg's v2.29.0 reports it. An exclusion that fires on
-#         nothing reads as a decision the gate made and is not falsifiable by
-#         re-running the gate. The general divergence -- 49 G304 + 1 G703 here
-#         against 18 G304 + 0 G703 there -- is filed separately (#295); which
-#         of the OTHER exclusions above are similarly inert is NOT established.
+#   G103  8 findings exist (pkg/index/metadata.go, generated .pb.go) but every
+#         one is LOW severity, and this leg runs at -severity=medium. The
+#         exclusion was doing nothing the severity floor was not already doing.
+#         Lower that floor and these appear -- which is the correct outcome:
+#         they would then be audited rather than silently pre-cleared.
+#   G104  no findings at all, at any severity. gosec reports unchecked errors
+#         only in audit mode, which this leg does not enable.
+#   G118  5 findings, every one already suppressed by an inline `#nosec G118`
+#         carrying its reason at the site (pkg/auth/login.go, pkg/service,
+#         pkg/api/{grpc,quic,mcp}). The list entry was a second suppression
+#         over the same five lines.
+#   G122  same shape: pkg/storage/file/iterator.go carries `#nosec G122` at
+#         both WalkDir callbacks.
+#   G705  same shape: pkg/api/rest/handlers.go:544 carries `#nosec G705`.
 #
-#   TWO COVERAGE LIMITS OF THIS LEG, measured the same day, both real and
-#   neither fixed here:
-#     - it runs with NO build tags, so tag-gated files are never scanned. The
-#       audit ran gosec a second time with $(BUILD_TAGS) and found 4 further
-#       G304 sites invisible to this target. Adding -tags here is not free: the
-#       tagged run also surfaces 2 G404 findings in pkg/vector that need their
-#       own triage.
-#     - it scans only the root module. sdk/go is a separate module and `./...`
-#       does not reach it; a tagged scan there found 4 more G304 sites
-#       (transport/tls.go and the test harness).
-GOSEC_EXCLUDE := G103,G104,G115,G118,G122,G304,G704,G705
+# Deleting the three annotation-shadowed entries is what MAKES the annotations
+# load-bearing. Before, removing a `#nosec G118` changed nothing, because the
+# list still covered it; now it reddens this leg. That is #181's rule -- the
+# justification lives at the site -- turned from a convention into a gate.
+#
+# THE ONE COVERAGE LIMIT LEFT, measured the same day and NOT fixed here (#395):
+# this leg does not pass -tests, and gosec's default is -tests=false. That is
+# not merely "test files are skipped". The analyzer-backed rules run over the
+# package's SSA, and the test variant of a package builds MORE of it, so
+# omitting tests loses findings in PRODUCTION files: 15 G602 sites in pkg/ are
+# reported by the lint leg (whose run.tests is true) and by `gosec -tests`, and
+# by this leg not at all. Turning -tests on here also admits ~48 findings in
+# test files that need their own triage -- G301, G306, G404, G407, G702 -- which
+# is why it is a separate change and not this one.
+GOSEC_EXCLUDE := G115,G304,G704
 
 # Coverage
 COVER_MIN     := 91
@@ -1292,7 +1322,13 @@ ci:
 # version nobody can name, so a lint or security result produced after the drift
 # is not evidence either way. Failing at the top says so in a second instead of
 # after the suite.
-_ci: check-tool-versions test-tool-versions check-compose-targets test-compose-targets fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
+#
+# check-bundled-gosec follows it, at the top for the same reason and second
+# because it needs an installed binary rather than a file. It answers the half
+# check-tool-versions cannot: `lint` and `lint-sdk` run a gosec that no pin in
+# this repository names, and every gosec entry in .golangci.yml means whatever
+# THAT version says it means (#295).
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1304,7 +1340,10 @@ _ci: check-tool-versions test-tool-versions check-compose-targets test-compose-t
 # behind `codec_json && raft && qrdb_ts && ...` — and a typecheck failure is
 # reported as a lint issue, so the gate goes red for a reason that has nothing
 # to do with the code. LINT_TAGS is BUILD_TAGS comma-joined, which is the form
-# --build-tags takes.
+# --build-tags takes -- and, since #295, the form `gosec -tags` takes too, so
+# this one list feeds every analyser in this file. It is not renamed to say so:
+# the value is the same string either way, and a rename would cost every
+# reference below for a comment's worth of clarity.
 #
 # The time budget is NOT passed here. `run.timeout` in .golangci.yml is the one
 # place it is declared; a --timeout flag would silently override that file and
@@ -1435,6 +1474,22 @@ check-tool-versions:
 .PHONY: test-tool-versions
 test-tool-versions:
 	@./scripts/check-tool-versions_test.sh
+
+# check-tool-versions above compares pins between FILES. This one reads a
+# BINARY, and the version it reads is written in no file at all: the gosec that
+# golangci-lint bundles, which is what `lint` and `lint-sdk` actually judge this
+# tree with (#295). See GOLANGCI_GOSEC_VERSION for why it is recorded rather
+# than pinned, and why it is not asserted equal to GOSEC_VERSION.
+.PHONY: check-bundled-gosec
+check-bundled-gosec: ## The gosec inside golangci-lint is the one the exclusions were measured against
+	@./scripts/check-bundled-gosec.sh
+
+# Accepting branch only, for as long as golangci-lint stays put -- which is the
+# point of the check and the reason its rejecting branches would otherwise ship
+# untested. Same reasoning as test-tool-versions, including the discovery floor.
+.PHONY: test-bundled-gosec
+test-bundled-gosec: ## Test the bundled-gosec guard
+	@./scripts/check-bundled-gosec_test.sh
 # Symbols no production path can reach (#337). #243's sweep measures
 # CONSTRUCTION -- a type built anywhere outside a test counts as produced -- so a
 # type constructed only inside a function nothing calls scored "produced" and
@@ -1867,6 +1922,32 @@ GOSEC_VERSION         := v2.29.0
 GOVULNCHECK_VERSION   := v1.7.0
 TRIVY_VERSION         := v0.74.0
 
+# A FIFTH VERSION, and it is NOT A PIN (#295). golangci-lint bundles a gosec of
+# its own, and that is the one `lint` and `lint-sdk` judge this tree with --
+# a real analyser, chosen by golangci-lint's go.mod rather than by anything
+# here, and until this line written down nowhere. It moves when
+# GOLANGCI_LINT_VERSION moves, silently, and the meaning of every gosec entry
+# in .golangci.yml moves with it.
+#
+# So this records WHICH gosec those entries were measured against, and
+# `make check-bundled-gosec` reads the installed binary's build info and fails
+# when it bundles a different one. It is deliberately NOT asserted equal to
+# GOSEC_VERSION above: nothing in this repository chooses golangci-lint's
+# dependency, so demanding they match would be a gate red by construction. The
+# divergence is made VISIBLE instead -- the check prints both, every run.
+#
+# The two are not interchangeable, and the difference is soundness rather than
+# strictness: v2.28.0's G703 accepts filepath.Clean as a path-traversal
+# sanitizer and v2.29.0 does not, upstream having removed it with the note that
+# Clean "evaluates '..' elements instead of rejecting them, so the traversal
+# succeeds" (securego/gosec#1721). The lint leg therefore CLEARS a cleaned path
+# that the gosec leg reports HIGH/HIGH.
+#
+# Bumping GOLANGCI_LINT_VERSION means re-measuring the exclusions in
+# .golangci.yml and updating this line in the same change. Read it off the
+# binary: `go version -m $$(command -v golangci-lint)`.
+GOLANGCI_GOSEC_VERSION := v2.28.0
+
 export GOLANGCI_LINT_VERSION
 export GOSEC_VERSION
 export GOVULNCHECK_VERSION
@@ -1911,25 +1992,38 @@ TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/
 # NO TAGS was the larger gap. Every other analysis target composes tags --
 # `lint` passes --build-tags, `test` composes TEST_TAGS -- for the reason the
 # agent spec already states: an untagged run can be "clean" while a gated
-# package does not even build. Measured with the pinned v2.29.0 at
-# -include=G304,G703: untagged 1035 files / 329,025 lines / 45 findings, tagged
-# 1140 / 352,506 / 49. A strict superset, so 105 files and 23,481 lines were
-# never scanned by the gate that carries this repository's path-traversal
-# justifications.
+# package does not even build.
 #
 # ONLY THE ROOT MODULE was the second. `./...` does not cross a nested module
 # boundary, so sdk/go -- the module go-xkms, go-quicbaas and go-signal actually
 # import -- was never scanned. Same shape as #333 found for the linter, and the
 # same fix: a second invocation, because there is no pattern that spans modules.
 #
-# GOSEC_TAGS is BUILD_TAGS space-joined, which is the form -tags takes. It is
-# not LINT_TAGS: that one is comma-joined for golangci-lint.
-GOSEC_TAGS := $(strip $(BUILD_TAGS))
-
+# THE TAG LIST IS $(LINT_TAGS), COMMA-JOINED, AND THE SYNTAX IS THE WHOLE POINT
+# (#295). #293 passed BUILD_TAGS space-joined, on the stated belief that "that
+# is the form -tags takes". It is not. gosec's flag is documented "Comma
+# separated list of build tags" and parsed `strings.Split(flag, ",")`, so a
+# space-joined list arrives as ONE tag whose name contains spaces, matches no
+# build constraint, and silently selects the UNTAGGED tree -- leaving the gap
+# #293 measured exactly where it found it, under a flag that looked like the
+# fix. Re-measured 2026-09-10 on gosec v2.29.0, whole tree, no excludes:
+#
+#   -tags "codec_json raft ..."   1044 files / 332,577 lines / 447 findings
+#   -tags "codec_json,raft,..."   1147 files / 355,851 lines / 490 findings
+#
+# 103 files and 23,274 lines. The tell is in gosec's own log: with the space
+# form it prints `Checking file: pkg/vector/ivf/stub.go` and nothing else for
+# that package, because every real file there is behind `//go:build
+# qrdb_vector`.
+#
+# There is deliberately no GOSEC_TAGS variable any more. golangci-lint and
+# gosec take the identical syntax, so one list feeds both legs and there is
+# nothing left to drift; a second name spelled a second way is what produced
+# this defect.
 .PHONY: gosec
 gosec:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	$(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
 
 # The SDK module, scanned with the same exclusions so the two legs cannot
 # disagree about what is suppressed. sdk/go/gorm/conformance is a module nested
@@ -1938,14 +2032,14 @@ gosec:
 .PHONY: gosec-sdk
 gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
+	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
 # dashboard and the gate never disagree; non-blocking because `gosec` is the
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
+	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable

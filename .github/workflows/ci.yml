@@ -168,6 +168,29 @@ jobs:
       - name: Test the tool-version guard
         run: make test-require-tool
 
+      # The step above establishes that the golangci-lint on PATH IS the pinned
+      # one. This establishes what that binary BUNDLES: golangci-lint carries a
+      # gosec of its own, and it — not GOSEC_VERSION — is what the golangci-lint
+      # steps below judge this tree with. It is chosen by golangci-lint's
+      # go.mod, it moves when the linter moves, and until #295 it was written
+      # down nowhere, while every gosec entry in .golangci.yml means whatever
+      # that version says it means. v2.13.2 bundles gosec v2.28.0, whose G703
+      # accepts filepath.Clean as a path-traversal sanitizer where the directly
+      # pinned v2.29.0 does not — the two legs differ in soundness, not
+      # strictness, and only one of them was pinned where anyone could see it.
+      #
+      # It reads `go version -m` rather than a self-report, because a dependency
+      # version comes from the module graph and cannot be handed in by ldflags —
+      # which is exactly how gosec's own version string came to say `dev`
+      # (#154, #195). Two halves of one assertion, in this order.
+      - name: The gosec inside golangci-lint is the measured one
+        run: make check-bundled-gosec
+
+      # Its rejecting branches, which the step above never reaches while
+      # golangci-lint stays put. Same ordering rule as every other guard here.
+      - name: Test the bundled-gosec guard
+        run: make test-bundled-gosec
+
       # The four analyser pins are written in four files and nothing but this
       # step keeps them in step (#323): a Dockerfile cannot read a make
       # variable, and THIS FILE's env block -- the authority, because it is what
