@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -627,5 +628,157 @@ func TestLoginClient_FinishLogin_FailsClosedWhenProofButNoVerifier(t *testing.T)
 	var ue *transport.FactorTypeUnsupportedError
 	if !errors.As(err, &ue) {
 		t.Errorf("expected *transport.FactorTypeUnsupportedError (fail closed), got %T", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-scoped resolution (go-qrdb#303)
+//
+// FinishLogin must resolve the presented (type, lookup key) against the
+// login SESSION's tenant — BeginLoginRequest.TenantID, captured on entry
+// before the caller's own ctx (which is unauthenticated for this endpoint
+// and carries no tenant) is ever consulted. tenantScopedFactorStore below is
+// a FactorStore double that indexes by (tenant, type, key) instead of the
+// production store's flat system-wide keyspace, so these tests observe
+// exactly what tenant FinishLogin resolved on rather than what a
+// non-tenant-aware double would silently paper over.
+// ---------------------------------------------------------------------------
+
+// tenantScopedFactorStore is an auth.FactorStore double keyed by
+// (tenant, type, credential), unlike memUserAuthFactorService which ignores
+// ctx entirely. It reads the tenant FinishLogin bound to the resolve
+// context via sdk.TenantFromContext, normalizing an absent binding to the
+// system tenant exactly as pkg/tenant.FromContext does, so a test can prove
+// which tenant a resolve call actually ran against.
+type tenantScopedFactorStore struct {
+	// factors is keyed by tenantFactorKey(tenant, type, credential).
+	factors map[string]*auth.AuthFactor
+}
+
+func newTenantScopedFactorStore() *tenantScopedFactorStore {
+	return &tenantScopedFactorStore{factors: make(map[string]*auth.AuthFactor)}
+}
+
+// enroll records factor as belonging to tenantID, mirroring what a
+// tenant-scoped enrolment write would persist.
+func (s *tenantScopedFactorStore) enroll(tenantID string, factor *auth.AuthFactor) {
+	s.factors[tenantFactorKey(tenantID, factor.Type, factor.Credential)] = factor
+}
+
+func tenantFactorKey(tenantID string, t auth.AuthFactorType, cred []byte) string {
+	return tenantID + "/" + string(t) + "/" + string(cred)
+}
+
+// LookupByCredentialKey implements auth.FactorStore, resolving against the
+// tenant bound to ctx rather than a fixed keyspace.
+func (s *tenantScopedFactorStore) LookupByCredentialKey(ctx context.Context, t auth.AuthFactorType, key []byte) (*auth.AuthFactor, error) {
+	tenantID, ok := sdk.TenantFromContext(ctx)
+	if !ok {
+		tenantID = sdk.SystemTenantID
+	}
+	f, ok := s.factors[tenantFactorKey(tenantID, t, key)]
+	if !ok {
+		return nil, &auth.FactorNotFoundError{}
+	}
+	return f, nil
+}
+
+// MarkUsed implements auth.FactorStore. The async LastUsedAt update is not
+// under test here, so it is a no-op.
+func (s *tenantScopedFactorStore) MarkUsed(context.Context, string, time.Time) error {
+	return nil
+}
+
+// TestLoginClient_FinishLogin_ScopesResolutionToSessionTenant is the
+// positive half of go-qrdb#303's verification: a factor enrolled for tenant
+// A resolves a ceremony BEGUN as tenant A, even though the caller's own ctx
+// (context.Background()) carries no tenant of its own. If FinishLogin still
+// resolved on the caller's context, this would behave identically to the
+// cross-tenant case below rather than succeeding — proving the session's
+// tenant, not the ambient default, is what makes the match.
+func TestLoginClient_FinishLogin_ScopesResolutionToSessionTenant(t *testing.T) {
+	store := newTenantScopedFactorStore()
+	cred := []byte("cred-tenant-a")
+	factor := &auth.AuthFactor{ID: "f-a", UserID: 1, Type: auth.AuthFactorFIDO2, Credential: cred}
+	store.enroll("tenant-a", factor)
+	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{
+		1: {ID: 1, Username: "alice", TenantID: "tenant-a", Roles: []string{"User"}, Active: true},
+	}}
+	resolver := auth.NewLoginResolver(store, lookup)
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithLoginResolver(resolver),
+		WithSessionIssuer(newMemSessionIssuer()),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lc := tr.LoginClient()
+
+	begin, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{
+		Type:     transport.FactorTypeFIDO2,
+		TenantID: "tenant-a",
+	})
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+
+	finish, err := lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
+		SessionID: begin.SessionID,
+		Type:      transport.FactorTypeFIDO2,
+		LookupKey: cred,
+	})
+	if err != nil {
+		t.Fatalf("FinishLogin: expected the session's own tenant to resolve, got: %v", err)
+	}
+	if finish.Identity == nil || finish.Identity.Subject != "alice" {
+		t.Errorf("expected identity for alice, got %+v", finish.Identity)
+	}
+}
+
+// TestLoginClient_FinishLogin_DeniesCrossTenantResolution is the negative
+// half of go-qrdb#303's verification: a factor enrolled for tenant A must
+// NOT resolve a ceremony begun with TenantID "tenant-b". Before the fix,
+// resolution ran on the caller's ctx (context.Background(), no tenant
+// bound → system tenant) regardless of either BeginLoginRequest.TenantID
+// value, so this case and the "tenant-a" case above resolved identically;
+// this test is what turns red under `git revert` of the fix (see the PR
+// description for the reverted-diff run).
+func TestLoginClient_FinishLogin_DeniesCrossTenantResolution(t *testing.T) {
+	store := newTenantScopedFactorStore()
+	cred := []byte("cred-tenant-a")
+	factor := &auth.AuthFactor{ID: "f-a", UserID: 1, Type: auth.AuthFactorFIDO2, Credential: cred}
+	store.enroll("tenant-a", factor)
+	lookup := &memUserLookup{principals: map[uint64]*auth.Principal{
+		1: {ID: 1, Username: "alice", TenantID: "tenant-a", Roles: []string{"User"}, Active: true},
+	}}
+	resolver := auth.NewLoginResolver(store, lookup)
+	tr, err := New(newMockKVService(), &mockAdminService{},
+		WithLoginResolver(resolver),
+		WithSessionIssuer(newMemSessionIssuer()),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lc := tr.LoginClient()
+
+	begin, err := lc.BeginLogin(context.Background(), transport.BeginLoginRequest{
+		Type:     transport.FactorTypeFIDO2,
+		TenantID: "tenant-b",
+	})
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+
+	_, err = lc.FinishLogin(context.Background(), transport.FinishLoginRequest{
+		SessionID: begin.SessionID,
+		Type:      transport.FactorTypeFIDO2,
+		LookupKey: cred,
+	})
+	if err == nil {
+		t.Fatal("expected a tenant-A factor to be invisible to a tenant-B ceremony")
+	}
+	var nf *transport.FactorNotFoundError
+	if !errors.As(err, &nf) {
+		t.Errorf("expected *transport.FactorNotFoundError, got %T", err)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -315,7 +316,16 @@ func (c *loginClient) FinishLogin(ctx context.Context, req transport.FinishLogin
 	// canonical pairing is SPKI key first (renewal-stable), legacy
 	// SHA-256(cert) key second (pre-SPKI enrolments).
 	lookupKeys := append([][]byte{req.LookupKey}, req.AltLookupKeys...)
-	principal, factor, err := c.transport.loginResolver.ResolveFirst(ctx, domainType, lookupKeys...)
+	// Resolve on the login SESSION's tenant (entry.tenantID, captured from
+	// BeginLoginRequest.TenantID above), never the caller's own ctx: this
+	// endpoint is unauthenticated, so ctx carries no tenant of its own, and
+	// resolving on it let a credential enrolled for tenant A complete a
+	// ceremony begun as tenant B (go-qrdb#303). An empty entry.tenantID
+	// binds the system tenant, matching BeginLogin's own default. This
+	// mirrors, at the resolve step, the explicit tenant the verifier below
+	// has always received.
+	resolveCtx := sdk.ContextWithTenant(ctx, entry.tenantID)
+	principal, factor, err := c.transport.loginResolver.ResolveFirst(resolveCtx, domainType, lookupKeys...)
 	if err != nil {
 		return nil, mapFactorError(err)
 	}
