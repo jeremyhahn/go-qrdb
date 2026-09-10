@@ -129,6 +129,11 @@ type ModuleAuthFallback interface {
 
 Everything else carries a permission.
 
+**Public means RBAC-exempt, not ungated.** The two cluster key routes run their
+own authorization sequence in `pkg/clusterkeys` — CA chain, node SPIFFE SAN,
+certificate revocation, then the placement table — because being off the
+middleware's path means they inherit none of its checks, revocation included.
+
 ## Transports
 
 | Transport | Wire |

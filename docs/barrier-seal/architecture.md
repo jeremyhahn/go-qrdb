@@ -147,7 +147,13 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
   node key does not expose tenant keys on other nodes.
 - **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
   over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
-  node's certificate. `pkg/clusterkeys/` handles node-identity authentication. See
+  node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the
+  node SPIFFE SAN, the placement gate, and **certificate revocation**, on both the receiving and the
+  sending side. Revocation is checked separately because the other three are all satisfied by a
+  revoked certificate: without it, a node whose certificate an operator has withdrawn keeps taking
+  part in key delivery, and a leader keeps sealing tenant root keys to it. See
+  [certificate-authority → Where revocation is enforced](../certificate-authority/architecture.md#where-revocation-is-enforced)
+  and
   [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy/architecture.md#per-node-independent-key-design).
 
 

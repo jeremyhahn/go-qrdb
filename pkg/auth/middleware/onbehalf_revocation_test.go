@@ -185,3 +185,39 @@ func TestEnforceRevocation_Outcomes(t *testing.T) {
 		t.Errorf("unavailable state = %v, want nil (admitted)", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The checker is reachable by authorization sites that never run this
+// middleware
+// ---------------------------------------------------------------------------
+
+// TestRevocationChecker_ReturnsTheWiredChecker verifies the accessor hands
+// back the SAME checker instance the option installed, not an equivalent one.
+//
+// Identity is the property under test. The value of sharing it with the
+// cluster key plane is the shared bounded-TTL CACHE; a checker that compared
+// equal but cached separately would satisfy every behavioural assertion and
+// still give that plane its own revocation window.
+func TestRevocationChecker_ReturnsTheWiredChecker(t *testing.T) {
+	rc := &obRevocationChecker{}
+	m := New(nil, WithRevocationChecker(rc))
+
+	if got := m.RevocationChecker(); got != auth.RevocationChecker(rc) {
+		t.Fatalf("RevocationChecker() = %#v, want the installed checker %#v", got, rc)
+	}
+}
+
+// TestRevocationChecker_UnwiredAndNilMiddlewareAnswerNil covers the two ways a
+// reusing plane can end up with no enforcement: no checker was wired, and no
+// middleware exists at all (--auth-enabled=false). Both must be a nil
+// INTERFACE, since the reusing plane's own guard is a `!= nil` test.
+func TestRevocationChecker_UnwiredAndNilMiddlewareAnswerNil(t *testing.T) {
+	if rc := New(nil).RevocationChecker(); rc != nil {
+		t.Errorf("unwired middleware: RevocationChecker() = %#v, want nil", rc)
+	}
+
+	var absent *AuthMiddleware
+	if rc := absent.RevocationChecker(); rc != nil {
+		t.Errorf("nil middleware: RevocationChecker() = %#v, want nil", rc)
+	}
+}

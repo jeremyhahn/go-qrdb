@@ -92,9 +92,10 @@ type RevocationChecker interface {
 func WithRevocationChecker(rc RevocationChecker) MTLSOption
 
 // EnforceRevocation is THE single definition of the three-way policy
-// (refuse / fail closed / admit when there is no state to read). Two call
-// sites apply it: the mTLS authenticator, and the middleware's on-behalf
-// forwarding path, which bypasses the authenticator chain entirely.
+// (refuse / fail closed / admit when there is no state to read). Three call
+// sites apply it: the mTLS authenticator, the middleware's on-behalf
+// forwarding path, and the cluster key plane — the latter two bypass the
+// authenticator chain entirely.
 func EnforceRevocation(ctx context.Context, rc RevocationChecker, peer *x509.Certificate) error
 func NewMTLSAuthenticator(opts ...MTLSOption) *MTLSAuthenticator
 func NewMTLSAuthenticatorWithTrustDomain(trustDomain string, opts ...MTLSOption) *MTLSAuthenticator
@@ -106,6 +107,38 @@ func RevocationStateUnavailable(err error) bool
 var ErrCertificateRevoked = &AuthError{Code: "cert_revoked", ...}
 
 type RevocationCheckError struct{ Err error }
+```
+
+`pkg/auth/middleware`:
+
+```go
+func WithRevocationChecker(rc auth.RevocationChecker) Option
+
+// RevocationChecker exposes the checker this middleware enforces with, so an
+// authorization site OUTSIDE the middleware enforces against the same state
+// and shares its cache rather than building a second one. Nil middleware and
+// unwired middleware both answer a nil INTERFACE.
+func (m *AuthMiddleware) RevocationChecker() auth.RevocationChecker
+```
+
+`pkg/clusterkeys` (the third enforcement point):
+
+```go
+// revocation is REQUIRED as a parameter and may be nil as a value: nil is
+// "not enforced", the posture of a node with no certificate authority wired.
+// A parameter rather than an option, so every construction site states which.
+func NewReceiver(kd *keydelivery.Receiver, registry *seal.BarrierRegistry,
+	placements PlacementGetter, pinnedTrustDomain, selfNodeID string,
+	caPool *x509.CertPool, revocation auth.RevocationChecker,
+	deliveryCertPEM []byte, logger *slog.Logger) (*Receiver, error)
+
+func NewSender(resolver AdminURLResolver, client *http.Client,
+	caPool *x509.CertPool, pinnedTrustDomain string,
+	revocation auth.RevocationChecker, logger *slog.Logger) (*Sender, error)
+
+// The leader's two refusals are distinct sentinels because they mean
+// different things to an operator: withdraw the node, versus retry.
+var ErrRecipientRevoked, ErrRecipientRevocationUnknown error
 ```
 
 `pkg/auth/wiring` (the single production wiring point):
@@ -161,14 +194,29 @@ type AuthMiddlewareConfig struct {
 - **Enforcement is on the authentication path, per request** — never a TLS
   handshake callback, which would leave an established QUIC connection
   authorised indefinitely.
-- **TWO enforcement points, one policy.** REST's on-behalf forwarding path
+- **THREE enforcement points, one policy.** REST's on-behalf forwarding path
   (`pkg/auth/middleware/onbehalf.go`) verifies the forwarding node's
   certificate without running the authenticator chain, so it gates on
-  revocation itself via `middleware.WithRevocationChecker`. Production wiring
-  passes the SAME checker to both, so they share one cache. A test in
+  revocation itself via `middleware.WithRevocationChecker`. The cluster key
+  plane (`pkg/clusterkeys`) authorizes on routes that are on the REST public
+  allowlist and never reach the middleware at all, so it gates on both its
+  receiving and its sending side, through a REQUIRED `auth.RevocationChecker`
+  parameter on `clusterkeys.NewReceiver` and `clusterkeys.NewSender`. Required
+  rather than optional: a nil checker is a legitimate posture for a node with
+  no certificate authority wired, and making it a parameter is what forces
+  every construction site to say which posture it chose.
+  Production wiring passes the SAME checker to all three, so they share one
+  cache; `middleware.AuthMiddleware.RevocationChecker` is how a site outside
+  the middleware obtains it, rather than building a second cache over the same
+  provider and giving that plane its own TTL window. A test in
   `pkg/auth/wiring` drives a forwarded write through `BuildAuthMiddleware` to
-  keep that wiring load-bearing: without it, dropping the second gate leaves
-  every authenticator-path test green.
+  keep that wiring load-bearing: without it, dropping a gate leaves every
+  authenticator-path test green.
+- **Each added gate ships with its own control test.** For the cluster key
+  plane, one test asserts a revoked peer is refused and a second asserts the
+  same certificate on the same request is admitted when no checker is wired.
+  The pair is what makes the guard, rather than some other check, the reason
+  for the refusal — removing the guard flips exactly the first of the two.
 
 ## Storage schema
 

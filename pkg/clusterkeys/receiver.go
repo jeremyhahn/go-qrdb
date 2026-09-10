@@ -37,6 +37,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -69,6 +70,13 @@ type Receiver struct {
 	deliveryCertPEM   []byte
 	logger            *slog.Logger
 	downgradeLogged   atomic.Bool
+
+	// revocation refuses a peer whose certificate has been revoked. This
+	// route is on the REST public allowlist, so it never runs the
+	// authenticator chain and inherits nothing from it: without this the
+	// chain check and the node-SAN check are both satisfied by a revoked
+	// certificate and a revoked node keeps taking part in key delivery.
+	revocation auth.RevocationChecker
 }
 
 // ackResponse is the JSON body for a successful delivery response.
@@ -101,6 +109,20 @@ var modeHandlers = map[keydelivery.Mode]modeImporter{
 // nil when the cluster runs without mutual TLS (dev mode); in that case the
 // HPKE recipient-binding and placement gate are the sole authZ mechanisms and
 // a SECURITY-DOWNGRADE warning is logged on the first unauthenticated request.
+//
+// revocation is REQUIRED as a parameter and may be nil as a value. Nil means
+// revocation is not enforced here — the posture of a node with no certificate
+// authority wired, and the same one auth.EnforceRevocation takes for a nil
+// checker. It is a parameter rather than an option so that every construction
+// site states which of the two it chose: this endpoint is one of the three
+// places in go-qrdb where a peer certificate is authorized, and the other two
+// are not reachable from here to compensate for an omission.
+//
+// Pass the checker the authentication path already holds
+// (middleware.AuthMiddleware.RevocationChecker) rather than building a second
+// one over the same provider, so both share one bounded-TTL cache and the
+// window in which a freshly revoked certificate still passes is one number for
+// the node.
 func NewReceiver(
 	kd *keydelivery.Receiver,
 	registry *seal.BarrierRegistry,
@@ -108,6 +130,7 @@ func NewReceiver(
 	pinnedTrustDomain string,
 	selfNodeID string,
 	caPool *x509.CertPool,
+	revocation auth.RevocationChecker,
 	deliveryCertPEM []byte,
 	logger *slog.Logger,
 ) (*Receiver, error) {
@@ -136,6 +159,7 @@ func NewReceiver(
 		pinnedTrustDomain: pinnedTrustDomain,
 		selfNodeID:        selfNodeID,
 		caPool:            caPool,
+		revocation:        revocation,
 		deliveryCertPEM:   deliveryCertPEM,
 		logger:            logger,
 	}, nil
@@ -145,7 +169,9 @@ func NewReceiver(
 // It enforces the following in order:
 //
 //	a. Peer-cert chain verification against the cluster CA (when cert is
-//	   present); node SPIFFE SAN checked if present (best-effort).
+//	   present); node SPIFFE SAN checked if present (best-effort); and the
+//	   certificate refused if it has been REVOKED (401) or if its revocation
+//	   status cannot be read (503) — see revocationRefusal.
 //	b. JSON-decode the keydelivery.Envelope (400 on malformed body).
 //	c. Placement-table gate: this node must appear as the replica assigned for
 //	   the envelope's (tenant, database, shard, replica) (403 on mismatch).
@@ -173,6 +199,21 @@ func (r *Receiver) Handler() http.HandlerFunc {
 				r.logger.Warn("clusterkeys: node SAN mismatch",
 					slog.String("self", r.selfNodeID),
 					slog.String("error", err.Error()))
+				return
+			}
+			// A revoked peer must not take part in key delivery. Neither check
+			// above sees revocation: a revoked certificate still chains to the
+			// cluster CA and still carries its node SAN. This route is on the
+			// REST public allowlist and never reaches the authenticator chain,
+			// so the policy is applied here rather than inherited — from
+			// auth.EnforceRevocation, its single definition, so this is not a
+			// third copy of a three-way fail-open/fail-closed decision.
+			if rerr := auth.EnforceRevocation(ctx, r.revocation, leaf); rerr != nil {
+				code, msg := revocationRefusal(rerr)
+				writeJSONError(w, code, msg)
+				r.logger.Warn("clusterkeys: peer certificate refused by revocation policy",
+					slog.Int("status", code),
+					slog.String("error", rerr.Error()))
 				return
 			}
 		} else if r.downgradeLogged.CompareAndSwap(false, true) {
@@ -298,6 +339,34 @@ func (r *Receiver) checkNodeSAN(cert *x509.Certificate) error {
 	// Any other error means the SAN is present but malformed or wrong trust
 	// domain. Return the error so the delivery is rejected.
 	return err
+}
+
+// revocationRefusal maps an auth.EnforceRevocation refusal to the status and
+// body this endpoint answers with.
+//
+// The two outcomes get DIFFERENT codes on purpose, and neither is the opaque
+// 403 the Open failures collapse to. Revocation status is not a
+// reconnaissance oracle: the answer is about the certificate the caller
+// itself presented, so it tells a caller nothing it could not read off its
+// own credential.
+//
+//   - revoked -> 401, the same code the mTLS authenticator's cert_revoked
+//     produces. Retrying is pointless and the sender should say so in its log
+//     rather than treat a withdrawn identity as a transient delivery failure.
+//   - status unknown -> 503. FAIL CLOSED, but as a refusal rather than a
+//     denial: the peer certificate may be perfectly good and this node could
+//     not read replicated revocation state, so the honest answer is "retry",
+//     not "your credential is bad".
+//
+// Any other shape lands on 503 as well. EnforceRevocation produces only these
+// two today; a future third has to be a refusal-with-retry until someone
+// decides otherwise here, which is the safe default for an unclassified
+// authorization failure.
+func revocationRefusal(err error) (int, string) {
+	if errors.Is(err, auth.ErrCertificateRevoked) {
+		return http.StatusUnauthorized, "client certificate has been revoked"
+	}
+	return http.StatusServiceUnavailable, "certificate revocation status unavailable"
 }
 
 // httpCodeForOpenErr maps a keydelivery Open error to an HTTP status code.

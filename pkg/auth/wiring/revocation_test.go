@@ -436,3 +436,64 @@ func TestRevocation_OnBehalfForwardingIsGatedByProductionWiring(t *testing.T) {
 	assert.Equal(t, int64(1), reached.Load(),
 		"the handler ran for a forwarded write from a revoked node")
 }
+
+// ---------------------------------------------------------------------------
+// The checker the middleware exposes for authorization sites outside it
+// ---------------------------------------------------------------------------
+
+// TestRevocation_ExposedCheckerIsTheEnforcementState verifies that what
+// BuildAuthMiddleware hands out through AuthMiddleware.RevocationChecker is the
+// live enforcement state, not a detached copy: a revocation written after the
+// middleware was built is visible through it.
+//
+// The cluster key plane (pkg/clusterkeys) authorizes peer certificates on
+// routes that are on the REST public allowlist and therefore never reach this
+// middleware. It takes this checker so the two planes share one cache and one
+// answer. A checker that went stale here would leave that plane enforcing
+// against a snapshot.
+func TestRevocation_ExposedCheckerIsTheEnforcementState(t *testing.T) {
+	const username, tenantID = "alice", "system"
+	f := newRevocationFixture(t, username, tenantID)
+	mw := buildRevocationMiddleware(t, f, username, tenantID, 0)
+
+	rc := mw.RevocationChecker()
+	require.NotNil(t, rc, "a wired CertProvider must yield a checker other planes can reuse")
+
+	ctx := context.Background()
+	revoked, err := rc.IsCertRevoked(ctx, f.peer)
+	require.NoError(t, err)
+	assert.False(t, revoked, "an unrevoked certificate must not report revoked")
+
+	require.NoError(t, f.provider.RevokeCert(ctx, f.serial))
+
+	revoked, err = rc.IsCertRevoked(ctx, f.peer)
+	require.NoError(t, err)
+	assert.True(t, revoked, "the exposed checker did not see a revocation written after wiring")
+}
+
+// TestRevocation_ExposedCheckerIsNilWithoutAProvider states the posture a node
+// with no certificate authority gets: nothing to enforce with, expressed as a
+// nil INTERFACE so a reusing plane's `rc == nil` test is true.
+//
+// The comparison is a bare != nil rather than require.Nil for the reason
+// TestRevocationChecker_NilProviderYieldsNilInterface documents: reflection
+// reports a typed nil pointer as nil and would pass on exactly the value this
+// rejects.
+func TestRevocation_ExposedCheckerIsNilWithoutAProvider(t *testing.T) {
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:     true,
+		RoleService: adminRoleService(),
+		UserService: &fakeUserService{u: &user.User{
+			Username:  "alice",
+			TenantID:  "system",
+			RoleIDs:   []string{testAdminRoleID},
+			Lifecycle: user.LifecycleActive,
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, mw)
+
+	if rc := mw.RevocationChecker(); rc != nil {
+		t.Fatalf("RevocationChecker() = %#v, want a nil interface", rc)
+	}
+}

@@ -302,7 +302,7 @@ func newTestReceiverFull(
 	recv, err := clusterkeys.NewReceiver(
 		kd, reg, placements,
 		"cluster.local", followerNodeID,
-		ca.pool, follower.pem,
+		ca.pool, nil, follower.pem,
 		newTestLogger(),
 	)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestNewReceiver_NilKD(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, followerCertPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(nil, reg, placements, "cluster.local", "node-1", nil, followerCertPEM, nil)
+	_, err := clusterkeys.NewReceiver(nil, reg, placements, "cluster.local", "node-1", nil, nil, followerCertPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilReceiver) {
 		t.Errorf("expected ErrNilReceiver, got %v", err)
 	}
@@ -387,7 +387,7 @@ func TestNewReceiver_NilRegistry(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, nil, placements, "cluster.local", "node-1", nil, certPEM, nil)
+	_, err := clusterkeys.NewReceiver(kd, nil, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilRegistry) {
 		t.Errorf("expected ErrNilRegistry, got %v", err)
 	}
@@ -397,7 +397,7 @@ func TestNewReceiver_NilPlacements(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
 	reg := newTestRegistry(t)
 	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, reg, nil, "cluster.local", "node-1", nil, certPEM, nil)
+	_, err := clusterkeys.NewReceiver(kd, reg, nil, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilPlacements) {
 		t.Errorf("expected ErrNilPlacements, got %v", err)
 	}
@@ -408,7 +408,7 @@ func TestNewReceiver_EmptySelfNodeID(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "", nil, certPEM, nil)
+	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrEmptySelfNodeID) {
 		t.Errorf("expected ErrEmptySelfNodeID, got %v", err)
 	}
@@ -418,7 +418,7 @@ func TestNewReceiver_EmptyDeliveryCertPEM(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, nil)
+	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, nil, nil)
 	if !errors.Is(err, clusterkeys.ErrEmptyDeliveryCert) {
 		t.Errorf("expected ErrEmptyDeliveryCert, got %v", err)
 	}
@@ -429,7 +429,7 @@ func TestNewReceiver_NilLogger_UsesDefault(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, certPEM, nil)
+	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestNewReceiver_NilLogger_UsesDefault(t *testing.T) {
 
 func TestNewSender_NilResolver(t *testing.T) {
 	ca := newTestCA(t)
-	_, err := clusterkeys.NewSender(nil, http.DefaultClient, ca.pool, "cluster.local", newTestLogger())
+	_, err := clusterkeys.NewSender(nil, http.DefaultClient, ca.pool, "cluster.local", nil, newTestLogger())
 	if !errors.Is(err, clusterkeys.ErrNilResolver) {
 		t.Errorf("expected ErrNilResolver, got %v", err)
 	}
@@ -449,7 +449,7 @@ func TestNewSender_NilResolver(t *testing.T) {
 func TestNewSender_NilClient(t *testing.T) {
 	resolver := &staticURLResolver{}
 	ca := newTestCA(t)
-	_, err := clusterkeys.NewSender(resolver, nil, ca.pool, "cluster.local", newTestLogger())
+	_, err := clusterkeys.NewSender(resolver, nil, ca.pool, "cluster.local", nil, newTestLogger())
 	if !errors.Is(err, clusterkeys.ErrNilClient) {
 		t.Errorf("expected ErrNilClient, got %v", err)
 	}
@@ -457,7 +457,7 @@ func TestNewSender_NilClient(t *testing.T) {
 
 func TestNewSender_NilCAPool(t *testing.T) {
 	resolver := &staticURLResolver{}
-	_, err := clusterkeys.NewSender(resolver, http.DefaultClient, nil, "cluster.local", newTestLogger())
+	_, err := clusterkeys.NewSender(resolver, http.DefaultClient, nil, "cluster.local", nil, newTestLogger())
 	if !errors.Is(err, clusterkeys.ErrNilCAPool) {
 		t.Errorf("expected ErrNilCAPool, got %v", err)
 	}
@@ -466,7 +466,7 @@ func TestNewSender_NilCAPool(t *testing.T) {
 func TestNewSender_EmptyTrustDomain(t *testing.T) {
 	resolver := &staticURLResolver{}
 	ca := newTestCA(t)
-	_, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "", newTestLogger())
+	_, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "", nil, newTestLogger())
 	if !errors.Is(err, clusterkeys.ErrEmptyTrustDomain) {
 		t.Errorf("expected ErrEmptyTrustDomain, got %v", err)
 	}
@@ -475,7 +475,7 @@ func TestNewSender_EmptyTrustDomain(t *testing.T) {
 func TestNewSender_NilLogger_UsesDefault(t *testing.T) {
 	resolver := &staticURLResolver{}
 	ca := newTestCA(t)
-	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", nil)
+	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestNodeKeyHandler_ServesNodeCert(t *testing.T) {
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", ca.pool, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestNodeKeyHandler_MethodNotAllowed(t *testing.T) {
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestHandler_SystemManaged_RoundTrip(t *testing.T) {
 	// CA before sealing: HIGH-1 fix in production, verified by having CA-signed
 	// follower cert with ExtKeyUsageServerAuth and matching node SAN.
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -890,7 +890,7 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 
 	// ---- Sender: self-managed (autoUnseal=false) ----
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 	_, srv := newTestReceiverFull(t, ca, follower, "follower-node-1", followerReg, &staticPlacementGetter{p: p})
 
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	// through to the HPKE + placement gate path (downgrade warning).
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	recv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1004,7 +1004,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	// Sender authenticates the delivery cert against the cluster CA before
 	// sealing, even though the transport channel is plain HTTP (no mTLS).
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 	// Placement lookup returns an error — no entry for this tenant/database.
 	placements := &staticPlacementGetter{err: errors.New("no placement entry")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		ca.pool, follower.pem, newTestLogger())
+		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1091,7 +1091,7 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("should not reach")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		ca.pool, follower.pem, newTestLogger())
+		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1146,7 +1146,7 @@ func TestSender_FetchNodeKey_NonP256(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1176,7 +1176,7 @@ func TestSender_FetchNodeKey_NonP256(t *testing.T) {
 func TestSender_Deliver_ResolveURLFails(t *testing.T) {
 	ca := newTestCA(t)
 	resolver := &staticURLResolver{raftAddr: "other-addr", adminURL: "http://irrelevant"}
-	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1222,7 +1222,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	var postCount atomic.Int64
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	recv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1236,7 +1236,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1306,7 +1306,7 @@ func TestSender_FetchNodeKey_MITMSelfSigned(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1350,7 +1350,7 @@ func TestSender_FetchNodeKey_WrongNodeSAN(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestSender_FetchNodeKey_NoSAN(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1467,7 +1467,7 @@ func newMinimalReceiver(t *testing.T, follower *testNodeBundle, caPool *x509.Cer
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	reg := newTestRegistry(t)
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		caPool, follower.pem, newTestLogger())
+		caPool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1566,7 +1566,7 @@ func TestHandler_NilCAPool_NoSAN(t *testing.T) {
 	placements := &staticPlacementGetter{err: errors.New("not reached yet")}
 	// nil caPool: verifyCert skips chain check entirely.
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		nil, selfSignedPEM, newTestLogger())
+		nil, nil, selfSignedPEM, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1595,7 +1595,7 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("not reached")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		ca.pool, follower.pem, newTestLogger())
+		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1633,7 +1633,7 @@ func TestHandler_CorrectNodeSAN_Proceeds(t *testing.T) {
 	reg := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("will not reach")}
 	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		ca.pool, follower.pem, newTestLogger())
+		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1686,7 +1686,7 @@ func TestHandler_SystemManaged_InvalidJSONPayload(t *testing.T) {
 	// Rebuild the receiver so it has the correct follower registry.
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	fullRecv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1708,7 +1708,7 @@ func TestSender_FetchNodeKey_NonOKStatus(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1737,7 +1737,7 @@ func TestSender_FetchNodeKey_InvalidPEM(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1770,7 +1770,7 @@ func TestSender_FetchNodeKey_BadCertDER(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1811,7 +1811,7 @@ func TestSender_Deliver_PostNonOK(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1850,7 +1850,7 @@ func TestSender_DeliverSystemManaged_SealedBarrier(t *testing.T) {
 	defer srv.Close()
 
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}
@@ -1883,7 +1883,7 @@ func TestSender_DeliverSelfManaged_UninitializedBarrier(t *testing.T) {
 
 	ca := newTestCA(t)
 	resolver := &staticURLResolver{raftAddr: "irrelevant:9000", adminURL: "http://127.0.0.1:0"}
-	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", newTestLogger())
+	sender, err := clusterkeys.NewSender(resolver, http.DefaultClient, ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewSender: %v", err)
 	}

@@ -81,6 +81,13 @@ is registered only when a metrics gatherer is configured.
 **Nothing else is public.** A route not on this list and not carrying a
 permission fails the startup assertion.
 
+"Unauthenticated" here means "not subject to user RBAC", not "unauthorized".
+The two cluster key routes authorize the calling NODE: its certificate must
+chain to the cluster CA, carry a cluster-node SPIFFE SAN, and not be revoked,
+and the placement table must assign the requested replica to this node. A
+revoked node certificate is refused with 401, and a node that cannot read
+revocation state answers 503 rather than admitting the delivery.
+
 ## Scoping
 
 | What | How it travels |

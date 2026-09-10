@@ -52,10 +52,15 @@ authorised for the life of that connection. The authenticator runs per request.
 | The lookup failed | 503 / `UNAVAILABLE` — fails **closed**, and tells a legitimate caller to retry rather than that its credential is bad |
 | No revocation state to read (barrier sealed) | admitted; the reachable surface is separately confined to the sealed-window allowlist |
 
-The REST **on-behalf forwarding** path — a follower forwarding a write to the
-leader under a signed assertion — verifies the forwarding node's certificate
-without running the authenticator chain, so it applies the identical policy
-itself. A revoked cluster node cannot forward.
+Two authorization paths verify a peer certificate without ever running the
+authenticator chain, and each applies the identical policy itself:
+
+- The REST **on-behalf forwarding** path — a follower forwarding a write to the
+  leader under a signed assertion. A revoked cluster node cannot forward.
+- The **cluster key plane**, whose routes are on the public allowlist because
+  they authorize by node identity plus the replicated placement table rather
+  than by user RBAC. A revoked node cannot receive a tenant root key, and a
+  leader will not seal one to a revoked recipient.
 
 A NOT-REVOKED answer is cached for `auth.revocation_cache_ttl` (default `30s`),
 which makes that value **the window during which a freshly revoked certificate

@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/enclave"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -61,6 +62,14 @@ type Sender struct {
 	caPool            *x509.CertPool
 	pinnedTrustDomain string
 	logger            *slog.Logger
+
+	// revocation refuses to seal a tenant root key to a recipient whose
+	// delivery certificate has been revoked. This is the disclosure half of
+	// the same gap the Receiver closes: chain validity and node-SAN match are
+	// both satisfied by a revoked certificate, so without this an operator
+	// who revokes a compromised node still watches the leader HPKE-seal that
+	// node's next tenant root key to it.
+	revocation auth.RevocationChecker
 }
 
 // NewSender constructs a Sender. The provided http.Client should be configured
@@ -69,7 +78,13 @@ type Sender struct {
 // REQUIRED: the sender uses them to authenticate each recipient's delivery
 // certificate before sealing the root key to it. A cluster always has a CA, so
 // requiring them is not a dev-mode burden; it closes the MITM disclosure path.
-func NewSender(resolver AdminURLResolver, client *http.Client, caPool *x509.CertPool, pinnedTrustDomain string, logger *slog.Logger) (*Sender, error) {
+//
+// revocation is REQUIRED as a parameter and may be nil as a value, with the
+// same meaning and for the same reason as on NewReceiver: nil is "not
+// enforced", and it is a parameter so the choice is stated rather than
+// defaulted. A leader that skips it will HPKE-seal a tenant root key to a node
+// whose certificate the operator has already withdrawn.
+func NewSender(resolver AdminURLResolver, client *http.Client, caPool *x509.CertPool, pinnedTrustDomain string, revocation auth.RevocationChecker, logger *slog.Logger) (*Sender, error) {
 	if resolver == nil {
 		return nil, ErrNilResolver
 	}
@@ -90,14 +105,15 @@ func NewSender(resolver AdminURLResolver, client *http.Client, caPool *x509.Cert
 		client:            client,
 		caPool:            caPool,
 		pinnedTrustDomain: pinnedTrustDomain,
+		revocation:        revocation,
 		logger:            logger,
 	}, nil
 }
 
 // fetchNodeKey GETs /v1/cluster/nodekey from adminURL, parses the PEM
 // certificate, AUTHENTICATES it (chains to the cluster CA AND its node SPIFFE
-// SAN equals expectedNodeID), and only then returns the node's ECDSA P-256
-// delivery public key. This is the trust anchor for HPKE recipient-binding:
+// SAN equals expectedNodeID, AND it has not been revoked), and only then
+// returns the node's ECDSA P-256 delivery public key. This is the trust anchor for HPKE recipient-binding:
 // without it the leader would seal the root key to whatever key the network
 // returned (an on-path attacker's key under no-mTLS). Fails closed — unlike the
 // receiver's best-effort SAN skip, the sender has a concrete expected identity.
@@ -145,6 +161,19 @@ func (s *Sender) fetchNodeKey(ctx context.Context, adminURL, expectedNodeID stri
 	}
 	if nodeID.NodeID != expectedNodeID {
 		return nil, ErrRecipientNodeMismatch
+	}
+
+	// The recipient is the RIGHT node; ask whether it is still a permitted
+	// one. A revoked certificate satisfies both checks above, so this is the
+	// only place the leader can decline to hand a tenant root key to a node
+	// the operator has withdrawn. Policy comes from auth.EnforceRevocation
+	// so the sender, the receiver and the authenticator cannot disagree about
+	// what "revoked" and "cannot tell" mean.
+	if rerr := auth.EnforceRevocation(ctx, s.revocation, cert); rerr != nil {
+		if errors.Is(rerr, auth.ErrCertificateRevoked) {
+			return nil, errors.Join(ErrRecipientRevoked, rerr)
+		}
+		return nil, errors.Join(ErrRecipientRevocationUnknown, rerr)
 	}
 
 	ecPub, ok := cert.PublicKey.(*ecdsa.PublicKey)

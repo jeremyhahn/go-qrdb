@@ -114,14 +114,36 @@ request -> AuthMiddleware -> MTLSAuthenticator
                                +-- barrier sealed -> admitted (see below)
 ```
 
-**There are two enforcement points, not one**, because REST's on-behalf
-forwarding path — a follower forwarding a write to the leader under a signed
-assertion — verifies the forwarding node's certificate directly and never runs
-the authenticator chain. Both apply the same policy from one definition
-(`auth.EnforceRevocation`); wiring passes them the same checker, so they share
-one cache and cannot drift. Without the second gate, revoking a compromised
-cluster node's certificate would not stop it forwarding writes on behalf of any
-user it names.
+**There are three enforcement points, not one.** Two of them are not the
+authenticator, because two authorization paths verify a peer certificate
+directly and never run the authenticator chain:
+
+- **REST's on-behalf forwarding path** — a follower forwarding a write to the
+  leader under a signed assertion. Without this gate, revoking a compromised
+  cluster node's certificate would not stop it forwarding writes on behalf of
+  any user it names.
+- **The cluster key plane** — the routes a leader uses to deliver a dedicated
+  tenant's root key to the follower nodes hosting its replicas. They are on the
+  REST public allowlist on purpose, because they authorize by node identity
+  plus the replicated placement table rather than by user RBAC, and that is
+  exactly why the authenticator's check does not reach them. It is gated on
+  BOTH sides: a receiving node refuses a delivery from a revoked peer, and a
+  delivering leader refuses to seal a tenant root key to a revoked recipient.
+  The second half matters more than it looks. HPKE recipient-binding guarantees
+  that only the holder of the recipient key can open the envelope, so against a
+  revoked node that guarantee works *for* the attacker: the delivery becomes a
+  correct, verified disclosure to precisely the node the operator withdrew.
+
+All three apply the same policy from one definition (`auth.EnforceRevocation`);
+wiring passes them the same checker, so they share one cache and cannot drift.
+
+Where such a gate is missing, what a revoked node retains is participation
+rather than another node's keys — the placement gate still requires it to be
+the assigned replica, recipient-binding still confines an envelope to its
+intended target, and the freshness guard still bounds replay. Those residual
+protections are why the cluster-key gap was ranked high rather than critical.
+They are not a reason to leave an authorization sequence that cannot see a
+withdrawn identity.
 
 Three outcomes, and the two failure modes are deliberately different:
 

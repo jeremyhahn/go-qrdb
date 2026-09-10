@@ -85,4 +85,20 @@ var (
 	// ErrRecipientNodeMismatch indicates a fetched delivery certificate's node
 	// SPIFFE SAN does not match the placement-assigned target NodeID.
 	ErrRecipientNodeMismatch = errors.New("clusterkeys: recipient node identity does not match target")
+
+	// ErrRecipientRevoked indicates the recipient's delivery certificate
+	// chains to the cluster CA and carries the expected node identity, but its
+	// serial has been REVOKED. The leader refuses to seal a tenant root key to
+	// a withdrawn node: HPKE recipient-binding would otherwise make the
+	// delivery a correct, verified disclosure to precisely the node the
+	// operator removed.
+	ErrRecipientRevoked = errors.New("clusterkeys: recipient delivery certificate has been revoked")
+
+	// ErrRecipientRevocationUnknown indicates the recipient's revocation
+	// status could not be determined. It is a REFUSAL, not a rejection of the
+	// certificate: the recipient may be perfectly good and this node could not
+	// read replicated revocation state. Delivery fails closed and the caller
+	// may retry, because sealing a root key to a node whose standing is
+	// unknown is the outcome this check exists to prevent.
+	ErrRecipientRevocationUnknown = errors.New("clusterkeys: recipient revocation status could not be determined")
 )

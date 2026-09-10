@@ -127,6 +127,28 @@ func WithRevocationChecker(rc auth.RevocationChecker) Option {
 	}
 }
 
+// RevocationChecker returns the checker this middleware enforces revocation
+// with, or nil when revocation is not enforced.
+//
+// It exists so a certificate-authorization site OUTSIDE the middleware can
+// enforce the same policy against the same state. The cluster key plane
+// (pkg/clusterkeys) is one: its routes are on the public allowlist by design,
+// so they never reach this middleware, yet they authorize a peer certificate
+// and must refuse a revoked one. Handing that site this checker rather than a
+// second one built from the same provider means both share one bounded-TTL
+// cache, so the window in which a freshly revoked certificate still passes is
+// one number for the node instead of one per plane.
+//
+// Nil middleware answers nil: --auth-enabled=false wires no middleware at all,
+// and the whole node then enforces no revocation, which is the posture the
+// operator selected.
+func (m *AuthMiddleware) RevocationChecker() auth.RevocationChecker {
+	if m == nil {
+		return nil
+	}
+	return m.revocation
+}
+
 // WithAuditLogger configures audit logging for authorization decisions.
 // When set, every authorize call is recorded with its outcome.
 func WithAuditLogger(a audit.Logger) Option {

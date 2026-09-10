@@ -1744,6 +1744,24 @@ func runStart(f *startFlags) error {
 			// enable-encryption coordination (below) can reuse the node's HPKE key
 			// for sealing/opening per-node migration credentials.
 			var nodePriv *ecdsa.PrivateKey
+
+			// The cluster key plane is a THIRD certificate-authorization site,
+			// alongside the mTLS authenticator and REST's on-behalf forwarding
+			// path. Its routes are on the REST public allowlist by design — they
+			// authorize by node identity plus the placement table, not user RBAC —
+			// so they never reach the middleware and inherit none of its checks.
+			// Reuse the middleware's own checker rather than building a second
+			// cache over the same provider: one cache means
+			// auth.revocation_cache_ttl is one window for this node rather than
+			// one per plane.
+			//
+			// Nil when --auth-enabled=false, because no middleware is built then.
+			// That leaves the key plane exactly as unenforced as every other plane
+			// on such a node.
+			var ckRevocation auth.RevocationChecker
+			if authResult != nil {
+				ckRevocation = authResult.authMW.RevocationChecker()
+			}
 			if host != nil && barrierRegistry != nil && svcNode.PlacementStore != nil {
 				// Parse the node's ECDSA P-256 private key from the TLS bundle. This is
 				// the same key that the node certificate was issued for, making it the
@@ -1772,6 +1790,7 @@ func runStart(f *startFlags) error {
 							f.clusterTrustDomain,
 							f.raftAddress,
 							bundle.CACertPool,
+							ckRevocation,
 							bundle.CertPEM,
 							slog.Default(),
 						)
@@ -1809,6 +1828,7 @@ func runStart(f *startFlags) error {
 						mtlsClient,
 						bundle.CACertPool,
 						f.clusterTrustDomain,
+						ckRevocation,
 						slog.Default(),
 					)
 					if senderErr != nil {
