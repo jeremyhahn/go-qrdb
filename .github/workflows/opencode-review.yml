@@ -1,4 +1,4 @@
-# code-review-template: v18 — automated peer review on EVERY pull request.
+# code-review-template: v19 — automated peer review on EVERY pull request.
 # v2 gated the job on a `code-review` label and could skip itself green;
 # see the note on the job below. v4 added a guard step and a concurrency
 # change; v5 keeps the guard and reverts the concurrency — measured, below.
@@ -289,6 +289,19 @@ jobs:
           # `code-review` is NOT such a label: it is the other half of the
           # opened/labeled pair this guard exists to de-duplicate.
           case "${EVENT_ACTION}:${EVENT_LABEL}" in
+            # v19 propagates go-qrdb#379 fleet-wide. That PR fixed this line in
+            # go-qrdb alone; the template and 24 other mains still matched only
+            # `labeled:model:*`, so adding `agent:codex` to an already-reviewed
+            # head hit the already-reviewed check and SKIPPED — defeating the
+            # entire reason `labeled` is a trigger. Invisible because every
+            # codex review driven by hand used the older `model:codex` form,
+            # which still matched.
+            #
+            # The stamp is bumped because #379 did NOT bump it: the file changed
+            # while still calling itself v18, so the stamp stopped distinguishing
+            # fixed from unfixed and a roller could not tell them apart. A
+            # version marker that does not move when the file does is worse than
+            # no marker.
             labeled:agent:*|labeled:model:*|labeled:effort:*)
               echo "A ${EVENT_LABEL} label was just added. Re-reviewing $EVENT_SHA"
               echo "under the reviewer it selects, which is what \`labeled\` is for."
