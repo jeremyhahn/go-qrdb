@@ -703,12 +703,29 @@ func TestDecodeGuardedRequest_LegalKeyThatEscapesIsNotRefused(t *testing.T) {
 // entry, and one byte more is required not to.
 //
 // It is also the cross-transport assertion, in the only form that is decisive.
-// gRPC, unix and QUIC apply no limit of their own below their frame ceilings
-// (101 MiB, far above one entry), so the encoder IS the binding limit on every
-// transport. A payload that encodes within one entry is accepted by all of
-// them; a payload that does not is refused by all of them. Standing up two
-// servers to exchange an 8 MiB request would measure the same fact less
-// directly and much more expensively.
+// Every transport's own request limit sits above the 8 MiB entry ceiling, so
+// the encoder IS the binding limit on all four (#277). Each cites its own
+// constant, because one number does not describe them:
+//
+//	gRPC   101 MiB  pkg/api/grpc.MaxImportMessageSize
+//	unix   101 MiB  the same constant
+//	QUIC    64 MiB  pkg/api/quic/wire.MaxPayloadSize   <- a different constant
+//	REST    16 MiB  maxGuardedRequestBytes, and this one is MEASURED rather
+//	                than inspected: TestMaxGuardedRequestBytes_AdmitsTheWorstLegalRequest
+//	                hands it the worst legal request instead of trusting the
+//	                arithmetic above it.
+//
+// The earlier wording gave 101 MiB for three transports and left REST out. It
+// was wrong in the direction that flatters this test: REST is the only one of
+// the four whose bound is established by measurement, and QUIC's real limit is
+// a third of the figure quoted. The conclusion is unchanged -- all four are
+// above one entry -- but this comment is the recorded reason for NOT standing
+// up two live servers, so a reader re-deriving it has to be able to check it.
+//
+// A payload that encodes within one entry is accepted by all of them; a payload
+// that does not is refused by all of them. Standing up two servers to exchange
+// an 8 MiB request would measure the same fact less directly and much more
+// expensively.
 //
 // The residual difference, stated rather than hidden: REST refuses at the edge
 // with 413, the others fail at encode time. No request that would have
