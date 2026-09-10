@@ -32,6 +32,23 @@ import (
 // twelve combinations and asserts exactly that, rather than asserting it in a
 // document and testing one corner of it.
 //
+// WHAT THIS CERTIFIES, EXACTLY (go-qrdb#276): every cell here calls each
+// guarded verb SEQUENTIALLY -- once, observe the result, once more, observe
+// again -- and inspects the store afterward. That proves SEQUENTIAL
+// CONFORMANCE (the right answer, in the right order, on the right engine,
+// mode and transport) and TYPED REFUSAL (a cell without the multi-key plane
+// says so safely, per assertGuardedPlaneRefusesSafely). It does NOT prove
+// ATOMICITY. A handler that emulates a guarded verb with a Get followed by a
+// Put returns the correct booleans in sequence -- store-and-report-true when
+// called on an absent key, decline when called again -- so it satisfies every
+// assertion below. What it cannot survive is two callers inside its Get-to-Put
+// window at the same time, which nothing in this file ever produces: 29 of the
+// (then) 30 cells here passed such an emulation outright (go-qrdb#276,
+// reproducing PR #230's mutation). Atomicity under contention is asserted
+// separately, in TestGuardedVerbConcurrency (concurrency_test.go), and only on
+// the cells that suite runs -- see its doc comment for which those are and
+// why running it on every cell here would not widen what gets caught.
+//
 // The cells are not parallel. Two of them drive process-global state-machine
 // storage selection (statemachine.SetSMStorage), and raft cells are expensive
 // enough that interleaving them would make the leader-election waits fight each
