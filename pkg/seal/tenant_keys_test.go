@@ -331,8 +331,17 @@ func TestTenantKeyManager_RotateTenantDEK_SealedBarrier(t *testing.T) {
 
 	ctx := context.Background()
 	err = tkm.RotateTenantDEK(ctx, "tenant-1")
-	if err == nil {
-		t.Fatal("expected error when barrier is sealed")
+	// RotateTenantDEK's sealed-barrier gate runs before any I/O
+	// (pkg/seal/tenant_keys.go), so with a non-empty tenant ID the only
+	// reachable error is BarrierSealedError; a bare err != nil would also
+	// pass for aesgcm.GenerateKey or the KVStore Put failing, which is not
+	// the claim this test makes. The sibling fault-injection test,
+	// TestRotateTenantDEKRefusesOnBadPreconditions/sealed_barrier in
+	// tenant_keys_failures_test.go, already asserts the type; this test was
+	// the one rung 2 left behind (go-qrdb#254).
+	var bsErr *BarrierSealedError
+	if !errors.As(err, &bsErr) {
+		t.Fatalf("RotateTenantDEK(sealed) = %v (%T), want *BarrierSealedError", err, err)
 	}
 }
 
@@ -453,8 +462,14 @@ func TestTenantKeyManager_ImportTenantKey_SealedBarrier(t *testing.T) {
 	ctx := context.Background()
 	key := make([]byte, 32)
 	err = tkm.ImportTenantKey(ctx, "tenant-1", key)
-	if err == nil {
-		t.Fatal("expected error when barrier is sealed")
+	// ImportTenantKey checks IsSealed() before the length check or any wrap/
+	// store I/O (pkg/seal/tenant_keys.go), so with a non-empty tenant ID and a
+	// well-formed 32-byte key the only reachable error is BarrierSealedError.
+	// A bare err != nil would also pass if the length gate or wrapAndStore
+	// failed instead, which is not the claim this test makes (go-qrdb#254).
+	var bsErr *BarrierSealedError
+	if !errors.As(err, &bsErr) {
+		t.Fatalf("ImportTenantKey(sealed) = %v (%T), want *BarrierSealedError", err, err)
 	}
 }
 

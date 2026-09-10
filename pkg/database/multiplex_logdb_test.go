@@ -799,16 +799,40 @@ func TestMultiplexRealWAL_RoundTrip(t *testing.T) {
 	if len(got) != 1 || string(got[0].Cmd) != "shared-1" {
 		t.Fatalf("shared entries = %v, want one shared-1", got)
 	}
-	directShared, _, _ := sharedDB.IterateEntries(nil, 0, 1, 1, 1, 2, 1<<20)
+	// err is checked separately from the count: a failed IterateEntries
+	// returns (nil, _, err), which would fail-closed on len()!=1 below but
+	// send the reader after a WAL-routing bug for what is actually an I/O
+	// failure on sharedDB (go-qrdb#254).
+	directShared, _, err := sharedDB.IterateEntries(nil, 0, 1, 1, 1, 2, 1<<20)
+	if err != nil {
+		t.Fatalf("iterate shared WAL directly: %v", err)
+	}
 	if len(directShared) != 1 {
 		t.Fatalf("shared WAL must hold the shared shard's entry directly")
 	}
 	// The shared WAL must NOT hold the dedicated shard's entries.
-	if dShared, _, _ := sharedDB.IterateEntries(nil, 0, dedShard, 1, 1, 2, 1<<20); len(dShared) != 0 {
-		t.Fatalf("dedicated shard entries must not be in the shared WAL, got %v", dShared)
+	//
+	// The old `if dShared, _, _ := ...; len(dShared) != 0` folded a discarded
+	// error into a length check: a failed call returns (nil, _, err), and
+	// len(nil) != 0 is false, so it PASSED — reporting "not in the shared
+	// WAL" — on a call that never actually read the shared WAL (go-qrdb#254,
+	// the vacuous-assertion class #236 fixed elsewhere in this file).
+	//
+	// The fix is not a bare err!=nil Fatal, though: waldb.DB.IterateEntries's
+	// OWN correct answer for "no index entry for this {shardID,replicaID}" is
+	// logdb.ErrUnavailable (db.go, shard.indexes miss), not (nil, nil) — the
+	// same idiom storage_durability_test.go uses upstream for ErrCompacted.
+	// A bare err!=nil Fatal would misreport a genuinely-absent shard as a
+	// WAL fault; errors.Is measures the one cause this assertion claims.
+	dShared, _, err := sharedDB.IterateEntries(nil, 0, dedShard, 1, 1, 2, 1<<20)
+	if !errors.Is(err, logdb.ErrUnavailable) {
+		t.Fatalf("iterate dedicated shard's id in the shared WAL: got (%v, err=%v), want ErrUnavailable", dShared, err)
 	}
 	// The dedicated WAL holds the dedicated shard's entry.
-	dDed, _, _ := dedDB.IterateEntries(nil, 0, dedShard, 1, 1, 2, 1<<20)
+	dDed, _, err := dedDB.IterateEntries(nil, 0, dedShard, 1, 1, 2, 1<<20)
+	if err != nil {
+		t.Fatalf("iterate dedicated WAL: %v", err)
+	}
 	if len(dDed) != 1 || string(dDed[0].Cmd) != "ded-1" {
 		t.Fatalf("dedicated WAL entries = %v, want one ded-1", dDed)
 	}

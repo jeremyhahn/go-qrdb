@@ -255,9 +255,7 @@ func TestRegisterTenant_PooledFlow_CursorPersistsAcrossRestart(t *testing.T) {
 	expected := filepath.Join(p1, "gamma")
 	assertPebbleAtPath(t, expected)
 	// Sanity: not at p2.
-	if _, err := pebbleExists(filepath.Join(p2, "gamma")); err == nil {
-		t.Errorf("gamma unexpectedly opened at p2 root %q", p2)
-	}
+	assertNoPebbleAtPath(t, filepath.Join(p2, "gamma"))
 }
 
 func TestRegisterTenant_PooledFlow_NoPoolConfigured(t *testing.T) {
@@ -448,6 +446,31 @@ func assertPebbleAtPath(t *testing.T, path string) {
 	}
 }
 
+// assertNoPebbleAtPath verifies no Pebble database directory exists at the
+// supplied path.
+//
+// It checks err and exists as two separate failures rather than folding them
+// into one `err == nil` branch. readDir (pebbleExists's base) reports an
+// absent directory as (nil, nil) per its own doc comment, so `err == nil`
+// alone is true both when the path is genuinely empty (what this assertion
+// claims) AND when the path exists but holds an ordinary, non-empty
+// directory with no CURRENT/OPTIONS-* file — the false-failure case go-qrdb
+// #254 found here. Splitting the checks makes a real readDir fault (e.g.
+// permission denied) fatal instead of silently satisfying "not opened",
+// which was pebbleExists's true failure mode: a permission error currently
+// makes exists=false, err!=nil, and the old `err == nil` read that as
+// PASSING for the wrong reason.
+func assertNoPebbleAtPath(t *testing.T, path string) {
+	t.Helper()
+	exists, err := pebbleExists(path)
+	if err != nil {
+		t.Fatalf("pebbleExists(%q): %v", path, err)
+	}
+	if exists {
+		t.Errorf("expected no Pebble at %q, one was found", path)
+	}
+}
+
 // pebbleExists reports whether a directory looks like a Pebble store
 // (has at least one CURRENT or OPTIONS-* file).
 func pebbleExists(path string) (bool, error) {
@@ -463,11 +486,23 @@ func pebbleExists(path string) (bool, error) {
 	return false, nil
 }
 
-// readDir lists entries in a directory by name, returning an empty
-// slice when the directory does not exist.
+// readDir lists entries in a directory by name, returning an empty slice
+// when the directory does not exist.
+//
+// The os.IsNotExist case is handled here rather than left to the caller
+// because pebbleExists needs it collapsed: "no directory" and "a directory
+// with nothing Pebble-shaped in it" are the same answer to "is there a
+// Pebble store here", and the go-qrdb#254 fix to assertNoPebbleAtPath below
+// depends on this function actually implementing the contract this comment
+// already claimed — before that fix, nothing called readDir on a path
+// guaranteed absent, so the mismatch (a bare os.ReadDir passthrough,
+// returning ErrNotExist instead of (nil, nil)) went unexercised.
 func readDir(path string) ([]string, error) {
 	entries, err := osReadDir(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	out := make([]string, 0, len(entries))
