@@ -377,11 +377,14 @@ func (m *mockCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []byt
 	return m.exportResp, nil
 }
 
-func (m *mockCertProvider) RevokeCert(_ context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(_ context.Context, serial string) (*cert.RevokeResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastRevoke = serial
-	return m.revokeErr
+	if m.revokeErr != nil {
+		return nil, m.revokeErr
+	}
+	return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(_ context.Context, _ string) (bool, error) {
@@ -972,8 +975,12 @@ func TestRevokeCert_Success(t *testing.T) {
 	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
 	defer cleanup()
 
-	if err := tr.RevokeCert(context.Background(), "AA01"); err != nil {
+	result, err := tr.RevokeCert(context.Background(), "AA01")
+	if err != nil {
 		t.Fatalf("RevokeCert: %v", err)
+	}
+	if !result.RecordFound {
+		t.Error("RecordFound should be true")
 	}
 }
 
@@ -983,7 +990,7 @@ func TestRevokeCert_ServiceError(t *testing.T) {
 	tr, cleanup := connectAuthInProcess(t, nil, nil, prov)
 	defer cleanup()
 
-	if err := tr.RevokeCert(context.Background(), "AA01"); err == nil {
+	if _, err := tr.RevokeCert(context.Background(), "AA01"); err == nil {
 		t.Fatal("expected error")
 	}
 }

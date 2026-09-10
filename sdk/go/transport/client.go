@@ -541,8 +541,15 @@ type CertClient interface {
 	// browser import.
 	ExportCert(ctx context.Context, req *ExportCertRequest) (*ExportCertResponse, error)
 
-	// RevokeCert marks a certificate serial as revoked.
-	RevokeCert(ctx context.Context, serial string) error
+	// RevokeCert marks a certificate serial as revoked and reports what the
+	// target node found: RevokeResult.RecordFound distinguishes a
+	// certificate the target holds a record for from a deny-by-serial
+	// revocation of one it does not. Both are successes -- the marker is
+	// written unconditionally -- which is why the distinction is carried in
+	// the result rather than the error return.
+	//
+	// BREAKING (go-qrdb#287): this method previously returned only error.
+	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, tenantID string) (*ListCertsResponse, error)

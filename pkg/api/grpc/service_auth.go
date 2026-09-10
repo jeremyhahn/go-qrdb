@@ -578,17 +578,19 @@ func (s *qrdbServiceServer) ExportCert(ctx context.Context, req *pb.ExportCertRe
 	}, nil
 }
 
-// RevokeCert marks a certificate serial as revoked.
-func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRequest) (*emptypb.Empty, error) {
+// RevokeCert marks a certificate serial as revoked and reports whether this
+// node held a CertRecord for it. See RevokeCertResponse.
+func (s *qrdbServiceServer) RevokeCert(ctx context.Context, req *pb.RevokeCertRequest) (*pb.RevokeCertResponse, error) {
 	if s.certProv == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "cert"}).Error())
 	}
 
-	if err := s.certProv.RevokeCert(ctx, req.GetSerial()); err != nil {
+	result, err := s.certProv.RevokeCert(ctx, req.GetSerial())
+	if err != nil {
 		return nil, mapAuthServiceError(err)
 	}
 
-	return &emptypb.Empty{}, nil
+	return &pb.RevokeCertResponse{RecordFound: result.RecordFound()}, nil
 }
 
 // ListCerts lists all issued client certificates for a tenant.

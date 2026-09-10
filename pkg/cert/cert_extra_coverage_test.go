@@ -217,7 +217,7 @@ func TestRevokeCert_ScanError(t *testing.T) {
 	// Then replace the KV store with one that fails on Scan.
 	p.kvStore = &putSucceedsScanFailsKVStore{inner: p.kvStore, scanErr: errors.New("scan error")}
 
-	err := p.RevokeCert(ctx, "some-serial")
+	_, err := p.RevokeCert(ctx, "some-serial")
 	if err == nil {
 		t.Fatal("expected error when Scan fails during RevokeCert")
 	}

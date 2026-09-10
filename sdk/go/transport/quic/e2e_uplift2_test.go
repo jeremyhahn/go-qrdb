@@ -329,7 +329,7 @@ func TestQUICExtraClosed_Auth(t *testing.T) {
 	if err := tr.UnassignRole(context.Background(), 1, "r"); !errorsAsP(err, &ce) {
 		t.Errorf("UnassignRole: %v", err)
 	}
-	if err := tr.RevokeCert(context.Background(), "fp"); !errorsAsP(err, &ce) {
+	if _, err := tr.RevokeCert(context.Background(), "fp"); !errorsAsP(err, &ce) {
 		t.Errorf("RevokeCert: %v", err)
 	}
 }

@@ -180,6 +180,15 @@ func toolCertRevoke() mcp.Tool {
 	)
 }
 
+// certRevokeResponse is the JSON envelope for a revocation outcome.
+// RecordFound distinguishes a certificate this node holds a record for
+// from a deny-by-serial revocation of one it does not -- both are
+// successes.
+type certRevokeResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
+}
+
 // handleCertRevoke returns a tool handler that delegates to
 // svc.RevokeCert.
 func handleCertRevoke(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
@@ -189,11 +198,17 @@ func handleCertRevoke(svc cert.CertProvider) mcpserver.ToolHandlerFunc {
 			return mcp.NewToolResultError("serial is required"), nil
 		}
 
-		if err := svc.RevokeCert(ctx, serial); err != nil {
+		result, err := svc.RevokeCert(ctx, serial)
+		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_cert_revoke", Err: err}
 		}
 
-		return mcp.NewToolResultText("ok"), nil
+		data, jsonErr := json.Marshal(certRevokeResponse{Status: "ok", RecordFound: result.RecordFound()})
+		if jsonErr != nil {
+			return nil, &ToolError{Tool: "qrdb_cert_revoke", Err: jsonErr}
+		}
+
+		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 

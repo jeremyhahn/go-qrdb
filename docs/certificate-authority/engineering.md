@@ -1,6 +1,6 @@
 # Certificate Authority — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Exported surface
 
@@ -21,12 +21,33 @@ func WithCertProvider(p cert.CertProvider) ServerOption
 ```go
 type CertProvider interface {
 	GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error)
+	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	RevokeCert(ctx context.Context, serial string) error
+	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
 	CACertPEM() []byte
 }
+
+// RevokeOutcome distinguishes a revocation of a certificate this node holds
+// a CertRecord for from a deny-by-serial revocation of one it does not.
+// Both are successes: the marker is written unconditionally, before the
+// outcome is even determined.
+type RevokeOutcome int
+
+const (
+	RevokeOutcomeRecordUpdated RevokeOutcome = iota
+	RevokeOutcomeDenyBySerial
+)
+
+type RevokeResult struct {
+	Serial  string
+	Outcome RevokeOutcome
+}
+
+// RecordFound is the bool projection of Outcome that every transport
+// serializes.
+func (r *RevokeResult) RecordFound() bool
 
 type GenerateRequest struct {
 	Username string        // sets certificate CN
@@ -187,7 +208,16 @@ type AuthMiddlewareConfig struct {
   the caller.
 - **Deny-by-serial is retained.** `RevokeCert` writes the marker whether or not
   this node holds a record for the serial, because revoking a peer-issued
-  certificate is a real CA operation, and it returns nil either way.
+  certificate is a real CA operation. It succeeds either way, and the returned
+  `RevokeResult.Outcome` reports which case occurred rather than the error
+  return, since both are successes.
+- **`ExportPKCS12` consults revocation before encoding.** It parses `certPEM`,
+  derives the serial with `FormatSerial`, and refuses with `*CertRevokedError`
+  when `IsRevoked` says the serial is revoked. There is no override: an export
+  of a revoked bundle needs to be added deliberately, not defaulted. This is
+  an operator signal, not a containment control — the caller already supplies
+  `certPEM`/`keyPEM`, so the refusal withholds nothing it did not already
+  have.
 - **The lookup precedes the write.** A store failure while locating the record
   aborts before any marker exists, so a failed revocation never leaves a marker
   behind that nothing reported.
@@ -248,8 +278,8 @@ enumeration.
 |---|---|---|
 | `BarrierSealedError` | the barrier is sealed | **yes** — every mutating op |
 | `CAKeyNotAvailableError` | CA private key not loaded or destroyed | **yes** |
-| `CertNotFoundError` | declared for a serial absent from the store. **Currently constructed nowhere** — see Known limitations | — |
-| `CertRevokedError` | declared for an operation targeting a revoked certificate. **Currently constructed nowhere**: enforcement lives in the authentication layer and returns `auth.ErrCertificateRevoked` | — |
+| `CertNotFoundError` | declared for a serial absent from the store. **Currently constructed nowhere**: `RevokeCert` is deny-by-serial by design (see Known limitations) and reports the "no local record" case through `RevokeResult`, not this error | — |
+| `CertRevokedError` | an operation targets a revoked certificate. Produced by `ExportPKCS12` when the supplied certificate's serial is revoked. Authentication-path enforcement is separate and returns `auth.ErrCertificateRevoked` instead | yes |
 | `CertGenerateError` | generation failure — wraps the cause | yes |
 | `CertExportError` | PKCS#12 export failure — wraps the cause | yes |
 | `StoreError` | KVStore failure — wraps the cause | yes |
@@ -319,31 +349,17 @@ key patterns are the on-disk contract for this feature.
   its key from a parsed certificate and the CA wrote its record from the
   `big.Int` it minted; if those disagree, every check silently matches nothing
   and every other test still passes.
+- **`RevokeResult.Outcome` is tested for both cases in the same test**: revoke
+  a serial this node issued and one it does not hold a record for, and assert
+  the two `RevokeOutcome` values are distinct. `ExportPKCS12`'s revocation
+  refusal is mutation-tested: disabling the check is what proves the test
+  would have caught a revoked certificate shipping in a PKCS#12 archive.
 
 ## Known limitations
 
 - **No CRL, no OCSP.** Deliberate for this trust domain; external relying
   parties cannot check revocation, which is the principal reason to inject the
   go-xkms provider. See [architecture.md](architecture.md).
-- **`RevokeCert` cannot report WHAT IT DID.** "Revoked, and a local record was
-  updated" and "revoked, no local record matched" are both successes and are
-  indistinguishable to the caller. The error return is the wrong channel for
-  it: two successes cannot be told apart by an error without lying about one of
-  them, and the one it would misreport is the deliberate revocation of a
-  peer-issued serial — a caller seeing an error retries, alerts and escalates
-  over an operation that worked. The fix is widening the return to a result
-  type, which touches 21 Go files (6 SDK transports, 4 handlers, 10 test
-  doubles, the CLI) plus `qrdb.proto`, where gRPC and unix return
-  `google.protobuf.Empty`. Tracked separately.
-- **`ExportPKCS12` packages a revoked certificate without checking.** It takes
-  `certPEM`/`keyPEM` and never resolves a serial, so revocation is not
-  consulted on that path. Tracked separately. Note what a check there would and
-  would not buy: the caller already supplies the PEM, so refusing withholds
-  nothing they do not have — it is an operator signal, not a containment
-  control.
-- **`cert.CertRevokedError` has no producer.** Both transports map it, and
-  enforcement returns an authentication error instead. It is recorded here
-  rather than removed because the type names a condition this CA may yet need.
 - **Reaping is driven by revocations, not by a timer.** A deployment that stops
   revoking keeps its last set of expired markers until the next revocation.
   There is no background sweeper by design (no timers in this package);

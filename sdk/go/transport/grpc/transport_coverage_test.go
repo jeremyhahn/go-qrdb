@@ -104,7 +104,7 @@ func TestGRPCCert_AllMethods_Closed(t *testing.T) {
 	}{
 		{"GenerateCert", func() error { _, e := tr.GenerateCert(ctx, &transport.GenerateCertRequest{}); return e }},
 		{"ExportCert", func() error { _, e := tr.ExportCert(ctx, &transport.ExportCertRequest{}); return e }},
-		{"RevokeCert", func() error { return tr.RevokeCert(ctx, "001") }},
+		{"RevokeCert", func() error { _, e := tr.RevokeCert(ctx, "001"); return e }},
 		{"ListCerts", func() error { _, e := tr.ListCerts(ctx, "t1"); return e }},
 	}
 
@@ -591,7 +591,7 @@ func TestGRPCServer_AuthCtxCanceled(t *testing.T) {
 	if _, err := tr.ExportCert(canceledCtx, &transport.ExportCertRequest{}); err == nil {
 		t.Fatal("ExportCert: expected error")
 	}
-	if err := tr.RevokeCert(canceledCtx, "001"); err == nil {
+	if _, err := tr.RevokeCert(canceledCtx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")
 	}
 	if _, err := tr.ListCerts(canceledCtx, "t1"); err == nil {

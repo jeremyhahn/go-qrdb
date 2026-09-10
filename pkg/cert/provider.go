@@ -27,8 +27,15 @@ type CertProvider interface {
 	// for browser import.
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
 
-	// RevokeCert marks a certificate serial as revoked.
-	RevokeCert(ctx context.Context, serial string) error
+	// RevokeCert marks a certificate serial as revoked and reports what it
+	// found: RevokeResult.Outcome distinguishes a certificate this node
+	// holds a record for from a deny-by-serial revocation of one it does
+	// not. Both are successes -- the marker is written unconditionally,
+	// before the outcome is even determined -- which is why the
+	// distinction is carried in the result rather than the error return.
+	//
+	// BREAKING (go-qrdb#287): this method previously returned only error.
+	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 
 	// IsRevoked checks whether a certificate serial is revoked.
 	IsRevoked(ctx context.Context, serial string) (bool, error)

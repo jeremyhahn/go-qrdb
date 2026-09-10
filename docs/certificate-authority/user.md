@@ -1,6 +1,6 @@
 # Certificate Authority — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Every caller authenticates with a client certificate. This is where they come
 from.
@@ -63,9 +63,17 @@ qrdb ca revoke --serial 3f2a9c...
 ```
 
 Revoking a serial this system never issued also succeeds, and takes effect —
-that is how you revoke a certificate issued by a peer. The flip side is that a
-**mistyped serial succeeds too**, so check the serial against `qrdb ca list`;
-the command cannot currently tell you it matched nothing.
+that is how you revoke a certificate issued by a peer. The command tells you
+which case happened:
+
+```
+OK: certificate record found and marked revoked
+OK: no local record for this serial (deny-by-serial revocation)
+```
+
+The second line is also what a **mistyped serial** produces, so treat it as a
+prompt to double-check the serial against `qrdb ca list` rather than as
+confirmation you revoked the certificate you meant to.
 
 **Package a certificate and key for a system that wants PKCS#12** — a browser,
 a Java keystore, a Windows certificate store.

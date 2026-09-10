@@ -260,11 +260,11 @@ func TestHandleExportCert_InvalidJSON(t *testing.T) {
 
 func TestHandleRevokeCert_Success(t *testing.T) {
 	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
 			if serial != "SER-REVOKE" {
 				t.Fatalf("expected serial 'SER-REVOKE', got %q", serial)
 			}
-			return nil
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 		},
 	}
 
@@ -276,19 +276,46 @@ func TestHandleRevokeCert_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var out statusWireResponse
+	var out revokeCertWireResponse
 	if err := json.Unmarshal(resp, &out); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	if out.Status != "ok" {
 		t.Fatalf("expected status 'ok', got %q", out.Status)
 	}
+	if !out.RecordFound {
+		t.Fatal("RecordFound should be true")
+	}
+}
+
+func TestHandleRevokeCert_DenyBySerial(t *testing.T) {
+	mock := &mockCertProvider{
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
+		},
+	}
+
+	srv := newCertServer(mock)
+	payload, _ := json.Marshal(revokeCertWireRequest{Serial: "peer-issued"})
+
+	resp, err := srv.handleRevokeCert(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out revokeCertWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.RecordFound {
+		t.Fatal("RecordFound should be false for a deny-by-serial revocation")
+	}
 }
 
 func TestHandleRevokeCert_ServiceError(t *testing.T) {
 	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, _ string) error {
-			return errMockCert
+		revokeCertFn: func(_ context.Context, _ string) (*cert.RevokeResult, error) {
+			return nil, errMockCert
 		},
 	}
 

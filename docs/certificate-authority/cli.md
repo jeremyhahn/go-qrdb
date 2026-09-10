@@ -1,6 +1,6 @@
 # Certificate Authority — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Command group: `qrdb ca` — post-init Certificate Authority operations. **This
 is the canonical CA surface; it replaces the legacy `certs` group.**
@@ -80,9 +80,18 @@ authenticates**. Set it to `0` to close the window entirely.
 
 **Revoking a serial this node holds no record for is allowed and reports
 success.** The marker is written and the serial is denied from then on;
-revoking a certificate issued by a peer is the case this behaviour exists for.
-The consequence is that a mistyped serial also reports success today — check
-the serial, because the command cannot tell you it matched nothing.
+revoking a certificate issued by a peer is the case this behaviour exists
+for. The command tells you which case occurred:
+
+```
+OK: certificate record found and marked revoked
+OK: no local record for this serial (deny-by-serial revocation)
+```
+
+The second line is expected when revoking a peer-issued certificate. It is
+also what a mistyped serial produces, so treat it as a prompt to double-check
+the serial against `qrdb ca list` rather than as an error — the command
+cannot tell the two apart on its own.
 
 **There is no unrevoke.** No verb removes a revocation, on any transport.
 

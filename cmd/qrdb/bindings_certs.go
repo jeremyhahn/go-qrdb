@@ -66,20 +66,23 @@ func (b *CertBinding) Export(req *transport.ExportCertRequest) (*transport.Expor
 	return resp, nil
 }
 
-// Revoke marks a certificate serial as revoked.
-func (b *CertBinding) Revoke(serial string) error {
+// Revoke marks a certificate serial as revoked and reports whether the
+// server held a local record for it (deny-by-serial revocations succeed
+// with no record found).
+func (b *CertBinding) Revoke(serial string) (*transport.RevokeResult, error) {
 	b.logger.Debug("Revoke called", "serial", serial)
 	cl, err := b.conn.loadClient()
 	if err != nil {
 		b.logger.Error("Revoke failed", "error", err)
-		return err
+		return nil, err
 	}
-	if err := cl.Certs().RevokeCert(context.Background(), serial); err != nil {
+	result, err := cl.Certs().RevokeCert(context.Background(), serial)
+	if err != nil {
 		b.logger.Error("Revoke failed", "serial", serial, "error", err)
-		return err
+		return nil, err
 	}
-	b.logger.Debug("Revoke completed", "serial", serial)
-	return nil
+	b.logger.Debug("Revoke completed", "serial", serial, "recordFound", result.RecordFound)
+	return result, nil
 }
 
 // List lists all issued client certificates for a tenant.

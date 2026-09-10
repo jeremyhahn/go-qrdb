@@ -341,11 +341,39 @@ func (p *DefaultCertProvider) GenerateClientCert(ctx context.Context, req *Gener
 // This requires the software.sslmate.com/src/go-pkcs12 module. If the
 // module is not available, this method returns a CertExportError.
 //
+// The certificate's serial is checked against revocation state before
+// encoding, and export is refused with *CertRevokedError when it is
+// revoked. There is no override: a caller that wants a forensic or
+// archival export of a revoked bundle needs that added deliberately, not
+// defaulted. This is an OPERATOR SIGNAL, not a containment control -- the
+// caller already supplied certPEM and keyPEM, so refusing the export
+// withholds nothing it did not already have. Its value is that the system
+// stops silently packaging a credential it will not honour anywhere in the
+// cluster. See go-qrdb#287.
+//
 // PKCS#12 export is delegated to the encodePKCS12 function, which can be
 // replaced by builds that include a PKCS#12 encoder.
-func (p *DefaultCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
+func (p *DefaultCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error) {
 	if p.barrier.IsSealed() {
 		return nil, &BarrierSealedError{}
+	}
+
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, &CertExportError{Err: &ValidationError{Field: "certPEM", Reason: "invalid PEM data"}}
+	}
+	parsedCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, &CertExportError{Err: err}
+	}
+
+	serial := FormatSerial(parsedCert.SerialNumber)
+	revoked, err := p.IsRevoked(ctx, serial)
+	if err != nil {
+		return nil, err
+	}
+	if revoked {
+		return nil, &CertRevokedError{Serial: serial}
 	}
 
 	p.mu.RLock()
@@ -365,16 +393,20 @@ func (p *DefaultCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []
 // operation. The marker is the authoritative state that IsRevoked reads;
 // CertRecord.Revoked is a display field updated best-effort beside it.
 //
-// It returns nil whether or not a local record matched, and the two cases are
-// currently indistinguishable to the caller. That is a REPORTING GAP, and it
-// is deliberately not closed with the error return: both outcomes are
-// successes, so reporting one of them as an error would tell a caller that a
-// revocation failed when the marker is durable and enforcement is already
-// reading it — and the case it would misreport is the deliberate revocation of
-// a peer-issued serial, the very operation deny-by-serial exists for. A caller
-// that saw an error would retry, alert and escalate over an operation that
-// worked. Closing the gap properly means widening the return to a result type
-// across every transport plus the proto, which is go-qrdb#287.
+// It reports the outcome through RevokeResult rather than through the error
+// return: both outcomes are successes, so reporting one of them as an error
+// would tell a caller that a revocation failed when the marker is durable
+// and enforcement is already reading it — and the case it would misreport is
+// the deliberate revocation of a peer-issued serial, the very operation
+// deny-by-serial exists for. A caller that saw an error would retry, alert
+// and escalate over an operation that worked. See go-qrdb#287.
+//
+// BREAKING (go-qrdb#287): RevokeCert previously returned only error. It now
+// returns (*RevokeResult, error). There were zero external consumers to
+// migrate at the time of this change -- RevokeCert is referenced only by
+// go-qrdb's own transports and handlers -- so the signature was changed
+// directly rather than adding a parallel method, per the project's
+// pre-publication breaking-change allowance.
 //
 // The same rule governs the reaping call below, where it is already applied: a
 // completed revocation must not be reported as a failure, because the marker
@@ -386,13 +418,13 @@ func (p *DefaultCertProvider) ExportPKCS12(_ context.Context, certPEM, keyPEM []
 //
 // Every revocation also reaps expired markers (ReapExpiredRevocations), which
 // is what bounds the namespace without a background sweeper.
-func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) (*RevokeResult, error) {
 	if p.barrier.IsSealed() {
-		return &BarrierSealedError{}
+		return nil, &BarrierSealedError{}
 	}
 
 	if serial == "" {
-		return &ValidationError{Field: "serial", Reason: "must not be empty"}
+		return nil, &ValidationError{Field: "serial", Reason: "must not be empty"}
 	}
 
 	// Locate the certificate record for this serial. We scan all tenants
@@ -413,7 +445,7 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) err
 		recordKey, record = key, &rec
 		return nil
 	}); err != nil {
-		return &StoreError{Op: "scan", Detail: prefixCerts, Err: err}
+		return nil, &StoreError{Op: "scan", Detail: prefixCerts, Err: err}
 	}
 
 	entry := revocationEntry{Serial: serial, RevokedAt: time.Now().UTC()}
@@ -424,22 +456,24 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) err
 	}
 	payload, err := json.Marshal(&entry)
 	if err != nil {
-		return &StoreError{Op: "marshal", Detail: prefixCertsRevoked + serial, Err: err}
+		return nil, &StoreError{Op: "marshal", Detail: prefixCertsRevoked + serial, Err: err}
 	}
 
 	revokedKey := prefixCertsRevoked + serial
 	if err := p.kvStore.Put(ctx, revokedKey, payload); err != nil {
-		return &StoreError{Op: "put", Detail: revokedKey, Err: err}
+		return nil, &StoreError{Op: "put", Detail: revokedKey, Err: err}
 	}
 
+	outcome := RevokeOutcomeDenyBySerial
 	if record != nil {
+		outcome = RevokeOutcomeRecordUpdated
 		record.Revoked = true
 		updated, err := json.Marshal(record)
 		if err != nil {
-			return &StoreError{Op: "marshal", Detail: recordKey, Err: err}
+			return nil, &StoreError{Op: "marshal", Detail: recordKey, Err: err}
 		}
 		if err := p.kvStore.Put(ctx, recordKey, updated); err != nil {
-			return &StoreError{Op: "put", Detail: recordKey, Err: err}
+			return nil, &StoreError{Op: "put", Detail: recordKey, Err: err}
 		}
 	}
 
@@ -451,7 +485,7 @@ func (p *DefaultCertProvider) RevokeCert(ctx context.Context, serial string) err
 		)
 	}
 
-	return nil
+	return &RevokeResult{Serial: serial, Outcome: outcome}, nil
 }
 
 // IsRevoked checks whether a certificate serial is marked as revoked.

@@ -823,7 +823,9 @@ func (s *stubCertProv) GenerateClientCert(_ context.Context, _ *cert.GenerateReq
 func (s *stubCertProv) ExportPKCS12(_ context.Context, _, _ []byte, _ string) ([]byte, error) {
 	return nil, nil
 }
-func (s *stubCertProv) RevokeCert(_ context.Context, _ string) error        { return nil }
+func (s *stubCertProv) RevokeCert(_ context.Context, _ string) (*cert.RevokeResult, error) {
+	return &cert.RevokeResult{}, nil
+}
 func (s *stubCertProv) IsRevoked(_ context.Context, _ string) (bool, error) { return false, nil }
 func (s *stubCertProv) ListCerts(_ context.Context, _ string) ([]*cert.CertRecord, error) {
 	return nil, nil

@@ -305,10 +305,14 @@ func TestE2E_ExportCert_HappyPath(t *testing.T) {
 func TestE2E_RevokeCert_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("cert.Revoke", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, nil
+		return wire.StatusOK, []byte(`{"status":"ok","recordFound":true}`)
 	})
-	if err := tr.RevokeCert(context.Background(), "abc"); err != nil {
+	result, err := tr.RevokeCert(context.Background(), "abc")
+	if err != nil {
 		t.Fatalf("RevokeCert: %v", err)
+	}
+	if !result.RecordFound {
+		t.Error("RecordFound should be true")
 	}
 }
 

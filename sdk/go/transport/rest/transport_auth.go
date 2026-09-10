@@ -585,18 +585,31 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 	return &exportResp, nil
 }
 
-// RevokeCert marks a certificate serial as revoked. Maps to
-// POST /certs/revoke.
-func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+// RevokeCert marks a certificate serial as revoked, and reports whether
+// the server held a certificate record for it. Maps to POST /certs/revoke.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 
 	payload := struct {
 		Serial string `json:"serial"`
 	}{Serial: serial}
 
-	return t.postJSON(ctx, "RevokeCert", "/certs/revoke", payload)
+	var resp revokeCertResponse
+	if err := t.postJSONDecode(ctx, "RevokeCert", "/certs/revoke", payload, &resp); err != nil {
+		return nil, err
+	}
+	return &transport.RevokeResult{
+		Serial:      serial,
+		RecordFound: resp.RecordFound,
+	}, nil
+}
+
+// revokeCertResponse decodes the server's revocation response.
+type revokeCertResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
 }
 
 // ListCerts lists all issued client certificates for a tenant.

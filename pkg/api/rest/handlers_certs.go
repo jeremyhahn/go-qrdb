@@ -50,6 +50,15 @@ type revokeCertRequest struct {
 	Serial string `json:"serial"`
 }
 
+// revokeCertResponse is the JSON representation of a revocation outcome.
+// RecordFound distinguishes a certificate this node holds a record for from
+// a deny-by-serial revocation of one it does not -- both are successes. See
+// go-qrdb#287.
+type revokeCertResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
+}
+
 // certBundleResponse is the JSON representation of a generated certificate
 // bundle containing the PEM-encoded certificate, key, and serial number.
 type certBundleResponse struct {
@@ -174,10 +183,9 @@ func (s *Server) handleExportCert(w http.ResponseWriter, r *http.Request) {
 //
 // A serial this node holds no record for is still revoked -- the marker is
 // written -- and the response is 200, because that is a real CA operation
-// (revoking a peer-issued certificate). The caller therefore cannot tell it
-// from a mistyped serial today; that reporting gap needs a result type on
-// CertProvider.RevokeCert, not an error status, since both outcomes are
-// successes.
+// (revoking a peer-issued certificate). The response's recordFound field
+// lets the caller tell that case apart from a mistyped serial without
+// either being reported as an error -- both are successes. See go-qrdb#287.
 func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	if s.certProv == nil {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "cert"})
@@ -193,12 +201,13 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	if err := s.certProv.RevokeCert(ctx, req.Serial); err != nil {
+	result, err := s.certProv.RevokeCert(ctx, req.Serial)
+	if err != nil {
 		writeErrorJSON(w, mapCertError(err), err)
 		return
 	}
 
-	writeJSON(w, okResponse{Status: "ok"})
+	writeJSON(w, revokeCertResponse{Status: "ok", RecordFound: result.RecordFound()})
 }
 
 // handleListCerts handles GET /certs/list -- returns all issued certificate

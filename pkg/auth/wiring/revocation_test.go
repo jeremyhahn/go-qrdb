@@ -186,7 +186,8 @@ func TestRevocation_EndToEnd(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "a valid certificate must authenticate")
 	require.Equal(t, int64(1), reached.Load())
 
-	require.NoError(t, f.provider.RevokeCert(context.Background(), f.serial))
+	_, err := f.provider.RevokeCert(context.Background(), f.serial)
+	require.NoError(t, err)
 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, f.request())
@@ -215,7 +216,8 @@ func TestRevocation_TakesEffectWithinTheConfiguredWindow(t *testing.T) {
 	handler.ServeHTTP(rec, f.request())
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	require.NoError(t, f.provider.RevokeCert(context.Background(), f.serial))
+	_, err := f.provider.RevokeCert(context.Background(), f.serial)
+	require.NoError(t, err)
 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, f.request())
@@ -234,7 +236,8 @@ func TestRevocation_SealedBarrierDoesNotLockOutTheOperator(t *testing.T) {
 
 	// Revoke first, THEN seal: this proves the request is admitted because the
 	// state is unreadable, not because there was nothing to find.
-	require.NoError(t, f.provider.RevokeCert(context.Background(), f.serial))
+	_, err := f.provider.RevokeCert(context.Background(), f.serial)
+	require.NoError(t, err)
 	f.barrier.sealed.Store(true)
 
 	handler := mw.RESTMiddleware(statusRoutes(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -427,7 +430,8 @@ func TestRevocation_OnBehalfForwardingIsGatedByProductionWiring(t *testing.T) {
 	// Deny-by-serial: this node holds no record for the node certificate, and
 	// the revocation takes effect anyway. That is the whole point of retaining
 	// it — a cluster operator revokes a peer-issued certificate.
-	require.NoError(t, f.provider.RevokeCert(context.Background(), nodeSerial))
+	_, err = f.provider.RevokeCert(context.Background(), nodeSerial)
+	require.NoError(t, err)
 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, obForwardedWrite(t, nodeCert, nodeKey, nodeID))
@@ -464,7 +468,8 @@ func TestRevocation_ExposedCheckerIsTheEnforcementState(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, revoked, "an unrevoked certificate must not report revoked")
 
-	require.NoError(t, f.provider.RevokeCert(ctx, f.serial))
+	_, err = f.provider.RevokeCert(ctx, f.serial)
+	require.NoError(t, err)
 
 	revoked, err = rc.IsCertRevoked(ctx, f.peer)
 	require.NoError(t, err)

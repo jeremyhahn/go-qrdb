@@ -1544,7 +1544,7 @@ func TestCertBinding_Export_NotConnected(t *testing.T) {
 
 func TestCertBinding_Revoke_NotConnected(t *testing.T) {
 	b := NewCertBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
-	err := b.Revoke("serial")
+	_, err := b.Revoke("serial")
 	assertNotConnected(t, err)
 }
 

@@ -465,7 +465,7 @@ type QRDBServiceClient interface {
 	// ExportCert exports a certificate as PKCS#12.
 	ExportCert(ctx context.Context, in *ExportCertRequest, opts ...grpc.CallOption) (*ExportCertResponse, error)
 	// RevokeCert marks a certificate serial as revoked.
-	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(ctx context.Context, in *ListCertsRequest, opts ...grpc.CallOption) (*ListCertsResponse, error)
 	// CreateCollection creates a new document collection in a database.
@@ -1717,9 +1717,9 @@ func (c *qRDBServiceClient) ExportCert(ctx context.Context, in *ExportCertReques
 	return out, nil
 }
 
-func (c *qRDBServiceClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (c *qRDBServiceClient) RevokeCert(ctx context.Context, in *RevokeCertRequest, opts ...grpc.CallOption) (*RevokeCertResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(emptypb.Empty)
+	out := new(RevokeCertResponse)
 	err := c.cc.Invoke(ctx, QRDBService_RevokeCert_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
@@ -2882,7 +2882,7 @@ type QRDBServiceServer interface {
 	// ExportCert exports a certificate as PKCS#12.
 	ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error)
 	// RevokeCert marks a certificate serial as revoked.
-	RevokeCert(context.Context, *RevokeCertRequest) (*emptypb.Empty, error)
+	RevokeCert(context.Context, *RevokeCertRequest) (*RevokeCertResponse, error)
 	// ListCerts lists all issued client certificates for a tenant.
 	ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error)
 	// CreateCollection creates a new document collection in a database.
@@ -3418,7 +3418,7 @@ func (UnimplementedQRDBServiceServer) GenerateCert(context.Context, *GenerateCer
 func (UnimplementedQRDBServiceServer) ExportCert(context.Context, *ExportCertRequest) (*ExportCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ExportCert not implemented")
 }
-func (UnimplementedQRDBServiceServer) RevokeCert(context.Context, *RevokeCertRequest) (*emptypb.Empty, error) {
+func (UnimplementedQRDBServiceServer) RevokeCert(context.Context, *RevokeCertRequest) (*RevokeCertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RevokeCert not implemented")
 }
 func (UnimplementedQRDBServiceServer) ListCerts(context.Context, *ListCertsRequest) (*ListCertsResponse, error) {

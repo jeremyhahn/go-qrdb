@@ -886,7 +886,7 @@ func TestDefaultCertProvider_RevokeCert(t *testing.T) {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 
@@ -902,7 +902,7 @@ func TestDefaultCertProvider_RevokeCert(t *testing.T) {
 func TestDefaultCertProvider_RevokeCert_EmptySerial(t *testing.T) {
 	p, _, _ := initializeProvider(t)
 
-	err := p.RevokeCert(context.Background(), "")
+	_, err := p.RevokeCert(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty serial")
 	}
@@ -916,7 +916,7 @@ func TestDefaultCertProvider_RevokeCert_WhenSealed(t *testing.T) {
 	p, _, barrier := initializeProvider(t)
 	barrier.seal()
 
-	err := p.RevokeCert(context.Background(), "some-serial")
+	_, err := p.RevokeCert(context.Background(), "some-serial")
 	if err == nil {
 		t.Fatal("expected error when barrier is sealed")
 	}
@@ -936,10 +936,10 @@ func TestDefaultCertProvider_RevokeCert_Idempotent(t *testing.T) {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("first RevokeCert: %v", err)
 	}
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("second RevokeCert: %v", err)
 	}
 
@@ -1273,7 +1273,7 @@ func TestDefaultCertProvider_RevokeCert_UpdatesRecord(t *testing.T) {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
 
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 
@@ -1401,7 +1401,7 @@ func TestDefaultCertProvider_RevokeCert_ScanError(t *testing.T) {
 	// Replace the kvStore with the error-injecting one.
 	p.kvStore = pkv
 
-	err = p.RevokeCert(ctx, bundle.Serial)
+	_, err = p.RevokeCert(ctx, bundle.Serial)
 	if err == nil {
 		t.Fatal("expected error when scan fails")
 	}
@@ -1419,7 +1419,7 @@ func TestDefaultCertProvider_RevokeCert_CorruptRecord(t *testing.T) {
 	_ = kv.Put(ctx, "__sys:certs/system/bad-serial", []byte("not-json{{{"))
 
 	// Revoke should still succeed (corrupt records are skipped).
-	if err := p.RevokeCert(ctx, "bad-serial"); err != nil {
+	if _, err := p.RevokeCert(ctx, "bad-serial"); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 }
@@ -1631,7 +1631,7 @@ func TestDefaultCertProvider_RevokeCert_PutRevokedKeyError(t *testing.T) {
 	// Replace with error store for the revoke Put.
 	p.kvStore = &errorKVStore{err: errors.New("put revoked failed")}
 
-	err := p.RevokeCert(ctx, "some-serial")
+	_, err := p.RevokeCert(ctx, "some-serial")
 	if err == nil {
 		t.Fatal("expected error when Put revoked key fails")
 	}

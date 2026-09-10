@@ -84,7 +84,8 @@ func TestE2E_Auth_RevokeCert_RPCError(t *testing.T) {
 	srv.SetResponder("cert.Revoke", func(_ []byte) (uint16, []byte) {
 		return wire.StatusError, []byte("cert not found")
 	})
-	assertQuicRequestError(t, tr.RevokeCert(context.Background(), "fp"))
+	_, err := tr.RevokeCert(context.Background(), "fp")
+	assertQuicRequestError(t, err)
 }
 
 // ---------------------------------------------------------------------------

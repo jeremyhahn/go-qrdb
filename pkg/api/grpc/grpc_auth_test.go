@@ -43,6 +43,7 @@ type mockCertProvider struct {
 	genErr       error
 	exportResult []byte
 	exportErr    error
+	revokeResult *cert.RevokeResult
 	revokeErr    error
 	isRevokedRes bool
 	isRevokedErr error
@@ -65,8 +66,14 @@ func (m *mockCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string
 	return m.exportResult, nil
 }
 
-func (m *mockCertProvider) RevokeCert(_ context.Context, _ string) error {
-	return m.revokeErr
+func (m *mockCertProvider) RevokeCert(_ context.Context, _ string) (*cert.RevokeResult, error) {
+	if m.revokeErr != nil {
+		return nil, m.revokeErr
+	}
+	if m.revokeResult != nil {
+		return m.revokeResult, nil
+	}
+	return &cert.RevokeResult{}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(_ context.Context, _ string) (bool, error) {

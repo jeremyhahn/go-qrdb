@@ -246,6 +246,14 @@ type revokeCertWireRequest struct {
 	Serial string `json:"serial"`
 }
 
+// revokeCertWireResponse is the JSON wire representation of a revocation
+// outcome. RecordFound distinguishes a certificate the server holds a
+// record for from a deny-by-serial revocation of one it does not.
+type revokeCertWireResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
+}
+
 // listCertsWireRequest is the JSON wire payload for cert.List.
 type listCertsWireRequest struct {
 	TenantID string `json:"tenantID"`
@@ -865,23 +873,29 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 }
 
 // RevokeCert marks a certificate serial as revoked via the QUIC
-// cert.Revoke method.
-func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+// cert.Revoke method, and reports whether the server held a certificate
+// record for it.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 
 	payload, err := json.Marshal(revokeCertWireRequest{Serial: serial})
 	if err != nil {
-		return &transport.RequestError{Method: "RevokeCert", Err: &MarshalError{Err: err}}
+		return nil, &transport.RequestError{Method: "RevokeCert", Err: &MarshalError{Err: err}}
 	}
 
-	_, err = t.call(ctx, "cert.Revoke", payload)
+	data, err := t.call(ctx, "cert.Revoke", payload)
 	if err != nil {
-		return &transport.RequestError{Method: "RevokeCert", Err: err}
+		return nil, &transport.RequestError{Method: "RevokeCert", Err: err}
 	}
 
-	return nil
+	var wire revokeCertWireResponse
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, &transport.RequestError{Method: "RevokeCert", Err: &UnmarshalError{Err: err}}
+	}
+
+	return &transport.RevokeResult{Serial: serial, RecordFound: wire.RecordFound}, nil
 }
 
 // ListCerts lists all issued client certificates for a tenant via the

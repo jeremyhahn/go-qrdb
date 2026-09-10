@@ -558,7 +558,7 @@ func TestRESTUserRoleCert_AllMethods_ServerError(t *testing.T) {
 	if _, err := rt.ExportCert(ctx, &transport.ExportCertRequest{}); err == nil {
 		t.Fatal("ExportCert: expected error")
 	}
-	if err := rt.RevokeCert(ctx, "001"); err == nil {
+	if _, err := rt.RevokeCert(ctx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")
 	}
 }
@@ -744,7 +744,7 @@ func TestRESTAllMethods_NetworkError(t *testing.T) {
 	if _, err := rt.ExportCert(ctx, &transport.ExportCertRequest{}); err == nil {
 		t.Fatal("ExportCert: expected error")
 	}
-	if err := rt.RevokeCert(ctx, "001"); err == nil {
+	if _, err := rt.RevokeCert(ctx, "001"); err == nil {
 		t.Fatal("RevokeCert: expected error")
 	}
 	if _, err := rt.ListCerts(ctx, "t1"); err == nil {

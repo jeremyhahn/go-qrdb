@@ -190,7 +190,7 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 type mockCertProvider struct {
 	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) error
+	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
 	caCertPEMVal         []byte
@@ -210,11 +210,11 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return nil, nil
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	if m.revokeCertFn != nil {
 		return m.revokeCertFn(ctx, serial)
 	}
-	return nil
+	return &cert.RevokeResult{Serial: serial}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(ctx context.Context, serial string) (bool, error) {
@@ -2080,11 +2080,11 @@ func TestHandleExportCert_ServiceError(t *testing.T) {
 
 func TestHandleRevokeCert_Success(t *testing.T) {
 	prov := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
 			if serial != "AABBCCDD" {
 				t.Fatalf("serial = %q, want %q", serial, "AABBCCDD")
 			}
-			return nil
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 		},
 	}
 	srv := newAuthServer(nil, nil, prov)
@@ -2096,10 +2096,35 @@ func TestHandleRevokeCert_Success(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var resp okResponse
+	var resp revokeCertResponse
 	decodeJSON(t, rec, &resp)
 	if resp.Status != "ok" {
 		t.Fatalf("status = %q, want %q", resp.Status, "ok")
+	}
+	if !resp.RecordFound {
+		t.Fatal("recordFound should be true when the provider found a local record")
+	}
+}
+
+func TestHandleRevokeCert_DenyBySerial(t *testing.T) {
+	prov := &mockCertProvider{
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
+		},
+	}
+	srv := newAuthServer(nil, nil, prov)
+
+	body := `{"serial":"peer-issued"}`
+	req := httptest.NewRequest(http.MethodPost, "/certs/revoke", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp revokeCertResponse
+	decodeJSON(t, rec, &resp)
+	if resp.RecordFound {
+		t.Fatal("recordFound should be false for a deny-by-serial revocation")
 	}
 }
 
@@ -2127,8 +2152,8 @@ func TestHandleRevokeCert_InvalidJSON(t *testing.T) {
 
 func TestHandleRevokeCert_NotFound(t *testing.T) {
 	prov := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
-			return &cert.CertNotFoundError{Serial: serial}
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return nil, &cert.CertNotFoundError{Serial: serial}
 		},
 	}
 	srv := newAuthServer(nil, nil, prov)
@@ -2143,8 +2168,8 @@ func TestHandleRevokeCert_NotFound(t *testing.T) {
 
 func TestHandleRevokeCert_AlreadyRevoked(t *testing.T) {
 	prov := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
-			return &cert.CertRevokedError{Serial: serial}
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return nil, &cert.CertRevokedError{Serial: serial}
 		},
 	}
 	srv := newAuthServer(nil, nil, prov)
@@ -2159,8 +2184,8 @@ func TestHandleRevokeCert_AlreadyRevoked(t *testing.T) {
 
 func TestHandleRevokeCert_StoreError(t *testing.T) {
 	prov := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, _ string) error {
-			return &cert.StoreError{Op: "revoke", Err: errors.New("disk full")}
+		revokeCertFn: func(_ context.Context, _ string) (*cert.RevokeResult, error) {
+			return nil, &cert.StoreError{Op: "revoke", Err: errors.New("disk full")}
 		},
 	}
 	srv := newAuthServer(nil, nil, prov)

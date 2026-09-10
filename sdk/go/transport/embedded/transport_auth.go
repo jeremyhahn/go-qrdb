@@ -405,12 +405,22 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 	}, nil
 }
 
-// RevokeCert marks a certificate serial as revoked via the embedded cert provider.
-func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+// RevokeCert marks a certificate serial as revoked via the embedded cert
+// provider, and reports whether it held a local record for the serial.
+//
+// BREAKING (go-qrdb#287): this method previously returned only error.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.certProv == nil {
-		return &transport.NotImplementedError{Method: "RevokeCert"}
+		return nil, &transport.NotImplementedError{Method: "RevokeCert"}
 	}
-	return t.certProv.RevokeCert(ctx, serial)
+	result, err := t.certProv.RevokeCert(ctx, serial)
+	if err != nil {
+		return nil, err
+	}
+	return &transport.RevokeResult{
+		Serial:      result.Serial,
+		RecordFound: result.RecordFound(),
+	}, nil
 }
 
 // ListCerts lists issued certificates for a tenant via the embedded cert provider.

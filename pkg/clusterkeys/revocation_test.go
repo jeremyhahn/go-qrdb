@@ -76,8 +76,8 @@ func (f *fakeCertAuthority) ExportPKCS12(context.Context, []byte, []byte, string
 	return nil, errors.New("fakeCertAuthority: not implemented")
 }
 
-func (f *fakeCertAuthority) RevokeCert(context.Context, string) error {
-	return errors.New("fakeCertAuthority: not implemented")
+func (f *fakeCertAuthority) RevokeCert(context.Context, string) (*cert.RevokeResult, error) {
+	return nil, errors.New("fakeCertAuthority: not implemented")
 }
 
 func (f *fakeCertAuthority) ListCerts(context.Context, string) ([]*cert.CertRecord, error) {

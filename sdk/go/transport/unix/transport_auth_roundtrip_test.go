@@ -196,7 +196,7 @@ var _ role.RoleServicer = (*mockRoleSvc)(nil)
 type mockCertProvider struct {
 	generateFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportFn   func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeFn   func(ctx context.Context, serial string) error
+	revokeFn   func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevoked  func(ctx context.Context, serial string) (bool, error)
 	listFn     func(ctx context.Context, tenant string) ([]*cert.CertRecord, error)
 }
@@ -219,11 +219,11 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return []byte("pkcs12-stub"), nil
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	if m.revokeFn != nil {
 		return m.revokeFn(ctx, serial)
 	}
-	return nil
+	return &cert.RevokeResult{Serial: serial}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(ctx context.Context, serial string) (bool, error) {
@@ -601,7 +601,7 @@ func TestUnixRT_RevokeCert(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithCertProvider(provider))
 	defer cleanup()
 
-	if err := tr.RevokeCert(context.Background(), "serial-1"); err != nil {
+	if _, err := tr.RevokeCert(context.Background(), "serial-1"); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 }
@@ -635,7 +635,7 @@ func TestUnixRT_CertOps_NotConfigured(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when cert provider is not configured")
 	}
-	if err := tr.RevokeCert(context.Background(), "s1"); err == nil {
+	if _, err := tr.RevokeCert(context.Background(), "s1"); err == nil {
 		t.Error("expected error when cert provider is not configured for revoke")
 	}
 }

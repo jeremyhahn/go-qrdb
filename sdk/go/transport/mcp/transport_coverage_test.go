@@ -166,7 +166,7 @@ func TestMCPAuthExtras_AfterClose(t *testing.T) {
 	if _, err := tr.ExportCert(ctx, &transport.ExportCertRequest{}); !errors.As(err, &ce) {
 		t.Errorf("ExportCert: %v", err)
 	}
-	if err := tr.RevokeCert(ctx, "s"); !errors.As(err, &ce) {
+	if _, err := tr.RevokeCert(ctx, "s"); !errors.As(err, &ce) {
 		t.Errorf("RevokeCert: %v", err)
 	}
 	if _, err := tr.ListCerts(ctx, "t"); !errors.As(err, &ce) {

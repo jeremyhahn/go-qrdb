@@ -605,7 +605,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 	t.Run("cert.Revoke", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "cert.Revoke", "err")
-		if err := tr.RevokeCert(context.Background(), "s"); err == nil {
+		if _, err := tr.RevokeCert(context.Background(), "s"); err == nil {
 			t.Fatal("expected err")
 		}
 	})

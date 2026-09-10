@@ -137,7 +137,7 @@ func (m *mockRoleServicer) ResolvePermissions(ctx context.Context, roleIDs []str
 type mockCertProvider struct {
 	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) error
+	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
 	caCertPEMFn          func() []byte
@@ -151,7 +151,7 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return m.exportPKCS12Fn(ctx, certPEM, keyPEM, passphrase)
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	return m.revokeCertFn(ctx, serial)
 }
 
@@ -1570,39 +1570,63 @@ func TestExportCert_ServiceError(t *testing.T) {
 func TestRevokeCert_Success(t *testing.T) {
 	called := false
 	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
 			if serial != "abc123" {
 				t.Errorf("expected serial 'abc123', got %q", serial)
 			}
 			called = true
-			return nil
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 		},
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	if err := tr.RevokeCert(context.Background(), "abc123"); err != nil {
+	result, err := tr.RevokeCert(context.Background(), "abc123")
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
 		t.Error("expected revokeCertFn to be called")
 	}
+	if result.Serial != "abc123" {
+		t.Errorf("Serial = %q, want %q", result.Serial, "abc123")
+	}
+	if !result.RecordFound {
+		t.Error("RecordFound should be true for RevokeOutcomeRecordUpdated")
+	}
+}
+
+func TestRevokeCert_DenyBySerial(t *testing.T) {
+	mock := &mockCertProvider{
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
+		},
+	}
+	tr := newAuthTransport(t, WithCertProvider(mock))
+
+	result, err := tr.RevokeCert(context.Background(), "peer-serial")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RecordFound {
+		t.Error("RecordFound should be false for RevokeOutcomeDenyBySerial")
+	}
 }
 
 func TestRevokeCert_NilProvider(t *testing.T) {
 	tr := newAuthTransport(t)
-	err := tr.RevokeCert(context.Background(), "abc123")
+	_, err := tr.RevokeCert(context.Background(), "abc123")
 	assertNotImplementedError(t, err, "RevokeCert")
 }
 
 func TestRevokeCert_ServiceError(t *testing.T) {
 	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
-			return &cert.CertNotFoundError{Serial: serial}
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return nil, &cert.CertNotFoundError{Serial: serial}
 		},
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	err := tr.RevokeCert(context.Background(), "not-found-serial")
+	_, err := tr.RevokeCert(context.Background(), "not-found-serial")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1900,13 +1924,13 @@ func TestWithRoleService_Option(t *testing.T) {
 
 func TestWithCertProvider_Option(t *testing.T) {
 	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) error {
-			return nil
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial}, nil
 		},
 	}
 	tr := newAuthTransport(t, WithCertProvider(mock))
 
-	if err := tr.RevokeCert(context.Background(), "abc123"); err != nil {
+	if _, err := tr.RevokeCert(context.Background(), "abc123"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

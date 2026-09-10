@@ -99,7 +99,7 @@ func TestRevokeCert_MarkerCarriesCertificateExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestRevokeCert_UnknownSerial_StillRevokes(t *testing.T) {
 	// Deny-by-serial: revoking a serial this node holds no record for is a
 	// real CA operation — the certificate may have been issued by a peer, or
 	// its record pruned — and it must take effect.
-	if err := p.RevokeCert(ctx, "deadbeef"); err != nil {
+	if _, err := p.RevokeCert(ctx, "deadbeef"); err != nil {
 		t.Fatalf("RevokeCert(unknown serial) = %v, want nil: both outcomes are successes", err)
 	}
 	if _, ok := kv.data[prefixCertsRevoked+"deadbeef"]; !ok {
@@ -155,7 +155,7 @@ func TestRevokeCert_KnownSerial_ReportsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert(known serial) = %v, want nil", err)
 	}
 }
@@ -165,7 +165,7 @@ func TestRevokeCert_ScanFailureLeavesNoMarker(t *testing.T) {
 	p := NewDefaultProvider(kv, newMockBarrier())
 	ctx := context.Background()
 
-	if err := p.RevokeCert(ctx, "some-serial"); err == nil {
+	if _, err := p.RevokeCert(ctx, "some-serial"); err == nil {
 		t.Fatal("RevokeCert with a failing scan returned nil")
 	}
 	// The lookup runs BEFORE the write, so a failed revocation must not leave
@@ -312,7 +312,7 @@ func TestRevokeCert_ReapsExpiredMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateClientCert: %v", err)
 	}
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 

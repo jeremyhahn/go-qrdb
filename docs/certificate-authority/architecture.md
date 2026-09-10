@@ -1,6 +1,6 @@
 # Certificate Authority — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-03
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Issuing, exporting and revoking the client certificates that authenticate every
 caller. Authentication is mTLS throughout the store, so this is the feature that
@@ -20,8 +20,11 @@ implementation**, and a composition seam for a real one.
 ```go
 type CertProvider interface {
 	GenerateClientCert(ctx context.Context, req *GenerateRequest) (*CertBundle, error)
+	// ExportPKCS12 refuses with *CertRevokedError when certPEM's serial is revoked.
 	ExportPKCS12(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	RevokeCert(ctx context.Context, serial string) error
+	// RevokeCert reports what it found through RevokeResult, not the error
+	// return: both a record match and a deny-by-serial revocation succeed.
+	RevokeCert(ctx context.Context, serial string) (*RevokeResult, error)
 	IsRevoked(ctx context.Context, serial string) (bool, error)
 	ListCerts(ctx context.Context, tenantID string) ([]*CertRecord, error)
 	CACertPEM() []byte
@@ -200,12 +203,15 @@ operation — the certificate may have been issued by a peer, or its record
 pruned — and it is retained. The marker is written either way, and the call
 succeeds either way.
 
-That means a mistyped serial and a deliberate peer-issued revocation are
-currently indistinguishable to the caller. It is a **reporting gap**, tracked
-separately, and it is deliberately not closed by returning an error: both
-outcomes are successes, so reporting either as an error would tell a caller
-that a revocation failed while the marker is durable and enforcement is
-already reading it.
+That means a mistyped serial and a deliberate peer-issued revocation would be
+indistinguishable to the caller if the distinction were reported through the
+error return: both outcomes are successes, so reporting either as an error
+would tell a caller that a revocation failed while the marker is durable and
+enforcement is already reading it. Instead `RevokeCert` returns a
+`RevokeResult` alongside `nil`, whose `Outcome` says which of the two
+happened. A caller that sees deny-by-serial when it expected to match a
+local record has the signal to double-check the serial, without either case
+being reported as a failure.
 
 The cost is that such a marker has no knowable expiry and is permanent. Markers
 for certificates this node did issue carry the certificate's `notAfter` and are

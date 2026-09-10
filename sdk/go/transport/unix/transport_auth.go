@@ -490,18 +490,19 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 	}, nil
 }
 
-// RevokeCert marks a certificate serial as revoked.
-func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+// RevokeCert marks a certificate serial as revoked and reports whether the
+// server held a certificate record for it.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 
-	_, err := t.client.RevokeCert(ctx, &pb.RevokeCertRequest{Serial: serial})
+	resp, err := t.client.RevokeCert(ctx, &pb.RevokeCertRequest{Serial: serial})
 	if err != nil {
-		return mapGRPCError("RevokeCert", err)
+		return nil, mapGRPCError("RevokeCert", err)
 	}
 
-	return nil
+	return &transport.RevokeResult{Serial: serial, RecordFound: resp.GetRecordFound()}, nil
 }
 
 // ListCerts lists all issued client certificates for a tenant.

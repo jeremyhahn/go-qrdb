@@ -455,7 +455,7 @@ func TestTransport_RevokeCert_Closed(t *testing.T) {
 	}
 	_ = tr.Close()
 	ctx := context.Background()
-	err = tr.RevokeCert(ctx, "serial-123")
+	_, err = tr.RevokeCert(ctx, "serial-123")
 	if err == nil {
 		t.Fatal("RevokeCert() on closed transport should return error")
 	}

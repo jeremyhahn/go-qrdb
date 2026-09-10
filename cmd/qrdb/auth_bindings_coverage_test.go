@@ -201,7 +201,7 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 type mockCertProvider struct {
 	generateFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportFn   func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeFn   func(ctx context.Context, serial string) error
+	revokeFn   func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevoked  func(ctx context.Context, serial string) (bool, error)
 	listFn     func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
 	caCertFn   func() []byte
@@ -225,11 +225,11 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return []byte("mock-pkcs12-data"), nil
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	if m.revokeFn != nil {
 		return m.revokeFn(ctx, serial)
 	}
-	return nil
+	return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(ctx context.Context, serial string) (bool, error) {
@@ -749,21 +749,43 @@ func TestCertBinding_Revoke_Success(t *testing.T) {
 	conn := newAuthTestConnectionBinding(t, nil, nil, &mockCertProvider{})
 	b := NewCertBinding(testLogger(t), conn)
 
-	if err := b.Revoke("AABBCCDD"); err != nil {
+	result, err := b.Revoke("AABBCCDD")
+	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !result.RecordFound {
+		t.Error("expected RecordFound true")
 	}
 }
 
-func TestCertBinding_Revoke_ServiceError(t *testing.T) {
+func TestCertBinding_Revoke_DenyBySerial(t *testing.T) {
 	prov := &mockCertProvider{
-		revokeFn: func(_ context.Context, _ string) error {
-			return errors.New("revoke failed")
+		revokeFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
 		},
 	}
 	conn := newAuthTestConnectionBinding(t, nil, nil, prov)
 	b := NewCertBinding(testLogger(t), conn)
 
-	if err := b.Revoke("AABBCCDD"); err == nil {
+	result, err := b.Revoke("peer-issued")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result.RecordFound {
+		t.Error("expected RecordFound false for a deny-by-serial revocation")
+	}
+}
+
+func TestCertBinding_Revoke_ServiceError(t *testing.T) {
+	prov := &mockCertProvider{
+		revokeFn: func(_ context.Context, _ string) (*cert.RevokeResult, error) {
+			return nil, errors.New("revoke failed")
+		},
+	}
+	conn := newAuthTestConnectionBinding(t, nil, nil, prov)
+	b := NewCertBinding(testLogger(t), conn)
+
+	if _, err := b.Revoke("AABBCCDD"); err == nil {
 		t.Fatal("expected error from Revoke")
 	}
 }

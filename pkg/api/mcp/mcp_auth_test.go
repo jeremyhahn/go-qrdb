@@ -275,7 +275,7 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 type mockCertProvider struct {
 	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) error
+	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
 	caCertPEMFn          func() []byte
@@ -299,11 +299,11 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return []byte("fake-p12-data"), nil
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	if m.revokeCertFn != nil {
 		return m.revokeCertFn(ctx, serial)
 	}
-	return nil
+	return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeRecordUpdated}, nil
 }
 
 func (m *mockCertProvider) IsRevoked(ctx context.Context, serial string) (bool, error) {
@@ -2068,8 +2068,39 @@ func TestCertRevokeTool_Success(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	text := resultText(t, result)
-	if text != "ok" {
-		t.Errorf("expected 'ok', got %q", text)
+	var resp certRevokeResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("expected status 'ok', got %q", resp.Status)
+	}
+	if !resp.RecordFound {
+		t.Error("expected RecordFound true")
+	}
+}
+
+func TestCertRevokeTool_DenyBySerial(t *testing.T) {
+	svc := &mockCertProvider{
+		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
+			return &cert.RevokeResult{Serial: serial, Outcome: cert.RevokeOutcomeDenyBySerial}, nil
+		},
+	}
+	handler := handleCertRevoke(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"serial": "peer-issued",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	text := resultText(t, result)
+	var resp certRevokeResponse
+	if jsonErr := json.Unmarshal([]byte(text), &resp); jsonErr != nil {
+		t.Fatalf("unmarshal: %v", jsonErr)
+	}
+	if resp.RecordFound {
+		t.Error("expected RecordFound false for a deny-by-serial revocation")
 	}
 }
 
@@ -2088,8 +2119,8 @@ func TestCertRevokeTool_MissingSerial(t *testing.T) {
 
 func TestCertRevokeTool_ServiceError(t *testing.T) {
 	svc := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, _ string) error {
-			return errors.New("certificate not found")
+		revokeCertFn: func(_ context.Context, _ string) (*cert.RevokeResult, error) {
+			return nil, errors.New("certificate not found")
 		},
 	}
 	handler := handleCertRevoke(svc)

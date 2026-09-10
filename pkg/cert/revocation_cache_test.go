@@ -282,7 +282,7 @@ func TestRevocationCache_AgainstRealProvider(t *testing.T) {
 		t.Fatal("a freshly issued certificate reported as revoked")
 	}
 
-	if err := p.RevokeCert(ctx, bundle.Serial); err != nil {
+	if _, err := p.RevokeCert(ctx, bundle.Serial); err != nil {
 		t.Fatalf("RevokeCert: %v", err)
 	}
 

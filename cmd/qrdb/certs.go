@@ -174,11 +174,20 @@ func newCertsRevokeCmd() *cobra.Command {
 		Short: "Revoke a certificate by serial number",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := client.Certs().RevokeCert(cmd.Context(), serial); err != nil {
+			result, err := client.Certs().RevokeCert(cmd.Context(), serial)
+			if err != nil {
 				return err
 			}
 
-			printOK()
+			// A mistyped serial and a deliberate revocation of a
+			// peer-issued certificate both succeed (deny-by-serial); this
+			// is the only way an operator can tell them apart. See
+			// go-qrdb#287.
+			if result.RecordFound {
+				_, _ = fmt.Fprintln(outputWriter, "OK: certificate record found and marked revoked")
+			} else {
+				_, _ = fmt.Fprintln(outputWriter, "OK: no local record for this serial (deny-by-serial revocation)")
+			}
 			return nil
 		},
 	}

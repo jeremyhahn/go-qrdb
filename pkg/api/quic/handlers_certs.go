@@ -48,6 +48,15 @@ type revokeCertWireRequest struct {
 	Serial string `json:"serial"`
 }
 
+// revokeCertWireResponse is the JSON wire representation of a revocation
+// outcome. RecordFound distinguishes a certificate this node holds a record
+// for from a deny-by-serial revocation of one it does not -- both are
+// successes.
+type revokeCertWireResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
+}
+
 // listCertsWireRequest is the JSON wire payload for cert.List.
 type listCertsWireRequest struct {
 	TenantID string `json:"tenantID"`
@@ -163,6 +172,11 @@ func (s *Server) handleExportCert(ctx context.Context, payload []byte) ([]byte, 
 // Enforcement is on the authentication path, per request -- which matters most
 // here: a QUIC client holds one long-lived connection, so a handshake-time
 // check would leave a revoked peer authorised for the life of that connection.
+//
+// The response's recordFound field reports whether a local record matched,
+// distinguishing a mistyped serial from a deliberate deny-by-serial
+// revocation without either being reported as an error -- both are
+// successes.
 func (s *Server) handleRevokeCert(ctx context.Context, payload []byte) ([]byte, error) {
 	if s.certProv == nil {
 		return nil, &ServiceNotConfiguredError{Service: "cert"}
@@ -173,11 +187,12 @@ func (s *Server) handleRevokeCert(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
-	if err := s.certProv.RevokeCert(ctx, req.Serial); err != nil {
+	result, err := s.certProv.RevokeCert(ctx, req.Serial)
+	if err != nil {
 		return nil, err
 	}
 
-	out, err := json.Marshal(statusWireResponse{Status: "ok"})
+	out, err := json.Marshal(revokeCertWireResponse{Status: "ok", RecordFound: result.RecordFound()})
 	if err != nil {
 		return nil, &MarshalError{Err: err}
 	}

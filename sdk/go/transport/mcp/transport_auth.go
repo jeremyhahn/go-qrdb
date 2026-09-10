@@ -121,6 +121,13 @@ type serverCertExportResponse struct {
 	P12Base64 string `json:"p12_base64"`
 }
 
+// serverCertRevokeResponse mirrors the certRevokeResponse envelope used by
+// the qrdb_cert_revoke tool handler.
+type serverCertRevokeResponse struct {
+	Status      string `json:"status"`
+	RecordFound bool   `json:"recordFound"`
+}
+
 // serverCertRecord mirrors cert.CertRecord for JSON decoding. The server
 // uses time.Time for timestamp fields (marshaled as RFC 3339 strings).
 type serverCertRecord struct {
@@ -798,17 +805,27 @@ func (t *Transport) ExportCert(ctx context.Context, req *transport.ExportCertReq
 	}, nil
 }
 
-// RevokeCert marks a certificate serial as revoked. Calls the
-// qrdb_cert_revoke MCP tool.
-func (t *Transport) RevokeCert(ctx context.Context, serial string) error {
+// RevokeCert marks a certificate serial as revoked, and reports whether
+// the server held a certificate record for it. Calls the qrdb_cert_revoke
+// MCP tool.
+func (t *Transport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	if t.closed.Load() {
-		return &transport.ClosedError{}
+		return nil, &transport.ClosedError{}
 	}
 
-	_, err := t.callTool(ctx, "qrdb_cert_revoke", map[string]any{
+	text, err := t.callTool(ctx, "qrdb_cert_revoke", map[string]any{
 		"serial": serial,
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+
+	var raw serverCertRevokeResponse
+	if jsonErr := json.Unmarshal([]byte(text), &raw); jsonErr != nil {
+		return nil, &transport.RequestError{Method: "RevokeCert", Err: &jsonDecodeError{Err: jsonErr}}
+	}
+
+	return &transport.RevokeResult{Serial: serial, RecordFound: raw.RecordFound}, nil
 }
 
 // ListCerts lists all issued client certificates for a tenant. Calls

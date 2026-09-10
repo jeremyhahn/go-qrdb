@@ -306,3 +306,13 @@ type CertRecord struct {
 type ListCertsResponse struct {
 	Certs []*CertRecord `json:"certs"`
 }
+
+// RevokeResult reports what RevokeCert did, distinguishing a revocation of
+// a certificate the target node holds a record for from a deny-by-serial
+// revocation of one it does not -- both are successes, so the distinction
+// is carried here rather than in the error return. It mirrors
+// cert.RevokeResult at the wire boundary.
+type RevokeResult struct {
+	Serial      string `json:"serial"`
+	RecordFound bool   `json:"recordFound"`
+}

@@ -137,7 +137,7 @@ func (m *mockRoleService) ResolvePermissions(ctx context.Context, roleIDs []stri
 type mockCertProvider struct {
 	generateClientCertFn func(ctx context.Context, req *cert.GenerateRequest) (*cert.CertBundle, error)
 	exportPKCS12Fn       func(ctx context.Context, certPEM, keyPEM []byte, passphrase string) ([]byte, error)
-	revokeCertFn         func(ctx context.Context, serial string) error
+	revokeCertFn         func(ctx context.Context, serial string) (*cert.RevokeResult, error)
 	isRevokedFn          func(ctx context.Context, serial string) (bool, error)
 	listCertsFn          func(ctx context.Context, tenantID string) ([]*cert.CertRecord, error)
 	caCertPEMFn          func() []byte
@@ -151,7 +151,7 @@ func (m *mockCertProvider) ExportPKCS12(ctx context.Context, certPEM, keyPEM []b
 	return m.exportPKCS12Fn(ctx, certPEM, keyPEM, passphrase)
 }
 
-func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockCertProvider) RevokeCert(ctx context.Context, serial string) (*cert.RevokeResult, error) {
 	return m.revokeCertFn(ctx, serial)
 }
 

@@ -1,6 +1,6 @@
 # Certificate Authority — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -52,7 +52,17 @@ Response — `CertBundle`:
   "revoked": false }
 ```
 
-`POST /certs/revoke` — `{ "serial": "3f2a9c…" }`.
+`POST /certs/revoke` — `{ "serial": "3f2a9c…" }`. Response:
+
+```json
+{ "status": "ok", "recordFound": true }
+```
+
+`recordFound` distinguishes a certificate this node holds a `CertRecord` for
+(`true`) from a deny-by-serial revocation of one it does not (`false`) —
+both are successes, reflected in `status`. gRPC and Unix carry the same
+distinction in `RevokeCertResponse.record_found`; the RPC previously
+returned `google.protobuf.Empty`.
 
 `POST /certs/export` — certificate PEM, key PEM and a passphrase; returns the
 PKCS#12 archive.
@@ -87,19 +97,19 @@ than merely inert.
 | Success | 200 | `OK` |
 | Barrier sealed | 503 | `UNAVAILABLE` — `BarrierSealedError` |
 | CA key not loaded or destroyed | 503 | `UNAVAILABLE` — `CAKeyNotAvailableError` |
-| Serial not found — declared and mapped, currently **produced by nothing** | 404 | `NOT_FOUND` — `CertNotFoundError` |
-| Operation targets a revoked certificate — declared and mapped, currently **produced by nothing**; revocation enforcement is an authentication failure, below | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
-
-`POST /certs/revoke` returns **200 / `OK` whether or not this node holds a
-record for the serial**: the marker is written either way (deny-by-serial), so
-both are successes. A caller therefore cannot currently tell a mistyped serial
-from a deliberate revocation of a peer-issued one. That is a known reporting
-gap, tracked separately; it is not closed with an error status, because
-reporting a success as a failure would send a caller retrying and escalating
-over a revocation that is already in force.
+| Serial not found — declared and mapped, currently **produced by nothing**: `RevokeCert` is deny-by-serial by design and never returns it | 404 | `NOT_FOUND` — `CertNotFoundError` |
+| Export targets a revoked certificate | 409 | `FAILED_PRECONDITION` — `CertRevokedError` |
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError` |
 | Generation or export failure | 500 | `INTERNAL` — wraps the cause, `Unwrap()`-able |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+
+`POST /certs/revoke` returns **200 / `OK` whether or not this node holds a
+record for the serial**: the marker is written either way (deny-by-serial), so
+both are successes. The response's `recordFound` field is how a caller tells
+a mistyped serial apart from a deliberate revocation of a peer-issued one,
+without either being reported as a failure — reporting a success as an error
+would send a caller retrying and escalating over a revocation that is already
+in force.
 
 ## Authenticating with a revoked certificate
 

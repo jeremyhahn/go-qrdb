@@ -140,7 +140,9 @@ func (f *fakeCertProvider) ExportPKCS12(_ context.Context, _, _ []byte, _ string
 	return []byte("PKCS12"), nil
 }
 
-func (f *fakeCertProvider) RevokeCert(_ context.Context, _ string) error        { return nil }
+func (f *fakeCertProvider) RevokeCert(_ context.Context, serial string) (*cert.RevokeResult, error) {
+	return &cert.RevokeResult{Serial: serial}, nil
+}
 func (f *fakeCertProvider) IsRevoked(_ context.Context, _ string) (bool, error) { return false, nil }
 func (f *fakeCertProvider) ListCerts(_ context.Context, _ string) ([]*cert.CertRecord, error) {
 	return []*cert.CertRecord{
@@ -346,7 +348,7 @@ func TestGRPCCert_AllMethods_Success(t *testing.T) {
 		}
 	})
 	t.Run("RevokeCert", func(t *testing.T) {
-		if err := tr.RevokeCert(ctx, "001"); err != nil {
+		if _, err := tr.RevokeCert(ctx, "001"); err != nil {
 			t.Fatalf("RevokeCert: %v", err)
 		}
 	})

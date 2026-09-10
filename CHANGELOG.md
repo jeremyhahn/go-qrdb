@@ -11,6 +11,49 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ExportPKCS12` refuses a revoked certificate** (#287). It parses the
+  supplied `certPEM`, derives the serial with `FormatSerial` (the single
+  definition of that format), and refuses with `*CertRevokedError` when
+  `IsRevoked` says the serial is revoked. There is no override flag: a
+  forensic or archival export of a revoked bundle needs that added
+  deliberately, not defaulted. This is an OPERATOR SIGNAL, not a containment
+  control — the caller already supplies `certPEM`/`keyPEM`, so refusal
+  withholds nothing it did not already have; its value is that the system
+  stops silently packaging a credential it will not honour anywhere in the
+  cluster. Gives `cert.CertRevokedError` its first producer: both REST (409)
+  and gRPC (`FAILED_PRECONDITION`) mappings were previously unreachable
+  except through a mock.
+
+### Changed — BREAKING
+
+- **`RevokeCert` reports what it did, on every transport** (#287).
+  `cert.CertProvider.RevokeCert`, `transport.CertClient.RevokeCert` (`sdk/go`)
+  and the gRPC/Unix `RevokeCert` RPC now return a result alongside the error:
+  `(*cert.RevokeResult, error)` in `pkg/cert`, `(*transport.RevokeResult,
+  error)` in the SDK, `RevokeCertResponse{record_found}` on the wire (the RPC
+  previously returned `google.protobuf.Empty`). `RevokeResult.RecordFound`
+  (a projection of `RevokeOutcome`) distinguishes a certificate this node
+  holds a `CertRecord` for from a deny-by-serial revocation of one it does
+  not — the certificate may have been issued by a peer, or its record
+  pruned. Both are successes: the revocation marker is written
+  unconditionally, before the outcome is even determined, so a mistyped
+  serial was previously indistinguishable from a deliberate revocation of a
+  peer-issued certificate. Reporting that distinction as an error would have
+  misreported the deliberate case — the one deny-by-serial exists to
+  protect — as a failure. `qrdb ca revoke` / `qrdb certs revoke` now prints
+  which case occurred.
+
+  **Consumer verification (pre-publication exception,
+  `conventions/release-versioning.md`):** `RevokeCert` and `ExportPKCS12` are
+  referenced only inside go-qrdb's own `pkg/cert`, `pkg/api/*` and
+  `sdk/go/transport/*`. go-xkms, go-quicbaas and go-trusted-platform were not
+  checked out on the host that made this change; go-trusted-ca matches on
+  the method name but has no go-qrdb dependency in its `go.mod`, so its
+  `RevokeCert` is an unrelated API, not a consumer of this one. Zero verified
+  external consumers at the time of this change.
+
 ## [0.16.3-alpha] - 2026-09-06
 
 ### Added

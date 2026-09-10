@@ -610,7 +610,7 @@ service QRDBService {
     }
 
     // RevokeCert marks a certificate serial as revoked.
-    rpc RevokeCert(RevokeCertRequest) returns (google.protobuf.Empty) {
+    rpc RevokeCert(RevokeCertRequest) returns (RevokeCertResponse) {
         option (qrdb.v1.permission) = "certs:revoke";
     }
 
@@ -2699,6 +2699,14 @@ message ExportCertResponse {
 // RevokeCertRequest marks a certificate serial as revoked.
 message RevokeCertRequest {
     string serial = 1;
+}
+
+// RevokeCertResponse reports what RevokeCert did. record_found
+// distinguishes a certificate the node holds a CertRecord for from a
+// deny-by-serial revocation of one it does not -- both are successes,
+// which is why the distinction is carried here rather than as an error.
+message RevokeCertResponse {
+    bool record_found = 1;
 }
 
 // ListCertsRequest lists all issued certificates for a tenant.

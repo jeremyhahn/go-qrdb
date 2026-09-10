@@ -126,7 +126,7 @@ func (m *mockAuthTransport) GenerateCert(ctx context.Context, req *transport.Gen
 func (m *mockAuthTransport) ExportCert(ctx context.Context, req *transport.ExportCertRequest) (*transport.ExportCertResponse, error) {
 	return m.certs.ExportCert(ctx, req)
 }
-func (m *mockAuthTransport) RevokeCert(ctx context.Context, serial string) error {
+func (m *mockAuthTransport) RevokeCert(ctx context.Context, serial string) (*transport.RevokeResult, error) {
 	return m.certs.RevokeCert(ctx, serial)
 }
 func (m *mockAuthTransport) ListCerts(ctx context.Context, tenantID string) (*transport.ListCertsResponse, error) {
@@ -489,14 +489,14 @@ func (m *mockCertClient) ExportCert(_ context.Context, _ *transport.ExportCertRe
 	}, nil
 }
 
-func (m *mockCertClient) RevokeCert(_ context.Context, serial string) error {
+func (m *mockCertClient) RevokeCert(_ context.Context, serial string) (*transport.RevokeResult, error) {
 	for _, c := range m.certs {
 		if c.Serial == serial {
 			c.Revoked = true
-			return nil
+			return &transport.RevokeResult{Serial: serial, RecordFound: true}, nil
 		}
 	}
-	return errors.New("certificate not found: " + serial)
+	return nil, errors.New("certificate not found: " + serial)
 }
 
 func (m *mockCertClient) ListCerts(_ context.Context, _ string) (*transport.ListCertsResponse, error) {

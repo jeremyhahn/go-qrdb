@@ -47,6 +47,59 @@ type CertBundle struct {
 	Serial string
 }
 
+// RevokeOutcome reports what RevokeCert (or RevokeCertResult) found when it
+// wrote a revocation marker for a serial. Both values are SUCCESSES: the
+// marker is written unconditionally, before either outcome is determined, so
+// the outcome describes what was found, never what was done. See
+// RevokeResult and go-qrdb#287.
+type RevokeOutcome int
+
+const (
+	// RevokeOutcomeRecordUpdated means this node held a CertRecord for the
+	// serial, and its Revoked display field was updated alongside the
+	// marker.
+	RevokeOutcomeRecordUpdated RevokeOutcome = iota
+
+	// RevokeOutcomeDenyBySerial means no local CertRecord matched the
+	// serial -- the certificate may have been issued by a peer, or its
+	// record pruned. The marker was still written: this is a deliberate,
+	// successful deny-by-serial revocation, not a failure. See "Deny-by
+	// serial" in docs/certificate-authority/architecture.md.
+	RevokeOutcomeDenyBySerial
+)
+
+// String renders the outcome for logs and CLI output.
+func (o RevokeOutcome) String() string {
+	switch o {
+	case RevokeOutcomeRecordUpdated:
+		return "record_updated"
+	case RevokeOutcomeDenyBySerial:
+		return "deny_by_serial"
+	default:
+		return "unknown"
+	}
+}
+
+// RevokeResult reports what a revocation did, distinguishing a revocation of
+// a certificate this node holds a record for from a deny-by-serial
+// revocation of one it does not -- the distinction RevokeCert's plain error
+// return cannot express without lying about one of the two cases (both are
+// successes). See RevokeOutcome.
+type RevokeResult struct {
+	// Serial is the revoked certificate serial, echoing the request.
+	Serial string
+
+	// Outcome reports whether a local CertRecord matched.
+	Outcome RevokeOutcome
+}
+
+// RecordFound reports whether this node held a CertRecord for the revoked
+// serial. It is the bool projection of Outcome that transports serialize,
+// since the two-value enum only exists in Go call sites.
+func (r *RevokeResult) RecordFound() bool {
+	return r.Outcome == RevokeOutcomeRecordUpdated
+}
+
 // CertRecord is the metadata stored in KVStore for each issued certificate.
 type CertRecord struct {
 	// Serial is the hexadecimal serial number of the certificate.

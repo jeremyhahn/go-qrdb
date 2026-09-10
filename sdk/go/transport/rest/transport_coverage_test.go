@@ -679,17 +679,35 @@ func TestRESTExportCert_Closed(t *testing.T) {
 func TestRESTRevokeCert_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/certs/revoke"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		writeJSON(w, map[string]any{"status": "ok", "recordFound": true})
 	})
-	if err := rt.RevokeCert(context.Background(), "001"); err != nil {
+	result, err := rt.RevokeCert(context.Background(), "001")
+	if err != nil {
 		t.Fatalf("RevokeCert: %v", err)
+	}
+	if !result.RecordFound {
+		t.Fatal("RecordFound should be true")
+	}
+}
+
+func TestRESTRevokeCert_DenyBySerial(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	rs.handle(exactPath(http.MethodPost, "/certs/revoke"), func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{"status": "ok", "recordFound": false})
+	})
+	result, err := rt.RevokeCert(context.Background(), "peer-serial")
+	if err != nil {
+		t.Fatalf("RevokeCert: %v", err)
+	}
+	if result.RecordFound {
+		t.Fatal("RecordFound should be false for a deny-by-serial revocation")
 	}
 }
 
 func TestRESTRevokeCert_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
-	err := rt.RevokeCert(context.Background(), "001")
+	_, err := rt.RevokeCert(context.Background(), "001")
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
