@@ -205,12 +205,13 @@ func (h *Hub) prepareReplay(startRev int64) (bool, error) {
 }
 
 // startReplay streams the historical change range to a freshly registered,
-// unsynced watcher, then hands off to live delivery. The boundary (used only as
-// the scan's upper bound and the Created cursor origin) is captured AFTER
-// registration. Delivery dedup is driven by the watcher's deliver floor — the
-// last revision the replay ACTUALLY delivered — not the boundary, so a revision
-// the in-memory counter had already advanced to but that was not yet durable at
-// scan time is delivered by the staged-live path rather than dropped.
+// unsynced watcher, then hands off to live delivery. The boundary (the scan's
+// upper bound, the Created cursor origin, and — once replay completes — the
+// Progress watermark) is captured AFTER registration. Delivery dedup is driven
+// by the watcher's deliver floor — the last revision the replay ACTUALLY
+// delivered — not the boundary, so a revision the in-memory counter had
+// already advanced to but that was not yet durable at scan time is delivered
+// by the staged-live path rather than dropped.
 func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
 	hr := h.historyReplayer()
 	if hr == nil {
@@ -270,6 +271,19 @@ func (h *Hub) startReplay(w *watcher, wo WatchOptions) {
 		}
 
 		w.finishReplay()
+
+		// Post-replay watermark (#210): finishReplay has just flushed every
+		// staged live event through the deliver floor, so everything through
+		// boundary has now actually reached the channel. Created's Revision
+		// cannot serve this role — it is sent before replay starts, so a
+		// collection window that expires mid-replay would hand a caller a
+		// cursor covering events it never got. Opt-in because it is one more
+		// response per replay and only a start-revision caller that resumes
+		// across bounded collection windows (e.g. pkg/api/mcp/tools_watch.go)
+		// needs it.
+		if wo.ProgressNotify {
+			w.deliver(WatchResponse{WatchID: int64(w.id), Revision: boundary, Progress: true})
+		}
 	}()
 }
 

@@ -89,9 +89,24 @@ type WatchResponse struct {
 
 	// Created is true for the single synthetic response emitted when a watch
 	// with a start revision is established, before any change events. Its
-	// Revision carries the store's current revision at creation, which a client
-	// uses as the authoritative cursor origin for a later resume.
+	// Revision is the replay's intended upper bound, captured before a single
+	// historical event has been delivered — NOT a delivery watermark. A
+	// consumer that resumes from Created.Revision on a collection window that
+	// expires mid-replay skips every event the replay never got to (#210).
+	// Use Progress for a value that is actually safe to resume from.
 	Created bool
+
+	// Progress is true for the synthetic response startReplay emits after a
+	// start-revision replay has FULLY delivered every matching event through
+	// Revision (opt-in via WithProgressNotify), including the flush of any
+	// live event staged during the replay. Unlike Created, a consumer that
+	// advances its cursor to Progress.Revision has not skipped anything: every
+	// revision at or below it was either replayed or handed off to live
+	// delivery before this response was sent. Never emitted when the replay
+	// fails or is truncated (finishReplay is only reached on success), so its
+	// absence during a bounded collection window is itself the truncation
+	// signal a caller acts on.
+	Progress bool
 }
 
 // ---------------------------------------------------------------------------

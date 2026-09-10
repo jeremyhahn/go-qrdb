@@ -300,9 +300,6 @@ func TestNewWatcher_SetsFields(t *testing.T) {
 	if w.startRevision != 42 {
 		t.Fatalf("startRevision = %d, want 42", w.startRevision)
 	}
-	if !w.progressNotify {
-		t.Fatal("expected progressNotify to be true")
-	}
 	if len(w.filters) != 1 || w.filters[0] != WatchFilterNoPut {
 		t.Fatalf("filters = %v, want [WatchFilterNoPut]", w.filters)
 	}
@@ -316,9 +313,6 @@ func TestNewWatcher_DefaultOptions(t *testing.T) {
 	}
 	if w.startRevision != 0 {
 		t.Fatalf("expected startRevision 0, got %d", w.startRevision)
-	}
-	if w.progressNotify {
-		t.Fatal("expected progressNotify to be false by default")
 	}
 	if len(w.filters) != 0 {
 		t.Fatalf("expected no filters by default, got %d", len(w.filters))

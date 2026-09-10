@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +122,35 @@ func connectWatchHistoryInProcess(t *testing.T, fh *fakeHistory) (*Transport, fu
 
 	hub := watch.NewHub()
 	hub.SetHistory(fh)
+	watchSvc := service.NewWatchService(hub)
+	mvccSvc := &dynamicMVCCSvc{mockMVCCSvc: newMockMVCCSvc(), fh: fh}
+
+	srv := mcpapi.NewServer(
+		newMockKVService(),
+		newMockAdminService(),
+		":0",
+		mcpapi.WithWatch(watchSvc),
+		mcpapi.WithMVCC(mvccSvc),
+	)
+	tr, err := NewInProcess(srv.MCPServer())
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	if connErr := tr.Connect(context.Background()); connErr != nil {
+		t.Fatalf("Connect: %v", connErr)
+	}
+	return tr, func() { _ = tr.Close() }
+}
+
+// connectWatchHistoryWithReplayer is connectWatchHistoryInProcess generalized
+// to a caller-supplied watch.HistoryReplayer, so a test can drive Replay
+// itself (e.g. slowHistory below) while CurrentRevision still reflects fh —
+// the same *fakeHistory the replayer wraps.
+func connectWatchHistoryWithReplayer(t *testing.T, hr watch.HistoryReplayer, fh *fakeHistory) (*Transport, func()) {
+	t.Helper()
+
+	hub := watch.NewHub()
+	hub.SetHistory(hr)
 	watchSvc := service.NewWatchService(hub)
 	mvccSvc := &dynamicMVCCSvc{mockMVCCSvc: newMockMVCCSvc(), fh: fh}
 
@@ -354,12 +384,14 @@ func TestWatchPoll_BootstrapsCursorViaCurrentRevision(t *testing.T) {
 //
 // Residual note for whoever touches this next: the qrdb_watch tool's
 // collection window is a server-side timer this package cannot inject, and a
-// window narrow enough to expire mid-replay makes the tool report a cursor
-// covering events it never delivered. That is a real defect in the tool
-// handler, not in this loop, and it is tracked separately; it is why
-// withSteppedWatchPolling sets a generously wide window instead of the 1ms
-// the old helper used. Do not narrow it to "make the gaps tighter" — the gaps
-// here are already exact.
+// window narrow enough to expire mid-replay used to make the tool report a
+// cursor covering events it never delivered — fixed in #210
+// (TestWatchPoll_TruncatedReplayResumesRatherThanSkips exercises that path
+// directly). withSteppedWatchPolling still sets a generously wide window
+// instead of the 1ms the old helper used, because this test's job is
+// verifying the gap-free property of a loop that completes its polls
+// normally, not re-proving #210's truncation handling on every run. Do not
+// narrow it to "make the gaps tighter" — the gaps here are already exact.
 func TestWatchPoll_NoLossAcrossPollGaps(t *testing.T) {
 	clk := withSteppedWatchPolling(t)
 
@@ -527,6 +559,108 @@ func TestWatchPoll_LiveOnlyZeroEventDoesNotAdvanceCursor(t *testing.T) {
 	for i, has := range sawStartRevision {
 		if has {
 			t.Errorf("poll %d unexpectedly carried start_revision; a zero-event/zero-revision live-only response must never establish a cursor", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Truncated replay resumes rather than skips (#210), end to end
+// ---------------------------------------------------------------------------
+
+// slowHistory embeds fakeHistory but blocks the FIRST Replay call anyone
+// makes on it until gate closes, modelling a store slow enough that one
+// qrdb_watch collection window (withSteppedWatchPolling's 200ms server-side
+// timer) expires while a replay is still in progress. fakeHistory's own
+// Replay is effectively instantaneous, which is exactly why it cannot
+// exercise this path on its own — the truncation this test is about only
+// happens when a replay genuinely outlives the collection window.
+type slowHistory struct {
+	fakeHistory
+	gate    chan struct{}
+	blocked atomic.Bool
+}
+
+func (s *slowHistory) Replay(startRev, endRev int64, keyMatch func([]byte) bool, wantPrev bool, fn func(*watch.Event) bool) error {
+	if s.blocked.CompareAndSwap(false, true) {
+		<-s.gate
+	}
+	return s.fakeHistory.Replay(startRev, endRev, keyMatch, wantPrev, fn)
+}
+
+// TestWatchPoll_TruncatedReplayResumesRatherThanSkips is the end-to-end
+// reproducer for #210: a poll whose server-side replay does not finish
+// inside the collection window must not advance the cursor past what it
+// actually delivered, or the next poll permanently skips the revisions the
+// truncated one never got to.
+//
+// Before the fix: the truncated poll's Created response (Revision: boundary,
+// i.e. 3 — the store's revision at the moment the watcher was registered,
+// captured before a single historical event had been replayed) was credited
+// as the delivered cursor. The next poll then requested start_revision=4,
+// and revisions 1-3 were gone for good — reproduced with `go test -run
+// TestWatchPoll_TruncatedReplayResumesRatherThanSkips` against
+// pkg/api/mcp/tools_watch.go with the resp.Progress/len(resp.Events)>0 gate
+// in handleWatch's collectLoop reverted to an unconditional
+// `lastRevision = resp.Revision` (see the commit message for this repo's
+// tools_watch_test.go-level mutation run, which shows the same class of
+// failure directly against the handler).
+//
+// After the fix: the truncated poll reports nothing delivered (Events empty,
+// Revision uncredited — see tools_watch.go's collectLoop), so the cursor
+// stays at 1 and the next poll re-requests start_revision=1. Its replay is no
+// longer blocked (slowHistory only blocks the first call), so it delivers
+// all four revisions in a single pass — none skipped, none duplicated.
+func TestWatchPoll_TruncatedReplayResumesRatherThanSkips(t *testing.T) {
+	clk := withSteppedWatchPolling(t)
+
+	sh := &slowHistory{gate: make(chan struct{})}
+	tr, cleanup := connectWatchHistoryWithReplayer(t, sh, &sh.fakeHistory)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch, err := tr.Watch(ctx, "k", transport.WatchOptions{})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	pause := clk.awaitPause(t)
+
+	// Three changes land before the watch even starts polling, so the very
+	// first poll's replay (start_revision=1, via the bootstrap cursor) is
+	// what has to deliver them.
+	wantRevs := []int64{sh.push("k", "v1"), sh.push("k", "v2"), sh.push("k", "v3")}
+
+	// The first poll runs, creates a watcher, and starts a replay that blocks
+	// on sh.gate — past the 200ms collection window the stepClock lets it
+	// wait out uninterrupted (the poll loop itself is parked in its own
+	// After, not driving any timer the replay depends on).
+	pause = clk.step(t, pause)
+	seen := make(map[string]map[int64]int)
+	drainWatch(ch, seen)
+	if len(seen["k"]) != 0 {
+		t.Fatalf("truncated poll delivered %v, want nothing yet (replay is still blocked server-side)", seen["k"])
+	}
+
+	close(sh.gate) // let the abandoned first replay finish server-side.
+
+	// A fourth change, then the next poll. If the cursor had been advanced
+	// by the truncated poll's Created revision (the #210 defect), this poll
+	// would request start_revision=4 and 1-3 would never come back.
+	wantRevs = append(wantRevs, sh.push("k", "v4"))
+	clk.step(t, pause)
+	drainWatch(ch, seen)
+
+	cancel()
+	drainWatchUntilClosed(ch)
+
+	got := seen["k"]
+	if len(got) != len(wantRevs) {
+		t.Fatalf("observed %d distinct revisions, want %d (pushed %v): %v", len(got), len(wantRevs), wantRevs, got)
+	}
+	for _, rev := range wantRevs {
+		if got[rev] != 1 {
+			t.Errorf("revision %d delivered %d times, want exactly 1", rev, got[rev])
 		}
 	}
 }

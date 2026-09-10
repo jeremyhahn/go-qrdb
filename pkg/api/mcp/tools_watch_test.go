@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -143,5 +144,98 @@ func TestHandleWatch_MidStreamNoError(t *testing.T) {
 	}
 	if result == nil || result.IsError {
 		t.Fatalf("expected a successful result, got: %+v", result)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Truncated replay must not overstate the reported cursor (#210)
+// ---------------------------------------------------------------------------
+
+// TestHandleWatch_TruncatedReplayDoesNotOverstateRevision is the tool-level
+// reproducer from #210: a start-revision watch whose collection window
+// expires before the replay delivers a single event must report a Revision
+// the caller has actually been given something for — not the Created
+// response's boundary. Before the fix, this handler took lastRevision
+// straight from Created, so it reported revision:3 here despite Events being
+// empty; an SDK poller resuming from revision+1 would then request
+// start_revision=4 and permanently skip revisions 1-3, which never arrived
+// on the wire. Revert the credit-from-Created line in tools_watch.go and
+// this test fails with "revision = 3, want 0".
+func TestHandleWatch_TruncatedReplayDoesNotOverstateRevision(t *testing.T) {
+	// Buffered so the test can queue the Created response before the handler
+	// starts reading — simulating a replay goroutine that got as far as
+	// startReplay's Created send and then blocked (a slow store, exactly the
+	// fault-injection shape docs/watch/engineering.md already prescribes)
+	// for longer than the tool's collection window.
+	ch := make(chan watch.WatchResponse, 1)
+	ch <- watch.WatchResponse{WatchID: 1, Created: true, Revision: 3}
+	watcher := &mockWatcher{eventsCh: ch, watchID: 1}
+	svc := &mockWatchService{
+		watchFn: func(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
+			return watcher, nil
+		},
+	}
+	handler := handleWatch(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"key":             "k",
+		"start_revision":  float64(1),
+		"timeout_seconds": float64(0.05),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got watchResult
+	if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &got); jsonErr != nil {
+		t.Fatalf("decoding result: %v", jsonErr)
+	}
+	if len(got.Events) != 0 {
+		t.Fatalf("got %d events, want 0 (the replay never delivered any): %+v", len(got.Events), got.Events)
+	}
+	if got.Revision != 0 {
+		t.Fatalf("revision = %d, want 0: a truncated replay delivered nothing, so the cursor must not advance past what a resume would then skip", got.Revision)
+	}
+}
+
+// TestHandleWatch_ProgressNotifyWatermarkCreditedAsRevision is the
+// complement of the truncation test above: once a replay genuinely
+// completes (finishReplay reached, opted in via WithProgressNotify — which
+// this handler always requests for a start-revision watch), its Progress
+// response IS trustworthy and must set Revision, including the all-idle case
+// where the replay delivered zero events because nothing changed. Without
+// this, a caller correctly refusing to trust Created would be unable to
+// advance its cursor at all during idle periods.
+func TestHandleWatch_ProgressNotifyWatermarkCreditedAsRevision(t *testing.T) {
+	ch := make(chan watch.WatchResponse, 2)
+	ch <- watch.WatchResponse{WatchID: 1, Created: true, Revision: 5}
+	ch <- watch.WatchResponse{WatchID: 1, Progress: true, Revision: 5}
+	watcher := &mockWatcher{eventsCh: ch, watchID: 1}
+	svc := &mockWatchService{
+		watchFn: func(_ context.Context, _ string, opts ...watch.WatchOption) (watch.Watcher, error) {
+			gotOpts := watch.ApplyWatchOptions(opts)
+			if !gotOpts.ProgressNotify {
+				t.Error("handleWatch must request WithProgressNotify for a start-revision watch")
+			}
+			return watcher, nil
+		},
+	}
+	handler := handleWatch(svc)
+
+	result, err := handler(context.Background(), makeReq(map[string]any{
+		"key":             "k",
+		"start_revision":  float64(1),
+		"timeout_seconds": float64(0.05),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got watchResult
+	if jsonErr := json.Unmarshal([]byte(resultText(t, result)), &got); jsonErr != nil {
+		t.Fatalf("decoding result: %v", jsonErr)
+	}
+	if got.Revision != 5 {
+		t.Fatalf("revision = %d, want 5 (from the Progress watermark)", got.Revision)
 	}
 }

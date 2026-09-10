@@ -1,6 +1,6 @@
 # Watch — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-05
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Exported surface
 
@@ -65,8 +65,10 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
 - **Replay is seamless.** When `StartRevision` is set and supported, historical
   events are delivered before live ones with no gap and no duplicate at the
   join point. This holds for a consumer that reads the stream to its end. The
-  MCP transport does not — it snapshots the stream inside a bounded collection
-  window — and there the invariant is currently broken; see *Known limitations*.
+  MCP transport reads a bounded collection window instead, so a SINGLE call may
+  return a partial replay — but it reports a cursor covering only what it
+  delivered, so the polling sequence as a whole is still gap-free and
+  duplicate-free; see *Known limitations*.
 - **`PrevKV` is opt-in** because retaining the prior value costs a lookup per
   event.
 - **Cancellation is in-band, never a silent close.** Every abnormal termination
@@ -171,18 +173,35 @@ nothing survives a restart, and a consumer reconnecting must re-establish and
 
 ## Known limitations
 
-- **A replay truncated by the MCP collection window loses events silently.**
-  `qrdb_watch` reports, as its `revision`, the revision of the last stream
-  response it consumed — and `Hub.startReplay` delivers the `Created` response,
-  whose `Revision` is the store boundary at watcher registration, *before* any
-  replayed event. A collection window that expires mid-replay therefore returns
-  a truncated event list next to a revision covering the events it dropped, and
-  the SDK's polling client advances its cursor past them and never asks again.
-  Any backlog that takes longer than one `timeout_seconds` window to drain is
-  affected, which is exactly the resume-after-a-gap case the cursor exists to
-  serve. A deterministic reproducer exists; the fix needs a decision on how
-  replay completion becomes visible to the tool handler, since the handler
-  cannot currently tell a completed replay from a truncated one.
+- **A replay truncated by the MCP collection window can under-report, never
+  over-report, its cursor.** `qrdb_watch` computes the `revision` it returns
+  only from responses that prove delivery — an event batch's own revision, or
+  a post-replay progress watermark emitted once every matching event through
+  the replay's boundary has actually reached the watcher's channel. It never
+  credits the `Created` response's revision, because that value is the
+  replay's *intended* upper bound, captured before a single historical event
+  has been replayed; treating it as delivered would let a collection window
+  that expires mid-replay hand a caller a cursor covering events it never
+  received. The consequence of under-reporting is bounded and
+  self-correcting: the SDK's polling client re-requests the same
+  `start_revision` on its next poll rather than skipping ahead, so a replay
+  backlog that outlives one `timeout_seconds` window costs an extra round
+  trip, not a lost event.
+
+## Watch responses (internal)
+
+`pkg/watch.WatchResponse` carries two synthetic, event-free markers a
+start-revision watch may see, and they answer different questions:
+
+- **`Created`** — the single response emitted when the watch is established,
+  before any historical event is replayed. Its `Revision` is the replay's
+  *target*, not a delivery guarantee.
+- **`Progress`** — opt-in via `WithProgressNotify`, emitted only once a
+  start-revision replay has fully drained, including any live event staged
+  during it. Its `Revision` is safe to treat as "everything through this
+  revision has been delivered." The `qrdb_watch` tool handler is the
+  consumer that opts in, and only for a start-revision watch — a plain
+  live-only watch never replays, so the distinction does not apply to it.
 
 ## Observability
 

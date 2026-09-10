@@ -28,7 +28,7 @@ grant and is authorized as such.
 |---|---|---|---|
 | `start_revision` | int64 | 0 | replay from this revision, then continue live |
 | `prev_kv` | bool | false | include the previous value in each event |
-| `progress_notify` | bool | false | request periodic progress responses on an idle stream |
+| `progress_notify` | bool | false | emit one progress response after the replay completes, carrying a cursor safe to resume from |
 
 ## Response
 

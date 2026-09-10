@@ -33,17 +33,25 @@ import (
 //
 // The qrdb_watch tool itself is stateless request/response: each call
 // creates a fresh watcher, collects for up to timeout_seconds, closes the
-// watcher, and returns a snapshot carrying the highest revision observed
-// (Revision in watchResult) — including the revision of the zero-event
-// "Created" response a start-revision watch gets on creation (see
-// pkg/watch.Hub.startReplay). The SDK client (sdk/go/transport/mcp) is what
-// makes repeated calls to this tool loss-free: it tracks that revision as a
-// cursor and always requests start_revision = cursor+1 on the next call, so
-// pkg/watch's replay-then-live-handoff redelivers anything committed in the
-// gap between one call ending and the next beginning. A single call to this
-// tool in isolation (start_revision omitted) is a plain live-only snapshot
-// with no such guarantee — the loss-free contract lives in the client's
-// polling loop, not in this handler.
+// watcher, and returns a snapshot carrying the highest revision actually
+// DELIVERED (Revision in watchResult). The SDK client (sdk/go/transport/mcp)
+// is what makes repeated calls to this tool loss-free: it tracks that
+// revision as a cursor and always requests start_revision = cursor+1 on the
+// next call, so pkg/watch's replay-then-live-handoff redelivers anything
+// committed in the gap between one call ending and the next beginning. A
+// single call to this tool in isolation (start_revision omitted) is a plain
+// live-only snapshot with no such guarantee — the loss-free contract lives
+// in the client's polling loop, not in this handler.
+//
+// Revision is computed only from responses that carry proof of delivery: an
+// event batch's own Revision, or the post-replay Progress watermark (see
+// pkg/watch.Hub.startReplay, requested here via WithProgressNotify). The
+// zero-event "Created" response a start-revision watch gets on creation is
+// NOT used — its Revision is the replay's intended upper bound, captured
+// before a single historical event has been delivered, so a collection
+// window that expires mid-replay would otherwise hand the caller a cursor
+// covering events the replay never got to: silent, permanent loss on the
+// caller's next poll (#210).
 const defaultWatchTimeout = 5 * time.Second
 
 // watchTools returns the MCP tool registrations for watch operations.
@@ -117,10 +125,13 @@ func handleWatch(watchSvc service.WatchServicer) mcpserver.ToolHandlerFunc {
 			timeout = time.Duration(timeoutSec * float64(time.Second))
 		}
 
-		// Build watch options.
+		// Build watch options. WithProgressNotify only matters alongside a
+		// start revision — it is what lets startReplay report a Revision this
+		// handler can trust even when the replay delivered zero events (see
+		// the package doc comment above and pkg/watch.Hub.startReplay).
 		var opts []watch.WatchOption
 		if startRevision > 0 {
-			opts = append(opts, watch.WithStartRevision(startRevision))
+			opts = append(opts, watch.WithStartRevision(startRevision), watch.WithProgressNotify())
 		}
 		if prevKV {
 			opts = append(opts, watch.WithPrevKV())
@@ -168,7 +179,16 @@ func handleWatch(watchSvc service.WatchServicer) mcpserver.ToolHandlerFunc {
 					}
 					break collectLoop
 				}
-				lastRevision = resp.Revision
+				// Only credit Revision from a response that proves delivery: an
+				// event batch's own Revision, or the post-replay Progress
+				// watermark. Created's Revision is the replay's intended upper
+				// bound, not a delivery watermark (#210) — crediting it here is
+				// exactly the defect this handler exists to not have.
+				if resp.Progress || len(resp.Events) > 0 {
+					if resp.Revision > lastRevision {
+						lastRevision = resp.Revision
+					}
+				}
 				for _, evt := range resp.Events {
 					if evt == nil {
 						continue

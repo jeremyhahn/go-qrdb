@@ -40,17 +40,21 @@ var _ transport.WatchClient = (*Transport)(nil)
 // plain live-only watch (no start_revision) never replays anything that
 // happened before its own creation.
 //
-// This version is cursor-based: it tracks the highest revision observed
+// This version is cursor-based: it tracks the highest DELIVERED revision
 // (nextRevision, primed to a real anchor before the very first poll — see
 // below) and requests start_revision = nextRevision on every poll,
-// unconditionally. The server-side qrdb_watch tool then always takes the
-// hub's replay-then-live-handoff path (pkg/watch.Hub.startReplay), which
-// guarantees every change since nextRevision is delivered exactly once
-// before the tool call returns — including the empty "Created" response
-// that arrives even when nothing changed, which is what lets the cursor
-// advance (and the gap stay closed) during idle periods. This makes the
+// unconditionally. The server-side qrdb_watch tool takes the hub's
+// replay-then-live-handoff path (pkg/watch.Hub.startReplay) and reports back
+// only what it actually delivered within its bounded collection window
+// (tools_watch.go) — including, once a replay fully drains, an empty
+// progress watermark that arrives even when nothing changed, which is what
+// lets the cursor advance (and the gap stay closed) during idle periods. A
+// replay that does not finish inside the window is reported honestly as
+// under-delivered rather than padded out to the window's target revision,
+// so this poll's next start_revision request picks up exactly where the
+// truncation left off instead of skipping past it (#210). This makes the
 // polling loop as a whole gap-free for as long as it runs, independent of
-// how often it actually observes an event.
+// how often it actually observes an event or how long a single replay takes.
 //
 // Bootstrap: nextRevision must be a real revision before the first poll, not
 // merely "the next revision the caller happens to see" — otherwise the very
@@ -243,12 +247,21 @@ func (t *Transport) watchPoll(ctx context.Context, key string, prefix bool, opts
 			}
 
 			// Advance the cursor past every revision the server reported.
-			// A replay poll (sentStartRevision) always gets a Created
-			// response even with zero events, so its Revision anchors the
-			// next poll's start_revision even when nothing changed — what
-			// keeps the loop gap-free while idle. A live-only poll's
-			// Revision is only trustworthy when it actually carried events
-			// (see sentStartRevision's comment above).
+			// result.Revision is only ever credited server-side (tools_watch.go)
+			// from a response that proves delivery — an event batch, or the
+			// post-replay progress watermark a replay poll (sentStartRevision)
+			// gets once it has FULLY drained, even with zero events, which is
+			// what keeps the loop gap-free while idle. It is NEVER credited from
+			// the zero-event "Created" response a replay poll gets immediately
+			// on creation, because Created's Revision is the replay's intended
+			// upper bound, not what it actually delivered — trusting it here
+			// would resume past events a collection window that expired
+			// mid-replay never got to (#210). A live-only poll's Revision is
+			// only trustworthy when it actually carried events (see
+			// sentStartRevision's comment above); the `result.Revision+1 >
+			// nextRevision` guard is what keeps a truncated replay poll (whose
+			// Revision under-reports rather than over-reports now) from ever
+			// regressing the cursor.
 			if (sentStartRevision || len(result.Events) > 0) && result.Revision+1 > nextRevision {
 				nextRevision = result.Revision + 1
 			}

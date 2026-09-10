@@ -37,10 +37,9 @@ type watcher struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	prevKV         bool
-	startRevision  int64
-	progressNotify bool
-	filters        []WatchFilter
+	prevKV        bool
+	startRevision int64
+	filters       []WatchFilter
 
 	// Replay handoff state. A watcher created with a start revision begins
 	// UNSYNCED: live events from notify() are held in staging while the replay
@@ -89,18 +88,17 @@ type watcher struct {
 func newWatcher(id uint64, key, rangeEnd []byte, opts WatchOptions, parentCtx context.Context) *watcher {
 	ctx, cancel := context.WithCancel(parentCtx)
 	w := &watcher{
-		id:             id,
-		key:            key,
-		rangeEnd:       rangeEnd,
-		events:         make(chan WatchResponse, defaultEventBufferSize),
-		ctx:            ctx,
-		cancel:         cancel,
-		prevKV:         opts.PrevKV,
-		startRevision:  opts.StartRevision,
-		progressNotify: opts.ProgressNotify,
-		filters:        opts.Filters,
-		replayDone:     make(chan struct{}),
-		deregistered:   make(chan struct{}),
+		id:            id,
+		key:           key,
+		rangeEnd:      rangeEnd,
+		events:        make(chan WatchResponse, defaultEventBufferSize),
+		ctx:           ctx,
+		cancel:        cancel,
+		prevKV:        opts.PrevKV,
+		startRevision: opts.StartRevision,
+		filters:       opts.Filters,
+		replayDone:    make(chan struct{}),
+		deregistered:  make(chan struct{}),
 	}
 	// Default: live-only (unsynced == false). A replaying watcher is switched to
 	// unsynced by the hub before it is registered (beginReplay); here replayDone
