@@ -1224,9 +1224,10 @@ func (n *Node) bindReplicatedVolumePool(svcNode *lifecycle.Node) {
 // would turn a concurrent tenant-scope migration — which today proceeds
 // independently of the system migration — into a typed "not yet fully booted"
 // refusal. Close clears it directly instead, where there is no rebuild to come.
-// The router does hold the OLD svcNode.Tenant across a recycle; that staleness
-// is tracked separately as go-qrdb#222, because fixing it means rebuilding or
-// lazily resolving the router, not nilling a pointer.
+// The router's tenant leg is wired with a nodeTenantResolver (go-qrdb#222),
+// which resolves n.svcNode.Load().Tenant on every call instead of capturing a
+// value once, so it never hands a concurrent tenant-scope migration a handle
+// onto the OLD, stopped tenant service across this window.
 func (n *Node) retractDataPlaneServices() {
 	n.authFactorSvc.Store(nil)
 	n.loginFactorSvc.Store(nil)
@@ -2119,7 +2120,16 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// This mirrors what the server builds internally via effectiveEncryptionMigrator,
 	// so the direct in-process call and every transport handler share the same
 	// routing semantics (system → sysMig → migrateMu; tenant → tenantHosts).
-	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, svcNode.Tenant)
+	//
+	// The tenant leg is wired with &nodeTenantResolver{node: n}, NOT svcNode.Tenant
+	// directly: this router is kept alive across a system-scope migration's
+	// teardownDataPlane→rebuild recycle (see retractDataPlaneServices), during
+	// which svcNode — and the *tenant.Service captured off it — is swapped out
+	// from under any handle taken here. nodeTenantResolver resolves
+	// n.svcNode.Load().Tenant on every call instead, so a concurrent tenant-scope
+	// migration during that window always reaches the currently-live tenant
+	// service rather than the one that existed when this line ran (go-qrdb#222).
+	var encMigrator service.EncryptionMigrator = server.NewScopedEncryptionMigrator(sysMig, n.tenantHosts, n.raftBackend, barrierRegistry, &nodeTenantResolver{node: n})
 	n.encMigrator.Store(&encMigrator)
 
 	srv := server.New(serverCfg, svcNode.KV, svcNode.Admin, allOpts...)

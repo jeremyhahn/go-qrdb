@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // stagingRootKeySuffix is appended to the canonical root-key path to hold the
@@ -108,6 +109,60 @@ func (m *nodeSystemMigrator) EnableEncryption(ctx context.Context, scope service
 
 // Compile-time check that nodeSystemMigrator implements service.EncryptionMigrator.
 var _ service.EncryptionMigrator = (*nodeSystemMigrator)(nil)
+
+// nodeTenantResolver adapts Node to server.TenantServiceResolver by resolving
+// n.svcNode.Load().Tenant on EVERY call instead of once. It is the value
+// wireClientAndServer passes to server.NewScopedEncryptionMigrator so the
+// resulting router's entitlement (CheckBarrierMode) and isolation-routing
+// (GetTenant) checks always see whichever *tenant.Service is currently live.
+//
+// This matters because wireClientAndServer runs once per data-plane build,
+// but the router it produces is deliberately kept alive across a
+// system-scope migration's teardownDataPlane→rebuild window (see
+// Node.retractDataPlaneServices): TenantHostRegistry and RaftBackendFactory,
+// which perform the actual tenant-scope recycle, survive that window by
+// design, so a concurrent tenant-scope migration proceeds independently of
+// the system one. svcNode does NOT survive the window, though — it is
+// swapped to nil in teardownDataPlane and only reappears once Reopen
+// rebuilds it, which for a committed Shamir target does not happen until a
+// Security Officer quorum unseals the barrier (nodeMigrationProvider.Reopen
+// returns after storing a seal-window-only svcNode and leaves the full
+// rebuild pending). A resolver captured once at construction would keep
+// pointing at the STOPPED pre-recycle *tenant.Service for that whole window;
+// resolving through n.svcNode on every call means there is no captured
+// handle to go stale, and no lifecycle hook that has to remember to refresh
+// one (go-qrdb#222).
+type nodeTenantResolver struct {
+	node *Node
+}
+
+// CheckBarrierMode delegates to the tenant service on the CURRENTLY live
+// svcNode. It returns MigrationNotSupportedError when no tenant service is
+// live right now — which is only reachable during the narrow synchronous
+// window inside teardownDataPlane where svcNode has been swapped to nil and
+// the rebuild has not yet stored a replacement (the router's earlier checks
+// in EnableEncryption already require server.TenantHostRegistry or
+// server.RaftBackendFactory to be wired before reaching here, and both
+// require a tenant service to have existed at construction time, so an
+// otherwise tenant-disabled node never reaches this branch).
+func (r *nodeTenantResolver) CheckBarrierMode(ctx context.Context, tenantID string, mode seal.StrategyID) error {
+	sv := r.node.svcNode.Load()
+	if sv == nil || sv.Tenant == nil {
+		return &MigrationNotSupportedError{Reason: "tenant service unavailable during data-plane recycle"}
+	}
+	return sv.Tenant.CheckBarrierMode(ctx, tenantID, mode)
+}
+
+// GetTenant delegates to the tenant service on the CURRENTLY live svcNode;
+// see CheckBarrierMode for why this resolves on every call rather than
+// capturing a handle once.
+func (r *nodeTenantResolver) GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error) {
+	sv := r.node.svcNode.Load()
+	if sv == nil || sv.Tenant == nil {
+		return nil, &MigrationNotSupportedError{Reason: "tenant service unavailable during data-plane recycle"}
+	}
+	return sv.Tenant.GetTenant(ctx, tenantID)
+}
 
 // nodeMigrationProvider implements service.BarrierMigrationProvider against a
 // live Node, performing the online in-process data-plane recycle. It is

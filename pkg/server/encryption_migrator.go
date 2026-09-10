@@ -42,6 +42,32 @@ type tenantIsolationResolver interface {
 	GetTenant(ctx context.Context, tenantID string) (*tenant.TenantInfo, error)
 }
 
+// TenantServiceResolver is the narrow slice of a tenant service
+// NewScopedEncryptionMigrator consults: barrierModeChecker's entitlement gate
+// plus tenantIsolationResolver's routing lookup. tenant.TenantServicer
+// satisfies it structurally, so a caller that already holds a stable
+// tenant.TenantServicer (the daemon's server.Server, which builds it once and
+// never swaps it) passes it directly.
+//
+// A caller whose tenant-service handle CAN be swapped out from under it
+// across a lifecycle event must instead pass an adapter that resolves the
+// CURRENT handle on every call rather than a value captured once here. That
+// is sdk/go/node's case: wireClientAndServer builds the router once per
+// data-plane build, but the router is deliberately kept alive across a
+// system-scope migration's teardownDataPlane→rebuild window (see
+// Node.retractDataPlaneServices) so a concurrent tenant-scope migration keeps
+// working — svcNode, and the *tenant.Service hanging off it, is swapped
+// during that window (potentially for as long as it takes a Security Officer
+// quorum to act, when the committed target is Shamir; see
+// nodeMigrationProvider.Reopen). A captured handle would silently keep
+// routing the concurrent migration's entitlement and isolation checks
+// against a STOPPED service for the whole window; go-qrdb#222 is exactly
+// that defect.
+type TenantServiceResolver interface {
+	barrierModeChecker
+	tenantIsolationResolver
+}
+
 // scopedEncryptionMigrator routes a scoped enable-encryption request to the
 // mechanism that owns the targeted barrier's at-rest stores:
 //
@@ -74,14 +100,14 @@ var _ service.EncryptionMigrator = (*scopedEncryptionMigrator)(nil)
 // uses it as the cluster reconciler's LocalRecycler so a reconciler-driven
 // recycle reuses the exact same routing, authority, and entitlement gates the
 // transports use. tenantSvc may be nil (disables the entitlement + isolation
-// gates); when non-nil it must satisfy both the barrier-mode and isolation
-// lookups (tenant.TenantServicer does).
+// gates); see TenantServiceResolver for who should pass a value directly
+// versus a lazy-resolving adapter.
 func NewScopedEncryptionMigrator(
 	system service.EncryptionMigrator,
 	tenants *TenantHostRegistry,
 	raft *RaftBackendFactory,
 	barrierReg *seal.BarrierRegistry,
-	tenantSvc tenant.TenantServicer,
+	tenantSvc TenantServiceResolver,
 ) service.EncryptionMigrator {
 	m := &scopedEncryptionMigrator{
 		system:     system,
