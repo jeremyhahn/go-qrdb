@@ -1292,7 +1292,7 @@ ci:
 # version nobody can name, so a lint or security result produced after the drift
 # is not evidence either way. Failing at the top says so in a second instead of
 # after the suite.
-_ci: check-tool-versions test-tool-versions check-compose-targets test-compose-targets fmt vet vet-sdk lint lint-sdk check-publication-bound test-publication-bound security build-server test
+_ci: check-tool-versions test-tool-versions check-compose-targets test-compose-targets fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2301,11 +2301,27 @@ coverage-vector-bloom: | _cover-dir ## Generate bloom filter coverage report
 # transient one.
 
 GORM_DIR  := sdk/go/gorm/conformance
-GORM_TAGS := gormconformance
+# gormconformance ALONE IS NOT A BUILDABLE TAG SET. The harness imports
+# sdk/go/driver, whose files are behind qrdb_sql and qrdb_embedded, so under the
+# bare tag `go vet` reports
+#
+#     imports github.com/jeremyhahn/go-qrdb/sdk/go/driver:
+#     build constraints exclude all Go files in .../sdk/go/driver
+#
+# which is a MISSING TAG, not a defect in this module. #233 recorded the blocker
+# as "sdk/go/gorm/conformance's untidy go.mod"; the untidiness was real and is
+# fixed in this same change, but it was never what made this leg red. Tidying
+# alone leaves it red, which is how the misdiagnosis was found.
+#
+# codec_json and raft are the mandatory floor (REQUIRED_TAGS); qrdb_sql and
+# qrdb_embedded are what sdk/go/driver itself needs. Adding a tag here is
+# additive: a tag the harness does not use costs nothing, and a tag it does use
+# and does not get costs the whole leg.
+GORM_TAGS := gormconformance,codec_json,raft,qrdb_sql,qrdb_embedded
 
 .PHONY: test-gorm
 test-gorm: ## Compile-check the GORM conformance harness (does not run the suite)
-	cd $(GORM_DIR) && go vet -tags $(GORM_TAGS) ./...
+	cd $(GORM_DIR) && go vet -tags "$(GORM_TAGS)" ./...
 
 .PHONY: coverage-gorm
 coverage-gorm: | _cover-dir ## Generate coverage for the node-target GORM conformance run (not COVER_MIN-gated: this suite is expected red)

@@ -274,6 +274,19 @@ jobs:
       - name: go vet
         run: make vet
 
+      # ARMED BY #233. `make vet` asks about ONE tag combination and says
+      # nothing about the others; vet-tags sweeps every combination in
+      # SUPPORTED_TAG_SETS. Until now this could not run here because the
+      # sdk/go/gorm/conformance leg was red, and that has been the standing
+      # reason the rule was "enforced by reading".
+      #
+      # It has already caught what reading did not: #360, where an
+      # unconstrained test file called a helper defined under `!integration`,
+      # so the package stopped typechecking under +integration while `make vet`
+      # stayed green and CI reported a healthy tree for a day.
+      - name: go vet across every supported tag set
+        run: make vet-tags
+
       - name: golangci-lint
         run: make lint
 
