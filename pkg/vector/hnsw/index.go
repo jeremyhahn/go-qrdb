@@ -48,7 +48,22 @@ func NewHNSWIndex(config *Config) (*HNSWIndex, error) {
 	idx := &HNSWIndex{
 		config:       config,
 		distanceFunc: GetDistanceFunc(config.DistanceMetric),
-		rng:          rand.New(rand.NewSource(42)), //nolint:gosec // G404: Using math/rand for non-cryptographic HNSW layer selection (fixed seed for reproducibility)
+		// #nosec G404 -- and //nolint:gosec for the golangci-lint leg; see the
+		// matching note in pkg/vector/ivf/kmeans.go.
+		//
+		// ON THE MERITS: this rng draws which layers a node joins in the HNSW
+		// graph. Nothing secret depends on it and it produces no key or
+		// identifier. The seed is FIXED at 42 so an index built twice from the
+		// same vectors has the same shape, which is what makes the recall
+		// numbers in test/performance reproducible.
+		//
+		// The one residual, stated rather than left for a reader to notice: a
+		// fixed seed makes layer assignment predictable, so an adversary who
+		// controls insertion order could in principle craft a worst-case graph.
+		// That is an availability concern about HNSW's structure, not the
+		// confidentiality concern G404 exists to flag, and it is not made worse
+		// by math/rand -- a CSPRNG with a fixed seed is equally predictable.
+		rng: rand.New(rand.NewSource(42)), //nolint:gosec // G404: see the note above
 	}
 
 	// Initialize maxLayer to -1 for empty index

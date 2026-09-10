@@ -133,6 +133,15 @@ func build(pkg string, cfg buildConfig) (string, error) {
 		return "", &BuildError{Package: pkg, Tags: cfg.tags, Err: err}
 	}
 	binary := filepath.Join(dir, cfg.binaryName)
+	// #nosec G204 -- the program is the literal "go"; every variable argument
+	// is the test's own. cfg.tags comes from DefaultBuildTags or a BuildOption
+	// the test passed, pkg is the package path the test named, and binary is a
+	// path under this package's own MkdirTemp. No request value reaches any of
+	// them, and qrdbdharness is a test harness that only ever runs from a test
+	// binary.
+	//
+	// The sibling call in Start carries the same annotation. Both were invisible
+	// until #293 put sdk/go under gosec at all.
 	cmd := exec.Command("go", "build", "-buildvcs=false", "-tags", cfg.tags, "-o", binary, pkg)
 	cmd.Dir = cfg.root
 	out, err := cmd.CombinedOutput()

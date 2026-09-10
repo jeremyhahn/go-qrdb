@@ -1906,17 +1906,46 @@ GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHEC
 # the tag too, so the hint and the image run the same fixed artifact.
 TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | sh -s -- -b /usr/local/bin $(TRIVY_VERSION)
 
+# -tags AND a second module, because this leg scanned neither (#293).
+#
+# NO TAGS was the larger gap. Every other analysis target composes tags --
+# `lint` passes --build-tags, `test` composes TEST_TAGS -- for the reason the
+# agent spec already states: an untagged run can be "clean" while a gated
+# package does not even build. Measured with the pinned v2.29.0 at
+# -include=G304,G703: untagged 1035 files / 329,025 lines / 45 findings, tagged
+# 1140 / 352,506 / 49. A strict superset, so 105 files and 23,481 lines were
+# never scanned by the gate that carries this repository's path-traversal
+# justifications.
+#
+# ONLY THE ROOT MODULE was the second. `./...` does not cross a nested module
+# boundary, so sdk/go -- the module go-xkms, go-quicbaas and go-signal actually
+# import -- was never scanned. Same shape as #333 found for the linter, and the
+# same fix: a second invocation, because there is no pattern that spans modules.
+#
+# GOSEC_TAGS is BUILD_TAGS space-joined, which is the form -tags takes. It is
+# not LINT_TAGS: that one is comma-joined for golangci-lint.
+GOSEC_TAGS := $(strip $(BUILD_TAGS))
+
 .PHONY: gosec
 gosec:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	$(GOSEC) -concurrency 4 -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+	$(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+
+# The SDK module, scanned with the same exclusions so the two legs cannot
+# disagree about what is suppressed. sdk/go/gorm/conformance is a module nested
+# inside it, so `./...` does not descend there and needs no exclusion -- its
+# go.mod is untidy on main (#233) and `go vet` already refuses it.
+.PHONY: gosec-sdk
+gosec-sdk:
+	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
+	cd $(SDK_DIR) && $(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -exclude=$(GOSEC_EXCLUDE) -severity=medium -confidence=medium ./...
 
 # SARIF for GitHub code scanning. Same exclusions as `gosec` above so the
 # dashboard and the gate never disagree; non-blocking because `gosec` is the
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -concurrency 4 -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
+	$(GOSEC) -concurrency 4 -tags "$(GOSEC_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable
@@ -1971,7 +2000,7 @@ trivy:
 # local skip harmless. That is how a suite came to be missing a quarter of
 # itself with nothing to read that would say so.
 .PHONY: security
-security: gosec vuln mod-verify trivy
+security: gosec gosec-sdk vuln mod-verify trivy
 	@echo "Security suite passed: $^"
 
 # ============================================================================

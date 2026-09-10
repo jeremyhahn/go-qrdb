@@ -53,7 +53,17 @@ func NewKMeans(config *Config) *KMeans {
 	return &KMeans{
 		config:       config,
 		distanceFunc: GetDistanceFunc(config.DistanceMetric),
-		rng:          rand.New(rand.NewSource(seed)), //nolint:gosec // G404: k-means initialisation is not cryptographic
+		// #nosec G404 -- and //nolint:gosec below for the golangci-lint leg; the
+		// two scanners read different directives and only one of them was here
+		// before #293.
+		//
+		// ON THE MERITS, not by assertion: this rng draws initial centroid
+		// positions for k-means. Its output is a clustering of vectors the
+		// caller already supplied, so predicting the draw reveals nothing that
+		// was secret and forges nothing -- there is no key, nonce, token or
+		// identifier downstream of it. config.Seed exists so an index can be
+		// rebuilt identically, which a CSPRNG would make impossible.
+		rng: rand.New(rand.NewSource(seed)), //nolint:gosec // G404: see the note above
 	}
 }
 

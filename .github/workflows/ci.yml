@@ -543,6 +543,13 @@ jobs:
       - name: gosec
         run: make gosec
 
+      # sdk/go is a SEPARATE module and `./...` does not cross a module
+      # boundary, so the step above has never scanned one package of it (#293)
+      # -- the same gap #333 found for the linter, in the module every consumer
+      # actually imports. Its own step so the log says which module objected.
+      - name: gosec (sdk/go module)
+        run: make gosec-sdk
+
       # SARIF is a GitHub code-scanning feature; Gitea has no equivalent
       # ingest. The gate above already ran, so this leg only produces the
       # report — `|| true` keeps a SARIF-writing failure from double-failing a
