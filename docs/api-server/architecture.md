@@ -58,6 +58,7 @@ type ServiceModule interface {
 	RegisterGRPC(reg grpc.ServiceRegistrar)   // once per gRPC-wire transport (gRPC and unix)
 	RegisterHTTP(r *HTTPRegistrar)
 	RegisterMCP(m *mcpserver.MCPServer)
+	RegisterQUIC(reg grpc.ServiceRegistrar)   // projected onto the native QUIC frame protocol
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
@@ -65,7 +66,22 @@ type ServiceModule interface {
 
 **Permissions are deliberately not declared in the interface**: an operation's
 permission lives on its gRPC method (the proto option) and is *referenced* by
-the chi route and the MCP tool. One source, three readers.
+the chi route, the MCP tool, and the QUIC frame projection. One source, four
+readers.
+
+`RegisterQUIC` shares `RegisterGRPC`'s exact signature on purpose: go-qrdb's
+native QUIC transport is a bespoke, method-keyed frame protocol, not a real
+`*grpc.Server`, so it cannot simply be handed to `RegisterGRPC` a second time
+the way the unix transport reuses the gRPC wire. Instead the QUIC server
+passes `RegisterQUIC` a `grpc.ServiceRegistrar` that PROJECTS the registered
+`grpc.ServiceDesc` onto the frame protocol: each unary method's frame key
+becomes its full gRPC method name (`/package.Service/Method`), its permission
+is resolved from the same `(qrdb.v1.permission)` proto option `RegisterGRPC`'s
+methods carry, and its payload is decoded/encoded with the same protobuf
+messages the generated `Handler` already expects. A module typically
+implements it by delegating straight to `RegisterGRPC`. Streaming methods are
+not projected — QUIC's frame protocol has no generic streaming path — so a
+module whose surface is entirely streaming leaves this hook a no-op.
 
 `BaseModule` supplies no-op defaults for every hook **except `Name`**, so a
 module embeds it and overrides only what applies — and cannot accidentally be
@@ -119,6 +135,17 @@ neither owns a verb neither registered. See
   bypass wearing a fallback's clothes.
 - **A second server beside the first.** Rejected — that is what the module seam
   exists to avoid.
+- **A `RegisterQUIC(reg *QUICRegistrar)` with its own `Handle`-style method
+  registration, mirroring `HTTPRegistrar`.** Rejected: it would make a module
+  declare its QUIC methods (and, to stay fail-closed, their permissions) a
+  second time by hand, duplicating what `RegisterGRPC`'s proto-declared
+  permission already states once. Projecting the registered
+  `grpc.ServiceDesc` instead keeps the one-declaration property the other
+  three hooks already have.
+- **A second, optional `QUICRegistrar` interface, type-asserted for.**
+  Rejected — an operation a module needs (QUIC reachability) belongs on the
+  interface every module implements, not behind a capability check a module
+  can silently fail to satisfy.
 
 ## Component boundaries
 

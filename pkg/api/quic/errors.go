@@ -175,6 +175,33 @@ func (e *UnmarshalError) Unwrap() error {
 	return e.Err
 }
 
+// ModuleMethodRequestTypeError is returned when a projected capability
+// module's gRPC method Handler asks to decode into a value that is not a
+// proto.Message. This is a construction-time bug in the module's generated
+// gRPC code, not a caller error: every properly generated unary Handler
+// always decodes into a *pb.XRequest, which is always a proto.Message.
+type ModuleMethodRequestTypeError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *ModuleMethodRequestTypeError) Error() string {
+	return "quic: projected method " + e.Method + ": decode target is not a proto.Message"
+}
+
+// ModuleMethodResponseTypeError is returned when a projected capability
+// module's gRPC method returns a response that is not a proto.Message. Like
+// ModuleMethodRequestTypeError, this reflects a bug in the module's
+// generated gRPC code, not a caller error.
+type ModuleMethodResponseTypeError struct {
+	Method string
+}
+
+// Error returns a human-readable description.
+func (e *ModuleMethodResponseTypeError) Error() string {
+	return "quic: projected method " + e.Method + ": response is not a proto.Message"
+}
+
 // mapServiceError translates a service-layer error into a wire status code
 // and error message payload. Returns StatusOK with nil payload when err is nil.
 func mapServiceError(err error) (uint16, []byte) {

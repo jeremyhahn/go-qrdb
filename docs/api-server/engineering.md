@@ -52,6 +52,7 @@ type ServiceModule interface {
 	RegisterGRPC(reg grpc.ServiceRegistrar)
 	RegisterHTTP(r *HTTPRegistrar)
 	RegisterMCP(m *mcpserver.MCPServer)
+	RegisterQUIC(reg grpc.ServiceRegistrar)
 	Start(ctx context.Context) error
 	Stop(ctx context.Context) error
 }
@@ -65,6 +66,19 @@ type BaseModule struct{}   // no-op defaults for every hook EXCEPT Name
 func (h *HTTPRegistrar) Handle(method, pattern string, perm permission.Permission, handler http.HandlerFunc)
 func (h *HTTPRegistrar) HandlePublic(method, pattern string, handler http.HandlerFunc)
 ```
+
+`RegisterQUIC` takes the identical `grpc.ServiceRegistrar` type `RegisterGRPC`
+does; a module usually implements it by calling the same generated
+`pb.Register<X>Server(reg, impl)`, or simply `func (m *M) RegisterQUIC(r
+grpc.ServiceRegistrar) { m.RegisterGRPC(r) }`. The QUIC server supplies a
+registrar that PROJECTS the resulting `grpc.ServiceDesc` onto the native
+frame protocol: each unary method's frame key is its full gRPC method name
+(`/package.Service/Method`, identical to `grpc.UnaryServerInfo.FullMethod`),
+its permission comes from the same `(qrdb.v1.permission)` proto descriptor
+option `LookupGRPCFromDescriptor` resolves for gRPC and unix, and its payload
+is decoded/encoded with the request/response messages the generated
+`MethodDesc.Handler` already expects. Streaming methods
+(`grpc.ServiceDesc.Streams`) are not projected — logged, not fatal.
 
 Optional extensions:
 
@@ -86,13 +100,22 @@ type ModuleAuthFallback interface {
 
 - **`RegisterGRPC` is invoked once per gRPC-wire transport** — gRPC *and* unix.
   A module registering side effects there will see them twice.
+- **`RegisterQUIC` is invoked once, at QUIC server construction**, with a
+  registrar that projects unary methods onto the frame dispatch table — it is
+  NOT the same `*grpc.Server` `RegisterGRPC` receives, so a module that keys
+  state off the registrar identity will see two different objects.
 - **`Start` runs after all transports register and before any accepts
   traffic**; `Stop` runs LIFO with the server's own stop.
 - **`BaseModule` does not implement `Name`**, forcing every module to supply its
   own identity. A module cannot be anonymous by omission.
 - **Permissions are not declared on `ServiceModule`.** An operation's permission
   lives on its gRPC method as the `qrdb.v1.permission` proto option and is
-  *referenced* by the chi route and the MCP tool. One source, three readers.
+  *referenced* by the chi route, the MCP tool, and the QUIC frame projection.
+  One source, four readers.
+- **A `RegisterQUIC` method whose descriptor carries no `(qrdb.v1.permission)`
+  option fails QUIC server construction** — the same default-deny startup
+  assertion an undeclared REST route or QUIC built-in method fails, just
+  reached through the proto descriptor lookup instead of a missing literal.
 - **An MCP tool registered via `RegisterMCP` without a matching
   `MCPToolPermissions()` entry stays fail-closed** on an authenticated server.
   Use `permission.IdentityGated` for tools whose authorization the module's own
@@ -100,7 +123,11 @@ type ModuleAuthFallback interface {
 - **`PublicGRPCMethods()` bypasses both authentication and authorization** for
   the named methods, symmetric with `HandlePublic`. **A malformed method name is
   rejected at registration**, so a typo fails startup loudly rather than
-  silently leaving the method auth-gated.
+  silently leaving the method auth-gated. **QUIC has no unauthenticated-method
+  path at all** (every frame requires a verified mTLS client certificate), so
+  a declared-public method with no `(qrdb.v1.permission)` option is skipped —
+  logged, not fatal — by the QUIC projection rather than tripping its
+  default-deny assertion; it stays reachable on gRPC/unix as declared.
 - **`ModuleAuthFallback` may establish identity, never authority.** A returned
   identity is finalized and authorized by the host's single enrichment and
   authorizer path: **roles come from the store, never from the token**, and the
@@ -142,7 +169,7 @@ middleware's path means they inherit none of its checks, revocation included.
 | unix | **gRPC over a UDS** — same service definitions as gRPC |
 | REST | HTTP/JSON, chi router |
 | gRPC | HTTP/2 |
-| QUIC | method/frame dispatch |
+| QUIC | method/frame dispatch — module unary RPCs are reached via `RegisterQUIC` projection |
 | MCP | Model Context Protocol tools |
 
 Additionally, **per-database protocol listeners** run beside these: MySQL and
@@ -159,6 +186,7 @@ over the same services, not a seventh transport.
 | A module claiming a built-in's method+pattern | the built-in yields, debug-logged | n/a |
 | MCP tool with no `MCPToolPermissions()` entry | fail-closed at call time | **yes** |
 | Malformed public gRPC method name | rejected at registration; startup fails | **yes** |
+| Module gRPC method declared public with no permission option, projected onto QUIC | skipped (logged); unreachable over QUIC only | n/a |
 | `ModuleAuthFallback` returning no identity | request unauthenticated | **yes** |
 | Raft-only capability in standalone mode | `requires mode: raft` — REST 501, gRPC/QUIC `Unimplemented` | **yes** |
 

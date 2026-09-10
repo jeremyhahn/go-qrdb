@@ -30,6 +30,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -92,6 +93,11 @@ type Server struct {
 	// from the request frame's database field. When nil, the singleton service
 	// fields are used, preserving single-database and embedded deployments.
 	registry service.Registry
+
+	// modules holds capability modules whose gRPC service(s) are projected onto
+	// the QUIC frame dispatch table by buildHandlers via each module's
+	// RegisterQUIC hook. Set via WithServiceModules by the server orchestrator.
+	modules []apimodule.ServiceModule
 
 	addr      string
 	tlsConfig *tls.Config
@@ -335,6 +341,13 @@ func WithKVService(svc service.KVServicer) ServerOption {
 // when constructing a server without a KV engine.
 func WithAdminService(svc service.AdminServicer) ServerOption {
 	return func(s *Server) { s.adminSvc = svc }
+}
+
+// WithServiceModules registers capability modules whose gRPC service(s) are
+// projected onto the QUIC frame dispatch table at construction, via each
+// module's RegisterQUIC hook.
+func WithServiceModules(mods []apimodule.ServiceModule) ServerOption {
+	return func(s *Server) { s.modules = mods }
 }
 
 // NewServer creates a new native QUIC server that listens on the given

@@ -69,19 +69,17 @@ func (h *HTTPRegistrar) HandlePublic(method, pattern string, handler http.Handle
 //	RegisterGRPC -> gRPC AND unix (unix serves the same gRPC wire over a UDS)
 //	RegisterHTTP -> REST (chi)
 //	RegisterMCP  -> MCP (the real mcp-go server)
+//	RegisterQUIC -> QUIC (the native frame transport)
 //
-// Transport coverage caveats (see plans/unified-api-server-2026-08-14.md):
-//   - QUIC: go-qrdb's QUIC transport is a bespoke frame protocol (method-keyed
-//     dispatch), not HTTP-over-chi, so a module is NOT reached over QUIC by these
-//     hooks. Module QUIC parity would need a separate RegisterQUIC hook and is a
-//     deferred follow-up.
-//   - embedded: the in-process transport is each capability owner's own SDK
-//     surface (e.g. go-xkms's sdk/go/embedded), independent of this seam.
+// Transport coverage caveat: embedded is the in-process transport, and remains
+// each capability owner's own SDK surface (e.g. go-xkms's sdk/go/embedded),
+// independent of this seam.
 //
 // Permissions are NOT declared here: an operation's required permission lives on
 // its gRPC method (the proto option, enforced by the shared interceptor) and is
-// referenced by the chi route and MCP tool. Embed BaseModule and override only the
-// hooks a module actually uses.
+// referenced by the chi route, the MCP tool, and — via RegisterQUIC — the QUIC
+// frame dispatch table. Embed BaseModule and override only the hooks a module
+// actually uses.
 type ServiceModule interface {
 	// Name uniquely identifies the module (logs, duplicate detection, metrics).
 	Name() string
@@ -101,6 +99,27 @@ type ServiceModule interface {
 	// RegisterMCP adds the module's tools (and resources/prompts, if any) to the
 	// shared MCP server.
 	RegisterMCP(m *mcpserver.MCPServer)
+
+	// RegisterQUIC attaches the module's gRPC service(s) to go-qrdb's native QUIC
+	// transport. go-qrdb's QUIC transport is a bespoke frame protocol
+	// (method-keyed dispatch), not HTTP-over-chi and not a real *grpc.Server, so
+	// it cannot share RegisterGRPC's registration call the way unix does. Instead
+	// the QUIC server hands RegisterQUIC a grpc.ServiceRegistrar that PROJECTS
+	// each unary method of the registered grpc.ServiceDesc onto the frame
+	// protocol: the frame's method key is the RPC's full gRPC method name
+	// ("/package.Service/Method"), the frame payload is decoded/encoded with the
+	// same protobuf messages the generated Handler expects, and the method's
+	// permission is read from the identical (qrdb.v1.permission) proto option
+	// RegisterGRPC's methods use — no second permission declaration. Because the
+	// signature is identical to RegisterGRPC, most modules implement this by
+	// calling the same pb.Register<X>Server(reg, impl) a second time (or simply
+	// delegating: `func (m *M) RegisterQUIC(r grpc.ServiceRegistrar) { m.RegisterGRPC(r) }`).
+	// A method with no declared permission fails the QUIC server's default-deny
+	// startup assertion, exactly like an undeclared REST route. Streaming methods
+	// (grpc.ServiceDesc.Streams) are NOT projected — QUIC's frame protocol has no
+	// generic streaming path — so a module whose surface is entirely streaming
+	// leaves this a no-op via BaseModule.
+	RegisterQUIC(reg grpc.ServiceRegistrar)
 
 	// Start acquires the module's background resources (connection pools, hardware
 	// handles, timers) before the server begins serving; it runs after all
@@ -155,6 +174,13 @@ type ModuleAuthFallback interface {
 // everything else is reached through the RPC's (qrdb.v1.permission) proto
 // option. A malformed method name is rejected at registration time so a typo
 // fails server startup loudly instead of silently staying auth-gated.
+//
+// The native QUIC transport (RegisterQUIC) has no unauthenticated-method path
+// at all -- every frame requires a verified mTLS client certificate -- so a
+// method declared here that carries no (qrdb.v1.permission) option is simply
+// left unreachable over QUIC (logged at registration) rather than failing the
+// QUIC server's default-deny startup assertion. The declaration only ever
+// widens gRPC/unix reachability; it never narrows QUIC's.
 type GRPCPublicMethodLister interface {
 	PublicGRPCMethods() []string
 }
@@ -172,6 +198,9 @@ func (BaseModule) RegisterHTTP(*HTTPRegistrar) {}
 
 // RegisterMCP is a no-op default.
 func (BaseModule) RegisterMCP(*mcpserver.MCPServer) {}
+
+// RegisterQUIC is a no-op default.
+func (BaseModule) RegisterQUIC(grpc.ServiceRegistrar) {}
 
 // Start is a no-op default.
 func (BaseModule) Start(context.Context) error { return nil }

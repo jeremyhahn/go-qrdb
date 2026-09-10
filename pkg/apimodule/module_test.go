@@ -152,6 +152,7 @@ func TestBaseModuleHooksAreHarmlessNoOps(t *testing.T) {
 	mod.RegisterGRPC(nil)
 	mod.RegisterHTTP(nil)
 	mod.RegisterMCP(nil)
+	mod.RegisterQUIC(nil)
 
 	if err := mod.Start(ctx); err != nil {
 		t.Errorf("Start returned %v, want nil", err)
@@ -171,6 +172,7 @@ func TestBaseModuleHooksAcceptRealArguments(t *testing.T) {
 	mod.RegisterGRPC(grpcServer)
 	mod.RegisterHTTP(reg)
 	mod.RegisterMCP(mcpserver.NewMCPServer("test", "0.0.1"))
+	mod.RegisterQUIC(grpcServer)
 }
 
 // permissionedModule declares MCP tool permissions, exercising the optional

@@ -84,8 +84,8 @@ type ModuleMCPToolPermissioner = apimodule.MCPToolPermissioner
 type ModuleGRPCPublicMethodLister = apimodule.GRPCPublicMethodLister
 
 // WithModule registers a capability module into the embedded qrdb server. Its
-// gRPC/REST/MCP surfaces are attached to every transport at startup and its
-// Start/Stop lifecycle runs with the server's.
+// gRPC/REST/MCP/QUIC surfaces are attached to every transport at startup and
+// its Start/Stop lifecycle runs with the server's.
 var WithModule = qrdbserver.WithModule
 
 // NewModuleHTTPRegistrar builds the permission-recording registrar the server

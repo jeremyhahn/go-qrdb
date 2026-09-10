@@ -1420,6 +1420,10 @@ func (s *Server) startQUIC() error {
 		quicOpts = append(quicOpts, quicapi.WithServiceRegistry(reg))
 	}
 
+	if len(s.opts.modules) > 0 {
+		quicOpts = append(quicOpts, quicapi.WithServiceModules(s.opts.modules))
+	}
+
 	s.quicSrv = quicapi.NewServer(s.kvSvc, s.adminSvc, addr, quicOpts...)
 
 	if err := s.quicSrv.Start(); err != nil {
