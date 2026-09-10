@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	quicgo "github.com/quic-go/quic-go"
 )
 
 // TestConfig holds configuration for integration tests.
@@ -150,6 +152,39 @@ func requireCLI(t *testing.T, cfg *TestConfig) {
 	}
 }
 
+// probeTimeout bounds every connectivity probe below (REST, gRPC, Unix,
+// MCP, QUIC). go-qrdb#345 measured the failure mode a tight budget produces:
+// in the job that filed the issue, the REST subtest of the same suite
+// stretched from 10.15s to 26.58s under host contention, and the grpc/quic
+// subtests that followed it then failed a 2-second socket probe in ~24-26s
+// each — the servers were answering, just not inside 2s. A probe timeout has
+// to be read as "did not respond in time", never as "is not there"; 10s
+// tracks quicConnectBudget (sdk/go/transport/quic/transport.go), the budget
+// the QUIC transport itself gives a real connection attempt under the same
+// contention, and is well inside the 45m the docker-compose integration job
+// budgets per test binary.
+const probeTimeout = 10 * time.Second
+
+// logProbeFailure records why a probe failed, distinguishing "the peer did
+// not answer inside probeTimeout" from every other cause (connection
+// refused, TLS/ALPN mismatch, no route, DNS failure). go-qrdb#345's root
+// finding was that a bare boolean here reads to a log skimmer as "nothing is
+// listening", which a probe timeout does not establish — it establishes only
+// that no answer arrived in the budget. Both quic-go's handshake/idle
+// timeout errors and context.DeadlineExceeded implement net.Error's
+// Timeout() method, so a single check on the returned error covers both the
+// probe's own context deadline and any timeout the transport reports on its
+// own.
+func logProbeFailure(t *testing.T, protocol, addr string, err error) {
+	t.Helper()
+	var netErr net.Error
+	if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("%s probe: %s unreachable within %s", protocol, addr, probeTimeout)
+		return
+	}
+	t.Logf("%s probe: %s: %v", protocol, addr, err)
+}
+
 // isServerAvailable checks if the REST server is available.
 // The health endpoint is public (no client cert needed). The CA cert pool
 // from cfg.TLSCACert is used to verify the server certificate. Set
@@ -163,11 +198,12 @@ func isServerAvailable(t *testing.T, cfg *TestConfig) bool {
 		MinVersion: tls.VersionTLS13,
 	}
 	client := &http.Client{
-		Timeout:   2 * time.Second,
+		Timeout:   probeTimeout,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
 	}
 	resp, err := client.Get(cfg.RESTBaseURL + "/health")
 	if err != nil {
+		logProbeFailure(t, "rest", cfg.RESTBaseURL, err)
 		return false
 	}
 	defer resp.Body.Close()
@@ -177,8 +213,9 @@ func isServerAvailable(t *testing.T, cfg *TestConfig) bool {
 // isGRPCServerAvailable checks if the gRPC server is available.
 func isGRPCServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", cfg.GRPCAddr, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", cfg.GRPCAddr, probeTimeout)
 	if err != nil {
+		logProbeFailure(t, "grpc", cfg.GRPCAddr, err)
 		return false
 	}
 	defer conn.Close()
@@ -189,10 +226,12 @@ func isGRPCServerAvailable(t *testing.T, cfg *TestConfig) bool {
 func isUnixSocketAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
 	if _, err := os.Stat(cfg.UnixSocketPath); os.IsNotExist(err) {
+		t.Logf("unix probe: %s: %v", cfg.UnixSocketPath, err)
 		return false
 	}
-	conn, err := net.DialTimeout("unix", cfg.UnixSocketPath, 2*time.Second)
+	conn, err := net.DialTimeout("unix", cfg.UnixSocketPath, probeTimeout)
 	if err != nil {
+		logProbeFailure(t, "unix", cfg.UnixSocketPath, err)
 		return false
 	}
 	defer conn.Close()
@@ -202,8 +241,9 @@ func isUnixSocketAvailable(t *testing.T, cfg *TestConfig) bool {
 // isMCPServerAvailable checks if the MCP server is available.
 func isMCPServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", cfg.MCPAddr, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", cfg.MCPAddr, probeTimeout)
 	if err != nil {
+		logProbeFailure(t, "mcp", cfg.MCPAddr, err)
 		return false
 	}
 	defer conn.Close()
@@ -329,14 +369,42 @@ func (cfg *TestConfig) IsProtocolAvailable(t *testing.T, protocol ProtocolType) 
 	}
 }
 
-// isQUICServerAvailable checks if the QUIC server is available via UDP.
+// isQUICServerAvailable checks if the QUIC server is available by
+// performing a real QUIC handshake.
+//
+// go-qrdb#345 measured what the previous implementation — net.DialTimeout
+// ("udp", ...) — actually does: nothing. A UDP "dial" only calls connect(2)
+// on a datagram socket, which records a default destination for later
+// Write calls; it sends no packet and waits for no reply. Measured against
+// 127.0.0.1:1, 127.0.0.1:65533, and an unreachable TEST-NET-1 address, all
+// three came back "available". Every test gated on this probe was
+// therefore ungated, and the one path that can make it return false locally
+// (socket/address-resolution failure, not server unreachability) makes a
+// failing quic subtest carry no information about the server at all.
+//
+// quic.DialAddr performs the actual handshake, so it fails the way
+// isServerAvailable's HTTPS GET does: no reply, no valid response, no
+// available. It reuses the suite's CA pool (the same one loadClientTLSConfig
+// gives the other probes) and sets ALPN to "qrdb-quic" to match the
+// transport's own buildTLSConfig (sdk/go/transport/quic/transport.go) and
+// the server's Listen config (pkg/api/quic/server.go) — without matching
+// ALPN, quic-go fails the handshake before it reaches the server's
+// certificate at all, which would read as "unavailable" for a live server.
 func isQUICServerAvailable(t *testing.T, cfg *TestConfig) bool {
 	t.Helper()
-	conn, err := net.DialTimeout("udp", cfg.QUICAddr, 2*time.Second)
+
+	tlsCfg := loadClientTLSConfig(cfg)
+	tlsCfg.NextProtos = []string{"qrdb-quic"}
+
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+
+	conn, err := quicgo.DialAddr(ctx, cfg.QUICAddr, tlsCfg, nil)
 	if err != nil {
+		logProbeFailure(t, "quic", cfg.QUICAddr, err)
 		return false
 	}
-	defer conn.Close()
+	_ = conn.CloseWithError(0, "probe complete")
 	return true
 }
 
