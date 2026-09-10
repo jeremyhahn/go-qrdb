@@ -524,9 +524,14 @@ proto:
 # Unit tests
 # ============================================================================
 
+# ./test/buildgates holds gates over properties of the REPOSITORY rather than
+# of the program (#367). They are listed here, not only in the Lint job, so a
+# developer running the advertised unit-test entrypoint is told about a
+# repository defect at the same moment CI would tell them -- the same reasoning
+# that put check-publication-bound into `_ci`.
 .PHONY: test
 test:
-	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/...
+	$(GOTEST) $(TAG_FLAG) ./pkg/... ./cmd/... ./test/buildgates/...
 
 .PHONY: test-stubs
 test-stubs:
@@ -1328,7 +1333,14 @@ ci:
 # check-tool-versions cannot: `lint` and `lint-sdk` run a gosec that no pin in
 # this repository names, and every gosec entry in .golangci.yml means whatever
 # THAT version says it means (#295).
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
+#
+# check-action-pins is named here AND reached again through `test`, which is
+# not redundant book-keeping: `test` sits at the end of this list, behind the
+# security suite and a server build, and an unpinned action is a supply-chain
+# finding that should be the first thing a reader sees rather than the last.
+# The gate costs hundredths of a second and needs neither network nor binary,
+# so running it twice is cheaper than reading it late.
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1434,6 +1446,30 @@ check-publication-bound:
 .PHONY: test-publication-bound
 test-publication-bound:
 	@./scripts/check-publication-bound_test.sh
+
+# Every `uses:` in every workflow resolves to a 40-hex commit (#367).
+#
+# A tag is a ref its owner can move, and the review job holds a WRITE-SCOPED
+# token -- where auto-merge is armed, a moved tag runs attacker-controlled code
+# with credentials that can merge. go-quicraft has caught the identical line
+# three times, each an unnoticed template propagation whose real payload was
+# something else; this repository had no gate at all, which made it unwatched
+# rather than safe.
+#
+# A GO TEST rather than a scripts/check-*.sh guard like its neighbours, and the
+# difference is not stylistic. The property is over PARSED YAML in both
+# directions: a line-oriented pattern misses the spellings Actions accepts (a
+# flow mapping, a quoted key, an anchor + alias) and passes over them while the
+# floors stay satisfied -- and it also reports the word `uses:` in the 70 KB
+# agent prompt embedded in opencode-review.yml, which is prose in a block
+# scalar and not a step at all.
+#
+# Its own floors and rejecting branches ship with it in the same package, for
+# the same reason every other guard here carries a self-test: this one fails by
+# staying silent, and silence is what success looks like.
+.PHONY: check-action-pins
+check-action-pins:
+	$(GOTEST) ./test/buildgates/...
 
 # The four analyser pins are written in four files, and a Dockerfile cannot read
 # a make variable (#323). #322 first removed the duplication outright, by giving

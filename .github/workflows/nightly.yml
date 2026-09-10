@@ -93,9 +93,9 @@ jobs:
       GOFIPS140: latest
       GODEBUG: fips140=only
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -224,15 +224,29 @@ jobs:
     runs-on: ubuntu-latest
     # needs: none — nightly runs standalone; build health is ci.yml's job.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       # GitHub leg: a fresh source-scoped scan is uploaded to code scanning on
       # every run so the dashboard never reflects a stale analysis, then a
       # second pass gates on CRITICAL/HIGH. test/ holds benchmark harnesses
       # that ship in no release.
+      #
+      # trivy-action was `@master` here until #367 -- not a mutable TAG but a
+      # moving BRANCH, re-resolved on every nightly, so this job ran whatever
+      # aquasecurity had merged that day. Pinning a branch has to choose a
+      # version, and the choice is the latest RELEASE (v0.36.0) rather than
+      # master's head: a release tag is a reviewed artifact and it gives the
+      # trailing comment something a human can bump against. Master's head at
+      # the time of pinning was d2a0b607, ahead of v0.36.0; that difference is
+      # the deliberate part of this change and not a transcription error.
+      #
+      # Both trivy steps and the SARIF upload are gated on
+      # `github.server_url == 'https://github.com'`, so on this Gitea they do
+      # not execute at all. Pinned regardless: an action that runs nowhere
+      # today is exactly the one whose ref nobody notices moving.
       - name: Trivy scan (SARIF for code scanning)
         if: github.server_url == 'https://github.com'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -244,14 +258,14 @@ jobs:
 
       - name: Upload Trivy SARIF
         if: always() && github.server_url == 'https://github.com'
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-fs
 
       - name: Trivy gate (fail on CRITICAL/HIGH)
         if: github.server_url == 'https://github.com'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
