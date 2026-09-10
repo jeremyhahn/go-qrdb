@@ -48,9 +48,11 @@ the code, the document is wrong and gets fixed — never the reverse.
 |---|---|
 | [key-value](key-value/) | KV operations, MVCC revisions, consistency levels, write modes, compaction, selective restore |
 | [transactions](transactions/) | compare-and-swap transactions, atomic batches, file import |
+| [guarded-swap](guarded-swap/) | `sdk.GuardedSwap` — the optimistic compare-and-set loop over the transaction plane |
 | [watch](watch/) | change streams, replay from a revision |
 | [leases](leases/) | TTL leases and cascade expiry |
 | [distributed-locks](distributed-locks/) | locks with fencing tokens, reentrancy |
+| [coordination](coordination/) | the SDK coordination surface — lock/lease/CAS/watch, the acknowledged-deadline ownership model |
 | [secondary-indexes](secondary-indexes/) | indexes, compound indexes, the query planner, DAO aggregations |
 | [full-text-search](full-text-search/) | inverted index, analyzer, tokenizer *(build tag `qrdb_fts`)* |
 | [collections](collections/) | document collections and ID strategies |
@@ -98,9 +100,14 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 34 currently-implemented features have a `docs/<feature>/` folder with all
-five files** (migrated 2026-08-19; [rate-limit](rate-limit/) added 2026-09-10).
-The portfolio view is derived, not maintained — count `docs/*/architecture.md`.
+**All 36 currently-implemented features have a `docs/<feature>/` folder with all
+five files** (migrated 2026-08-19; [rate-limit](rate-limit/) and
+[coordination](coordination/) added 2026-09-10). The portfolio view is derived,
+not maintained — count `docs/*/architecture.md`.
+
+The count read 34 while the tree held 35 folders: [guarded-swap](guarded-swap/)
+had a complete folder and no row in the tables above. The row is now there, so
+the tables and the derived count agree again.
 
 Some legacy documents survive **as companions**, not as duplicates: they carry
 deeper reference material the five-file layout points at rather than restates.

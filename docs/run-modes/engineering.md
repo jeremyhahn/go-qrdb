@@ -1,6 +1,6 @@
 # Run Modes — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Exported surface
 
@@ -208,11 +208,20 @@ Build tags currently registering capabilities: `qrdb_sql`, `qrdb_mysql`,
 - Timeseries and vector (build-tag gated; require the MVCC-capable engine, so
   unavailable over the file/objstore backends — the engine boundary is in
   `pkg/engine/kv_engine.go`)
+- Transactions / compare-and-swap
 - Plus the always-compiled core below
 
 **Refused with `requires mode: raft`** — everything consensus-shaped: MVCC
-revisions, watch, lease, lock, transactions, etcd compatibility, and cluster
-operations.
+revisions, watch, lease, lock, etcd compatibility, and cluster operations.
+
+**Transactions are the exception and are NOT refused** (owner ruling
+2026-08-23). This list carried them among the refusals; corrected to match
+`raftOnlyGatedRegistry` in `pkg/server/standalone_gate.go`, which refuses
+`MVCCService`, `WatchService` and `LeaseService` and passes
+`TransactionService` through. A standalone node is engine-direct and
+single-process, so its compare-and-swap is already linearizable — consensus is
+what makes a swap linearizable across *replicas*. The etcd-style `Txn` endpoint
+is still refused, under etcd compatibility.
 
 ## The always-compiled core
 
@@ -287,9 +296,15 @@ config validation, so pure-config validation stays build-independent.
 ## Behavior change notice
 
 SDK standalone (`NewStandaloneNode`) historically composed MVCC, lease,
-and transaction services over `LocalBackend`. Under this requirement those
-become raft-mode-only everywhere; standalone compositions stop building
-them. Downstream consumers are notified via Gitea issues on their repos.
+and transaction services over `LocalBackend`. Under this requirement **MVCC and
+lease** become raft-mode-only everywhere; standalone compositions stop building
+them. Downstream consumers were notified on their own repositories.
+
+**Transactions did not become raft-only** (owner ruling 2026-08-23), and this
+notice said they did — corrected to match the shipped composition. Standalone
+still serves the transaction / compare-and-swap family on every transport,
+in-process and on the wire; `pkg/server/standalone_gate.go` passes
+`TransactionService` through by name and says why.
 
 ## Test strategy
 

@@ -1,6 +1,6 @@
 # Run Modes — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 A qrdb server runs in one of two modes. The mode decides which features exist,
 so it is usually the answer when something "is not there".
@@ -9,13 +9,19 @@ so it is usually the answer when something "is not there".
 
 **Standalone** — one process, no consensus. Fast, simple, no cluster to
 operate. You get the standard database operations: keys and values, batch,
-indexes, collections, databases, SQL, time series and vectors.
+**compare-and-swap transactions**, indexes, collections, databases, SQL, time
+series and vectors.
 
 **Raft** — the consensus layer. Everything standalone has, plus the things that
 need a replicated log: revisions and historical reads, watch, leases, locks,
-transactions, etcd compatibility, cluster membership, rebalance and shard
-backup/restore. A single-node raft deployment is a one-replica group — same
-write path as a cluster, and it scales out cleanly later.
+etcd compatibility, cluster membership, rebalance and shard backup/restore. A
+single-node raft deployment is a one-replica group — same write path as a
+cluster, and it scales out cleanly later.
+
+*(Transactions were previously listed here as raft-only. They are not: a
+standalone node is single-process, so its compare-and-swap is already
+linearizable, and the server passes the transaction family through in both
+modes. Corrected to match the code.)*
 
 **If in doubt, run raft.** A single-node raft server gives you the full feature
 set and can grow; standalone cannot.
@@ -99,10 +105,12 @@ own Pebble store and reject a non-pebble `sm_storage`.
 compiled in.** Both need the MVCC-capable engine, so they do not work over the
 file or objstore backends.
 
-**Your SDK standalone code stopped composing MVCC, lease and transaction
-services.** That is the ratified behaviour change: those became raft-mode-only
-everywhere, and standalone compositions no longer build them. Move to
-`NewClusteredNode` if you need them.
+**Your SDK standalone code stopped composing MVCC and lease services.** That is
+the ratified behaviour change: those became raft-mode-only everywhere, and
+standalone compositions no longer build them. Move to `NewClusteredNode` if you
+need them. **Transactions are not in that list** — this paragraph used to name
+them and was wrong; compare-and-swap still works standalone, on every
+transport.
 
 **Switching modes.** The mode is fixed at composition. Changing it is a restart,
 not a runtime operation.

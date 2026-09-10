@@ -71,8 +71,17 @@ Typed errors: `WatchCanceledError`, `WatchCompactedError`,
   duplicate-free; see *Known limitations*.
 - **`PrevKV` is opt-in** because retaining the prior value costs a lookup per
   event.
-- **Cancellation is in-band, never a silent close.** Every abnormal termination
-  carries `Canceled: true` and a reason.
+- **Cancellation is in-band, never a silent close — on the five wire
+  transports.** REST, gRPC, Unix, QUIC and MCP each consult `watcher.Err()` when
+  the hub closes the event channel and synthesize a terminal frame from it, so
+  every abnormal termination reaches the client carrying `Canceled: true` and a
+  reason. **The embedded transport does not**: `embedded.Transport.Watch` and
+  `WatchPrefix` range the watcher's events and close their own channel without
+  reading `watcher.Err()`, and `pkg/watch` never sets `Canceled` itself. So an
+  in-process consumer sees a hub-side eviction — a watcher dropped for overflow,
+  or a compaction racing an in-progress replay — as an ordinary clean close.
+  Corrected here to match the code; the invariant is the goal, and embedded is
+  the transport that does not yet meet it.
 - **Closing a watcher is synchronous with deregistration.** When `Close`
   returns, the watcher is out of the hub registry and `Hub.WatchCount` no
   longer counts it, so no further event can be dispatched to it. A caller may

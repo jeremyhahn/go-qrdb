@@ -1,6 +1,6 @@
 # Run Modes — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Run mode is not itself an API capability — it is the property that determines
 which capabilities exist. Two things are observable over the wire: the reported
@@ -40,17 +40,28 @@ per-handler check that could be forgotten.
 
 ## Capability families by mode
 
-**Available in both modes:** KV (get/put/delete/range/scan), batch, secondary
-indexes, collections and entity CRUD, database management, SQL (`qrdb_sql`),
-time series and vector (their tags; both need the MVCC-capable engine, so they
-are unavailable over file/objstore backends), plus the always-compiled core —
-auth, RBAC, identity, seal/barrier, credentials, audit, REST and gRPC
-transports.
+**Available in both modes:** KV (get/put/delete/range/scan), batch, **the
+transaction / compare-and-swap family**, secondary indexes, collections and
+entity CRUD, database management, SQL (`qrdb_sql`), time series and vector
+(their tags; both need the MVCC-capable engine, so they are unavailable over
+file/objstore backends), plus the always-compiled core — auth, RBAC, identity,
+seal/barrier, credentials, audit, REST and gRPC transports.
 
 **Raft mode only:** MVCC revisions and `at-revision` reads, `Compact`,
-`RestoreToRevision`, watch (including replay), lease, lock, transactions, etcd
-compatibility, cluster membership and topology, rebalance, shard
-backup/restore, and IsolationRaft / IsolationVolume tenancy.
+`RestoreToRevision`, watch (including replay), lease, lock, etcd compatibility,
+cluster membership and topology, rebalance, shard backup/restore, and
+IsolationRaft / IsolationVolume tenancy.
+
+**Transactions are deliberately NOT gated** (owner ruling 2026-08-23), and this
+list used to say they were — corrected here to match
+`pkg/server/standalone_gate.go`, whose `raftOnlyGatedRegistry` passes
+`TransactionService` straight through while refusing MVCC, watch and lease. A
+standalone node is engine-direct and single-process, so a compare-and-swap
+there is already linearizable: consensus is what makes a swap linearizable
+across *replicas*, and a standalone node has none. Gating it at the wire while
+the SDK's in-process transport served it would put the contradiction back one
+seam over. The etcd-style `Txn` **is** refused, but as part of etcd
+compatibility, which is listed separately above.
 
 The SQL catalog keeps its internal MVCC and transaction plumbing in standalone
 even though the MVCC *endpoints* are refused — the two are different surfaces.

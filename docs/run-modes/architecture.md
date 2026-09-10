@@ -1,6 +1,6 @@
 # Run Modes — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19 ·
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10 ·
 > Ratified 2026-08-17
 
 ## Problem
@@ -36,11 +36,20 @@ Serves **standard database operations**:
 - Timeseries and vector (build-tag gated; require the MVCC-capable engine,
   so unavailable over the file/objstore backends — see the engine boundary
   in `pkg/engine/kv_engine.go`)
+- Transactions / compare-and-swap (`pkg/server/standalone_gate.go` passes
+  `TransactionService` through deliberately — see below)
 
 Plus the **always-on security core** (below). Everything consensus-shaped —
-MVCC revisions, watch, lease, lock, transactions, etcd compatibility,
-cluster operations — is refused with a typed error whose text names the
-remedy: `requires mode: raft`.
+MVCC revisions, watch, lease, lock, etcd compatibility, cluster operations — is
+refused with a typed error whose text names the remedy: `requires mode: raft`.
+
+**Transactions are the deliberate exception** (owner ruling 2026-08-23). This
+paragraph used to list them among the refusals; corrected here to match
+`raftOnlyGatedRegistry`, which refuses MVCC, watch and lease and passes
+`TransactionService` through. Consensus is what makes a swap linearizable
+across *replicas*; a standalone node is engine-direct, single-process and has
+none, so its compare-and-swap is already linearizable. The etcd-style `Txn`
+endpoint is still refused, as part of etcd compatibility.
 
 Status: implemented everywhere — the SDK (`node://` /
 `sdk/go/node.NewStandaloneNode`, the flat `embedded://` driver) and the
