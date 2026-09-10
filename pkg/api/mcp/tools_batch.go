@@ -30,12 +30,24 @@ import (
 )
 
 // maxImportFileSize is the maximum size for imported files (100MB),
-// mirroring the REST /batch/import bound. Unlike REST (bounded by
-// http.MaxBytesReader) and gRPC (bounded by grpc.MaxRecvMsgSize), the MCP
-// HTTP transport has no framework-level request size cap, so this handler
-// enforces the bound itself -- both on the base64-encoded "file" argument
-// (before decoding, see maxEncodedImportFileSize) and again on the decoded
-// result.
+// mirroring the REST /batch/import bound. Unlike REST and gRPC (bounded by
+// grpc.MaxRecvMsgSize), the MCP HTTP transport has no framework-level request
+// size cap, so this handler enforces the bound itself -- both on the
+// base64-encoded "file" argument (before decoding, see
+// maxEncodedImportFileSize) and again on the decoded result.
+//
+// The earlier wording said REST was "bounded by http.MaxBytesReader" without
+// qualification. That was true of /batch/import and of nothing else: five REST
+// handlers read their bodies with no bound at all, and the sentence read as a
+// statement about the transport (#231). A comment asserting a property six
+// handlers did not have is worse than no comment, because the next person to
+// add a handler reads it as established and does not look -- which is exactly
+// what happened to the three endpoints PR #230 added.
+//
+// Every REST handler that buffers a body now goes through readBoundedBody, so
+// the claim is true today. It is still written per-endpoint rather than as a
+// property of the transport, because that is what it is: the bound lives in
+// each handler, not in a framework.
 const maxImportFileSize = 100 << 20
 
 // maxEncodedImportFileSize is the largest base64-encoded "file" argument

@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 
@@ -549,9 +548,8 @@ func (s *Server) handleUpdateDatabaseRaft(w http.ResponseWriter, r *http.Request
 // buffered up front (rather than decoded directly off r.Body) so the
 // original bytes remain available for forwarding.
 func (s *Server) handleScaleDatabase(w http.ResponseWriter, r *http.Request, name string) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
 		return
 	}
 

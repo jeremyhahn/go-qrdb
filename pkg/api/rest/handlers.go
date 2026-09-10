@@ -351,9 +351,8 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 // Optional query parameter ?write_mode=sync|wal_durable|batched selects the
 // write durability mode; absent/empty preserves existing behavior.
 func (s *Server) handleKVPut(w http.ResponseWriter, r *http.Request, key string) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	body, ok := readBoundedBody(w, r, maxKVPutRequestBytes)
+	if !ok {
 		return
 	}
 
@@ -673,9 +672,8 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 // buffered up front (rather than decoded directly off r.Body) so the
 // original bytes remain available for forwarding.
 func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
 		return
 	}
 
@@ -706,9 +704,8 @@ func (s *Server) handleMembershipAdd(w http.ResponseWriter, r *http.Request) {
 // buffered up front (rather than decoded directly off r.Body) so the
 // original bytes remain available for forwarding.
 func (s *Server) handleMembershipRemove(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	body, ok := readBoundedBody(w, r, maxControlPlaneRequestBytes)
+	if !ok {
 		return
 	}
 

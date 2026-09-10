@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -183,9 +182,8 @@ func (s *Server) handleRebalanceExecute(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+	body, ok := readBoundedBody(w, r, maxRebalancePlanRequestBytes)
+	if !ok {
 		return
 	}
 

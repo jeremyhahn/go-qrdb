@@ -329,6 +329,103 @@ const maxGuardedKeyBytes = protocol.MaxUint16Field
 // bound, so the relationship is asserted rather than computed.
 const maxGuardedRequestBytes = int64(2 * guardedEntryCeiling)
 
+// maxKVPutRequestBytes bounds PUT /kv/{key}, and unlike the control-plane
+// bound below it IS derived: the body is the raw value, which becomes exactly
+// one Raft entry, so a body above guardedEntryCeiling cannot be proposed no
+// matter what this layer accepts. Admitting it buys nothing but the allocation
+// -- the same argument guardedEntryCeiling itself records.
+//
+// It is the entry ceiling rather than the ceiling minus framing, which is
+// deliberately PERMISSIVE by the few bytes of [op][keyLen][key]: this layer
+// must never refuse what a backend could still encode, so the propose path
+// stays the authority on the exact limit and REST agrees with the other
+// transports at the edge. That is the same reasoning the per-verb overhead
+// constants above are written from.
+const maxKVPutRequestBytes = int64(guardedEntryCeiling)
+
+// maxControlPlaneRequestBytes bounds the control-plane JSON bodies: membership
+// add/remove, database scale and rebalance execute.
+//
+// Unlike maxGuardedRequestBytes it is NOT derived, and saying so is the point.
+// Those bodies are fixed-shape documents of a few scalar fields -- a node id,
+// an address, a replica count -- so there is no service-layer size to compute
+// one from; #231 asked for a derived bound wherever one exists, and here one
+// does not. 64 KiB is three orders of magnitude above the largest legal body
+// any of the four can produce, which is the property that matters: it bounds
+// the allocation without being a limit a real caller can reach.
+//
+// Do not tighten it toward the observed maximum. The bound exists to stop an
+// unbounded allocation, not to validate the schema -- the decoders do that,
+// and they reject an oversized field with a better message than a byte cap
+// would.
+const maxControlPlaneRequestBytes = int64(64 << 10)
+
+// maxRebalancePlanRequestBytes bounds POST /v1/rebalance/execute, whose body is
+// NOT a control-plane scalar document and must not be capped like one.
+//
+// It is the whole RebalancePlan that POST /v1/rebalance/plan returned -- a list
+// of moves whose length scales with the CLUSTER, not with the request. The
+// planner stops adding moves only when opts.MaxMoves > 0
+// (pkg/service/rebalance_service.go), and the documented contract is that
+// max_moves: 0 means no limit. So a plan is unbounded by design at the service
+// layer, and a small cap here would let REST generate a plan REST cannot
+// execute: 413 before the service ever saw it, on a plan the server produced.
+//
+// #231's first cut did exactly that by reusing maxControlPlaneRequestBytes, and
+// the review caught it. That is the failure the issue itself warned about --
+// "a rejection test alone does not prove a too-tight bound has not broken
+// legitimate large values" -- committed while implementing the issue that
+// warned about it.
+//
+// DERIVED from the wire shape rather than picked:
+//
+//	rebalanceMoveResponse is {shard_id, from_node, to_node, estimated_bytes}.
+//	Worst case per move -- the JSON keys, two uint64s at 20 digits, two node
+//	identifiers and the punctuation -- rounded UP to 256 bytes, several times
+//	the realistic ~90. rebalancePlanMoveCeiling is the move count that admits,
+//	plus 4 KiB for the envelope's own scalar fields.
+//
+// The ceiling is deliberately far above any cluster that exists: a move
+// relocates one shard, so a plan longer than this describes a cluster whose
+// shard count is itself the problem. Refusing there bounds the allocation
+// without being a limit an operator can reach by rebalancing.
+const (
+	rebalancePlanMoveCeiling  = 65536
+	rebalancePlanBytesPerMove = 256
+
+	maxRebalancePlanRequestBytes = int64(rebalancePlanMoveCeiling*rebalancePlanBytesPerMove) + 4<<10
+)
+
+// readBoundedBody reads r.Body under a byte bound and returns its contents.
+//
+// Every caller buffers the body up front because the original bytes have to
+// stay available for leader forwarding, so the read is unavoidable -- but
+// before #231 five of them called io.ReadAll(r.Body) with no bound at all,
+// and the HTTP read timeout bounds DURATION, not bytes. A fast authenticated
+// caller could hand any of them a body of arbitrary size and the server would
+// allocate all of it before the service layer saw a thing.
+//
+// It reports ok=false once it has written the error response, so callers
+// return immediately -- the same shape as decodeGuardedRequest above.
+func readBoundedBody(w http.ResponseWriter, r *http.Request, limit int64) (body []byte, ok bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		// MaxBytesReader reports the overflow as *http.MaxBytesError, which is
+		// a 413 and not the 400 a genuine read failure gets: the caller can act
+		// on it by sending less, and RequestTooLargeError carries the bound so
+		// they can choose a size that will be accepted.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErrorJSON(w, http.StatusRequestEntityTooLarge, &RequestTooLargeError{Limit: limit})
+			return nil, false
+		}
+		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
+		return nil, false
+	}
+	return body, true
+}
+
 // decodeGuardedRequest reads, bounds and decodes a guarded verb's JSON body.
 //
 // It streams through a json.Decoder rather than reading the whole body first,
