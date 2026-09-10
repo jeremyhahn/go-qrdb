@@ -112,6 +112,47 @@ func requireComplete(t *testing.T, ctx context.Context, s *Store, want bool, why
 	}
 }
 
+// requireMigrationAbsent asserts GetMigration reports no record for the
+// fixture scope, and fails DISTINCTLY when the store read itself failed
+// (go-qrdb#255).
+//
+// GetMigration returns (nil, nil) when the record is absent and (nil, err)
+// when the read failed -- see the GetMigration doc comment in store.go -- so
+//
+//	if m, _ := s.GetMigration(ctx, tid, db); m != nil { t.Fatal(...) }
+//
+// scores a failed read as "the record is gone", which is the exact defect
+// #236 fixed 15 instances of elsewhere in this package. #236 itself excluded
+// this shape of assertion on the premise that for a Get-style API absence
+// always arrives through the error; that premise is false for this store,
+// which separates the two channels explicitly (issue #255).
+func requireMigrationAbsent(t *testing.T, ctx context.Context, s *Store, why string) {
+	t.Helper()
+	m, err := s.GetMigration(ctx, tid, db)
+	if err != nil {
+		t.Fatalf("GetMigration (%s): %v -- the store read failed, so absence was never established", why, err)
+	}
+	if m != nil {
+		t.Fatalf("GetMigration (%s) = %+v, want absent", why, m)
+	}
+}
+
+// requireNodeStatusAbsent asserts GetNodeStatus reports no status for nodeID
+// in the fixture scope, and fails DISTINCTLY when the store read itself
+// failed. Same rationale as requireMigrationAbsent: GetNodeStatus returns
+// (nil, nil) for "no status yet" and (nil, err) for "the read failed", and
+// only checking the value conflates the two (go-qrdb#255).
+func requireNodeStatusAbsent(t *testing.T, ctx context.Context, s *Store, nodeID, why string) {
+	t.Helper()
+	st, err := s.GetNodeStatus(ctx, tid, db, nodeID)
+	if err != nil {
+		t.Fatalf("GetNodeStatus(%s) (%s): %v -- the store read failed, so absence was never established", nodeID, why, err)
+	}
+	if st != nil {
+		t.Fatalf("GetNodeStatus(%s) (%s) = %+v, want absent", nodeID, why, st)
+	}
+}
+
 func seedMigration(t *testing.T, s *Store, gen uint64, owners []string) {
 	t.Helper()
 	if err := s.PutMigration(context.Background(), &ClusterMigration{
@@ -205,9 +246,7 @@ func TestStore_Delete(t *testing.T) {
 	if err := s.Delete(ctx, tid, db); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatal("migration record should be gone after Delete")
-	}
+	requireMigrationAbsent(t, ctx, s, "after Delete")
 	st, err := s.ListNodeStatuses(ctx, tid, db)
 	if err != nil {
 		t.Fatalf("ListNodeStatuses after Delete: %v -- the scan failed, so it never established that the statuses were gone", err)

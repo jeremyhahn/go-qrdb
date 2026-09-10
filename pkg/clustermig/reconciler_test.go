@@ -115,9 +115,7 @@ func TestReconciler_NotOwnerSkips(t *testing.T) {
 	if rec.count() != 0 {
 		t.Fatal("non-owner must not recycle")
 	}
-	if st, _ := s.GetNodeStatus(ctx, tid, db, "n9"); st != nil {
-		t.Fatalf("non-owner must not write a status, got %+v", st)
-	}
+	requireNodeStatusAbsent(t, ctx, s, "n9", "non-owner must not write a status")
 }
 
 // TestReconciler_RetriesAfterFailure proves a failed recycle records PhaseFailed

@@ -142,9 +142,7 @@ func TestCoordinator_Request_RejectsInvalidShamirThreshold(t *testing.T) {
 	if _, err := c.Request(ctx, tid, db, shamirOpts(4, 3), nil); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
 		t.Fatalf("Request(threshold=4,total=3) = %v, want ErrShamirThresholdInvalid", err)
 	}
-	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatal("an invalid Shamir request must not write an intent record")
-	}
+	requireMigrationAbsent(t, ctx, s, "an invalid Shamir request must not write an intent record")
 }
 
 // TestCoordinator_Request_NotLeader proves a follower forwards (errors) rather
@@ -157,9 +155,7 @@ func TestCoordinator_Request_NotLeader(t *testing.T) {
 	if _, err := c.Request(ctx, tid, db, validOpts(), nil); !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("Request on follower = %v, want ErrNotLeader", err)
 	}
-	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatal("follower must not write an intent record")
-	}
+	requireMigrationAbsent(t, ctx, s, "follower must not write an intent record")
 }
 
 // TestCoordinator_Request_NoOwners rejects a scope that resolves to no replicas.
@@ -183,9 +179,7 @@ func TestCoordinator_Request_InvalidOpts(t *testing.T) {
 	if _, err := c.Request(ctx, tid, db, seal.MigrationOptions{TargetStrategy: seal.StrategyNone}, nil); err == nil {
 		t.Fatal("Request with none target must error")
 	}
-	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatal("invalid request must not write an intent record")
-	}
+	requireMigrationAbsent(t, ctx, s, "invalid request must not write an intent record")
 }
 
 // TestCoordinator_Request_OwnerResolveError surfaces a resolver failure wrapped.
@@ -281,9 +275,7 @@ func TestCoordinator_Reap(t *testing.T) {
 	if reaped, err := c.Reap(ctx, tid, db); !reaped || err != nil {
 		t.Fatalf("Reap(complete) = %v, %v; want true, nil", reaped, err)
 	}
-	if m, _ := s.GetMigration(ctx, tid, db); m != nil {
-		t.Fatal("Reap must delete the completed intent record")
-	}
+	requireMigrationAbsent(t, ctx, s, "Reap must delete the completed intent record")
 }
 
 // TestCoordinator_Reap_NotLeader never deletes from a follower.

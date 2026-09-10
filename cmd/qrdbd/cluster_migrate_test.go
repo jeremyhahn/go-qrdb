@@ -362,7 +362,15 @@ func TestReapCompletedMigrations(t *testing.T) {
 		t.Fatalf("PutNodeStatus: %v", err)
 	}
 	reapCompletedMigrations(ctx, coord, store)
-	if got, _ := store.GetMigration(ctx, "acme", ""); got != nil {
+	// GetMigration returns (nil, nil) once the record is reaped and (nil, err)
+	// if the read itself failed; checking only got == nil scores a broken read
+	// as "reaped", the same defect #236 fixed elsewhere and #255 found #236 had
+	// missed for this store's absent-is-(nil,nil) contract.
+	got, err := store.GetMigration(ctx, "acme", "")
+	if err != nil {
+		t.Fatalf("GetMigration after reap: %v -- the store read failed, so reap was never confirmed", err)
+	}
+	if got != nil {
 		t.Fatal("completed migration must be reaped")
 	}
 }
