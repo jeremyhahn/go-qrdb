@@ -16,7 +16,10 @@ package unix
 
 import (
 	"context"
+	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -29,6 +32,26 @@ var _ transport.LeaseClient = (*Transport)(nil)
 // ---------------------------------------------------------------------------
 // LeaseClient implementation
 // ---------------------------------------------------------------------------
+
+// mapLeaseAbsent is mapGRPCError for the lease-by-ID endpoints. It mirrors
+// sdk/go/transport/grpc's function of the same name: the unix transport is
+// gRPC over a domain socket talking to the identical pkg/api/grpc server, so
+// it receives the identical codes.NotFound for both service.LeaseNotFoundError
+// and service.LeaseExpiredError and needs the identical message-text split to
+// tell them apart (go-qrdb#169, completing #141 for the lease family). See
+// the grpc package's mapLeaseAbsent for the full rationale, including why this
+// is not the substring classification go-qrdb#289 deleted and what is not
+// established about service.LeaseExpiredError's production reachability.
+func mapLeaseAbsent(method string, leaseID int64, err error) error {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		return mapGRPCError(method, err)
+	}
+	if strings.Contains(st.Message(), "lease expired") {
+		return &transport.LeaseExpiredError{LeaseID: leaseID}
+	}
+	return &transport.LeaseNotFoundError{LeaseID: leaseID}
+}
 
 // LeaseGrant creates a new lease with the specified TTL in seconds.
 func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
@@ -56,7 +79,7 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return mapGRPCError("LeaseRevoke", err)
+		return mapLeaseAbsent("LeaseRevoke", leaseID, err)
 	}
 	return nil
 }
@@ -71,7 +94,7 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return nil, mapGRPCError("LeaseKeepAlive", err)
+		return nil, mapLeaseAbsent("LeaseKeepAlive", leaseID, err)
 	}
 
 	return protoToLeaseInfo(resp.GetLease()), nil
@@ -87,7 +110,7 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return nil, mapGRPCError("LeaseTimeToLive", err)
+		return nil, mapLeaseAbsent("LeaseTimeToLive", leaseID, err)
 	}
 
 	return protoToLeaseInfo(resp.GetLease()), nil

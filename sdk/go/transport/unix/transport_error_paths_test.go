@@ -368,6 +368,139 @@ func TestUnixRT_LeaseTimeToLive_Error(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Lease not-found/expired typed-error round trips (go-qrdb#169, completing
+// #141 for the lease family). The unix transport is gRPC over a domain
+// socket talking to the identical pkg/api/grpc server the grpc package
+// dials over TCP, so these mirror sdk/go/transport/grpc's equivalents; see
+// mapLeaseAbsent's doc comment in transport_lease.go for the full rationale.
+// ---------------------------------------------------------------------------
+
+func TestUnixRT_LeaseRevoke_NotFound(t *testing.T) {
+	svc := &mockLeaseSvc{revokeFn: func(_ context.Context, _ int64) error {
+		return &service.LeaseNotFoundError{LeaseID: 42}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	err := tr.LeaseRevoke(context.Background(), 42)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 42 {
+		t.Errorf("LeaseID: got %d, want 42", notFound.LeaseID)
+	}
+}
+
+func TestUnixRT_LeaseRevoke_Expired(t *testing.T) {
+	svc := &mockLeaseSvc{revokeFn: func(_ context.Context, _ int64) error {
+		return &service.LeaseExpiredError{LeaseID: 42}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	err := tr.LeaseRevoke(context.Background(), 42)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 42 {
+		t.Errorf("LeaseID: got %d, want 42", expired.LeaseID)
+	}
+}
+
+func TestUnixRT_LeaseKeepAlive_NotFound(t *testing.T) {
+	svc := &mockLeaseSvc{keepAliveFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+		return nil, &service.LeaseNotFoundError{LeaseID: 7}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	_, err := tr.LeaseKeepAlive(context.Background(), 7)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 7 {
+		t.Errorf("LeaseID: got %d, want 7", notFound.LeaseID)
+	}
+}
+
+func TestUnixRT_LeaseKeepAlive_Expired(t *testing.T) {
+	svc := &mockLeaseSvc{keepAliveFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+		return nil, &service.LeaseExpiredError{LeaseID: 7}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	_, err := tr.LeaseKeepAlive(context.Background(), 7)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 7 {
+		t.Errorf("LeaseID: got %d, want 7", expired.LeaseID)
+	}
+}
+
+func TestUnixRT_LeaseTimeToLive_NotFound(t *testing.T) {
+	svc := &mockLeaseSvc{ttlFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+		return nil, &service.LeaseNotFoundError{LeaseID: 99}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 99 {
+		t.Errorf("LeaseID: got %d, want 99", notFound.LeaseID)
+	}
+}
+
+func TestUnixRT_LeaseTimeToLive_Expired(t *testing.T) {
+	svc := &mockLeaseSvc{ttlFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+		return nil, &service.LeaseExpiredError{LeaseID: 99}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 99 {
+		t.Errorf("LeaseID: got %d, want 99", expired.LeaseID)
+	}
+}
+
+// TestUnixRT_LeaseTimeToLive_NonNotFoundNotReclassified is the mutation-check
+// companion (see the grpc package's equivalent for the full rationale):
+// mapLeaseAbsent's codes.NotFound gate must actually gate, or a non-NotFound
+// condition from the same call would be misreported as a lease error.
+func TestUnixRT_LeaseTimeToLive_NonNotFoundNotReclassified(t *testing.T) {
+	svc := &mockLeaseSvc{ttlFn: func(_ context.Context, _ int64) (*lease.Lease, error) {
+		return nil, &service.NotLeaderError{ShardID: 1}
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var notFound *transport.LeaseNotFoundError
+	var expired *transport.LeaseExpiredError
+	if errors.As(err, &notFound) || errors.As(err, &expired) {
+		t.Fatalf("expected a non-lease error, got %T: %v", err, err)
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
 // ===========================================================================
 // Lock service error paths
 // ===========================================================================

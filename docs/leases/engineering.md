@@ -100,6 +100,29 @@ The refusal on attaching to an unknown lease is the important one: accepting the
 write and dropping the association would produce a key that outlives its owner
 with no way to notice.
 
+`sdk/go/transport.LeaseNotFoundError` / `LeaseExpiredError` cross `embedded`,
+`grpc`, `unix`, `quic` and `mcp` as the same two types — `grpc`/`unix` classify
+their shared `codes.NotFound` by message text at the lease call sites, `quic`
+does the same against its `wire.StatusError` payload, and `mcp` against its
+tool-result text, since none of those wires carries a status distinct enough to
+tell the two conditions apart on its own.
+
+**REST is the exception, and it is a partial one.** Only `LeaseTimeToLive` maps
+a typed lease error (`transport/rest/transport_lease.go` turns a 404 into
+`LeaseNotFoundError`). `LeaseRevoke` and `LeaseKeepAlive` go through
+`postJSON`/`postJSONDecode`, whose 404 lands in `decodeErrorResponse` and comes
+back as a generic `RequestError`. And REST emits **no `LeaseExpiredError` at
+all**: `mapHTTPError` sends both the not-found and the expired case to
+`http.StatusNotFound`, so the wire cannot tell them apart — a client would have
+to parse the body text, which is what #141 exists to eliminate.
+
+Closing that gap means giving REST a status or body field that distinguishes
+the two, which is a wire-format change and not a client-side mapping; it is not
+done here. `sdk/go`'s
+lease monitor (`coordination.go`) is the reason this matters: it detects
+external revocation at the revoke rather than at the lease's own expiry only
+when the absence arrives typed.
+
 ## Configuration
 
 No lease-specific configuration keys. The sweep runs on the leader; its cadence

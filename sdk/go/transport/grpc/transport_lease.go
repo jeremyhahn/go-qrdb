@@ -16,7 +16,10 @@ package grpc
 
 import (
 	"context"
+	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -29,6 +32,48 @@ var _ transport.LeaseClient = (*Transport)(nil)
 // ---------------------------------------------------------------------------
 // LeaseClient implementation
 // ---------------------------------------------------------------------------
+
+// mapLeaseAbsent is mapGRPCError for the lease-by-ID endpoints: it turns the
+// server's codes.NotFound into the typed lease error every other transport
+// carries for this condition (go-qrdb#169, completing #141 for the lease
+// family), using the caller's own leaseID rather than parsing it back out of
+// the status message. Everything else falls through to mapGRPCError
+// unchanged.
+//
+// It is a SEPARATE function rather than a new case in mapGRPCError for the
+// same reason mapUserNotFound is (see transport_auth.go): mapGRPCError sees
+// only a code and a message and cannot know which lease call this is, so a
+// NotFound case there could only guess -- and it already guesses, mapping
+// every NotFound to KeyNotFoundError. The call site knows, because it knows
+// which lease it asked about.
+//
+// pkg/api/grpc/errors.go maps both service.LeaseNotFoundError and
+// service.LeaseExpiredError to codes.NotFound -- gRPC has no expired-specific
+// sibling of NotFound, the same way REST's http.StatusNotFound doesn't --
+// so the message text is the only signal left to tell the two apart. That is
+// NOT the substring classification go-qrdb#289 deleted: #289 guessed WHICH
+// SUBJECT was missing from a code shared across subjects (user, key, ...);
+// here the call site already knows the subject is a lease, and only the two
+// lease Error() strings the service layer defines ("lease not found" /
+// "lease expired") are being told apart.
+//
+// NOT ESTABLISHED: whether any production state machine actually constructs
+// service.LeaseExpiredError today -- pkg/lease's Lessor removes an expired
+// lease from its table rather than reporting it distinct from not-found, so
+// this branch is currently unreached in practice. The mapping exists so a
+// caller's errors.As matches the day the engine does report it, the same as
+// the LeaseExpiredError case sdk/go/transport/embedded/errors.go already
+// carries for the identical, currently-unreached reason.
+func mapLeaseAbsent(method string, leaseID int64, err error) error {
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		return mapGRPCError(method, err)
+	}
+	if strings.Contains(st.Message(), "lease expired") {
+		return &transport.LeaseExpiredError{LeaseID: leaseID}
+	}
+	return &transport.LeaseNotFoundError{LeaseID: leaseID}
+}
 
 // LeaseGrant creates a new lease with the specified TTL in seconds
 // through the gRPC transport.
@@ -58,7 +103,7 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return mapGRPCError("LeaseRevoke", err)
+		return mapLeaseAbsent("LeaseRevoke", leaseID, err)
 	}
 	return nil
 }
@@ -74,7 +119,7 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return nil, mapGRPCError("LeaseKeepAlive", err)
+		return nil, mapLeaseAbsent("LeaseKeepAlive", leaseID, err)
 	}
 
 	return protoToLeaseInfo(resp.GetLease()), nil
@@ -91,7 +136,7 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 		LeaseId: leaseID,
 	})
 	if err != nil {
-		return nil, mapGRPCError("LeaseTimeToLive", err)
+		return nil, mapLeaseAbsent("LeaseTimeToLive", leaseID, err)
 	}
 
 	return protoToLeaseInfo(resp.GetLease()), nil

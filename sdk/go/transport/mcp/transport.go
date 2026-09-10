@@ -859,6 +859,27 @@ func extractTextContent(result *mcp.CallToolResult) string {
 	return ""
 }
 
+// isExpiredError checks whether an error indicates a lease-expired
+// condition. MCP tool errors propagate the service-layer error message
+// verbatim (pkg/api/mcp.ToolError.Error() wraps it, not replaces it), so
+// service.LeaseExpiredError's fixed "lease expired" text survives to the
+// client the same way "not found" does for isNotFoundError below.
+//
+// It exists as a companion to isNotFoundError rather than a case inside it
+// because MCP carries no status code at all -- callTool's IsError result is
+// the ONLY signal, so telling "not found" from "expired" is text-substring
+// classification whichever function does it (go-qrdb#169, completing #141
+// for the lease family). This is not the guess go-qrdb#289 deleted: #289
+// guessed WHICH SUBJECT a generic condition applied to; every call site that
+// checks isExpiredError already knows the subject is the lease it just
+// asked about.
+func isExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "lease expired")
+}
+
 // isNotFoundError checks whether an error indicates a key-not-found
 // condition. MCP tool errors propagate the service-layer error message,
 // which contains "not found".

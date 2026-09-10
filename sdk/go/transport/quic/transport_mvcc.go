@@ -16,8 +16,10 @@ package quic
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strconv"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -586,6 +588,53 @@ func (e *importFileTooLargeError) Error() string {
 // LeaseClient implementation
 // ---------------------------------------------------------------------------
 
+// mapLeaseAbsent classifies a QUIC wire error surfaced from a lease-by-ID
+// call as the typed lease error the server meant, using the caller's own
+// leaseID rather than parsing it back out of the message text mapWireError
+// already flattened into a generic RequestError (go-qrdb#169, completing
+// #141 for the lease family).
+//
+// The QUIC wire.Status vocabulary (wire.go) has no NotFound of its own --
+// every application error short of Unimplemented/Unauthenticated/
+// PermissionDenied/Unavailable collapses to wire.StatusError, the same status
+// a transport blip or a malformed request would carry -- so message text is
+// the only signal left, exactly as it already is for mapWireError's own
+// "key not found" case a few lines above this one in transport.go. That
+// existing case stuffs the whole message into KeyNotFoundError.Key; lease
+// errors carry a typed int64 LeaseID instead, so parsing one back out of
+// "service: lease not found: 42" would be reconstructing a value the call
+// site already has. This is call-site classification, not a mapWireError
+// case, for that reason.
+//
+// It is not the substring classification go-qrdb#289 deleted: #289 guessed
+// WHICH SUBJECT was missing from a status shared across subjects; here the
+// call site already knows the subject is a lease, and only pkg/service's two
+// lease Error() strings ("lease not found" / "lease expired") are being told
+// apart.
+//
+// NOT ESTABLISHED: whether any production state machine actually constructs
+// service.LeaseExpiredError today -- pkg/lease's Lessor removes an expired
+// lease from its table rather than reporting it distinct from not-found, so
+// the LeaseExpiredError branch is currently unreached in practice. The
+// mapping exists so a caller's errors.As matches the day the engine does
+// report it, the same as sdk/go/transport/embedded/errors.go already carries
+// for the identical, currently-unreached reason.
+func mapLeaseAbsent(leaseID int64, err error) error {
+	var re *transport.RequestError
+	if !errors.As(err, &re) || re.StatusCode != int(wire.StatusError) || re.Err == nil {
+		return err
+	}
+	msg := re.Err.Error()
+	switch {
+	case strings.Contains(msg, "lease expired"):
+		return &transport.LeaseExpiredError{LeaseID: leaseID}
+	case strings.Contains(msg, "lease not found"):
+		return &transport.LeaseNotFoundError{LeaseID: leaseID}
+	default:
+		return err
+	}
+}
+
 // LeaseGrant creates a new lease with the specified TTL in seconds
 // through the QUIC transport.
 func (t *Transport) LeaseGrant(ctx context.Context, ttl int64) (*transport.LeaseInfo, error) {
@@ -628,7 +677,10 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 	}
 
 	_, err = t.call(ctx, "lease.Revoke", payload)
-	return err
+	if err != nil {
+		return mapLeaseAbsent(leaseID, err)
+	}
+	return nil
 }
 
 // LeaseKeepAlive resets the TTL on an existing lease through the QUIC
@@ -647,7 +699,7 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 
 	resp, err := t.call(ctx, "lease.KeepAlive", payload)
 	if err != nil {
-		return nil, err
+		return nil, mapLeaseAbsent(leaseID, err)
 	}
 
 	var pbResp pb.LeaseKeepAliveResponse
@@ -674,7 +726,7 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 
 	resp, err := t.call(ctx, "lease.TimeToLive", payload)
 	if err != nil {
-		return nil, err
+		return nil, mapLeaseAbsent(leaseID, err)
 	}
 
 	var pbResp pb.LeaseTimeToLiveResponse

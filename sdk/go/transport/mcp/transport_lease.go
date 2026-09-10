@@ -88,7 +88,20 @@ func (t *Transport) LeaseRevoke(ctx context.Context, leaseID int64) error {
 	_, err := t.callTool(ctx, "qrdb_lease_revoke", map[string]any{
 		"lease_id": leaseID,
 	})
-	return err
+	if err != nil {
+		// isExpiredError/isNotFoundError are the same message-text
+		// classification transport.go's Get and transport_auth.go's GetUser
+		// already use over MCP, which carries no status code at all
+		// (go-qrdb#169, completing #141 for the lease family).
+		if isExpiredError(err) {
+			return &transport.LeaseExpiredError{LeaseID: leaseID}
+		}
+		if isNotFoundError(err) {
+			return &transport.LeaseNotFoundError{LeaseID: leaseID}
+		}
+		return err
+	}
+	return nil
 }
 
 // LeaseKeepAlive resets the TTL on an existing lease, preventing it
@@ -102,6 +115,12 @@ func (t *Transport) LeaseKeepAlive(ctx context.Context, leaseID int64) (*transpo
 		"lease_id": leaseID,
 	})
 	if err != nil {
+		if isExpiredError(err) {
+			return nil, &transport.LeaseExpiredError{LeaseID: leaseID}
+		}
+		if isNotFoundError(err) {
+			return nil, &transport.LeaseNotFoundError{LeaseID: leaseID}
+		}
 		return nil, err
 	}
 
@@ -124,6 +143,12 @@ func (t *Transport) LeaseTimeToLive(ctx context.Context, leaseID int64) (*transp
 		"lease_id": leaseID,
 	})
 	if err != nil {
+		if isExpiredError(err) {
+			return nil, &transport.LeaseExpiredError{LeaseID: leaseID}
+		}
+		if isNotFoundError(err) {
+			return nil, &transport.LeaseNotFoundError{LeaseID: leaseID}
+		}
 		return nil, err
 	}
 

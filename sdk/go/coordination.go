@@ -721,15 +721,20 @@ func (l *lease) probe(timeout time.Duration) bool {
 		// error — a timeout, a connection reset — establishes nothing either
 		// way, and is left to the known-held floor to adjudicate.
 		//
-		// Whether an absent lease arrives typed is a property of the transport:
-		// the embedded and REST transports carry LeaseNotFoundError across the
-		// seam, while the others still flatten it into a generic RequestError
-		// (the seam problem of go-qrdb#141, unfinished for the lease family).
-		// Typing only makes loss detection PROMPTER; it is not what makes it
-		// correct. Untyped, an externally revoked lease is reported lost when
-		// the confirmed lifetime runs out instead of at the revoke — the same
-		// bound every TTL lease client lives by, and never later than the
-		// guarantee the last renewal actually bought.
+		// Every transport now carries an absent lease across the seam as a
+		// typed transport.LeaseNotFoundError/LeaseExpiredError (go-qrdb#169
+		// finished #141 for the lease family: grpc and unix classify their
+		// shared codes.NotFound by message text at the lease call sites, quic
+		// does the same against its wire.StatusError payload, and mcp against
+		// its tool-result text — mirroring the classification embedded already
+		// carried, and REST carries for LeaseTimeToLive only: its Revoke and
+		// KeepAlive still flatten a 404 into a generic RequestError, and it
+		// emits no LeaseExpiredError at all because both conditions are the
+		// same HTTP status). Typing only makes loss detection PROMPTER; it
+		// is not what makes it correct. leaseAbsent still degrades safely
+		// against an untyped error — errors.As simply does not match — so a
+		// transport that somehow returned one would still be bounded by the
+		// confirmed lifetime rather than mis-declared lost.
 		return leaseAbsent(err)
 	}
 	if info != nil && info.RemainingTTL > 0 {

@@ -23,6 +23,7 @@ import (
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // ---------------------------------------------------------------------------
@@ -190,6 +191,69 @@ func TestLeaseRevoke_ServiceError(t *testing.T) {
 	}
 }
 
+// go-qrdb#169: carry service.LeaseNotFoundError / service.LeaseExpiredError
+// across the MCP seam as the matching typed transport error, completing #141
+// for the lease family the same way #289 did for the user family. MCP
+// carries no status code, so classification is the isExpiredError /
+// isNotFoundError message-text check transport_lease.go already applies —
+// the same idiom transport.go's Get and transport_auth.go's GetUser use for
+// their own typed not-found errors.
+
+func TestLeaseRevoke_NotFound(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.revokeErr = &service.LeaseNotFoundError{LeaseID: 42}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	err := tr.LeaseRevoke(context.Background(), 42)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 42 {
+		t.Errorf("LeaseID: got %d, want 42", notFound.LeaseID)
+	}
+}
+
+func TestLeaseRevoke_Expired(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.revokeErr = &service.LeaseExpiredError{LeaseID: 42}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	err := tr.LeaseRevoke(context.Background(), 42)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 42 {
+		t.Errorf("LeaseID: got %d, want 42", expired.LeaseID)
+	}
+}
+
+// TestLeaseRevoke_OtherErrorNotReclassified is the mutation-check companion:
+// an error whose message names neither lease condition must fall through
+// unchanged, not be reclassified as a lease error just because it came from
+// LeaseRevoke. This is what would go red if the isExpiredError/isNotFoundError
+// checks were deleted in favor of "any error at a lease call site is a lease
+// error".
+func TestLeaseRevoke_OtherErrorNotReclassified(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.revokeErr = &service.NotLeaderError{ShardID: 1}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	err := tr.LeaseRevoke(context.Background(), 42)
+	var notFound *transport.LeaseNotFoundError
+	var expired *transport.LeaseExpiredError
+	if errors.As(err, &notFound) || errors.As(err, &expired) {
+		t.Fatalf("expected a non-lease error, got %T: %v", err, err)
+	}
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LeaseKeepAlive
 // ---------------------------------------------------------------------------
@@ -219,6 +283,38 @@ func TestLeaseKeepAlive_ServiceError(t *testing.T) {
 	}
 }
 
+func TestLeaseKeepAlive_NotFound(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.keepAliveErr = &service.LeaseNotFoundError{LeaseID: 7}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.LeaseKeepAlive(context.Background(), 7)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 7 {
+		t.Errorf("LeaseID: got %d, want 7", notFound.LeaseID)
+	}
+}
+
+func TestLeaseKeepAlive_Expired(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.keepAliveErr = &service.LeaseExpiredError{LeaseID: 7}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.LeaseKeepAlive(context.Background(), 7)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 7 {
+		t.Errorf("LeaseID: got %d, want 7", expired.LeaseID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LeaseTimeToLive
 // ---------------------------------------------------------------------------
@@ -245,6 +341,38 @@ func TestLeaseTimeToLive_ServiceError(t *testing.T) {
 
 	if _, err := tr.LeaseTimeToLive(context.Background(), 100); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestLeaseTimeToLive_NotFound(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.ttlErr = &service.LeaseNotFoundError{LeaseID: 99}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 99 {
+		t.Errorf("LeaseID: got %d, want 99", notFound.LeaseID)
+	}
+}
+
+func TestLeaseTimeToLive_Expired(t *testing.T) {
+	svc := newMockLeaseSvc()
+	svc.ttlErr = &service.LeaseExpiredError{LeaseID: 99}
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var expired *transport.LeaseExpiredError
+	if !errors.As(err, &expired) {
+		t.Fatalf("expected *transport.LeaseExpiredError, got %T: %v", err, err)
+	}
+	if expired.LeaseID != 99 {
+		t.Errorf("LeaseID: got %d, want 99", expired.LeaseID)
 	}
 }
 
