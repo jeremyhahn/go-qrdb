@@ -56,12 +56,25 @@ cd "$ROOT"
 # Every compose file, and the overlays each one is legitimately combined with.
 # Overlays are checked in combination because the defect is IN the merge: each
 # file alone is consistent, and only the join produces the impossible pairing.
-# .devcontainer/docker-compose.yml is deliberately ABSENT: it names no build
-# target on any service, and this scanner's floor treats a set with no targets
-# as a failure rather than a pass. Listing it would mean either weakening the
-# floor or carrying a permanent exception for a file that has nothing to check.
-# It gets added the day it grows a `target:`.
+# .devcontainer/docker-compose.yml grew a `target:` on four services in
+# go-qrdb#294 -- see that file for why -- so it is checked alone here, the
+# same as any set with no legitimate overlay.
+#
+# devcontainer-gpu is in that file and names NO target, so it is not a pairing
+# this scanner can check: with nothing named there is nothing to resolve. It is
+# excluded from the reasoning above rather than from the scan -- the file IS
+# scanned, and if that service ever grows a `target:` the scanner picks it up
+# with no change here.
+#
+# An earlier version of this comment said Dockerfile.gpu "has exactly one
+# stage, so there is no alternate target to name". That stopped being true in
+# go-qrdb#327, which named its final stage `AS integration` precisely so the
+# GPU integration lane could build -- the same commit that introduced this
+# scanner. It now has two named stages, `go-downloader` and `integration`. The
+# claim is corrected rather than deleted because a reader who checks it should
+# find the file, not a confident sentence about it.
 COMPOSE_SETS="
+.devcontainer/docker-compose.yml
 test/integration/api/docker-compose.yml
 test/integration/api/docker-compose.yml:test/integration/api/docker-compose.gpu.yml
 "

@@ -52,11 +52,43 @@ x-scanner-pins: &scanner-pins
   <<: *go-scanner-pins
   TRIVY_VERSION:
 
+# devcontainer, client-build, benchmark and e2e all bind-mount the worktree
+# over /workspace/go-qrdb (below) and run `go build`/`go test` against that
+# mount, never against anything baked into the image. Before this comment none
+# of them named a `target:`, so compose built the DEFAULT target -- the LAST
+# stage in .devcontainer/Dockerfile, `integration` -- for every one of them.
+# That stage exists for test/integration/api's stack, which runs on a Gitea
+# job container with no source mount and genuinely needs `COPY . .` and the
+# two binaries `integration` compiles from it (see the Dockerfile). None of
+# the four services here need either: `_ci`, `_build-client`,
+# `_bench-qrdb-kv-fair` and `_test-e2e*` all build and test from the mounted
+# source themselves.
+#
+# The cost of that accident (go-qrdb#294): `COPY . .` invalidates on any file
+# in the build context, so it and the `RUN go build` layer after it rebuild on
+# every source edit, and neither Go build cache mount nor Docker layer cache
+# survives that invalidation -- each rebuild recompiles both binaries cold.
+# Measured on this host, `make ci` after a one-line test-file edit:
+#
+#   target defaulted to `integration` (unfixed)   1:56  (COPY 1.7s + go build
+#                                                          105.6s + export 6.4s)
+#   target: deps (this fix)                  0:00  (stage builds nothing
+#                                                          past the tool
+#                                                          installs; unaffected
+#                                                          by any source edit)
+#
+# `toolchain` is the stage the Dockerfile already documents as the
+# development target -- "The image ends here for development: no source, so
+# the devcontainer service's bind mount supplies it" -- these four services
+# just never named it. Naming it here is what makes
+# `scripts/check-compose-targets.sh` start checking this file: see the
+# comment there for why it was excluded until a target existed to check.
 services:
   devcontainer:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      target: deps
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -66,7 +98,18 @@ services:
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
+    # NO runtime module credentials, and no go-mod-cache volume, because
+    # neither is needed: `deps` runs `go mod download` under the BuildKit
+    # secret, so /go/pkg/mod is already populated IN THE IMAGE LAYER.
+    #
+    # Measured: `docker run --network none` against this image, with no volume
+    # and no credentials, builds a package that imports github.com/jeremyhahn/*
+    # successfully. A named volume mounted at /go/pkg/mod would SHADOW that
+    # baked cache -- Docker seeds an empty volume from the image once, but a
+    # volume that already exists is never re-seeded, so a stale one would send
+    # `go build` to the network without the credentials to get there.
     cap_add:
       - NET_ADMIN
 
@@ -74,6 +117,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      target: deps
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -83,6 +127,7 @@ services:
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
     environment:
       - GOPRIVATE=github.com/jeremyhahn/*
@@ -95,6 +140,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      target: deps
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -104,6 +150,7 @@ services:
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
     environment:
       - CI=true
@@ -144,6 +191,7 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+      target: deps
       args: *scanner-pins
       secrets:
         - gomodauth
@@ -153,7 +201,11 @@ services:
       - ../../go-quicraft:/workspace/go-quicraft
       - ../../go-truststrap:/workspace/go-truststrap
       - ../../go-objstore:/workspace/go-objstore
+      - go-build-cache:/root/.cache/go-build
     working_dir: /workspace/go-qrdb
+    # Same reason as devcontainer's identical block above: `toolchain` bakes
+    # no module cache, so `_bench-qrdb-kv-fair`'s `go test` resolves
+    # github.com/jeremyhahn/* at runtime and needs these.
     cap_add:
       - NET_ADMIN
 
@@ -182,3 +234,24 @@ services:
 secrets:
   gomodauth:
     environment: GOMODAUTH
+
+# go-build-cache backs the `deps` services' /root/.cache/go-build
+# (go-qrdb#294). `docker compose run --rm` discards the container's writable
+# layer on exit, so without it nothing a run COMPILES survives to the next one
+# and every `make ci` pays a cold build.
+#
+# A named volume is the right tool for this one: GOCACHE is immutable,
+# content-addressed compiler output keyed by a hash of the inputs, so a stale
+# entry is unreachable rather than wrong, and concurrent writers cannot corrupt
+# each other.
+#
+# THERE IS DELIBERATELY NO go-mod-cache VOLUME. The module cache is baked into
+# the image by `deps`, and a named volume at /go/pkg/mod would SHADOW it:
+# Docker seeds an empty volume from the image once, but a volume that already
+# exists is never re-seeded, so a stale one from an earlier image would send
+# `go build` to the network -- for private modules, without the credentials to
+# get there. Measured: `docker run --network none` with no volume and no
+# credentials builds a package importing github.com/jeremyhahn/* successfully,
+# which is the property that makes the volume unnecessary as well as unsafe.
+volumes:
+  go-build-cache:

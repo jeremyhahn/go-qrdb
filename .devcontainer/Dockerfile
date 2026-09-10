@@ -248,19 +248,33 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # The image ends here for development: no source, so the devcontainer service's
 # bind mount supplies it and a developer's edits are live without a rebuild.
+# This is also what `make ci` builds (go-qrdb#294): the CMD below is
+# irrelevant there, since `docker compose run ... devcontainer make _ci`
+# overrides it, but the stage boundary is what keeps the gate from rebuilding
+# past the tool installs on a source edit.
 CMD ["sleep", "infinity"]
 
 # ---------------------------------------------------------------------------
 # integration — the same toolchain with the code under test baked in.
 # ---------------------------------------------------------------------------
 #
-# CI uses this stage and mounts no source. Bind-mounting the checkout cannot
-# work from a Gitea job container: compose reaches the HOST daemon through the
-# mounted socket, so a host path resolves on the host, and the job's checkout
-# lives at /workspace/<owner>/<repo> inside the job container -- a path the
-# runner host does not have. Compose declares create_host_path, so the daemon
-# manufactures an empty directory and mounts that; nothing fails until the
-# build inside the container cannot find the tree.
+# test/integration/api/docker-compose.yml's integration-tests service builds
+# this stage and mounts no source. Bind-mounting the checkout cannot work from
+# a Gitea job container: compose reaches the HOST daemon through the mounted
+# socket, so a host path resolves on the host, and the job's checkout lives at
+# /workspace/<owner>/<repo> inside the job container -- a path the runner host
+# does not have. Compose declares create_host_path, so the daemon manufactures
+# an empty directory and mounts that; nothing fails until the build inside the
+# container cannot find the tree.
+#
+# .devcontainer/docker-compose.yml's services do NOT build this stage (go-qrdb
+# #294): devcontainer, client-build, benchmark and e2e all bind-mount the live
+# worktree over /workspace/go-qrdb and run `go build`/`go test` against that
+# mount, so a `COPY . .` baked here would buy them nothing and cost a cold
+# recompile of both binaries on every source edit -- measured at 1:56 per
+# `make ci` for a one-line test-file change, with no persistent Go build cache
+# across the invalidated layer. They build `toolchain` instead, which this
+# comment's own name says is where the image ends for development.
 #
 # This stage also replaces the Go workspace this image used to bake. That
 # workspace `replace`d go-quicraft, go-truststrap and go-objstore to sibling
@@ -269,7 +283,23 @@ CMD ["sleep", "infinity"]
 # conventions/dependency-resolution.md section 2. Those modules now resolve
 # from their Gitea tags like every other dependency, which is why the
 # entrypoints no longer need to avoid GOWORK=off.
-FROM toolchain AS integration
+# The dependency layer, and the reason the bind-mount services are fast (#294).
+#
+# Everything here invalidates on go.mod/go.sum and NOTHING else -- no source is
+# copied, so an edit to any .go file leaves this layer cached. `integration`
+# builds FROM it and adds the `COPY . .` that a no-source-mount stack needs;
+# devcontainer, client-build, benchmark and e2e target THIS stage, because they
+# bind-mount the live worktree and never wanted the copy.
+#
+# THE TOKEN STAYS BUILD-TIME. The obvious alternative -- point those four at
+# `toolchain` and let them `go mod download` at run time -- needs
+# GITEA_GO_TOKEN in each service's runtime `environment:`, where `docker
+# inspect` and /proc/<pid>/environ can read it for the life of the container.
+# #326 had just finished removing the token from a mode-600 file; widening its
+# runtime exposure from two services to four is the same defect in the other
+# direction. A BuildKit secret is a tmpfs mount for one RUN and survives in no
+# image layer, so keeping the download here is both faster and narrower.
+FROM toolchain AS deps
 
 WORKDIR /workspace/go-qrdb
 
@@ -304,6 +334,8 @@ RUN --mount=type=secret,id=gomodauth \
     fi; \
     go mod download
 
+
+FROM deps AS integration
 COPY . .
 
 # Build the binaries the stack runs, at image build time rather than at
