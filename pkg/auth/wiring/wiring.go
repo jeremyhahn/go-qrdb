@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -208,6 +209,24 @@ type AuthMiddlewareConfig struct {
 	// (middleware.WithAuditLogger).
 	AuditLogger audit.Logger
 
+	// RateLimitPolicies declares, per permission, the request-throttling
+	// Policy go-qrdb#201's centralized rate limiter enforces
+	// (middleware.WithRateLimitPolicies). Nil -- the default -- declares no
+	// policy for any permission, so BuildAuthMiddleware installs no limiter
+	// at all: rate limiting is an explicit per-permission opt-in an embedder
+	// takes by constructing a *ratelimit.Registry and calling Register on
+	// it, never a default this constructor imposes.
+	RateLimitPolicies *ratelimit.Registry
+
+	// RateLimiter overrides the enforcement engine RateLimitPolicies runs
+	// against. Nil, with RateLimitPolicies non-nil, constructs the
+	// production ratelimit.NewTokenBucketLimiter(); an embedder that already
+	// runs one shared limiter across other subsystems may supply it here
+	// instead so go-qrdb#201's mechanism reuses that instance rather than
+	// starting a second background reaper goroutine and a second bucket set.
+	// Ignored when RateLimitPolicies is nil.
+	RateLimiter ratelimit.Limiter
+
 	// ExtraAuthenticators appends embedder-supplied authenticators to the
 	// chain AFTER the built-in mTLS authenticator. The chain is
 	// first-success-wins, so mTLS peers keep their existing behavior and a
@@ -332,6 +351,16 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 	}
 	if cfg.AuditLogger != nil {
 		opts = append(opts, middleware.WithAuditLogger(cfg.AuditLogger))
+	}
+	if cfg.RateLimitPolicies != nil {
+		limiter := cfg.RateLimiter
+		if limiter == nil {
+			limiter = ratelimit.NewTokenBucketLimiter()
+		}
+		opts = append(opts,
+			middleware.WithRateLimiter(limiter),
+			middleware.WithRateLimitPolicies(cfg.RateLimitPolicies),
+		)
 	}
 
 	return middleware.New(authorizer, opts...), nil

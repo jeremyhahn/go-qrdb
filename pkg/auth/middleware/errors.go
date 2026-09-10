@@ -14,7 +14,12 @@
 
 package middleware
 
-import "strings"
+import (
+	"strings"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+)
 
 // UserDisabledError is returned when an authenticated user account is not in a
 // lifecycle state that permits authentication. The middleware rejects the
@@ -141,4 +146,31 @@ func (e *AuthMethodNotPermittedError) Error() string {
 	return "auth/middleware: authentication method " + e.Method +
 		" is not permitted for " + e.Username + " in tenant " + e.TenantID +
 		" (permitted: " + strings.Join(e.Permitted, ", ") + ")"
+}
+
+// RateLimitedError is returned by authorize (go-qrdb#201) when the caller has
+// exceeded the Policy declared for the permission it is invoking. It carries
+// enough for a transport to answer a caller that can act on the refusal: the
+// permission it was throttled on and how long to wait before trying again,
+// the same shape #231 established for RequestTooLargeError and
+// PayloadTooLargeError -- a caller told only "denied" cannot choose to wait
+// the right amount, or to check whether it is even the operation it thinks
+// is failing.
+type RateLimitedError struct {
+	// Permission is the operation the caller was throttled on.
+	Permission permission.Permission
+
+	// Subject and TenantID identify the caller whose bucket was exhausted.
+	Subject  string
+	TenantID string
+
+	// RetryAfter is the engine's own estimate of the minimum wait before the
+	// next request against this permission would be admitted.
+	RetryAfter time.Duration
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *RateLimitedError) Error() string {
+	return "auth/middleware: rate limit exceeded for " + e.Subject + " in tenant " + e.TenantID +
+		" on " + e.Permission.String() + "; retry after " + e.RetryAfter.String()
 }

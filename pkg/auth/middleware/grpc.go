@@ -292,5 +292,17 @@ func mapGRPCAuthError(err error) error {
 		return status.Error(codes.Unauthenticated, chainErr.Error())
 	}
 
+	// ResourceExhausted, not PermissionDenied: the credential and the grant
+	// are both fine, and codes.ResourceExhausted is the standard gRPC
+	// signal a client library maps to "back off and retry" rather than
+	// "re-authenticate" or "do not retry at all". Covers the unix-socket
+	// listener too -- it registers this same interceptor (see
+	// pkg/api/unix/server.go), so a caller over its unix-transport quota
+	// sees the identical code a TCP gRPC caller would.
+	var rateLimited *RateLimitedError
+	if errors.As(err, &rateLimited) {
+		return status.Error(codes.ResourceExhausted, rateLimited.Error())
+	}
+
 	return status.Error(codes.Unauthenticated, err.Error())
 }

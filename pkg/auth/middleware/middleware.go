@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -48,6 +49,15 @@ type AuthMiddleware struct {
 	// authenticator's own revocation check. Nil means revocation is not
 	// enforced, matching the authenticator.
 	revocation auth.RevocationChecker
+
+	// limiter and limits together are go-qrdb#201's centralized rate-limit
+	// enforcement: limiter is the engine (see ratelimit.Limiter), limits is
+	// the single-source per-permission Policy declaration (see
+	// ratelimit.Registry). Either being nil disables rate limiting entirely
+	// -- the pre-#201 posture -- so an embedder that never opts in pays one
+	// nil check per authorize() call and nothing else.
+	limiter ratelimit.Limiter
+	limits  *ratelimit.Registry
 
 	// publicGRPCMethods holds the gRPC full method names ("/package.Service/
 	// Method") that bypass both authentication and authorization, declared by
@@ -429,6 +439,23 @@ func (m *AuthMiddleware) lookupUser(ctx context.Context, tenantID, subject strin
 // role-permission check can never authorize them. The decision is still
 // audited.
 func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity, perm permission.Permission) error {
+	// Rate limiting runs FIRST, ahead of every other branch below, including
+	// IdentityGated and the tenant-IAM-sealed allowance: a caller within its
+	// quota reaches exactly the same authorization outcome as before #201,
+	// and a caller over it is refused before the RBAC/ABAC authorizer or the
+	// audit logger's user-store-adjacent lookups do any further work on its
+	// behalf. It is a no-op whenever rate limiting is not configured (see
+	// checkRateLimit) or perm carries no declared Policy -- a Policy is an
+	// explicit per-permission opt-in, not a default, so admin:health and
+	// every other permission behave exactly as before #201 until an owner
+	// declares one.
+	if identity != nil {
+		if err := m.checkRateLimit(identity, perm); err != nil {
+			m.auditDecision(ctx, identity, perm, err)
+			return err
+		}
+	}
+
 	if perm == permission.IdentityGated {
 		if identity == nil {
 			return auth.ErrUnauthenticated

@@ -87,6 +87,7 @@ the code, the document is wrong and gets fixed — never the reverse.
 | [identity-rbac](identity-rbac/) | users, roles, the permission vocabulary, the RBAC PDP |
 | [auth-factors](auth-factors/) | the `Factor` framework, the N-factor model, PIN custody |
 | [audit](audit/) | compliance-grade audit logging and query |
+| [rate-limit](rate-limit/) | per-permission request throttling, enforced identically across every transport |
 | [multi-tenancy](multi-tenancy/) | the isolation ladder, quotas, entitlements, per-tenant barriers |
 
 ### Interfaces
@@ -97,9 +98,9 @@ the code, the document is wrong and gets fixed — never the reverse.
 
 ## Migration state
 
-**All 33 currently-implemented features have a `docs/<feature>/` folder with all
-five files** (migrated 2026-08-19). The portfolio view is derived, not
-maintained — count `docs/*/architecture.md`.
+**All 34 currently-implemented features have a `docs/<feature>/` folder with all
+five files** (migrated 2026-08-19; [rate-limit](rate-limit/) added 2026-09-10).
+The portfolio view is derived, not maintained — count `docs/*/architecture.md`.
 
 Some legacy documents survive **as companions**, not as duplicates: they carry
 deeper reference material the five-file layout points at rather than restates.
