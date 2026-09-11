@@ -45,16 +45,16 @@ func lockToProto(l *lock.Lock) *pb.LockInfo {
 // distributed lock via the lock service (blocking), and returns a
 // serialized LockAcquireResponse.
 func (s *Server) handleLockAcquire(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockAcquireRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	l, err := s.lockSvc.Lock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
+	l, err := lockSvc.Lock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
 	if err != nil {
 		return nil, err
 	}
@@ -70,16 +70,16 @@ func (s *Server) handleLockAcquire(ctx context.Context, payload []byte) ([]byte,
 // the distributed lock immediately without blocking, and returns a
 // serialized LockTryLockResponse.
 func (s *Server) handleLockTryLock(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockTryLockRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	l, err := s.lockSvc.TryLock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
+	l, err := lockSvc.TryLock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
 	if err != nil {
 		return nil, err
 	}
@@ -94,16 +94,16 @@ func (s *Server) handleLockTryLock(ctx context.Context, payload []byte) ([]byte,
 // handleLockRelease unmarshals a LockReleaseRequest, releases the held
 // lock validated by fencing token, and returns an empty response payload.
 func (s *Server) handleLockRelease(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockReleaseRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	if err := s.lockSvc.Unlock(ctx, req.GetKey(), req.GetFencingToken()); err != nil {
+	if err := lockSvc.Unlock(ctx, req.GetKey(), req.GetFencingToken()); err != nil {
 		return nil, err
 	}
 
@@ -113,16 +113,16 @@ func (s *Server) handleLockRelease(ctx context.Context, payload []byte) ([]byte,
 // handleLockExtend unmarshals a LockExtendRequest, refreshes the TTL
 // on the held lock, and returns a serialized LockExtendResponse.
 func (s *Server) handleLockExtend(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockExtendRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	l, err := s.lockSvc.Extend(ctx, req.GetKey(), req.GetFencingToken())
+	l, err := lockSvc.Extend(ctx, req.GetKey(), req.GetFencingToken())
 	if err != nil {
 		return nil, err
 	}
@@ -137,16 +137,16 @@ func (s *Server) handleLockExtend(ctx context.Context, payload []byte) ([]byte, 
 // handleLockStatus unmarshals a LockStatusRequest, retrieves the current
 // state of the specified lock, and returns a serialized LockStatusResponse.
 func (s *Server) handleLockStatus(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockStatusRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	l, err := s.lockSvc.Status(ctx, req.GetKey())
+	l, err := lockSvc.Status(ctx, req.GetKey())
 	if err != nil {
 		return nil, err
 	}
@@ -161,16 +161,16 @@ func (s *Server) handleLockStatus(ctx context.Context, payload []byte) ([]byte, 
 // handleLockList unmarshals a LockListRequest, retrieves all active locks
 // optionally filtered by prefix, and returns a serialized LockListResponse.
 func (s *Server) handleLockList(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.lockSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "lock"}
-	}
-
 	var req pb.LockListRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, svcErr
+	}
 
-	locks, err := s.lockSvc.List(ctx, req.GetPrefix())
+	locks, err := lockSvc.List(ctx, req.GetPrefix())
 	if err != nil {
 		return nil, err
 	}

@@ -341,6 +341,12 @@ func WithLease(svc service.LeaseServicer) ServerOption {
 // WithLock attaches a LockServicer for distributed lock management
 // operations including blocking acquisition, try-lock, release, extend,
 // status query, and list.
+//
+// This is the REGISTRY-LESS fallback, not the primary path. When a
+// service.Registry is configured the lock servicer is resolved per
+// (tenant, database) through Registry.LockService and this singleton is never
+// consulted: a lock key carries no tenant segment, so a process-wide servicer
+// built over the raw engines gives every tenant the same lock (go-qrdb#455).
 func WithLock(svc service.LockServicer) ServerOption {
 	return func(s *Server) {
 		s.lockSvc = svc

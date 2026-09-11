@@ -432,11 +432,12 @@ func TestRegistryImplementationsAnswerEveryAccessor(t *testing.T) {
 		"SequenceService":    func(r service.Registry) error { _, err := r.SequenceService("tenant-a", "appdb"); return err },
 		"PrivilegeService":   func(r service.Registry) error { _, err := r.PrivilegeService("tenant-a", "appdb"); return err },
 		"CollectionService":  func(r service.Registry) error { _, err := r.CollectionService("tenant-a", "appdb"); return err },
+		"LockService":        func(r service.Registry) error { _, err := r.LockService("tenant-a", "appdb"); return err },
 	}
 
 	// The count is asserted so that adding an accessor to the interface
-	// without adding it here fails, rather than silently testing twelve of
-	// thirteen.
+	// without adding it here fails, rather than silently testing thirteen of
+	// fourteen.
 	if got := reflect.TypeOf((*service.Registry)(nil)).Elem().NumMethod(); got != len(accessors) {
 		t.Fatalf("service.Registry has %d methods but this test exercises %d; add the new accessor here", got, len(accessors))
 	}

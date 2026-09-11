@@ -43,6 +43,7 @@ type recordingRegistry struct {
 	mvcc  service.MVCCKVServicer
 	ts    timeseries.TimeSeriesServicer
 	coll  service.CollectionServicer
+	lock  service.LockServicer
 }
 
 func (r *recordingRegistry) record(svc, tenantID, db string) {
@@ -112,6 +113,11 @@ func (r *recordingRegistry) PrivilegeService(t, d string) (service.PrivilegeServ
 func (r *recordingRegistry) CollectionService(t, d string) (service.CollectionServicer, error) {
 	r.record("collection", t, d)
 	return r.coll, nil
+}
+
+func (r *recordingRegistry) LockService(t, d string) (service.LockServicer, error) {
+	r.record("lock", t, d)
+	return r.lock, nil
 }
 
 // scopedCtx builds a context carrying the given tenant and database scope,

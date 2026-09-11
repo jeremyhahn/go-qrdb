@@ -211,6 +211,11 @@ func (r *fakeRelationalRegistry) CollectionService(tenantID, db string) (service
 	return r.collectionSvc, r.collectionErr
 }
 
+func (r *fakeRelationalRegistry) LockService(tenantID, db string) (service.LockServicer, error) {
+	r.record("lock", tenantID, db)
+	return nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

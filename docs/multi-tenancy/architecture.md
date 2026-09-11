@@ -1,6 +1,6 @@
 # Multi-Tenancy — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 Tenant isolation, from a logical key prefix up to a dedicated Raft group per
 database, plus the three governance planes that decide who may have which.
@@ -285,17 +285,40 @@ through `service.Registry`, whose accessors return the servicer for a
 KVService  MVCCService  WatchService   LeaseService     IndexService
 TimeSeriesService       VectorService  TransactionService
 BatchService            TableService   SequenceService  PrivilegeService
-CollectionService
+CollectionService       LockService
 ```
 
 **A surface missing from that list is a surface with no tenancy.** That is not
-a theoretical risk. `CollectionService` was the last accessor to be added, and
-until it was, every transport served document collections from one process-wide
-servicer built over the raw, pre-namespace engines: under `prefix` isolation two
-tenants naming the same database and the same collection addressed the same
-documents, and each could read, overwrite and deny the other's. The registry
-wrapper isolated the bundle's KV and index servicers; the collection service was
-copied past it, holding the engines it had been constructed with.
+a theoretical risk; it has happened twice, and the second time is the more
+instructive one.
+
+`CollectionService` was added after every transport had served document
+collections from one process-wide servicer built over the raw, pre-namespace
+engines: under `prefix` isolation two tenants naming the same database and the
+same collection addressed the same documents, and each could read, overwrite
+and deny the other's. The registry wrapper isolated the bundle's KV and index
+servicers; the collection service was copied past it, holding the engines it
+had been constructed with.
+
+`LockService` was added after the same enumeration found one more surface of
+the same shape. A lock record is `__sys:lock/{key}` with the key supplied by
+the caller and no tenant segment, and the lock servicer was a process singleton
+over the raw engines — so under `prefix` isolation one tenant holding `deploy`
+blocked every other tenant's `deploy`, `List` enumerated foreign lock names,
+`Status` returned a foreign holder record, and `LockHeldError` handed back the
+foreign `HolderID` even as it correctly refused the caller. See
+[../distributed-locks/architecture.md](../distributed-locks/architecture.md).
+
+**Note what survived the "no exempt prefix" rule below, and why.** That rule
+confines every key a resolver-served store handles. A process singleton is not
+resolver-served, so it never enters the confined path at all: the guarantee was
+conditional on being resolved, and the two misses were the two surfaces that
+were not. The discriminator is therefore NOT the key shape —
+`pkg/permission`'s `__sys:perm_scope/{permission}` has no tenant segment either
+and is perfectly safe, because it routes through `tenant.StoreResolver`. The
+question to ask of any surface is: **does the writing type route through the
+resolver, or resolve through the registry's namespaced engines — or does it
+hold a raw store as a process singleton?**
 
 The general rule the miss came from: **a service inherits isolation from the
 engines it HOLDS, never from the engines its neighbours in the same bundle

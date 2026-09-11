@@ -1,6 +1,6 @@
 # Distributed Locks — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -18,6 +18,24 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 
 `trylock` deliberately shares the `locks:acquire` permission with `acquire` —
 blocking is a client-side waiting strategy, not a distinct privilege.
+
+## Scope
+
+**Every verb is scoped to `(tenant, database)`,** and neither dimension is
+carried in the request body. The tenant comes from the authenticated identity;
+the database comes from the transport's ordinary database scope:
+
+| Transport | Database scope |
+|---|---|
+| REST | `X-QRDB-Database` header (defaults to `system`) |
+| gRPC / Unix | `x-qrdb-database` metadata (defaults to `system`) |
+| QUIC | the stream's database scope |
+| MCP | the `database` tool argument |
+| Embedded | n/a — one store, which is the caller's own keyspace |
+
+Two tenants using the same lock name hold two different locks, and so do one
+tenant's two databases. A caller sees, lists and contends for locks in its own
+scope only.
 
 **REST paths are unversioned.** `docs/18-distributed-locking.md` documents them
 as `/v1/lock/*`; that is stale. The code registers `/lock/*` and the code is
@@ -58,7 +76,9 @@ stripped.
 `LockReleaseRequest` and `LockExtendRequest`: `{ "key": ..., "fencing_token": ... }`.
 
 `LockListResponse`: `{ "locks": [LockInfo, ...] }`. REST `GET /lock/list` takes
-an optional `prefix` query parameter.
+an optional `prefix` query parameter. The enumeration is confined to the
+caller's own `(tenant, database)` scope; an empty prefix means "every lock I
+hold in this scope", never "every lock on this node".
 
 ## Status and error mapping
 
@@ -73,6 +93,9 @@ an optional `prefix` query parameter.
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
+| Unknown tenant / unknown database | 404 | `NOT_FOUND` |
+| Isolation backend not wired for the tenant | 503 | `UNAVAILABLE` |
+| Mode `standalone`, or a database on a dedicated non-raft store | 501 | `UNIMPLEMENTED` |
 
 No failure path returns a `LockInfo`. A caller that gets a lock got the lock.
 

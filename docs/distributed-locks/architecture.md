@@ -1,6 +1,6 @@
 # Distributed Locks — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Problem
 
@@ -53,6 +53,7 @@ holder's write, even though the zombie is convinced it holds the lock.
 | Acquisition CAS | `pkg/service` transaction path — see [../transactions/](../transactions/) | go-qrdb |
 | Blocking wait | `pkg/watch` — see [../watch/](../watch/) | go-qrdb |
 | Revision ordering that makes tokens monotonic | `pkg/mvcc` over **go-quicraft** commit order | go-qrdb / go-quicraft |
+| Per-(tenant, database) resolution | `service.Registry.LockService` — see [../multi-tenancy/](../multi-tenancy/) | go-qrdb |
 | SDK surface | `sdk/go` (`Client.Lock()`) | go-qrdb |
 
 ## Data flow
@@ -77,6 +78,10 @@ Lock records live under the internal prefix `__sys:lock/`, so application keys
 can never collide with lock storage and locks never appear in ordinary KV
 enumeration.
 
+The stored key is `__sys:lock/{key}` with the key supplied by the caller, and
+it carries **no tenant segment**. That is deliberate and is not what separates
+tenants — see the next-but-one section.
+
 ## Trust boundaries
 
 - Locks are scoped per (tenant, database).
@@ -90,11 +95,82 @@ enumeration.
   downstream resource checks it.** The lock service cannot enforce it on the
   caller's behalf.
 
+## Tenant isolation is a property of the SERVICE, not of the key
+
+The trust boundary above — *locks are scoped per (tenant, database)* — is a
+requirement the code owes, and the only mechanism that discharges it is which
+engines the lock service was built over.
+
+A lock key names neither the tenant nor the database, so the isolation of a
+lock is entirely the isolation of the transaction, lease, watch and MVCC
+servicers the lock service holds. Every transport therefore resolves its lock
+servicer per request, through `service.Registry.LockService(tenant, database)`,
+exactly as it resolves KV and MVCC. What that accessor returns is a lock
+service built over the `<tenant>/<database>/`-namespaced engines, so the
+physical record is at `<tenant>/<database>/__sys:lock/{key}` and the blocking
+watch, the lease and the CAS all address that same namespaced key.
+
+**This was not always true, and the failure mode is worth recording.** Until
+the accessor existed, every transport held ONE process-wide lock servicer built
+over the raw, pre-namespace engines. Under `prefix` isolation — where tenants
+share one state machine and are separated only by that prefix — two tenants
+locking the same name took the same lock, with three consequences:
+
+- **Denial.** One tenant holding `deploy` blocked every other tenant's
+  `deploy` until the TTL expired. Caller-supplied names collide by
+  construction, and common names — `migrate`, `leader`, `cron` — collide by
+  convention.
+- **Disclosure of coordination metadata.** `List` enumerated other tenants'
+  lock names and holder IDs, `Status` returned a foreign holder record, and
+  `LockHeldError` carried the foreign `HolderID` — a leak that survives the
+  caller being correctly refused, which is why it is asserted on the error's
+  contents and not merely on the refusal.
+- **The fencing token guarded release, and only bounded the rest.** Release and
+  extend already required a matching token, so this was never a trivial
+  cross-tenant unlock. A token is an `int64` obtained from a successful
+  acquire; it bounds the exposure rather than closing it, and it is not what
+  isolation rests on.
+
+### The alternative that was rejected
+
+Namespacing the key *inside* the single lock service — writing
+`{tenant}/{database}/__sys:lock/{key}` from within `pkg/lock` — is cheaper and
+was rejected. It would be a SECOND tenancy mechanism alongside the registry
+namespace, and [../multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
+rules that out by name: there is no exempt prefix, an exemption keyed on a
+string prefix is a second mechanism, and two mechanisms drift. Confinement
+comes from construction — the engines the servicer holds — not from a rule
+about the key.
+
+Two compositions legitimately keep a single lock servicer, and both are
+recorded rather than treated as exceptions to explain away:
+
+- **A registry-less composition** — the embedded transport and single-database
+  servers — where the whole store and the caller's own keyspace are the same
+  set.
+- **A resolution that already reached a dedicated store** — a `raft`-isolated
+  tenant's per-database shard, or a `volume`-isolated tenant's own Host. Those
+  bundles belong to exactly one tenant already. On the `raft` path no composite
+  prefix is applied at all: the shard IS the keyspace, and adding a tenant
+  segment there would be the same duplicate encoding the multi-tenancy design
+  rejects.
+
+A database on its own dedicated **non-raft** store has no lease, watch or MVCC
+engine, so it cannot serve a lock at all; the accessor refuses rather than
+returning a lock that nothing can expire.
+
 ## Standalone vs clustered
 
 The semantics are identical in all three run modes. In embedded and standalone
 the CAS and the sweep are local; clustered, both go through Raft. A caller does
 not change code between them.
+
+**Mode `standalone` is the exception, and it refuses rather than degrading.** A
+lock is composed from the lease, watch and MVCC resolutions the standalone gate
+already refuses as raft-only, so `LockService` under that mode returns
+not-implemented with the remedy `requires mode: raft`. Serving it would hand
+back a lock with no TTL expiry and no blocking acquisition, which is the
+"hopeful lock" this feature exists to avoid.
 
 ## What this feature deliberately does not do
 

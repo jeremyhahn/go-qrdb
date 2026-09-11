@@ -87,6 +87,10 @@ func toolLockAcquire() mcp.Tool {
 // handleLockAcquire returns a tool handler that delegates to lockSvc.Lock.
 func handleLockAcquire(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -140,6 +144,10 @@ func toolLockTryLock() mcp.Tool {
 // handleLockTryLock returns a tool handler that delegates to lockSvc.TryLock.
 func handleLockTryLock(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -186,6 +194,10 @@ func toolLockRelease() mcp.Tool {
 // handleLockRelease returns a tool handler that delegates to lockSvc.Unlock.
 func handleLockRelease(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -221,6 +233,10 @@ func toolLockExtend() mcp.Tool {
 // handleLockExtend returns a tool handler that delegates to lockSvc.Extend.
 func handleLockExtend(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -258,6 +274,10 @@ func toolLockStatus() mcp.Tool {
 // handleLockStatus returns a tool handler that delegates to lockSvc.Status.
 func handleLockStatus(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
 			return mcp.NewToolResultError("key is required"), nil
@@ -290,6 +310,10 @@ func toolLockList() mcp.Tool {
 // handleLockList returns a tool handler that delegates to lockSvc.List.
 func handleLockList(lockSvc service.LockServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		lockSvc, rerr := resolveLock(ctx, lockSvc)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		prefix := mcp.ParseString(req, "prefix", "")
 
 		locks, err := lockSvc.List(ctx, prefix)

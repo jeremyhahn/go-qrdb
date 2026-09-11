@@ -85,6 +85,10 @@ func (r *errServiceRegistry) CollectionService(_, _ string) (service.CollectionS
 	return nil, r.err
 }
 
+func (r *errServiceRegistry) LockService(_, _ string) (service.LockServicer, error) {
+	return nil, r.err
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build test auth factor
 // ---------------------------------------------------------------------------
@@ -1175,6 +1179,10 @@ func (r *stubServiceRegistryForTenant) PrivilegeService(_, _ string) (service.Pr
 }
 
 func (r *stubServiceRegistryForTenant) CollectionService(_, _ string) (service.CollectionServicer, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (r *stubServiceRegistryForTenant) LockService(_, _ string) (service.LockServicer, error) {
 	return nil, errors.New("not implemented")
 }
 

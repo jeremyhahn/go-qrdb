@@ -1,10 +1,22 @@
 # Distributed Locks — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 Command group: `qrdb lock` — acquire, release, extend, inspect and list
 distributed locks with fencing tokens. All verbs accept the root persistent
 flags documented in [../key-value/cli.md](../key-value/cli.md#global-flags).
+
+**A lock name is scoped to `(tenant, database)`.** The tenant comes from your
+client certificate; the database comes from the root `--database` flag, exactly
+as for `qrdb kv`. `qrdb lock acquire deploy --database billing` and
+`qrdb lock acquire deploy --database reporting` take two DIFFERENT locks, and
+`qrdb lock list` shows only the scope you asked for. If a lock looks like it is
+not being contended when you expect it to be, check that both holders name the
+same database.
+
+Locks are a raft-mode feature. Under mode `standalone` every verb here is
+refused with `requires mode: raft`: a lock needs the lease that expires it and
+the watch that unblocks the next acquirer, neither of which standalone serves.
 
 ## `qrdb lock acquire <key>`
 
@@ -78,7 +90,7 @@ qrdb lock status jobs/nightly-report --output json
 
 ## `qrdb lock list`
 
-List active locks.
+List active locks in the current `(tenant, database)` scope.
 
 | Flag | Type | Default |
 |---|---|---|
@@ -87,7 +99,12 @@ List active locks.
 ```bash
 qrdb lock list
 qrdb lock list --prefix jobs/
+qrdb lock list --database billing
 ```
+
+No prefix means "every lock in this scope", not "every lock on this node":
+another tenant's locks, and your own other databases' locks, are not
+enumerable from here.
 
 ## A complete critical section
 

@@ -71,8 +71,8 @@ type locksResponse struct {
 // handleLockAcquire handles POST /lock/acquire -- acquires a distributed
 // lock, blocking until acquired or the context is cancelled.
 func (s *Server) handleLockAcquire(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
@@ -82,7 +82,7 @@ func (s *Server) handleLockAcquire(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.lockSvc.Lock(r.Context(), req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
+	l, err := lockSvc.Lock(r.Context(), req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -94,8 +94,8 @@ func (s *Server) handleLockAcquire(w http.ResponseWriter, r *http.Request) {
 // handleLockTryLock handles POST /lock/trylock -- attempts to acquire a
 // lock immediately without blocking.
 func (s *Server) handleLockTryLock(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
@@ -105,7 +105,7 @@ func (s *Server) handleLockTryLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.lockSvc.TryLock(r.Context(), req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
+	l, err := lockSvc.TryLock(r.Context(), req.Key, req.HolderID, time.Duration(req.TTL)*time.Second, req.Reentrant)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -117,8 +117,8 @@ func (s *Server) handleLockTryLock(w http.ResponseWriter, r *http.Request) {
 // handleLockRelease handles POST /lock/release -- releases a held lock.
 // The fencing token must match the current lock state.
 func (s *Server) handleLockRelease(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
@@ -128,7 +128,7 @@ func (s *Server) handleLockRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.lockSvc.Unlock(r.Context(), req.Key, req.FencingToken); err != nil {
+	if err := lockSvc.Unlock(r.Context(), req.Key, req.FencingToken); err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
@@ -141,8 +141,8 @@ func (s *Server) handleLockRelease(w http.ResponseWriter, r *http.Request) {
 // handleLockExtend handles POST /lock/extend -- refreshes the TTL on a
 // held lock without releasing it. The fencing token must match.
 func (s *Server) handleLockExtend(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
@@ -152,7 +152,7 @@ func (s *Server) handleLockExtend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.lockSvc.Extend(r.Context(), req.Key, req.FencingToken)
+	l, err := lockSvc.Extend(r.Context(), req.Key, req.FencingToken)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -164,8 +164,8 @@ func (s *Server) handleLockExtend(w http.ResponseWriter, r *http.Request) {
 // handleLockStatus handles GET /lock/status?key=... -- returns the
 // current lock state for a key, or 404 if the key is not locked.
 func (s *Server) handleLockStatus(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
@@ -175,7 +175,7 @@ func (s *Server) handleLockStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	l, err := s.lockSvc.Status(r.Context(), key)
+	l, err := lockSvc.Status(r.Context(), key)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -192,14 +192,14 @@ func (s *Server) handleLockStatus(w http.ResponseWriter, r *http.Request) {
 // handleLockList handles GET /lock/list?prefix=... -- returns all active
 // locks, optionally filtered by key prefix.
 func (s *Server) handleLockList(w http.ResponseWriter, r *http.Request) {
-	if s.lockSvc == nil {
-		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+	lockSvc := s.lockSvcFor(w, r.Context())
+	if lockSvc == nil {
 		return
 	}
 
 	prefix := r.URL.Query().Get("prefix")
 
-	locks, err := s.lockSvc.List(r.Context(), prefix)
+	locks, err := lockSvc.List(r.Context(), prefix)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

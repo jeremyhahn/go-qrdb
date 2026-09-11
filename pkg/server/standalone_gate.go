@@ -123,5 +123,14 @@ func (r *raftOnlyGatedRegistry) CollectionService(tenant, db string) (service.Co
 	return r.inner.CollectionService(tenant, db)
 }
 
+// LockService is gated: a distributed lock is composed from the lease, watch
+// and MVCC resolutions this wrapper already refuses, so serving it under mode
+// "standalone" would hand back a lock with no TTL expiry and no blocking
+// acquisition. It refuses with the same remedy text rather than failing later
+// and less legibly inside the composed servicer.
+func (r *raftOnlyGatedRegistry) LockService(tenant, db string) (service.LockServicer, error) {
+	return nil, &rest.ServiceNotImplementedError{Service: "lock", Hint: StandaloneModeHint}
+}
+
 // compile-time interface check.
 var _ service.Registry = (*raftOnlyGatedRegistry)(nil)

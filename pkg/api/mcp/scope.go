@@ -162,6 +162,27 @@ func resolveVector(ctx context.Context, fallback service.VectorServicer) (servic
 	return reg.VectorService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
 }
 
+// resolveLock resolves the LockServicer for the (tenant, db) scope in ctx.
+//
+// Before go-qrdb#455 the lock tools closed over one process-wide servicer
+// built over the raw, un-namespaced engines. A lock key is "__sys:lock/{key}"
+// with the key supplied by the caller and no tenant segment, so under prefix
+// isolation two tenants locking the same name took the same lock -- and List,
+// Status and LockHeldError handed each of them the other's lock names and
+// holder IDs. With no registry bound to ctx the captured singleton is
+// returned unchanged, which is the single-database, embedded and unit-test
+// path.
+func resolveLock(ctx context.Context, fallback service.LockServicer) (service.LockServicer, error) {
+	reg := registryFromContext(ctx)
+	if reg == nil {
+		if fallback == nil {
+			return nil, &ServiceNotConfiguredError{Service: "lock"}
+		}
+		return fallback, nil
+	}
+	return reg.LockService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
+}
+
 // resolveCollection resolves the CollectionServicer for the (tenant, database)
 // scope of this tool call. Unlike its neighbours the database is passed in
 // rather than read from the "database" tool argument via the scope context:

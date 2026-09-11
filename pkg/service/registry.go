@@ -81,6 +81,20 @@ type Registry interface {
 	// (go-qrdb#441). Every transport resolves collections through here
 	// rather than holding one process-wide servicer.
 	CollectionService(tenant, db string) (CollectionServicer, error)
+
+	// LockService returns the LockServicer for the given (tenant, db) scope
+	// -- the distributed-lock surface. A lock record is keyed
+	// "__sys:lock/{key}" with the key supplied by the caller and no tenant
+	// segment of its own, so under prefix isolation two tenants locking the
+	// same name took the SAME lock: tenant A holding "deploy" blocked tenant
+	// B, and List/Status/LockHeldError disclosed the other tenant's lock
+	// names and holder IDs (go-qrdb#455). Confinement comes from the engines
+	// the returned servicer holds -- the (tenant, db)-namespaced transaction,
+	// lease, watch and MVCC servicers this registry resolves -- never from a
+	// rule about the key, which would be a second tenancy mechanism beside
+	// the namespace. Every transport resolves locks through here rather than
+	// holding one process-wide servicer.
+	LockService(tenant, db string) (LockServicer, error)
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated

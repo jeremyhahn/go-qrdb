@@ -1,6 +1,6 @@
 # Distributed Locks — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -51,6 +51,19 @@ Internal storage constant, `pkg/lock`:
 const lockKeyPrefix = "__sys:lock/"
 ```
 
+Per-(tenant, database) resolution, `pkg/service`:
+
+```go
+// The fourteenth accessor on service.Registry, with the same arity as the
+// thirteen beside it.
+LockService(tenant, db string) (LockServicer, error)
+```
+
+Every transport resolves through it rather than holding a process-wide
+servicer: `lockSvcFor` in `pkg/api/{rest,grpc,quic}` and `resolveLock` in
+`pkg/api/mcp`. Each falls back to the singleton ONLY when no registry is
+configured, which is the registry-less composition.
+
 ## Invariants
 
 - **`FencingToken` is the MVCC `ModRevision` at acquisition.** Revisions are
@@ -74,6 +87,22 @@ const lockKeyPrefix = "__sys:lock/"
   `__sys:lock/`, inside the internal-key guard.
 - **`HolderID` is not authenticated.** It is a reentrancy discriminator supplied
   by the caller; when empty, a UUID is generated. Never treat it as identity.
+- **A lock is confined by the ENGINES its servicer holds, never by its key.**
+  `__sys:lock/{key}` carries no tenant segment; the resolved servicer's
+  transaction, lease, watch and MVCC servicers are the `(tenant, database)`
+  boundary. Concretely: `List` never enumerates another tenant's lock names,
+  `Status` never returns a foreign holder record, and **`LockHeldError` never
+  carries a foreign `HolderID`** — the last of those is a leak even when the
+  caller is correctly refused, so it is asserted on the error's contents.
+- **The fencing token is not a tenancy mechanism.** A token is the MVCC
+  revision of an acquisition *in its own keyspace*, so two tenants acquiring
+  the same name in two namespaces routinely hold the same `int64`. That is
+  harmless precisely because the keyspace, not the number, keeps them apart.
+- **A scope that cannot serve a lock is refused, not degraded.** The accessor
+  returns `ServiceNotImplementedError{Service: "lock"}` when the resolved
+  bundle lacks any of transaction, lease, watch or MVCC — a database on a
+  dedicated non-raft store — and the same error with the hint
+  `requires mode: raft` under mode `standalone`.
 
 ## Error semantics
 
@@ -109,6 +138,22 @@ store's ordering.
 - **Unit**: `pkg/lock` — acquire/try/release/extend/status/list, reentrant
   counting, stale-token refusal, and token monotonicity across successive
   acquisitions.
+- **Cross-tenant isolation**: `pkg/server/lock_tenancy_test.go` drives the REAL
+  data plane — an MVCC engine over in-memory storage with a real lessor and
+  watch hub — through the registry accessor, under all three isolation types
+  (`prefix`, `volume`, `raft`), and asserts each of denial, disclosure (List,
+  Status and `LockHeldError.HolderID`) and fencing-token semantics. `volume`
+  and `raft` were sound before the accessor existed; they are in the matrix so
+  the fix is shown not to have narrowed to the mode that was broken. It also
+  asserts the inverse — two holders INSIDE one tenant still contend — because
+  isolation bought by making the lock stop locking would pass every other
+  assertion.
+- **Transport resolution**: `lock_scope_test.go` in `pkg/api/{rest,grpc,quic,mcp}`
+  asserts that EVERY lock verb resolves through the registry and does not reach
+  the singleton, that the registry-less composition still serves the singleton,
+  that a refused resolution propagates rather than falling back, and that a
+  server with neither fails closed. Every verb is covered because an unresolved
+  verb is an unconfined verb.
 - **No `time.Sleep`.** Blocking acquisition and TTL expiry are driven through
   the watch and clock seams with channels and waitgroups, per the repo rule.
 - **Error tests** for each function, minimum happy path plus error path.
@@ -128,3 +173,4 @@ correct; [api.md](api.md) records the real paths.
 - Acquire, release, extend and expiry are audited through [../audit/](../audit/).
 - Lock acquisition and release appear as key events under `__sys:lock/` and are
   therefore not visible on a user watch — use `qrdb lock list` for visibility.
+  `qrdb lock list` shows the caller's own `(tenant, database)` scope only.

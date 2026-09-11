@@ -167,6 +167,12 @@ func WithRegisterCollectionService(svc service.CollectionServicer) RegisterOptio
 }
 
 // WithRegisterLockService attaches a distributed lock service for the registered gRPC service.
+//
+// This is the REGISTRY-LESS fallback, not the primary path. When a
+// service.Registry is configured the lock servicer is resolved per
+// (tenant, database) and this singleton is never consulted: a lock key
+// carries no tenant segment, so a process-wide servicer built over the raw
+// engines gives every tenant the same lock (go-qrdb#455).
 func WithRegisterLockService(svc service.LockServicer) RegisterOption {
 	return func(s *qrdbServiceServer) { s.lockSvc = svc }
 }

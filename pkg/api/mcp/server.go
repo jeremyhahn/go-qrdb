@@ -244,6 +244,12 @@ func WithLease(svc service.LeaseServicer) ServerOption {
 }
 
 // WithLock registers distributed lock tools on the MCP server.
+//
+// This is the REGISTRY-LESS fallback, not the primary path. When a
+// service.Registry is configured the lock servicer is resolved per
+// (tenant, database) and this singleton is never consulted: a lock key
+// carries no tenant segment, so a process-wide servicer built over the raw
+// engines gives every tenant the same lock (go-qrdb#455).
 func WithLock(svc service.LockServicer) ServerOption {
 	return func(s *Server) {
 		s.lockSvc = svc
@@ -517,7 +523,13 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.leaseSvc != nil {
 		s.addTools(leaseTools(s.leaseSvc)...)
 	}
-	if s.lockSvc != nil {
+	// Registered when either the singleton is wired or a registry is
+	// configured, for the reason the collection tools below are: the
+	// per-(tenant, database) lock servicer resolves at call time through
+	// resolveLock, so gating on the singleton alone would omit the lock tools
+	// entirely from a multi-tenant server that resolves them per request
+	// (go-qrdb#455).
+	if s.lockSvc != nil || s.registry != nil {
 		s.addTools(lockTools(s.lockSvc)...)
 	}
 	if s.indexSvc != nil {

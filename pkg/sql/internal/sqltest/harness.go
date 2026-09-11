@@ -456,6 +456,7 @@ type FakeRegistry struct {
 	SequenceServiceFn    func(tenant, db string) (service.SequenceServicer, error)
 	PrivilegeServiceFn   func(tenant, db string) (service.PrivilegeServicer, error)
 	CollectionServiceFn  func(tenant, db string) (service.CollectionServicer, error)
+	LockServiceFn        func(tenant, db string) (service.LockServicer, error)
 }
 
 // KVService implements service.Registry.
@@ -503,6 +504,14 @@ func (r *FakeRegistry) CollectionService(tenant, db string) (service.CollectionS
 		return nil, nil
 	}
 	return r.CollectionServiceFn(tenant, db)
+}
+
+// LockService returns the configured LockServicer for the (tenant, db) scope.
+func (r *FakeRegistry) LockService(tenant, db string) (service.LockServicer, error) {
+	if r.LockServiceFn == nil {
+		return nil, nil
+	}
+	return r.LockServiceFn(tenant, db)
 }
 
 // ---------------------------------------------------------------------------

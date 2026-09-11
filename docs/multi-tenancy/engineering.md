@@ -1,6 +1,6 @@
 # Multi-Tenancy — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -51,13 +51,17 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   bound. Data-plane database scoping is the transports' and SQL provider's job
   and is unaffected.
 - **Every data-plane servicer a transport uses comes from
-  `service.Registry`, resolved per `(tenant, database)`.** The thirteen
+  `service.Registry`, resolved per `(tenant, database)`.** The fourteen
   accessors are the complete list of namespaced data-plane surfaces; a surface
   a transport holds as a process-wide singleton instead has NO tenancy,
-  whatever the isolation mode says. `CollectionService` was the last of the
-  thirteen to exist, and while it was missing document collections were shared
-  across tenants under `prefix` isolation. Adding a data-plane surface means
-  adding its accessor in the same change.
+  whatever the isolation mode says. `CollectionService` and then `LockService`
+  were the last two to exist, and while each was missing that surface was
+  shared across tenants under `prefix` isolation — collections addressed the
+  same documents, locks contended for the same name and disclosed each other's
+  holder IDs. Adding a data-plane surface means adding its accessor in the same
+  change. `pkg/server/collection_namespace_test.go` asserts the accessor COUNT
+  by reflection, so widening the interface without widening the coverage fails
+  there rather than at a call site in another package.
 - **A composite servicer is REBUILT over the wrapped engines, never copied.**
   `applyComposite` wraps each engine and then constructs the collection service
   from the wrapped pair; copying the bundle's own would carry the raw engines

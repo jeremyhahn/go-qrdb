@@ -1149,11 +1149,12 @@ func lockToProto(l *lock.Lock) *pb.LockInfo {
 // LockAcquire acquires a distributed lock, blocking until acquired or the
 // context is cancelled.
 func (s *qrdbServiceServer) LockAcquire(ctx context.Context, req *pb.LockAcquireRequest) (*pb.LockAcquireResponse, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.lockSvc.Lock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
+	l, err := lockSvc.Lock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1162,11 +1163,12 @@ func (s *qrdbServiceServer) LockAcquire(ctx context.Context, req *pb.LockAcquire
 
 // LockTryLock attempts to acquire a lock immediately without blocking.
 func (s *qrdbServiceServer) LockTryLock(ctx context.Context, req *pb.LockTryLockRequest) (*pb.LockTryLockResponse, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.lockSvc.TryLock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
+	l, err := lockSvc.TryLock(ctx, req.GetKey(), req.GetHolderId(), time.Duration(req.GetTtl())*time.Second, req.GetReentrant())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1175,11 +1177,12 @@ func (s *qrdbServiceServer) LockTryLock(ctx context.Context, req *pb.LockTryLock
 
 // LockRelease releases a held lock. The fencing token must match.
 func (s *qrdbServiceServer) LockRelease(ctx context.Context, req *pb.LockReleaseRequest) (*emptypb.Empty, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if err := s.lockSvc.Unlock(ctx, req.GetKey(), req.GetFencingToken()); err != nil {
+	if err := lockSvc.Unlock(ctx, req.GetKey(), req.GetFencingToken()); err != nil {
 		return nil, mapServiceError(err)
 	}
 	return &emptypb.Empty{}, nil
@@ -1187,11 +1190,12 @@ func (s *qrdbServiceServer) LockRelease(ctx context.Context, req *pb.LockRelease
 
 // LockExtend refreshes the TTL on a held lock without releasing it.
 func (s *qrdbServiceServer) LockExtend(ctx context.Context, req *pb.LockExtendRequest) (*pb.LockExtendResponse, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.lockSvc.Extend(ctx, req.GetKey(), req.GetFencingToken())
+	l, err := lockSvc.Extend(ctx, req.GetKey(), req.GetFencingToken())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1200,11 +1204,12 @@ func (s *qrdbServiceServer) LockExtend(ctx context.Context, req *pb.LockExtendRe
 
 // LockStatus returns the current lock state for a key.
 func (s *qrdbServiceServer) LockStatus(ctx context.Context, req *pb.LockStatusRequest) (*pb.LockStatusResponse, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	l, err := s.lockSvc.Status(ctx, req.GetKey())
+	l, err := lockSvc.Status(ctx, req.GetKey())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -1213,11 +1218,12 @@ func (s *qrdbServiceServer) LockStatus(ctx context.Context, req *pb.LockStatusRe
 
 // LockList returns all active locks, optionally filtered by prefix.
 func (s *qrdbServiceServer) LockList(ctx context.Context, req *pb.LockListRequest) (*pb.LockListResponse, error) {
-	if s.lockSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "lock"}).Error())
+	lockSvc, svcErr := s.lockSvcFor(ctx)
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	locks, err := s.lockSvc.List(ctx, req.GetPrefix())
+	locks, err := lockSvc.List(ctx, req.GetPrefix())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

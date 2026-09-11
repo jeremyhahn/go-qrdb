@@ -1,6 +1,6 @@
 # Distributed Locks — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 A distributed lock lets one process at a time into a critical section across
 machines. Each acquisition comes with a **fencing token** — a number that only
@@ -8,8 +8,20 @@ goes up — and using it is what separates a safe lock from a hopeful one.
 
 ## Prerequisites
 
-A reachable server, client certificates, an unsealed barrier, and the `locks:*`
-permissions for the verbs you use.
+A reachable server running in raft mode, client certificates, an unsealed
+barrier, and the `locks:*` permissions for the verbs you use.
+
+## What a lock name means
+
+**A lock name is scoped to your tenant and your database.** Two organizations
+on the same cluster can both hold `deploy` and neither will wait for the other;
+so can your `billing` and `reporting` databases. Names like `migrate`,
+`leader` and `cron` are safe to use for exactly this reason — they collide with
+your own processes, which is the point, and with nobody else's.
+
+The corollary is the thing to watch for: **two processes that should contend
+must name the same database.** If a job runs twice and the lock looked healthy,
+check that both runs used the same `--database`.
 
 ## First run
 
@@ -100,10 +112,21 @@ refusal is what prevented you from releasing a lock you no longer own.
 lock is released automatically when its lease expires; there is no manual
 break-lock, deliberately.
 
-**Your job ran twice anyway.** Almost always the fencing token is not being
-checked downstream. The lock narrows the window; only the resource checking the
-token closes it. Look for a stalled holder — long GC pause, descheduled
-container, network partition — that outlived its TTL.
+**Your job ran twice anyway.** Two usual causes. Either the fencing token is
+not being checked downstream — the lock narrows the window, and only the
+resource checking the token closes it, so look for a stalled holder (long GC
+pause, descheduled container, network partition) that outlived its TTL — or the
+two runs were in different scopes and never contended at all. Compare the
+`--database` each one used, and confirm both ran under the same tenant.
+
+**You cannot see a lock somebody told you about.** `qrdb lock status` and
+`qrdb lock list` answer for your own tenant and database only. A lock held by
+another tenant is not visible to you and does not block you; a lock held in
+another of your databases needs `--database` to see.
+
+**Every lock command is refused with "requires mode: raft".** The server is
+running in standalone mode, which has no lease to expire a lock and no watch to
+unblock a waiter. Locks need a raft-mode server.
 
 **`acquire` times out.** Raise `--wait`, or use `trylock` and skip the run. Note
 that `--wait 0` falls back to the global `--timeout`.

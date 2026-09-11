@@ -167,6 +167,33 @@ func (s *Server) batchSvcFor(w http.ResponseWriter, ctx context.Context) service
 	return svc
 }
 
+// lockSvcFor resolves the LockServicer for the (tenant, db) scope in ctx.
+//
+// Before go-qrdb#455 the lock handlers called one process-wide servicer built
+// over the raw, un-namespaced engines. A lock key is "__sys:lock/{key}" with
+// the key supplied by the caller and no tenant segment, so under prefix
+// isolation two tenants locking the same name took the same lock -- and
+// List, Status and LockHeldError handed each of them the other's lock names
+// and holder IDs. Resolving here puts every lock in the caller's own
+// keyspace. When no registry is configured the singleton is returned
+// unchanged: that is the single-tenant composition, where the whole store and
+// the caller's own keyspace are the same set.
+func (s *Server) lockSvcFor(w http.ResponseWriter, ctx context.Context) service.LockServicer {
+	if s.serviceRegistry == nil {
+		if s.lockSvc == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "lock"})
+			return nil
+		}
+		return s.lockSvc
+	}
+	svc, err := s.serviceRegistry.LockService(tenantFromContext(ctx), databaseFromContext(ctx))
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return nil
+	}
+	return svc
+}
+
 // collectionSvcFor resolves the CollectionServicer for the (tenant, database)
 // scope of this request. Unlike every other resolver here, the database is
 // passed in rather than read from the scope context: the collection surface

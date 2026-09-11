@@ -218,6 +218,26 @@ func (s *qrdbServiceServer) vectorSvcFor(ctx context.Context) (service.VectorSer
 	return s.registry.VectorService(tenant.FromContext(ctx), databaseFromContext(ctx))
 }
 
+// lockSvcFor resolves the LockServicer for the (tenant, db) scope in ctx.
+//
+// Before go-qrdb#455 the lock RPCs called one process-wide servicer built
+// over the raw, un-namespaced engines. A lock key is "__sys:lock/{key}" with
+// the key supplied by the caller and no tenant segment, so under prefix
+// isolation two tenants locking the same name took the same lock -- and
+// List, Status and LockHeldError handed each of them the other's lock names
+// and holder IDs. When no registry is configured the singleton is returned
+// unchanged -- the single-tenant, embedded composition, where the whole store
+// and the caller's own keyspace coincide.
+func (s *qrdbServiceServer) lockSvcFor(ctx context.Context) (service.LockServicer, error) {
+	if s.registry == nil {
+		if s.lockSvc == nil {
+			return nil, &ServiceNotConfiguredError{Service: "lock"}
+		}
+		return s.lockSvc, nil
+	}
+	return s.registry.LockService(tenant.FromContext(ctx), databaseFromContext(ctx))
+}
+
 // collectionSvcFor resolves the CollectionServicer for the (tenant, database)
 // scope of this call. The database is passed in rather than read from the
 // x-qrdb-database metadata: every collection RPC names its database in the

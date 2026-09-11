@@ -204,10 +204,21 @@ type Node struct {
 	Index       service.IndexServicer
 	TimeSeries  service.TimeSeriesServicer
 	Watch       service.WatchServicer
-	Lock        service.LockServicer
-	Collection  service.CollectionServicer
-	Database    service.DatabaseServicer
-	Vector      service.VectorServicer
+
+	// Lock is the node's lock servicer over the node's RAW, pre-namespace
+	// engines. It is the registry-LESS composition's servicer -- the embedded
+	// transport, and single-database servers -- where the whole store and the
+	// caller's own keyspace are the same set. A multi-tenant server must NOT
+	// serve locks from it: a lock key carries no tenant segment, so every
+	// tenant would take the same lock (go-qrdb#455). Those servers resolve
+	// through service.Registry.LockService instead, which builds a lock
+	// service over the (tenant, database)-namespaced engines, and the
+	// transports prefer the registry whenever one is configured.
+	Lock service.LockServicer
+
+	Collection service.CollectionServicer
+	Database   service.DatabaseServicer
+	Vector     service.VectorServicer
 
 	// Cluster operations services. Rebalance inspects/moves shards via the
 	// host; Backup snapshots/restores shards via the host's snapshot/export

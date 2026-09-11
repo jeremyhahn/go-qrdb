@@ -741,6 +741,55 @@ func (r *restServiceRegistry) PrivilegeService(tenantID, db string) (service.Pri
 	return service.NewPrivilegeService(svcs.KV, svcs.MVCC, svcs.Transaction), nil
 }
 
+// LockService returns the LockServicer for the given (tenant, db) scope --
+// the distributed-lock surface. It is built fresh on every call from the
+// resolved (tenant, db)-scoped Transaction/Lease/Watch/MVCC servicers, the
+// same way TableService, SequenceService and PrivilegeService are built from
+// theirs, because resolve has already applied the per-tenant
+// barrier/quota/isolation wrapping those four carry.
+//
+// That wrapping is the whole of go-qrdb#455. A lock record is keyed
+// "__sys:lock/{key}" with the key supplied by the caller and no tenant
+// segment, and before this accessor existed every transport held ONE
+// process-wide servicer built by lifecycle.BuildServices over the raw,
+// pre-namespace engines. Under prefix isolation two tenants locking the same
+// name therefore took the same lock -- denial of the name for the second
+// tenant, and disclosure of the first tenant's lock names and HolderIDs
+// through List, Status and LockHeldError. Confinement is by construction
+// here: a lock lands wherever the engines the servicer HOLDS put it, which
+// is the caller's own "<tenant>/<database>/" namespace. Key-namespacing
+// inside the singleton was the rejected alternative -- an exemption keyed on
+// a string prefix is a SECOND tenancy mechanism beside the namespace, and
+// docs/multi-tenancy/architecture.md rejects that by name.
+//
+// It is NOT a field on DatabaseServices, for the reason
+// sdk/go/driver/node.databaseServices gives for leaving Table and Sequence
+// off that bundle: every bundle is built over raw, pre-wrap engines, so a
+// composer filling a Lock field would produce a second, unscoped servicer
+// that a struct copy then carries straight through the namespacing wrapper
+// -- which is exactly how go-qrdb#441 happened to Collection.
+//
+// Per-call construction holds no resource: lock.NewLocker stores the four
+// servicers and a logger and subscribes to nothing. A blocking Lock opens
+// its watcher inside the call and closes it on return, and a lease is
+// granted per acquisition, so nothing here outlives the operation that
+// created it.
+//
+// ServiceNotImplementedError is returned when any of the four is absent --
+// a database on a dedicated non-raft store has no lease, watch or MVCC
+// engine, so it cannot serve a lock and must refuse rather than serve a
+// lock that nothing can expire.
+func (r *restServiceRegistry) LockService(tenantID, db string) (service.LockServicer, error) {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
+		return nil, err
+	}
+	if svcs.Transaction == nil || svcs.Lease == nil || svcs.Watch == nil || svcs.MVCC == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "lock"}
+	}
+	return service.NewLockService(svcs.Transaction, svcs.Lease, svcs.Watch, svcs.MVCC, nil)
+}
+
 // CollectionService returns the CollectionServicer for the given (tenant, db)
 // scope. It resolves exactly like KVService and MVCCService -- the resolved
 // bundle's Collection is the one applyComposite built over that scope's

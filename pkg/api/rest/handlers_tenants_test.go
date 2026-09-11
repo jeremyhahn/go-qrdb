@@ -227,6 +227,10 @@ func (m *mockServiceRegistry) CollectionService(_, _ string) (service.Collection
 	return nil, nil
 }
 
+func (m *mockServiceRegistry) LockService(_, _ string) (service.LockServicer, error) {
+	return nil, nil
+}
+
 var _ service.Registry = (*mockServiceRegistry)(nil)
 
 // newTenantServerWithRegistry builds a tenant REST server wired with a service
