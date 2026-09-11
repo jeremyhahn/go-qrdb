@@ -54,6 +54,26 @@ func (m *memoryKVSvc) Put(_ context.Context, key string, value []byte) error {
 	return nil
 }
 
+// PutIfAbsent is GENUINELY atomic in this double: the check and the write are
+// one critical section under the same mutex every other write takes.
+//
+// A double that reported "stored" from an unguarded map write would make a
+// concurrency test assert the defect is correct -- the failure mode that has
+// now landed three times in this repo (go-qrdb#489). The real backends
+// (database.StandaloneBackend, the Raft state machine) are exactly this
+// strong, so the double is not stronger than production either.
+func (m *memoryKVSvc) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, occupied := m.data[key]; occupied {
+		return false, nil
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	m.data[key] = cp
+	return true, nil
+}
+
 func (m *memoryKVSvc) Get(_ context.Context, key string) ([]byte, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

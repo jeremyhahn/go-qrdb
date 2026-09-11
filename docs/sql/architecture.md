@@ -306,17 +306,19 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 - **Isolation levels are accepted, not differentiated.** MySQL's
   `transaction_isolation` names lock-engine behaviour; QRDB's transactions are
   optimistic and the two do not correspond.
-- **A collection table's `PRIMARY KEY` is not a compare-and-swap.** The `_id`
-  column of a document-collection table is enforced by
-  `CollectionService.InsertDocument`'s read-then-write, so it refuses the
-  ordinary overwrite and not a race between two concurrent claims — and
-  `REPLACE INTO` and `INSERT … ON DUPLICATE KEY UPDATE`, which are built on
-  that refusal, inherit the bound. A *relational* table's uniqueness does ride
-  on a compare in the same proposal as the row. The two table kinds are not
-  interchangeable in this respect, and the collection table is the weaker one
-  despite presenting the same declared constraint. See
+- **A collection table's `PRIMARY KEY` holds under concurrent claims, but
+  `REPLACE`/`ON DUPLICATE KEY UPDATE` are still not atomic.** The `_id` column
+  of a document-collection table is enforced by
+  `CollectionService.InsertDocument`'s guarded write, so two concurrent claims
+  on the same `_id` produce one success and one **1062** — the same strength a
+  *relational* table's uniqueness gets from a compare in the same proposal as
+  the row, reached by a different mechanism. What the two kinds still do not
+  share is the statement-level upsert: `REPLACE INTO` and
+  `INSERT … ON DUPLICATE KEY UPDATE` on a collection table are an insert, a
+  refusal and a second write with no lock across the three, and the table is
+  autocommit-only so neither can be widened into a transaction. See
   [engineering.md](engineering.md#collection-table-schema) and
-  [../collections/architecture.md](../collections/architecture.md#what-this-does-not-close).
+  [../collections/architecture.md](../collections/architecture.md#what-this-still-does-not-close).
 
 ## Companion documents
 

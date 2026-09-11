@@ -131,6 +131,28 @@ would be worse than refusing it — the consumer would build a lock on top of
 something that never decided anything. Every transport the SDK ships now
 carries them: embedded, gRPC, unix, QUIC, REST and MCP.
 
+### A database with its own store arbitrates too
+
+The paragraphs above describe the Raft plane, where the condition travels with
+the write in one proposal. A database with its own store — `memory`, `file` or
+`pebble`, with or without a per-database barrier over it — has no proposal and
+no replicas, so it arbitrates a different way: the read and the write are one
+critical section on the backend, and **every** write on that backend enters the
+same one, unguarded `Put`, `Delete` and `Batch` included. For a single-process
+engine that is the whole of the problem, because there is no second process to
+race with.
+
+Both mechanisms deliver the same contract, which is what lets the verbs be
+described once: exactly one caller is told it stored, swapped or deleted. What
+differs is only what the contract has to survive — replica divergence on one
+path, an interleaved local writer on the other.
+
+The one backend that still refuses is the **remote proxy**, whose wire protocol
+does not carry the verbs. It fails with
+`database: backend does not support atomic conditional writes` rather than
+reading and then writing, for the reason the transport assertion exists: a
+`Get` followed by a `Put` returns the same booleans and arbitrates nothing.
+
 A state machine with no handler for a guarded opcode **refuses and keeps
 serving**. The refusal is typed all the way to the caller
 (`transport.CapabilityUnsupportedError`) so a consumer can fall back to a

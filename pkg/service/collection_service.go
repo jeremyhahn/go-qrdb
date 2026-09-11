@@ -86,6 +86,7 @@ type CollectionService struct {
 // always calls Scan/ScanWithConsistency for the values, never List).
 type kvService interface {
 	Put(ctx context.Context, key string, value []byte) error
+	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
 	Get(ctx context.Context, key string) ([]byte, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]string, error)
@@ -453,17 +454,23 @@ func (s *CollectionService) GetCollectionInfo(ctx context.Context, database, nam
 // made go-qrdb#447 silent: two successful inserts, one surviving document, no
 // error anywhere.
 //
-// The existence check is a read followed by a guarded-by-nothing write, so it
-// closes the DETERMINISTIC overwrite -- the one a single caller reaches with
-// no concurrency at all, which is the defect -- and not a race between two
-// concurrent inserts claiming the same explicit ID. Closing that too means
-// writing the document with KVServicer.PutIfAbsent, the only write with a
-// defined outcome under concurrency; it is not used here because
-// BackendKVService.PutIfAbsent refuses when the backend is not a
-// database.AtomicBackend, and the dedicated-store bundle's StandaloneBackend
-// is not one, so a guarded write would fail EVERY collection insert on that
-// path. Tracked as its own change; the guard lives in this service either
-// way, so moving it to a guarded write later changes no caller.
+// A refusal is enforced by KVServicer.PutIfAbsent -- the only write with a
+// defined outcome under concurrency -- rather than by a read followed by an
+// unguarded write. The read-then-write closed only the DETERMINISTIC overwrite,
+// the one a single caller reaches with no concurrency at all; two callers
+// claiming the same explicit `_id` could both observe it free and both write,
+// and the loser's document vanished with no error anywhere. It was written that
+// way because the dedicated-store bundle's StandaloneBackend was not a
+// database.AtomicBackend, so a guarded write would have failed EVERY collection
+// insert on that path. It is one now (go-qrdb#466), and every other KVServicer
+// -- the Raft KVService, MVCCKVService, the namespace and quota wrappers --
+// already had the verb, so the guard is now the write itself.
+//
+// req.WriteMode is deliberately NOT honoured for a guarded insert. The guarded
+// write is synchronous by construction because its whole purpose is to report
+// which caller won; an asynchronous proposal has no answer to report, so there
+// is nothing for a weaker durability mode to mean here. An overwriting insert
+// (see generatedIDMayOverwrite) has no claim to report and still honours it.
 func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocumentRequest) (*InsertDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -498,20 +505,6 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	entity.SetEntityID(id)
 
 	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(id, 10)
-	if !mayOverwrite(info.IDStrategy, explicit) {
-		occupied, err := s.documentExists(ctx, docKey)
-		if err != nil {
-			return nil, err
-		}
-		if occupied {
-			return nil, &CollectionDocumentExistsError{
-				Database:   req.Database,
-				Collection: req.Collection,
-				ID:         id,
-				Explicit:   explicit,
-			}
-		}
-	}
 
 	// Serialize and store document using the resolved codec.
 	c := s.resolveCodec(info)
@@ -520,14 +513,8 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 		return nil, &CollectionMetadataError{Op: "marshal-document", Err: err}
 	}
 
-	if req.WriteMode != 0 {
-		if err := s.kvSvc.PutWithMode(ctx, docKey, docData, req.WriteMode); err != nil {
-			return nil, &CollectionMetadataError{Op: "insert-document", Err: err}
-		}
-	} else {
-		if err := s.kvSvc.Put(ctx, docKey, docData); err != nil {
-			return nil, &CollectionMetadataError{Op: "insert-document", Err: err}
-		}
+	if err := s.storeNewDocument(ctx, info, req, docKey, docData, id, explicit); err != nil {
+		return nil, err
 	}
 
 	// Update schema from document fields.
@@ -1035,23 +1022,50 @@ func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info 
 	return nil
 }
 
-// documentExists reports whether a document is stored under docKey.
+// storeNewDocument writes an insert's document, choosing the write by whether
+// the insert is allowed to overwrite.
 //
-// A read that FAILS is not an absent document: reporting absence on a
-// transport error would let a failed read wave through the overwrite the
-// caller is being protected from, so the error is returned and the insert
-// fails. This is deliberately stricter than GetDocument, which treats any
-// read failure as not-found because on a read path there is nothing to
-// destroy.
-func (s *CollectionService) documentExists(ctx context.Context, docKey string) (bool, error) {
-	data, err := s.kvSvc.Get(ctx, docKey)
-	if err != nil {
-		if isKeyNotFound(err) {
-			return false, nil
+// Where it is not, the write is KVServicer.PutIfAbsent and the refusal is the
+// backend declining to store, not a check this service performed first. That
+// matters because the two are not equally strong: a read followed by a write
+// leaves a window in which a second caller sees the same free ID, and both
+// write, and one document is silently gone. The guarded write has no such
+// window on any backend that offers it, and a backend that does not offer it
+// refuses with database.ErrAtomicWriteUnsupported rather than degrading -- an
+// insert that cannot promise the ID is the caller's fails, which is the whole
+// point of the promise.
+//
+// A write that FAILS is never read as an absent document: the error is
+// returned and the insert fails. This is deliberately stricter than
+// GetDocument, which treats any read failure as not-found because on a read
+// path there is nothing to destroy.
+func (s *CollectionService) storeNewDocument(ctx context.Context, info *CollectionInfo, req *InsertDocumentRequest, docKey string, docData []byte, id uint64, explicit bool) error {
+	if !mayOverwrite(info.IDStrategy, explicit) {
+		stored, err := s.kvSvc.PutIfAbsent(ctx, docKey, docData)
+		if err != nil {
+			return &CollectionMetadataError{Op: "insert-document", Err: err}
 		}
-		return false, &CollectionMetadataError{Op: "check-document", Err: err}
+		if !stored {
+			return &CollectionDocumentExistsError{
+				Database:   req.Database,
+				Collection: req.Collection,
+				ID:         id,
+				Explicit:   explicit,
+			}
+		}
+		return nil
 	}
-	return data != nil, nil
+
+	if req.WriteMode != 0 {
+		if err := s.kvSvc.PutWithMode(ctx, docKey, docData, req.WriteMode); err != nil {
+			return &CollectionMetadataError{Op: "insert-document", Err: err}
+		}
+		return nil
+	}
+	if err := s.kvSvc.Put(ctx, docKey, docData); err != nil {
+		return &CollectionMetadataError{Op: "insert-document", Err: err}
+	}
+	return nil
 }
 
 // collectionSequenceName returns the SequenceServicer sequence name backing

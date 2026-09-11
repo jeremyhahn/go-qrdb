@@ -152,35 +152,48 @@ at all, so a refusal there means the allocator is wrong and the caller is told
 rather than losing a document. `unix_nano` reaches one only when two inserts
 read the same nanosecond, which is rare rather than impossible.
 
-#### What this does not close
+#### How the refusal is enforced
 
-The existence check is a read followed by the document write, so it closes the
-overwrite a single caller reaches with no concurrency at all — which is the
-defect — and not a race between two concurrent inserts claiming the same
-explicit `_id`. Closing that as well means writing the document with the
-guarded `PutIfAbsent`, the only write whose outcome is defined under
-concurrency. It is not used yet because the dedicated-store backend cannot
-perform a guarded write, so a guarded insert would fail every collection insert
-on that path. The guard lives in the service layer either way, so tightening
-the mechanism later changes no caller.
+**The refusal is the write declining to store, not a check performed before
+it.** An insert that may not overwrite is written with `PutIfAbsent`, the only
+write whose outcome is defined under concurrency, and the
+`CollectionDocumentExistsError` above reports that the write did not store.
 
-**The SQL surface inherits that limitation rather than escaping it, and is not
-stronger for looking more like a database.** A collection table's writes go
-through the same `InsertDocument`, so its primary key is enforced by the same
-read-then-write and is exactly as wide open to two concurrent claims. It is
-worth saying plainly because the surface invites the opposite assumption: a
-declared `PRIMARY KEY` that answers with MySQL 1062 reads like a constraint the
-storage engine enforces, and here it is a check the service performs. The
-*relational* tables in the same SQL layer are the ones whose uniqueness rides
-on a compare-and-swap in the same proposal as the row; a collection table's
-does not, and the two are not interchangeable in that respect.
+It was a read followed by an unguarded write for one release, which closed only
+the overwrite a single caller reaches with no concurrency at all — and not the
+race between two concurrent inserts claiming the same explicit `_id`, where
+both observed the ID free, both wrote, and one document was gone with no error
+anywhere. It was written that way because a database with its own store had no
+guarded write to reach for; its backend now offers one, and every other engine
+already did, so the guard is the write itself on every path.
 
-`REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are built on that
-refusal and are therefore not atomic either: each is an insert, a refusal, and
-a second statement-level write, with no lock across the three. They are correct
-against a single writer and racy against two, like the insert they are made of.
+**`WriteMode` is not honoured for an insert that may not overwrite.** The
+guarded write is synchronous because its purpose is to report which caller won,
+and an asynchronous proposal has no answer to report. An insert that *may*
+overwrite makes no claim and still honours it.
+
+**A backend without the guarded write refuses the insert rather than degrading
+to a read-then-write.** The only such backend is the remote proxy, whose wire
+protocol does not carry the verbs; an insert through it fails with
+`database: backend does not support atomic conditional writes` instead of
+quietly offering the weaker promise.
+
+**The SQL surface inherits the strengthened guarantee the same way it inherited
+the weak one.** A collection table's writes go through the same
+`InsertDocument`, so its `PRIMARY KEY` is now enforced by the same guarded
+write that enforces the collection's, and a declared `PRIMARY KEY` answering
+with MySQL 1062 means what the surface invites a reader to assume.
+
+#### What this still does not close
+
+`REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are **not** atomic.
+Each is an insert, a refusal, and a second statement-level write, with no lock
+across the three — so two concurrent `REPLACE INTO`s on the same `_id` can
+still interleave, even though neither can silently lose a document to the
+other's insert. They are correct against a single writer and racy against two.
 A collection table is also autocommit-only, so neither can be made atomic by
-wrapping it in a transaction.
+wrapping it in a transaction. Closing this needs a statement-level guarded
+upsert, which is a different primitive from the three the KV plane carries.
 
 ### Alternatives rejected
 

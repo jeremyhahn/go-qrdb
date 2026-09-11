@@ -169,12 +169,12 @@ storing the document under a generated one, which is why it never collided —
 so nothing that statement inserted landed where you asked. Re-check the IDs
 before assuming the new error is wrong.
 
-**A collection table's `PRIMARY KEY` did not stop two concurrent writers.** It
-is enforced by a read-then-write in the collection service, not by a
-compare-and-swap, so it closes the ordinary overwrite and not the race.
-`REPLACE` and `ON DUPLICATE KEY UPDATE` are built on the same refusal and
-inherit the same bound. For a uniqueness constraint that holds under concurrent
-writers, use a relational table.
+**A collection table's `PRIMARY KEY` under two concurrent writers.** It holds:
+the insert behind it is a guarded write, so one writer is told it stored and
+the other gets the duplicate-key error. `REPLACE` and `ON DUPLICATE KEY UPDATE`
+are still each an insert, a refusal and a second write with no lock across the
+three, so two of *those* racing can interleave — use a relational table inside
+a transaction if you need a read-modify-write that holds end to end.
 
 **A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.

@@ -77,15 +77,17 @@ wire protocols, and they are not equivalent:
 |---|---|---|---|
 | `kv` | the raw KV keyspace | the key itself | no — autocommit-only |
 | entity (`pkg/dao`-registered) | the entity keyspace | the key itself | no — autocommit-only |
-| collection ([../collections/](../collections/)) | `__col:` documents | `CollectionService.InsertDocument`'s **read-then-write** | no — autocommit-only |
+| collection ([../collections/](../collections/)) | `__col:` documents | `CollectionService.InsertDocument`'s **guarded write** (`PutIfAbsent`) | no — autocommit-only |
 | relational (`CREATE TABLE`) | the table's own keyspace | a **compare in the same proposal** as the row | yes |
 
 A collection table's first column is `_id`; naming it in an `INSERT` claims
 that document ID and is refused with **1062** if it is taken, while omitting it
 (or writing `0`) lets the collection allocate. `REPLACE INTO` and
-`INSERT … ON DUPLICATE KEY UPDATE` are implemented on that refusal. The row it
-produces is the same document a REST, gRPC, QUIC or MCP insert of the same
-`_id` would produce. See
+`INSERT … ON DUPLICATE KEY UPDATE` are implemented on that refusal and are
+therefore each an insert, a refusal and a second write, with no lock across the
+three — the claim itself is atomic, the two-statement upsert built on it is
+not. The row it produces is the same document a REST, gRPC, QUIC or MCP insert
+of the same `_id` would produce. See
 [engineering.md](engineering.md#collection-table-schema).
 
 **The `1062` in the status table above therefore means two different strengths**

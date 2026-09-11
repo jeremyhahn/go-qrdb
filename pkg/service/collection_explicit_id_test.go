@@ -20,6 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
 )
 
 // This file covers what an explicitly supplied document _id does to a
@@ -379,67 +381,151 @@ func TestCollectionService_ReserveExplicitDocumentID_SequenceFailureFailsTheInse
 }
 
 // ---------------------------------------------------------------------------
-// documentExists
+// storeNewDocument
 // ---------------------------------------------------------------------------
 
-// failingGetKVSvc is the in-memory KV service with one key's Get replaced by
-// a transport-shaped failure. It embeds the real double rather than
-// reimplementing it, so every other verb behaves exactly as production's
+// failingGuardedKVSvc is the in-memory KV service with one key's guarded write
+// replaced by a transport-shaped failure. It embeds the real double rather
+// than reimplementing it, so every other verb behaves exactly as production's
 // caller sees it.
-type failingGetKVSvc struct {
+type failingGuardedKVSvc struct {
 	*memoryKVSvc
 	failKey string
 	err     error
 }
 
-func (f *failingGetKVSvc) Get(ctx context.Context, key string) ([]byte, error) {
+func (f *failingGuardedKVSvc) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
 	if key == f.failKey {
-		return nil, f.err
+		return false, f.err
 	}
-	return f.memoryKVSvc.Get(ctx, key)
+	return f.memoryKVSvc.PutIfAbsent(ctx, key, value)
 }
 
-func TestCollectionService_DocumentExists(t *testing.T) {
+// TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused proves
+// the refusal is the backend declining to store rather than a check this
+// service performed: the document is written with PutIfAbsent, and a second
+// claim on the same ID is refused by the write itself.
+func TestCollectionService_StoreNewDocument_GuardedWhenOverwriteRefused(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemoryKVSvc()
 	svc := NewCollectionService(kv)
-	docKey := collectionDataEntityType("mydb", "c") + "/1"
-
-	absent, err := svc.documentExists(ctx, docKey)
+	docKey := collectionDataEntityType("mydb", "users") + "/1"
+	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
+	info, err := svc.loadCollectionInfo(ctx, "mydb", "users")
 	require.NoError(t, err)
-	assert.False(t, absent, "a key that was never written is absent, not an error")
+	req := &InsertDocumentRequest{Database: "mydb", Collection: "users"}
 
-	require.NoError(t, kv.Put(ctx, docKey, []byte(`{"id":"1"}`)))
-	present, err := svc.documentExists(ctx, docKey)
+	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"first"}`), 1, true))
+
+	err = svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"id":"1","who":"second"}`), 1, true)
+	var exists *CollectionDocumentExistsError
+	require.ErrorAs(t, err, &exists)
+	assert.Equal(t, uint64(1), exists.ID)
+	assert.True(t, exists.Explicit)
+
+	stored, err := kv.Get(ctx, docKey)
 	require.NoError(t, err)
-	assert.True(t, present)
+	assert.Contains(t, string(stored), "first", "the refused claim must not have replaced the stored document")
 }
 
-// TestCollectionService_DocumentExists_ReadFailureIsNotAbsence is the
-// property that makes the guard worth having: if a failed read were reported
-// as "no document here", a transport blip would wave through exactly the
-// overwrite the guard exists to prevent.
-func TestCollectionService_DocumentExists_ReadFailureIsNotAbsence(t *testing.T) {
+// TestCollectionService_StoreNewDocument_OverwriteAllowedUsesPlainWrite covers
+// the other branch: a field_hash re-insert is the documented idempotent update,
+// so it takes the unguarded write and honours req.WriteMode.
+func TestCollectionService_StoreNewDocument_OverwriteAllowedUsesPlainWrite(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemoryKVSvc()
+	svc := NewCollectionService(kv)
+	docKey := collectionDataEntityType("mydb", "hashed") + "/1"
+	createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
+	info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
+	require.NoError(t, err)
+
+	req := &InsertDocumentRequest{Database: "mydb", Collection: "hashed"}
+	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"who":"first"}`), 1, false))
+	require.NoError(t, svc.storeNewDocument(ctx, info, req, docKey, []byte(`{"who":"second"}`), 1, false))
+
+	modeReq := &InsertDocumentRequest{Database: "mydb", Collection: "hashed", WriteMode: writemode.WALDurable}
+	require.NoError(t, svc.storeNewDocument(ctx, info, modeReq, docKey, []byte(`{"who":"third"}`), 1, false))
+
+	stored, err := kv.Get(ctx, docKey)
+	require.NoError(t, err)
+	assert.Contains(t, string(stored), "third")
+}
+
+// failingPutKVSvc is the in-memory KV service whose unguarded writes fail. It
+// covers the overwrite-allowed branch, where the write is a plain Put or a
+// PutWithMode rather than the guarded verb.
+type failingPutKVSvc struct {
+	*memoryKVSvc
+	failKey string
+	err     error
+}
+
+func (f *failingPutKVSvc) Put(ctx context.Context, key string, value []byte) error {
+	if key == f.failKey {
+		return f.err
+	}
+	return f.memoryKVSvc.Put(ctx, key, value)
+}
+
+func (f *failingPutKVSvc) PutWithMode(ctx context.Context, key string, value []byte, mode writemode.Mode) error {
+	if key == f.failKey {
+		return f.err
+	}
+	return f.memoryKVSvc.PutWithMode(ctx, key, value, mode)
+}
+
+// TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped covers
+// the other two write failures: an idempotent re-insert whose plain write
+// fails, with and without an explicit WriteMode. Both must surface as a typed
+// insert failure rather than a partially applied insert reporting success.
+func TestCollectionService_StoreNewDocument_OverwriteWriteFailuresAreTyped(t *testing.T) {
+	ctx := context.Background()
+	docKey := collectionDataEntityType("mydb", "hashed") + "/1"
+
+	tests := []struct {
+		name string
+		req  *InsertDocumentRequest
+	}{
+		{"default write mode", &InsertDocumentRequest{Database: "mydb", Collection: "hashed"}},
+		{"explicit write mode", &InsertDocumentRequest{Database: "mydb", Collection: "hashed", WriteMode: writemode.WALDurable}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := newMemoryKVSvc()
+			svc := NewCollectionService(&failingPutKVSvc{memoryKVSvc: kv, failKey: docKey, err: assert.AnError})
+			createCollection(t, svc, "mydb", "hashed", IDStrategyFieldHash, "email")
+			info, err := svc.loadCollectionInfo(ctx, "mydb", "hashed")
+			require.NoError(t, err)
+
+			err = svc.storeNewDocument(ctx, info, tc.req, docKey, []byte(`{"who":"first"}`), 1, false)
+			var metaErr *CollectionMetadataError
+			require.ErrorAs(t, err, &metaErr)
+			assert.Equal(t, "insert-document", metaErr.Op)
+		})
+	}
+}
+
+// TestCollectionService_StoreNewDocument_WriteFailureIsNotAbsence is the
+// property that makes the guard worth having: a guarded write that FAILS is
+// never read as "no document here", because that would wave through exactly
+// the overwrite the guard exists to prevent.
+func TestCollectionService_StoreNewDocument_WriteFailureIsNotAbsence(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemoryKVSvc()
 	docKey := collectionDataEntityType("mydb", "users") + "/1"
-	svc := NewCollectionService(&failingGetKVSvc{memoryKVSvc: kv, failKey: docKey, err: assert.AnError})
+	svc := NewCollectionService(&failingGuardedKVSvc{memoryKVSvc: kv, failKey: docKey, err: assert.AnError})
 
 	createCollection(t, svc, "mydb", "users", IDStrategyIncrement, "")
 	require.NoError(t, kv.Put(ctx, docKey, []byte(`{"id":"1","who":"stored"}`)))
 
-	_, err := svc.documentExists(ctx, docKey)
-	var metaErr *CollectionMetadataError
-	require.ErrorAs(t, err, &metaErr)
-	assert.Equal(t, "check-document", metaErr.Op)
-
-	// And the insert that consults it fails rather than overwriting.
 	_, insertErr := svc.InsertDocument(ctx, &InsertDocumentRequest{
 		Database: "mydb", Collection: "users",
 		Document: map[string]interface{}{"_id": 1, "who": "overwriter"},
 	})
+	var metaErr *CollectionMetadataError
 	require.ErrorAs(t, insertErr, &metaErr)
-	assert.Equal(t, "check-document", metaErr.Op)
+	assert.Equal(t, "insert-document", metaErr.Op)
 
 	stored, err := kv.Get(ctx, docKey)
 	require.NoError(t, err)

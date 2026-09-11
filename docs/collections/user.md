@@ -103,12 +103,15 @@ Two things to know before you lean on it:
 
 - **A collection table is autocommit-only.** Any of these inside `BEGIN` fails
   rather than silently escaping the transaction.
-- **The primary key is enforced by a check, not by a lock.** Two clients
-  claiming `42` at the same instant can both be told they succeeded — the
-  refusal closes the ordinary case, not the race. `REPLACE` and `ON DUPLICATE
-  KEY UPDATE` are built on that refusal and inherit the same caveat. If you
-  need a uniqueness constraint that holds under concurrent writers, use a
-  relational table ([../sql/user.md](../sql/user.md)).
+- **The primary key holds under concurrent writers.** Two clients claiming `42`
+  at the same instant get one success and one duplicate-key error; the insert
+  is a guarded write, so it is not possible for both to be told they succeeded.
+- **`REPLACE` and `ON DUPLICATE KEY UPDATE` are still not atomic.** Each is an
+  insert, a refusal and a second write, with no lock across the three, so two
+  of them racing on `42` can interleave. Neither can lose a document to the
+  other's *insert*, which is the case the guarded write closed. If you need a
+  read-modify-write that holds end to end, use a relational table
+  ([../sql/user.md](../sql/user.md)), which can run it inside a transaction.
 
 ## Common tasks
 

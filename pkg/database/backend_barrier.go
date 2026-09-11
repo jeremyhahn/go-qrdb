@@ -99,7 +99,9 @@ func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
 // a non-atomic store cannot manufacture atomicity — encrypting first and then
 // doing a check-then-write here would reintroduce exactly the window the
 // operation exists to close — so the capability is reported honestly by
-// returning ErrAtomicWriteUnsupported instead.
+// returning ErrAtomicWriteUnsupported instead. StandaloneBackend is one, so the
+// barrier-over-standalone composition the dedicated-store path builds is atomic
+// end to end (go-qrdb#466).
 func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
 	if b.barrier.IsSealed() {
 		return false, &SealedError{}
@@ -119,6 +121,13 @@ func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bo
 // decrypts to expected. Like StorageBarrier's, it guards on the ciphertext
 // this call read: encryption is randomised, so a re-encryption of expected
 // would never match.
+//
+// The Get below is deliberately OUTSIDE the inner backend's write lock. It
+// establishes only which ciphertext corresponds to expected; the decision is
+// the inner CompareAndDelete's, which re-reads and compares that same
+// ciphertext while holding the lock. A writer that lands between the two
+// changes the stored ciphertext, so the guarded call declines — the outcome is
+// still defined, and no value this caller never observed is destroyed.
 func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []byte) (bool, error) {
 	if b.barrier.IsSealed() {
 		return false, &SealedError{}
@@ -150,6 +159,11 @@ func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []b
 // Like CompareAndDelete it guards on the CIPHERTEXT this call read, because
 // encryption is randomised and a re-encryption of expected would never match
 // what the inner backend holds.
+//
+// The Get below is outside the inner backend's write lock for the same reason
+// CompareAndDelete's is: it resolves expected to a ciphertext, and the inner
+// CompareAndSwap re-compares that ciphertext under the lock, so a concurrent
+// writer turns this into a declined swap rather than a lost update.
 //
 // Its absence was a breaking defect, not merely a missing feature: widening
 // AtomicBackend without implementing it here meant BarrierBackend stopped

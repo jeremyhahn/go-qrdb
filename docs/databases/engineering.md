@@ -141,6 +141,26 @@ path, not the body.
   releases quota on success.
 - **A sealed database fails reads and writes closed** until unsealed with its
   secret.
+- **Every local backend offers the guarded writes; only the remote proxy does
+  not.** `PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` are available on
+  a database backed by `memory`, `file` or `pebble` — with or without a
+  per-database barrier over it — as well as on `raft`. The capability is
+  discovered by asserting the backend to `database.AtomicBackend` rather than
+  being part of `database.Backend`, because the remote proxy cannot honour it
+  until its wire protocol carries the verbs; it refuses with
+  `database.ErrAtomicWriteUnsupported` instead of emulating them with a read
+  and a write.
+- **A local backend's guarded write is atomic against every other write on the
+  same backend**, unguarded ones included. The read and the write are one
+  critical section, and `Put`, `Delete` and `Batch` enter the same one, so no
+  write can land between a guarded operation's observation and its decision. A
+  guarantee that held only while callers cooperated would be advisory, which is
+  worse than the refusal above — a refusal is at least honest about what the
+  caller did not get.
+- **`Batch` is still all-or-nothing, and for the same reason as before.** The
+  property is the storage engine's batch commit; serializing batches against
+  the guarded verbs adds exclusion in the other direction (a batch cannot
+  commit inside a guarded operation's window) and takes nothing away.
 
 ## Permission model
 

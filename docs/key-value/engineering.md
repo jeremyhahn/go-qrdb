@@ -316,6 +316,48 @@ middle decided nowhere.
   value, so a batched operation cannot express a guard. Multi-key atomicity is
   [../transactions/](../transactions/), which does need `sm_type: mvcc`.
 
+- **A database with its own store answers them too, without Raft.**
+  `BackendKVService` — the servicer a database with a dedicated store or a
+  per-database barrier is served by — asserts its backend to
+  `database.AtomicBackend` and delegates. `database.StandaloneBackend`, what
+  every `memory`, `file` and `pebble` database is built on, satisfies it by
+  making the read and the write one critical section; `database.BarrierBackend`
+  satisfies it whenever its inner backend does, which is the composition the
+  dedicated-store bundle actually builds.
+
+  **The mutex is shared with the unguarded writes, and that is the whole
+  correctness argument.** `StandaloneBackend.Put`, `Delete` and `Batch` enter
+  the same critical section, so no write on that backend can land between a
+  guarded operation's read and its write. Were they outside it, a plain `Put`
+  could overwrite what a `PutIfAbsent` had just decided and the verb would be
+  advisory — which is worse than the refusal below, because a refusal is
+  honest and an advisory guarantee is not. `Batch` keeps its own all-or-nothing
+  property unchanged; what it gains is that it can no longer commit inside a
+  guarded operation's window.
+
+  **One write mutex, not per-key lock striping.** Striping was measured against
+  it before the choice was made: on `pebble` the two were inside each other's
+  noise, and on `memory` striping was roughly 20% **worse**, because that engine
+  serializes internally already and the extra lock buys nothing while costing
+  two more atomics. The simpler construction is therefore also the faster one
+  here, and it is the one `seal.StorageAdapter` and
+  `database.BackendStorageAdapter` already use. A lock-free form is not
+  available at all: `storage.Storage` exposes no compare-and-set, so a
+  check-then-write over an arbitrary engine has nothing to CAS on.
+
+  What the shipped path costs is reproducible — `make bench-database`, run with
+  `-cpu` at or above the host's core count, since a write mutex is invisible
+  single-threaded. Parallel `Put` through the backend against an unlocked `Set`
+  on the same engine measures within a few per cent on `memory` and under ten
+  per cent on `pebble`.
+
+  **The remote proxy still refuses**, with
+  `database.ErrAtomicWriteUnsupported`, because its wire protocol carries no
+  guarded operation. That refusal is why the capability is discovered by type
+  assertion instead of living on `database.Backend`: widening the interface
+  would force the proxy to ship a method that either lies or always fails, and
+  a caller cannot tell those apart from a real refusal.
+
 ### Wire-field bounds — the owning contract for every plane
 
 This section owns the length-field contract for the whole extended wire

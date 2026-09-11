@@ -130,15 +130,25 @@ statements are in the table above, and why the row the writer supplies must
 match the table's own column order (`documentToRow`, shared with the read
 path).
 
-**The key is enforced by a check, not by a compare-and-swap.**
-`CollectionService.InsertDocument` reads the document key and then writes, so
-the constraint closes the ordinary overwrite and not a race between two
-concurrent claims. This is the one respect in which a collection table's
-`PRIMARY KEY` is weaker than a relational table's, whose uniqueness rides on a
-`TransactionServicer.Execute` compare in the same proposal as the row (see
-*Relational Tables* below). `REPLACE` and `ON DUPLICATE KEY UPDATE` are built
-on the refusal and inherit the same bound, and a collection table is
-autocommit-only so neither can be widened into a transaction.
+**The key is enforced by the write, not by a check before it.**
+`CollectionService.InsertDocument` writes a non-overwriting document with
+`KVServicer.PutIfAbsent`, so the constraint closes a race between two
+concurrent claims as well as the ordinary overwrite. It is as strong as a
+relational table's uniqueness, which rides on a `TransactionServicer.Execute`
+compare in the same proposal as the row (see *Relational Tables* below),
+reached by a different mechanism.
+
+It was a read followed by an unguarded write until the backend behind a
+database with its own store gained the guarded verbs; every other engine
+already had them. A backend that still lacks them — the remote proxy, whose
+wire protocol does not carry the verbs — refuses the insert rather than
+degrading to the weaker shape.
+
+**What is still not atomic: `REPLACE` and `ON DUPLICATE KEY UPDATE`.** Each is
+an insert, a refusal and a second statement-level write, with no lock across
+the three, and a collection table is autocommit-only so neither can be widened
+into a transaction. Closing that needs a statement-level guarded upsert, which
+is a different primitive from the three single-key verbs the KV plane carries.
 
 ## Index-Accelerated WHERE Clauses
 

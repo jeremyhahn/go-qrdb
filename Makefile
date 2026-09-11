@@ -661,6 +661,13 @@ test-engine:
 bench-engine:
 	$(GO) test $(TAG_FLAG) -run '^$$' -bench=. -benchmem $(PKG_ENGINE)
 
+# The standalone backend's write path, which serializes every write so its
+# guarded verbs can be atomic (go-qrdb#466). Run with -cpu at or above the
+# host's core count: a write mutex is invisible single-threaded.
+.PHONY: bench-database
+bench-database:
+	$(GO) test $(TAG_FLAG) -run '^$$' -bench='BenchmarkStandaloneBackend' -benchmem $(PKG_DATABASE)
+
 .PHONY: test-timeseries
 test-timeseries:
 	$(GOTEST) $(TAG_FLAG) $(PKG_TIMESERIES)
