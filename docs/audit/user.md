@@ -110,9 +110,12 @@ this; check you are not passing the full string.
 **You expect more than 1000 results.** That is the server's hard cap per page.
 Follow `next_cursor`.
 
-**The audit log is enormous.** There is **no retention policy** — nothing prunes
-it. Rotating and archiving is your operational responsibility, for both the file
-and the KV backend.
+**The audit log is enormous.** The **file** sink rotates at its size bound and
+deletes archives older than its retention window (90 days by default) when it
+opens — so the active directory is bounded, but nothing moves those archives
+off the node before they are deleted. The **KV** backend has no retention at
+all: nothing prunes `__sys:audit/`. Archiving off the node is your operational
+responsibility for both.
 
 **Audit entries do not appear in `kv list`.** They live under `__sys:audit/`,
 inside the internal namespace, deliberately invisible to user enumeration.
@@ -231,23 +234,35 @@ an operator-facing control in this build. Treat the `PrevHash` field as
 *evidence you can check with your own tooling*, not as a feature you can run.
 See the note under "You need to be sure nobody edited the trail" below.
 
-If you do verify a single file with your own tooling and it reports a break,
-check first whether the node logged `audit: fsync failed` or
-`audit: write failed` near that point, and whether
+**The chain runs through the archives, not per file.** The first record of a
+file written after a rotation carries the digest the previous file's
+`chain-anchor` entry recorded, so your tooling verifies the directory as ONE
+sequence: check each file's records against each other, then check that each
+file's first `prev_hash` really is the `prev_hash` its predecessor's anchor
+states. A break at the first record of an archive used to be an artefact of the
+verifier and was documented here as expected — **it is not expected now**, and
+it means the file before it is missing or was rewritten.
+
+If a verification reports a break, check first whether the node logged
+`audit: fsync failed` or `audit: write failed` near that point, and whether
 `qrdb_audit_write_failures_total` moved. A record that reached the file while
 its fsync failed is a genuine record, and the sink keeps the chain consistent
 with the bytes actually on disk across exactly that fault — so a break there
-means something else. **A break at the first record of a rotated file is
-expected and is not tampering**: the chain restarts per file and the handoff is
-recorded in the previous file's `chain-anchor` entry.
+means something else.
+
+**One clean result is not a complete one.** If retention has deleted the oldest
+archives, the surviving chain no longer reaches its origin. That is normal, and
+it is also what deleting the oldest archives would look like — the two cannot be
+told apart from the files alone. If that distinction matters to you, record the
+newest `prev_hash` you have seen somewhere off the node, or ship the trail.
 
 **You need to be sure nobody edited the trail.** Entries carry the hash of the
 previous entry, so an edit or a deletion *within one file* is detectable by
 recomputing the chain.
 
 **Do not rely on this as a live control in this build.** The chain is
-*written*, and it is written correctly across write and fsync faults — but
-nothing verifies it for you: there is no command, no startup check and no
-alert. Verifying it is your own tooling's job, and that tooling must account
-for the per-file chain restart described above. Chain verification is a
-documented gap, not a shipped control.
+*written*, and it is written correctly across write faults, fsync faults,
+rotations and restarts — but nothing verifies it for you: there is no command,
+no startup check and no alert. Verifying it is your own tooling's job, and that
+tooling must walk the archives as one sequence as described above. Chain
+verification is a documented gap, not a shipped control.

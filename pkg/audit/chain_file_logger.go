@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,20 +86,25 @@ func WithSyncPerWrite(v bool) ChainFileOption {
 // maximum file size, and configurable retention policy.
 //
 // Hash-chain design:
-//   - prevDigest starts as 32 zero bytes for the first event in each file.
+//   - prevDigest starts as 32 zero bytes for the first event of the TRAIL.
 //   - For each event: canonicalJSON = MarshalCanonical(event_without_prevHash);
 //     currentDigest = SHA-256(prevDigest || canonicalJSON).
-//   - event.PrevHash = hex(prevDigest) written to the NDJSON line.
+//   - event.PrevHash = hex(prevDigest) written to the NDJSON line, empty when
+//     prevDigest is zero.
 //   - prevDigest advances to currentDigest.
 //
-// Rotation boundary:
-//   - When the file exceeds maxBytes, the logger rotates to a new file named
-//     audit-YYYY-MM-DD-NNN.ndjson. A "chain anchor" entry is appended to the
-//     old file recording the final prevHash so that auditors can link the
-//     chain across file boundaries.
-//   - The new file starts with an empty prevHash (chain resets per file), but
-//     the anchor event in the previous file records the handoff hash, enabling
-//     cross-file verification when needed.
+// Rotation boundary -- THE CHAIN SPANS IT, it does not restart per file
+// (go-qrdb#452; the reasoning is at the top of chain_verify.go):
+//   - When the file would exceed maxBytes, the logger rotates to a new file
+//     named audit-YYYY-MM-DD-NNN.ndjson. A "chain anchor" entry is appended to
+//     the outgoing file recording the handoff prevHash.
+//   - The first record of the new file carries that same handoff digest as its
+//     PrevHash, so the anchor and its successor's first record state the same
+//     value from either side of the boundary. verifyChainSet follows it.
+//   - The anchor is NOT folded into prevDigest: it terminates the outgoing
+//     file after the handoff was fixed. A verifier folds it like any other
+//     record (a record that follows one -- see #268 -- chains over it) and
+//     takes the handoff from the digest standing BEFORE a terminal anchor.
 type ChainFileLogger struct {
 	path          string
 	maxBytes      int64
@@ -147,9 +151,20 @@ type ChainFileLogger struct {
 	// asserting a property OF rotate must drive the real rotate() -- see
 	// TestChainFileLogger_Rotation_CloseFailureDoesNotWedgeTheNode, which
 	// pre-closes the handle instead.
+	//
+	// renameFunc is the NARROW one, and it is narrow on purpose: it replaces
+	// only the rename inside rotate(), so the anchor write, the close, the
+	// reopen and the failure accounting all still run for real. It exists
+	// because os.Rename failing while the open handle stays writable -- an
+	// unwritable directory from a hardening pass, a bind-mount, an ACL change,
+	// the scenario rotateRetryInterval was written for -- leaves the anchor in
+	// the file the next append extends, and that is the one rotation failure
+	// with a consequence for the CHAIN rather than only for the size bound.
+	// The chmod that would fake it is a no-op under a root CI runner.
 	writeFunc  func([]byte) (int, error)
 	syncFunc   func() error
 	rotateFunc func() error
+	renameFunc func(oldpath, newpath string) error
 
 	// closed records that the OWNER closed this logger, as distinct from the
 	// logger having lost its handle to a failed rotation. ensureOpen reopens
@@ -225,9 +240,25 @@ func (l *ChainFileLogger) openFile() error {
 	return nil
 }
 
-// initPrevDigest scans the file to find the last valid event and re-derives
-// prevDigest as SHA-256(prevDigest||canonicalJSON(event)) for each event,
-// leaving prevDigest pointing at the digest after the last event.
+// initPrevDigest scans the file and re-derives prevDigest as
+// SHA-256(prevDigest||canonicalJSON(event)) for each event it can read back,
+// leaving prevDigest pointing at the digest after the last one.
+//
+// IT SEEDS FROM THE FIRST RECORD'S STORED PrevHash, not from zero, and that
+// distinction is the whole reason a restart used to break the chain. The chain
+// spans rotations (go-qrdb#452), so a file opened after one begins mid-chain:
+// folding it from zero produced a digest no record in the file agrees with,
+// and the next event written after the restart linked to it. VerifyChain then
+// reported a break at index 1 on honest data -- a second face of the same
+// defect, reached by restarting rather than by rotating.
+//
+// What has NOT changed is the property the comment on Emit's write depends on:
+// this never reads the LAST record's stored PrevHash. It folds over the
+// records it can actually read back, so a torn or unsynced tail leaves the
+// digest where the surviving records put it. Only the starting point is taken
+// from the file, and only from the one record whose predecessor is not in this
+// file to be folded. verifyChainSegment seeds itself the identical way, which
+// is what keeps the two readers in step.
 func (l *ChainFileLogger) initPrevDigest(f *os.File) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
@@ -235,7 +266,9 @@ func (l *ChainFileLogger) initPrevDigest(f *os.File) error {
 	defer func() { _, _ = f.Seek(0, 2) }() // reset to end
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScanLine)
 	var prev [sha256.Size]byte
+	seeded := false
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -249,7 +282,26 @@ func (l *ChainFileLogger) initPrevDigest(f *os.File) error {
 		if err != nil {
 			continue
 		}
+		if !seeded {
+			seed, ok := decodeDigest(ev.PrevHash)
+			if !ok {
+				// An unparsable seed is a tampered or corrupt head. Folding
+				// from zero instead would silently write a chain the file
+				// cannot support; refusing leaves prevDigest untouched and
+				// openFile logs it.
+				return &ChainBrokenError{
+					Path:     l.path,
+					Expected: "hex-encoded sha-256 digest",
+					Got:      ev.PrevHash,
+				}
+			}
+			prev = seed
+			seeded = true
+		}
 		prev = chainDigest(prev, canonical)
+	}
+	if err := scanner.Err(); err != nil {
+		return &FileError{Path: l.path, Err: err}
 	}
 	l.prevDigest = prev
 	return nil
@@ -301,13 +353,11 @@ func (l *ChainFileLogger) Emit(_ context.Context, ev AuditEvent) error {
 		slog.Error("audit: cannot marshal event for chain", "error", err)
 		return &WriteError{Backend: l.path, Err: err}
 	}
-	newDigest := chainDigest(l.prevDigest, canonical)
+	prevAtMarshal := l.prevDigest
+	newDigest := chainDigest(prevAtMarshal, canonical)
 
 	// Set PrevHash to the previous digest (what the reader uses to verify).
-	ev.PrevHash = hex.EncodeToString(l.prevDigest[:])
-	if allZero(l.prevDigest) {
-		ev.PrevHash = "" // first event: omit prevHash
-	}
+	ev.PrevHash = expectedPrevHash(prevAtMarshal)
 
 	line, err := json.Marshal(ev)
 	if err != nil {
@@ -320,6 +370,36 @@ func (l *ChainFileLogger) Emit(_ context.Context, ev AuditEvent) error {
 	// its own channels and is NOT part of this Emit's answer -- see tryRotate.
 	if l.size+int64(len(line)) > l.maxBytes {
 		l.tryRotate()
+	}
+
+	// A ROTATION THAT DID NOT MOVE THE FILE AWAY MOVED THE CHAIN UNDER THIS
+	// RECORD, and the record has to be re-fixed to the digest the file it is
+	// about to land in actually expects.
+	//
+	// The case is a FAILED RENAME. rotate() appended the chain anchor before
+	// renaming, so when the rename fails the anchor is durable in the very
+	// file this append is about to extend, and openFile has re-folded that
+	// file INCLUDING the anchor. The line marshalled above still carries the
+	// pre-anchor digest, so appending it as-is puts a record after the anchor
+	// claiming the digest from before it -- a break at that record, on
+	// entirely honest data, from a recoverable fault.
+	//
+	// A SUCCESSFUL rotation deliberately does NOT take this branch: it leaves
+	// prevDigest at the handoff, which is what the first record of the new
+	// file must carry for the chain to span the boundary (go-qrdb#452).
+	//
+	// So the comparison is the whole condition, and on the healthy path it is
+	// one 32-byte compare that is always equal -- no second marshal, which is
+	// the cost this design exists to avoid paying on every write.
+	if l.prevDigest != prevAtMarshal {
+		newDigest = chainDigest(l.prevDigest, canonical)
+		ev.PrevHash = expectedPrevHash(l.prevDigest)
+		remarshalled, err := json.Marshal(ev)
+		if err != nil {
+			slog.Error("audit: cannot re-marshal event after a failed rotation", "error", err)
+			return &WriteError{Backend: l.path, Err: err}
+		}
+		line = append(remarshalled, '\n')
 	}
 
 	n, writeErr := l.write(line)
@@ -479,6 +559,15 @@ func (l *ChainFileLogger) sync() error {
 	return l.f.Sync()
 }
 
+// rename commits the rotation, through the renameFunc seam when one is
+// installed. Must be called with l.mu held.
+func (l *ChainFileLogger) rename(oldpath, newpath string) error {
+	if l.renameFunc != nil {
+		return l.renameFunc(oldpath, newpath)
+	}
+	return fsync.Rename(oldpath, newpath)
+}
+
 // Query scans the active file and returns events matching the filter.
 // It opens a separate read-only file handle to avoid locking the writer.
 func (l *ChainFileLogger) Query(_ context.Context, f Filter) (*Page, error) {
@@ -496,15 +585,37 @@ func (l *ChainFileLogger) Query(_ context.Context, f Filter) (*Page, error) {
 	return buildPage(events, f), nil
 }
 
-// VerifyChain opens the file at path, recomputes the hash chain from the
-// first event, and returns ChainBrokenError if any event's PrevHash does not
-// match the expected value.
-func (l *ChainFileLogger) VerifyChain(_ context.Context) error {
+// VerifyChain verifies the WHOLE ROTATION SET -- the active file and every
+// archive beside it -- and returns an error describing the first fault.
+//
+// It verifies the set rather than one file because the chain spans rotations
+// (go-qrdb#452). Checking only the active file would have to either ignore the
+// archives, which is most of the trail, or report a break at index 0 on every
+// file opened after a rotation, which is the defect this replaces. The
+// distinction the set walk buys is real: a *ChainBrokenError means a RECORD
+// was changed, a *ChainLinkError means a FILE was.
+//
+// Use VerifyChainSet when the answer matters beyond pass/fail -- in particular
+// to learn whether the walk reached the chain's origin. See ChainVerification.
+func (l *ChainFileLogger) VerifyChain(ctx context.Context) error {
+	_, err := l.VerifyChainSet(ctx)
+	return err
+}
+
+// VerifyChainSet verifies the rotation set and reports what it covered.
+//
+// The result matters because a clean verification is not necessarily a
+// complete one: retention pruning deletes the oldest archives, so a healthy
+// trail's walk routinely begins mid-chain, and Genesis == false is the only
+// way a caller learns that the digests were not traced back to zero. Removing
+// a contiguous prefix of the archives is the one edit a hash walk cannot tell
+// from retention doing its job; every other edit breaks a link.
+func (l *ChainFileLogger) VerifyChainSet(_ context.Context) (*ChainVerification, error) {
 	l.mu.Lock()
 	path := l.path
 	l.mu.Unlock()
 
-	return verifyChainFile(path)
+	return verifyChainSet(path)
 }
 
 // Close flushes and closes the underlying file.
@@ -526,15 +637,22 @@ func (l *ChainFileLogger) Close() error {
 // Must be called with l.mu held.
 func (l *ChainFileLogger) rotate() error {
 	// Append chain anchor to the old file before rotating.
+	//
+	// PrevHash follows Emit's rule EXACTLY -- a zero digest is written empty,
+	// never as sixty-four zeros -- because a verifier cannot have two rules
+	// for the same field. It reaches here zero only when the file is rotated
+	// before it holds a foldable record, which maxBytes below one line's
+	// length makes possible.
 	anchor := AuditEvent{
 		Timestamp: time.Now().UTC(),
-		Actor:     "system",
-		Resource:  "audit",
-		Action:    "chain-anchor",
+		Actor:     chainAnchorActor,
+		Resource:  chainAnchorResource,
+		Action:    chainAnchorAction,
 		Outcome:   OutcomeSuccess,
-		PrevHash:  hex.EncodeToString(l.prevDigest[:]),
+		PrevHash:  expectedPrevHash(l.prevDigest),
 		Attributes: map[string]any{
-			"note": "rotation boundary; next file starts a new chain; verify cross-file chain via prevHash in this entry",
+			"note": "rotation boundary; the chain CONTINUES into the next file, whose first " +
+				"record carries this same prevHash; this entry is the handoff from this side",
 		},
 	}
 	anchorLine, anchorErr := json.Marshal(anchor)
@@ -583,17 +701,35 @@ func (l *ChainFileLogger) rotate() error {
 	// Rename to archive, durably. The rename IS the rotation's commit point:
 	// after it, the chain-anchor entry that closes the old file lives only
 	// under the archive name. A crash that loses the directory entry leaves the
-	// anchored file reachable under l.path, where openFile appends the new
-	// chain onto it -- two chains in one file, with the anchor in the middle
-	// claiming a boundary the reader cannot locate (go-qrdb#268).
+	// anchored file reachable at l.path, where openFile keeps appending to it
+	// -- an anchor buried mid-file, a file still over maxBytes, and a rotation
+	// that has to happen again (go-qrdb#268).
+	//
+	// Since go-qrdb#452 that state is at least READABLE: the chain spans
+	// rotations, initPrevDigest folds the buried anchor, records written after
+	// it chain over it, and verifyChainSegment folds it the same way, so the
+	// file verifies as the one continuous chain it actually is. The durability
+	// of this rename still matters -- the size bound and the archive boundary
+	// depend on it -- but it is no longer the difference between a verifiable
+	// trail and an unverifiable one.
 	archivePath := rotatedPath(l.path)
-	rotErr := fsync.Rename(l.path, archivePath)
+	rotErr := l.rename(l.path, archivePath)
 
-	// Reset chain state for the new file. openFile overwrites both from the
-	// file it finds, so this is correct whether the rename moved the old file
-	// away or left it in place.
-	var zero [sha256.Size]byte
-	l.prevDigest = zero
+	// Reset the SIZE for the new file, and deliberately LEAVE prevDigest where
+	// it is -- at the handoff this rotation's anchor just recorded.
+	//
+	// It used to be zeroed here, which was harmless on the happy path because
+	// Emit overwrites prevDigest after its append anyway, and wrong on the
+	// failure path: after a failed rename openFile re-folds the SAME file and
+	// overwrites prevDigest from it, so what this line left behind decided
+	// nothing, while a caller reading prevDigest between the two saw a value
+	// belonging to no file at all. Leaving the handoff makes prevDigest mean
+	// one thing at every point: the digest the next record must carry.
+	//
+	// That is also what makes the chain span the boundary (go-qrdb#452): when
+	// the rename succeeds, openFile finds an EMPTY file, derives nothing, and
+	// the handoff stands -- so the first record of the new file carries the
+	// digest the outgoing file's anchor states.
 	l.size = 0
 
 	// Reopen UNCONDITIONALLY. l.f was closed above, so returning early on a
@@ -732,7 +868,7 @@ func scanFile(path string, f Filter) ([]AuditEvent, error) {
 
 	var events []AuditEvent
 	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxScanLine)
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
@@ -812,52 +948,4 @@ func buildPage(events []AuditEvent, f Filter) *Page {
 		Next:   next,
 		Total:  total,
 	}
-}
-
-// verifyChainFile opens path and walks every event, recomputing the hash
-// chain. Returns ChainBrokenError on the first mismatch.
-func verifyChainFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return &FileError{Path: path, Err: err}
-	}
-	defer func() { _ = file.Close() }()
-
-	var prev [sha256.Size]byte
-	index := 0
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var ev AuditEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			index++
-			continue
-		}
-
-		// Determine expected prevHash.
-		var expectedPrevHash string
-		if !allZero(prev) || index > 0 {
-			expectedPrevHash = hex.EncodeToString(prev[:])
-		}
-
-		if ev.PrevHash != expectedPrevHash {
-			return &ChainBrokenError{
-				Index:    index,
-				Expected: expectedPrevHash,
-				Got:      ev.PrevHash,
-			}
-		}
-
-		canonical, err := canonicalJSON(ev)
-		if err != nil {
-			return &ChainBrokenError{Index: index, Expected: "valid json", Got: "marshal error"}
-		}
-		prev = chainDigest(prev, canonical)
-		index++
-	}
-	return nil
 }

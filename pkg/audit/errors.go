@@ -52,9 +52,15 @@ func (e *ConfigError) Error() string {
 	return "audit: invalid config: " + e.Detail
 }
 
-// ChainBrokenError is returned by VerifyChain when a hash-chain link is broken.
-// Index is the zero-based position of the first mismatching event.
+// ChainBrokenError is returned by VerifyChain when a hash-chain link is broken
+// WITHIN one file. Index is the zero-based position of the first mismatching
+// event, counting every line the file holds.
+//
+// Path names the file. It is optional so the message keeps reading correctly
+// when only one file is in question, and is set by every verifier in this
+// package because a rotation set holds many.
 type ChainBrokenError struct {
+	Path     string
 	Index    int
 	Expected string
 	Got      string
@@ -62,8 +68,84 @@ type ChainBrokenError struct {
 
 // Error returns a human-readable description of the chain break.
 func (e *ChainBrokenError) Error() string {
-	return "audit: chain broken at index " + itoa(e.Index) +
-		": expected prevHash " + e.Expected + ", got " + e.Got
+	msg := "audit: chain broken at index " + itoa(e.Index)
+	if e.Path != "" {
+		msg += " of " + e.Path
+	}
+	return msg + ": expected prevHash " + e.Expected + ", got " + e.Got
+}
+
+// LinkReason names the way a rotation set failed to form one chain.
+type LinkReason string
+
+const (
+	// LinkNoPredecessor means a file declares a seed digest no other file
+	// hands off -- the archive before it is missing, or was rewritten.
+	LinkNoPredecessor LinkReason = "no file in the set hands off to it"
+
+	// LinkForked means two files claim the same predecessor, or two files end
+	// on the same digest. A trail is a line, not a tree.
+	LinkForked LinkReason = "two files occupy the same position in the chain"
+
+	// LinkMultipleHeads means more than one file is entered by nothing, so
+	// the directory holds more than one trail.
+	LinkMultipleHeads LinkReason = "the set holds more than one chain"
+
+	// LinkNoHead means every file is entered by another, which for a finite
+	// set means the links form a cycle.
+	LinkNoHead LinkReason = "the links form a cycle and the set has no head"
+)
+
+// ChainLinkError is returned when every file of a rotation set is internally
+// sound but the files do not link into one chain.
+//
+// DISTINCT FROM ChainBrokenError on purpose: that one says a RECORD was
+// changed, this one says a FILE was removed, duplicated or reordered. The
+// remediation differs and so does the question an operator asks next.
+type ChainLinkError struct {
+	// Path is the file the fault was observed at; Other is the file it
+	// conflicts with, when the reason names two.
+	Path  string
+	Other string
+
+	// Digest is the hex digest at which the link failed, when the reason has
+	// one.
+	Digest string
+
+	// Reason names the failure.
+	Reason LinkReason
+}
+
+// Error returns a human-readable description of the broken linkage.
+func (e *ChainLinkError) Error() string {
+	msg := "audit: rotation set does not form one chain at " + e.Path
+	if e.Other != "" {
+		msg += " (conflicts with " + e.Other + ")"
+	}
+	msg += ": " + string(e.Reason)
+	if e.Digest != "" {
+		msg += " (digest " + e.Digest + ")"
+	}
+	return msg
+}
+
+// ConcurrentRotationError is returned when a whole-set verification could not
+// observe a stable rotation set because the sink rotated underneath it.
+//
+// IT IS NOT A TAMPER VERDICT and its message says so. The verification made no
+// finding; re-running it is the remedy. Reporting a broken chain from a race
+// would be worse than reporting nothing, because an operator who learns the
+// signal fires on healthy trails stops reading it.
+type ConcurrentRotationError struct {
+	Path     string
+	Attempts int
+}
+
+// Error returns a human-readable description of the unstable read.
+func (e *ConcurrentRotationError) Error() string {
+	return "audit: could not verify " + e.Path + ": the trail rotated during each of " +
+		itoa(e.Attempts) + " attempts, so no consistent view was obtained. " +
+		"Nothing is known to be wrong with it; re-run the verification."
 }
 
 // FileLockedError is returned when the audit file cannot be opened because

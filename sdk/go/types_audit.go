@@ -43,9 +43,15 @@ func WithAuditLogger(l NodeAuditLogger) ServerOption {
 	return qrdbserver.WithAuditLogger(l)
 }
 
-// NewAuditFileLogger returns an HMAC-chained, tamper-evident file audit
+// NewAuditFileLogger returns a SHA-256 hash-chained, tamper-evident file audit
 // logger writing to path. Use it as the node sink when persistent,
 // compliance-grade audit storage is required.
+//
+// The chain SPANS the sink's size rotations: the first record of each rotated
+// file continues the previous file's digest, and the outgoing file is closed
+// with a chain-anchor record stating the same handoff. Verification therefore
+// walks the whole rotation set. It said "HMAC-chained" until the rotation
+// contract was settled; there is no HMAC and never was.
 func NewAuditFileLogger(path string) (NodeAuditLogger, error) {
 	return audit.NewFileLogger(path)
 }

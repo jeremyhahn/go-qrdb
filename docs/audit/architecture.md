@@ -217,12 +217,54 @@ guarantee is that the gap is *visible and measurable* rather than silent — a
 security control that fails quietly when its recorder is down is the worst
 case.
 
-The hash chain makes a back-filled record *detectable within a file*, which is
-a weaker claim than it may read as, and it is worth stating the limit exactly:
-**nothing in the daemon or the CLI verifies the chain.** `VerifyChain` exists on
-the sink and has no non-test caller, so detection is available to an auditor
-with their own tooling and is not a control the system runs. Verification also
-does not currently span a rotation boundary — see *Known limits* below.
+The hash chain makes a back-filled record detectable **across the whole trail**,
+archives included — but it is worth stating the limit exactly: **nothing in the
+daemon or the CLI verifies the chain.** `VerifyChain` exists on the sink and has
+no non-test caller, so detection is available to an auditor with their own
+tooling and is not a control the system runs. What it detects is described under
+*The chain across a rotation* below.
+
+## The chain across a rotation
+
+**The chain spans the rotation. It does not restart per file.**
+
+When the active file reaches its size bound the sink appends a `chain-anchor`
+record to it, renames it to an archive, and opens a fresh file. The first
+record written into the new file carries the **same** digest the anchor just
+recorded, so the boundary is stated from both sides and the running digest
+continues uninterrupted.
+
+That is what the writer has always produced. Until the rotation-boundary fix
+the *reader* assumed each file began at zero, so every file opened after a
+rotation was reported broken at index 0 on entirely honest data — the one
+signal this subsystem exists to make trustworthy, firing on healthy archives.
+The same assumption in the restore path (`initPrevDigest`) broke the chain for
+real at the first write after a restart, because the active file it folded from
+zero had begun mid-chain.
+
+Verification is now two properties, checked in order:
+
+1. **Each file is internally sound.** Every record's `PrevHash` is the fold over
+   its predecessor, seeded with the digest the file's own first record declares.
+   This catches any edit, insertion, reordering or truncation inside the file.
+   The terminating anchor pins an archive's *last* record, which a self-contained
+   per-file chain could not do.
+2. **The files form one chain.** Each file's declared seed must be some other
+   file's handoff. This is what makes the seed unforgeable, and it is what
+   detects a whole archive being deleted, duplicated or reordered — a fault no
+   per-file check can see, because every remaining file still verifies perfectly.
+
+The two report different types, because the remediation differs: a
+`ChainBrokenError` means a **record** was changed and names the file and index;
+a `ChainLinkError` means a **file** was removed, duplicated or reordered.
+
+**The alternative was rejected deliberately.** Making each file self-contained —
+rotating before the outgoing record's `PrevHash` is fixed — is simpler, and it
+gives up the cross-file evidence the data already carries: an adversary who can
+edit a line can delete a file, and under per-file chains deleting an entire
+archive leaves a directory in which everything that remains verifies. It would
+also make the anchor decorative, and it would put a second marshal on the write
+path that every authorization decision now traverses.
 
 ## Event schema
 
@@ -272,29 +314,39 @@ document-by-document; it is recorded here rather than silently left in place.
 
 ## Known limits of chain verification
 
-Both are pre-existing, neither is introduced by the fail-closed work, and both
-bound what the *tamper-evidence* claim above is worth today.
+These bound what the *tamper-evidence* claim above is worth today. None is
+introduced by the fail-closed work.
 
 - **Nothing verifies the chain.** `ChainFileLogger.VerifyChain` has no
-  non-test caller anywhere — no CLI verb, no startup check, no periodic scan.
-  The chain is written correctly; reading it back is an auditor's own job.
-- **Verification does not span a rotation boundary.** A file's chain restarts
-  at zero, but the first record appended after a rotation carries the *previous*
-  file's digest in its `PrevHash`, while a whole-file verifier expects the first
-  record of a file to carry none. A rotated file therefore fails verification at
-  index 0 on entirely honest data. The `chain-anchor` entry written into the
-  outgoing file records the handoff digest, so the cross-file link is
-  recoverable by tooling that knows to look for it — but a naive whole-file
-  check reports a break.
+  non-test caller anywhere — no CLI verb, no startup check, no periodic scan,
+  and no SDK route. The chain is written and checkable; running the check is an
+  auditor's own job.
+- **Removing a contiguous prefix of the archives is indistinguishable from
+  retention.** Retention pruning deletes the oldest archives by age, so a
+  healthy trail's walk routinely starts mid-chain, and no hash walk can tell
+  that apart from someone deleting the same files. It is therefore **reported,
+  not refused**: `VerifyChainSet` returns `Genesis: false` and names the digest
+  the surviving head claims to continue from. Anchoring the head would need
+  evidence kept outside the trail — an operator-recorded high-water digest, or
+  shipping the trail off the node — and this feature ships neither.
+- **The last record of the active file is not pinned until another follows
+  it.** A chain cannot vouch for its own tip. This is inherent to an
+  append-only chain and is unchanged by the rotation work; every archive's last
+  record *is* pinned, by the anchor that terminates it.
+- **A record that will not parse is skipped, not folded.** A torn line is not a
+  record, and the writer's restore path and the verifier agree on that, so a
+  crash mid-write leaves a trail that still verifies.
 
-Until both are closed, treat `PrevHash` as **evidence an auditor can check**,
-not as a control the system enforces.
+Until the first is closed, treat `PrevHash` as **evidence an auditor can
+check**, not as a control the system enforces.
 
 ## What this feature deliberately does not do
 
 - **No log shipping.** There is no syslog, no remote sink, no agent. The file
   backend produces line-delimited JSON; shipping it is somebody else's job.
-- **No retention policy.** Nothing prunes the trail.
+- **No retention policy for the KV backend.** Nothing prunes `__sys:audit/`.
+  The *file* sink does prune: rotated archives older than its retention window
+  (90 days by default) are deleted when the sink opens.
 - **No alerting.**
 - **No redaction.** Callers must not put secret material in `Attributes` —
   values are never included by the subsystems that emit, and nothing strips them

@@ -141,7 +141,7 @@ already put the record in the file; returning early without advancing
 `VerifyChain` reported `ChainBrokenError` on honest, untampered data. The
 condition for advancing the chain is `n == len(line)` — a short write leaves a
 torn line, which is not a record, and both `initPrevDigest` and
-`verifyChainFile` skip a line that will not unmarshal.
+`verifyChainSegment` skip a line that will not unmarshal.
 
 Truncating back to the pre-write offset was the alternative and is worse: a
 second I/O on a disk that just failed one, destroying a record that genuinely
@@ -150,6 +150,107 @@ meant to prevent. Advancing needs no crash handling, because `initPrevDigest`
 re-derives by folding over **the records it can read back** rather than
 trusting the last record's stored `PrevHash` — consistent whether the unsynced
 record survived or not.
+
+## The rotation boundary
+
+**The chain spans a rotation; it does not restart per file.** `rotate()`
+appends a `chain-anchor` record carrying the handoff digest to the outgoing
+file, renames it, and opens a fresh one — and `Emit` fixed the outgoing
+record's `PrevHash` and its successor digest *before* calling in, so the first
+record of the new file carries that same handoff. Both sides of the boundary
+state the same value.
+
+| Function | Question it answers |
+|---|---|
+| `verifyChainSegment(path)` | is this one file internally sound, and what does it hand to its successor? |
+| `verifyChainFile(path)` | the same, discarding the handoff |
+| `verifyChainSet(path)` | are every file in the rotation set sound **and** do they form one chain? |
+| `ChainFileLogger.VerifyChain(ctx)` | `verifyChainSet` over the sink's own directory, verdict only |
+| `ChainFileLogger.VerifyChainSet(ctx)` | the same, returning a `ChainVerification` |
+
+Three details carry the design:
+
+- **A segment is SELF-SEEDED.** It starts from the digest its own first record
+  declares, which makes the check on that record vacuous and every other check
+  exact. What the seed is worth is settled by `verifyChainSet`, which requires
+  it to be some other file's handoff. Verifying against a caller-supplied seed
+  instead would report one fault twice — as a break in the file *and* as a
+  broken link.
+- **The handoff is the digest standing BEFORE a terminal anchor**, or the final
+  fold when the file has none (the active file). This mirrors `l.prevDigest`
+  exactly: the anchor is written after the handoff is fixed and is never folded
+  into it. An anchor that is *not* terminal — which a lost rename can leave
+  mid-file — is folded like any other record, because the records after it
+  chained over it.
+- **Chain order comes from the digests, not the file names.** The walk finds
+  the head (a file nothing hands off to), follows handoffs, and requires every
+  record-bearing file to be reached. Files holding no records — an archive that
+  is nothing but an anchor, the empty file a rotation has just opened — are
+  verified and then left out of the linking, because they hand off nothing.
+
+**A failed rename is re-fixed on the write path, and only there.** `rotate()`
+appends the anchor *before* the rename, so when the rename fails — an
+unwritable directory while the open handle stays writable, the scenario the
+rotation backoff exists for — the anchor is durable in the very file the next
+append extends, and `openFile` has re-folded that file including it. `Emit`
+compares `prevDigest` against the value it marshalled with, and re-fixes the
+record when they differ. A *successful* rotation deliberately does not take
+that branch: it leaves `prevDigest` at the handoff, which is exactly what the
+first record of the new file must carry. On the healthy path the branch is one
+32-byte comparison that is always equal — no second marshal.
+
+`initPrevDigest` seeds the same way, and it must: a file opened after a
+rotation begins mid-chain, so folding it from zero produced a digest no record
+in the file agrees with and the next event written after a restart linked to
+it. That was a second face of the same defect, reached by restarting rather
+than by rotating, and it broke the chain *for real* rather than only in the
+reader. It still never reads the LAST record's stored `PrevHash`; only the
+starting point comes from the file, and only from the one record whose
+predecessor is not in the file to be folded.
+
+Three error types, because the remediation differs:
+
+| Type | Means |
+|---|---|
+| `*ChainBrokenError{Path, Index, Expected, Got}` | a **record** was changed |
+| `*ChainLinkError{Path, Other, Digest, Reason}` | a **file** was removed, duplicated or reordered |
+| `*ConcurrentRotationError{Path, Attempts}` | **no finding** — the sink rotated under the walk and no consistent view was obtained |
+
+**The walk does not hold the writer's lock**, and re-reads the directory
+listing to find out whether it got a consistent view. A rotation renames the
+active file and creates a new one, so a walk that straddles one lists the set
+before and opens the files after: the new archive is missing from the list, the
+replacement active file's seed has no predecessor in it, and the walk reports a
+broken link **on honest data**. Taking `l.mu` across the walk would fix that and
+is the wrong trade — it reads the entire trail, and every authorization
+decision in the node would block behind it. So the listing is taken, the walk
+runs, the listing is taken again; archive names are only ever added, so an
+unchanged listing means the walk saw one generation. Up to five attempts with a
+doubling backoff, then `*ConcurrentRotationError` — which says the trail moved,
+**not** that anything is wrong with it. Reporting a tamper verdict from a race
+is the one outcome worse than reporting nothing.
+
+**A missing active file is a fault, not an empty set.** Unlinking a live audit
+log would otherwise verify clean over the archives alone — or, before the first
+rotation, over nothing at all — while the sink kept writing to an unreachable
+inode. It is reported as a `*FileError` wrapping `fs.ErrNotExist`, but only
+once *every* attempt has seen it absent across a walk in which nothing rotated:
+`rotate()` unlinks the active name and re-creates it a moment later, and a
+single listing cannot tell that from a deletion.
+
+The one edit the walk cannot distinguish from healthy operation is the removal
+of a contiguous **prefix** of the archives, because retention pruning does
+exactly that. It is reported rather than refused: `ChainVerification.Genesis`
+is false and `Seed` names the digest the surviving head claims to continue
+from.
+
+**The write path is untouched by this.** The rejected alternative — rotating
+before the record's `PrevHash` is fixed, so each file is self-contained —
+requires marshalling to get the line's length, rotating, recomputing the digest
+and marshalling again, on the sink every authorization decision traverses.
+Measured at a fixed iteration count on either side of the change,
+`BenchmarkChainFileLogger_Emit_NoSync` and `BenchmarkChainFileLogger_Emit_Rotating`
+are identical in allocations and within noise in time.
 
 ## Fail-closed on audit write failure
 
@@ -455,10 +556,25 @@ there is no retention policy in this feature.
   same across a close-and-reopen. A single-emit test that asserts only the
   returned error cannot see a desynchronised `prevDigest` and will pass over
   the bug.
+- **The chain is verified ACROSS A ROTATION, on both a real rotation and a
+  real restart.** Every rotation-boundary test drives the real
+  `ChainFileLogger` over a real `rotate()` — `rotateFunc` is never installed
+  there, because it replaces the rotation wholesale and would delete the anchor
+  write, the rename and the reopen, which is the entire subject. The honest
+  direction verifies **every** file the run produced, not a file count; the
+  tampering direction edits a record in a middle archive, deletes one, truncates
+  one, duplicates one and re-seats one, and asserts the type and the file named
+  in each case.
 - **Fsync and rotation failures use an unexported fault seam** on
-  `ChainFileLogger` (`writeFunc` / `syncFunc` / `rotateFunc`, set only by tests
-  in `pkg/audit`). They cannot be induced portably, and the `chmod` trick that
-  fakes a rename failure is a no-op under a root CI runner.
+  `ChainFileLogger` (`writeFunc` / `syncFunc` / `rotateFunc` / `renameFunc`,
+  set only by tests in `pkg/audit`). They cannot be induced portably, and the
+  `chmod` trick that fakes a rename failure is a no-op under a root CI runner.
+  `renameFunc` is the narrow one: it replaces **only** the rename, so the
+  anchor write, the close, the reopen and the failure accounting still run.
+  That matters because a failed rename is the one rotation failure with a
+  consequence for the *chain* rather than only for the size bound, and
+  `rotateFunc` — which replaces the rotation wholesale — would delete the
+  entire subject.
 - **Chronological ordering** on a prefix scan is tested, since it is what the
   query surface depends on.
 - **Error tests** per function.
