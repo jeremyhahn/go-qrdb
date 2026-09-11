@@ -109,6 +109,12 @@ exits non-zero with "document already exists" rather than replacing it. Use
 `qrdb collection doc update` to replace a document. See
 [user.md](user.md#supplying-your-own-document-id).
 
+`_id` names the document; it is not stored as one of its fields, so
+`qrdb collection doc get events 42` prints `{"kind": "deploy"}` and not
+`{"_id": 42, "kind": "deploy"}`. The same insert is available over SQL — see
+[user.md](user.md#doing-the-same-thing-over-sql) and
+[`qrdb sql`](../sql/cli.md).
+
 ## `qrdb collection doc get <collection> <id>`
 
 Retrieve a document by ID.

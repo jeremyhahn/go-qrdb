@@ -479,7 +479,10 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 
 	// Honour an explicit _id from the document when present and non-zero;
 	// otherwise generate one using the collection's configured ID strategy.
-	entity := &dao.DynamicEntity{Fields: req.Document}
+	// Either way the "_id" key is consumed into the identity rather than
+	// stored alongside the data -- see documentFields.
+	fields := documentFields(req.Document)
+	entity := &dao.DynamicEntity{Fields: fields}
 	id := extractExplicitID(req.Document)
 	explicit := id != 0
 	if explicit {
@@ -528,7 +531,7 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	}
 
 	// Update schema from document fields.
-	s.updateSchema(ctx, info, req.Document)
+	s.updateSchema(ctx, info, fields)
 
 	return &InsertDocumentResponse{ID: id}, nil
 }
@@ -606,9 +609,15 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 		return nil, loadErr
 	}
 
+	// The document's identity comes from the request, never from the body:
+	// UpdateDocument addresses a document that already exists. A body that
+	// also carries "_id" is carrying the identity key, not a field, so it is
+	// consumed here for the same reason InsertDocument consumes it -- an
+	// updated document must have the same shape as an inserted one.
+	fields := documentFields(req.Document)
 	entity := &dao.DynamicEntity{
 		ID:     req.ID,
-		Fields: req.Document,
+		Fields: fields,
 	}
 
 	c := s.resolveCodec(info)
@@ -628,7 +637,7 @@ func (s *CollectionService) UpdateDocument(ctx context.Context, req *UpdateDocum
 	}
 
 	// Update schema from new fields.
-	s.updateSchema(ctx, info, req.Document)
+	s.updateSchema(ctx, info, fields)
 
 	return &UpdateDocumentResponse{ID: req.ID}, nil
 }
@@ -751,6 +760,50 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 	}, nil
 }
 
+// DocumentIDField is the document key a caller uses to name a document's
+// identity. Every transport spells it this way -- the REST and MCP request
+// bodies, the gRPC and QUIC document maps, the SDK -- and the SQL surface
+// exposes it as column 0 of a collection table
+// (pkg/sql/provider.buildCollectionSchema), which is why it is exported: there
+// is one identity and it must not acquire a second spelling.
+const DocumentIDField = "_id"
+
+// documentFields returns the document's DATA -- everything except its
+// identity.
+//
+// "_id" names the document; it is not one of the document's fields, and a
+// collection that stores it as one ends up describing it twice. That is not
+// theoretical: updateSchema records every key it is given, so a stored "_id"
+// became an entry in CollectionInfo.Schema, and the SQL surface -- whose
+// collection table already declares "_id" as column 0 -- then emitted a
+// SECOND column with the same name, so `SELECT * FROM <collection>` returned
+// two `_id` columns (go-qrdb#467). It also made a document's shape depend on
+// how its ID was decided: an explicit insert carried an extra field a
+// generated one did not.
+//
+// The identity survives the strip -- extractExplicitID has already read it,
+// and it is written back out by marshalDocument as the entity's "id" -- so
+// nothing is lost, and a document round-trips identically whichever verb and
+// whichever transport wrote it.
+//
+// The input map is never mutated: it belongs to the caller, and on the
+// transports that decode a request body directly into it the caller is the
+// wire. A document without "_id" is returned as-is, so the common path
+// allocates nothing.
+func documentFields(doc map[string]interface{}) map[string]interface{} {
+	if _, ok := doc[DocumentIDField]; !ok {
+		return doc
+	}
+	fields := make(map[string]interface{}, len(doc)-1)
+	for k, v := range doc {
+		if k == DocumentIDField {
+			continue
+		}
+		fields[k] = v
+	}
+	return fields
+}
+
 // extractExplicitID returns the document's own "_id" field when it carries a
 // positive numeric value, and 0 otherwise -- 0 meaning "no explicit ID", so
 // the caller allocates one from the collection's ID strategy instead.
@@ -765,7 +818,7 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 // uint64 (see docs/collections/architecture.md on why string document IDs
 // were rejected) and there is nothing to interpret.
 func extractExplicitID(doc map[string]interface{}) uint64 {
-	raw, ok := doc["_id"]
+	raw, ok := doc[DocumentIDField]
 	if !ok {
 		return 0
 	}

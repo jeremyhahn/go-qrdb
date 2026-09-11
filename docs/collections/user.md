@@ -67,6 +67,49 @@ The reservation only moves the counter **up**. Insert `{"_id": 1000000}` into a
 fresh `increment` collection and the IDs beneath it are gone for good — that is
 deliberate, and it is why small explicit IDs are the ones worth supplying.
 
+`_id` is not stored as one of the document's fields; it names the document. Read
+`{"_id": 42, "kind": "deploy"}` back and you get ID `42` with a document of
+`{"kind": "deploy"}` — the same shape you would get had you let the collection
+allocate the ID.
+
+## Doing the same thing over SQL
+
+A collection is also a SQL table whose first column is `_id`, and the rules
+above are the collection's, not the CLI's — they hold identically here.
+
+```sql
+-- Claim an id. Refused with a duplicate-key error (1062, or SQLSTATE 23505 on
+-- the PostgreSQL port) if 42 is taken; the stored document is not touched.
+INSERT INTO events (_id, kind) VALUES (42, 'deploy');
+
+-- Let the collection allocate. Leave the column out, or write 0.
+INSERT INTO events (kind)      VALUES ('deploy');
+INSERT INTO events (_id, kind) VALUES (0, 'deploy');
+
+-- Copy a collection and keep every id -- what a restore is made of.
+INSERT INTO archive (_id, kind) SELECT _id, kind FROM events;
+
+-- Replace, or update on collision, instead of being refused.
+REPLACE INTO events (_id, kind) VALUES (42, 'redeploy');
+INSERT INTO events (_id, kind) VALUES (42, 'redeploy')
+  ON DUPLICATE KEY UPDATE kind = 'redeploy';
+
+-- Move a document to another id. Refused, with nothing destroyed, if the
+-- destination is taken.
+UPDATE events SET _id = 99 WHERE _id = 42;
+```
+
+Two things to know before you lean on it:
+
+- **A collection table is autocommit-only.** Any of these inside `BEGIN` fails
+  rather than silently escaping the transaction.
+- **The primary key is enforced by a check, not by a lock.** Two clients
+  claiming `42` at the same instant can both be told they succeeded — the
+  refusal closes the ordinary case, not the race. `REPLACE` and `ON DUPLICATE
+  KEY UPDATE` are built on that refusal and inherit the same caveat. If you
+  need a uniqueness constraint that holds under concurrent writers, use a
+  relational table ([../sql/user.md](../sql/user.md)).
+
 ## Common tasks
 
 **Insert from a file or a pipe.**
@@ -163,7 +206,21 @@ ID from.
 already in use. If you supplied an `_id`, pick another one or use `update` to
 replace the document you meant to replace. If you did not supply one, the
 collection's own allocator produced an ID that is taken — report it, because on
-an `increment` collection that should be impossible.
+an `increment` collection that should be impossible. Over SQL the same refusal
+arrives as a duplicate-key error: MySQL 1062, PostgreSQL `SQLSTATE 23505`,
+`gorm.ErrDuplicatedKey`.
+
+**An `INSERT` into a collection table used to succeed and now fails with a
+duplicate key.** It was previously discarding the `_id` you supplied and
+storing the document under a generated one, which is why it never collided.
+Whatever that statement inserted did not land where you asked. Re-check the
+IDs; the document you thought you were writing to `42` is somewhere else.
+
+**Documents inserted over SQL have lost an `_id` field.** They never had one to
+lose — `_id` names the document rather than being one of its fields, on every
+transport. If a client was reading `document._id`, read the document's `id`
+instead. (Older documents may still carry the key; it is not written any more,
+and the SQL table no longer emits a second `_id` column for it.)
 
 **Your `increment` collection skipped a range of IDs.** Something was inserted
 with an explicit `_id` above the counter, and the counter moved up to clear it.

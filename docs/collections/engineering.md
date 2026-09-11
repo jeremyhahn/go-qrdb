@@ -143,7 +143,31 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
   the overwrite the check exists to prevent.
 - **`UpdateDocument` replaces the whole document.** There is no partial update
   or merge. It is also the verb for "replace whatever is stored under this ID";
-  `InsertDocument` is not, and will not do it.
+  `InsertDocument` is not, and will not do it. Its ID comes from the request,
+  never from the body.
+- **`_id` is consumed into the identity, never stored as a field.** Both
+  `InsertDocument` and `UpdateDocument` strip it from the document they write
+  (`service.documentFields`), so `GetDocument` returns the document's data and
+  its ID beside it, and two documents in one collection have the same shape
+  whether their IDs were claimed or allocated. The caller's map is not mutated.
+  This is load-bearing for the SQL surface: `updateSchema` records every key it
+  is given, and `CollectionInfo.Schema` is what
+  `pkg/sql/provider.buildCollectionSchema` builds a collection table's columns
+  from, on top of the `_id` it already declares as column 0.
+- **The SQL surface carries an explicit `_id` like every other transport.**
+  `pkg/sql/provider.collectionWriter.Insert` reads column 0 and passes it to
+  `InsertDocument` under `service.DocumentIDField`, so the claim reserves the
+  counter and is refused on a collision through the same code path. A zero or
+  absent column 0 is not a claim (`claimedDocID`); the `_id` column carries
+  `DEFAULT 0` so the statement may omit it. A refused claim is reported as
+  `sql.NewUniqueKeyErr("PRIMARY", true, existingRow)` — MySQL 1062, PostgreSQL
+  `23505`, `gorm.ErrDuplicatedKey` — because go-mysql-server implements
+  `REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` on that error and its
+  `Existing` row.
+- **An `UPDATE` that changes `_id` claims before it releases.**
+  `collectionWriter.Update` inserts the document under its new ID and only then
+  deletes the old one, so a move onto an occupied ID fails with nothing
+  destroyed.
 - **`DropCollection` deletes every document, drops every secondary index the
   collection declared, reclaims the collection's replicated `increment`
   counter, and is irreversible.** The order is documents → indexes → sequence →
@@ -197,7 +221,10 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 | `id_strategy: field_hash` without `field_hash` | invalid-argument | **yes** |
 | Unknown `id_strategy` value | invalid-argument | **yes** |
 | Unknown document ID on get/update/delete | not-found | yes |
-| Insert whose `_id` already names a stored document | `service.CollectionDocumentExistsError{Explicit: true}` — 409 / `AlreadyExists` | **yes** |
+| Insert whose `_id` already names a stored document | `service.CollectionDocumentExistsError{Explicit: true}` — 409 / `AlreadyExists`; over SQL, MySQL 1062 / `SQLSTATE 23505` | **yes** |
+| SQL `INSERT` into a collection table whose `_id` is present but unreadable as an ID | `provider.InvalidKeyError`; nothing is stored | **yes** |
+| SQL `UPDATE ... SET _id = N` where N is taken | MySQL 1062; **both** documents survive | **yes** |
+| SQL insert refused repeatedly while the occupant is never readable | `provider.TransactionConflictRetriesExhaustedError` after `writeMaxAttempts` | **yes** |
 | Insert whose GENERATED ID already names a stored document (`increment`, `unix_nano`) | `service.CollectionDocumentExistsError{Explicit: false}` — 409 / `AlreadyExists` | **yes** |
 | Re-insert into a `field_hash` collection under the same natural key | success — the document is replaced, which is the strategy's purpose | n/a |
 | Counter cannot be reserved for an explicit `_id` | `CollectionMetadataError{Op: "reserve-id"}`; nothing is stored | **yes** |

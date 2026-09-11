@@ -68,6 +68,31 @@ Statement-level ceilings surface as their own errors before any proposal is
 made: 65535 bytes for an encoded key, 4 MB for an encoded row, 8 MiB for one
 statement's estimated compares plus ops.
 
+## Table surfaces
+
+Four kinds of table are reachable through both the ad-hoc endpoint and the
+wire protocols, and they are not equivalent:
+
+| Kind | Where its rows live | Primary key enforced by | Transactional |
+|---|---|---|---|
+| `kv` | the raw KV keyspace | the key itself | no — autocommit-only |
+| entity (`pkg/dao`-registered) | the entity keyspace | the key itself | no — autocommit-only |
+| collection ([../collections/](../collections/)) | `__col:` documents | `CollectionService.InsertDocument`'s **read-then-write** | no — autocommit-only |
+| relational (`CREATE TABLE`) | the table's own keyspace | a **compare in the same proposal** as the row | yes |
+
+A collection table's first column is `_id`; naming it in an `INSERT` claims
+that document ID and is refused with **1062** if it is taken, while omitting it
+(or writing `0`) lets the collection allocate. `REPLACE INTO` and
+`INSERT … ON DUPLICATE KEY UPDATE` are implemented on that refusal. The row it
+produces is the same document a REST, gRPC, QUIC or MCP insert of the same
+`_id` would produce. See
+[engineering.md](engineering.md#collection-table-schema).
+
+**The `1062` in the status table above therefore means two different strengths**
+depending on which kind of table raised it: on a relational table it is a
+constraint that holds under concurrent writers, on a collection table it is a
+check that does not.
+
 ## Catalog surfaces
 
 - **`pg_catalog`** — `pg_type`, `pg_class`, `pg_namespace`, `pg_description`,

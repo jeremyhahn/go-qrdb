@@ -34,6 +34,18 @@ echo "SELECT * FROM kv" | qrdb sql query --file -
 available over the wire protocols and the in-process driver, not through this
 verb.
 
+A collection is one of the tables this reaches, and its first column is `_id` —
+the document's ID, honoured on write:
+
+```bash
+qrdb sql query --database app "INSERT INTO events (_id, kind) VALUES (42, 'deploy')"
+qrdb collection doc get events 42 --database app   # the same document
+```
+
+Claiming an `_id` another document holds exits non-zero with a duplicate-key
+error rather than replacing it. See
+[../collections/user.md](../collections/user.md#doing-the-same-thing-over-sql).
+
 ## Server flags — `qrdbd start`
 
 ```bash

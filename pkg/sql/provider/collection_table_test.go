@@ -351,17 +351,32 @@ func TestCollectionTable_Update(t *testing.T) {
 	assert.Equal(t, "New", updatedDoc["name"])
 }
 
+// TestCollectionTable_Update_KeyChanged pins the ORDER of a
+// re-identification: the document is claimed under its new _id first and
+// released from the old one only afterwards.
+//
+// Until go-qrdb#467 this ran the other way round -- delete the old ID, then
+// UpdateDocument the new one -- and UpdateDocument requires the document to
+// already exist, so the statement failed with a not-found AFTER destroying
+// the document it was moving. This test asserted the call order that produced
+// that, which is why it needed rewriting rather than merely passing.
 func TestCollectionTable_Update_KeyChanged(t *testing.T) {
-	var deletedID uint64
-	var updatedID uint64
+	var calls []string
+	var deletedID, insertedID uint64
 	svc := &mockCollectionService{
 		deleteFn: func(_ context.Context, req *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+			calls = append(calls, "delete")
 			deletedID = req.ID
 			return &service.DeleteDocumentResponse{Deleted: true}, nil
 		},
-		updateFn: func(_ context.Context, req *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
-			updatedID = req.ID
-			return &service.UpdateDocumentResponse{ID: req.ID}, nil
+		insertFn: func(_ context.Context, req *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
+			calls = append(calls, "insert")
+			insertedID = uint64(req.Document[service.DocumentIDField].(uint64))
+			return &service.InsertDocumentResponse{ID: insertedID}, nil
+		},
+		updateFn: func(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
+			calls = append(calls, "update")
+			return nil, nil
 		},
 	}
 	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
@@ -373,8 +388,37 @@ func TestCollectionTable_Update_KeyChanged(t *testing.T) {
 		sqle.Row{uint64(2), "New"},
 	)
 	require.NoError(t, err)
+	assert.Equal(t, []string{"insert", "delete"}, calls,
+		"the new identity must be claimed before the old one is released")
+	assert.Equal(t, uint64(2), insertedID, "the new _id is claimed explicitly")
 	assert.Equal(t, uint64(1), deletedID)
-	assert.Equal(t, uint64(2), updatedID)
+}
+
+// TestCollectionTable_Update_KeyChanged_RefusedClaimLeavesTheDocument is the
+// half that matters: when the new _id is already taken, nothing is deleted.
+func TestCollectionTable_Update_KeyChanged_RefusedClaimLeavesTheDocument(t *testing.T) {
+	deleted := false
+	svc := &mockCollectionService{
+		insertFn: func(_ context.Context, req *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
+			return nil, &service.CollectionDocumentExistsError{
+				Database: req.Database, Collection: req.Collection, ID: 2, Explicit: true,
+			}
+		},
+		getFn: func(_ context.Context, req *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return &service.GetDocumentResponse{ID: req.ID, Document: map[string]interface{}{"name": "Occupant"}}, nil
+		},
+		deleteFn: func(_ context.Context, _ *service.DeleteDocumentRequest) (*service.DeleteDocumentResponse, error) {
+			deleted = true
+			return &service.DeleteDocumentResponse{Deleted: true}, nil
+		},
+	}
+	tbl := NewCollectionTable(svc, "mydb", "users", map[string]string{"name": "VARCHAR"}, nil)
+	ctx := newTestContext()
+
+	err := tbl.Updater(ctx).Update(ctx, sqle.Row{uint64(1), "Old"}, sqle.Row{uint64(2), "New"})
+	require.Error(t, err)
+	assert.True(t, sqle.ErrPrimaryKeyViolation.Is(err), "a taken _id is a primary key violation")
+	assert.False(t, deleted, "a refused re-identification must not delete the original")
 }
 
 func TestCollectionTable_Update_InvalidOldKey(t *testing.T) {

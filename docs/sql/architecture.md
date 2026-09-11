@@ -306,6 +306,17 @@ For in-process SQL, see [gorm.md](gorm.md) — it covers the two in-process DSN 
 - **Isolation levels are accepted, not differentiated.** MySQL's
   `transaction_isolation` names lock-engine behaviour; QRDB's transactions are
   optimistic and the two do not correspond.
+- **A collection table's `PRIMARY KEY` is not a compare-and-swap.** The `_id`
+  column of a document-collection table is enforced by
+  `CollectionService.InsertDocument`'s read-then-write, so it refuses the
+  ordinary overwrite and not a race between two concurrent claims — and
+  `REPLACE INTO` and `INSERT … ON DUPLICATE KEY UPDATE`, which are built on
+  that refusal, inherit the bound. A *relational* table's uniqueness does ride
+  on a compare in the same proposal as the row. The two table kinds are not
+  interchangeable in this respect, and the collection table is the weaker one
+  despite presenting the same declared constraint. See
+  [engineering.md](engineering.md#collection-table-schema) and
+  [../collections/architecture.md](../collections/architecture.md#what-this-does-not-close).
 
 ## Companion documents
 

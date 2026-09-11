@@ -95,6 +95,19 @@ non-numeric `_id` is read as "generate one for me". See
 [architecture.md](architecture.md#explicitly-supplied-ids) for the full rule
 and [user.md](user.md#supplying-your-own-document-id) for the workflow.
 
+**`_id` is not echoed back as a field.** It names the document; the document's
+`document` object holds its data and its ID is the `id` beside it. An insert of
+`{"_id": 42, "kind": "deploy"}` reads back as:
+
+```json
+{ "id": "42", "document": { "kind": "deploy" } }
+```
+
+which is the same shape a document inserted without an `_id` has. The same
+applies to `UpdateDocument`: its ID comes from the request path, and an `_id`
+in the body is consumed rather than stored, so a read-modify-write that sends
+the document back unchanged does not reintroduce the key.
+
 `ListDocumentsResponse`:
 
 ```json

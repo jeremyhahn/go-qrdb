@@ -113,6 +113,23 @@ permanently exempt.
 version is that `node://` and `embedded://` DSNs differ in whether the
 relational catalog is reachable.
 
+**Write to a document collection.** A collection
+([../collections/user.md](../collections/user.md)) appears as a table whose
+first column is `_id`, and that column means what it says: name it and you are
+claiming that document ID, omit it (or write `0`) and the collection allocates
+one.
+
+```sql
+INSERT INTO events (_id, kind) VALUES (42, 'deploy');   -- claim 42
+INSERT INTO events (kind)      VALUES ('deploy');       -- let it allocate
+INSERT INTO archive (_id, kind) SELECT _id, kind FROM events;  -- ids preserved
+```
+
+A claim on an ID another document already holds is refused as a duplicate key
+(1062, or `SQLSTATE 23505`), not silently replaced; `REPLACE INTO` and
+`INSERT … ON DUPLICATE KEY UPDATE` do the replacing. `UPDATE … SET _id = N`
+moves a document, and is refused with nothing destroyed if `N` is taken.
+
 ## Troubleshooting
 
 **"Access denied" (1044 / 1142 / 1143) right after your first `GRANT`.** You
@@ -145,6 +162,19 @@ cache and a retry re-parses.
 **A `CREATE TABLE` was rejected for its column type.** Spatial types and
 anything else the type mapper cannot represent are refused at DDL time rather
 than surfacing later as a decode failure.
+
+**An `INSERT` into a collection table now fails with a duplicate key where it
+used to succeed.** It was previously discarding the `_id` you supplied and
+storing the document under a generated one, which is why it never collided —
+so nothing that statement inserted landed where you asked. Re-check the IDs
+before assuming the new error is wrong.
+
+**A collection table's `PRIMARY KEY` did not stop two concurrent writers.** It
+is enforced by a read-then-write in the collection service, not by a
+compare-and-swap, so it closes the ordinary overwrite and not the race.
+`REPLACE` and `ON DUPLICATE KEY UPDATE` are built on the same refusal and
+inherit the same bound. For a uniqueness constraint that holds under concurrent
+writers, use a relational table.
 
 **A write inside `BEGIN` failed with "non-transactional table".** The `kv`,
 entity and collection tables are autocommit-only — they have no write buffer.

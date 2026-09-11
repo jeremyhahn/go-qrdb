@@ -72,6 +72,69 @@ explicit `_id` far above the collection's watermark permanently strands the IDs
 beneath it. That is the cheaper of the two failures — a stranded range wastes
 IDs in a 64-bit space, an unreserved one destroys documents.
 
+#### Every wire, including SQL
+
+The rule above is the collection's, not a transport's. A document inserted over
+SQL and read back over REST must be the same document, and it is not one if the
+ID changed on the way in — so the SQL surface, where a collection is exposed as
+a table whose column 0 is `_id`, carries the claim exactly as the document
+bodies on REST, gRPC, QUIC, MCP and the SDK do.
+
+It did not, and the shape of the failure is the one this rule exists to remove:
+column 0 was read on `UPDATE` and `DELETE` and **discarded on `INSERT`**, so
+`INSERT INTO events (_id, kind) VALUES (42, 'deploy')` stored the document under
+the next generated ID and reported success. The column was declared, accepted
+and thrown away.
+
+The refusal travels with the claim, and on this surface it is load-bearing
+beyond its error message. A collection table reports a taken `_id` as a
+**primary key violation** — MySQL error 1062, PostgreSQL `SQLSTATE 23505`,
+`gorm.ErrDuplicatedKey` — which is both the SQL equivalent of REST's 409 and
+the error `REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are built
+on: each is "insert, and on a primary-key violation carry the existing row into
+a delete or an update". Without it neither statement did what it says. Both
+silently inserted a *second* document under a generated ID and left the first
+one untouched.
+
+Two consequences follow, and both are contract rather than implementation
+detail:
+
+- **An `UPDATE` that changes `_id` is a re-identification**, and the new
+  identity is claimed before the old one is released. The claim reserves the
+  counter and is refused if the destination is occupied, so a move that cannot
+  complete leaves the document where it was. Done the other way round — release
+  first — a move onto a taken ID destroyed the document it was moving and
+  reported an error. A move to `_id = 0` is refused outright: zero means
+  "allocate one" on an insert and nothing at all here, and allocating a fresh
+  identity for a statement that named zero would be the same silent
+  substitution one statement over.
+- **`_id` may be omitted on an insert**, spelled either as leaving the column
+  out or as `_id = 0`, and then the collection allocates from its strategy.
+  This is MySQL's convention for an `AUTO_INCREMENT` column and already what
+  the service reads a zero `_id` as. Before, the column was `NOT NULL` with no
+  default, so SQL could not reach the generated path at all: every insert had
+  to name an ID, and every ID it named was discarded.
+
+#### The identity is not a field
+
+`_id` names a document; it is not one of the document's fields. It is
+**consumed** into the identity by whichever verb received it and never stored
+alongside the data, on any transport.
+
+This matters twice. A collection's schema is auto-discovered from the keys of
+the documents written to it, so an `_id` stored as a field became an entry in
+that schema — and the SQL surface builds a collection table's columns from it,
+on top of the `_id` it already declares as column 0. `SELECT *` returned two
+columns called `_id`, one holding the document's real ID and one holding the
+echo. It also made a document's *shape* depend on how its ID was decided: an
+explicitly identified document carried a field a generated one did not, in the
+same collection.
+
+So the document read back from any transport is the document's data, and its
+identity is the `id` beside it. `UpdateDocument` takes its ID from the request
+and consumes a body `_id` the same way, so a read-modify-write that echoes the
+ID back cannot reintroduce the field.
+
 #### What a generated ID may overwrite
 
 Exactly one case: a `field_hash` ID. That strategy derives the ID from a named
@@ -100,6 +163,24 @@ concurrency. It is not used yet because the dedicated-store backend cannot
 perform a guarded write, so a guarded insert would fail every collection insert
 on that path. The guard lives in the service layer either way, so tightening
 the mechanism later changes no caller.
+
+**The SQL surface inherits that limitation rather than escaping it, and is not
+stronger for looking more like a database.** A collection table's writes go
+through the same `InsertDocument`, so its primary key is enforced by the same
+read-then-write and is exactly as wide open to two concurrent claims. It is
+worth saying plainly because the surface invites the opposite assumption: a
+declared `PRIMARY KEY` that answers with MySQL 1062 reads like a constraint the
+storage engine enforces, and here it is a check the service performs. The
+*relational* tables in the same SQL layer are the ones whose uniqueness rides
+on a compare-and-swap in the same proposal as the row; a collection table's
+does not, and the two are not interchangeable in that respect.
+
+`REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are built on that
+refusal and are therefore not atomic either: each is an insert, a refusal, and
+a second statement-level write, with no lock across the three. They are correct
+against a single writer and racy against two, like the insert they are made of.
+A collection table is also autocommit-only, so neither can be made atomic by
+wrapping it in a transaction.
 
 ### Alternatives rejected
 
@@ -137,6 +218,25 @@ the mechanism later changes no caller.
   insert that destroys a stored document and reports success is
   indistinguishable from one that stored a new document, and `UpdateDocument`
   already exists for callers that mean "replace whatever is there".
+- **Refusing an explicit `_id` on the SQL surface alone,** so the discard
+  becomes an error instead of silence. This was the defensible fallback if
+  honouring the claim proved impractical, and it did not: the SQL layer can
+  read column 0, can reach the same reservation, and already had a vocabulary
+  for the refusal in `sql.NewUniqueKeyErr`. Taking it anyway would have forked
+  the contract per-surface — a caller who learned it from any other transport
+  would carry a false expectation into this one — for no gain. The measurement
+  that would have justified it was whether the column projection was
+  load-bearing; it is not, it is index arithmetic over the field list, and
+  moving it cost one line.
+- **Keeping `_id` as a stored document field and filtering it out of the SQL
+  projection instead.** Narrower, and wrong in the direction that matters. It
+  suppresses the duplicate column without addressing why the field is there,
+  and it leaves a document's shape depending on how its ID was decided — so the
+  next surface to enumerate a document's keys finds the echo again. The SQL
+  table still skips a discovered `_id` when building its columns, but as the
+  projection's own contract (column 0 *is* the identity), not as the fix:
+  collections written before this change still carry the key in their stored
+  schema.
 
 ## Component boundaries
 

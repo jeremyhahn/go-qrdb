@@ -16,11 +16,13 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"sort"
 	"strconv"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/expression"
 	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/dolthub/vitess/go/sqltypes"
 
@@ -204,9 +206,19 @@ func (t *CollectionTable) Replacer(_ *sqle.Context) sqle.RowReplacer {
 // documentToRow converts a document to a SQL row. Column 0 is _id,
 // followed by fields in fieldOrder. Missing fields are NULL.
 func (t *CollectionTable) documentToRow(id uint64, doc map[string]interface{}) sqle.Row {
-	row := make(sqle.Row, 1+len(t.fieldOrder))
+	return documentToRow(t.fieldOrder, id, doc)
+}
+
+// documentToRow is the single projection from a document to a SQL row, shared
+// by the read path (CollectionTable.PartitionRows) and the write path
+// (collectionWriter, which needs the row of an EXISTING document to report a
+// duplicate key). Two implementations of this mapping would be two chances to
+// disagree about the column order, and the row the writer hands back to
+// go-mysql-server is fed straight into Delete and Update.
+func documentToRow(fieldOrder []string, id uint64, doc map[string]interface{}) sqle.Row {
+	row := make(sqle.Row, 1+len(fieldOrder))
 	row[0] = id
-	for i, field := range t.fieldOrder {
+	for i, field := range fieldOrder {
 		val, exists := doc[field]
 		if !exists {
 			row[i+1] = nil
@@ -284,16 +296,51 @@ func (t *CollectionTable) LookupPartitions(ctx *sqle.Context, lookup sqle.IndexL
 // Schema builder
 // ---------------------------------------------------------------------------
 
+// docIDColumnDefault is the DEFAULT on the _id column: zero, which this
+// table reads as "no claim -- let the collection allocate one".
+//
+// Without a default the column is NOT NULL with nothing to fall back on, so
+// `INSERT INTO <collection> (field) VALUES (...)` was rejected outright by
+// go-mysql-server with "Field '_id' doesn't have a default value" and the
+// collection's own ID strategy was unreachable over SQL: every insert had to
+// name an ID, and every ID it named was then discarded (go-qrdb#467).
+//
+// Zero is the right spelling of "allocate one" rather than an invented
+// sentinel: it is MySQL's convention for an AUTO_INCREMENT column, it is
+// already what the service layer means by a zero "_id"
+// (service.extractExplicitID), and zero is not a document ID -- every other
+// collection verb refuses it with CollectionInvalidDocumentIDError.
+//
+// Spelled as a composite literal rather than through sqle.NewColumnDefaultValue
+// because that constructor only fills these same fields and cannot fail: going
+// through it would put an unreachable error branch on a package-level variable,
+// whose only honest handling at initialisation is a panic.
+var docIDColumnDefault = &sqle.ColumnDefaultValue{
+	Expr:    expression.NewLiteral(uint64(0), types.Uint64),
+	OutType: types.Uint64,
+	Literal: true,
+}
+
 // buildCollectionSchema constructs a sqle.Schema from a collection's field
 // type map. Returns the schema and the ordered list of field names.
+//
+// The identity column is emitted here and ONLY here. A field named "_id"
+// discovered in the collection's schema map is skipped rather than emitted as
+// an ordinary column: it names the same thing column 0 already names, and
+// declaring it twice gave `SELECT *` two columns called `_id`
+// (go-qrdb#467). The service no longer records it -- see
+// service.documentFields -- but a collection written before that change still
+// carries it in its stored metadata, and this projection is what the table is
+// built from.
 func buildCollectionSchema(tableName string, fieldSchema map[string]string) (sqle.Schema, []string) {
 	// _id is always the first column.
 	schema := sqle.Schema{
 		{
-			Name:       "_id",
+			Name:       service.DocumentIDField,
 			Type:       types.Uint64,
 			Nullable:   false,
 			PrimaryKey: true,
+			Default:    docIDColumnDefault,
 			Source:     tableName,
 		},
 	}
@@ -301,6 +348,9 @@ func buildCollectionSchema(tableName string, fieldSchema map[string]string) (sql
 	// Sort field names for deterministic column order.
 	fields := make([]string, 0, len(fieldSchema))
 	for name := range fieldSchema {
+		if name == service.DocumentIDField {
+			continue
+		}
 		fields = append(fields, name)
 	}
 	sort.Strings(fields)
@@ -417,19 +467,84 @@ func (w *collectionWriter) Close(_ *sqle.Context) error {
 	return nil
 }
 
-// Insert inserts a document from a SQL row. Column 0 is _id (may be nil
-// for auto-generation), remaining columns map to fieldOrder.
+// Insert inserts a document from a SQL row.
+//
+// Column 0 is the document's _id and it is a CLAIM on that identity, carried
+// through to the service layer exactly as every other transport carries it:
+// as the document's own "_id". The claim reserves an `increment` collection's
+// counter and is refused if another document already holds it, so a document
+// written over SQL and read back over REST, gRPC, QUIC or MCP is the same
+// document under the same ID (go-qrdb#447, go-qrdb#467). A zero or absent
+// column 0 is not a claim -- the collection allocates from its own ID
+// strategy, which is what the column's DEFAULT 0 expresses.
+//
+// A refused claim is reported in go-mysql-server's own vocabulary rather than
+// as the service's error, because the refusal is load-bearing beyond the
+// error message: `REPLACE INTO` and `INSERT ... ON DUPLICATE KEY UPDATE` are
+// both implemented upstream as "insert, and on a primary-key violation carry
+// the EXISTING row into a delete or an update" (sql/rowexec/insert.go). Both
+// statements were silently inserting a second document instead of replacing
+// or updating the first, for want of that error.
 func (w *collectionWriter) Insert(ctx *sqle.Context, row sqle.Row) error {
 	if err := requireAutocommit(ctx, w.collection); err != nil {
 		return err
 	}
+
 	doc := w.rowToDocument(row)
-	_, err := w.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+	id, err := claimedDocID(row)
+	if err != nil {
+		return err
+	}
+	if id != 0 {
+		doc[service.DocumentIDField] = id
+	}
+
+	// The retry loop exists for one outcome: the insert is refused because an
+	// ID is occupied, and by the time the occupant is read back to describe
+	// the duplicate it has been deleted. Nothing is then in the way, so the
+	// insert is reattempted rather than failed with a duplicate-key error
+	// naming a row that no longer exists. This mirrors relationalWriter's
+	// treatment of a transient compare-and-swap failure (resolveDuplicate).
+	for attempt := 0; attempt < writeMaxAttempts; attempt++ {
+		_, insErr := w.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+			Collection: w.collection,
+			Database:   w.database,
+			Document:   doc,
+		})
+		if insErr == nil {
+			return nil
+		}
+
+		var exists *service.CollectionDocumentExistsError
+		if !errors.As(insErr, &exists) {
+			return insErr
+		}
+
+		if dupErr := w.duplicateKeyError(ctx, exists.ID); dupErr != nil {
+			return dupErr
+		}
+	}
+	return &TransactionConflictRetriesExhaustedError{Table: w.collection}
+}
+
+// duplicateKeyError describes a refused insert as a go-mysql-server primary
+// key violation carrying the row that is in the way.
+//
+// It returns NIL when the occupying document can no longer be read -- it was
+// deleted between the refusal and this read -- because there is then no
+// duplicate to report: nothing is in the way any more and the caller should
+// reattempt the insert rather than fail it with an error naming a row that
+// does not exist.
+func (w *collectionWriter) duplicateKeyError(ctx *sqle.Context, id uint64) error {
+	resp, err := w.collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
 		Collection: w.collection,
 		Database:   w.database,
-		Document:   doc,
+		ID:         id,
 	})
-	return err
+	if err != nil || resp == nil {
+		return nil
+	}
+	return sqle.NewUniqueKeyErr("PRIMARY", true, documentToRow(w.fieldOrder, resp.ID, resp.Document))
 }
 
 // Delete deletes a document by _id from column 0.
@@ -449,8 +564,20 @@ func (w *collectionWriter) Delete(ctx *sqle.Context, row sqle.Row) error {
 	return delErr
 }
 
-// Update updates a document. Deletes the old ID if it changed, then
-// inserts the new document.
+// Update updates a document.
+//
+// An UPDATE that changes _id is a RE-IDENTIFICATION: the document has to be
+// stored under the new ID and released from the old one. The new ID is
+// claimed FIRST, through the same insert path an INSERT uses, so it reserves
+// the counter and is refused if another document already holds it; only once
+// the document is safely under its new ID is the old one released.
+//
+// The order matters and was previously the other way round. `UPDATE events
+// SET _id = 99 WHERE _id = 1` deleted document 1 and then called
+// UpdateDocument for 99, which requires the document to already exist and so
+// failed with a not-found -- leaving the statement reporting an error and the
+// document gone (go-qrdb#467). A re-identification that cannot complete must
+// leave the document where it was.
 func (w *collectionWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row) error {
 	if err := requireAutocommit(ctx, w.collection); err != nil {
 		return err
@@ -463,29 +590,46 @@ func (w *collectionWriter) Update(ctx *sqle.Context, old sqle.Row, new sqle.Row)
 	if err != nil {
 		return err
 	}
-
-	doc := w.rowToDocument(new)
+	// Zero is a legal claim on INSERT -- it means "allocate one" -- and is not
+	// one here. An UPDATE names the document it is writing, and zero is not a
+	// document: every collection verb but insert refuses it. Letting it fall
+	// through to the re-identification below would move the document to a
+	// freshly allocated ID, which is the silent substitution this whole change
+	// removes, one statement over.
+	if newID == 0 {
+		return &InvalidKeyError{Key: "0"}
+	}
 
 	if oldID != newID {
-		_, _ = w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+		if insErr := w.Insert(ctx, new); insErr != nil {
+			return insErr
+		}
+		_, delErr := w.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
 			Collection: w.collection,
 			Database:   w.database,
 			ID:         oldID,
 		})
+		return delErr
 	}
 
 	_, updateErr := w.collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
 		Collection: w.collection,
 		Database:   w.database,
 		ID:         newID,
-		Document:   doc,
+		Document:   w.rowToDocument(new),
 	})
 	return updateErr
 }
 
 // rowToDocument converts a SQL row to a document field map.
+//
+// It returns the document's DATA only. Column 0 is the document's identity,
+// not one of its fields -- the collection service spells the same distinction
+// as service.documentFields -- so the projection starts at column 1, which is
+// where fieldOrder starts. A caller that needs the identity too reads it with
+// claimedDocID or extractDocID and adds it under service.DocumentIDField.
 func (w *collectionWriter) rowToDocument(row sqle.Row) map[string]interface{} {
-	doc := make(map[string]interface{}, len(w.fieldOrder))
+	doc := make(map[string]interface{}, len(w.fieldOrder)+1)
 	for i, field := range w.fieldOrder {
 		colIdx := i + 1 // skip _id at index 0
 		if colIdx < len(row) && row[colIdx] != nil {
@@ -493,6 +637,22 @@ func (w *collectionWriter) rowToDocument(row sqle.Row) map[string]interface{} {
 		}
 	}
 	return doc
+}
+
+// claimedDocID returns the document ID an INSERT row claims through column 0,
+// and zero when it claims none.
+//
+// It differs from extractDocID in exactly one way, and the difference is the
+// verb: UPDATE and DELETE address a document that exists, so a missing ID is
+// an error there. An INSERT may legitimately leave the collection to allocate
+// one, which both an absent column 0 and an explicit zero express (see
+// docIDColumnDefault). A value that is present but cannot be read as an ID is
+// an error on every verb.
+func claimedDocID(row sqle.Row) (uint64, error) {
+	if len(row) < 1 || row[0] == nil {
+		return 0, nil
+	}
+	return extractDocID(row)
 }
 
 // extractDocID extracts the _id (uint64) from column 0 of a SQL row.

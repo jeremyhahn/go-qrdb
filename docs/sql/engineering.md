@@ -79,6 +79,67 @@ CREATE TABLE kv (
 | `DELETE FROM kv WHERE key = ?` | `kvSvc.Delete(ctx, prefixedKey)` |
 
 
+## Collection Table Schema
+
+A document collection ([../collections/](../collections/)) is exposed as a
+table whose **column 0 is `_id`** — `BIGINT UNSIGNED`, `PRIMARY KEY`,
+`DEFAULT 0` — followed by one nullable column per field in the collection's
+auto-discovered schema, sorted by name.
+
+```sql
+CREATE TABLE events (
+    _id  BIGINT UNSIGNED PRIMARY KEY DEFAULT 0,
+    kind VARCHAR(65535) NULL
+);
+```
+
+`_id` is the document's identity, not one of its fields, so a field of that
+name discovered in the collection's stored schema is **skipped** when the
+columns are built (`pkg/sql/provider.buildCollectionSchema`): the identity is
+declared exactly once. Collections written before the service stopped storing
+`_id` as a field still carry the key in their metadata, which is why the
+projection guards it rather than assuming.
+
+| SQL | Service call |
+|-----|--------------|
+| `SELECT * FROM <collection>` | `collectionSvc.ListDocuments` |
+| `INSERT INTO <collection> (_id, …) VALUES (N, …)` | `collectionSvc.InsertDocument` with `_id = N` — a **claim** |
+| `INSERT INTO <collection> (…) VALUES (…)` | `collectionSvc.InsertDocument` with no `_id` — an **allocation** |
+| `UPDATE <collection> SET … WHERE _id = N` | `collectionSvc.UpdateDocument` |
+| `UPDATE <collection> SET _id = M WHERE _id = N` | `InsertDocument` claiming `M`, then `DeleteDocument(N)` — refused with `InvalidKeyError` when `M` is 0 |
+| `DELETE FROM <collection> WHERE _id = N` | `collectionSvc.DeleteDocument` |
+| `REPLACE INTO <collection> …` | `InsertDocument`; on a primary-key violation, `DeleteDocument` then `InsertDocument` |
+| `INSERT … ON DUPLICATE KEY UPDATE` | `InsertDocument`; on a primary-key violation, `UpdateDocument` |
+
+### `_id` on INSERT
+
+An `_id` named in an `INSERT` is honoured, exactly as it is on every other
+transport: it reserves an `increment` collection's counter and is **refused**
+if another document already holds it. A zero or omitted `_id` is not a claim —
+the collection allocates from its own ID strategy, which is what the column's
+`DEFAULT 0` expresses (MySQL's convention for an `AUTO_INCREMENT` column, and
+already how the service reads a zero `_id`).
+
+The refusal is reported as `sql.NewUniqueKeyErr("PRIMARY", true, existingRow)`,
+so it reaches a client as **MySQL 1062** / **PostgreSQL `SQLSTATE 23505`** /
+`gorm.ErrDuplicatedKey`, the same as a relational table's primary key. That is
+not only cosmetic: go-mysql-server implements `REPLACE INTO` and
+`INSERT … ON DUPLICATE KEY UPDATE` by inserting, catching that specific error,
+and feeding its `Existing` row into a delete or an update — which is why both
+statements are in the table above, and why the row the writer supplies must
+match the table's own column order (`documentToRow`, shared with the read
+path).
+
+**The key is enforced by a check, not by a compare-and-swap.**
+`CollectionService.InsertDocument` reads the document key and then writes, so
+the constraint closes the ordinary overwrite and not a race between two
+concurrent claims. This is the one respect in which a collection table's
+`PRIMARY KEY` is weaker than a relational table's, whose uniqueness rides on a
+`TransactionServicer.Execute` compare in the same proposal as the row (see
+*Relational Tables* below). `REPLACE` and `ON DUPLICATE KEY UPDATE` are built
+on the refusal and inherit the same bound, and a collection table is
+autocommit-only so neither can be widened into a transaction.
+
 ## Index-Accelerated WHERE Clauses
 
 When a KV table has secondary indexes, the SQL analyzer automatically uses them to accelerate WHERE clauses.
