@@ -28,6 +28,34 @@ type IDGenerator interface {
 	NextID(entity Entity) uint64
 }
 
+// IDSequence is an IDGenerator whose values are drawn from a counter, and
+// which can therefore be told about an identifier a caller assigned itself.
+//
+// Advance(n) guarantees no later NextID returns a value less than or equal
+// to n. That is what lets an explicitly supplied identifier reserve itself
+// against every identifier the generator produces afterwards: without it, a
+// caller that assigns its own identifiers and a generator that allocates
+// them are two allocators over one keyspace, and the second one eventually
+// hands out a value the first one already used.
+//
+// Generators whose values do not come from a counter -- UnixNanoGenerator's
+// clock reading, FieldHashGenerator's hash of a natural key -- cannot
+// honour this and deliberately do not implement it. A caller discovers the
+// capability by type assertion and has nothing to reserve when it is
+// absent.
+//
+// It is the process-local counterpart of the replicated counter's Advance
+// verb, and the two are defined identically so that a caller which may be
+// backed by either does not have to know which it got.
+type IDSequence interface {
+	IDGenerator
+
+	// Advance raises the underlying counter so that no subsequent NextID
+	// returns a value less than or equal to atLeast. It is a no-op, not an
+	// error, when the counter is already at or past atLeast.
+	Advance(atLeast uint64)
+}
+
 // UnixNanoGenerator generates IDs from the current Unix nanosecond timestamp.
 // This is the default generator used when no IDGenerator is configured.
 type UnixNanoGenerator struct{}
@@ -53,9 +81,35 @@ func NewAtomicIncrementGenerator(start uint64) *AtomicIncrementGenerator {
 	return g
 }
 
+// Compile-time proof that the counter-backed generator carries the Advance
+// verb IDSequence requires. It sits beside the methods rather than at the
+// top of the file so that removing either one fails here.
+var _ IDSequence = (*AtomicIncrementGenerator)(nil)
+
 // NextID atomically increments the counter and returns the new value.
 func (g *AtomicIncrementGenerator) NextID(_ Entity) uint64 {
 	return g.counter.Add(1)
+}
+
+// Advance raises the counter to atLeast when it is below it, so the next
+// NextID returns atLeast+1; it is a no-op when the counter is already at or
+// past atLeast.
+//
+// Lock-free, like NextID: a compare-and-swap that loses to a concurrent
+// NextID or Advance re-reads the winner's value and re-decides against it,
+// so the counter only ever moves up and no interleaving can lower it. The
+// loop is bounded in practice by the same thing that bounds Add's — there
+// is no unbounded work between the load and the swap.
+func (g *AtomicIncrementGenerator) Advance(atLeast uint64) {
+	for {
+		current := g.counter.Load()
+		if current >= atLeast {
+			return
+		}
+		if g.counter.CompareAndSwap(current, atLeast) {
+			return
+		}
+	}
 }
 
 // FieldHashGenerator generates deterministic IDs by hashing a named struct

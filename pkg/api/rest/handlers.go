@@ -1136,6 +1136,7 @@ func mapHTTPError(err error) int {
 	var cis *service.CollectionInvalidIDStrategyError
 	var cmf *service.CollectionMissingFieldHashError
 	var cdnf *service.CollectionDocumentNotFoundError
+	var cde *service.CollectionDocumentExistsError
 	var cedc *service.CollectionEmptyDocumentError
 	var cidi *service.CollectionInvalidDocumentIDError
 	var cme *service.CollectionMetadataError
@@ -1294,6 +1295,11 @@ func mapHTTPError(err error) int {
 		return http.StatusBadRequest
 	case errors.As(err, &cdnf):
 		return http.StatusNotFound
+	// 409, like the collection-already-exists case above and unlike the 400s
+	// around it: the request is well-formed and the caller may retry it
+	// against a different id or delete the document first.
+	case errors.As(err, &cde):
+		return http.StatusConflict
 	case errors.As(err, &cedc):
 		return http.StatusBadRequest
 	case errors.As(err, &cidi):

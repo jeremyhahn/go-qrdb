@@ -79,6 +79,22 @@ are free-form.
 above 2^53 survive JavaScript clients intact. `InsertDocumentResponse` uses the
 same encoding.
 
+### Supplying `_id` on an insert
+
+An insert body's `document` may carry its own `_id` (a positive number), which
+is used instead of a generated ID:
+
+```json
+{ "document": { "_id": 42, "kind": "deploy" } }
+```
+
+The supplied value is **reserved** against the collection's ID strategy, and an
+`_id` that already names a stored document is **refused with `409 Conflict`**
+(`AlreadyExists` on gRPC) rather than overwritten. A zero, negative or
+non-numeric `_id` is read as "generate one for me". See
+[architecture.md](architecture.md#explicitly-supplied-ids) for the full rule
+and [user.md](user.md#supplying-your-own-document-id) for the workflow.
+
 `ListDocumentsResponse`:
 
 ```json

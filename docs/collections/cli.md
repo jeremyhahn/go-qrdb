@@ -96,6 +96,19 @@ cat user.json | qrdb collection doc insert users --database app --file -
 
 The response carries the allocated document `id` as a JSON string.
 
+A document that carries its own `_id` is stored under that ID rather than a
+generated one, and that ID is reserved against every ID the collection
+generates afterwards:
+
+```bash
+qrdb collection doc insert events --database app --data '{"_id": 42, "kind": "deploy"}'
+```
+
+An `_id` that already names a stored document is **refused** — the command
+exits non-zero with "document already exists" rather than replacing it. Use
+`qrdb collection doc update` to replace a document. See
+[user.md](user.md#supplying-your-own-document-id).
+
 ## `qrdb collection doc get <collection> <id>`
 
 Retrieve a document by ID.

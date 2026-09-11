@@ -159,3 +159,28 @@ func TestMapServiceError_BackendClosedIsUnavailable(t *testing.T) {
 		t.Fatalf("code = %v, want %v", got, codes.Unavailable)
 	}
 }
+
+// An insert refused because it would have written over a stored document is
+// AlreadyExists, the mirror of the NotFound the same collection returns for
+// an absent one (go-qrdb#447). Both origins of the ID map to the same code:
+// a client retries or gives up on either, and the distinction is carried in
+// the message for a human, not in the status for a switch.
+func TestMapServiceError_CollectionDocumentExistsIsAlreadyExists(t *testing.T) {
+	for _, explicit := range []bool{true, false} {
+		err := mapServiceError(&service.CollectionDocumentExistsError{
+			Database: "db", Collection: "c", ID: 7, Explicit: explicit,
+		})
+		if got := status.Code(err); got != codes.AlreadyExists {
+			t.Fatalf("explicit=%v: code = %v, want %v", explicit, got, codes.AlreadyExists)
+		}
+	}
+}
+
+// The not-found rule must keep winning for an ABSENT document, so the new
+// rule above cannot have been inserted in a position that shadows it.
+func TestMapServiceError_CollectionDocumentNotFoundStillMapsToNotFound(t *testing.T) {
+	err := mapServiceError(&service.CollectionDocumentNotFoundError{Database: "db", Collection: "c", ID: 7})
+	if got := status.Code(err); got != codes.NotFound {
+		t.Fatalf("code = %v, want %v", got, codes.NotFound)
+	}
+}

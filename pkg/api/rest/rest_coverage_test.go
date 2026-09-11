@@ -1040,6 +1040,11 @@ func TestMapHTTPError_CollectionErrors(t *testing.T) {
 		{&service.CollectionInvalidIDStrategyError{}, http.StatusBadRequest},
 		{&service.CollectionMissingFieldHashError{}, http.StatusBadRequest},
 		{&service.CollectionDocumentNotFoundError{}, http.StatusNotFound},
+		// The insert-refused-an-overwrite case (go-qrdb#447) is a conflict,
+		// not a bad request: the body is well-formed and the caller may
+		// retry it under a different id.
+		{&service.CollectionDocumentExistsError{Database: "db", Collection: "c", ID: 7, Explicit: true}, http.StatusConflict},
+		{&service.CollectionDocumentExistsError{Database: "db", Collection: "c", ID: 7}, http.StatusConflict},
 		{&service.CollectionEmptyDocumentError{}, http.StatusBadRequest},
 		{&service.CollectionInvalidDocumentIDError{}, http.StatusBadRequest},
 		{&service.CollectionMetadataError{}, http.StatusInternalServerError},

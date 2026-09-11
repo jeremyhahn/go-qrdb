@@ -434,6 +434,36 @@ func (s *CollectionService) GetCollectionInfo(ctx context.Context, database, nam
 }
 
 // InsertDocument inserts a new document into a collection.
+//
+// The document's ID comes from one of two places, and which one it came from
+// decides what the insert is allowed to do:
+//
+//   - An EXPLICIT `_id` carried in the document is a claim on a particular
+//     identity. The insert reserves it against the collection's own allocator
+//     (reserveExplicitDocumentID) and refuses if a document already holds it.
+//   - A GENERATED ID comes from the collection's declared strategy
+//     (nextDocumentID). It may write over an existing document only where the
+//     strategy defines that as its purpose -- field_hash, whose ID is derived
+//     from a natural key so a re-insert of the same key is the documented
+//     idempotent update. See generatedIDMayOverwrite.
+//
+// Every other collision is refused with CollectionDocumentExistsError rather
+// than overwritten. An insert that destroys a stored document and reports
+// success is indistinguishable from one that stored a new one, which is what
+// made go-qrdb#447 silent: two successful inserts, one surviving document, no
+// error anywhere.
+//
+// The existence check is a read followed by a guarded-by-nothing write, so it
+// closes the DETERMINISTIC overwrite -- the one a single caller reaches with
+// no concurrency at all, which is the defect -- and not a race between two
+// concurrent inserts claiming the same explicit ID. Closing that too means
+// writing the document with KVServicer.PutIfAbsent, the only write with a
+// defined outcome under concurrency; it is not used here because
+// BackendKVService.PutIfAbsent refuses when the backend is not a
+// database.AtomicBackend, and the dedicated-store bundle's StandaloneBackend
+// is not one, so a guarded write would fail EVERY collection insert on that
+// path. Tracked as its own change; the guard lives in this service either
+// way, so moving it to a guarded write later changes no caller.
 func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocumentRequest) (*InsertDocumentResponse, error) {
 	if err := validateCollectionRequest(req.Database, req.Collection); err != nil {
 		return nil, err
@@ -451,13 +481,34 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 	// otherwise generate one using the collection's configured ID strategy.
 	entity := &dao.DynamicEntity{Fields: req.Document}
 	id := extractExplicitID(req.Document)
-	if id == 0 {
+	explicit := id != 0
+	if explicit {
+		if err := s.reserveExplicitDocumentID(ctx, info, id); err != nil {
+			return nil, err
+		}
+	} else {
 		id, err = s.nextDocumentID(ctx, info, entity)
 		if err != nil {
 			return nil, err
 		}
 	}
 	entity.SetEntityID(id)
+
+	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(id, 10)
+	if !mayOverwrite(info.IDStrategy, explicit) {
+		occupied, err := s.documentExists(ctx, docKey)
+		if err != nil {
+			return nil, err
+		}
+		if occupied {
+			return nil, &CollectionDocumentExistsError{
+				Database:   req.Database,
+				Collection: req.Collection,
+				ID:         id,
+				Explicit:   explicit,
+			}
+		}
+	}
 
 	// Serialize and store document using the resolved codec.
 	c := s.resolveCodec(info)
@@ -466,7 +517,6 @@ func (s *CollectionService) InsertDocument(ctx context.Context, req *InsertDocum
 		return nil, &CollectionMetadataError{Op: "marshal-document", Err: err}
 	}
 
-	docKey := collectionDataEntityType(req.Database, req.Collection) + "/" + strconv.FormatUint(id, 10)
 	if req.WriteMode != 0 {
 		if err := s.kvSvc.PutWithMode(ctx, docKey, docData, req.WriteMode); err != nil {
 			return nil, &CollectionMetadataError{Op: "insert-document", Err: err}
@@ -701,10 +751,19 @@ func (s *CollectionService) ListDocuments(ctx context.Context, req *ListDocument
 	}, nil
 }
 
-// resolveCodec returns the codec to use for encoding documents in the given
-// extractExplicitID checks if the document map contains an "_id" field with
-// a non-zero numeric value and returns it. Returns 0 when no explicit ID is
-// present, signalling that the caller should auto-generate one.
+// extractExplicitID returns the document's own "_id" field when it carries a
+// positive numeric value, and 0 otherwise -- 0 meaning "no explicit ID", so
+// the caller allocates one from the collection's ID strategy instead.
+//
+// Zero and negative values are read as absent rather than rejected because 0
+// is not a document ID in this service (CollectionInvalidDocumentIDError
+// refuses it on every other verb) and a negative one cannot become a uint64
+// ID; both are MySQL's "generate one for me" convention, and the relational
+// layer reads an explicit AUTO_INCREMENT value the same way.
+//
+// A non-numeric "_id" -- a string, say -- is also absent: the ID space is
+// uint64 (see docs/collections/architecture.md on why string document IDs
+// were rejected) and there is nothing to interpret.
 func extractExplicitID(doc map[string]interface{}) uint64 {
 	raw, ok := doc["_id"]
 	if !ok {
@@ -729,6 +788,7 @@ func extractExplicitID(doc map[string]interface{}) uint64 {
 	return 0
 }
 
+// resolveCodec returns the codec used to encode documents in the given
 // collection. Resolution order:
 //  1. Per-collection StorageCodec (set at collection creation time)
 //  2. Per-database default from dbCodecLookup (if configured)
@@ -828,6 +888,117 @@ func (s *CollectionService) countDocuments(ctx context.Context, database, collec
 		return 0
 	}
 	return int64(len(keys))
+}
+
+// idStrategyDrawsFromACounter records, per ID strategy, whether the
+// collection's IDs come from a counter -- and therefore whether an
+// explicitly supplied _id has anything to reserve itself against.
+//
+// A map rather than a switch so that adding a strategy is adding a row: a
+// strategy absent from it reserves nothing, which is the correct answer for
+// unix_nano (a clock reading, which no counter tracks) and for field_hash
+// (a hash of a natural key, which no counter tracks either).
+var idStrategyDrawsFromACounter = map[string]bool{
+	IDStrategyIncrement: true,
+}
+
+// generatedIDMayOverwrite records, per ID strategy, whether an ID the
+// collection GENERATED may be written over a document that already holds it.
+//
+// Exactly one strategy may: field_hash derives the ID from a named document
+// field, so re-inserting a document with the same natural key resolves to
+// the same ID on purpose -- docs/collections/architecture.md promises that
+// re-insert is idempotent, and refusing it would break the property the
+// strategy exists to provide.
+//
+// increment and unix_nano may not. For increment a generated collision is
+// now impossible by construction (see reserveExplicitDocumentID), so a hit
+// here means the allocator is broken and the caller is told rather than
+// losing a document. For unix_nano it means two inserts read the same
+// nanosecond, which is rare rather than impossible and is data loss when it
+// happens.
+//
+// An EXPLICIT _id is never in this table: it is not a strategy's generated
+// value, it is a caller naming an identity, and naming one that is taken is
+// refused on every strategy. See mayOverwrite.
+var generatedIDMayOverwrite = map[string]bool{
+	IDStrategyFieldHash: true,
+}
+
+// mayOverwrite reports whether an insert resolving to an already-occupied
+// document ID is a legitimate overwrite rather than data loss.
+func mayOverwrite(strategy string, explicit bool) bool {
+	return !explicit && generatedIDMayOverwrite[strategy]
+}
+
+// reserveExplicitDocumentID raises the collection's ID counter past an
+// explicitly supplied _id, so no ID the collection generates afterwards can
+// collide with it.
+//
+// This is the fix for go-qrdb#447 and it is the same answer the relational
+// layer already gives for an explicit value in an AUTO_INCREMENT column (see
+// pkg/sql/provider.RelationalTable.GetNextAutoIncrementValue and
+// docs/sql/engineering.md): the counter is a high-water mark over every ID
+// in use, not merely over the IDs it handed out itself. Without it, the
+// caller and the collection are two allocators over one keyspace and the
+// collection eventually reissues an ID the caller already used.
+//
+// Both implementations of IDStrategyIncrement are advanced, because they
+// must not disagree about this any more than they may disagree about what a
+// recreated collection does (go-qrdb#411): the replicated counter through
+// SequenceServicer.Advance, the process-local fallback through
+// dao.IDSequence.Advance. Both are defined as no-ops once the counter is at
+// or past the target, so the steady-state cost of an explicit insert is one
+// read and zero Raft proposals -- a proposal is made only when the counter
+// actually has to move.
+//
+// A strategy whose IDs do not come from a counter has nothing to reserve and
+// this returns without doing anything; see idStrategyDrawsFromACounter.
+//
+// The cost, stated rather than hidden: the counter can only move up, so an
+// explicit _id far above the collection's current watermark permanently
+// strands the range beneath it. That is MySQL's behaviour for an explicit
+// AUTO_INCREMENT value and the relational layer's here, and it is the cheaper
+// of the two failures -- a stranded range wastes IDs in a 64-bit space, while
+// an unreserved one destroys documents.
+func (s *CollectionService) reserveExplicitDocumentID(ctx context.Context, info *CollectionInfo, id uint64) error {
+	if !idStrategyDrawsFromACounter[info.IDStrategy] {
+		return nil
+	}
+
+	if s.seqSvc != nil {
+		if err := s.seqSvc.Advance(ctx, info.Database, collectionSequenceName(info.Name), id); err != nil {
+			return &CollectionMetadataError{Op: "reserve-id", Err: err}
+		}
+		return nil
+	}
+
+	// The process-local fallback. The capability is discovered by assertion
+	// because IDGenerator has no counter in general -- see dao.IDSequence --
+	// and a generator without one had nothing to reserve in the first place.
+	if gen, ok := s.getOrCreateIDGen(info).(dao.IDSequence); ok {
+		gen.Advance(id)
+	}
+	return nil
+}
+
+// documentExists reports whether a document is stored under docKey.
+//
+// A read that FAILS is not an absent document: reporting absence on a
+// transport error would let a failed read wave through the overwrite the
+// caller is being protected from, so the error is returned and the insert
+// fails. This is deliberately stricter than GetDocument, which treats any
+// read failure as not-found because on a read path there is nothing to
+// destroy.
+func (s *CollectionService) documentExists(ctx context.Context, docKey string) (bool, error) {
+	data, err := s.kvSvc.Get(ctx, docKey)
+	if err != nil {
+		if isKeyNotFound(err) {
+			return false, nil
+		}
+		return false, &CollectionMetadataError{Op: "check-document", Err: err}
+	}
+	return data != nil, nil
 }
 
 // collectionSequenceName returns the SequenceServicer sequence name backing

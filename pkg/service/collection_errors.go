@@ -91,6 +91,40 @@ func (e *CollectionDocumentNotFoundError) Error() string {
 		e.Collection + "/" + strconv.FormatUint(e.ID, 10)
 }
 
+// CollectionDocumentExistsError is returned when InsertDocument would have
+// written over a document already stored under the ID the insert resolved
+// to.
+//
+// It is the mirror of CollectionDocumentNotFoundError, which UpdateDocument
+// and DeleteDocument return when the document is absent: insert requires
+// absence exactly as update requires presence, and that pair is what keeps
+// the two verbs distinguishable. Before this existed, an insert whose ID
+// named a stored document overwrote it and reported success, so a caller
+// could not tell a new document from a destroyed one (go-qrdb#447).
+//
+// Explicit records whether the ID came from the document's own "_id" field
+// or from the collection's ID strategy, because the two are different
+// faults: an explicit ID that is taken is a caller claiming an identity
+// another document holds, while a GENERATED ID that is taken means the
+// collection's own allocator produced a value already in use. The message
+// says which.
+type CollectionDocumentExistsError struct {
+	Database   string
+	Collection string
+	ID         uint64
+	Explicit   bool
+}
+
+// Error returns a human-readable description.
+func (e *CollectionDocumentExistsError) Error() string {
+	origin := "generated"
+	if e.Explicit {
+		origin = "explicit"
+	}
+	return "service: document already exists: " + e.Database + "/" +
+		e.Collection + "/" + strconv.FormatUint(e.ID, 10) + " (" + origin + " id)"
+}
+
 // CollectionEmptyDocumentError is returned when an insert or update
 // request contains an empty document.
 type CollectionEmptyDocumentError struct{}

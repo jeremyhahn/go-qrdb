@@ -224,6 +224,13 @@ func mapServiceError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	}
 
+	// AlreadyExists, the mirror of the NotFound above: an insert refused
+	// because the document it would have written over is already stored.
+	var cde *service.CollectionDocumentExistsError
+	if errors.As(err, &cde) {
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
 	var cedc *service.CollectionEmptyDocumentError
 	if errors.As(err, &cedc) {
 		return status.Error(codes.InvalidArgument, err.Error())

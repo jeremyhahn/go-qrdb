@@ -118,9 +118,32 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
   `field_hash` requires `FieldHash` to be set; the request is refused without it.
 - **`field_hash` is deterministic** — re-inserting the same document field value
   yields the same ID, which is what makes re-insertion idempotent rather than
-  duplicating.
+  duplicating. It is the **only** case in which an insert may write over a
+  stored document; see the two invariants below.
+- **An explicit `_id` reserves the collection's counter.** `InsertDocument`
+  honours an `_id` carried in the document when it is a positive number, and on
+  an `increment` collection it raises the sequence past that value
+  (`SequenceServicer.Advance`) before storing anything, so no subsequently
+  generated ID can collide with it. `Advance` is a no-op once the sequence is
+  at or past the target, so the steady-state cost is one read and zero Raft
+  proposals. Both implementations of `increment` do this — the replicated
+  sequence and the process-local `dao.AtomicIncrementGenerator`, which
+  satisfies `dao.IDSequence` for exactly this purpose — because a wiring that
+  skipped it would reissue IDs the other one had reserved. A reservation that
+  fails fails the insert (`CollectionMetadataError{Op: "reserve-id"}`): storing
+  the document under an ID the collection is still free to hand out is the
+  defect itself.
+- **`InsertDocument` refuses to write over a stored document.** The only
+  exception is a `field_hash`-**generated** ID, whose collision is the
+  documented idempotent re-insert. An explicit `_id` that is already taken is
+  refused on every strategy, as is a generated ID on `increment` or
+  `unix_nano`. The check is a read, and a read that FAILS fails the insert
+  (`CollectionMetadataError{Op: "check-document"}`) rather than being treated
+  as absence — reporting a failed read as "nothing there" would wave through
+  the overwrite the check exists to prevent.
 - **`UpdateDocument` replaces the whole document.** There is no partial update
-  or merge.
+  or merge. It is also the verb for "replace whatever is stored under this ID";
+  `InsertDocument` is not, and will not do it.
 - **`DropCollection` deletes every document, drops every secondary index the
   collection declared, reclaims the collection's replicated `increment`
   counter, and is irreversible.** The order is documents → indexes → sequence →
@@ -174,6 +197,11 @@ Metadata is keyed `__sys:collections/{database}/{name}`; documents are keyed
 | `id_strategy: field_hash` without `field_hash` | invalid-argument | **yes** |
 | Unknown `id_strategy` value | invalid-argument | **yes** |
 | Unknown document ID on get/update/delete | not-found | yes |
+| Insert whose `_id` already names a stored document | `service.CollectionDocumentExistsError{Explicit: true}` — 409 / `AlreadyExists` | **yes** |
+| Insert whose GENERATED ID already names a stored document (`increment`, `unix_nano`) | `service.CollectionDocumentExistsError{Explicit: false}` — 409 / `AlreadyExists` | **yes** |
+| Re-insert into a `field_hash` collection under the same natural key | success — the document is replaced, which is the strategy's purpose | n/a |
+| Counter cannot be reserved for an explicit `_id` | `CollectionMetadataError{Op: "reserve-id"}`; nothing is stored | **yes** |
+| Existence check cannot be read on insert | `CollectionMetadataError{Op: "check-document"}`; nothing is stored | **yes** |
 | Malformed document JSON | invalid-argument | **yes** |
 | Index drop fails during `DropCollection` | `CollectionMetadataError{Op: "drop-index"}`; metadata survives, drop is retryable | **yes** |
 | Index already absent during `DropCollection` | success — a teardown asked to remove something that is not there has got what it asked for | n/a |

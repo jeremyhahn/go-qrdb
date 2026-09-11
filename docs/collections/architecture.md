@@ -45,11 +45,61 @@ above promises, and because there is nothing for a restarted counter to collide
 with: a drop deletes every document in the collection before it reclaims the
 counter (see [Data flow](#data-flow)).
 
-The counter is *not* reserved by an explicitly supplied `_id`. A document
-inserted with its own `_id` is stored under that ID without advancing the
-sequence, so a later auto-generated ID can reach a value an explicit insert
-already used. Do not mix explicit and generated IDs in one `increment`
-collection.
+### Explicitly supplied IDs
+
+A document may carry its own `_id`. That is what makes re-import work — export
+a collection, recreate it, put the documents back under the IDs they had — and
+it is the second way an ID reaches the key space, alongside the strategy. Two
+allocators over one keyspace need a rule, and there is one:
+
+**An explicit `_id` is a claim on an identity; a generated ID is an
+allocation.** The claim wins, permanently:
+
+- **It reserves the counter.** On an `increment` collection the sequence is
+  raised past the supplied value *before* the document is stored, so no ID the
+  collection generates afterwards can reach it. This is the rule the relational
+  layer already applies to an explicit value in an `AUTO_INCREMENT` column (see
+  [../sql/engineering.md](../sql/engineering.md)), and the rule MySQL applies.
+  `unix_nano` and `field_hash` have no counter, so there is nothing to reserve
+  and nothing is written.
+- **It never overwrites.** An insert whose `_id` already names a stored
+  document is refused with a document-already-exists error. Insert requires the
+  document to be absent exactly as update requires it to be present, and that
+  pair is what keeps the two verbs distinguishable.
+
+The cost is stated rather than hidden: the counter only moves up, so an
+explicit `_id` far above the collection's watermark permanently strands the IDs
+beneath it. That is the cheaper of the two failures — a stranded range wastes
+IDs in a 64-bit space, an unreserved one destroys documents.
+
+#### What a generated ID may overwrite
+
+Exactly one case: a `field_hash` ID. That strategy derives the ID from a named
+document field, so re-inserting a document with the same natural key resolves
+to the same ID **on purpose** — the idempotent re-insert the table above
+promises. Everything else is refused:
+
+| ID origin | `unix_nano` | `increment` | `field_hash` |
+|---|---|---|---|
+| explicit `_id` | refuse | refuse | refuse |
+| generated | refuse | refuse | **overwrite** (idempotent re-insert) |
+
+Once explicit IDs reserve the counter, `increment` cannot reach an occupied ID
+at all, so a refusal there means the allocator is wrong and the caller is told
+rather than losing a document. `unix_nano` reaches one only when two inserts
+read the same nanosecond, which is rare rather than impossible.
+
+#### What this does not close
+
+The existence check is a read followed by the document write, so it closes the
+overwrite a single caller reaches with no concurrency at all — which is the
+defect — and not a race between two concurrent inserts claiming the same
+explicit `_id`. Closing that as well means writing the document with the
+guarded `PutIfAbsent`, the only write whose outcome is defined under
+concurrency. It is not used yet because the dedicated-store backend cannot
+perform a guarded write, so a guarded insert would fail every collection insert
+on that path. The guard lives in the service layer either way, so tightening
+the mechanism later changes no caller.
 
 ### Alternatives rejected
 
@@ -65,6 +115,28 @@ collection.
   order-preserving in key space. The JSON representation is a string
   (`json:"id,string"`) so that large values survive JavaScript clients.
 - **Bulk document import.** Deliberately absent — see the scope fence below.
+- **Refusing an explicit `_id` on an `increment` collection outright.**
+  Rejected, though it is the cleanest contract on paper: the strategy owns ID
+  assignment or the caller does, never both, and a collision becomes impossible
+  rather than merely handled. The cost is that it deletes the re-import
+  workflow — recreate a collection, put the documents back under the IDs they
+  had — from the one strategy whose IDs are small and stable enough for a
+  caller to have recorded them elsewhere. Reserving the counter makes that
+  workflow *safe* instead of *forbidden* at the price of one read per explicit
+  insert, and it keeps `increment` consistent with the relational layer's
+  `AUTO_INCREMENT`, which takes the same view for the same reason.
+- **Refusing the collision alone, without reserving the counter.** Rejected as
+  a half-fix. It converts the silent overwrite into an error, which is the
+  minimum bar, but it leaves the collection's own allocator walking into IDs a
+  caller already used — so the caller who did nothing wrong, the one inserting
+  without an `_id`, is the one who gets the error. Reserving the counter is
+  what makes that unreachable; refusing the collision is what makes the
+  remaining cases loud. Both, not either.
+- **Treating an insert with an explicit `_id` as an upsert.** This is what the
+  code did before, and it was not a decision — it was the absence of one. An
+  insert that destroys a stored document and reports success is
+  indistinguishable from one that stored a new document, and `UpdateDocument`
+  already exists for callers that mean "replace whatever is there".
 
 ## Component boundaries
 

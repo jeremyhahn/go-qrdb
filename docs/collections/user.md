@@ -41,7 +41,31 @@ qrdb collection create products --database app --id-strategy field_hash --field-
 ```
 
 With `field_hash`, inserting the same `sku` twice lands on the same ID rather
-than creating a duplicate — that is the point of it.
+than creating a duplicate — that is the point of it, and it is the only case
+where an insert replaces a document instead of refusing.
+
+## Supplying your own document ID
+
+Put an `_id` in the document and it is used verbatim instead of a generated
+one. This is how you re-import documents under the IDs they already had.
+
+```bash
+qrdb collection doc insert events --database app \
+     --data '{"_id": 42, "kind": "deploy"}'
+```
+
+Two rules apply, on every strategy:
+
+- **An `_id` you supply is reserved.** On an `increment` collection the counter
+  jumps past it, so the next generated ID is `43` and can never come back round
+  to `42`. You can mix your own IDs and generated ones freely.
+- **An `_id` that is already taken is refused,** not overwritten. You get a
+  "document already exists" error (HTTP 409). If you meant to replace the
+  document, use `update`; if you meant to add one, leave `_id` out.
+
+The reservation only moves the counter **up**. Insert `{"_id": 1000000}` into a
+fresh `increment` collection and the IDs beneath it are gone for good — that is
+deliberate, and it is why small explicit IDs are the ones worth supplying.
 
 ## Common tasks
 
@@ -134,6 +158,16 @@ created is now refused rather than silently used. Create it
 **`--id-strategy field_hash` was rejected.** It needs `--field-hash <field>`
 naming which document field to hash. Without it there is nothing to derive the
 ID from.
+
+**"document already exists" on an insert.** The ID the insert resolved to is
+already in use. If you supplied an `_id`, pick another one or use `update` to
+replace the document you meant to replace. If you did not supply one, the
+collection's own allocator produced an ID that is taken — report it, because on
+an `increment` collection that should be impossible.
+
+**Your `increment` collection skipped a range of IDs.** Something was inserted
+with an explicit `_id` above the counter, and the counter moved up to clear it.
+The skipped IDs are not coming back. See *Supplying your own document ID*.
 
 **Your document ID looks wrong in JavaScript.** IDs are `uint64` and are sent as
 JSON *strings* precisely so they survive. If a client is turning them into
