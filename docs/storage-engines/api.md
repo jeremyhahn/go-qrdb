@@ -66,12 +66,23 @@ What crosses depends on the transport:
 | `embedded` | the value: `errors.Is(err, sdk.ErrStorageClosed)` holds, and `errors.As` reaches `*sdk.StorageClosedError` |
 | `grpc`, `unix` | the classification: `codes.Unavailable`, on every RPC |
 | `rest` | the classification: HTTP `503`, on every verb — `GET /kv/{key}`, `/kv/list`, `/kv/scan`, `PUT` (plain and lease), `DELETE`, `POST /batch` |
-| `quic`, `mcp` | a generic request failure — **the classification is not carried yet** |
+| `quic` | the classification: `StatusUnavailable`, on every frame |
+| `mcp` | a generic tool failure — **the classification is not carried yet** |
 
 **Only `embedded` preserves the typed value**, because only `embedded` never
 serializes it. The others carry a status code, which is what a wire can carry;
-a remote caller reads the code and must not parse the message. The `quic` and
-`mcp` gaps are recorded here rather than left to be discovered — see
+a remote caller reads the code and must not parse the message.
+
+The `quic` row used to read the same as `mcp`'s. It carries the classification
+now because the QUIC wire gained a status vocabulary large enough to say it:
+the closed-store condition maps to `StatusUnavailable`, the same retryable
+family `grpc` reports as `codes.Unavailable` and `rest` as `503`. See
+[the API server's status mapping](../api-server/api.md#common-status-mapping)
+for the whole table.
+
+The `mcp` gap remains, and it is a different shape: MCP has no status channel
+at all, so there is no code to carry rather than no code to carry it in. It is
+recorded here rather than left to be discovered — see
 [engineering.md](engineering.md).
 
 ## Error semantics

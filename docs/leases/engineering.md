@@ -101,11 +101,25 @@ write and dropping the association would produce a key that outlives its owner
 with no way to notice.
 
 `sdk/go/transport.LeaseNotFoundError` / `LeaseExpiredError` cross `embedded`,
-`grpc`, `unix`, `quic` and `mcp` as the same two types — `grpc`/`unix` classify
-their shared `codes.NotFound` by message text at the lease call sites, `quic`
-does the same against its `wire.StatusError` payload, and `mcp` against its
-tool-result text, since none of those wires carries a status distinct enough to
-tell the two conditions apart on its own.
+`grpc`, `unix`, `quic` and `mcp` as the same two types. `grpc`, `unix` and
+`quic` all gate on a **not-found status** — `codes.NotFound` on the first two,
+`wire.StatusNotFound` on `quic` — and then split the two lease conditions apart
+by message text at the lease call sites, because no wire here carries an
+expired-specific sibling of not-found. `mcp` has no status channel at all and
+works from tool-result text alone.
+
+Two things about that split are worth stating, because they look alike and are
+not. Deciding **which subject** is missing from a status shared across subjects
+by reading prose is fail-open classification and is forbidden. Deciding **which
+of a lease's two conditions** it is, at a call site that already knows the
+subject is a lease and already holds the lease id, is not: the id on the typed
+error comes from the caller's own argument, never from the message.
+
+The `quic` gate used to be `wire.StatusError` — the same status a transport
+fault carries — so the words "lease not found" were the only thing separating a
+gone lease from a broken node. That changed when the QUIC wire gained a status
+vocabulary; see
+[the API server's status vocabulary](../api-server/api.md#the-quic-status-vocabulary).
 
 **REST is the exception, and it is a partial one.** Only `LeaseTimeToLive` maps
 a typed lease error (`transport/rest/transport_lease.go` turns a 404 into

@@ -64,10 +64,15 @@ func TestE2E_Get_HappyPath(t *testing.T) {
 	}
 }
 
+// TestE2E_Get_KeyNotFound. The double answers wire.StatusNotFound because that
+// is what a real server answers for service.KeyNotFoundError since
+// go-qrdb#437; before it, the wire had no not-found status, this double
+// returned StatusError, and the client recovered absence by finding the words
+// "key not found" in the message. Both halves of that arrangement are gone.
 func TestE2E_Get_KeyNotFound(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("kv.Get", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("key not found")
+		return wire.StatusNotFound, []byte("service: key not found: missing")
 	})
 	_, err := tr.Get(context.Background(), "missing")
 	if err == nil {
@@ -141,10 +146,13 @@ func TestE2E_Exists_True(t *testing.T) {
 	}
 }
 
+// TestE2E_Exists_False: Exists is absence-or-error, so it turns on exactly the
+// classification go-qrdb#437 made possible. The double sends the frame a real
+// server sends.
 func TestE2E_Exists_False(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("kv.Get", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("key not found")
+		return wire.StatusNotFound, []byte("service: key not found: k")
 	})
 	ok, err := tr.Exists(context.Background(), "k")
 	if err != nil || ok {

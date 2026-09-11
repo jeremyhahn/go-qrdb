@@ -14,13 +14,24 @@ gives for **any** permission an operator has declared a `Policy` for.
 | REST | `429 Too Many Requests`, JSON body `{"error": "..."}`, `Retry-After` header (seconds, rounded up to at least 1) |
 | gRPC (TCP) | `codes.ResourceExhausted` |
 | gRPC over Unix socket | `codes.ResourceExhausted` — identical to TCP gRPC; the unix listener shares the same interceptor |
-| QUIC | An authorization-error frame naming the permission and the refusal reason; no separate numeric status for this class of error today |
+| QUIC | `StatusResourceExhausted`, in a frame naming the permission and the refusal reason |
 | MCP | The tool call's error result carries the refusal text; no numeric status code — MCP errors are text, not codes |
 
 Every row above is reached from the same enforcement call
 (`AuthMiddleware.authorize`), so a `Policy` declared for a permission is
 enforced identically wherever a caller reaches that permission — not
 declared once per transport, and not at risk of drifting between them.
+
+The QUIC row read "no separate numeric status for this class of error today"
+until the QUIC wire gained a status vocabulary wide enough to say it. What it
+had before was a choice between two wrong answers: permission-denied, which is
+terminal in every client and sends an operator to fix grants that were never
+the problem, and unavailable, which at least carries the right instruction —
+retry — but loses the reason and points at the node's health. See
+[the API server's status vocabulary](../api-server/api.md#the-quic-status-vocabulary).
+
+MCP is the one row still without a code, and for a different reason: MCP has no
+status channel at all, so there is nothing to put a code in.
 
 ## What a caller learns from a refusal
 

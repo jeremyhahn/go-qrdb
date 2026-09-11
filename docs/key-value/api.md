@@ -187,7 +187,7 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Condition | REST | gRPC / Unix | Notes |
 |---|---|---|---|
 | Success | 200 | `OK` | |
-| Key not found | 404 | `NOT_FOUND` | distinct from an empty value |
+| Key not found | 404 | `NOT_FOUND` | distinct from an empty value. QUIC answers `StatusNotFound`; the SDK reconstitutes `transport.KeyNotFoundError` from the status, never from the message |
 | Bad parameter (`at-revision` unparseable, bad sort key) | 400 | `INVALID_ARGUMENT` | |
 | Revision above current, or below the compaction floor | 400 | `INVALID_ARGUMENT` | fails closed, never approximated |
 | Non-MVCC state machine asked for an MVCC operation | 400 | `FAILED_PRECONDITION` | `service: requires raft.sm_type: mvcc` |
@@ -200,7 +200,10 @@ plus `dry_run` and `force`. The response carries the plan entries
 | Restore scope empty, ambiguous, or over `MaxRestoreKeys` | 400 | `INVALID_ARGUMENT` | refused whole |
 | Missing permission | 403 | `PERMISSION_DENIED` | |
 | Barrier sealed | 503 | `UNAVAILABLE` | fail closed |
-| Not the leader, no resolver configured | 503 | `UNAVAILABLE` | otherwise routed to the leader |
+| Not the leader, no resolver configured | 503 | `UNAVAILABLE` | otherwise routed to the leader. QUIC answers `StatusUnavailable`, not the generic `StatusError` it used to |
+
+Every condition in this table has a QUIC status; the whole vocabulary is in
+[the API server's status mapping](../api-server/api.md#common-status-mapping).
 
 ## Versioning
 

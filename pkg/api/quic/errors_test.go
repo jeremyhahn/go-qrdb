@@ -437,11 +437,15 @@ func TestMapServiceError_NilError(t *testing.T) {
 	}
 }
 
+// TestMapServiceError_KeyNotFoundError. This asserted StatusError until
+// go-qrdb#437, because the wire had no not-found status and every absence had
+// to ride the generic one. It is now StatusNotFound, which is what let the SDK
+// client delete its strings.Contains(msg, "key not found") test.
 func TestMapServiceError_KeyNotFoundError(t *testing.T) {
 	err := &service.KeyNotFoundError{Key: "missing-key"}
 	statusCode, payload := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusNotFound {
+		t.Fatalf("expected StatusNotFound (%d), got %d", wire.StatusNotFound, statusCode)
 	}
 	if !strings.Contains(string(payload), "missing-key") {
 		t.Fatalf("expected payload to contain key name, got %q", string(payload))
@@ -455,8 +459,12 @@ func TestMapServiceError_NotLeaderError(t *testing.T) {
 		LeaderAddress: "127.0.0.2:63001",
 	}
 	statusCode, payload := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	// StatusUnavailable since go-qrdb#437, matching the gRPC transport: a
+	// non-leader is a routing condition the caller retries, not a fault. It
+	// answered the generic StatusError only because that was the whole
+	// vocabulary.
+	if statusCode != wire.StatusUnavailable {
+		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
 	}
 	if !strings.Contains(string(payload), "not leader") {
 		t.Fatalf("expected payload to contain 'not leader', got %q", string(payload))
@@ -490,8 +498,8 @@ func TestMapServiceError_WrappedKeyNotFoundError(t *testing.T) {
 	err := &HandlerError{Method: "kv.Get", Err: inner}
 	// mapServiceError uses errors.As which follows the Unwrap chain.
 	statusCode, payload := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusNotFound {
+		t.Fatalf("expected StatusNotFound (%d), got %d", wire.StatusNotFound, statusCode)
 	}
 	if !strings.Contains(string(payload), "wrapped-key") {
 		t.Fatalf("expected payload to contain key name from wrapped error, got %q", string(payload))
@@ -502,8 +510,8 @@ func TestMapServiceError_WrappedNotLeaderError(t *testing.T) {
 	inner := &service.NotLeaderError{ShardID: 5, LeaderID: 3, LeaderAddress: "10.0.0.3:6000"}
 	err := &HandlerError{Method: "kv.Put", Err: inner}
 	statusCode, payload := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusUnavailable {
+		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, statusCode)
 	}
 	if !strings.Contains(string(payload), "not leader") {
 		t.Fatalf("expected payload to contain 'not leader', got %q", string(payload))
@@ -554,13 +562,15 @@ func TestMapServiceError_WrappedBarrierSealedError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestMapServiceError_WatchCompacted verifies a watch requesting a compacted
-// start revision maps to StatusError (the same status handleWatchStream
-// writes on any watcher error), with the sentinel's message text preserved
-// so the SDK client's ClassifyWatchError can recognize it downstream.
+// start revision maps to StatusOutOfRange -- the condition is an address below
+// the floor the server still holds, and go-qrdb#437 gave this wire a status
+// that says so. It rode StatusError until then, indistinguishable from the
+// watcher breaking. The sentinel's message text is still preserved so the SDK
+// client's ClassifyWatchError keeps recognizing it downstream.
 func TestMapServiceError_WatchCompacted(t *testing.T) {
 	statusCode, payload := mapServiceError(watch.ErrCompacted)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusOutOfRange {
+		t.Fatalf("expected StatusOutOfRange (%d), got %d", wire.StatusOutOfRange, statusCode)
 	}
 	if string(payload) != watch.ErrCompacted.Error() {
 		t.Fatalf("payload = %q, want %q", string(payload), watch.ErrCompacted.Error())

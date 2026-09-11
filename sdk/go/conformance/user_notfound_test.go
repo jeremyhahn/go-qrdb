@@ -58,6 +58,25 @@ import (
 // than the measured inconsistency, because it would be invisible. When the
 // QUIC wire status and the MCP not-found code land, the quic and mcp rows flip
 // to typed and this file is where that is stated.
+//
+// # THE QUIC ROWS HAVE FLIPPED (go-qrdb#437)
+//
+// The QUIC wire status landed. pkg/api/quic/wire declared six statuses and now
+// declares seventeen — one per gRPC status code — so a missing user reaches
+// this wire as wire.StatusNotFound instead of the generic StatusError, and the
+// SDK's mapUserNotFound reconstitutes transport.UserNotFoundError from the id
+// the CALLER asked for, never from the server's message. Five of the six
+// transports now type the condition.
+//
+// Nothing in the assertion was relaxed to get there. wantClass is the only
+// edit: the machinery below is untouched, and flipping a row to typed makes
+// this suite STRICTER rather than looser, because the ID / Lookup checks that
+// sit under `if want != typedNotFound { return }` start running for those
+// nine cells.
+//
+// The MCP row stays opaque. It is go-qrdb#438 and a different problem — MCP
+// has no status channel at all, so there is no code to carry — and the
+// negative test below still pins that its substring match must not be trusted.
 
 // notFoundClass is what a cell is required to do with a missing user.
 type notFoundClass int
@@ -100,14 +119,6 @@ var userNotFoundTransports = []transportKind{
 // from the id or key IT asked for, and never from the server's message.
 func wantClass(tk transportKind) notFoundClass {
 	switch tk {
-	case quicTransport:
-		// pkg/api/quic/wire carries no not-found status at all — OK, Error,
-		// Unimplemented, Unauthenticated, PermissionDenied, Unavailable — so a
-		// missing user arrives as the generic Error and is indistinguishable
-		// from any other server-side failure. Carrying it typed needs a new
-		// wire status, which is protocol design that outlives #289 and which
-		// go-qrdb#169 needs identically. Escalated, not invented here.
-		return opaqueNotFound
 	case mcpTransport:
 		// go-qrdb has no JSON-RPC error-code mapping (conventions/errors.md
 		// §5), so a tool error reaches the client as a message string. The MCP
@@ -238,16 +249,26 @@ func TestUserNotFound_Matrix(t *testing.T) {
 //
 // This is not a lowered bar. Measured on every remote transport, assigning a
 // role fails with the identical status whether the USER or the ROLE is
-// missing — 404 over REST, codes.NotFound over gRPC and unix, wire status 1
-// over QUIC, a tool error over MCP — and the two are separable only by reading
-// the message. A client that mapped that status to UserNotFoundError would
-// report a missing ROLE as a missing USER, which is the same class of defect
-// as the substring matching, arrived at from the other direction.
+// missing — 404 over REST, codes.NotFound over gRPC and unix,
+// wire.StatusNotFound over QUIC, a tool error over MCP — and the two are
+// separable only by reading the message. A client that mapped that status to
+// UserNotFoundError would report a missing ROLE as a missing USER, which is the
+// same class of defect as the substring matching, arrived at from the other
+// direction.
+//
+// go-qrdb#437 did NOT change this, and was not expected to. It gave the QUIC
+// wire a not-found status, which is why the quic cells in the matrix above
+// flipped; it did not give any transport a way to say WHICH subject is
+// missing, which is what these two methods would need. pkg/api/quic maps
+// *role.RoleNotFoundError and a missing user to the SAME wire.StatusNotFound
+// on purpose, matching gRPC and REST, and that clause carries a comment
+// pointing here.
 //
 // The information exists at the server: the role service returns the user
 // store's not-found for a missing user and *role.RoleNotFoundError for a
-// missing role. It is the wire that loses it, which is why the fix belongs
-// with the QUIC/MCP protocol work rather than here. The embedded transport
+// missing role. It is the wire that loses it, and closing that would mean
+// carrying a subject alongside the status — a larger protocol change than a
+// status vocabulary, and one no consumer has asked for. The embedded transport
 // has no wire to lose it on, and since go-qrdb#343 the user store's not-found
 // IS transport.UserNotFoundError, so in-process the missing-user case is
 // correctly typed — asserted positively below, with
@@ -297,8 +318,10 @@ func TestUserNotFound_AmbiguousMethods(t *testing.T) {
 // TestUserNotFound_MissingRoleIsNotAMissingUser is the negative that matters.
 //
 // It assigns a REAL user a role that does not exist. The server's message
-// contains "not found", the status is the same one a missing user produces,
-// and the correct answer is still "this is not a user-not-found". Any client
+// contains "not found", the status is the same one a missing user produces —
+// wire.StatusNotFound on QUIC since go-qrdb#437, deliberately shared with the
+// missing-user case — and the correct answer is still "this is not a
+// user-not-found". Any client
 // that reintroduces substring classification on the user path — the shape
 // go-qrdb#286 was asked to stop using, and the shape the MCP transport still
 // carries at transport.go's isNotFoundError — fails here.

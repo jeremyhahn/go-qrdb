@@ -14,7 +14,7 @@ each feature's own `api.md`.
 | unix | **gRPC over a UDS** | `/var/run/qrdbd/qrdbd.sock` | identical service definitions to gRPC |
 | REST | HTTP/JSON (chi) | 63002 | |
 | gRPC | HTTP/2 | 63003 | `qrdb.v1.QRDBService` and the auxiliary services |
-| QUIC | method/frame dispatch | 63004 | |
+| QUIC | method/frame dispatch | 63004 | seventeen wire statuses, one per gRPC code — see [the status vocabulary](#the-quic-status-vocabulary) |
 | MCP | Model Context Protocol over HTTPS | configured endpoint | tools named `qrdb_*` |
 
 **The Unix transport is not a distinct protocol.** It serves the same gRPC wire
@@ -101,19 +101,77 @@ Absent a database, the server's default (`system`) is used.
 
 ## Common status mapping
 
-| Condition | REST | gRPC / Unix |
-|---|---|---|
-| Success | 200 | `OK` |
-| Bad request | 400 | `INVALID_ARGUMENT` |
-| Unauthenticated | 401 | `UNAUTHENTICATED` |
-| Missing permission | 403 | `PERMISSION_DENIED` |
-| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) |
-| Not found | 404 | `NOT_FOUND` |
-| Conflict / precondition | 409 | `ALREADY_EXISTS` / `FAILED_PRECONDITION` |
-| Quota exceeded | 429 | `RESOURCE_EXHAUSTED` |
-| Barrier sealed, not leader, draining | 503 | `UNAVAILABLE` |
-| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` |
-| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` |
+| Condition | REST | gRPC / Unix | QUIC |
+|---|---|---|---|
+| Success | 200 | `OK` | `StatusOK` (0) |
+| Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) |
+| Unauthenticated | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) |
+| Missing permission | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) |
+| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) |
+| Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) |
+| Conflict | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) |
+| Precondition | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) |
+| Quota exceeded, rate limited | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) |
+| Concurrency conflict | 409 | `ABORTED` | `StatusAborted` (11) |
+| Revision below the compaction floor | 400 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) |
+| Work stopped | 499 | `CANCELED` | `StatusCanceled` (13) |
+| Persisted state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) |
+| Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) |
+| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) |
+| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) |
+| Unclassified server fault | 500 | `INTERNAL` | `StatusError` (1) |
+
+### The QUIC status vocabulary
+
+The QUIC frame protocol carries a `uint16` status. It declares **seventeen**
+statuses — one for each of gRPC's seventeen status codes, so the set of
+conditions the two transports can express is identical and one event never
+reaches a QUIC caller and a gRPC caller as two different conditions.
+
+It carried **six** until that change, and everything outside those six arrived
+as the generic `StatusError`: a missing key, a missing user, a bad argument, a
+quota rejection and a broken node were one frame. Four separate pieces of work
+escalated to the gap rather than inventing a status locally, which is why the
+whole vocabulary was settled at once instead of a status at a time.
+
+Three things follow from the decision and are worth knowing before adding to it:
+
+- **The numbering is qrdb's own, not gRPC's.** Statuses 0–5 predate the
+  vocabulary and were not renumbered, so `StatusNotFound` is 6 while
+  `codes.NotFound` is 5. The correspondence is by MEANING and goes through one
+  table in the server package; there is no arithmetic relating the two.
+- **A new condition is a lookup, not a protocol change.** Anything the service
+  layer can express already has a status, because gRPC's set is closed and this
+  set matches it. A genuinely new condition appends at the next free number.
+- **Two statuses are reachable only through a projected capability module**
+  (`StatusDeadlineExceeded`, `StatusUnknown`). The QUIC transport dispatches a
+  module's unary gRPC methods as frames, so a module answers in gRPC's
+  vocabulary by construction; a partial correspondence would silently degrade
+  its answers to `StatusError`.
+
+**Version skew.** A client built before a status existed reads it as an
+unrecognised number and falls through to its generic request error — degraded
+to exactly the behaviour it had before, never a misclassification. The server
+and the Go SDK ship from one repository, so a mixed deployment loses precision
+on old clients and nothing else.
+
+### Absence is typed, and never read out of the message
+
+`StatusNotFound` is what lets an SDK consumer's `errors.As` mean the same thing
+over QUIC as it does over REST, gRPC, unix and embedded. Two message-text
+classifications were deleted when it landed:
+
+- the client's `strings.Contains(msg, "key not found")` test, which read a
+  transport failure whose text happened to carry the phrase as "this key does
+  not exist";
+- the lease client's gate on `StatusError`-plus-message, which could not tell a
+  gone lease from a broken node.
+
+The typed error a consumer receives is reconstructed from the id or key the
+**caller** supplied, not from the server's prose. Where a not-found can mean
+more than one subject — assigning a role to a user, where either may be missing
+— every transport answers the shared not-found status and the SDK types
+**neither**, because typing one would report the wrong subject as absent.
 
 ### 403 and 405 are different claims
 

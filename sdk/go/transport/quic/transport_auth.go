@@ -325,6 +325,37 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	return wireToUser(&wire), nil
 }
 
+// mapUserNotFound is mapWireError for the single-user endpoints: it turns the
+// server's wire.StatusNotFound into the typed not-found every transport
+// returns for this condition, so a consumer's errors.As is the same predicate
+// here as it is over REST, gRPC, unix and embedded (go-qrdb#289).
+//
+// It is the exact twin of mapUserNotFound in sdk/go/transport/grpc, and a
+// SEPARATE function from mapWireError for the same reason: the shared mapper
+// sees only a status and a message and cannot know WHICH subject was missing,
+// so its NotFound case can only guess and does — it reconstitutes the key
+// flavour. The call site knows, because it knows which user it asked for.
+//
+// It is wired ONLY where a not-found can mean exactly one thing. AssignRole
+// and UnassignRole are deliberately excluded: their not-found carries either a
+// missing user or a missing role, the server answers the same status for both,
+// and separating them at the client would mean reading the message — the
+// substring classification #289 exists to delete, not to relocate.
+func mapUserNotFound(method string, id uint64, err error) error {
+	if isWireNotFound(err) {
+		return &transport.UserNotFoundError{ID: id}
+	}
+	return &transport.RequestError{Method: method, Err: err}
+}
+
+// mapUserLookupNotFound is mapUserNotFound for a lookup by a non-numeric key.
+func mapUserLookupNotFound(method, lookup string, err error) error {
+	if isWireNotFound(err) {
+		return &transport.UserNotFoundError{Lookup: lookup}
+	}
+	return &transport.RequestError{Method: method, Err: err}
+}
+
 // GetUser retrieves a user by its globally unique ID via the QUIC
 // user.Get method.
 func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, error) {
@@ -339,7 +370,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 
 	data, err := t.call(ctx, "user.Get", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GetUser", Err: err}
+		return nil, mapUserNotFound("GetUser", id, err)
 	}
 
 	var wire userWireResponse
@@ -364,7 +395,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 
 	data, err := t.call(ctx, "user.GetByUsername", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GetUserByUsername", Err: err}
+		return nil, mapUserLookupNotFound("GetUserByUsername", transport.UserLookupKey(tenantID, username), err)
 	}
 
 	var wire userWireResponse
@@ -388,7 +419,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 
 	data, err := t.call(ctx, "user.GetByEmail", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GetUserByEmail", Err: err}
+		return nil, mapUserLookupNotFound("GetUserByEmail", transport.UserLookupKey(tenantID, email), err)
 	}
 
 	var wire userWireResponse
@@ -413,7 +444,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 
 	data, err := t.call(ctx, "user.GetByCertThumbprint", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "GetUserByCertThumbprint", Err: err}
+		return nil, mapUserLookupNotFound("GetUserByCertThumbprint", "cert_spki/"+thumbprint, err)
 	}
 
 	var wire userWireResponse
@@ -442,7 +473,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 
 	data, err := t.call(ctx, "user.AddCertBinding", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "AddCertBinding", Err: err}
+		return nil, mapUserNotFound("AddCertBinding", userID, err)
 	}
 
 	var wire userWireResponse
@@ -477,7 +508,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 	data, err := t.call(ctx, "user.Update", payload)
 	if err != nil {
-		return nil, &transport.RequestError{Method: "UpdateUser", Err: err}
+		return nil, mapUserNotFound("UpdateUser", req.ID, err)
 	}
 
 	var wire userWireResponse
@@ -502,7 +533,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 
 	_, err = t.call(ctx, "user.Delete", payload)
 	if err != nil {
-		return &transport.RequestError{Method: "DeleteUser", Err: err}
+		return mapUserNotFound("DeleteUser", id, err)
 	}
 
 	return nil
@@ -559,7 +590,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 
 	_, err = t.call(ctx, "user.Enable", payload)
 	if err != nil {
-		return &transport.RequestError{Method: "EnableUser", Err: err}
+		return mapUserNotFound("EnableUser", id, err)
 	}
 
 	return nil
@@ -579,7 +610,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 
 	_, err = t.call(ctx, "user.Disable", payload)
 	if err != nil {
-		return &transport.RequestError{Method: "DisableUser", Err: err}
+		return mapUserNotFound("DisableUser", id, err)
 	}
 
 	return nil

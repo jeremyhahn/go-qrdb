@@ -36,6 +36,25 @@ func serverErr(srv *e2eServer, method, msg string) {
 	})
 }
 
+// serverNotFound makes the double answer the frame a REAL qrdb server sends
+// when the addressed subject does not exist: wire.StatusNotFound carrying the
+// service layer's own message.
+//
+// It is a separate helper from serverErr, rather than a status argument added
+// to it, so that a test asking for absence cannot silently get a fault. The
+// production fact it mirrors is pinned end to end by
+// pkg/api/quic.TestIntegration_KVGet_NotFound -- a real server, a real frame,
+// a real service.KeyNotFoundError -- and per condition by
+// pkg/api/quic.TestMapServiceError_EveryCondition. Before go-qrdb#437 the wire
+// had no not-found status and these doubles correctly returned StatusError;
+// leaving them there after the server moved would have made the double
+// narrower than production in exactly the dimension under test.
+func serverNotFound(srv *e2eServer, method, msg string) {
+	srv.SetResponder(method, func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, []byte(msg)
+	})
+}
+
 // ---------------------------------------------------------------------------
 // MVCC
 // ---------------------------------------------------------------------------

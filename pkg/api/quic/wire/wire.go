@@ -30,17 +30,178 @@ package wire
 import (
 	"encoding/binary"
 	"io"
+	"strconv"
 )
 
 // Status codes returned in QUIC response frames.
+//
+// # The vocabulary is gRPC's seventeen conditions, under this protocol's own numbering
+//
+// The set of CONDITIONS this wire can report is exactly the set gRPC's status
+// codes name — one wire status per gRPC code, seventeen of each, no condition
+// in either that the other cannot express. That correspondence is written down
+// once, in pkg/api/quic.wireStatusByGRPCCode, and asserted to be a bijection by
+// TestWireStatusByGRPCCode_IsABijection.
+//
+// It was chosen rather than a smaller set for three measured reasons:
+//
+//  1. The server already speaks this vocabulary. pkg/api/grpc emits fifteen of
+//     the seventeen codes across roughly eighty classified conditions; QUIC
+//     declared six, so every InvalidArgument, AlreadyExists, NotFound,
+//     FailedPrecondition, Aborted, OutOfRange, Canceled, ResourceExhausted and
+//     DataLoss the service layer produced arrived on this wire as the generic
+//     StatusError. "QUIC is deliberately narrower" described the frame layout,
+//     never the conditions the handlers behind it can reach.
+//  2. This wire PROJECTS gRPC services onto its frames. A capability module
+//     registers a grpc.ServiceDesc and pkg/api/quic/modules.go dispatches its
+//     unary methods as QUIC frames, so a module's handler answers in gRPC's
+//     vocabulary by construction. Anything narrower than a 1:1 correspondence
+//     is lossy for every projected module, permanently.
+//  3. Four separate pieces of work escalated to the missing vocabulary rather
+//     than inventing a status locally. Deciding the whole set once is what
+//     stops the set from being whatever the last four issues happened to need.
+//
+// The cost, stated plainly: two of the seventeen (StatusDeadlineExceeded,
+// StatusUnknown) are never produced by qrdb's own handlers today and exist
+// only so the projection in (2) is total. A partial map there would silently
+// degrade a module's error to StatusError, which is the defect this whole
+// vocabulary exists to remove.
+//
+// # Numbering extends, it never renumbers
+//
+// Codes 0-5 keep the values they have always had: a renumbering is permitted
+// pre-1.0 but breaks every deployed peer simultaneously and buys nothing. The
+// consequence is that the numbering is qrdb's own and does NOT equal gRPC's —
+// StatusNotFound is 6 here and codes.NotFound is 5 — so the correspondence is
+// by MEANING and goes through the map named above, never through a cast.
+//
+// A future condition appends at the next free number. It is a one-constant
+// change here plus one row in that map, and the bijection test names the row
+// that is missing.
+//
+// # Version skew
+//
+// A client built before a status existed reads it as an unrecognised number
+// and falls through to its generic request error — degraded to exactly the
+// behaviour it had before the status was added, never a misclassification.
+// Server and client are shipped from this repository together; a mixed
+// deployment therefore loses precision on old clients and nothing else.
 const (
-	StatusOK               uint16 = 0
-	StatusError            uint16 = 1
-	StatusUnimplemented    uint16 = 2
-	StatusUnauthenticated  uint16 = 3
+	// StatusOK reports success. Peer of codes.OK.
+	StatusOK uint16 = 0
+
+	// StatusError reports a server-side fault the server could not classify.
+	// Peer of codes.Internal: it is this protocol's fallback exactly as
+	// Internal is gRPC's. It predates the vocabulary and keeps its name.
+	StatusError uint16 = 1
+
+	// StatusUnimplemented reports a healthy node that does not carry the verb.
+	// Peer of codes.Unimplemented.
+	StatusUnimplemented uint16 = 2
+
+	// StatusUnauthenticated reports a caller that did not authenticate.
+	// Peer of codes.Unauthenticated.
+	StatusUnauthenticated uint16 = 3
+
+	// StatusPermissionDenied reports an authenticated caller that may not.
+	// Peer of codes.PermissionDenied.
 	StatusPermissionDenied uint16 = 4
-	StatusUnavailable      uint16 = 5
+
+	// StatusUnavailable reports a retryable node-side condition — a sealed
+	// barrier, a closed store, a non-leader with no resolver, a drain.
+	// Peer of codes.Unavailable.
+	StatusUnavailable uint16 = 5
+
+	// StatusNotFound reports that the addressed subject does not exist.
+	// Peer of codes.NotFound.
+	StatusNotFound uint16 = 6
+
+	// StatusInvalidArgument reports a request the server refused on its own
+	// merits. Peer of codes.InvalidArgument.
+	StatusInvalidArgument uint16 = 7
+
+	// StatusAlreadyExists reports a create that collided with a live subject.
+	// Peer of codes.AlreadyExists.
+	StatusAlreadyExists uint16 = 8
+
+	// StatusFailedPrecondition reports a request valid in itself that the
+	// system's current state refuses. Peer of codes.FailedPrecondition.
+	StatusFailedPrecondition uint16 = 9
+
+	// StatusResourceExhausted reports a quota, a rate limit or a bound on
+	// request size. Peer of codes.ResourceExhausted.
+	StatusResourceExhausted uint16 = 10
+
+	// StatusAborted reports a concurrency conflict the caller may retry from
+	// the top. Peer of codes.Aborted.
+	StatusAborted uint16 = 11
+
+	// StatusOutOfRange reports an address outside the range the server still
+	// holds. Peer of codes.OutOfRange.
+	StatusOutOfRange uint16 = 12
+
+	// StatusCanceled reports work the caller or the server stopped.
+	// Peer of codes.Canceled.
+	StatusCanceled uint16 = 13
+
+	// StatusDataLoss reports unrecoverable corruption of persisted state.
+	// Peer of codes.DataLoss.
+	StatusDataLoss uint16 = 14
+
+	// StatusDeadlineExceeded reports a deadline that elapsed before the work
+	// completed. Peer of codes.DeadlineExceeded. Reachable only through a
+	// projected capability module; qrdb's own handlers never produce it.
+	StatusDeadlineExceeded uint16 = 15
+
+	// StatusUnknown reports an error the ORIGIN could not classify — distinct
+	// from StatusError, which is this server declining to classify. Peer of
+	// codes.Unknown. Reachable only through a projected capability module.
+	StatusUnknown uint16 = 16
 )
+
+// statusNames is the diagnostic rendering of every declared status.
+//
+// It is a map rather than a switch so that adding a status and forgetting its
+// name is one missing key rather than a silently reachable default, and so
+// that TestStatusName_CoversEveryDeclaredStatus can assert the vocabulary and
+// this table have the same size.
+var statusNames = map[uint16]string{
+	StatusOK:                 "OK",
+	StatusError:              "ERROR",
+	StatusUnimplemented:      "UNIMPLEMENTED",
+	StatusUnauthenticated:    "UNAUTHENTICATED",
+	StatusPermissionDenied:   "PERMISSION_DENIED",
+	StatusUnavailable:        "UNAVAILABLE",
+	StatusNotFound:           "NOT_FOUND",
+	StatusInvalidArgument:    "INVALID_ARGUMENT",
+	StatusAlreadyExists:      "ALREADY_EXISTS",
+	StatusFailedPrecondition: "FAILED_PRECONDITION",
+	StatusResourceExhausted:  "RESOURCE_EXHAUSTED",
+	StatusAborted:            "ABORTED",
+	StatusOutOfRange:         "OUT_OF_RANGE",
+	StatusCanceled:           "CANCELED",
+	StatusDataLoss:           "DATA_LOSS",
+	StatusDeadlineExceeded:   "DEADLINE_EXCEEDED",
+	StatusUnknown:            "UNKNOWN",
+}
+
+// StatusName renders a wire status for logs and error messages. A status this
+// build does not declare renders as "STATUS_<n>" rather than as a guess, so a
+// frame from a newer peer is legible in a log without being misreported.
+func StatusName(status uint16) string {
+	if name, ok := statusNames[status]; ok {
+		return name
+	}
+	return "STATUS_" + strconv.FormatUint(uint64(status), 10)
+}
+
+// StatusDeclared reports whether this build declares the given status. It is
+// how a client tells "a condition I do not know yet" from "a condition I chose
+// to handle generically".
+func StatusDeclared(status uint16) bool {
+	_, ok := statusNames[status]
+	return ok
+}
 
 // MaxMethodLen is the maximum length of a method name in bytes.
 const MaxMethodLen = 256

@@ -216,18 +216,23 @@ func TestMapServiceError_RestoreInternalKeyError(t *testing.T) {
 	}
 }
 
+// The restore guards are the caller's own request being refused on its merits,
+// so they answer StatusInvalidArgument since go-qrdb#437 -- matching the gRPC
+// transport, which has always answered codes.InvalidArgument for them. They
+// rode StatusError only because this wire had nothing else to say.
+
 func TestMapServiceError_RestoreScopeEmptyError(t *testing.T) {
 	err := &service.RestoreScopeEmptyError{}
 	statusCode, _ := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
 	}
 }
 
 func TestMapServiceError_RestoreRevisionFutureError(t *testing.T) {
 	err := &service.RestoreRevisionFutureError{Requested: 99, Current: 5}
 	statusCode, _ := mapServiceError(err)
-	if statusCode != wire.StatusError {
-		t.Fatalf("expected StatusError (%d), got %d", wire.StatusError, statusCode)
+	if statusCode != wire.StatusInvalidArgument {
+		t.Fatalf("expected StatusInvalidArgument (%d), got %d", wire.StatusInvalidArgument, statusCode)
 	}
 }

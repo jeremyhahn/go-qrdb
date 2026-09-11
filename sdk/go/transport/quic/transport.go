@@ -745,61 +745,102 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 	})
 }
 
+// typedWireErrors are the wire statuses this client reconstitutes into a TYPED
+// SDK error rather than into a generic request error.
+//
+// A map of constructors rather than a switch: adding a typed reconstitution is
+// one row, and every status NOT listed falls through to the generic error by
+// construction — which is exactly the behaviour a client built before a status
+// existed has to show when a newer server sends it.
+//
+// Both entries mirror the gRPC transport's mapGRPCError, including its guess:
+// a bare NotFound says the subject is absent but not WHICH subject, so the
+// shared mapper reconstitutes the key flavour and the call-site mappers below
+// override it where the subject is known. That is the same division of labour
+// mapUserNotFound and mapLeaseAbsent have on gRPC.
+var typedWireErrors = map[uint16]func(msg string) error{
+	// The node is healthy and does not implement this verb — an opcode its
+	// state machine has no handler for, a subsystem it was constructed
+	// without, or a method this server build does not register at all.
+	// Reconstituting the typed error here is what lets a consumer degrade
+	// gracefully over QUIC exactly as it can embedded, over gRPC and over
+	// unix, instead of matching message text (go-qrdb#141).
+	//
+	// This mirrors mapGRPCError's codes.Unimplemented case exactly, including
+	// its conflation of the two: gRPC returns Unimplemented both for a
+	// capability refusal and for an unregistered method, and a
+	// GuardedKVClient talking to an older server that does not carry the verbs
+	// needs precisely that answer — "this node cannot do that" — not a generic
+	// request failure it might retry forever (go-qrdb#124).
+	wire.StatusUnimplemented: func(msg string) error {
+		return &transport.CapabilityUnsupportedError{Message: msg}
+	},
+
+	// This case REPLACES a strings.Contains(msg, "key not found") test that
+	// ran under StatusError, because the wire had no not-found status and the
+	// message was the only signal left. That is the fail-open classification
+	// go-qrdb#289 exists to delete: a transport failure whose text happened to
+	// contain the phrase read as absence. The server now says which condition
+	// it is and the client no longer reads the prose.
+	wire.StatusNotFound: func(msg string) error {
+		return &transport.KeyNotFoundError{Key: msg}
+	},
+}
+
+// wireStatusPrefixes label the generic request error with the condition the
+// server named, so a client log says which of the seventeen it was instead of
+// repeating the server's sentence with no classification attached.
+//
+// StatusUnavailable's label used to read "barrier sealed", which was true of
+// the only condition that produced it when it was written and wrong for the
+// four that produce it now — a closed store, a drain, a non-leader and an
+// exhausted cluster all arrive here.
+var wireStatusPrefixes = map[uint16]string{
+	wire.StatusUnauthenticated:    "unauthenticated: ",
+	wire.StatusPermissionDenied:   "permission denied: ",
+	wire.StatusUnavailable:        "unavailable: ",
+	wire.StatusInvalidArgument:    "invalid argument: ",
+	wire.StatusAlreadyExists:      "already exists: ",
+	wire.StatusFailedPrecondition: "failed precondition: ",
+	wire.StatusResourceExhausted:  "resource exhausted: ",
+	wire.StatusAborted:            "aborted: ",
+	wire.StatusOutOfRange:         "out of range: ",
+	wire.StatusCanceled:           "canceled: ",
+	wire.StatusDataLoss:           "data loss: ",
+	wire.StatusDeadlineExceeded:   "deadline exceeded: ",
+	wire.StatusUnknown:            "unknown: ",
+}
+
 // mapWireError translates a QUIC wire status code and payload into the
 // appropriate SDK transport error type.
+//
+// A status this build does not recognise — a newer server's — keeps its
+// number on the RequestError and its message unprefixed, so it degrades to the
+// generic failure this client would have reported anyway and never to a
+// misclassification.
 func mapWireError(method string, statusCode uint16, payload []byte) error {
 	msg := string(payload)
 
-	switch statusCode {
-	case wire.StatusError:
-		if strings.Contains(msg, "key not found") {
-			return &transport.KeyNotFoundError{Key: msg}
-		}
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New(msg),
-		}
-	case wire.StatusUnimplemented:
-		// The node is healthy and does not implement this verb — an opcode its
-		// state machine has no handler for, a subsystem it was constructed
-		// without, or a method this server build does not register at all.
-		// Reconstituting the typed error here is what lets a consumer degrade
-		// gracefully over QUIC exactly as it can embedded, over gRPC and over
-		// unix, instead of matching message text (go-qrdb#141).
-		//
-		// This mirrors mapGRPCError's codes.Unimplemented case exactly,
-		// including its conflation of the two: gRPC returns Unimplemented both
-		// for a capability refusal and for an unregistered method, and a
-		// GuardedKVClient talking to an older server that does not carry the
-		// verbs needs precisely that answer — "this node cannot do that" — not
-		// a generic request failure it might retry forever (go-qrdb#124).
-		return &transport.CapabilityUnsupportedError{Message: msg}
-	case wire.StatusUnauthenticated:
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New("unauthenticated: " + msg),
-		}
-	case wire.StatusPermissionDenied:
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New("permission denied: " + msg),
-		}
-	case wire.StatusUnavailable:
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New("barrier sealed: " + msg),
-		}
-	default:
-		return &transport.RequestError{
-			Method:     method,
-			StatusCode: int(statusCode),
-			Err:        errors.New(msg),
-		}
+	if build, ok := typedWireErrors[statusCode]; ok {
+		return build(msg)
 	}
+
+	return &transport.RequestError{
+		Method:     method,
+		StatusCode: int(statusCode),
+		Err:        errors.New(wireStatusPrefixes[statusCode] + msg),
+	}
+}
+
+// isWireNotFound reports whether err is the not-found the shared mapper
+// reconstitutes from wire.StatusNotFound.
+//
+// The call-site mappers below ask this and then rebuild the error around the
+// subject THEY named, so the typed error carries which user or which lease was
+// missing rather than a descriptor parsed back out of the server's prose.
+func isWireNotFound(err error) bool {
+	var knf *transport.KeyNotFoundError
+	return errors.As(err, &knf)
 }
 
 // stripScheme removes http:// or https:// prefixes from addresses so

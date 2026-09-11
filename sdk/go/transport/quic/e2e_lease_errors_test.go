@@ -14,15 +14,23 @@
 
 // go-qrdb#169: carry the typed lease not-found/expired errors across the
 // QUIC seam, completing #141 for the lease family the same way #289 did for
-// the user family. pkg/api/quic/errors.go's mapServiceError has no case of
-// its own for service.LeaseNotFoundError / service.LeaseExpiredError -- both
-// fall through to its final `return wire.StatusError, []byte(err.Error())`,
-// which already reproduces the exact "service: lease not found: <id>" /
-// "service: lease expired: <id>" text a real server would send. These tests
-// exercise that wire contract directly via serverErr rather than standing up
-// a service.LeaseServicer, mirroring TestE2E_LeaseRevoke_ServerErr and
-// siblings in e2e_server_errors_test.go, which use the identical harness for
-// the untyped case these tests are completing.
+// the user family.
+//
+// pkg/api/quic/errors.go now maps BOTH service.LeaseNotFoundError and
+// service.LeaseExpiredError to wire.StatusNotFound (go-qrdb#437), matching the
+// gRPC transport, which answers codes.NotFound for both because neither
+// protocol has an expired-specific sibling of not-found. Until #437 this wire
+// had no not-found status at all and both fell through to StatusError -- the
+// same status a transport fault carries -- so the message text was the ONLY
+// thing separating "your lease is gone" from "this node broke". These tests
+// pinned that arrangement and now pin its replacement.
+//
+// They exercise the wire contract directly via serverNotFound rather than
+// standing up a service.LeaseServicer, mirroring TestE2E_LeaseRevoke_ServerErr
+// and siblings in e2e_server_errors_test.go, which use the identical harness
+// for the untyped case these tests are completing. The status and message the
+// double sends are the ones a real server sends, pinned by
+// pkg/api/quic.TestMapServiceError_EveryCondition.
 
 package quic
 
@@ -37,7 +45,7 @@ import (
 
 func TestE2E_LeaseRevoke_NotFound(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.Revoke", "service: lease not found: 42")
+	serverNotFound(srv, "lease.Revoke", "service: lease not found: 42")
 
 	err := tr.LeaseRevoke(context.Background(), 42)
 	var notFound *transport.LeaseNotFoundError
@@ -51,7 +59,7 @@ func TestE2E_LeaseRevoke_NotFound(t *testing.T) {
 
 func TestE2E_LeaseRevoke_Expired(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.Revoke", "service: lease expired: 42")
+	serverNotFound(srv, "lease.Revoke", "service: lease expired: 42")
 
 	err := tr.LeaseRevoke(context.Background(), 42)
 	var expired *transport.LeaseExpiredError
@@ -65,7 +73,7 @@ func TestE2E_LeaseRevoke_Expired(t *testing.T) {
 
 func TestE2E_LeaseKeepAlive_NotFound(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.KeepAlive", "service: lease not found: 7")
+	serverNotFound(srv, "lease.KeepAlive", "service: lease not found: 7")
 
 	_, err := tr.LeaseKeepAlive(context.Background(), 7)
 	var notFound *transport.LeaseNotFoundError
@@ -79,7 +87,7 @@ func TestE2E_LeaseKeepAlive_NotFound(t *testing.T) {
 
 func TestE2E_LeaseKeepAlive_Expired(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.KeepAlive", "service: lease expired: 7")
+	serverNotFound(srv, "lease.KeepAlive", "service: lease expired: 7")
 
 	_, err := tr.LeaseKeepAlive(context.Background(), 7)
 	var expired *transport.LeaseExpiredError
@@ -93,7 +101,7 @@ func TestE2E_LeaseKeepAlive_Expired(t *testing.T) {
 
 func TestE2E_LeaseTimeToLive_NotFound(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.TimeToLive", "service: lease not found: 99")
+	serverNotFound(srv, "lease.TimeToLive", "service: lease not found: 99")
 
 	_, err := tr.LeaseTimeToLive(context.Background(), 99)
 	var notFound *transport.LeaseNotFoundError
@@ -107,7 +115,7 @@ func TestE2E_LeaseTimeToLive_NotFound(t *testing.T) {
 
 func TestE2E_LeaseTimeToLive_Expired(t *testing.T) {
 	srv, tr := startE2EServer(t)
-	serverErr(srv, "lease.TimeToLive", "service: lease expired: 99")
+	serverNotFound(srv, "lease.TimeToLive", "service: lease expired: 99")
 
 	_, err := tr.LeaseTimeToLive(context.Background(), 99)
 	var expired *transport.LeaseExpiredError
@@ -120,10 +128,19 @@ func TestE2E_LeaseTimeToLive_Expired(t *testing.T) {
 }
 
 // TestE2E_LeaseTimeToLive_OtherErrNotReclassified is the mutation-check
-// companion: mapLeaseAbsent must not turn an UNRELATED wire.StatusError body
-// into a lease error just because it arrived from a lease call. This is what
-// would go red if the substring checks in mapLeaseAbsent were deleted in
-// favor of "any wire.StatusError at a lease call site is a lease error".
+// companion: mapLeaseAbsent must not turn a SERVER FAULT into a lease error
+// just because it arrived from a lease call. This is what would go red if the
+// status gate in mapLeaseAbsent were deleted in favour of "any failure at a
+// lease call site is a lease error".
+//
+// The gate it guards changed with go-qrdb#437. It used to be "StatusError
+// carrying the words lease not found", which meant a fault and an absence
+// arrived under the same status and only the prose separated them. It is now
+// "StatusNotFound", so a fault like this one is excluded by the status before
+// the message is looked at. Note that ANY StatusNotFound at a lease-by-id call
+// site IS a lease not-found — the call site knows its subject, exactly as the
+// gRPC transport's mapLeaseAbsent does with codes.NotFound — so it is the
+// fault case, not a differently-worded absence, that this test pins.
 func TestE2E_LeaseTimeToLive_OtherErrNotReclassified(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	serverErr(srv, "lease.TimeToLive", "some unrelated failure")

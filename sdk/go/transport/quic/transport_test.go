@@ -479,11 +479,37 @@ func TestStripScheme_EmptyString(t *testing.T) {
 // mapWireError tests
 // ---------------------------------------------------------------------------
 
-func TestMapWireError_StatusError_KeyNotFound(t *testing.T) {
-	err := mapWireError("kv.Get", wire.StatusError, []byte("key not found"))
+// TestMapWireError_StatusNotFound_IsTyped REPLACES
+// TestMapWireError_StatusError_KeyNotFound, which asserted that a StatusError
+// frame whose message CONTAINED "key not found" was reconstituted as absence.
+//
+// That was the fail-open classification go-qrdb#289 exists to remove: a
+// transport failure whose text happened to carry the phrase read as "this key
+// does not exist". It was defensible only for as long as the wire had no
+// not-found status. go-qrdb#437 gave it one, so the classification now comes
+// from the status and the message is never read.
+func TestMapWireError_StatusNotFound_IsTyped(t *testing.T) {
+	err := mapWireError("kv.Get", wire.StatusNotFound, []byte("service: key not found: k"))
 	var knf *transport.KeyNotFoundError
 	if !errors.As(err, &knf) {
-		t.Errorf("expected KeyNotFoundError, got %T: %v", err, err)
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+// TestMapWireError_StatusErrorIsNeverNotFound is the negative half, and the
+// one that matters: the substring must NOT be trusted any more. A server fault
+// whose message mentions a missing key is a server fault.
+func TestMapWireError_StatusErrorIsNeverNotFound(t *testing.T) {
+	err := mapWireError("kv.Get", wire.StatusError, []byte("proxy died: key not found in upstream"))
+	var knf *transport.KeyNotFoundError
+	if errors.As(err, &knf) {
+		t.Fatal("a StatusError frame was classified as absence because its message " +
+			"contained \"key not found\" — that is the fail-open classification " +
+			"go-qrdb#289 deleted, not a feature to restore")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
 	}
 }
 

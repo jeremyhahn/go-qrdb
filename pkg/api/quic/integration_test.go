@@ -280,8 +280,11 @@ func TestIntegration_KVPut_ServiceError(t *testing.T) {
 
 	_, status, _ := roundTrip(t, conn, "kv.Put", 1, payload)
 
-	if status != wire.StatusError {
-		t.Fatalf("expected StatusError (1), got %d", status)
+	// Through the REAL server and the REAL frame protocol: a non-leader is a
+	// routing condition the caller retries, and since go-qrdb#437 this wire
+	// says so instead of reporting it as a server fault.
+	if status != wire.StatusUnavailable {
+		t.Fatalf("expected StatusUnavailable (%d), got %d", wire.StatusUnavailable, status)
 	}
 }
 
@@ -340,8 +343,12 @@ func TestIntegration_KVGet_NotFound(t *testing.T) {
 
 	_, status, respPayload := roundTrip(t, conn, "kv.Get", 101, payload)
 
-	if status != wire.StatusError {
-		t.Fatalf("expected StatusError (1), got %d", status)
+	// Through the REAL server and the REAL frame protocol, not a hand-built
+	// frame: this is the end-to-end proof that an absent key reaches a QUIC
+	// caller as absence rather than as the generic failure (go-qrdb#437). The
+	// SDK's KeyNotFoundError is reconstituted from exactly this status.
+	if status != wire.StatusNotFound {
+		t.Fatalf("expected StatusNotFound (%d), got %d", wire.StatusNotFound, status)
 	}
 	if len(respPayload) == 0 {
 		t.Fatal("expected non-empty error payload")

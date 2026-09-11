@@ -83,6 +83,20 @@ implements it by delegating straight to `RegisterGRPC`. Streaming methods are
 not projected — QUIC's frame protocol has no generic streaming path — so a
 module whose surface is entirely streaming leaves this hook a no-op.
 
+**This projection is what decided the QUIC status vocabulary.** A projected
+method's handler is the module's own generated gRPC code, so it answers with a
+gRPC status by construction — it has never seen the frame protocol and cannot
+be asked to. The frame protocol therefore declares one status per gRPC status
+code, and the QUIC server translates a module's answer through a single table
+asserted to be a bijection. Anything narrower would be lossy for every
+projected module permanently, and could not be fixed by adding a clause to a
+handler: there is no qrdb handler in that path to add it to.
+
+That constraint is the reason the question "should the QUIC wire mirror gRPC's
+codes?" has a measured answer rather than a taste-based one. See
+[api.md](api.md#the-quic-status-vocabulary) for the vocabulary and
+[the alternatives below](#alternatives-rejected) for what was rejected.
+
 `BaseModule` supplies no-op defaults for every hook **except `Name`**, so a
 module embeds it and overrides only what applies — and cannot accidentally be
 anonymous.
@@ -146,6 +160,31 @@ neither owns a verb neither registered. See
   Rejected — an operation a module needs (QUIC reachability) belongs on the
   interface every module implements, not behind a capability check a module
   can silently fail to satisfy.
+- **A small, purpose-built QUIC status set — one status per condition that has
+  actually been asked for.** Rejected. It is how the six-status vocabulary was
+  arrived at, and four separate pieces of work then escalated to it in turn; a
+  set assembled an issue at a time ends up arbitrary, and every future
+  condition is a protocol change rather than a lookup. Measured against the
+  code rather than against taste: `pkg/api/grpc` classifies roughly eighty
+  conditions across fifteen of gRPC's seventeen codes, so "QUIC is deliberately
+  narrower" described the frame layout and was never true of the conditions the
+  handlers behind it reach.
+- **Adopting gRPC's status codes by NUMBER as well as by meaning.** Rejected:
+  it would renumber `StatusError`, `StatusUnimplemented`,
+  `StatusUnauthenticated`, `StatusPermissionDenied` and `StatusUnavailable`,
+  which breaks every deployed peer simultaneously and buys nothing a lookup
+  table does not already give. Pre-1.0 permission to renumber is not a reason
+  to. The correspondence is therefore by meaning, through one table, and no
+  arithmetic relates the two numberings.
+- **Declaring only the fifteen codes qrdb's own handlers emit.** Rejected, but
+  narrowly: the two left out (`DEADLINE_EXCEEDED`, `UNKNOWN`) are emitted by
+  nothing in qrdb today, so on a "what does the codebase demonstrably need"
+  test they do not qualify. They are declared anyway because the module
+  projection above makes the table's TOTALITY the property that matters — a
+  missing row degrades a module's answer silently, and silence is what this
+  whole change exists to remove. The cost is two constants that qrdb's own
+  handlers never produce, and it is named in the wire package rather than
+  glossed.
 
 ## Component boundaries
 

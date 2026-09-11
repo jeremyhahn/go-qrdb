@@ -18,11 +18,17 @@ import (
 	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/lock"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // StartError is returned when the QUIC server fails to start listening.
@@ -204,10 +210,25 @@ func (e *ModuleMethodResponseTypeError) Error() string {
 
 // mapServiceError translates a service-layer error into a wire status code
 // and error message payload. Returns StatusOK with nil payload when err is nil.
+//
+// The clause order and the status chosen for each condition MIRROR
+// pkg/api/grpc.mapServiceError row for row, through the correspondence in
+// status.go. Both files answer the same question about the same service-layer
+// errors, and TestQUICAndGRPCAgreeOnEveryCondition asserts they give the same
+// answer for every condition either one classifies, so the two cannot drift
+// into telling a QUIC caller and a gRPC caller different things about one
+// event.
+//
+// Before the vocabulary landed this function could only reach six statuses, so
+// roughly sixty of the conditions below collapsed into the generic StatusError
+// and a QUIC caller could not tell a missing user from a broken node. See the
+// wire package's Status documentation for why the set is gRPC's.
 func mapServiceError(err error) (uint16, []byte) {
 	if err == nil {
 		return wire.StatusOK, nil
 	}
+
+	msg := []byte(err.Error())
 
 	// Unimplemented, not Error. The node is healthy; it simply was not built
 	// with this verb on the configured state machine (an absent opcode, or a
@@ -224,39 +245,332 @@ func mapServiceError(err error) (uint16, []byte) {
 	// pkg/api/grpc.mapServiceError, whose first clause it is.
 	var cue *service.CapabilityUnsupportedError
 	if errors.As(err, &cue) {
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
+	// NotFound, not Error. A key that is absent is not a server fault, and
+	// until the vocabulary existed the SDK client had to recover the
+	// distinction by substring-matching "key not found" out of the message —
+	// the fail-open classification go-qrdb#289 exists to delete.
 	var knf *service.KeyNotFoundError
 	if errors.As(err, &knf) {
-		return wire.StatusError, []byte(err.Error())
+		return wire.StatusNotFound, msg
 	}
 
+	// The identity not-found family (go-qrdb#289). pkg/user.UserNotFoundError
+	// is an ALIAS of transport.UserNotFoundError, so the type the service
+	// returns and the type the SDK promises are one type; all this clause has
+	// to do is stop flattening it into StatusError. The SDK's call-site
+	// mappers rebuild it from the id THEY asked for, never from this message.
+	var unf *transport.UserNotFoundError
+	if errors.As(err, &unf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var rnfe *role.RoleNotFoundError
+	if errors.As(err, &rnfe) {
+		// Deliberately the SAME status a missing user gets, matching gRPC and
+		// REST. AssignRole can fail for either subject and the wire does not
+		// separate them, which is why the SDK types neither — see
+		// TestUserNotFound_AmbiguousMethods in sdk/go/conformance.
+		return wire.StatusNotFound, msg
+	}
+
+	// Unavailable, not Error: a non-leader is a routing condition the caller
+	// retries, exactly as gRPC has always reported it.
 	var nle *service.NotLeaderError
 	if errors.As(err, &nle) {
-		return wire.StatusError, []byte(err.Error())
+		return wire.StatusUnavailable, msg
+	}
+
+	// Must precede ProposeError: a request the protocol cannot encode was
+	// never proposed, so it is the caller's input that is wrong and not the
+	// cluster.
+	var ere *service.EncodeRequestError
+	if errors.As(err, &ere) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	// Must precede ProposeError and ReadError: a call that met a closed store
+	// arrives wrapped in one of them, and StatusError would tell the caller
+	// the server broke when in fact the node is going away underneath it
+	// (go-qrdb#371). This is the quic half of PR #435, which typed the
+	// condition on embedded and classified it on gRPC, unix and REST and had
+	// no status to classify it with here.
+	if errors.Is(err, storage.ErrStorageClosed) {
+		return wire.StatusUnavailable, msg
+	}
+
+	var pe *service.ProposeError
+	if errors.As(err, &pe) {
+		return wire.StatusError, msg
+	}
+
+	var re *service.ReadError
+	if errors.As(err, &re) {
+		return wire.StatusError, msg
+	}
+
+	var me *service.MembershipError
+	if errors.As(err, &me) {
+		return wire.StatusError, msg
+	}
+
+	var se *service.SnapshotRequestError
+	if errors.As(err, &se) {
+		return wire.StatusError, msg
+	}
+
+	var de *service.DrainError
+	if errors.As(err, &de) {
+		return wire.StatusUnavailable, msg
+	}
+
+	var rce *service.RevisionCompactedError
+	if errors.As(err, &rce) {
+		return wire.StatusOutOfRange, msg
+	}
+
+	var rnf *service.RevisionNotFoundError
+	if errors.As(err, &rnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var tce *service.TransactionConflictError
+	if errors.As(err, &tce) {
+		return wire.StatusAborted, msg
+	}
+
+	var wce *service.WatchCanceledError
+	if errors.As(err, &wce) {
+		return wire.StatusCanceled, msg
+	}
+
+	// The lease family (go-qrdb#169). Both not-found and expired answer
+	// NotFound, matching gRPC exactly: neither protocol has an expired-specific
+	// sibling of NotFound and REST's 404 does not either. The SDK's
+	// mapLeaseAbsent tells the two apart at the call site, where the subject is
+	// already known to be a lease.
+	var lnf *service.LeaseNotFoundError
+	if errors.As(err, &lnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var lee *service.LeaseExpiredError
+	if errors.As(err, &lee) {
+		return wire.StatusNotFound, msg
+	}
+
+	var lexe *service.LeaseExistsError
+	if errors.As(err, &lexe) {
+		return wire.StatusAlreadyExists, msg
+	}
+
+	var be *service.BatchError
+	if errors.As(err, &be) {
+		return wire.StatusError, msg
+	}
+
+	var inf *service.IndexNotFoundError
+	if errors.As(err, &inf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var iee *service.IndexExistsError
+	if errors.As(err, &iee) {
+		return wire.StatusAlreadyExists, msg
+	}
+
+	var tse *service.TimeSeriesError
+	if errors.As(err, &tse) {
+		return wire.StatusError, msg
+	}
+
+	var cse *service.ConsistencyError
+	if errors.As(err, &cse) {
+		return wire.StatusFailedPrecondition, msg
+	}
+
+	var vnf *service.VectorNotFoundError
+	if errors.As(err, &vnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var nnf *service.NamespaceNotFoundError
+	if errors.As(err, &nnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var nee *service.NamespaceExistsError
+	if errors.As(err, &nee) {
+		return wire.StatusAlreadyExists, msg
+	}
+
+	var dme *service.DimensionMismatchError
+	if errors.As(err, &dme) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ive *service.InvalidVectorError
+	if errors.As(err, &ive) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cae *service.CollectionAlreadyExistsError
+	if errors.As(err, &cae) {
+		return wire.StatusAlreadyExists, msg
+	}
+
+	var cnf *service.CollectionNotFoundError
+	if errors.As(err, &cnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var cen *service.CollectionEmptyNameError
+	if errors.As(err, &cen) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ced *service.CollectionEmptyDatabaseError
+	if errors.As(err, &ced) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cis *service.CollectionInvalidIDStrategyError
+	if errors.As(err, &cis) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cmf *service.CollectionMissingFieldHashError
+	if errors.As(err, &cmf) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cdnf *service.CollectionDocumentNotFoundError
+	if errors.As(err, &cdnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var cedc *service.CollectionEmptyDocumentError
+	if errors.As(err, &cedc) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cidi *service.CollectionInvalidDocumentIDError
+	if errors.As(err, &cidi) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var cme *service.CollectionMetadataError
+	if errors.As(err, &cme) {
+		return wire.StatusError, msg
+	}
+
+	// -------------------------------------------------------------------
+	// Bulk import guard errors.
+	// -------------------------------------------------------------------
+
+	var iif *service.ImportInvalidFormatError
+	if errors.As(err, &iif) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var imk *service.ImportMissingKeyFieldError
+	if errors.As(err, &imk) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ivm *service.ImportInvalidValueModeError
+	if errors.As(err, &ivm) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var imv *service.ImportMissingValueFieldError
+	if errors.As(err, &imv) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ipe *service.ImportParseError
+	if errors.As(err, &ipe) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var iae *service.ImportArchiveError
+	if errors.As(err, &iae) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ita *service.ImportTransactionAbortedError
+	if errors.As(err, &ita) {
+		return wire.StatusAborted, msg
+	}
+
+	var iite *service.ImportInputTooLargeError
+	if errors.As(err, &iite) {
+		return wire.StatusResourceExhausted, msg
+	}
+
+	var iaete *service.ImportArchiveExpandedTooLargeError
+	if errors.As(err, &iaete) {
+		return wire.StatusResourceExhausted, msg
+	}
+
+	var itme *service.ImportTooManyEntriesError
+	if errors.As(err, &itme) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var itmr *service.ImportTooManyRowsError
+	if errors.As(err, &itmr) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var iptl *service.ImportProposalTooLargeError
+	if errors.As(err, &iptl) {
+		return wire.StatusResourceExhausted, msg
 	}
 
 	var snc *ServiceNotConfiguredError
 	if errors.As(err, &snc) {
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
 	var ccnc *CeremonyCANotConfiguredError
 	if errors.As(err, &ccnc) {
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
-	var tqee *tenant.QuotaExceededError
-	if errors.As(err, &tqee) {
-		return wire.StatusError, []byte(err.Error())
+	// InvalidArgumentError is this package's own guard for a malformed or
+	// incomplete frame payload. It answered StatusError for want of anywhere
+	// better, which told a caller its own bad request was a server fault.
+	var iae2 *InvalidArgumentError
+	if errors.As(err, &iae2) {
+		return wire.StatusInvalidArgument, msg
 	}
 
-	var infe *placement.InsufficientNodesError
-	if errors.As(err, &infe) {
-		// Cluster has no free node for the request — distinct from a quota
-		// rejection, retryable once capacity changes.
-		return wire.StatusUnavailable, []byte(err.Error())
+	// A share-claim frame with no verified client certificate is refused as an
+	// authority the caller does not have.
+	var ccr *ClientCertRequiredError
+	if errors.As(err, &ccr) {
+		return wire.StatusPermissionDenied, msg
+	}
+
+	// A malformed request payload is the caller's, not the server's. Its
+	// sibling MarshalError stays StatusError: a response this server could not
+	// encode IS a server fault.
+	var ue *UnmarshalError
+	if errors.As(err, &ue) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var tnf *service.TenantNotFoundError
+	if errors.As(err, &tnf) {
+		return wire.StatusNotFound, msg
+	}
+
+	var dnf *service.DatabaseNotFoundError
+	if errors.As(err, &dnf) {
+		return wire.StatusNotFound, msg
 	}
 
 	var bse *service.BarrierSealedError
@@ -264,7 +578,7 @@ func mapServiceError(err error) (uint16, []byte) {
 		// A data-plane operation targeted a sealed barrier. Surface
 		// Unavailable so the caller retries after the barrier is unsealed,
 		// matching the gRPC and REST BarrierSealedError mapping.
-		return wire.StatusUnavailable, []byte(err.Error())
+		return wire.StatusUnavailable, msg
 	}
 
 	if errors.Is(err, tenant.ErrTenantSealed) {
@@ -273,7 +587,77 @@ func mapServiceError(err error) (uint16, []byte) {
 		// the operation through the shared system store — surface Unavailable
 		// so the caller retries after the tenant's barrier is unsealed,
 		// matching the BarrierSealedError data-plane mapping.
-		return wire.StatusUnavailable, []byte(err.Error())
+		return wire.StatusUnavailable, msg
+	}
+
+	var lhe *lock.LockHeldError
+	if errors.As(err, &lhe) {
+		return wire.StatusAborted, msg
+	}
+
+	var nlh *lock.NotLockHolderError
+	if errors.As(err, &nlh) {
+		return wire.StatusPermissionDenied, msg
+	}
+
+	var lnfe *lock.LockNotFoundError
+	if errors.As(err, &lnfe) {
+		return wire.StatusNotFound, msg
+	}
+
+	// A THROTTLED caller, not a denied one.
+	//
+	// This condition is why the rate-limit feature's own documentation carried
+	// the line "no separate numeric status for this class of error today": the
+	// authorization gate had to answer it with whatever status was nearest,
+	// and every candidate in a six-status vocabulary said something false.
+	// PermissionDenied is terminal in every client and would tell a caller to
+	// fix grants that were never the problem; Unavailable at least carries the
+	// right instruction (retry) but loses the reason and points an operator at
+	// the node's health.
+	//
+	// MERGE NOTE for the audit/authz classifier work in flight: that change
+	// routes authorization refusals through one middleware.ClassifyAuthError
+	// table, and its table sends the rate-limited class to StatusUnavailable
+	// with a NAMED PROTOCOL EXCLUSION saying the wire declares no rate-limit
+	// status. That exclusion is no longer true. When the two meet, the class
+	// table is the right home for this clause and the row it should carry is
+	// wire.StatusResourceExhausted — merging the two without changing that row
+	// would put a throttled caller back on Unavailable, which is the state
+	// this clause exists to leave.
+	var rle *authmw.RateLimitedError
+	if errors.As(err, &rle) {
+		return wire.StatusResourceExhausted, msg
+	}
+
+	var tqee *tenant.QuotaExceededError
+	if errors.As(err, &tqee) {
+		// Tenant-wide replica-usage reservation lost a concurrency race —
+		// ResourceExhausted, matching gRPC's quota family. It answered the
+		// generic StatusError here, which a client cannot tell from a fault.
+		return wire.StatusResourceExhausted, msg
+	}
+
+	var infe *placement.InsufficientNodesError
+	if errors.As(err, &infe) {
+		// Cluster has no free node for the request — distinct from a quota
+		// rejection, retryable once capacity changes.
+		return wire.StatusUnavailable, msg
+	}
+
+	var rfe *service.ReplicaFloorError
+	if errors.As(err, &rfe) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var ndre *service.NotDedicatedRaftDatabaseError
+	if errors.As(err, &ndre) {
+		return wire.StatusInvalidArgument, msg
+	}
+
+	var utoe *service.UnsupportedTransactionOpError
+	if errors.As(err, &utoe) {
+		return wire.StatusInvalidArgument, msg
 	}
 
 	var xt *tenant.CrossTenantDeniedError
@@ -282,7 +666,7 @@ func mapServiceError(err error) (uint16, []byte) {
 		// The IAM routing layer refuses to act on a client-supplied tenant —
 		// surface PermissionDenied, matching the REST 403 / gRPC PermissionDenied
 		// mapping across transports.
-		return wire.StatusPermissionDenied, []byte(err.Error())
+		return wire.StatusPermissionDenied, msg
 	}
 
 	var cso *service.CompactSystemOnlyError
@@ -290,7 +674,7 @@ func mapServiceError(err error) (uint16, []byte) {
 		// A non-system tenant attempted a store-global MVCC compaction — the
 		// service layer fails closed. PermissionDenied, matching the REST 403 /
 		// gRPC PermissionDenied mapping and the ScopeCross authz gate.
-		return wire.StatusPermissionDenied, []byte(err.Error())
+		return wire.StatusPermissionDenied, msg
 	}
 
 	var tade *database.TenantAccessDeniedError
@@ -298,19 +682,20 @@ func mapServiceError(err error) (uint16, []byte) {
 		// A caller targeted a per-database control operation (seal/unseal/
 		// barrier-status, drop) on a database owned by a different tenant. The
 		// service layer fails closed independently of transport RBAC.
-		return wire.StatusPermissionDenied, []byte(err.Error())
+		return wire.StatusPermissionDenied, msg
 	}
 
 	if errors.Is(err, watch.ErrCompacted) {
 		// A watch requested a start revision at or below the compacted floor
-		// — the intervening history is gone.
-		return wire.StatusError, []byte(err.Error())
+		// — the intervening history is gone. OutOfRange names exactly that,
+		// where StatusError named nothing.
+		return wire.StatusOutOfRange, msg
 	}
 
 	if errors.Is(err, watch.ErrStartRevisionUnsupported) {
 		// A watch requested a start revision against a store with no change
 		// history attached (a non-MVCC store) — replay is impossible.
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
 	var mbr *service.MVCCBackendRequiredError
@@ -319,22 +704,131 @@ func mapServiceError(err error) (uint16, []byte) {
 		// default raft.sm_type is "pebble", not "mvcc") — Unimplemented so
 		// the caller learns the operation is unavailable on this deployment,
 		// not merely that this one call failed. Matches the gRPC/REST mapping.
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
 	var rciu *service.RestoreChangeIndexUnavailableError
 	if errors.As(err, &rciu) {
 		// A prefix-scoped restore needs the durable revision index and this
 		// backend maintains none — same family as MVCCBackendRequiredError.
-		return wire.StatusUnimplemented, []byte(err.Error())
+		return wire.StatusUnimplemented, msg
 	}
 
 	var rike *service.RestoreInternalKeyError
 	if errors.As(err, &rike) {
 		// A restore scope reached the internal key namespace — refused as an
 		// authority the caller does not have, not a malformed request.
-		return wire.StatusPermissionDenied, []byte(err.Error())
+		return wire.StatusPermissionDenied, msg
 	}
 
-	return wire.StatusError, []byte(err.Error())
+	if st, ok := restoreGuardStatus(err); ok {
+		return st, msg
+	}
+
+	if st, ok := pinStatus(err); ok {
+		return st, msg
+	}
+
+	// LAST, and only for an error that carries a gRPC status: a PROJECTED
+	// capability module answers in gRPC's vocabulary, never this one. Placing
+	// it after every typed clause means it can only ever classify what nothing
+	// above recognised, so it cannot shadow qrdb's own errors.
+	if st, ok := moduleStatus(err); ok {
+		return st, msg
+	}
+
+	return wire.StatusError, msg
+}
+
+// restoreGuardStatus classifies the selective point-in-time restore guards.
+//
+// They are split out because they are a closed family that answers exactly two
+// statuses and would otherwise add eight near-identical clauses to the middle
+// of mapServiceError. The mapping matches pkg/api/grpc row for row.
+func restoreGuardStatus(err error) (uint16, bool) {
+	var rnre *service.RestoreNilRequestError
+	if errors.As(err, &rnre) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rrie *service.RestoreRevisionInvalidError
+	if errors.As(err, &rrie) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rrfe *service.RestoreRevisionFutureError
+	if errors.As(err, &rrfe) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rsee *service.RestoreScopeEmptyError
+	if errors.As(err, &rsee) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rsae *service.RestoreScopeAmbiguousError
+	if errors.As(err, &rsae) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var reke *service.RestoreEmptyKeyError
+	if errors.As(err, &reke) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rstl *service.RestoreScopeTooLargeError
+	if errors.As(err, &rstl) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rupe *service.RestoreUnboundedPrefixError
+	if errors.As(err, &rupe) {
+		return wire.StatusInvalidArgument, true
+	}
+
+	var rae *service.RestoreApplyError
+	if errors.As(err, &rae) {
+		return wire.StatusError, true
+	}
+
+	return 0, false
+}
+
+// pinStatusBySentinel is the PIN gate's status table, the twin of
+// pkg/api/grpc.pinErrorCodes and mapped through the same correspondence.
+//
+// A map keyed by the sentinel, not a switch: the sentinels are values, the
+// dispatch is a lookup, and a PIN error added to pkg/pin without a row here is
+// a missing key rather than a case someone forgot to write.
+//
+// Before this existed the QUIC barrier-PIN handlers had no mapping at all, so
+// a locked-out PIN, a too-short PIN and a corrupted PIN state file were the
+// same frame as a disk fault — on the one surface where telling them apart
+// decides whether an operator waits or restores from backup.
+var pinStatusBySentinel = map[error]uint16{
+	pin.ErrPINNotSet:         wire.StatusFailedPrecondition,
+	pin.ErrPINLocked:         wire.StatusResourceExhausted,
+	pin.ErrPINInvalid:        wire.StatusUnauthenticated,
+	pin.ErrSOPINRequired:     wire.StatusUnauthenticated,
+	pin.ErrPINTooShort:       wire.StatusInvalidArgument,
+	pin.ErrPINAlreadySet:     wire.StatusAlreadyExists,
+	pin.ErrInvalidCurrentPIN: wire.StatusUnauthenticated,
+	pin.ErrStateCorrupted:    wire.StatusDataLoss,
+	pin.ErrStrategyNotSet:    wire.StatusFailedPrecondition,
+}
+
+// pinStatus classifies a PIN backend error. The second return is false for
+// anything pinStatusBySentinel does not name, which leaves the caller's
+// fallback in charge.
+//
+// Iterating a map is safe here because the sentinels are mutually exclusive:
+// each is a distinct errors.New value and no error in pkg/pin wraps two, so
+// the nondeterministic iteration order cannot change the answer.
+func pinStatus(err error) (uint16, bool) {
+	for sentinel, st := range pinStatusBySentinel {
+		if errors.Is(err, sentinel) {
+			return st, true
+		}
+	}
+	return 0, false
 }
