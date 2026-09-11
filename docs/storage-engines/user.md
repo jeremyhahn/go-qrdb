@@ -107,5 +107,18 @@ or path problem shows up immediately rather than at the first busy moment.
 build-tag gated — rebuild with `WITH_AWS_S3=1`, `WITH_GCP_STORAGE=1` and so on.
 They are a snapshot and archive tier, not a hot path.
 
+**A write failed while the node was shutting down.** That is a closed store,
+not a fault: the node released its storage while your call was in flight. Match
+it in code rather than reading the message —
+
+```go
+if err := kv.Put(ctx, key, value); err != nil && sdk.IsStorageClosed(err) {
+	return nil // the node is going down; conclude and let a restart resume
+}
+```
+
+Over a network transport you see gRPC `Unavailable` or HTTP `503` instead of
+the typed value, which means the same thing: retry, or try another node.
+
 **You want to change a database's backend.** Not possible in place. Create a new
 database and migrate — see [../backup-restore/user.md](../backup-restore/user.md).

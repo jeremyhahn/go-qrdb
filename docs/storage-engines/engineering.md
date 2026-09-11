@@ -7,18 +7,45 @@
 `pkg/storage`:
 
 ```go
-type Engine interface {
-	Get(key string) ([]byte, error)
-	Put(key string, value []byte) error
-	Delete(key string) error
-	List(prefix string) ([]string, error)
-	Exists(key string) (bool, error)
+type Reader interface {
+	Get(key []byte) ([]byte, error)
+	NewIterator(opts *IteratorOptions) Iterator
+}
+
+type Storage interface {
+	Reader
+	Set(key, value []byte) error
+	Delete(key []byte) error
+	List(prefix []byte) ([][]byte, error)
+	Exists(key []byte) (bool, error)
+	Batch() Batch
+	Snapshot() (Snapshot, error)
 	Close() error
 }
 ```
 
+> **Correction.** This block previously named a six-method `Engine` interface
+> with `string` keys and a `Put` method. No such interface exists; the contract
+> is `storage.Storage` above, keyed by `[]byte`, with `Set` rather than `Put`,
+> plus `Batch` and `Snapshot`. `file.Engine` is the file backend's concrete
+> type, which is where the name came from. The invariant below is restated
+> against the real name.
+
+The closed-store vocabulary, shared by every backend:
+
+```go
+var ErrStorageClosed = &StorageError{Code: "storage_closed", ...}  // THE sentinel
+type ClosedError struct{}                                          // unwraps to it
+func IsClosed(err error) bool
+func NewClosedBatch() Batch        // the Batch a closed engine hands out
+func NewClosedIterator() Iterator  // the Iterator a closed engine hands out
+```
+
+Re-exported as `sdk.ErrStorageClosed`, `sdk.StorageClosedError` and
+`sdk.IsStorageClosed`.
+
 Implementations: `pkg/storage/file`, `pkg/storage/memory`,
-`pkg/storage/pebble`, `pkg/storage/namespace`.
+`pkg/storage/pebble`, `pkg/storage/objstore`, `pkg/storage/namespace`.
 
 `pkg/storage/pool`:
 
@@ -67,10 +94,38 @@ transport does not implement `VolumePoolProvider` — **nil-check it**.
 
 ## Invariants
 
-- **`Engine` is a six-method interface and is a cross-repo contract.**
-  go-xkms imports `go-qrdb/pkg/storage` for all its storage operations and
-  wraps the go-qrdb SDK client into this interface for distributed mode.
-  Changing the signature breaks go-xkms.
+- **`Storage` is a cross-repo contract.** go-xkms imports
+  `go-qrdb/pkg/storage` for all its storage operations and wraps the go-qrdb
+  SDK client into this interface for distributed mode. Changing the signature
+  breaks go-xkms.
+- **An operation issued THROUGH a closed engine returns an error; it never
+  panics.** Every backend answers every post-`Close` operation with an error
+  that `errors.Is(err, ErrStorageClosed)` matches, including the two methods
+  whose signatures cannot return one — `Batch` and `NewIterator` hand back the
+  shared inert handles from `NewClosedBatch` / `NewClosedIterator`, which
+  report the closure from each of their own methods. A backend that improvises
+  its own answer here is a defect: this is one implementation shared by all of
+  them so it cannot drift into four dialects.
+- **A handle the caller created BEFORE `Close` and kept afterwards is a
+  different case, and the boundary is deliberate.** The gate makes handle
+  *creation* atomic with respect to `Close`; it does not wrap each `Next` on an
+  iterator already in flight, which would put a gate acquisition on every
+  element of every scan to police a caller lifetime bug. Measured on the
+  PebbleDB backend: such an iterator does **not** panic — it holds a reference
+  to the LSM version it was created against and keeps serving that pinned,
+  internally consistent view. It does not report the closure. The leak is not
+  silent either way: `Close` returns an error naming the leaked handle, which
+  is the caller's signal to close its iterators first.
+- **`Close` on the PebbleDB backend waits for in-flight operations.** PebbleDB
+  answers a use-after-close with a panic rather than an error, so a bare
+  closed-flag check is advisory: the check and the DB call are two steps and
+  `Close` fits between them. The backend holds a reader gate across both, and
+  `Close` takes it exclusively. The other backends release no resource whose
+  use-after-close is fatal and do not carry the gate — after `Close` returns
+  all four are identical, and only PebbleDB needs the ordering *during* it.
+- **A closed engine's iterator is not an empty range.** `Error()` reports
+  `ErrStorageClosed`; a scan that silently returned "no keys" from a closed
+  store would be a wrong answer rather than a loud one.
 - **The interface satisfies go-quicraft's `seal.StorageBackend` by duck
   typing** — no embedding, no import. Both sides must stay compatible by
   agreement, and there is no compiler check across the repo boundary.
@@ -113,6 +168,11 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Key absent on `Get` | not-found, distinct from an empty value | n/a |
+| Any operation after `Close` | error matching `ErrStorageClosed`, on every backend | **yes** |
+| `Batch()` / `NewIterator()` after `Close` | inert handle reporting `ErrStorageClosed` from every method | **yes** |
+| `Close` racing an in-flight PebbleDB operation | the operation completes, or returns `ErrStorageClosed`; never a panic | **yes** |
+| Closed store reaching gRPC / REST | `Unavailable` / `503`, not `Internal` / `500`, on **every verb** — read, write, lease-write and batch alike | yes |
+| Iterator created before `Close` and advanced after it | serves its pinned version; never panics. `Close` reported the leak | — |
 | Backing directory unwritable | error at open, not at first write | **yes** |
 | Objstore configured as a hot apply path | validation error | **yes** |
 | Non-pebble `sm_storage` with a pebble-native state machine | rejected | **yes** |
@@ -146,5 +206,14 @@ an error value, so an unchecked call panics rather than failing cleanly.
 ## Observability
 
 Storage errors surface as typed errors at the service boundary rather than as
-backend-specific messages. Volume pool composition is visible through
+backend-specific messages. A closed store is reported to an operator as a
+`503`/`Unavailable` — a node going away, not a fault — and is matched in code
+with `sdk.IsStorageClosed`, never by comparing the message.
+
+**The classification is per-condition, not per-verb.** On REST it lives in
+`mapHTTPError`, the one table every endpoint consults, at the top of the switch
+so the wrapper arms below it (`ReadError`, `ProposeError`, `BatchError`) cannot
+claim it first; on gRPC it lives in `mapServiceError` for the same reason. A
+`GET` meeting a dying node and a `PUT` meeting one are the same fact and get
+the same status. Volume pool composition is visible through
 `VolumePool.BackendCount` and `LocalPaths`.

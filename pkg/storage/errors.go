@@ -14,6 +14,8 @@
 
 package storage
 
+import "errors"
+
 // StorageError is a typed error for storage operations.
 type StorageError struct {
 	Code    string
@@ -29,7 +31,12 @@ var (
 	// ErrKeyNotFound is returned when a key does not exist in storage.
 	ErrKeyNotFound = &StorageError{Code: "key_not_found", Message: "key does not exist"}
 
-	// ErrStorageClosed is returned when operating on a closed engine.
+	// ErrStorageClosed is the sentinel for "this storage engine has been
+	// closed". It is THE identity of the condition across the whole stack:
+	// every closed-store failure a backend reports unwraps to it, whether the
+	// backend returns this value directly or a ClosedError, and whether the
+	// caller receives it bare or inside an OpError, BatchError, SnapshotError
+	// or a service/transport wrapper. One errors.Is covers all of them.
 	ErrStorageClosed = &StorageError{Code: "storage_closed", Message: "storage engine is closed"}
 
 	// ErrEmptyKey is returned when an empty key is provided.
@@ -68,11 +75,30 @@ func (e *KeyNotFoundError) Error() string {
 }
 
 // ClosedError is returned when operating on a closed storage instance.
+//
+// It carries no data, so ErrStorageClosed is the value callers match against;
+// ClosedError is the shape the backends construct. The two are not rival
+// concepts: Unwrap ties every ClosedError to the sentinel.
 type ClosedError struct{}
 
 // Error returns a human-readable description indicating the storage is closed.
 func (e *ClosedError) Error() string {
 	return "storage is closed"
+}
+
+// Unwrap returns ErrStorageClosed so that a closed-store failure is matchable
+// with errors.Is at any depth. Without it a caller has only errors.As against
+// this concrete type, which fails the moment a backend returns the sentinel
+// instead — and go-quicbaas resorted to matching the string "pebble: closed"
+// for exactly that reason.
+func (e *ClosedError) Unwrap() error {
+	return ErrStorageClosed
+}
+
+// IsClosed reports whether err is, or wraps, the storage engine having been
+// closed. Prefer it over comparing error strings.
+func IsClosed(err error) bool {
+	return errors.Is(err, ErrStorageClosed)
 }
 
 // BatchError wraps an error that occurred during a batch operation.

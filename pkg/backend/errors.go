@@ -14,7 +14,11 @@
 
 package backend
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+)
 
 // ClusterOperationError is returned when a cluster-only operation
 // (AddNode, RemoveNode, StartShard, etc.) is called on a LocalBackend
@@ -47,6 +51,18 @@ type BackendClosedError struct{}
 // Error returns a human-readable description.
 func (e *BackendClosedError) Error() string {
 	return "backend: closed"
+}
+
+// Unwrap returns storage.ErrStorageClosed.
+//
+// Closing a LocalBackend closes the state machine and with it the store, so
+// from a caller's side this reports the same fact as a backend's own
+// ClosedError: the store you were using was closed under you. Whether the
+// racing call lost at the backend's gate or at the storage engine's is an
+// internal detail, and a caller forced to distinguish them ends up matching
+// two error strings instead of one sentinel (go-qrdb#371).
+func (e *BackendClosedError) Unwrap() error {
+	return storage.ErrStorageClosed
 }
 
 // LookupTypeError is returned when a Lookup query has an unsupported

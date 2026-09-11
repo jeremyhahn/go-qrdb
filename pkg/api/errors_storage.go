@@ -17,26 +17,25 @@ import (
 	"fmt"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // =============================================================================
 // Storage Layer Error Types
 // =============================================================================
 
-// StorageClosedError indicates the storage backend has been closed.
-type StorageClosedError struct{}
-
-// Error implements the error interface.
-func (e *StorageClosedError) Error() string {
-	return "storage is closed"
-}
-
 // NewStorageClosedError creates a QRDBError for a closed storage backend.
+//
+// It wraps storage.ClosedError, the one closed-store error type in the repo,
+// so errors.Is(err, storage.ErrStorageClosed) holds through the QRDBError as
+// well as through the raw backend error. A local clone of the type used to
+// live here; it was a second spelling of the same fact that nothing could
+// match against, which is how go-qrdb#371 ended up being classified by string.
 func NewStorageClosedError(op string) *dberrors.QRDBError {
 	return &dberrors.QRDBError{
 		Code: dberrors.ErrUnavailable,
 		Op:   op,
-		Err:  &StorageClosedError{},
+		Err:  &storage.ClosedError{},
 	}
 }
 

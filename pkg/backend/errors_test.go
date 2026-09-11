@@ -15,8 +15,11 @@
 package backend
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 func TestClusterOperationError_Message(t *testing.T) {
@@ -58,6 +61,32 @@ func TestBackendClosedError_ImplementsError(t *testing.T) {
 	var err error = &BackendClosedError{}
 	if err.Error() == "" {
 		t.Fatal("expected non-empty error message")
+	}
+}
+
+// Closing a LocalBackend closes the state machine and with it the store, so
+// its refusal reports the same fact as the storage engine's own. A caller must
+// match ONE sentinel, not one per layer that can lose a shutdown race
+// (go-qrdb#371).
+func TestBackendClosedError_MatchesTheStorageSentinel(t *testing.T) {
+	err := error(&BackendClosedError{})
+	if !errors.Is(err, storage.ErrStorageClosed) {
+		t.Fatal("errors.Is(&BackendClosedError{}, storage.ErrStorageClosed) = false, want true")
+	}
+	if !storage.IsClosed(err) {
+		t.Fatal("storage.IsClosed(&BackendClosedError{}) = false, want true")
+	}
+}
+
+// The sentinel must survive a wrapper, since a caller receives this error
+// through the service and transport layers rather than bare.
+func TestBackendClosedError_MatchesThroughAWrapper(t *testing.T) {
+	err := &storage.OpError{Op: "propose", Err: &BackendClosedError{}}
+	if !errors.Is(err, storage.ErrStorageClosed) {
+		t.Fatal("a wrapped BackendClosedError did not match storage.ErrStorageClosed")
+	}
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		t.Fatal("a BackendClosedError matched ErrKeyNotFound; the sentinels are not distinct")
 	}
 }
 

@@ -161,19 +161,28 @@ func (s *MemoryStorage) Exists(key []byte) (bool, error) {
 	return ok, nil
 }
 
-// Batch creates a new write batch for atomic multi-key operations.
+// Batch creates a new write batch for atomic multi-key operations. A closed
+// store returns a batch that reports the closure from every operation.
 func (s *MemoryStorage) Batch() storage.Batch {
+	if s.closed.Load() {
+		return storage.NewClosedBatch()
+	}
 	return newBatch(s)
 }
 
 // NewIterator creates an iterator for scanning key ranges.
 // The iterator operates on a CoW snapshot of the btree taken at creation time,
 // providing isolation from concurrent mutations. A nil opts creates an
-// unbounded forward iterator.
+// unbounded forward iterator. A closed store returns an iterator that reports
+// the closure through Error.
 //
 // Copy() requires a write lock because btree.IsoCopy mutates the source
 // tree's isolation ID even with NoLocks: true.
 func (s *MemoryStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	if s.closed.Load() {
+		return storage.NewClosedIterator()
+	}
+
 	s.mu.Lock()
 	snapshot := s.tree.Copy()
 	s.mu.Unlock()

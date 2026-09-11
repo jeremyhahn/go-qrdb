@@ -147,6 +147,20 @@ the same permissions the ordinary write and delete need, not extra ones.
 
 ## Troubleshooting
 
+**A `Put` failed with "storage is closed"** — the node released its store while
+your call was in flight, which is what a shutdown does to work still running.
+It is not a fault and not something to retry on the same node. In code, test
+for it rather than reading the message:
+
+```go
+if err := kv.Put(ctx, key, value); err != nil && sdk.IsStorageClosed(err) {
+	return nil // conclude cleanly; a restart resumes from the last record
+}
+```
+
+Over gRPC you see `Unavailable` and over REST a `503`, both meaning the same:
+this node is going away, retry elsewhere or later.
+
 **"requires raft.sm_type: mvcc"** — the server keeps no revision history.
 As-of reads, `kv restore` and watch replay all need it. This is a server
 configuration change, not something you can pass as a flag.

@@ -213,13 +213,21 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 	return true, nil
 }
 
-// Batch creates a new write batch for atomic multi-key operations.
+// Batch creates a new write batch for atomic multi-key operations. A closed
+// engine returns a batch that reports the closure from every operation.
 func (e *Engine) Batch() storage.Batch {
+	if e.closed.Load() {
+		return storage.NewClosedBatch()
+	}
 	return newBatch(e)
 }
 
-// NewIterator creates an iterator for scanning key ranges.
+// NewIterator creates an iterator for scanning key ranges. A closed engine
+// returns an iterator that reports the closure through Error.
 func (e *Engine) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	if e.closed.Load() {
+		return storage.NewClosedIterator()
+	}
 	return newIterator(e, opts)
 }
 

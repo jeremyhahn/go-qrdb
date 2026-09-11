@@ -4,7 +4,7 @@
 
 ## Storage engines
 
-**No wire API.** `pkg/storage.Engine` is an in-process interface, not a
+**No wire API.** `pkg/storage.Storage` is an in-process interface, not a
 capability. Every data-plane operation in every other feature is served *over*
 an engine; none of them expose the engine itself.
 
@@ -55,6 +55,25 @@ value.
 { "name": "fast-nvme", "paths": ["/mnt/nvme0", "/mnt/nvme1"], "strategy": "round-robin" }
 ```
 
+## The closed-store condition on the wire
+
+The engine has no wire API, but the condition "this node closed its store under
+your request" reaches a caller through whatever data-plane transport it used.
+What crosses depends on the transport:
+
+| Transport | What the caller receives |
+|---|---|
+| `embedded` | the value: `errors.Is(err, sdk.ErrStorageClosed)` holds, and `errors.As` reaches `*sdk.StorageClosedError` |
+| `grpc`, `unix` | the classification: `codes.Unavailable`, on every RPC |
+| `rest` | the classification: HTTP `503`, on every verb — `GET /kv/{key}`, `/kv/list`, `/kv/scan`, `PUT` (plain and lease), `DELETE`, `POST /batch` |
+| `quic`, `mcp` | a generic request failure — **the classification is not carried yet** |
+
+**Only `embedded` preserves the typed value**, because only `embedded` never
+serializes it. The others carry a status code, which is what a wire can carry;
+a remote caller reads the code and must not parse the message. The `quic` and
+`mcp` gaps are recorded here rather than left to be discovered — see
+[engineering.md](engineering.md).
+
 ## Error semantics
 
 | Condition | Behavior |
@@ -62,6 +81,7 @@ value.
 | Unknown pool name on `Pick` | not-found |
 | Transport without `VolumePoolProvider` | `Client.VolumePools()` returns nil |
 | Non-local backend registered | refused — pools are `LocalOnly` |
+| Any engine operation after `Close` | error matching `ErrStorageClosed`, never a panic |
 
 ## Versioning
 

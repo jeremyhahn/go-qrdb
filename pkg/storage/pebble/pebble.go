@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -33,11 +34,32 @@ var _ storage.Storage = (*PebbleStorage)(nil)
 // and point-in-time snapshots for the Raft state machine layer.
 //
 // Thread safety: PebbleDB handles its own internal synchronization.
-// The closed flag uses atomic.Bool for lock-free state checking.
 // Concurrent read and write capacity is bounded by semaphore channels.
+//
+// # Why Close is ordered against every operation
+//
+// PebbleDB answers a use-after-close with panic(pebble.ErrClosed), not an
+// error — deliberately, to make illegal concurrent use during Close loud
+// (pebble/db.go, applyInternal). A bare `if s.closed.Load()` guard is
+// therefore not enough: the check and the DB call are two steps, and a Close
+// that lands between them turns an ordinary shutdown race into a panic with
+// no typed value to match (go-qrdb#371).
+//
+// gate closes that window. Every method that touches s.db holds gate.RLock
+// across BOTH its closed check and its DB call; Close holds gate.Lock, so it
+// cannot release the DB while an operation is inside that window and no
+// operation can enter after it. That makes the check binding rather than
+// advisory, which is what lets this layer return a typed *storage.ClosedError
+// instead of recovering a panic and classifying it by text.
+//
+// gate is a reader-counter, which is precisely what the lock-free form of this
+// would be: sync.RWMutex.RLock is a single atomic add on the uncontended path
+// and it already carries the drain-on-close wait, so hand-rolling it with
+// atomics would reproduce sync.RWMutex with more code and no fast path.
 type PebbleStorage struct {
 	db       *pebble.DB
 	config   *Config
+	gate     sync.RWMutex
 	closed   atomic.Bool
 	readSem  chan struct{}
 	writeSem chan struct{}
@@ -91,6 +113,10 @@ func NewFromDB(db *pebble.DB, syncWrites bool) *PebbleStorage {
 // DB returns the underlying PebbleDB instance. This is used by subsystems
 // like index.NewPebbleIndex and timeseries.New that require direct PebbleDB
 // access.
+//
+// The returned handle is OUTSIDE the close gate: a caller that keeps it past
+// Close gets PebbleDB's raw semantics back, panic included. Subsystems built
+// on it own their own lifecycle against this store's.
 func (s *PebbleStorage) DB() *pebble.DB {
 	return s.db
 }
@@ -99,6 +125,8 @@ func (s *PebbleStorage) DB() *pebble.DB {
 // to retain. Returns nil, nil when the key does not exist per the
 // storage.Storage contract.
 func (s *PebbleStorage) Get(key []byte) ([]byte, error) {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
@@ -126,6 +154,8 @@ func (s *PebbleStorage) Get(key []byte) ([]byte, error) {
 // Set stores a key-value pair. Uses pebble.NoSync by default since
 // the Raft WAL provides durability. Honors Config.SyncWrites when set.
 func (s *PebbleStorage) Set(key, value []byte) error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -149,6 +179,8 @@ func (s *PebbleStorage) Set(key, value []byte) error {
 
 // Delete removes a key-value pair. Deleting a non-existent key is a no-op.
 func (s *PebbleStorage) Delete(key []byte) error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -174,6 +206,8 @@ func (s *PebbleStorage) Delete(key []byte) error {
 // returns all keys. Uses a PebbleDB prefix iterator bounded by the computed
 // upper key for efficient range scanning.
 func (s *PebbleStorage) List(prefix []byte) ([][]byte, error) {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
@@ -220,6 +254,8 @@ func (s *PebbleStorage) List(prefix []byte) ([][]byte, error) {
 // Exists reports whether the given key exists in storage. Returns false
 // without error when the key is not found.
 func (s *PebbleStorage) Exists(key []byte) (bool, error) {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return false, &storage.ClosedError{}
 	}
@@ -241,29 +277,57 @@ func (s *PebbleStorage) Exists(key []byte) (bool, error) {
 	return true, nil
 }
 
-// Batch creates a new write batch for atomic multi-key operations.
+// Batch creates a new write batch for atomic multi-key operations. On a
+// closed store it returns a batch that reports the closure from every method
+// rather than one wired to a dead DB: pebble.DB.NewIndexedBatch succeeds after
+// Close and the panic then lands in Commit or Get, several frames from the
+// mistake. That is the shape go-qrdb#371 was reported as — the MVCC engine's
+// apply path is batch-then-commit, so its Put panicked out of Commit.
 func (s *PebbleStorage) Batch() storage.Batch {
-	return newBatch(s.db, s.config.SyncWrites)
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return storage.NewClosedBatch()
+	}
+	return newBatch(s)
 }
 
 // NewIterator creates an iterator for scanning key ranges.
-// A nil opts creates an unbounded forward iterator.
+// A nil opts creates an unbounded forward iterator. On a closed store the
+// returned iterator is invalid and reports ErrStorageClosed from Error().
 func (s *PebbleStorage) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return storage.NewClosedIterator()
+	}
 	return newIterator(s.db, opts)
 }
 
 // Snapshot creates a point-in-time snapshot for consistent reads.
 func (s *PebbleStorage) Snapshot() (storage.Snapshot, error) {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return nil, &storage.ClosedError{}
 	}
-	snap := s.db.NewSnapshot()
-	return newSnapshot(snap), nil
+	return newSnapshot(s, s.db.NewSnapshot()), nil
 }
 
 // Close releases all resources held by the storage. Subsequent operations
 // return ClosedError. Calling Close on an already-closed storage is a no-op.
+//
+// It waits for every in-flight operation to leave the gate before releasing
+// the DB, so an operation that has already passed its closed check always
+// completes against a live DB.
+//
+// The closed flag is set BEFORE db.Close and is never rolled back if db.Close
+// reports an error: PebbleDB closes the database regardless and returns the
+// leaked-handle report as a value, so the store really is closed either way.
 func (s *PebbleStorage) Close() error {
+	s.gate.Lock()
+	defer s.gate.Unlock()
+
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
@@ -276,6 +340,8 @@ func (s *PebbleStorage) Close() error {
 // Compact triggers a manual compaction over the given key range [start, end].
 // Pass nil for both to compact the entire database.
 func (s *PebbleStorage) Compact(start, end []byte) error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -287,6 +353,8 @@ func (s *PebbleStorage) Compact(start, end []byte) error {
 
 // Flush forces a flush of all memtables to sstables on disk.
 func (s *PebbleStorage) Flush() error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
 	if s.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -296,7 +364,14 @@ func (s *PebbleStorage) Flush() error {
 	return nil
 }
 
-// Metrics returns the PebbleDB metrics snapshot for observability.
+// Metrics returns the PebbleDB metrics snapshot for observability. It returns
+// nil on a closed store: the metrics belong to a DB that no longer exists, and
+// a zero-valued snapshot would be indistinguishable from a genuinely idle one.
 func (s *PebbleStorage) Metrics() *pebble.Metrics {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return nil
+	}
 	return s.db.Metrics()
 }

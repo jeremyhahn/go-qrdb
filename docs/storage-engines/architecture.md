@@ -15,12 +15,14 @@ A narrow `Engine` interface with several implementations, and a wrapping engine
 that adds tenant isolation to any of them.
 
 ```go
-type Engine interface {
-	Get(key string) ([]byte, error)
-	Put(key string, value []byte) error
-	Delete(key string) error
-	List(prefix string) ([]string, error)
-	Exists(key string) (bool, error)
+type Storage interface {
+	Reader                                  // Get, NewIterator
+	Set(key, value []byte) error
+	Delete(key []byte) error
+	List(prefix []byte) ([][]byte, error)
+	Exists(key []byte) (bool, error)
+	Batch() Batch
+	Snapshot() (Snapshot, error)
 	Close() error
 }
 ```
@@ -36,6 +38,7 @@ projects share a shape without either importing the other's declaration.
 | File | `pkg/storage/file/` | key-to-path filesystem mapping; shard configs, metadata |
 | Memory | `pkg/storage/memory/` | in-memory, for tests and ephemeral data |
 | PebbleDB | `pkg/storage/pebble/` | production-grade, extracted from the Raft state machine |
+| ObjStore | `pkg/storage/objstore/` | object-storage-backed, via go-objstore |
 | Namespace | `pkg/storage/namespace/` | tenant prefix isolation **wrapping any engine** |
 
 The namespace engine is the important one architecturally: isolation is
@@ -44,8 +47,8 @@ composed, not reimplemented per backend.
 ```go
 base := pebble.New(dir)
 tenantEngine := namespace.New(base, "tenant-a")
-// Put("key", data)  →  base.Put("tenant-a/key", data)
-// List("")          →  filtered to the "tenant-a/" prefix
+// Set("key", data)  →  base.Set("tenant-a/key", data)
+// List(nil)         →  filtered to the "tenant-a/" prefix
 ```
 
 ### Alternatives rejected
@@ -59,6 +62,44 @@ tenantEngine := namespace.New(base, "tenant-a")
 - **A fatter interface.** Rejected: six methods is what a backend must provide.
   Anything richer (revisions, ranges, transactions) is built above it, which is
   what lets a new backend be small.
+
+### The closed engine is part of the interface, not an afterthought
+
+`Close` is one of the interface's methods, so "what happens to a call that
+arrives after it" is part of the contract every backend owes — and it is a
+contract a **composed** system needs, because the layer that closes the store
+and the layer still writing to it are usually different goroutines with
+different lifetimes.
+
+One condition, one identity: **`ErrStorageClosed`**. Every backend's refusal
+unwraps to it, so a consumer writes one `errors.Is` rather than one branch per
+backend, and never a message comparison.
+
+Two design consequences:
+
+- **`Batch()` and `NewIterator()` return a value, not a `(value, error)` pair**,
+  so a closed engine cannot refuse them the way `Get` does. Rather than let
+  each backend improvise — a live handle over stale state, or one wired to a
+  released resource — `pkg/storage` owns the two inert handles all of them
+  return. Improvisation here is what produced a backend-specific crash on one
+  engine and a silently-wrong empty scan on two others.
+- **Ordering `Close` against in-flight work is a per-backend cost, paid where
+  it buys something.** A backend whose `Close` releases a resource that panics
+  on later use must make its closed check binding rather than advisory; one
+  whose `Close` only sets a flag has nothing to order against. PebbleDB is the
+  first kind and carries a reader gate; memory, file and objstore are the
+  second and do not.
+
+### Alternatives rejected for the closed-store contract
+
+- **Recover the panic at the SDK boundary and convert it.** Rejected: it
+  converts a symptom at a layer that cannot tell an orderly shutdown from a
+  genuine bug, and every consumer above would inherit the same guesswork. The
+  layer holding the resource is the only one that can answer the question, so
+  that is where it is answered.
+- **Let each consumer match the panic text.** Rejected outright: it is what the
+  absence of this contract forced on a consumer, and it turns a reworded
+  message in a third-party dependency into a silent crash.
 
 ## Volume pools
 

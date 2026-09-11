@@ -8,19 +8,29 @@ import (
 	"testing"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 func TestStorageClosedError(t *testing.T) {
-	t.Run("Error", func(t *testing.T) {
-		e := &StorageClosedError{}
-		if got := e.Error(); got != "storage is closed" {
-			t.Errorf("got %q", got)
-		}
-	})
 	t.Run("Constructor", func(t *testing.T) {
 		de := NewStorageClosedError("storage.get")
 		if de.Code != dberrors.ErrUnavailable {
 			t.Errorf("code = %v", de.Code)
+		}
+		if de.Op != "storage.get" {
+			t.Errorf("op = %q", de.Op)
+		}
+	})
+	t.Run("MatchesTheSentinel", func(t *testing.T) {
+		de := NewStorageClosedError("storage.get")
+		if !errors.Is(de, storage.ErrStorageClosed) {
+			t.Errorf("errors.Is(%v, storage.ErrStorageClosed) = false, want true", de)
+		}
+	})
+	t.Run("CarriesTheCanonicalType", func(t *testing.T) {
+		var closed *storage.ClosedError
+		if !errors.As(NewStorageClosedError("storage.get"), &closed) {
+			t.Error("errors.As did not reach *storage.ClosedError")
 		}
 	})
 }

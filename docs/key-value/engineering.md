@@ -377,10 +377,44 @@ boundary as a typed value and is mapped per transport by
 | Restore CAS conflict without `--force` | key left untouched, reported as `CONFLICT` | **yes** |
 | Barrier sealed | request refused; no plaintext and no ciphertext served | **yes** |
 | Node is not the leader and consistency requires it | routed to the leader, or refused when no resolver is configured | yes |
+| Node closed its store under an in-flight operation | typed error matching `sdk.ErrStorageClosed`; never a panic | **yes** |
 
 The restore refusal on `__sys:` has no override by design: restoring
 `__sys:roles/…` or `__sys:users/…` to an earlier revision would undo a
 permission revocation.
+
+### A KV operation that meets a closed store
+
+A daemon that closes its storage while a goroutine is still writing is an
+ordinary shutdown race, not a defect, and the KV surface reports it as an
+error rather than a crash:
+
+```go
+if err := kv.Put(ctx, key, value); err != nil {
+	if sdk.IsStorageClosed(err) {          // or errors.Is(err, sdk.ErrStorageClosed)
+		return nil                     // the node is going down; conclude cleanly
+	}
+	return err
+}
+```
+
+- **The sentinel is `sdk.ErrStorageClosed`.** Every producer unwraps to it —
+  the storage engine's `StorageClosedError`, the local backend's closed
+  refusal, and each of them wrapped in an operation, batch or snapshot error.
+  One `errors.Is` covers all of them; `sdk.IsStorageClosed` is the same test
+  spelled as a predicate. **Never match the error's text.**
+- **`embedded` preserves the value.** The service and transport wrappers both
+  unwrap, so an in-process caller matches the sentinel and, if it prefers,
+  the `*sdk.StorageClosedError` type.
+- **The network transports carry the CLASSIFICATION, not the value** — gRPC
+  `Unavailable`, HTTP `503`. A status code is all that crosses a wire, so a
+  remote caller reads the code. The classification is per-condition and not
+  per-verb: a `GET` that meets a dying node and a `PUT` that meets one are the
+  same fact and get the same status. See
+  [../storage-engines/engineering.md](../storage-engines/engineering.md).
+- **A closed store is distinct from a closed client.** `ClientClosedError`
+  means the caller closed its own handle, which is its own bug to fix;
+  `sdk.IsStorageClosed` deliberately does not match it.
 
 ## Configuration
 

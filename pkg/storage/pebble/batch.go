@@ -29,7 +29,20 @@ var _ storage.Batch = (*pebbleBatch)(nil)
 
 // pebbleBatch implements storage.Batch backed by a PebbleDB batch.
 // Thread-safe: all mutation methods are guarded by a mutex.
+//
+// store is the batch's parent. A batch's own closed flag says nothing about
+// whether the DB underneath it is still open — an open batch does NOT keep
+// PebbleDB from closing — so every method that reaches through to the DB
+// (Get, NewIterator, Commit) re-enters the store's close gate and re-checks.
+// Set and Delete stay out of it: an indexed batch buffers them in its own
+// skiplist and touches no DB state, which is why a closed store's batch still
+// accepts writes and refuses only at Commit, matching the memory, file and
+// objstore backends.
+//
+// Lock order is store.gate then mu, everywhere, and PebbleStorage.Close never
+// takes mu.
 type pebbleBatch struct {
+	store      *PebbleStorage
 	batch      *pebble.Batch
 	mu         sync.Mutex
 	closed     atomic.Bool
@@ -45,11 +58,19 @@ type pebbleBatch struct {
 // indexed batch maintains a skiplist over its own contents, so writes cost more
 // than a write-only batch; that cost buys the determinism and is paid only on
 // the apply path, which is the one place that reads what it is writing.
-func newBatch(db *pebble.DB, syncWrites bool) storage.Batch {
+func newBatch(s *PebbleStorage) storage.Batch {
 	return &pebbleBatch{
-		batch:      db.NewIndexedBatch(),
-		syncWrites: syncWrites,
+		store:      s,
+		batch:      s.db.NewIndexedBatch(),
+		syncWrites: s.config.SyncWrites,
 	}
+}
+
+// storeClosed reports whether the parent store has been closed. It is only
+// reached from a batch that is itself still open, and every such batch came
+// from newBatch, so store is set.
+func (b *pebbleBatch) storeClosed() bool {
+	return b.store.closed.Load()
 }
 
 // Get returns the value for key as the batch sees it: the batch's own pending
@@ -62,6 +83,12 @@ func (b *pebbleBatch) Get(key []byte) ([]byte, error) {
 	}
 	if len(key) == 0 {
 		return nil, &storage.BatchError{Op: "get", Err: storage.ErrEmptyKey}
+	}
+
+	b.store.gate.RLock()
+	defer b.store.gate.RUnlock()
+	if b.storeClosed() {
+		return nil, &storage.BatchError{Op: "get", Err: &storage.ClosedError{}}
 	}
 
 	b.mu.Lock()
@@ -85,6 +112,12 @@ func (b *pebbleBatch) Get(key []byte) ([]byte, error) {
 // the database's committed contents.
 func (b *pebbleBatch) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	if b.closed.Load() {
+		return &pebbleIterator{err: &storage.BatchError{Op: "iterate", Err: &storage.ClosedError{}}}
+	}
+
+	b.store.gate.RLock()
+	defer b.store.gate.RUnlock()
+	if b.storeClosed() {
 		return &pebbleIterator{err: &storage.BatchError{Op: "iterate", Err: &storage.ClosedError{}}}
 	}
 
@@ -138,6 +171,12 @@ func (b *pebbleBatch) Delete(key []byte) error {
 // considered closed after a successful commit.
 func (b *pebbleBatch) Commit() error {
 	if b.closed.Load() {
+		return &storage.BatchError{Op: "commit", Err: &storage.ClosedError{}}
+	}
+
+	b.store.gate.RLock()
+	defer b.store.gate.RUnlock()
+	if b.storeClosed() {
 		return &storage.BatchError{Op: "commit", Err: &storage.ClosedError{}}
 	}
 

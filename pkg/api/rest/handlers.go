@@ -41,6 +41,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -535,7 +536,7 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 			http.Error(w, "key not found", http.StatusNotFound)
 			return
 		}
-		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
+		writeReadFailure(w, err)
 		return
 	}
 
@@ -615,7 +616,7 @@ func (s *Server) handleKVList(w http.ResponseWriter, r *http.Request) {
 		keys, err = kvSvc.List(ctx, prefix)
 	}
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
+		writeReadFailure(w, err)
 		return
 	}
 
@@ -654,7 +655,7 @@ func (s *Server) handleKVScan(w http.ResponseWriter, r *http.Request) {
 		pairs, err = kvSvc.Scan(ctx, prefix)
 	}
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
+		writeReadFailure(w, err)
 		return
 	}
 
@@ -1015,25 +1016,64 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // writeProposeFailure reports a write that did not reach the cluster.
 //
-// It exists for one case. Since the encoders began refusing a field longer than
-// its length field can describe (go-qrdb#52), an oversized key fails on this
-// path without a proposal ever being made — the caller's input is wrong, not
-// the cluster. A 500 for that tells the caller the cluster is broken, alerts an
-// operator, and invites a retry of an input that can never succeed.
+// It exists for two cases, both of which a blanket 500 describes wrongly.
 //
-// Deliberately NOT `mapHTTPError(err)`: that would also reclassify the other
-// errors reaching this path, and this is not the change to do it in. A
-// non-forwardable NotLeaderError, for instance, would become 503 — arguably
+// Since the encoders began refusing a field longer than its length field can
+// describe (go-qrdb#52), an oversized key fails on this path without a proposal
+// ever being made — the caller's input is wrong, not the cluster. A 500 for
+// that tells the caller the cluster is broken, alerts an operator, and invites
+// a retry of an input that can never succeed. A closed store is the mirror
+// image: the request was fine and the node is going away (go-qrdb#371).
+//
+// Deliberately NOT `mapHTTPError(err)` wholesale: that would also reclassify
+// the other errors reaching this path, and this is not the change to do it in.
+// A non-forwardable NotLeaderError, for instance, would become 503 — arguably
 // better, but a behaviour change nobody asked for, and it is pinned at 500 by
-// existing tests. Everything except the encoding refusal keeps exactly the
-// status and the ProposeError wrapper it had.
+// existing tests. Everything except those two keeps exactly the status and the
+// ProposeError wrapper it had.
 func writeProposeFailure(w http.ResponseWriter, err error) {
 	var encodeErr *service.EncodeRequestError
 	if errors.As(err, &encodeErr) {
 		writeErrorJSON(w, http.StatusBadRequest, err)
 		return
 	}
+	// A write that met a closed store is the node going away under the
+	// request. The STATUS comes from mapHTTPError rather than being written
+	// again here: the same condition reaches this file through five other
+	// paths, and a number repeated per path is a number that disagrees with
+	// itself (go-qrdb#371).
+	if errors.Is(err, storage.ErrStorageClosed) {
+		writeErrorJSON(w, mapHTTPError(err), &ProposeError{Err: err})
+		return
+	}
 	writeErrorJSON(w, http.StatusInternalServerError, &ProposeError{Err: err})
+}
+
+// writeReadFailure reports a read that could not be served.
+//
+// It is writeProposeFailure's counterpart on the other verb, and it exists for
+// one case, the same one: a read that met a closed store. go-qrdb#371's whole
+// argument — "500 tells a client the request is poison and invites a retry that
+// can never work" — is as true of a read as of a write, so answering PUT /kv/k
+// with 503 and GET /kv/k with 500 would leave the verb asymmetry the issue was
+// filed to remove.
+//
+// Deliberately NOT `mapHTTPError(err)` wholesale, measured rather than assumed.
+// KVService.translateReadError yields exactly three things: KeyNotFoundError,
+// NotLeaderError, or ReadError wrapping whatever the host returned. Of those,
+// handleKVGet answers KeyNotFoundError itself before reaching here and a
+// list or scan cannot produce one, so the only status the wholesale form would
+// additionally change is NotLeaderError, from 500 to 503. writeProposeFailure
+// pins that error at 500 on the write path with a written reason, so moving it
+// on reads alone would create a fresh instance of exactly the asymmetry this
+// function removes. Everything except the closed store keeps the status and
+// the ReadError wrapper it had.
+func writeReadFailure(w http.ResponseWriter, err error) {
+	if errors.Is(err, storage.ErrStorageClosed) {
+		writeErrorJSON(w, mapHTTPError(err), &ReadError{Err: err})
+		return
+	}
+	writeErrorJSON(w, http.StatusInternalServerError, &ReadError{Err: err})
 }
 
 // writeErrorJSON writes a JSON error response with the given HTTP status
@@ -1148,6 +1188,20 @@ func mapHTTPError(err error) int {
 	switch {
 	case errors.As(err, &sni):
 		return http.StatusNotImplemented
+	// A closed store is the node going away underneath the request, not a
+	// broken server: 503 says "try another node or try again", which is true,
+	// where 500 says "this request is poison", which is not (go-qrdb#371).
+	//
+	// It sits at the TOP of the table because the condition arrives wrapped —
+	// in a BatchError, a ReadError, a ProposeError, a TimeSeriesError — and
+	// every one of those wrappers has an errors.As arm further down that would
+	// claim it first and answer 500. That is how the first cut of this rule
+	// reached only the write path.
+	//
+	// It is matched with errors.Is, not errors.As: every producer unwraps to
+	// the one sentinel, which is the whole point of the shared identity.
+	case errors.Is(err, storage.ErrStorageClosed):
+		return http.StatusServiceUnavailable
 	// A request the protocol cannot encode was never proposed, so it is a
 	// client error and not an infrastructure one. Reported as 500 it fires
 	// an operational alert and invites a retry of an input that can never

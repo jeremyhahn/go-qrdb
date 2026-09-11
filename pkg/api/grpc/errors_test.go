@@ -22,8 +22,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
@@ -120,5 +122,40 @@ func TestMapServiceError_ProposeErrorIsStillInternal(t *testing.T) {
 	err := mapServiceError(&service.ProposeError{Err: errors.New("raft is down")})
 	if got := status.Code(err); got != codes.Internal {
 		t.Fatalf("code = %v, want %v", got, codes.Internal)
+	}
+}
+
+// A write that met a closed store is the node going away underneath the
+// request, not a broken server. Unavailable is retryable and routable;
+// Internal fires an operational alert for an orderly shutdown (go-qrdb#371).
+//
+// The rule sits ABOVE the ProposeError rule because the closed-store error
+// arrives wrapped in one, so a reversed ordering would classify it Internal.
+func TestMapServiceError_StorageClosedIsUnavailable(t *testing.T) {
+	err := mapServiceError(&service.ProposeError{
+		Err: &storage.OpError{Op: "set", Err: &storage.ClosedError{}},
+	})
+	if got := status.Code(err); got != codes.Unavailable {
+		t.Fatalf("code = %v, want %v", got, codes.Unavailable)
+	}
+}
+
+// The same holds on the read path, where the wrapper is ReadError.
+func TestMapServiceError_StorageClosedOnReadIsUnavailable(t *testing.T) {
+	err := mapServiceError(&service.ReadError{
+		Err: &storage.BatchError{Op: "get", Err: &storage.ClosedError{}},
+	})
+	if got := status.Code(err); got != codes.Unavailable {
+		t.Fatalf("code = %v, want %v", got, codes.Unavailable)
+	}
+}
+
+// The backend's own refusal reports the same condition, so it must reach the
+// same code: a caller must not have to know whether the storage engine or the
+// local backend lost the shutdown race.
+func TestMapServiceError_BackendClosedIsUnavailable(t *testing.T) {
+	err := mapServiceError(&service.ProposeError{Err: &backend.BackendClosedError{}})
+	if got := status.Code(err); got != codes.Unavailable {
+		t.Fatalf("code = %v, want %v", got, codes.Unavailable)
 	}
 }

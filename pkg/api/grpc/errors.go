@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
@@ -63,6 +64,19 @@ func mapServiceError(err error) error {
 	var ere *service.EncodeRequestError
 	if errors.As(err, &ere) {
 		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	// Must precede ProposeError and ReadError: a call that met a closed store
+	// arrives wrapped in one of them, and Internal would tell the caller the
+	// server broke when in fact the node is going away underneath it.
+	// Unavailable is the retryable classification a client library already
+	// knows how to act on (go-qrdb#371).
+	//
+	// The typed value does not cross the wire — a status code is all gRPC
+	// carries — so a remote caller reads the code, while an in-process caller
+	// on the embedded transport still matches storage.ErrStorageClosed.
+	if errors.Is(err, storage.ErrStorageClosed) {
+		return status.Error(codes.Unavailable, err.Error())
 	}
 
 	var pe *service.ProposeError

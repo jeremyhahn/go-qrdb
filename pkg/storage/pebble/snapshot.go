@@ -24,14 +24,20 @@ import (
 )
 
 // pebbleSnapshot implements storage.Snapshot backed by a PebbleDB snapshot.
+//
+// store is the snapshot's parent. Closing the store closes the DB the snapshot
+// reads through — PebbleDB reports the open snapshot as leaked but closes
+// anyway — so the snapshot's own closed flag is not enough and every read
+// re-enters the store's close gate. See PebbleStorage for why the gate exists.
 type pebbleSnapshot struct {
+	store  *PebbleStorage
 	snap   *pebble.Snapshot
 	closed atomic.Bool
 }
 
-// newSnapshot wraps a PebbleDB snapshot.
-func newSnapshot(snap *pebble.Snapshot) storage.Snapshot {
-	return &pebbleSnapshot{snap: snap}
+// newSnapshot wraps a PebbleDB snapshot taken from s.
+func newSnapshot(s *PebbleStorage, snap *pebble.Snapshot) storage.Snapshot {
+	return &pebbleSnapshot{store: s, snap: snap}
 }
 
 // Get retrieves the value for the given key from the snapshot. Returns a
@@ -42,6 +48,12 @@ func (s *pebbleSnapshot) Get(key []byte) ([]byte, error) {
 	}
 	if len(key) == 0 {
 		return nil, &storage.SnapshotError{Op: "get", Err: storage.ErrEmptyKey}
+	}
+
+	s.store.gate.RLock()
+	defer s.store.gate.RUnlock()
+	if s.store.closed.Load() {
+		return nil, &storage.SnapshotError{Op: "get", Err: &storage.ClosedError{}}
 	}
 
 	value, closer, err := s.snap.Get(key)
@@ -62,15 +74,29 @@ func (s *pebbleSnapshot) Get(key []byte) ([]byte, error) {
 // an unbounded forward iterator.
 func (s *pebbleSnapshot) NewIterator(opts *storage.IteratorOptions) storage.Iterator {
 	if s.closed.Load() {
-		return &pebbleIterator{err: &storage.ClosedError{}}
+		return storage.NewClosedIterator()
+	}
+
+	s.store.gate.RLock()
+	defer s.store.gate.RUnlock()
+	if s.store.closed.Load() {
+		return storage.NewClosedIterator()
 	}
 	return newSnapshotIterator(s.snap, opts)
 }
 
 // Close releases resources held by the snapshot. Calling Close on an
-// already-closed snapshot is a no-op.
+// already-closed snapshot is a no-op, and so is closing one whose store has
+// already been closed: the DB that owned the snapshot is gone, so there is
+// nothing left to release.
 func (s *pebbleSnapshot) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	s.store.gate.RLock()
+	defer s.store.gate.RUnlock()
+	if s.store.closed.Load() {
 		return nil
 	}
 	if err := s.snap.Close(); err != nil {
