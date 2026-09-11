@@ -51,6 +51,50 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **The MCP transport carries seventeen JSON-RPC error codes, and the
+  substring classification is deleted** (#438). `pkg/api/mcp` had **no**
+  error-code mapping at all — a tool failure reached a client as a sentence —
+  so every typed condition the SDK promises degraded to matching words in
+  prose. `sdk/go/transport/mcp` classified four conditions with
+  `strings.Contains(msg, "not found")` and one with `"lease expired"`, which is
+  fail-open in the direction that costs most: a transport failure whose text
+  happened to carry the phrase read as a successful determination of absence.
+
+  The new `pkg/api/mcp/wire` package declares one code per gRPC status code,
+  by MEANING, exactly as the QUIC wire does since #437 — so a consumer keeps
+  one mental model across transports instead of acquiring a second. The
+  numbers are JSON-RPC's, from the −32000..−32099 band reserved for
+  implementation-defined server errors, and three of them (−32002, −32005,
+  −32010) are deliberately left unassigned to the names the portfolio's error
+  convention already gives them.
+
+  | condition | code |
+  |---|---|
+  | not found (key, user, role, lease, revision) | `NOT_FOUND` (−32004) |
+  | barrier sealed, store closed, not leader, draining | `UNAVAILABLE` (−32006) |
+  | capability this node was not built with | `UNIMPLEMENTED` (−32014) |
+  | throttled caller | `RESOURCE_EXHAUSTED` (−32008) |
+  | unclassified server fault | `INTERNAL` (−32603) |
+
+  **What changes on the wire.** A service-layer failure used to leave as a
+  JSON-RPC error pinned to `INTERNAL_ERROR`; it is now a tool RESULT carrying
+  `isError`, which is what the MCP specification asks for and the only envelope
+  a tool handler controls. The text content is byte-identical to what it was,
+  so a client that only reads text sees no difference; the code rides in
+  `structuredContent` as `{"error": {"code", "status", "message", "tool"}}`.
+
+  **What changes in the SDK.** The nine single-subject user methods return
+  `*transport.UserNotFoundError` naming the id or key **the caller supplied**,
+  where they previously returned `*transport.KeyNotFoundError` (four of them)
+  or a generic request error (five). `transport.RequestError.StatusCode` now
+  carries the JSON-RPC code on MCP. An unrecognised code from a newer server
+  degrades to the generic request error, never to a misclassification.
+
+  The server owns no classification clauses of its own: it consults the gRPC
+  transport's per-family classifiers through the new
+  `grpc.ServiceErrorCode` and renders the result, so a condition cannot mean
+  one thing over gRPC and another over MCP.
+
 - **Two barrier-passphrase config fields are `*secure.Buffer`, and an unusable
   one is now an error rather than a downgrade** (#429). Arming
   `pkg/secure/analyzer` as a build gate left exactly two findings that were

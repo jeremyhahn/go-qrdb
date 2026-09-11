@@ -83,6 +83,13 @@ implements it by delegating straight to `RegisterGRPC`. Streaming methods are
 not projected — QUIC's frame protocol has no generic streaming path — so a
 module whose surface is entirely streaming leaves this hook a no-op.
 
+**The MCP transport carries a module's tools too**, through `RegisterMCP`, and
+a module typically implements them over the code that serves its gRPC surface —
+so it answers in gRPC's vocabulary there as well. That is why the MCP error
+vocabulary is also one code per gRPC status code, and why the MCP server takes
+a module's gRPC status verbatim instead of running it through a classifier that
+knows only qrdb's own error types.
+
 **This projection is what decided the QUIC status vocabulary.** A projected
 method's handler is the module's own generated gRPC code, so it answers with a
 gRPC status by construction — it has never seen the frame protocol and cannot
@@ -185,6 +192,35 @@ neither owns a verb neither registered. See
   whole change exists to remove. The cost is two constants that qrdb's own
   handlers never produce, and it is named in the wire package rather than
   glossed.
+- **A bespoke error vocabulary for MCP.** Rejected. MCP had no codes at all, so
+  nothing constrained the choice and the temptation was to design a set around
+  what MCP's tools happen to return. It would have handed a consumer a second
+  translation table days after the QUIC vocabulary gave them their first, and
+  made the transport-by-transport conformance matrix a translation exercise
+  rather than a comparison. MCP declares one code per gRPC status code, by
+  meaning, for the same reasons QUIC does — with JSON-RPC numbers, because the
+  envelope is JSON-RPC's and importing a foreign registry's integers into it
+  would be the worst of both.
+- **Emitting MCP's codes as JSON-RPC `error` objects.** Rejected on the
+  specification: a failure inside a tool is a RESULT carrying `isError`, and
+  only a dispatch failure is a protocol error. It is also not available — the
+  mcp-go server pins every handler-returned error to `INTERNAL_ERROR` with a
+  nil `data` field and gives a handler no way to influence either, so the
+  spec-correct channel is the only channel.
+- **A third ~80-clause error classifier, in `pkg/api/mcp`.** Rejected. Two such
+  ladders already exist and must agree with nothing forcing them to; a third
+  compounds that. The MCP server instead consults the gRPC transport's
+  per-family classifiers and renders the code they return, so it owns no
+  condition clauses and has nothing to drift. Whether the classification
+  eventually moves to a transport-neutral home is a separate, open question;
+  this keeps that move cheap rather than pre-empting it.
+- **Stamping a code on every MCP tool error, including the argument refusals.**
+  Rejected for now. Those refusals are built from string literals at some four
+  hundred call sites, and the only way to code them centrally is to infer a
+  classification from prose — the exact thing being deleted. They stay uncoded,
+  a client degrades them as it always did, and a test pins the boundary so it
+  is a stated gap. Coding them means giving those call sites typed errors
+  first, which is mechanical, wide, and its own change.
 
 ## Component boundaries
 

@@ -25,6 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -496,38 +497,68 @@ func (f *failingRegistry) CollectionService(string, string) (service.CollectionS
 }
 
 // TestGuardedArgs_UnresolvableScope covers the branch every guarded handler
-// shares: a request whose database scope does not resolve is an ARGUMENT-level
-// tool error, not a guarded answer. Returning false here would tell a caller
-// its claim was declined by a keyspace that was never consulted.
+// shares: a request whose database scope does not resolve is a TYPED refusal
+// that reaches the client CODED, and is never a guarded answer.
+//
+// Both halves matter and they are different failures. Answering false would
+// tell a caller its claim was declined by a keyspace that was never consulted.
+// Answering with a rendered string — which this helper did until #438's review
+// caught the one site its sweep missed — keeps the caller safe but strips the
+// code, so the SDK degrades a NotFound into a generic RequestError and the
+// guarded verbs answer in a different vocabulary from every other KV tool.
+//
+// An earlier version of this test asserted the rendered-string shape was
+// correct ("an unresolvable scope is a tool error, not a Go error"). It was
+// pinning the defect, which is part of why the sweep passed over the site.
 func TestGuardedArgs_UnresolvableScope(t *testing.T) {
-	ctx := withRegistry(context.Background(), &failingRegistry{err: errors.New("no such database")})
+	ctx := withRegistry(context.Background(), &failingRegistry{
+		err: &service.TenantNotFoundError{TenantID: "acme"},
+	})
 
-	handlers := map[string]func() (bool, error){
-		"qrdb_put_if_absent": func() (bool, error) {
-			result, err := handlePutIfAbsent(newMockKVService())(ctx,
-				buildCallToolRequest(t, "qrdb_put_if_absent", map[string]any{"key": "claim", "value": b64("acme")}))
-			return result.IsError, err
-		},
-		"qrdb_compare_and_delete": func() (bool, error) {
-			result, err := handleCompareAndDelete(newMockKVService())(ctx,
-				buildCallToolRequest(t, "qrdb_compare_and_delete", map[string]any{"key": "claim", "expected": b64("acme")}))
-			return result.IsError, err
-		},
-		"qrdb_compare_and_swap": func() (bool, error) {
-			result, err := handleCompareAndSwap(newMockKVService())(ctx,
-				buildCallToolRequest(t, "qrdb_compare_and_swap", map[string]any{"key": "claim", "expected": b64("acme"), "next": b64("globex")}))
-			return result.IsError, err
-		},
+	handlers := map[string]mcpserver.ToolHandlerFunc{
+		"qrdb_put_if_absent":      handlePutIfAbsent(newMockKVService()),
+		"qrdb_compare_and_delete": handleCompareAndDelete(newMockKVService()),
+		"qrdb_compare_and_swap":   handleCompareAndSwap(newMockKVService()),
+	}
+	args := map[string]map[string]any{
+		"qrdb_put_if_absent":      {"key": "claim", "value": b64("acme")},
+		"qrdb_compare_and_delete": {"key": "claim", "expected": b64("acme")},
+		"qrdb_compare_and_swap":   {"key": "claim", "expected": b64("acme"), "next": b64("globex")},
 	}
 
-	for name, call := range handlers {
+	for name, handler := range handlers {
 		t.Run(name, func(t *testing.T) {
-			isErr, err := call()
-			if err != nil {
-				t.Fatalf("an unresolvable scope is a tool error, not a Go error: %v", err)
+			req := buildCallToolRequest(t, name, args[name])
+
+			// The bare handler hands the typed error up, so the outermost
+			// errorCodeMiddleware is what classifies it -- the same shape
+			// every other KV verb uses.
+			res, err := handler(ctx, req)
+			if err == nil {
+				t.Fatal("an unresolvable scope must reach the middleware as a typed error; " +
+					"rendering it here strips the code")
 			}
-			if !isErr {
-				t.Fatal("an unresolvable database scope must be a tool error, never a guarded answer")
+			if res != nil {
+				t.Fatalf("a refusal must not carry a result, and above all not a guarded "+
+					"answer: %+v", res)
+			}
+
+			// Through the middleware, it arrives coded.
+			coded, mwErr := errorCodeMiddleware()(handler)(ctx, req)
+			if mwErr != nil {
+				t.Fatalf("the middleware passed the error through; mcp-go would pin it "+
+					"to INTERNAL_ERROR with no data: %v", mwErr)
+			}
+			if coded == nil || !coded.IsError {
+				t.Fatal("no error result was produced")
+			}
+			payload, ok := wire.DecodeErrorPayload(coded.StructuredContent)
+			if !ok {
+				t.Fatal("the guarded verbs' scope refusal reached the client with no code")
+			}
+			if payload.Code != wire.CodeNotFound {
+				t.Errorf("Code = %d (%s), want CodeNotFound (%d) -- a missing tenant is "+
+					"not an internal fault", payload.Code, payload.Status, wire.CodeNotFound)
 			}
 		})
 	}

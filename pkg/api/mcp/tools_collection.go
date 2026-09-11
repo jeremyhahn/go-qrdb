@@ -108,7 +108,7 @@ func handleCollectionCreate(svc service.CollectionServicer) mcpserver.ToolHandle
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -166,7 +166,7 @@ func handleCollectionDrop(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -205,7 +205,7 @@ func handleCollectionList(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 
 		resp, err := svc.ListCollections(ctx, &service.ListCollectionsRequest{
@@ -249,7 +249,7 @@ func handleCollectionInfo(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -299,7 +299,7 @@ func handleCollectionInsert(svc service.CollectionServicer) mcpserver.ToolHandle
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -362,7 +362,7 @@ func handleCollectionGet(svc service.CollectionServicer) mcpserver.ToolHandlerFu
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -424,7 +424,7 @@ func handleCollectionUpdate(svc service.CollectionServicer) mcpserver.ToolHandle
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -492,7 +492,7 @@ func handleCollectionDelete(svc service.CollectionServicer) mcpserver.ToolHandle
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -553,7 +553,7 @@ func handleCollectionListDocuments(svc service.CollectionServicer) mcpserver.Too
 		}
 		svc, rerr := resolveCollection(ctx, svc, database)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {

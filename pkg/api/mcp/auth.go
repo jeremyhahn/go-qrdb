@@ -21,6 +21,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"google.golang.org/grpc/codes"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -106,21 +107,43 @@ func (s *Server) bearerChallengeHandler(next http.Handler) http.Handler {
 }
 
 // authzToolError renders a failed authorization gate as an MCP tool error
-// whose WORDS match what actually happened.
+// whose CODE and words both match what actually happened.
 //
-// NAMED PROTOCOL EXCLUSION: MCP tool results carry text, not a status code.
-// REST answers 503, gRPC codes.Unavailable and QUIC wire.StatusUnavailable for
-// a node-side fault; MCP has no equivalent channel and cannot be made to
-// agree with them mechanically. What it CAN do is stop saying "authorization
-// denied" about a refusal that is not one -- an operator reading an MCP client
-// during a full audit disk was being told it was a permissions problem, which
-// is the exact misdiagnosis go-qrdb#335's 503 mapping exists to prevent. The
-// prose is the whole channel here, so the prose is where the distinction goes.
+// THE NAMED PROTOCOL EXCLUSION IS GONE (go-qrdb#438). It read: "MCP tool
+// results carry text, not a status code. REST answers 503, gRPC
+// codes.Unavailable and QUIC wire.StatusUnavailable for a node-side fault; MCP
+// has no equivalent channel and cannot be made to agree with them
+// mechanically." It has one now, so it does agree with them: a retryable
+// node-side fault -- a full audit disk, the case go-qrdb#335's 503 mapping
+// exists to keep from being misread as a permissions problem -- carries
+// CodeUnavailable, the same family REST reports as 503 and gRPC as
+// codes.Unavailable, and a genuine refusal carries CodePermissionDenied.
+//
+// The prose distinction the exclusion introduced is kept verbatim: an operator
+// reads the message, and it was already saying the right thing. What changes
+// is that a program no longer has to.
+//
+// The tool name is not available at this gate -- it is called from the
+// authorization middleware, which knows the request but renders the refusal
+// for every tool alike -- so the envelope's Tool field is left empty rather
+// than filled with a guess. A caller that needs it has the request in hand.
+//
+// The CODE comes from authmw.GRPCError -- the shared classifier REST and gRPC
+// already answer from -- and not from the retryable/not split the prose uses,
+// so the four auth failure classes keep four distinct codes instead of
+// collapsing into two. A THROTTLED caller in particular reaches an MCP client
+// as RESOURCE_EXHAUSTED, the same answer gRPC gives and the sibling of REST's
+// 429; the coarser split would have said UNAVAILABLE and lost the reason.
 func authzToolError(err error) *mcpgo.CallToolResult {
+	// PermissionDenied is the fallback for a failure the classifier does not
+	// recognise, matching the wording below and the fallback gRPC's
+	// authorization interceptor passes.
+	code := classifyToolError(authmw.GRPCError(err, codes.PermissionDenied))
+
 	if authmw.ClassifyAuthError(err).Retryable() {
-		return mcpgo.NewToolResultError("authorization unavailable, retry: " + err.Error())
+		return toolErrorResult("", code, "authorization unavailable, retry: "+err.Error())
 	}
-	return mcpgo.NewToolResultError("authorization denied: " + err.Error())
+	return toolErrorResult("", code, "authorization denied: "+err.Error())
 }
 
 // authorizeTenantBarrierOp authorizes a per-tenant barrier tool invocation

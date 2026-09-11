@@ -20,9 +20,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -46,12 +48,25 @@ func toolErrorText(t *testing.T, res *mcpgo.CallToolResult) string {
 	return sb.String()
 }
 
+// toolErrorCode extracts the JSON-RPC code from an MCP tool error result,
+// failing when it carries none.
+func toolErrorCode(t *testing.T, res *mcpgo.CallToolResult) wire.Code {
+	t.Helper()
+	payload, ok := wire.DecodeErrorPayload(res.StructuredContent)
+	if !ok {
+		t.Fatal("the tool error carries no code, so a client can only read its prose")
+	}
+	return payload.Code
+}
+
 // TestAuthzToolError_RetryableIsNotWordedAsADenial is the regression test.
 //
-// NAMED PROTOCOL EXCLUSION: MCP tool results carry TEXT, not a status code, so
+// The NAMED PROTOCOL EXCLUSION this comment used to carry is gone
+// (go-qrdb#438). It read: "MCP tool results carry TEXT, not a status code, so
 // this transport cannot answer 503 the way REST does or Unavailable the way
-// gRPC and QUIC do. The prose is its whole channel -- which is exactly why the
-// prose must not say "authorization denied" about a full audit disk. An
+// gRPC and QUIC do. The prose is its whole channel." The prose is no longer
+// the whole channel, and TestAuthzToolError_CodesMatchTheOtherTransports below
+// asserts the code half. The prose half still matters and is unchanged: an
 // operator reading an MCP client during an audit outage was being told it was
 // a permissions problem.
 func TestAuthzToolError_RetryableIsNotWordedAsADenial(t *testing.T) {
@@ -92,4 +107,51 @@ func TestAuthzToolError_StoreUnavailableAlsoRetries(t *testing.T) {
 	if !strings.Contains(text, "retry") {
 		t.Fatalf("got %q, want a retry instruction", text)
 	}
+}
+
+// TestAuthzToolError_CodesMatchTheOtherTransports is the half go-qrdb#438
+// added: the words were already right, and now a PROGRAM can act on the same
+// distinction without parsing them.
+func TestAuthzToolError_CodesMatchTheOtherTransports(t *testing.T) {
+	t.Run("a node-side fault is Unavailable", func(t *testing.T) {
+		cause := &audit.GateError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}}
+		if got := toolErrorCode(t, authzToolError(cause)); got != wire.CodeUnavailable {
+			t.Errorf("code = %s, want UNAVAILABLE — the same family REST answers 503 "+
+				"and gRPC codes.Unavailable for", got)
+		}
+	})
+
+	t.Run("a genuine refusal is PermissionDenied", func(t *testing.T) {
+		cause := &authmw.UserDisabledError{Username: "bob", TenantID: "t1", Lifecycle: "suspended"}
+		if got := toolErrorCode(t, authzToolError(cause)); got != wire.CodePermissionDenied {
+			t.Errorf("code = %s, want PERMISSION_DENIED", got)
+		}
+	})
+
+	t.Run("a bad credential is Unauthenticated", func(t *testing.T) {
+		if got := toolErrorCode(t, authzToolError(auth.ErrNoPeerCertificate)); got != wire.CodeUnauthenticated {
+			t.Errorf("code = %s, want UNAUTHENTICATED", got)
+		}
+	})
+
+	// The rate-limit row. docs/rate-limit/engineering.md recorded MCP as
+	// having "no numeric status code for this class of refusal", so a
+	// throttled caller was indistinguishable from a denied one. It is
+	// RESOURCE_EXHAUSTED now, the same class gRPC answers and the sibling of
+	// REST's 429 -- a caller backs off instead of going to fix grants that
+	// were never the problem.
+	t.Run("a throttled caller is ResourceExhausted", func(t *testing.T) {
+		cause := &authmw.RateLimitedError{Permission: "kv:put", RetryAfter: time.Second}
+		if got := toolErrorCode(t, authzToolError(cause)); got != wire.CodeResourceExhausted {
+			t.Errorf("code = %s, want RESOURCE_EXHAUSTED", got)
+		}
+	})
+
+	// An error nothing classifies keeps the wording's own answer rather than
+	// acquiring a more specific one it cannot justify.
+	t.Run("an unclassified failure is PermissionDenied", func(t *testing.T) {
+		if got := toolErrorCode(t, authzToolError(errors.New("something new"))); got != wire.CodePermissionDenied {
+			t.Errorf("code = %s, want PERMISSION_DENIED", got)
+		}
+	})
 }

@@ -31,12 +31,22 @@ typed error whose text names the remedy: **`requires mode: raft`**.
 | gRPC | `UNIMPLEMENTED` |
 | Unix (gRPC over UDS) | `UNIMPLEMENTED` |
 | QUIC | `Unimplemented` |
-| MCP | tool error carrying the same message |
+| MCP | `INTERNAL` (−32603), with the same message — see below |
 | Embedded | typed Go error |
 
 Implemented by `pkg/server/standalone_gate.go` — nil singletons plus a gated
 per-database service registry — so the refusal is structural rather than a
 per-handler check that could be forgotten.
+
+**The MCP row is a stated gap, not a design.** The gated registry refuses with
+`rest.ServiceNotImplementedError`, and only the REST transport classifies that
+type — so on MCP the refusal is now CODED but coded `INTERNAL`, because no
+classifier recognises it. That is at least honest: `INTERNAL` is what the
+classifiers mean by "nothing here recognises this", and it is strictly better
+than the uncoded tool result the row described before. It is also wrong, and it
+is wrong on QUIC in the same way and for the same reason. Closing it means
+teaching the shared service-error classifier about the gated registry's
+refusal, which reaches both transports at once and is tracked separately.
 
 ## Capability families by mode
 

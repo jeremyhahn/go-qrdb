@@ -92,7 +92,7 @@ func handleBatchExecute(batchSvc service.BatchServicer) mcpserver.ToolHandlerFun
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		batchSvc, rerr := resolveBatch(ctx, batchSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		opsStr := mcp.ParseString(req, "ops", "")
 		if opsStr == "" {
@@ -166,7 +166,7 @@ func handleBatchImport(batchSvc service.BatchServicer) mcpserver.ToolHandlerFunc
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		batchSvc, rerr := resolveBatch(ctx, batchSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 
 		encoded := mcp.ParseString(req, "file", "")

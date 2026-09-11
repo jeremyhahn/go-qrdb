@@ -476,6 +476,16 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// call is authorized (default-deny) before its handler runs.
 	mcpOpts := []mcpserver.ServerOption{
 		mcpserver.WithToolCapabilities(false),
+
+		// FIRST, and therefore OUTERMOST: mcp-go wraps middlewares in reverse
+		// index order, so this one sees the errors every middleware below it
+		// and every tool handler returns, and is what gives each of them a
+		// JSON-RPC code (go-qrdb#438). It is registered unconditionally —
+		// unlike the three gates below it, whose registration depends on what
+		// the server was configured with — because a failure classified on one
+		// deployment and opaque on another is the inconsistency this transport
+		// has just stopped having.
+		mcpserver.WithToolHandlerMiddleware(errorCodeMiddleware()),
 	}
 	if s.authMW != nil {
 		mcpOpts = append(mcpOpts, mcpserver.WithToolHandlerMiddleware(s.toolAuthzMiddleware()))

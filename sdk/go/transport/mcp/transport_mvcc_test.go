@@ -245,7 +245,7 @@ func TestGetRevision_Success(t *testing.T) {
 
 func TestGetRevision_NotFound(t *testing.T) {
 	svc := newMockMVCCSvc()
-	svc.getRevErr = errors.New("key not found")
+	svc.getRevErr = &service.KeyNotFoundError{Key: "missing"}
 	tr, cleanup := connectMVCCInProcess(t, svc)
 	defer cleanup()
 
@@ -284,7 +284,7 @@ func TestGetAtRevision_Success(t *testing.T) {
 
 func TestGetAtRevision_NotFound(t *testing.T) {
 	svc := newMockMVCCSvc()
-	svc.getAtRevErr = errors.New("key not found")
+	svc.getAtRevErr = &service.KeyNotFoundError{Key: "k"}
 	tr, cleanup := connectMVCCInProcess(t, svc)
 	defer cleanup()
 

@@ -67,23 +67,27 @@ What crosses depends on the transport:
 | `grpc`, `unix` | the classification: `codes.Unavailable`, on every RPC |
 | `rest` | the classification: HTTP `503`, on every verb — `GET /kv/{key}`, `/kv/list`, `/kv/scan`, `PUT` (plain and lease), `DELETE`, `POST /batch` |
 | `quic` | the classification: `StatusUnavailable`, on every frame |
-| `mcp` | a generic tool failure — **the classification is not carried yet** |
+| `mcp` | the classification: `UNAVAILABLE` (−32006), on every tool |
 
 **Only `embedded` preserves the typed value**, because only `embedded` never
 serializes it. The others carry a status code, which is what a wire can carry;
 a remote caller reads the code and must not parse the message.
 
-The `quic` row used to read the same as `mcp`'s. It carries the classification
-now because the QUIC wire gained a status vocabulary large enough to say it:
-the closed-store condition maps to `StatusUnavailable`, the same retryable
-family `grpc` reports as `codes.Unavailable` and `rest` as `503`. See
+Both remote rows used to read "a generic tool failure — the classification is
+not carried yet". They carry it now, each once its transport gained a
+vocabulary wide enough to say it: `quic` maps the closed store to
+`StatusUnavailable`, and `mcp` to `UNAVAILABLE` (−32006) in the error envelope
+on its tool result. All four remote transports therefore report the same
+retryable family — `503`, `codes.Unavailable`, `StatusUnavailable`,
+`UNAVAILABLE` — so a client that backs off and retries on one does it on all of
+them. See
 [the API server's status mapping](../api-server/api.md#common-status-mapping)
 for the whole table.
 
-The `mcp` gap remains, and it is a different shape: MCP has no status channel
-at all, so there is no code to carry rather than no code to carry it in. It is
-recorded here rather than left to be discovered — see
-[engineering.md](engineering.md).
+The two arrived by the same route and are worth telling apart from a fix in the
+handlers: nothing about how the closed store is DETECTED changed. The condition
+was always classified `Unavailable` by the service-error mapper; what was
+missing was somewhere on the wire to put the answer.
 
 ## Error semantics
 

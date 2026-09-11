@@ -53,7 +53,7 @@ func TestMCPGetRoleByName_Success(t *testing.T) {
 
 func TestMCPGetRoleByName_NotFound(t *testing.T) {
 	svc := newMockRoleSvc()
-	svc.getByErr = errors.New("role not found")
+	svc.getByErr = &role.RoleNotFoundError{ID: "missing"}
 	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), svc, nil)
 	defer cleanup()
 

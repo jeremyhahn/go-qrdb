@@ -36,7 +36,7 @@ func (t *Transport) GetRoleByName(ctx context.Context, req *transport.GetRoleByN
 
 	text, err := t.callTool(ctx, "qrdb_role_get_by_name", args)
 	if err != nil {
-		if isNotFoundError(err) {
+		if isToolNotFound(err) {
 			return nil, &transport.RoleNotFoundError{ID: req.Name}
 		}
 		return nil, err

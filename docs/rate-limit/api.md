@@ -15,7 +15,7 @@ gives for **any** permission an operator has declared a `Policy` for.
 | gRPC (TCP) | `codes.ResourceExhausted` |
 | gRPC over Unix socket | `codes.ResourceExhausted` — identical to TCP gRPC; the unix listener shares the same interceptor |
 | QUIC | `StatusResourceExhausted`, in a frame naming the permission and the refusal reason |
-| MCP | The tool call's error result carries the refusal text; no numeric status code — MCP errors are text, not codes |
+| MCP | `RESOURCE_EXHAUSTED` (−32008) in the tool result's error envelope, alongside the refusal text |
 
 Every row above is reached from the same enforcement call
 (`AuthMiddleware.authorize`), so a `Policy` declared for a permission is
@@ -30,8 +30,13 @@ the problem, and unavailable, which at least carries the right instruction —
 retry — but loses the reason and points at the node's health. See
 [the API server's status vocabulary](../api-server/api.md#the-quic-status-vocabulary).
 
-MCP is the one row still without a code, and for a different reason: MCP has no
-status channel at all, so there is nothing to put a code in.
+The MCP row read "no code at all" for longer and for a different reason: MCP had
+no error-code vocabulary whatsoever, so there was nothing to put a code in
+rather than nothing wide enough to say it. It now answers
+`RESOURCE_EXHAUSTED` (−32008) — the same class gRPC answers and the sibling of
+REST's 429 — because the MCP authorization gate renders the SHARED auth-failure
+classification rather than a coarser retryable/not split of its own. See
+[the MCP error vocabulary](../api-server/api.md#the-mcp-error-vocabulary).
 
 ## What a caller learns from a refusal
 

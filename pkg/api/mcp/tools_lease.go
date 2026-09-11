@@ -73,7 +73,7 @@ func handleLeaseGrant(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		ttl := mcp.ParseInt64(req, "ttl", 0)
 		if ttl <= 0 {
@@ -111,7 +111,7 @@ func handleLeaseRevoke(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
@@ -143,7 +143,7 @@ func handleLeaseKeepAlive(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerF
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
@@ -181,7 +181,7 @@ func handleLeaseTTL(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		leaseID := mcp.ParseInt64(req, "lease_id", 0)
 		if leaseID == 0 {
@@ -215,7 +215,7 @@ func handleLeaseList(leaseSvc service.LeaseServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		leaseSvc, rerr := resolveLease(ctx, leaseSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		leases, err := leaseSvc.Leases(ctx)
 		if err != nil {

@@ -31,6 +31,75 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
+// serviceErrorClassifiers are this package's per-family error mappers, in the
+// order ServiceErrorCode consults them.
+//
+// There are nine of them because a gRPC SERVICE knows its own family and calls
+// exactly one. Each is total — every one ends in codes.Internal — and Internal
+// is what each of them means by "I do not recognise this", not by "this is a
+// server fault I have identified".
+//
+// The order is a tiebreak for an error two families both classify. No error in
+// TestServiceErrorCode_NoFamilyDisagrees is claimed twice with different codes,
+// and that test is what would catch one appearing.
+var serviceErrorClassifiers = []func(error) error{
+	// The data plane first: it is the classifier every transport already runs
+	// on every RPC, and the one whose errors.Is clauses (storage.ErrStorageClosed,
+	// watch.ErrCompacted) can match through another family's wrapper.
+	mapServiceError,
+	mapAuthServiceError,
+	mapTenantError,
+	mapCredentialError,
+	mapPINError,
+	mapAuthFactorGRPCError,
+	mapUserAuthFactorGRPCError,
+	mapBarrierCeremonyError,
+	mapTenantBarrierCeremonyError,
+}
+
+// ServiceErrorCode reports the gRPC status code this package's classifiers
+// assign to err, without building a status error around it.
+//
+// It exists so a transport whose wire is NOT gRPC can reuse this
+// classification instead of growing a ladder of its own. The MCP transport
+// does exactly that: pkg/api/mcp renders the code returned here into its own
+// JSON-RPC vocabulary through a seventeen-row correspondence table, and owns
+// no condition-to-class clauses at all (go-qrdb#438).
+//
+// That is deliberate, and it is the answer to go-qrdb#462. This repository
+// already carries TWO ~80-clause classifiers that must agree and are not
+// forced to (this package's and pkg/api/quic's). A third would have compounded
+// the problem; a renderer over this one cannot drift from it, because there is
+// nothing in it to drift. Whether the classification eventually moves to a
+// transport-neutral home is #462's call, and this function is deliberately a
+// thin, side-effect-free view of the mappers so that move stays cheap.
+//
+// # Why it consults every family and a gRPC service consults one
+//
+// A gRPC service method belongs to one family and calls that family's mapper.
+// MCP classifies in a tool-handler middleware that is family-agnostic by
+// design — it has to cover a module's tools too, and a module has no family
+// here at all — so it asks all of them and takes the FIRST that classifies.
+//
+// "Classifies" means "answers something other than codes.Internal", because
+// Internal is every one of these mappers' default branch: the answer they give
+// to an error they do not recognise. Preferring a real classification over
+// that is the correct resolution, and it is the only one available to a caller
+// that cannot know which family an error came from.
+//
+// A nil error classifies as codes.OK.
+func ServiceErrorCode(err error) codes.Code {
+	if err == nil {
+		return codes.OK
+	}
+	for _, classify := range serviceErrorClassifiers {
+		if code := status.Code(classify(err)); code != codes.Internal {
+			return code
+		}
+	}
+	return codes.Internal
+}
+
 // mapServiceError translates service-layer errors into gRPC status errors
 // with appropriate codes. Unknown errors are mapped to codes.Internal.
 func mapServiceError(err error) error {

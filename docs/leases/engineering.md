@@ -101,12 +101,12 @@ write and dropping the association would produce a key that outlives its owner
 with no way to notice.
 
 `sdk/go/transport.LeaseNotFoundError` / `LeaseExpiredError` cross `embedded`,
-`grpc`, `unix`, `quic` and `mcp` as the same two types. `grpc`, `unix` and
-`quic` all gate on a **not-found status** — `codes.NotFound` on the first two,
-`wire.StatusNotFound` on `quic` — and then split the two lease conditions apart
-by message text at the lease call sites, because no wire here carries an
-expired-specific sibling of not-found. `mcp` has no status channel at all and
-works from tool-result text alone.
+`grpc`, `unix`, `quic` and `mcp` as the same two types. All four remote
+transports gate on a **not-found status** — `codes.NotFound` on `grpc` and
+`unix`, `wire.StatusNotFound` on `quic`, the `NOT_FOUND` (−32004) error code on
+`mcp` — and then split the two lease conditions apart by message text at the
+lease call sites, because no wire here carries an expired-specific sibling of
+not-found.
 
 Two things about that split are worth stating, because they look alike and are
 not. Deciding **which subject** is missing from a status shared across subjects
@@ -120,6 +120,14 @@ fault carries — so the words "lease not found" were the only thing separating 
 gone lease from a broken node. That changed when the QUIC wire gained a status
 vocabulary; see
 [the API server's status vocabulary](../api-server/api.md#the-quic-status-vocabulary).
+
+`mcp` had no gate at all: it tested the message for "lease expired", then for
+"not found", on **any** tool failure, so a broken node whose prose carried
+either phrase was reported as a lease condition. It now gates on the same
+not-found code as its siblings before the message is consulted, which is the
+difference between a split made at a call site that knows its subject and a
+guess made about an unclassified failure. See
+[the MCP error vocabulary](../api-server/api.md#the-mcp-error-vocabulary).
 
 **REST is the exception, and it is a partial one.** Only `LeaseTimeToLive` maps
 a typed lease error (`transport/rest/transport_lease.go` turns a 404 into

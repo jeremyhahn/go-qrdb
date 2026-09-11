@@ -273,10 +273,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 		"id": strconv.FormatUint(id, 10),
 	})
 	if err != nil {
-		if isNotFoundError(err) {
-			return nil, &transport.KeyNotFoundError{Key: strconv.FormatUint(id, 10)}
-		}
-		return nil, err
+		return nil, mapUserNotFound(id, err)
 	}
 
 	var raw serverUser
@@ -299,10 +296,7 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 		"username":  username,
 	})
 	if err != nil {
-		if isNotFoundError(err) {
-			return nil, &transport.KeyNotFoundError{Key: username}
-		}
-		return nil, err
+		return nil, mapUserLookupNotFound(transport.UserLookupKey(tenantID, username), err)
 	}
 
 	var raw serverUser
@@ -324,10 +318,7 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 		"email":     email,
 	})
 	if err != nil {
-		if isNotFoundError(err) {
-			return nil, &transport.KeyNotFoundError{Key: email}
-		}
-		return nil, err
+		return nil, mapUserLookupNotFound(transport.UserLookupKey(tenantID, email), err)
 	}
 
 	var raw serverUser
@@ -349,10 +340,7 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 		"thumbprint": thumbprint,
 	})
 	if err != nil {
-		if isNotFoundError(err) {
-			return nil, &transport.KeyNotFoundError{Key: "cert_spki/" + thumbprint}
-		}
-		return nil, err
+		return nil, mapUserLookupNotFound("cert_spki/"+thumbprint, err)
 	}
 
 	var raw serverUser
@@ -376,7 +364,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 		"not_after_unix": notAfterUnix,
 	})
 	if err != nil {
-		return nil, err
+		return nil, mapUserNotFound(userID, err)
 	}
 
 	var raw serverUser
@@ -439,7 +427,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 
 	text, err := t.callTool(ctx, "qrdb_user_update", args)
 	if err != nil {
-		return nil, err
+		return nil, mapUserNotFound(req.ID, err)
 	}
 
 	var raw serverUser
@@ -460,7 +448,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	_, err := t.callTool(ctx, "qrdb_user_delete", map[string]any{
 		"id": strconv.FormatUint(id, 10),
 	})
-	return err
+	return mapUserNotFound(id, err)
 }
 
 // ListUsers returns a paginated list of users for the given tenant.
@@ -513,7 +501,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	_, err := t.callTool(ctx, "qrdb_user_enable", map[string]any{
 		"id": strconv.FormatUint(id, 10),
 	})
-	return err
+	return mapUserNotFound(id, err)
 }
 
 // DisableUser deactivates a user account. Calls the qrdb_user_disable
@@ -526,7 +514,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	_, err := t.callTool(ctx, "qrdb_user_disable", map[string]any{
 		"id": strconv.FormatUint(id, 10),
 	})
-	return err
+	return mapUserNotFound(id, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +564,7 @@ func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, er
 		"id": id,
 	})
 	if err != nil {
-		if isNotFoundError(err) {
+		if isToolNotFound(err) {
 			return nil, &transport.KeyNotFoundError{Key: id}
 		}
 		return nil, err

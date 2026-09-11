@@ -33,6 +33,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -317,8 +318,9 @@ func (t *Transport) Get(ctx context.Context, key string, opts ...transport.ReadO
 
 	text, err := t.callTool(ctx, "qrdb_get", args)
 	if err != nil {
-		// Detect key-not-found errors from the tool response.
-		if isNotFoundError(err) {
+		// The key this call site asked for, not one read back out of the
+		// server's prose.
+		if isToolNotFound(err) {
 			return nil, &transport.KeyNotFoundError{Key: key}
 		}
 		return nil, err
@@ -839,6 +841,18 @@ func (t *Transport) callTool(ctx context.Context, tool string, args map[string]a
 
 	if result.IsError {
 		text := extractTextContent(result)
+
+		// A coded failure is classified by its code; an UNCODED one degrades
+		// to the generic request error this transport has always returned.
+		//
+		// Uncoded is not a fault to paper over. It is what a tool's ARGUMENT
+		// refusals still are — the server builds those results itself and
+		// stamping a code on them would mean guessing one from a string — and
+		// it is also what an older server sends. Both want the same answer:
+		// report the failure, classify nothing (go-qrdb#438).
+		if payload, ok := wire.DecodeErrorPayload(result.StructuredContent); ok {
+			return "", mapToolError(tool, payload)
+		}
 		return "", &transport.RequestError{Method: tool, Err: &toolResultError{Tool: tool, Message: text}}
 	}
 
@@ -867,36 +881,25 @@ func extractTextContent(result *mcp.CallToolResult) string {
 	return ""
 }
 
-// isExpiredError checks whether an error indicates a lease-expired
-// condition. MCP tool errors propagate the service-layer error message
-// verbatim (pkg/api/mcp.ToolError.Error() wraps it, not replaces it), so
-// service.LeaseExpiredError's fixed "lease expired" text survives to the
-// client the same way "not found" does for isNotFoundError below.
+// leaseExpiredMessage reports whether a lease not-found says the lease
+// EXPIRED rather than never existed.
 //
-// It exists as a companion to isNotFoundError rather than a case inside it
-// because MCP carries no status code at all -- callTool's IsError result is
-// the ONLY signal, so telling "not found" from "expired" is text-substring
-// classification whichever function does it (go-qrdb#169, completing #141
-// for the lease family). This is not the guess go-qrdb#289 deleted: #289
-// guessed WHICH SUBJECT a generic condition applied to; every call site that
-// checks isExpiredError already knows the subject is the lease it just
-// asked about.
-func isExpiredError(err error) bool {
+// It is only ever consulted from mapLeaseAbsent, AFTER the failure has been
+// established as a not-found by its code and at a call site that already knows
+// its subject is a lease. That gate is the whole difference between this and
+// the classification go-qrdb#438 removed: nothing but a not-found reaches it,
+// so a server fault carrying the words can no longer be read as a gone lease.
+//
+// A message test remains necessary because no transport in this repository has
+// an expired-specific code. gRPC maps service.LeaseNotFoundError and
+// service.LeaseExpiredError both to codes.NotFound, and its own mapLeaseAbsent
+// splits them exactly this way; MCP matching it is what keeps one condition
+// from meaning two different things depending on how it was reached.
+func leaseExpiredMessage(err error) bool {
 	if err == nil {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "lease expired")
-}
-
-// isNotFoundError checks whether an error indicates a key-not-found
-// condition. MCP tool errors propagate the service-layer error message,
-// which contains "not found".
-func isNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found")
 }
 
 // applyReadArgs resolves read options and adds them to the MCP tool

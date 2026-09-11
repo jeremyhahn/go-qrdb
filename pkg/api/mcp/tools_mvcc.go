@@ -96,7 +96,7 @@ func handleMVCCPutWithLease(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandle
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -160,7 +160,7 @@ func handleMVCCGetRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandler
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -219,7 +219,7 @@ func handleMVCCGetAtRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandl
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -348,7 +348,7 @@ func handleMVCCRange(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		start := mcp.ParseString(req, "start", "")
 		if start == "" {
@@ -444,7 +444,7 @@ func handleMVCCCompact(mvccSvc service.MVCCKVServicer) mcpserver.ToolHandlerFunc
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		revision := mcp.ParseInt64(req, "revision", 0)
 		if revision == 0 {
@@ -472,7 +472,7 @@ func handleMVCCCurrentRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolHan
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		rev, err := mvccSvc.CurrentRevision(ctx)
 		if err != nil {
@@ -576,7 +576,7 @@ func handleMVCCRestoreToRevision(mvccSvc service.MVCCKVServicer) mcpserver.ToolH
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		mvccSvc, rerr := resolveMVCC(ctx, mvccSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		revision := mcp.ParseInt64(req, "revision", 0)
 		if revision == 0 {

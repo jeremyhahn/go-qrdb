@@ -108,7 +108,7 @@ func handleWatch(watchSvc service.WatchServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		watchSvc, rerr := resolveWatch(ctx, watchSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {

@@ -85,7 +85,7 @@ func handlePut(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kvSvc, rerr := resolveKV(ctx, kvSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -139,7 +139,7 @@ func handleGet(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kvSvc, rerr := resolveKV(ctx, kvSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -188,7 +188,7 @@ func handleDelete(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kvSvc, rerr := resolveKV(ctx, kvSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		key := mcp.ParseString(req, "key", "")
 		if key == "" {
@@ -233,7 +233,7 @@ func handleList(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kvSvc, rerr := resolveKV(ctx, kvSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		prefix := mcp.ParseString(req, "prefix", "")
 
@@ -283,7 +283,7 @@ func handleScan(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		kvSvc, rerr := resolveKV(ctx, kvSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		prefix := mcp.ParseString(req, "prefix", "")
 

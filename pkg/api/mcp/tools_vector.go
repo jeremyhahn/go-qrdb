@@ -200,7 +200,7 @@ func handleVectorCreateNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -287,7 +287,7 @@ func handleVectorDeleteNamespace(svc service.VectorServicer) mcpserver.ToolHandl
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -329,7 +329,7 @@ func handleVectorListNamespaces(svc service.VectorServicer) mcpserver.ToolHandle
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		shardID := mcp.ParseUInt64(req, "shard_id", 0)
 
@@ -369,7 +369,7 @@ func handleVectorGetNamespaceInfo(svc service.VectorServicer) mcpserver.ToolHand
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -430,7 +430,7 @@ func handleVectorUpsert(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -503,7 +503,7 @@ func handleVectorGet(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -566,7 +566,7 @@ func handleVectorDelete(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -633,7 +633,7 @@ func handleVectorBatchUpsert(svc service.VectorServicer) mcpserver.ToolHandlerFu
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -707,7 +707,7 @@ func handleVectorBatchDelete(svc service.VectorServicer) mcpserver.ToolHandlerFu
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -778,7 +778,7 @@ func handleVectorList(svc service.VectorServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -834,7 +834,7 @@ func handleVectorUpdateMetadata(svc service.VectorServicer) mcpserver.ToolHandle
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -915,7 +915,7 @@ func handleVectorSearchSimilar(svc service.VectorServicer) mcpserver.ToolHandler
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -997,7 +997,7 @@ func handleVectorSearchByMetadata(svc service.VectorServicer) mcpserver.ToolHand
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1089,7 +1089,7 @@ func handleVectorHybridSearch(svc service.VectorServicer) mcpserver.ToolHandlerF
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1182,7 +1182,7 @@ func handleVectorSearchByID(svc service.VectorServicer) mcpserver.ToolHandlerFun
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1249,7 +1249,7 @@ func handleVectorRebuildIndex(svc service.VectorServicer) mcpserver.ToolHandlerF
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1297,7 +1297,7 @@ func handleVectorGetRebuildProgress(svc service.VectorServicer) mcpserver.ToolHa
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1345,7 +1345,7 @@ func handleVectorGetIndexStats(svc service.VectorServicer) mcpserver.ToolHandler
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1395,7 +1395,7 @@ func handleVectorCompactNamespace(svc service.VectorServicer) mcpserver.ToolHand
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {
@@ -1446,7 +1446,7 @@ func handleVectorGetCompactionProgress(svc service.VectorServicer) mcpserver.Too
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		svc, rerr := resolveVector(ctx, svc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		namespace := mcp.ParseString(req, "namespace", "")
 		if namespace == "" {

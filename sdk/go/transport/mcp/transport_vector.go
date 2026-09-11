@@ -540,7 +540,7 @@ func (t *Transport) GetVector(ctx context.Context, req *transport.GetVectorReque
 	// transport.VectorNotFoundError.
 	text, err := t.callTool(ctx, "qrdb_vector_get", args)
 	if err != nil {
-		if isNotFoundError(err) {
+		if isToolNotFound(err) {
 			return nil, &transport.VectorNotFoundError{Namespace: req.Namespace, ID: strconv.FormatUint(req.ID, 10)}
 		}
 		return nil, err

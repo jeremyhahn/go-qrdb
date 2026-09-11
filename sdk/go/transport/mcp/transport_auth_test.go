@@ -513,7 +513,12 @@ func TestGetUser_Success(t *testing.T) {
 
 func TestGetUser_NotFound(t *testing.T) {
 	svc := newMockUserSvc()
-	svc.getErr = errors.New("user not found")
+	// The type the REAL user service returns, not prose that reads like it.
+	// go-qrdb#438 made that distinction load-bearing: the server classifies by
+	// TYPE now, so a double answering errors.New("user not found") produces an
+	// unclassified fault here exactly as it would in production, and the
+	// substring match that used to rescue it is gone.
+	svc.getErr = &user.UserNotFoundError{ID: 9999}
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
 	defer cleanup()
 
@@ -521,9 +526,12 @@ func TestGetUser_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var knfErr *transport.KeyNotFoundError
-	if !errors.As(err, &knfErr) {
-		t.Errorf("expected *transport.KeyNotFoundError, got %T: %v", err, err)
+	var unf *transport.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Fatalf("expected *transport.UserNotFoundError, got %T: %v", err, err)
+	}
+	if unf.ID != 9999 {
+		t.Errorf("ID = %d, want 9999 — the id the CALLER asked for", unf.ID)
 	}
 }
 
@@ -555,7 +563,7 @@ func TestGetUserByUsername_Success(t *testing.T) {
 
 func TestGetUserByUsername_NotFound(t *testing.T) {
 	svc := newMockUserSvc()
-	svc.getByErr = errors.New("user not found")
+	svc.getByErr = &user.UserNotFoundError{Lookup: "t1/missing"}
 	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
 	defer cleanup()
 
@@ -563,9 +571,12 @@ func TestGetUserByUsername_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var knfErr *transport.KeyNotFoundError
-	if !errors.As(err, &knfErr) {
-		t.Errorf("expected *transport.KeyNotFoundError, got %T", err)
+	var unf *transport.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Fatalf("expected *transport.UserNotFoundError, got %T: %v", err, err)
+	}
+	if unf.Lookup == "" {
+		t.Error("a non-id lookup left Lookup empty, so the error names no key")
 	}
 }
 
@@ -769,7 +780,7 @@ func TestGetRole_Success(t *testing.T) {
 
 func TestGetRole_NotFound(t *testing.T) {
 	svc := newMockRoleSvc()
-	svc.getErr = errors.New("role not found")
+	svc.getErr = &role.RoleNotFoundError{ID: "missing"}
 	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), svc, nil)
 	defer cleanup()
 

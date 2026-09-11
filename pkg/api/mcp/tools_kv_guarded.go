@@ -89,7 +89,10 @@ func toolPutIfAbsent() mcp.Tool {
 // kvSvc.PutIfAbsent — one call, no preceding read.
 func handlePutIfAbsent(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		kvSvc, key, value, bad := guardedArgs(ctx, kvSvc, req, "value")
+		kvSvc, key, value, bad, rerr := guardedArgs(ctx, kvSvc, req, "value")
+		if rerr != nil {
+			return nil, rerr
+		}
 		if bad != nil {
 			return bad, nil
 		}
@@ -125,7 +128,10 @@ func toolCompareAndDelete() mcp.Tool {
 // kvSvc.CompareAndDelete — one call, no preceding read.
 func handleCompareAndDelete(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		kvSvc, key, expected, bad := guardedArgs(ctx, kvSvc, req, "expected")
+		kvSvc, key, expected, bad, rerr := guardedArgs(ctx, kvSvc, req, "expected")
+		if rerr != nil {
+			return nil, rerr
+		}
 		if bad != nil {
 			return bad, nil
 		}
@@ -162,7 +168,10 @@ func toolCompareAndSwap() mcp.Tool {
 // kvSvc.CompareAndSwap — one call, no preceding read.
 func handleCompareAndSwap(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		kvSvc, key, expected, bad := guardedArgs(ctx, kvSvc, req, "expected")
+		kvSvc, key, expected, bad, rerr := guardedArgs(ctx, kvSvc, req, "expected")
+		if rerr != nil {
+			return nil, rerr
+		}
 		if bad != nil {
 			return bad, nil
 		}
@@ -183,25 +192,33 @@ func handleCompareAndSwap(kvSvc service.KVServicer) mcpserver.ToolHandlerFunc {
 // guarded verb takes: the required key, and one byte-valued guard argument
 // named by valueField ("value" for the create, "expected" for the compares).
 //
-// It returns a non-nil result ONLY when the request cannot be served, and that
-// result is always an argument-level tool error — never a guarded answer. The
-// distinction is the whole contract of these verbs: "the guard did not hold"
-// is a successful call reporting false, so a malformed request must never be
-// able to look like one.
-func guardedArgs(ctx context.Context, fallback service.KVServicer, req mcp.CallToolRequest, valueField string) (service.KVServicer, string, []byte, *mcp.CallToolResult) {
+// It refuses in one of two ways, and the difference is which vocabulary the
+// refusal belongs to. A scope-resolution failure is a TYPED condition the
+// shared classifier can code, so it is returned as an error and reaches the
+// outermost errorCodeMiddleware — the same shape every other KV verb uses.
+// An argument-level refusal has no typed condition to hand and is returned as
+// a tool-error result, which is the gap errorCodeMiddleware's doc comment
+// states. Rendering the typed one to text here would strip its code, which is
+// the defect this package exists to prevent.
+//
+// Either refusal is returned ONLY when the request cannot be served — never a
+// guarded answer. That distinction is the whole contract of these verbs: "the
+// guard did not hold" is a successful call reporting false, so a malformed
+// request must never be able to look like one.
+func guardedArgs(ctx context.Context, fallback service.KVServicer, req mcp.CallToolRequest, valueField string) (service.KVServicer, string, []byte, *mcp.CallToolResult, error) {
 	kvSvc, rerr := resolveKV(ctx, fallback)
 	if rerr != nil {
-		return nil, "", nil, mcp.NewToolResultError(rerr.Error())
+		return nil, "", nil, nil, rerr
 	}
 	key := mcp.ParseString(req, "key", "")
 	if key == "" {
-		return nil, "", nil, mcp.NewToolResultError("key is required")
+		return nil, "", nil, mcp.NewToolResultError("key is required"), nil
 	}
 	value, decodeErr := guardedBytesArg(req, valueField)
 	if decodeErr != nil {
-		return nil, "", nil, mcp.NewToolResultError(decodeErr.Error())
+		return nil, "", nil, mcp.NewToolResultError(decodeErr.Error()), nil
 	}
-	return kvSvc, key, value, nil
+	return kvSvc, key, value, nil, nil
 }
 
 // guardedBytesArg decodes an optional base64 (RFC 4648) argument into the

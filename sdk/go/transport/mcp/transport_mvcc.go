@@ -180,7 +180,7 @@ func (t *Transport) GetRevision(ctx context.Context, key string, opts ...transpo
 
 	text, err := t.callTool(ctx, "qrdb_mvcc_get_revision", args)
 	if err != nil {
-		if isNotFoundError(err) {
+		if isToolNotFound(err) {
 			return nil, &transport.KeyNotFoundError{Key: key}
 		}
 		return nil, err
@@ -212,7 +212,7 @@ func (t *Transport) GetAtRevision(ctx context.Context, key string, revision int6
 
 	text, err := t.callTool(ctx, "qrdb_mvcc_get_at_revision", args)
 	if err != nil {
-		if isNotFoundError(err) {
+		if isToolNotFound(err) {
 			return nil, &transport.KeyNotFoundError{Key: key}
 		}
 		return nil, err

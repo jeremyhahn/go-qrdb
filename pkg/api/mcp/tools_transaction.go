@@ -106,7 +106,7 @@ func handleTxExecute(txSvc service.TransactionServicer) mcpserver.ToolHandlerFun
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		txSvc, rerr := resolveTx(ctx, txSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		comparesStr := mcp.ParseString(req, "compares", "")
 		if comparesStr == "" {

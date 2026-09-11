@@ -15,7 +15,7 @@ each feature's own `api.md`.
 | REST | HTTP/JSON (chi) | 63002 | |
 | gRPC | HTTP/2 | 63003 | `qrdb.v1.QRDBService` and the auxiliary services |
 | QUIC | method/frame dispatch | 63004 | seventeen wire statuses, one per gRPC code — see [the status vocabulary](#the-quic-status-vocabulary) |
-| MCP | Model Context Protocol over HTTPS | configured endpoint | tools named `qrdb_*` |
+| MCP | Model Context Protocol over HTTPS | configured endpoint | tools named `qrdb_*` — seventeen JSON-RPC error codes, one per gRPC code, see [the MCP error vocabulary](#the-mcp-error-vocabulary) |
 
 **The Unix transport is not a distinct protocol.** It serves the same gRPC wire
 over a domain socket, which is why every feature's `api.md` gives one column for
@@ -101,25 +101,27 @@ Absent a database, the server's default (`system`) is used.
 
 ## Common status mapping
 
-| Condition | REST | gRPC / Unix | QUIC |
-|---|---|---|---|
-| Success | 200 | `OK` | `StatusOK` (0) |
-| Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) |
-| Unauthenticated | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) |
-| Missing permission | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) |
-| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) |
-| Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) |
-| Conflict | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) |
-| Precondition | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) |
-| Quota exceeded, rate limited | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) |
-| Concurrency conflict | 409 | `ABORTED` | `StatusAborted` (11) |
-| Revision below the compaction floor | 400 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) |
-| Work stopped | 499 | `CANCELED` | `StatusCanceled` (13) |
-| Persisted state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) |
-| Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) |
-| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) |
-| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) |
-| Unclassified server fault | 500 | `INTERNAL` | `StatusError` (1) |
+| Condition | REST | gRPC / Unix | QUIC | MCP |
+|---|---|---|---|---|
+| Success | 200 | `OK` | `StatusOK` (0) | no error envelope |
+| Bad request | 400 | `INVALID_ARGUMENT` | `StatusInvalidArgument` (7) | `INVALID_ARGUMENT` (−32012) |
+| Unauthenticated | 401 | `UNAUTHENTICATED` | `StatusUnauthenticated` (3) | `UNAUTHENTICATED` (−32001) |
+| Missing permission | 403 | `PERMISSION_DENIED` | `StatusPermissionDenied` (4) | `PERMISSION_DENIED` (−32003) |
+| Known path, unregistered method | **405** + `Allow` | — (gRPC has no verb axis) | — (no verb axis) | — (no verb axis) |
+| Not found | 404 | `NOT_FOUND` | `StatusNotFound` (6) | `NOT_FOUND` (−32004) |
+| Conflict | 409 | `ALREADY_EXISTS` | `StatusAlreadyExists` (8) | `ALREADY_EXISTS` (−32013) |
+| Precondition | 409 | `FAILED_PRECONDITION` | `StatusFailedPrecondition` (9) | `FAILED_PRECONDITION` (−32009) |
+| Quota exceeded, rate limited | 429 | `RESOURCE_EXHAUSTED` | `StatusResourceExhausted` (10) | `RESOURCE_EXHAUSTED` (−32008) |
+| Concurrency conflict | 409 | `ABORTED` | `StatusAborted` (11) | `ABORTED` (−32015) |
+| Revision below the compaction floor | 400 | `OUT_OF_RANGE` | `StatusOutOfRange` (12) | `OUT_OF_RANGE` (−32016) |
+| Work stopped | 499 | `CANCELED` | `StatusCanceled` (13) | `CANCELED` (−32011) |
+| Persisted state corrupted | 500 | `DATA_LOSS` | `StatusDataLoss` (14) | `DATA_LOSS` (−32017) |
+| Barrier sealed, store closed, not leader, draining | 503 | `UNAVAILABLE` | `StatusUnavailable` (5) | `UNAVAILABLE` (−32006) |
+| Raft-only capability in standalone | 501 | `UNIMPLEMENTED` — `requires mode: raft` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| Capability not compiled in | 404 (route unregistered) | `UNIMPLEMENTED` | `StatusUnimplemented` (2) | `UNIMPLEMENTED` (−32014) |
+| Deadline exceeded at the origin | 504 | `DEADLINE_EXCEEDED` | `StatusDeadlineExceeded` (15) | `DEADLINE_EXCEEDED` (−32007) |
+| Origin could not classify | 500 | `UNKNOWN` | `StatusUnknown` (16) | `UNKNOWN` (−32018) |
+| Unclassified server fault | 500 | `INTERNAL` | `StatusError` (1) | `INTERNAL` (−32603) |
 
 ### The QUIC status vocabulary
 
@@ -155,10 +157,10 @@ to exactly the behaviour it had before, never a misclassification. The server
 and the Go SDK ship from one repository, so a mixed deployment loses precision
 on old clients and nothing else.
 
-### Absence is typed, and never read out of the message
+### Absence is typed over QUIC, and never read out of the message
 
 `StatusNotFound` is what lets an SDK consumer's `errors.As` mean the same thing
-over QUIC as it does over REST, gRPC, unix and embedded. Two message-text
+over QUIC as it does over REST, gRPC, unix, MCP and embedded. Two message-text
 classifications were deleted when it landed:
 
 - the client's `strings.Contains(msg, "key not found")` test, which read a
@@ -172,6 +174,106 @@ The typed error a consumer receives is reconstructed from the id or key the
 more than one subject — assigning a role to a user, where either may be missing
 — every transport answers the shared not-found status and the SDK types
 **neither**, because typing one would report the wrong subject as absent.
+
+### The MCP error vocabulary
+
+MCP declares **seventeen** error codes, one for each of gRPC's seventeen status
+codes, for the same reason QUIC does: the service layer behind the `qrdb_*`
+tools is the one the gRPC transport classifies, and a narrower set is not
+simpler, it is lossy.
+
+It had **none** until that change — not a small set, none. A tool failure
+reached the client as a sentence, so every typed condition the SDK promises
+degraded to matching words in prose, and a transport failure whose text
+happened to contain "not found" read as a successful determination that
+something was absent.
+
+Four things follow from the decision:
+
+- **The codes ride in the TOOL RESULT, not in a JSON-RPC `error` object.** The
+  Model Context Protocol draws a line the JSON-RPC layer does not: a failure to
+  DISPATCH a call — unparseable JSON, an unknown method, an unknown tool — is a
+  JSON-RPC error, while a failure INSIDE a tool is an ordinary result carrying
+  `isError`. A missing user is the second kind. The payload is an
+  `ErrorEnvelope` in the result's `structuredContent`:
+
+  ```json
+  {
+    "isError": true,
+    "content": [{"type": "text", "text": "user not found: 999999"}],
+    "structuredContent": {
+      "error": {
+        "code": -32004,
+        "status": "NOT_FOUND",
+        "message": "user not found: 999999",
+        "tool": "qrdb_user_get"
+      }
+    }
+  }
+  ```
+
+  The text content is unchanged, so a client that only reads text sees exactly
+  what it saw before.
+
+- **The numbers are JSON-RPC numbers even so.** They are drawn from the
+  −32000..−32099 band JSON-RPC 2.0 sets aside for implementation-defined server
+  errors, and they do not collide with the codes the protocol layer emits for a
+  dispatch failure. A consumer therefore reads one integer space whichever
+  envelope carried the failure. `INTERNAL` is JSON-RPC's own −32603 for the
+  same reason: an unclassified fault keeps the number it already had.
+
+- **Three numbers in the band are deliberately unassigned** — −32002, −32005
+  and −32010. The portfolio's error convention names fourteen application codes
+  at −32001..−32014, and three of those names have no gRPC sibling and nothing
+  here that means them. Leaving the numbers alone is what stops one integer
+  meaning two things depending on which server answered.
+
+- **The server owns no classification clauses of its own.** A tool failure is
+  classified by the same per-family mappers the gRPC transport runs, and the
+  MCP layer only renders the resulting gRPC code through a seventeen-row
+  correspondence table. A condition cannot mean one thing over gRPC and another
+  over MCP, and a new condition needs one clause in one place.
+
+**Argument refusals carry no code yet**, and that is a stated gap rather than
+an oversight. A tool that refuses before it reaches the service layer —
+`key is required`, `value must be valid base64` — builds its own error result
+from a string literal, and stamping a code on it centrally would mean guessing
+one from prose, which is the classification this vocabulary exists to remove.
+Those refusals reach a client as an uncoded failure, exactly as they did
+before, and giving them codes means giving their call sites typed errors first.
+
+Every refusal that had a TYPED error to hand already carries a code, including
+the ones that used to render one as text: a tool that cannot resolve the
+service for its `(tenant, database)` scope now returns the error rather than
+its message, so it is classified like everything else.
+
+**Version skew** behaves as it does on QUIC: a client built before a code
+existed reads an unrecognised number and falls through to its generic request
+error — degraded to the behaviour it had before, never a misclassification. An
+uncoded failure from an older server degrades the same way.
+
+### Absence over MCP is typed, and never read out of the message
+
+`NOT_FOUND` (−32004) is what lets an SDK consumer's `errors.As` mean the same
+thing over MCP as over every other transport. Two message-text classifications
+were deleted when it landed:
+
+- the client's `strings.Contains(msg, "not found")` test, which ran on **every**
+  tool failure because the message was the only signal there was;
+- the lease client's ungated `"lease expired"` test, which could report a
+  broken node as a gone lease.
+
+The lease split survives in one place and under one condition: a failure has to
+be a `NOT_FOUND` **first**, at a call site that already knows its subject is a
+lease, before the message is consulted at all. No transport here has an
+expired-specific sibling of not-found, and gRPC's lease client makes the same
+split behind the same gate.
+
+As on every other transport, the typed error a consumer receives is
+reconstructed from the id or key the **caller** supplied. The error payload
+carries the classification and the server's prose — it deliberately does not
+name the subject, because a second source for that fact is a second source that
+can disagree with the first.
 
 ### 403 and 405 are different claims
 

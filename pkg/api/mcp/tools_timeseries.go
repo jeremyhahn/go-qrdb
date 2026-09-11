@@ -163,7 +163,7 @@ func handleTSWrite(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -215,7 +215,7 @@ func handleTSWriteBatch(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerF
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		pointsStr := mcp.ParseString(req, "points", "")
 		if pointsStr == "" {
@@ -286,7 +286,7 @@ func handleTSQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -383,7 +383,7 @@ func handleTSAggregate(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFu
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -466,7 +466,7 @@ func handleTSDeleteSeries(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandle
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -515,7 +515,7 @@ func handleTSGetRetentionPolicy(tsSvc service.TimeSeriesServicer) mcpserver.Tool
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -563,7 +563,7 @@ func handleTSSetRetentionPolicy(tsSvc service.TimeSeriesServicer) mcpserver.Tool
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -618,7 +618,7 @@ func handleTSListMetrics(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandler
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		prefix := mcp.ParseString(req, "prefix", "")
 		limit := mcp.ParseInt(req, "limit", 0)
@@ -679,7 +679,7 @@ func handleTSWritePoint(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerF
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {
@@ -759,7 +759,7 @@ func handleTSRichQuery(tsSvc service.TimeSeriesServicer) mcpserver.ToolHandlerFu
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		tsSvc, rerr := resolveTS(ctx, tsSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		metric := mcp.ParseString(req, "metric", "")
 		if metric == "" {

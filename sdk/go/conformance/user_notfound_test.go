@@ -59,24 +59,34 @@ import (
 // QUIC wire status and the MCP not-found code land, the quic and mcp rows flip
 // to typed and this file is where that is stated.
 //
-// # THE QUIC ROWS HAVE FLIPPED (go-qrdb#437)
+// # EVERY ROW HAS NOW FLIPPED (go-qrdb#437, then go-qrdb#438)
 //
-// The QUIC wire status landed. pkg/api/quic/wire declared six statuses and now
-// declares seventeen — one per gRPC status code — so a missing user reaches
-// this wire as wire.StatusNotFound instead of the generic StatusError, and the
-// SDK's mapUserNotFound reconstitutes transport.UserNotFoundError from the id
-// the CALLER asked for, never from the server's message. Five of the six
-// transports now type the condition.
+// go-qrdb#437 gave the QUIC wire a status vocabulary: pkg/api/quic/wire
+// declared six statuses and now declares seventeen, one per gRPC status code,
+// so a missing user reaches that wire as wire.StatusNotFound instead of the
+// generic StatusError. Five of the six transports typed the condition after it.
 //
-// Nothing in the assertion was relaxed to get there. wantClass is the only
-// edit: the machinery below is untouched, and flipping a row to typed makes
-// this suite STRICTER rather than looser, because the ID / Lookup checks that
-// sit under `if want != typedNotFound { return }` start running for those
-// nine cells.
+// go-qrdb#438 closed the sixth. MCP had no error code AT ALL — a tool failure
+// reached the client as prose, and this transport classified four of these
+// cells by strings.Contains(msg, "not found"), which is why they passed while
+// being recorded here as opaque. pkg/api/mcp/wire now declares seventeen
+// JSON-RPC codes, again one per gRPC status code, carried in the tool result's
+// structured content; the substring test is deleted, and the SDK's
+// mapUserNotFound reconstitutes transport.UserNotFoundError from the id the
+// CALLER asked for, never from the server's message — the same mapper, with
+// the same guarantee, as gRPC's and QUIC's.
 //
-// The MCP row stays opaque. It is go-qrdb#438 and a different problem — MCP
-// has no status channel at all, so there is no code to carry — and the
-// negative test below still pins that its substring match must not be trusted.
+// Nothing in the assertion was relaxed to get there, at either step.
+// wantClassByTransport is the only edit both times: the machinery below is
+// untouched, and flipping a row to typed makes this suite STRICTER rather than
+// looser, because the ID / Lookup checks that sit under
+// `if want != typedNotFound { return }` start running for those cells — nine
+// per transport, fifty-four in all now that no row is excused.
+//
+// The negative test at the bottom is what stops this being a lowered bar. It
+// asserts that a MISSING ROLE is still not classified as a missing user on any
+// transport, including this one, and it would have gone red the moment MCP's
+// deleted substring match came back.
 
 // notFoundClass is what a cell is required to do with a missing user.
 type notFoundClass int
@@ -111,26 +121,38 @@ var userNotFoundTransports = []transportKind{
 	mcpTransport,
 }
 
-// wantClass says what each transport must do with a missing user on the
-// single-subject user methods.
+// wantClassByTransport says what each transport must do with a missing user on
+// the single-subject user methods.
 //
 // A single-subject method is one whose not-found can mean exactly one thing.
 // That is what makes the mapping honest: the client reconstitutes the error
 // from the id or key IT asked for, and never from the server's message.
-func wantClass(tk transportKind) notFoundClass {
-	switch tk {
-	case mcpTransport:
-		// go-qrdb has no JSON-RPC error-code mapping (conventions/errors.md
-		// §5), so a tool error reaches the client as a message string. The MCP
-		// transport currently classifies four of these by
-		// strings.Contains(msg, "not found"), which is why they are typed
-		// today — but that is the fail-open this issue exists to remove, not a
-		// working implementation, so the cell is recorded as opaque and the
-		// negative test below pins that the substring must not be trusted.
-		return opaqueNotFound
-	default:
-		return typedNotFound
+//
+// Every transport is listed even though every transport now answers the same
+// thing. A map with six identical values reads as redundant right up to the
+// day a seventh transport is added, and then it is the difference between that
+// transport DECLARING it types the condition and being credited with it by a
+// default branch. The gap this file exists to keep visible was exactly that
+// shape: a suite covering only the transports someone had fixed.
+var wantClassByTransport = map[transportKind]notFoundClass{
+	embeddedTransport: typedNotFound,
+	restTransport:     typedNotFound,
+	grpcTransport:     typedNotFound,
+	unixTransport:     typedNotFound,
+	quicTransport:     typedNotFound,
+	mcpTransport:      typedNotFound,
+}
+
+// wantClass reads the expectation for one transport, failing loudly rather
+// than defaulting when a transport has none.
+func wantClass(t *testing.T, tk transportKind) notFoundClass {
+	t.Helper()
+	want, ok := wantClassByTransport[tk]
+	if !ok {
+		t.Fatalf("%s is on the transport axis with no expected classification. "+
+			"Say what it does with a missing user; do not let it inherit one", tk)
 	}
+	return want
 }
 
 // userNotFoundCall is one method exercised against a user that does not exist.
@@ -201,8 +223,8 @@ const validThumbprint = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 // user method and asserts the classification each one is required to produce.
 func TestUserNotFound_Matrix(t *testing.T) {
 	for _, tk := range userNotFoundTransports {
-		want := wantClass(tk)
 		t.Run(string(tk), func(t *testing.T) {
+			want := wantClass(t, tk)
 			c := bootUserCell(t, tk)
 			for _, call := range singleSubjectCalls {
 				t.Run(call.name, func(t *testing.T) {
@@ -256,13 +278,14 @@ func TestUserNotFound_Matrix(t *testing.T) {
 // same class of defect as the substring matching, arrived at from the other
 // direction.
 //
-// go-qrdb#437 did NOT change this, and was not expected to. It gave the QUIC
-// wire a not-found status, which is why the quic cells in the matrix above
-// flipped; it did not give any transport a way to say WHICH subject is
-// missing, which is what these two methods would need. pkg/api/quic maps
-// *role.RoleNotFoundError and a missing user to the SAME wire.StatusNotFound
-// on purpose, matching gRPC and REST, and that clause carries a comment
-// pointing here.
+// Neither go-qrdb#437 nor go-qrdb#438 changed this, and neither was expected
+// to. They gave the QUIC wire and the MCP transport a not-found code, which is
+// why those cells in the matrix above flipped; neither gave any transport a
+// way to say WHICH subject is missing, which is what these two methods would
+// need. pkg/api/quic maps *role.RoleNotFoundError and a missing user to the
+// SAME wire.StatusNotFound on purpose, matching gRPC and REST, and MCP renders
+// that same classification as wire.CodeNotFound for both. Those clauses carry
+// comments pointing here.
 //
 // The information exists at the server: the role service returns the user
 // store's not-found for a missing user and *role.RoleNotFoundError for a
@@ -319,12 +342,12 @@ func TestUserNotFound_AmbiguousMethods(t *testing.T) {
 //
 // It assigns a REAL user a role that does not exist. The server's message
 // contains "not found", the status is the same one a missing user produces —
-// wire.StatusNotFound on QUIC since go-qrdb#437, deliberately shared with the
-// missing-user case — and the correct answer is still "this is not a
-// user-not-found". Any client
-// that reintroduces substring classification on the user path — the shape
-// go-qrdb#286 was asked to stop using, and the shape the MCP transport still
-// carries at transport.go's isNotFoundError — fails here.
+// wire.StatusNotFound on QUIC since go-qrdb#437 and wire.CodeNotFound on MCP
+// since go-qrdb#438, deliberately shared with the missing-user case — and the
+// correct answer is still "this is not a user-not-found". Any client that
+// reintroduces substring classification on the user path — the shape
+// go-qrdb#286 was asked to stop using, and the shape the MCP transport carried
+// at transport.go's isNotFoundError until #438 deleted it — fails here.
 //
 // This is the assertion that makes the whole file worth running: the matrix
 // above proves the predicate FIRES when it should, and only this proves it

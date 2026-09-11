@@ -124,35 +124,31 @@ var transportKinds = []transportKind{
 	mcpTransport,
 }
 
-// carriesTypedCapabilityRefusal reports whether this transport can present a
-// server-side capability refusal a consumer can classify BY TYPE.
+// THE EXCLUSION THAT USED TO LIVE HERE IS GONE (go-qrdb#438).
 //
-// It gates the typedRefusal cells of the matrix, and only those: every
-// transport in transportKinds carries the guarded verbs themselves, so every
-// transport walks the full-passage cells. What MCP cannot do is carry the
-// refusal the MULTI-KEY transaction plane owes on a state machine with no MVCC
-// store. A qrdb tool reports a service-layer failure as a tool RESULT carrying
-// the message string, and go-qrdb has no JSON-RPC error-code mapping for the
-// service error vocabulary (conventions/errors.md §5), so that refusal reaches
-// the client as prose. classifyRefusal deliberately refuses to accept prose —
-// it was tightened from a substring match to a type assertion precisely so a
-// wedged cell could not be scored as "refused as required" — and admitting MCP
-// by loosening it would trade a real gate for a wider matrix.
+// A predicate carriesTypedCapabilityRefusal gated the typedRefusal cells and
+// returned false for exactly one transport. MCP could not carry the refusal
+// the MULTI-KEY transaction plane owes on a state machine with no MVCC store:
+// a qrdb tool reported a service-layer failure as prose, go-qrdb had no
+// JSON-RPC error-code mapping (conventions/errors.md §5), and classifyRefusal
+// deliberately refuses to accept prose — it had been tightened from a
+// substring match to a type assertion precisely so a wedged cell could not
+// score as "refused as required".
 //
-// So the gap is EXCLUDED AND NAMED rather than papered over: MCP's guarded
-// verbs are held to exactly the same standard as every other transport's, and
-// the four cells it does not run are the ones that would test a capability
-// MCP's error surface has not got yet. go-qrdb#169's error-typing sweep owns
-// that surface; when it lands this predicate loses its last false case and
-// goes away with it.
+// That exclusion is the sharpest thing go-qrdb#438 was asked to fix, because
+// the missing mapping did not merely block a feature: it created pressure to
+// LOOSEN classifyRefusal back to a substring match, and the lane that met it
+// declined and recorded the gap instead. The gap is now closed from the other
+// end. pkg/api/mcp/wire declares a code per gRPC status code, the service
+// layer's CapabilityUnsupportedError classifies to codes.Unimplemented, MCP
+// renders that as wire.CodeUnimplemented, and the SDK reconstitutes
+// transport.CapabilityUnsupportedError from the CODE.
 //
-// The guarded verbs themselves DO carry the typed refusal on MCP — an older
-// server that never registered the tools is reported as
-// transport.CapabilityUnsupportedError (sdk/go/transport/mcp's guardedTool) —
-// so this is narrower than "MCP cannot type a refusal".
-func (tk transportKind) carriesTypedCapabilityRefusal() bool {
-	return tk != mcpTransport
-}
+// So the predicate is DELETED rather than made to return true everywhere: a
+// gate with no false case is an invitation to add one. MCP's three typedRefusal
+// cells are in the matrix on the same terms as every other transport's, and
+// classifyRefusal is unchanged — not one clause of it was relaxed to admit
+// them, which is the only way admitting them is worth anything.
 
 // remote reports whether this transport crosses a real listener and therefore
 // needs TLS material and a seeded RBAC identity. Only the embedded transport
@@ -241,11 +237,11 @@ func (c cell) name() string {
 // x {embedded, remote-gRPC, QUIC, unix, REST}.
 //
 // It was 12 cells when only embedded and gRPC carried transport.GuardedKVClient,
-// 35 once QUIC, unix and REST did (go-qrdb#124/#125/#126), and is 39 now that
-// MCP does (go-qrdb#127) — four rather than seven, because MCP runs the
-// full-passage cells and not the typed-refusal ones
-// (carriesTypedCapabilityRefusal). The engine and mode axes are unchanged; only
-// the transport axis grew, so a new transport's cells inherit the same expected
+// 35 once QUIC, unix and REST did (go-qrdb#124/#125/#126), 39 when MCP ran the
+// four full-passage cells and not the three typed-refusal ones (go-qrdb#127),
+// and is 42 now that MCP's error surface can carry a typed refusal and it runs
+// all seven (go-qrdb#438). The engine and mode axes are unchanged; only the
+// transport axis grew, so a new transport's cells inherit the same expected
 // outcome its siblings have and a transport that quietly weakened a verb shows
 // up as a difference from them.
 //
@@ -275,14 +271,6 @@ func matrix() []cell {
 				smType: ""},
 		)
 
-		// The typed-refusal cells need a transport that can carry a typed
-		// capability refusal. Skipping them where it cannot is what keeps
-		// classifyRefusal a type assertion rather than a prose match — see
-		// carriesTypedCapabilityRefusal for the whole argument, and note that
-		// every transport still walks the four full-passage cells above.
-		if !tk.carriesTypedCapabilityRefusal() {
-			continue
-		}
 		cells = append(cells,
 			// Raft, non-default sm_types: no MVCC store, so the multi-key
 			// transaction plane must refuse cleanly and keep serving.

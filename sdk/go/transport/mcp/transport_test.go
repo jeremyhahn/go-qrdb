@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -952,25 +953,49 @@ func TestUnexpectedContentTypeError_Format(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isNotFoundError helper tests
+// isToolNotFound helper tests
+//
+// These replace the isNotFoundError tests go-qrdb#438 deleted. The one that
+// matters is TestIsToolNotFound_ProseIsNotAClassification: the predicate this
+// transport used to run answered TRUE for the second case below, which is
+// exactly the fail-open the code vocabulary exists to remove.
 // ---------------------------------------------------------------------------
 
-func TestIsNotFoundError_Nil(t *testing.T) {
-	if isNotFoundError(nil) {
+func TestIsToolNotFound_Nil(t *testing.T) {
+	if isToolNotFound(nil) {
 		t.Fatal("expected false for nil error")
 	}
 }
 
-func TestIsNotFoundError_MatchingError(t *testing.T) {
-	err := errors.New("key not found: mykey")
-	if !isNotFoundError(err) {
-		t.Fatal("expected true for 'not found' error")
+func TestIsToolNotFound_TypedNotFound(t *testing.T) {
+	if !isToolNotFound(&transport.KeyNotFoundError{Key: "mykey"}) {
+		t.Fatal("expected true for the typed not-found the code mapper builds")
 	}
 }
 
-func TestIsNotFoundError_NonMatchingError(t *testing.T) {
+func TestIsToolNotFound_WrappedTypedNotFound(t *testing.T) {
+	wrapped := fmt.Errorf("call failed: %w", &transport.KeyNotFoundError{Key: "mykey"})
+	if !isToolNotFound(wrapped) {
+		t.Fatal("expected true for a wrapped typed not-found; the predicate must " +
+			"match through the error tree, not only at the top")
+	}
+}
+
+func TestIsToolNotFound_ProseIsNotAClassification(t *testing.T) {
+	// The exact string the deleted isNotFoundError accepted. A transport
+	// failure whose text happens to carry the phrase is NOT a determination
+	// that the key is absent, and reading it as one is the fail-open
+	// go-qrdb#289 and go-qrdb#438 exist to delete.
+	err := errors.New("key not found: mykey")
+	if isToolNotFound(err) {
+		t.Fatal("prose containing \"not found\" was classified as absence; the " +
+			"substring match is back and the code vocabulary is being bypassed")
+	}
+}
+
+func TestIsToolNotFound_NonMatchingError(t *testing.T) {
 	err := errors.New("internal server error")
-	if isNotFoundError(err) {
+	if isToolNotFound(err) {
 		t.Fatal("expected false for non-matching error")
 	}
 }

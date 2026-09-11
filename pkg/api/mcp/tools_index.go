@@ -90,7 +90,7 @@ func handleIndexCreate(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		indexSvc, rerr := resolveIndex(ctx, indexSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -139,7 +139,7 @@ func handleIndexDrop(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		indexSvc, rerr := resolveIndex(ctx, indexSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -175,7 +175,7 @@ func handleIndexQuery(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc 
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		indexSvc, rerr := resolveIndex(ctx, indexSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		indexName := mcp.ParseString(req, "index_name", "")
 		if indexName == "" {
@@ -228,7 +228,7 @@ func handleIndexScan(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		indexSvc, rerr := resolveIndex(ctx, indexSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		indexName := mcp.ParseString(req, "index_name", "")
 		if indexName == "" {
@@ -287,7 +287,7 @@ func handleIndexList(indexSvc service.IndexServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		indexSvc, rerr := resolveIndex(ctx, indexSvc)
 		if rerr != nil {
-			return mcp.NewToolResultError(rerr.Error()), nil
+			return nil, rerr
 		}
 		names, err := indexSvc.ListIndexes(ctx)
 		if err != nil {

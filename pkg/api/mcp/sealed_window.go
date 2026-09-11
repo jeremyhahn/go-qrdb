@@ -20,6 +20,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 )
 
@@ -55,7 +56,12 @@ func (s *Server) sealedWindowMiddleware() mcpserver.ToolHandlerMiddleware {
 			if _, ok := SealedWindowAllowlist[req.Params.Name]; ok {
 				return next(ctx, req)
 			}
-			return mcpgo.NewToolResultError("barrier sealed"), nil
+			// CodeUnavailable, matching REST's 503, gRPC's codes.Unavailable
+			// and QUIC's StatusUnavailable for the same gate. A sealed barrier
+			// is a node that will serve this tool later, and a client that can
+			// read that from the code retries instead of reporting a failure
+			// its operator then has to diagnose from prose (go-qrdb#438).
+			return toolErrorResult(req.Params.Name, wire.CodeUnavailable, "barrier sealed"), nil
 		}
 	}
 }

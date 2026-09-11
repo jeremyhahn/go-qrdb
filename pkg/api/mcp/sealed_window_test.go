@@ -19,6 +19,8 @@ import (
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 )
 
 // fakeMCPSealedProbe is a deterministic sealedWindowProbe test double.
@@ -67,6 +69,22 @@ func TestSealedWindowMiddleware_RejectsNonAllowlistedWhenSealed(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected error result while sealed")
+	}
+
+	// The sealed window is the same condition REST answers 503 for, gRPC
+	// codes.Unavailable and QUIC wire.StatusUnavailable. Since go-qrdb#438 MCP
+	// says it too, so a client retries a node that will serve this tool later
+	// instead of reporting a failure its operator has to read prose to
+	// diagnose.
+	payload, ok := wire.DecodeErrorPayload(result.StructuredContent)
+	if !ok {
+		t.Fatal("the sealed-window refusal carries no code")
+	}
+	if payload.Code != wire.CodeUnavailable {
+		t.Errorf("code = %s, want UNAVAILABLE", payload.Code)
+	}
+	if payload.Tool != "qrdb_put" {
+		t.Errorf("tool = %q, want qrdb_put", payload.Tool)
 	}
 }
 

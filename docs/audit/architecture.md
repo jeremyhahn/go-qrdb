@@ -158,17 +158,19 @@ transport maps the class onto its own wire, so the four cannot drift:
 | REST | `503 Service Unavailable` | `403 Forbidden` |
 | gRPC | `codes.Unavailable` | `codes.PermissionDenied` |
 | QUIC | `wire.StatusUnavailable` | `wire.StatusPermissionDenied` |
-| MCP | text: `authorization unavailable, retry: …` | text: `authorization denied: …` |
+| MCP | `UNAVAILABLE` (−32006) + text: `authorization unavailable, retry: …` | `PERMISSION_DENIED` (−32003) + text: `authorization denied: …` |
 
-**Two named exclusions**, because a gap stated is better than a gap implied:
+**Both named exclusions are gone**, and how each closed is worth recording:
 
-- **MCP carries no status code at all** — tool results are text. It cannot
-  agree with the other three mechanically, so the distinction is carried in the
-  wording. That is the whole channel it has.
-- **The QUIC wire has no rate-limit status**, so a throttled caller rides
-  `StatusUnavailable` rather than a dedicated code. That keeps the instruction
-  the caller must act on — retry — and loses only the reason. Adding a status
-  code is a wire-protocol change.
+- **MCP used to carry no status code at all** — tool results were text, so it
+  could not agree with the other three mechanically and the distinction lived
+  in the wording alone. It has an error vocabulary now, and the MCP gate
+  renders `ClassifyAuthError`'s answer through it rather than a coarser split
+  of its own, so all four transports map the same class the same way. The
+  wording is unchanged and still matters: it is what an operator reads.
+- **The QUIC wire had no rate-limit status**, so a throttled caller rode
+  `StatusUnavailable` — the right instruction, retry, without the reason. The
+  wire declares `StatusResourceExhausted` now.
 
 This matters most on the **tenant-barrier surface**, which is what an operator
 and the SDK use to *recover* a node. Those handlers previously hard-coded
