@@ -66,14 +66,19 @@ func TestCollectionService_CreateCollection_MetadataSaveFails(t *testing.T) {
 
 type failingIndexSvc struct {
 	createErr error
+	// dropErr is returned by DropIndex; dropAttempts records the names it
+	// was called with, in call order.
+	dropErr      error
+	dropAttempts []string
 }
 
 func (f *failingIndexSvc) CreateIndex(_ context.Context, _, _ string, _ index.IndexConfig) error {
 	return f.createErr
 }
 
-func (f *failingIndexSvc) DropIndex(_ context.Context, _ string) error {
-	return nil
+func (f *failingIndexSvc) DropIndex(_ context.Context, name string) error {
+	f.dropAttempts = append(f.dropAttempts, name)
+	return f.dropErr
 }
 
 func TestCollectionService_CreateCollection_IndexCreationFails(t *testing.T) {

@@ -233,8 +233,25 @@ as an attack surface rather than a convenience:
 - **Zero-allocation expression parser** — the parser does not build intermediate
   strings from caller input.
 
-Each index write is scoped to the same (tenant, database) pair as the entity it
-indexes, so an index can never span tenants.
+**Index-write scoping is NOT uniform across the two write paths**, and the
+earlier claim here that "each index write is scoped to the same (tenant,
+database) pair as the entity it indexes, so an index can never span tenants" is
+true of only one of them. Corrected against measured behaviour:
+
+| Write path | Scoping |
+|---|---|
+| DAO / entity writes (`KVEngine.PutWithIndexes`, `DeleteWithIndexes`) | filtered to the indexes whose names carry the entity type's prefix — scoped as described |
+| Raft apply path (`handlePut` / MVCC put, the path a KV, collection or SQL write actually takes) | **unfiltered** — every registered index on the state machine is offered every value, and any index whose field name appears in that JSON value indexes the key |
+
+On the second path an index named `dbA.users.email` also indexes a
+`dbB`-prefixed key and a plain KV key whose value carries an `email` field. The
+name is a routing label, not a filter. Tenants under `volume` or `raft`
+isolation each get their own state machine, so the blast radius stops at the
+shard; tenants under **prefix** isolation share one, so it does not stop at the
+tenant. Narrowing the second path to a key-prefix filter changes the Raft
+command format and is tracked as its own defect — it is stated here rather than
+left implied, because the paragraph it replaces asserted the property as a
+guarantee.
 
 ## What this feature deliberately does not do
 

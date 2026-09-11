@@ -126,6 +126,10 @@ func (m *memoryKVSvc) ScanWithConsistency(ctx context.Context, prefix string, _ 
 type memoryIndexSvc struct {
 	mu      sync.Mutex
 	indexes map[string]index.IndexConfig // keyed by index name
+	// dropped records every name passed to DropIndex, in call order, so a
+	// test can assert WHICH indexes a lifecycle operation tore down and not
+	// merely that the catalog ended up empty.
+	dropped []string
 }
 
 func newMemoryIndexSvc() *memoryIndexSvc {
@@ -142,8 +146,28 @@ func (m *memoryIndexSvc) CreateIndex(_ context.Context, name, _ string, config i
 func (m *memoryIndexSvc) DropIndex(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.dropped = append(m.dropped, name)
 	delete(m.indexes, name)
 	return nil
+}
+
+// names returns the index names currently in the catalog, sorted.
+func (m *memoryIndexSvc) names() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.indexes))
+	for name := range m.indexes {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dropCalls returns the names passed to DropIndex, in call order.
+func (m *memoryIndexSvc) dropCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.dropped...)
 }
 
 func newTestCollectionService() *CollectionService {

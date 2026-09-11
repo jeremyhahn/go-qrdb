@@ -85,7 +85,10 @@ qrdb collection info users --database app --output json | jq .document_count
 qrdb collection list --database app
 ```
 
-**Delete a collection.** This removes every document in it and cannot be undone.
+**Delete a collection.** This removes every document in it, along with any
+secondary index the collection declared, and cannot be undone. If the command
+fails partway through, the collection is still listed — run it again and it
+finishes.
 
 ```bash
 qrdb collection drop scratch --database app

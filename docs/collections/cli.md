@@ -56,7 +56,13 @@ qrdb collection list --database app
 
 ## `qrdb collection drop <name>`
 
-Drop a collection and delete all of its documents. **Irreversible.**
+Drop a collection and delete all of its documents, together with any secondary
+index the collection declared. **Irreversible.**
+
+The drop deletes the documents first and the collection's metadata last, so an
+interrupted drop leaves the collection still listed and re-running the command
+finishes it. If the index teardown fails the command reports the failure instead
+of succeeding — retry it once the cluster has a leader again.
 
 | Flag | Type | Default |
 |---|---|---|

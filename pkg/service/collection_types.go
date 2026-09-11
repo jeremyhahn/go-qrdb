@@ -167,3 +167,17 @@ func collectionMetadataKey(database, name string) string {
 func collectionDataEntityType(database, collection string) string {
 	return collectionDataPrefix + database + ":" + collection
 }
+
+// collectionIndexName returns the secondary-index name for a field of a
+// collection, in the database-scoped hierarchical form
+// "{database}.{collection}.{field}" the rest of the index subsystem uses
+// (see docs/secondary-indexes/architecture.md, "Index naming").
+//
+// It is the single formula shared by CreateCollection and DropCollection.
+// The two derived the name independently only in the sense that the drop
+// derived none at all: it never dropped anything, so the indexes a
+// collection created outlived it (go-qrdb#399). Keeping one function means a
+// future change to the naming scheme cannot desynchronise them again.
+func collectionIndexName(database, collection, field string) string {
+	return database + "." + collection + "." + field
+}

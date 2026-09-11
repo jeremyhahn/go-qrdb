@@ -47,6 +47,23 @@ type CreateCollectionRequest struct {
 	FieldHash    string `json:"field_hash,omitempty"`    // required when IDStrategy == field_hash
 	StorageCodec string `json:"storage_codec,omitempty"`
 }
+```
+
+**Index definitions are not on the transport type.** `service.CollectionInfo`
+and `service.CreateCollectionRequest` both carry
+`Indexes []service.IndexDefinition`, and `CreateCollection` builds a secondary
+index per definition — but no transport request, protobuf field or CLI flag
+carries them, so only an in-process caller holding the `pkg/service` type can
+declare one. That is an exposure gap, not a design decision, and it is tracked
+separately; it is recorded here because it bounds who can reach the behaviour
+this contract describes.
+
+```go
+type IndexDefinition struct { // pkg/service only
+	FieldName string `json:"field_name"`
+	Unique    bool   `json:"unique,omitempty"`
+	Sparse    bool   `json:"sparse,omitempty"`
+}
 
 type DocumentResponse struct {
 	ID       uint64                 `json:"id,string"`
@@ -100,7 +117,25 @@ Metadata is keyed `__sys:collections/{database}/{name}`.
   duplicating.
 - **`UpdateDocument` replaces the whole document.** There is no partial update
   or merge.
-- **`DropCollection` deletes every document and is irreversible.**
+- **`DropCollection` deletes every document, drops every secondary index the
+  collection declared, and is irreversible.** The order is documents → indexes →
+  metadata, and the metadata key is deleted **last** so the operation is
+  retryable at every interruption point — see the architecture note. An index
+  that cannot be dropped fails the drop with
+  `service.CollectionMetadataError{Op: "drop-index"}`; the collection still
+  resolves and the drop can be re-issued. An index reported as *already absent*
+  (`index.IndexServicer` permits `IndexNotFoundError` from `DropIndex`) is
+  treated as success, so a retry is never wedged short of the metadata delete.
+- **Collection metadata that cannot be parsed fails the drop**, with
+  `service.CollectionMetadataError{Op: "unmarshal-metadata"}`. The index
+  definitions live in that metadata, so a drop that cannot read it does not know
+  what the collection owns; proceeding would leave the orphan the ordering rule
+  exists to prevent. Every other verb on the service already refuses a
+  collection in that state.
+- **A collection's secondary indexes are named
+  `{database}.{collection}.{field}`** — the same database-scoped hierarchical
+  form the rest of the index subsystem uses, produced by one function shared by
+  the create and drop paths.
 - **`ListDocuments` is paginated** and must be driven to completion by following
   `NextPageToken`. A caller that reads one page and stops has read one page, not
   the collection.
@@ -119,6 +154,9 @@ Metadata is keyed `__sys:collections/{database}/{name}`.
 | Unknown `id_strategy` value | invalid-argument | **yes** |
 | Unknown document ID on get/update/delete | not-found | yes |
 | Malformed document JSON | invalid-argument | **yes** |
+| Index drop fails during `DropCollection` | `CollectionMetadataError{Op: "drop-index"}`; metadata survives, drop is retryable | **yes** |
+| Index already absent during `DropCollection` | success — a teardown asked to remove something that is not there has got what it asked for | n/a |
+| Unparseable collection metadata on drop | `CollectionMetadataError{Op: "unmarshal-metadata"}`; nothing is deleted | **yes** |
 | Missing `collections:*` permission | permission denied | **yes** |
 | Barrier sealed | refused | **yes** |
 
@@ -151,6 +189,12 @@ override chosen at creation; the available codecs are those compiled in
 - **JSON round-trip test for the `id,string` encoding** — this is exactly the
   kind of detail that regresses silently.
 - **Integration**: collection parity across transports in the standalone stage.
+- **Lifecycle symmetry**: what `CreateCollection` creates, `DropCollection`
+  destroys — asserted on the index catalog, on the drop ORDER relative to the
+  metadata delete, and on the retryability of a failed drop. The engine
+  behaviour that makes an orphaned index a correctness problem rather than a
+  space leak (index creation is idempotent by name, so the surviving definition
+  wins over a divergent re-create) is pinned separately in `pkg/engine`.
 
 ## Observability
 

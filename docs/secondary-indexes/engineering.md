@@ -153,6 +153,34 @@ significant** — the first field is the leading prefix field.
 - **Only `ErrIndexUnsupported` degrades.** Any other registration error fails
   DAO construction. Treating a transient index-subsystem failure as a
   capability statement would permanently downgrade the DAO to full scans.
+- **Index creation is idempotent BY NAME, and the EXISTING definition wins.**
+  Re-creating a name that already exists succeeds without reconciling the
+  definition — it cannot fail, because returning an error from the apply path
+  would stall consensus. A divergent re-create must therefore be refused, or
+  the previous index dropped, *before* the proposal. This is why an index left
+  behind by a teardown is a correctness problem and not a space leak: the
+  survivor silently overrides the definition the next creator asked for, and a
+  `unique` constraint that creator requested is never enforced.
+- **Index drop is idempotent.** Dropping a name that is not registered
+  succeeds, so a teardown that is retried after an interruption costs nothing
+  where it has already run.
+- **An index created as part of another object's lifecycle is dropped by that
+  object's teardown.** A collection's indexes are named
+  `{database}.{collection}.{field}` and are dropped by `DropCollection`, after
+  its documents and before its metadata (see
+  [../collections/architecture.md](../collections/architecture.md)); a
+  relational table's index data is reclaimed by `DROP TABLE` before its catalog
+  entry.
+- **Lifecycle ownership is derived from the index NAME; nothing is persisted.**
+  There is no owner field on an index and no registry of which object created
+  which name. An index created through the explicit API under a name a
+  collection would derive is adopted by that collection on create (creation is
+  a name-idempotent no-op) and destroyed by its drop. Two consequences follow
+  and both are current behaviour, not aspiration: the explicit API does **not**
+  retain ownership against a colliding name, and a caller choosing an index
+  name should avoid the `{database}.{collection}.{field}` shape for anything it
+  intends to outlive that collection. Real ownership tracking is a separate
+  capability.
 
 ## Query security
 

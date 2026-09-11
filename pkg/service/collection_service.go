@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,9 +98,23 @@ type kvService interface {
 
 // indexService is the minimal index interface needed by CollectionService
 // to create and drop secondary indexes on collection fields.
+//
+// DropIndex is called during teardown, where "the index is not there" is the
+// outcome being asked for. The canonical index.IndexServicer contract permits
+// an implementation to report that as IndexNotFoundError -- the shipped
+// IndexService does not, because the state machine's drop handler is
+// idempotent so a cleanup proposal cannot stall Raft -- so DropCollection
+// accepts EITHER answer as success. Any other error fails the drop.
 type indexService interface {
 	CreateIndex(ctx context.Context, name, fieldName string, config index.IndexConfig) error
 	DropIndex(ctx context.Context, name string) error
+}
+
+// indexAlreadyGone reports whether an error from indexService.DropIndex means
+// the index was not there to drop, which is success for a teardown.
+func indexAlreadyGone(err error) bool {
+	var notFound *IndexNotFoundError
+	return errors.As(err, &notFound)
 }
 
 // Compile-time interface check.
@@ -219,7 +234,7 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 	// Create secondary indexes when an index service is available.
 	if s.indexSvc != nil && len(req.Indexes) > 0 {
 		for _, def := range req.Indexes {
-			idxName := req.Database + "." + req.Name + "." + def.FieldName
+			idxName := collectionIndexName(req.Database, req.Name, def.FieldName)
 			cfg := index.IndexConfig{
 				Name:   idxName,
 				Unique: def.Unique,
@@ -248,22 +263,76 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 	return info, nil
 }
 
-// DropCollection removes a collection, its metadata, and all documents.
+// DropCollection removes a collection: every document in it, every secondary
+// index CreateCollection built for it, and finally its metadata.
+//
+// The teardown order is deliberate and mirrors Database.DropTable in
+// pkg/sql/provider: dependent structures are reclaimed FIRST and the metadata
+// key -- the record that makes the collection resolvable at all -- is deleted
+// LAST. The metadata key is therefore the drop's own commit record, and every
+// intermediate state is one a re-issued DropCollection completes:
+//
+//   - interrupted mid-documents: the collection still resolves with fewer
+//     documents and consistent indexes;
+//   - interrupted between the documents and the indexes: exactly the state
+//     this change exists to eliminate, but reachable and retryable rather
+//     than permanent;
+//   - interrupted between the indexes and the metadata: the indexes are gone
+//     and the retry drops them again as a no-op (see indexService).
+//
+// That last state is the ordering's cost and is stated rather than hidden:
+// until the retry lands, the collection still resolves and still accepts
+// writes, with its declared indexes -- and therefore its unique constraints --
+// no longer maintained. READS in that state fail rather than mislead (a query
+// naming a dropped index returns "index not found"); writes are the unguarded
+// side. A drop that fails PARTWAY THROUGH a multi-index collection widens the
+// window from one metadata delete to however long it takes someone to retry,
+// with the collection live and partially indexed.
+//
+// It is still the SMALLEST window available, because every ordering has one:
+// dropping the indexes first makes the window the whole document deletion --
+// the longest step, with the collection fully populated -- and deleting the
+// metadata first replaces it with a PERMANENT orphan on a crash, which is the
+// defect being fixed. Closing it entirely needs a persisted "dropping" state
+// that other verbs refuse, which changes the metadata format and is a design
+// decision, not an implementation one.
+//
+// An index that cannot be dropped fails the whole operation. The engine's
+// index-create handler is idempotent by NAME and the original definition
+// wins, so an index left behind silently overrides the definition a later
+// CreateCollection asks for on the same (database, collection, field) -- a
+// unique constraint the new collection requested then goes unenforced
+// (go-qrdb#399). Reporting success over that is worse than reporting the
+// failure, and because the metadata survives the operator can simply retry.
+//
+// Ownership is derived from the NAME, not tracked. If an index called
+// {database}.{collection}.{field} already existed when the collection was
+// created -- created through the explicit index API, or by a DAO -- then
+// CreateCollection adopted it silently (its create was a name-idempotent
+// no-op) and this drop destroys it. That is a real collision and it is
+// deliberate rather than overlooked: the metadata declares the index as the
+// collection's, and refusing to drop what the collection believes it owns
+// re-opens the orphan. Distinguishing the two needs persisted ownership,
+// which is a separate capability.
 func (s *CollectionService) DropCollection(ctx context.Context, req *DropCollectionRequest) error {
 	if err := validateCollectionRequest(req.Database, req.Name); err != nil {
 		return err
 	}
 
-	metaKey := collectionMetadataKey(req.Database, req.Name)
-	existing, err := s.kvSvc.Get(ctx, metaKey)
-	if err != nil || existing == nil {
-		return &CollectionNotFoundError{
-			Database:   req.Database,
-			Collection: req.Name,
-		}
+	// The metadata carries the collection's index definitions, so the drop
+	// reads it rather than merely probing for its existence: a drop that
+	// cannot enumerate what the collection owns cannot finish correctly.
+	// Unparseable metadata therefore fails the drop with a typed error
+	// instead of half-dropping the collection -- every other verb on this
+	// type already refuses a collection in that state.
+	info, err := s.loadCollectionInfo(ctx, req.Database, req.Name)
+	if err != nil {
+		return err
 	}
 
-	// Delete all documents.
+	// Delete all documents. Each delete retracts that document's entries
+	// from every index maintained over it, so by the time the indexes are
+	// dropped below they are already empty.
 	dataPrefix := collectionDataEntityType(req.Database, req.Name) + "/"
 	keys, err := s.kvSvc.List(ctx, dataPrefix)
 	if err != nil {
@@ -275,7 +344,18 @@ func (s *CollectionService) DropCollection(ctx context.Context, req *DropCollect
 		}
 	}
 
+	// Drop the secondary indexes CreateCollection built for this collection.
+	if s.indexSvc != nil {
+		for _, def := range info.Indexes {
+			idxName := collectionIndexName(req.Database, req.Name, def.FieldName)
+			if err := s.indexSvc.DropIndex(ctx, idxName); err != nil && !indexAlreadyGone(err) {
+				return &CollectionMetadataError{Op: "drop-index", Err: err}
+			}
+		}
+	}
+
 	// Delete metadata.
+	metaKey := collectionMetadataKey(req.Database, req.Name)
 	if err := s.kvSvc.Delete(ctx, metaKey); err != nil {
 		return &CollectionMetadataError{Op: "delete-metadata", Err: err}
 	}
