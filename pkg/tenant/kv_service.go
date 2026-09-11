@@ -260,11 +260,11 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 		return &StoreError{Op: "get", Err: err}
 	}
 	if data == nil {
-		// An interrupted delete: the metadata is gone but the id is
-		// tombstoned, so resume the reclamation rather than reporting
+		// A teardown interrupted on the far side of the fence: the metadata
+		// is gone but the id is tombstoned, so resume rather than reporting
 		// not-found. Mirrors TenantService.DeleteTenant.
 		if _, tombstoned, tErr := s.deletedAt(ctx, tenantID); tErr == nil && tombstoned {
-			return s.reclaim(ctx, tenantID)
+			return s.finishTeardown(ctx, tenantID)
 		}
 		return ErrTenantNotFound
 	}
@@ -275,10 +275,13 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 		info = TenantInfo{ID: tenantID}
 	}
 
-	// 1. Bottom-up refusal, 2. crypto-shred, 3. tombstone, 4. metadata
-	// delete, 5. reclaim. There is no barrier step here: this service exists
-	// precisely because the seal subsystem is off. The ordering and the
-	// reasoning behind it are documented on TenantService.DeleteTenant.
+	// 1. Bottom-up refusal, 2. tombstone, 3. metadata delete, 4. crypto-shred,
+	// 5. reclaim. There is no barrier step here: this service exists precisely
+	// because the seal subsystem is off. The ordering and the reasoning behind
+	// it -- fence first, destroy afterwards -- are documented on
+	// TenantService.DeleteTenant, and they hold here for the reason the
+	// teardown seams are shared at all: a node must behave identically whether
+	// or not the seal subsystem is enabled.
 	if s.databases != nil {
 		names, lErr := s.databases.TenantDatabases(ctx, tenantID)
 		if lErr != nil {
@@ -289,12 +292,8 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 		}
 	}
 
-	if s.dekShredder != nil {
-		if sErr := s.dekShredder.DeleteTenantDEK(ctx, tenantID); sErr != nil {
-			return &DEKShredError{TenantID: tenantID, Err: sErr}
-		}
-	}
-
+	// 2 and 3. The fence. Neither write destroys anything, so a failure in
+	//          either leaves the tenant intact.
 	tombstone, mErr := json.Marshal(newTombstone(&info, time.Now().UTC()))
 	if mErr != nil {
 		return &StoreError{Op: "marshal-tombstone", Err: mErr}
@@ -302,14 +301,34 @@ func (s *kvTenantService) DeleteTenant(ctx context.Context, tenantID string) err
 	if pErr := s.store.Put(ctx, tombstoneKey(tenantID), tombstone); pErr != nil {
 		return &StoreError{Op: "put-tombstone", Err: pErr}
 	}
-
 	if err := s.store.Delete(ctx, key); err != nil {
 		return &StoreError{Op: "delete", Err: err}
 	}
 
-	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
+	s.logger.Info("tenant retired", slog.String("tenant_id", tenantID))
 
-	return s.reclaim(ctx, tenantID)
+	// 4 and 5.
+	return s.finishTeardown(ctx, tenantID)
+}
+
+// finishTeardown runs the two steps past the fence: shred the DEK, then
+// reclaim the keyspace. It is what a re-issued delete resumes, and both steps
+// are idempotent so resuming completes rather than wedges.
+//
+// See TenantService.finishTeardown, whose barrier step is the only thing this
+// one lacks.
+func (s *kvTenantService) finishTeardown(ctx context.Context, tenantID string) error {
+	if s.dekShredder != nil {
+		if sErr := s.dekShredder.DeleteTenantDEK(ctx, tenantID); sErr != nil {
+			return &TeardownError{TenantID: tenantID, Err: &DEKShredError{TenantID: tenantID, Err: sErr}}
+		}
+	}
+	if err := s.reclaim(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: err}
+	}
+
+	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
+	return nil
 }
 
 // reclaim runs the configured KeyspaceReclaimer over the tenant. See

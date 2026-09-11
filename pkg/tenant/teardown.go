@@ -52,13 +52,21 @@ type DatabaseLister interface {
 // DEKShredder destroys a tenant's data encryption key.
 //
 // Destroying the key is what makes a dedicated-isolation tenant's data
-// unreadable at the moment of deletion, before any byte of it has been
-// reclaimed -- which is why it runs first and why a failure aborts the
-// deletion. dek.TenantDEKManager satisfies it.
+// unreadable before any byte of it has been reclaimed. It is the first
+// IRREVERSIBLE step of a deletion, which is why DeleteTenant runs it
+// immediately after the fence and never before it: the retirement has to be
+// durable before the key dies, or a transient store failure leaves a live,
+// resolvable tenant with no key (go-qrdb#483). dek.TenantDEKManager satisfies
+// it.
 type DEKShredder interface {
 	// DeleteTenantDEK removes tenantID's DEK. A tenant that never had one is
 	// the success case, not a not-found error: the deletion must be
 	// re-issuable, and a prefix tenant may never have had a key at all.
+	//
+	// Implementations MUST be idempotent, for the reason
+	// KeyspaceReclaimer.ReclaimTenantKeyspace must be: a teardown interrupted
+	// past the fence is completed by re-issuing the delete, and that re-runs
+	// this call over a key that is already gone.
 	DeleteTenantDEK(ctx context.Context, tenantID string) error
 }
 
@@ -126,7 +134,7 @@ type TeardownWiring interface {
 	SetDEKShredder(DEKShredder)
 
 	// SetKeyspaceReclaimer sets the reclaimer DeleteTenant runs after the
-	// tombstone commits. A nil reclaimer means DeleteTenant retires the id
+	// fence commits. A nil reclaimer means DeleteTenant retires the id
 	// and leaves the bytes, which is correct for a composition with no
 	// shared store behind it and a leak for one with -- so a daemon asserts
 	// on it rather than discovering it later.
@@ -166,7 +174,7 @@ func WithDEKShredder(d DEKShredder) TenantServiceOption {
 }
 
 // WithKeyspaceReclaimer injects the reclaimer DeleteTenant runs after the
-// tombstone commits. Prefer SetKeyspaceReclaimer in a daemon; see
+// fence commits. Prefer SetKeyspaceReclaimer in a daemon; see
 // TeardownWiring.
 func WithKeyspaceReclaimer(r KeyspaceReclaimer) TenantServiceOption {
 	return func(s *TenantService) { s.SetKeyspaceReclaimer(r) }

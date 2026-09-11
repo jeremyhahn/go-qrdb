@@ -147,8 +147,9 @@ leaks to a caller with no access to the tier.
 | Create **or delete** a RESERVED tenant id | 400 | `INVALID_ARGUMENT` — `*ReservedTenantIDError`. Previously unmapped on every transport and reported as 500 / `INTERNAL` |
 | Create under a DELETED tenant id | 409 | `ALREADY_EXISTS` — `*TenantDeletedError`, carries the retirement time |
 | Delete while the tenant owns databases | 409 | `FAILED_PRECONDITION` — `*TenantHasDatabasesError`, names them |
-| Delete: DEK shred failed | 500 | `INTERNAL` — `*DEKShredError`; nothing changed |
-| Delete: keyspace reclaim failed | 500 | `INTERNAL` — `*KeyspaceReclaimError`; the id is already retired, retry to resume |
+| Delete: tombstone write or metadata delete failed | 500 | `INTERNAL` — `*StoreError`; **nothing changed**, the tenant and its key are intact |
+| Delete: DEK shred failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*DEKShredError`; the id is already retired and the tenant no longer resolves, retry to resume |
+| Delete: keyspace reclaim failed | 500 | `INTERNAL` — `*TeardownError` wrapping `*KeyspaceReclaimError`; the id is already retired, retry to resume |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 
 > **Deployment gap, recorded deliberately.** If the data-plane service registry

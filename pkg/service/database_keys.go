@@ -55,11 +55,20 @@ import (
 //     resolver, so a collection created today writes under shape 1 and this
 //     shape holds only keys written before that landed.
 //
-//     It is kept, and is not dead code: it reclaims that residue, and it
-//     costs two empty scans for a database that has none.
-//     pkg/server's TestReclaim_CollectionKeysAreInsideTheCompositeNamespace
-//     is what says which of the two shapes the collection surface is writing
-//     today, so a change that moves it back is caught rather than assumed.
+//     NOTHING RECLAIMS SHAPE 2, and that is the decision rather than an
+//     omission. A key with a database in it and no tenant cannot be attributed
+//     to the tenant asking for the drop, so reclaiming it by database alone
+//     destroys every OTHER tenant's residue for a database of that name --
+//     which for a while it did (go-qrdb#481). go-qrdb#441 had already ruled on
+//     the general case: the server does not delete data it cannot attribute,
+//     and the documented upgrade path is an export with the previous binary
+//     followed by a per-tenant re-import. Deleting the residue deletes that
+//     path. So the shape is still NAMED here, by LegacyCollectionKeyPrefixes,
+//     because two tests enforce the decision and both need to spell it; it is
+//     passed to no reclamation. pkg/server's
+//     TestReclaim_CollectionKeysAreInsideTheCompositeNamespace is what says
+//     which of the two shapes the collection surface is writing today, so a
+//     change that moves it back is caught rather than assumed.
 //
 // A THIRD property cuts across both and is the reason a reclamation reads
 // through ReclaimKV.ListAll rather than the user-facing List: some of these
@@ -87,8 +96,10 @@ import (
 // It does NOT return timeseries.KeyPrefixTagIndex: a tag index key is
 // KeyPrefixTagIndex + tagKey + ":" + tagValue and carries no metric, so it is
 // shared by every metric in every database and no single database owns it.
-// Nor does it return the collection prefixes, which are not namespaced —
-// see CollectionKeyPrefixes and the note above.
+// Nor does it return the pre-tenant-namespace collection prefixes, which are
+// not namespaced and are reclaimed by nothing — see
+// LegacyCollectionKeyPrefixes and the note above. A collection created today
+// is namespaced, so the first prefix returned here covers it.
 //
 // An empty ns returns nil rather than the whole store: a teardown that
 // resolved no namespace must reclaim nothing, never everything.
@@ -104,19 +115,34 @@ func NamespacedKeyPrefixes(ns string) []string {
 	}
 }
 
-// CollectionKeyPrefixes returns the ROOT-KEYED physical prefixes holding the
-// named database's collection catalog and documents — the layout the
+// LegacyCollectionKeyPrefixes returns the ROOT-KEYED physical prefixes holding
+// the named database's collection catalog and documents — the layout the
 // collection surface used before go-qrdb#441 moved it behind the
 // per-(tenant, database) resolver. They carry no tenant segment, because the
 // surface that wrote them carried none.
 //
-// A collection created today lands under NamespacedKeyPrefixes instead. These
-// are kept to reclaim what was written before that change; see the note
-// above.
+// # Do not pass these to a reclamation
+//
+// They are what a database of this name holds for EVERY tenant, not for the
+// one asking. A drop that deletes them destroys other tenants' residue, and no
+// scoping fixes that, because the tenant is not in the key and is not
+// recoverable from anywhere else. go-qrdb#441 decided the consequence: the
+// keys are left in place, inert — nothing reads them, because every
+// transport's KV surface is namespaced and no caller can compose the bare key,
+// and nothing deletes them, because the server cannot attribute data it cannot
+// attribute. The documented upgrade is an export with the previous binary and
+// a per-tenant re-import, and that is what a reclamation would take away
+// (go-qrdb#481).
+//
+// It stays exported because the shape has to be spelled in exactly one place
+// for the two tests that hold the decision: one asserts a collection created
+// today does NOT land here, the other asserts a drop does not delete what did.
+//
+// A collection created today lands under NamespacedKeyPrefixes instead.
 //
 // An empty database returns nil, for the reason NamespacedKeyPrefixes returns
 // nil for an empty namespace.
-func CollectionKeyPrefixes(database string) []string {
+func LegacyCollectionKeyPrefixes(database string) []string {
 	if database == "" {
 		return nil
 	}
@@ -126,37 +152,32 @@ func CollectionKeyPrefixes(database string) []string {
 	}
 }
 
-// DatabaseIndexNamePrefixes returns every secondary-index NAME prefix a
-// database owns in the state machine's index catalog. The catalog is a
-// namespace of its own — its entries are not KV keys — so a prefix delete
-// over the key prefixes above does not touch it and a teardown must
-// enumerate it separately.
+// DatabaseIndexNamePrefixes returns the secondary-index NAME prefix a database
+// owns in the state machine's index catalog. The catalog is a namespace of its
+// own — its entries are not KV keys — so a prefix delete over the key prefixes
+// above does not touch it and a teardown must enumerate it separately.
 //
-// Index names take the same two shapes the key layout does, for the same
-// reason: an index created through a registry-resolved IndexServicer is named
-// under the composite namespace ns, while a collection field index written
-// before go-qrdb#441 is named "{database}.{collection}.{field}" and carries no
-// tenant (see collectionIndexName). Both prefixes are returned, so a catalog
-// holding either generation is reclaimed.
+// It is the composite namespace, and only that. Index names take the same two
+// shapes the key layout does, for the same reason: an index created through a
+// registry-resolved IndexServicer is named under the composite namespace ns,
+// while a collection field index written before go-qrdb#441 is named
+// "{database}.{collection}.{field}" and carries no tenant (see
+// collectionIndexName). The second shape is deliberately absent, for the
+// reason LegacyCollectionKeyPrefixes is passed to no reclamation: a name with
+// a database in it and no tenant belongs to no tenant this call can identify,
+// and dropping it on one tenant's DROP DATABASE drops it for all of them.
 //
-// Unlike the key prefixes, neither is subject to the internal-key discovery
+// Unlike the key prefixes, it is not subject to the internal-key discovery
 // guard: the index catalog is enumerated through IndexServicer.ListIndexes,
 // which is not a KV read and applies no filter.
 //
-// An empty ns or database contributes no prefix, so a caller that resolved
-// neither reclaims nothing.
-func DatabaseIndexNamePrefixes(ns, database string) []string {
-	prefixes := make([]string, 0, 2)
-	if ns != "" {
-		prefixes = append(prefixes, ns)
-	}
-	if database != "" {
-		prefixes = append(prefixes, database+".")
-	}
-	if len(prefixes) == 0 {
+// An empty ns returns nil, so a caller that resolved no namespace reclaims
+// nothing rather than everything.
+func DatabaseIndexNamePrefixes(ns string) []string {
+	if ns == "" {
 		return nil
 	}
-	return prefixes
+	return []string{ns}
 }
 
 // TenantKeyPrefixes returns every physical key prefix the named tenant owns
@@ -178,10 +199,11 @@ func DatabaseIndexNamePrefixes(ns, database string) []string {
 // therefore shared by every tenant.
 //
 // It does not return the pre-go-qrdb#441 root-keyed collection prefixes
-// either. Those carry a database segment and NO tenant, so no tenant owns
-// them and no tenant-scoped scan can find them; they are reclaimed by the
-// drop of the database that wrote them, which DeleteTenant's bottom-up
-// refusal requires to have happened already.
+// either, and nothing else does: those carry a database segment and NO tenant,
+// so no tenant owns them and no tenant-scoped scan can find them. Deleting a
+// tenant therefore leaves them exactly as deleting a database does -- in
+// place, inert, and exportable with the previous binary. See
+// LegacyCollectionKeyPrefixes.
 //
 // It DOES return the tenant's placement range. A dedicated-raft database's
 // replica assignment lives at "__sys:placement/{tenant}/{db}", outside the

@@ -236,9 +236,15 @@ func TestDeleteTenant_UnlistableDatabasesAbortTheDelete(t *testing.T) {
 	}
 }
 
-// TestDeleteTenant_ShredsTheDEKBeforeAnythingElse pins the ordering the
-// ruling chose: a shred failure leaves the tenant entirely intact.
-func TestDeleteTenant_ShredsTheDEKBeforeAnythingElse(t *testing.T) {
+// TestDeleteTenant_ShredsTheDEKOnlyAfterTheFence pins the ordering the ruling
+// chose: the shred is the first step PAST the fence, so a shred failure finds
+// the id already retired and the metadata already gone, and it says so.
+//
+// The inverse -- shred first -- is what go-qrdb#483 reports: a transient store
+// failure after a successful shred left a live, listed, resolvable tenant
+// whose data was permanently undecryptable, under an error that read as
+// "nothing changed".
+func TestDeleteTenant_ShredsTheDEKOnlyAfterTheFence(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	shred := &shredRecorder{err: errStoreFault}
@@ -250,18 +256,87 @@ func TestDeleteTenant_ShredsTheDEKBeforeAnythingElse(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 
+	err := svc.DeleteTenant(ctx, "acme")
 	var de *DEKShredError
-	if err := svc.DeleteTenant(ctx, "acme"); !errors.As(err, &de) {
+	if !errors.As(err, &de) {
 		t.Fatalf("DeleteTenant = %v, want a DEKShredError", err)
 	}
-	if _, err := svc.GetTenant(ctx, "acme"); err != nil {
-		t.Errorf("a failed shred must leave the metadata: %v", err)
+	var te *TeardownError
+	if !errors.As(err, &te) {
+		t.Fatalf("DeleteTenant = %v, want the shred failure wrapped in a TeardownError", err)
 	}
-	if _, tombstoned, _ := svc.deletedAt(ctx, "acme"); tombstoned {
-		t.Error("a failed shred must not retire the id")
+	if _, gErr := svc.GetTenant(ctx, "acme"); !errors.Is(gErr, ErrTenantNotFound) {
+		t.Errorf("the fence must have removed the metadata before the shred ran, got %v", gErr)
+	}
+	if _, tombstoned, _ := svc.deletedAt(ctx, "acme"); !tombstoned {
+		t.Error("the fence must have retired the id before the shred ran")
 	}
 	if len(reclaim.calls) != 0 {
 		t.Errorf("the reclamation ran after a failed shred: %v", reclaim.calls)
+	}
+}
+
+// TestDeleteTenant_AFailedFenceLeavesTheTenantIntact is the property the
+// reordering exists to provide, asserted on each half of the fence in turn.
+//
+// Neither fence write destroys anything, so a failure in either must leave a
+// tenant that is still resolvable AND a DEK that was never touched -- which is
+// what makes "put-tombstone failed" readable as "nothing changed". Under the
+// shred-first ordering this test fails on the DEK: the key was already gone.
+func TestDeleteTenant_AFailedFenceLeavesTheTenantIntact(t *testing.T) {
+	tests := []struct {
+		name   string
+		fail   func(*failingBackend)
+		wantOp string
+	}{
+		{name: "tombstone write fails", fail: func(f *failingBackend) { f.failPut = true }, wantOp: "put-tombstone"},
+		{name: "metadata delete fails", fail: func(f *failingBackend) { f.failDel = true }, wantOp: "delete"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			backend := &failingBackend{inner: seal.NewMemoryBackend()}
+			svc, _ := newTestServiceWithStore(t, backend)
+			shred := &shredRecorder{}
+			reclaim := &recordingReclaimer{}
+			svc.SetDEKShredder(shred)
+			svc.SetKeyspaceReclaimer(reclaim)
+
+			if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
+				t.Fatalf("CreateTenant: %v", err)
+			}
+
+			tc.fail(backend)
+			err := svc.DeleteTenant(ctx, "acme")
+			var se *StoreError
+			if !errors.As(err, &se) {
+				t.Fatalf("DeleteTenant = %v, want a StoreError", err)
+			}
+			if se.Op != tc.wantOp {
+				t.Errorf("StoreError.Op = %q, want %q", se.Op, tc.wantOp)
+			}
+
+			// THE assertion: the irreversible step did not run.
+			if len(shred.calls) != 0 {
+				t.Errorf("the DEK was shredded by a delete that failed at the fence: %v", shred.calls)
+			}
+			if len(reclaim.calls) != 0 {
+				t.Errorf("the keyspace was reclaimed by a delete that failed at the fence: %v", reclaim.calls)
+			}
+
+			// And the error does not claim a retirement that did not stick.
+			var te *TeardownError
+			if errors.As(err, &te) {
+				t.Errorf("a fence failure must not report itself as a teardown past the fence: %v", err)
+			}
+
+			// The tenant is still there once the store recovers.
+			backend.failPut, backend.failDel = false, false
+			if _, gErr := svc.GetTenant(ctx, "acme"); gErr != nil {
+				t.Errorf("a failed fence must leave the tenant: %v", gErr)
+			}
+		})
 	}
 }
 
@@ -694,22 +769,38 @@ func TestKVTenantService_DeleteFailureModes(t *testing.T) {
 		}
 	})
 
-	t.Run("shred failure aborts", func(t *testing.T) {
+	t.Run("shred failure finds the id already retired", func(t *testing.T) {
 		store := kvstore.NewMemoryKVStore()
 		svcI, err := NewKVTenantService(store, testLogger())
 		if err != nil {
 			t.Fatalf("NewKVTenantService: %v", err)
 		}
-		svcI.(TeardownWiring).SetDEKShredder(&shredRecorder{err: errStoreFault}) //nolint:errcheck // asserted in TestKVTenantService_DeletedIdIsRetired
+		shred := &shredRecorder{err: errStoreFault}
+		svcI.(TeardownWiring).SetDEKShredder(shred) //nolint:errcheck // asserted in TestKVTenantService_DeletedIdIsRetired
 		if _, err := svcI.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {
 			t.Fatalf("CreateTenant: %v", err)
 		}
+		dErr := svcI.DeleteTenant(ctx, "acme")
 		var de *DEKShredError
-		if err := svcI.DeleteTenant(ctx, "acme"); !errors.As(err, &de) {
-			t.Fatalf("DeleteTenant = %v, want a DEKShredError", err)
+		if !errors.As(dErr, &de) {
+			t.Fatalf("DeleteTenant = %v, want a DEKShredError", dErr)
 		}
-		if _, err := svcI.GetTenant(ctx, "acme"); err != nil {
-			t.Errorf("a failed shred must leave the tenant: %v", err)
+		var te *TeardownError
+		if !errors.As(dErr, &te) {
+			t.Fatalf("DeleteTenant = %v, want the shred failure wrapped in a TeardownError", dErr)
+		}
+		if _, gErr := svcI.GetTenant(ctx, "acme"); !errors.Is(gErr, ErrTenantNotFound) {
+			t.Errorf("the no-seal service must fence before it shreds too, got %v", gErr)
+		}
+
+		// Re-issuing resumes and completes once the shredder recovers -- the
+		// resume path reaches the shred, which is now past the fence.
+		shred.err = nil
+		if rErr := svcI.DeleteTenant(ctx, "acme"); rErr != nil {
+			t.Fatalf("re-issued DeleteTenant: %v", rErr)
+		}
+		if len(shred.calls) != 2 {
+			t.Errorf("shred calls = %v, want the resume to have re-run it", shred.calls)
 		}
 	})
 

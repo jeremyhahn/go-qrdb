@@ -952,36 +952,64 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 
 // DeleteTenant retires a tenant id and reclaims what the tenant owned.
 //
-// The order is the whole design, and each step is placed by asking which
-// crash is survivable (go-qrdb#413):
+// The order is the whole design, and every step is placed by one rule:
+// PERSIST THE RETIREMENT BEFORE ANYTHING IRREVERSIBLE (go-qrdb#483).
 //
 //  0. REFUSE a RESERVED id outright, before any read. The reserved set --
 //     "system", "default", "_*", "*:*" -- is declared once, in
 //     reservedTenantIDReason, and consulted by creation and deletion alike.
 //     The reclamation in step 6 already refused the system tenant, but that
-//     guards the last step and steps 2 to 4 are the irreversible ones, so the
-//     same judgement is hoisted to the front.
+//     guards the last step and step 4 is the irreversible one, so the same
+//     judgement is hoisted to the front.
 //  1. REFUSE while the tenant still owns databases. Teardown is bottom-up: a
 //     database's own drop reclaims the keyspace that database owns
 //     (go-qrdb#412), so by the time this runs, what is left under the tenant
 //     is its identity records. That is what keeps step 6 bounded.
-//  2. SHRED THE DEK, before anything else is touched. A failure here aborts
-//     with nothing changed. Shred-then-delete can strand metadata for a
-//     tenant whose key is gone -- recoverable, inspectable, and already
-//     unreadable. Delete-then-shred can strand a key nothing names AND leave
-//     the data readable in the window. Take the first failure mode.
-//  3. WRITE THE TOMBSTONE. From here the id is retired permanently: no
+//  2. WRITE THE TOMBSTONE. From here the id is retired permanently: no
 //     tenant may ever be created under it again, so no later principal can
-//     inherit whatever step 6 has not yet removed. This is the step that
-//     closes the security half, and it is deliberately placed BEFORE the
-//     metadata delete so a crash between them leaves an id that is retired
-//     and a record that still describes it -- never the reverse.
-//  4. DELETE THE METADATA.
+//     inherit whatever the later steps have not yet removed.
+//  3. DELETE THE METADATA. Steps 2 and 3 together are the FENCE, and they are
+//     in this order so a crash between them leaves an id that is retired and
+//     a record that still describes it -- never the reverse. Once both have
+//     committed the tenant no longer resolves: GetTenant reports not-found,
+//     ListTenants omits it, and StoreResolver refuses the id outright rather
+//     than serving it as an unregistered prefix tenant. Neither step destroys
+//     anything, so a failure in either aborts with the tenant INTACT.
+//  4. SHRED THE DEK. This is the first irreversible step and it is
+//     deliberately the first step after the fence.
 //  5. UNREGISTER AND DESTROY THE BARRIER, including the durable records
 //     behind it. Leaving those behind is not a leak but a defect: the boot
 //     path restores a per-tenant barrier from them, so a deleted tenant's
 //     barrier would come back on the next restart.
 //  6. RECLAIM THE KEYSPACE, synchronously.
+//
+// # Why the shred is not first
+//
+// It was, and that was the defect go-qrdb#483 reports. The ordering was
+// argued from a choice of two: shred-then-delete can strand metadata for a
+// tenant whose key is gone, and delete-then-shred can strand a key nothing
+// names AND leave the data readable in the window. Shred-first was taken as
+// the lesser, but its real cost is worse than "stranded metadata": a
+// transient failure of the tombstone write returned an error that reads as
+// "nothing changed" while leaving a LIVE, resolvable, listed tenant whose
+// every byte was already permanently undecryptable.
+//
+// A third ordering dominates both, and it was not on that list. Fencing
+// first strands no key that is readable -- steps 2 and 3 make the tenant
+// unresolvable before step 4 can destroy anything -- and it strands no
+// metadata for a keyless tenant, because the metadata is gone before the key
+// is. What it can leave is a retired id whose DEK still exists: residue of
+// exactly the same kind as steps 5 and 6 already leave, reachable by nobody,
+// and removed by re-issuing the call.
+//
+// # Resuming
+//
+// Every step after the fence is idempotent -- DeleteTenantDEK treats an
+// absent key as success, DestroyTenant treats an unregistered tenant as
+// success, and the reclaimer treats an empty keyspace as success -- so
+// re-issuing DeleteTenant over a partly finished teardown completes it
+// rather than wedging. A failure on the far side of the fence is reported as
+// *TeardownError, which says so.
 //
 // Step 6 is synchronous rather than a background sweep because step 1 has
 // already bounded it. What remains under a tenant whose databases are gone
@@ -991,10 +1019,6 @@ func (s *TenantService) ListTenants(ctx context.Context) ([]TenantInfo, error) {
 // key-at-a-time path. A background reclaimer would add a restartable,
 // observable, idempotent subsystem in order to do less work than a call this
 // repository already makes inline.
-//
-// A failure in step 6 surfaces as *KeyspaceReclaimError and leaves the id
-// retired: re-issuing DeleteTenant resumes the reclamation, because the
-// reclaimer is idempotent and a tombstoned tenant is still deletable.
 func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error {
 	if tenantID == "" {
 		return ErrEmptyTenantID
@@ -1012,14 +1036,13 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			// A tenant whose metadata is already gone but whose id is
-			// tombstoned is an interrupted delete. Resume it from step 5
-			// rather than reporting not-found, so a teardown that failed once
-			// can be completed by re-issuing the same call. Steps 1 to 4 are
-			// already done -- and step 5 is exactly the step whose failure
-			// leaves this state, so a resume that skipped it could never
-			// finish.
+			// tombstoned is a teardown interrupted on the far side of the
+			// fence. Resume it from step 4 rather than reporting not-found,
+			// so a teardown that failed once can be completed by re-issuing
+			// the same call. Steps 1 to 3 are already done, and steps 4 to 6
+			// are exactly the steps whose failure leaves this state.
 			if _, tombstoned, tErr := s.deletedAt(ctx, tenantID); tErr == nil && tombstoned {
-				return s.destroyAndReclaim(ctx, tenantID)
+				return s.finishTeardown(ctx, tenantID)
 			}
 		}
 		return err
@@ -1030,14 +1053,37 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 		return err
 	}
 
-	// 2. Crypto-shred.
-	if s.dekShredder != nil {
-		if err := s.dekShredder.DeleteTenantDEK(ctx, tenantID); err != nil {
-			return &DEKShredError{TenantID: tenantID, Err: err}
-		}
+	// 2 and 3. The fence. Nothing here destroys anything, so a failure
+	//          leaves the tenant intact and the error says only that.
+	if err := s.fence(ctx, tenantID, info); err != nil {
+		return err
 	}
 
-	// 3. Retire the id.
+	s.logger.Info("tenant retired",
+		slog.String("tenant_id", tenantID),
+		slog.String("isolation_type", string(info.EffectiveIsolationType())))
+
+	// 4, 5 and 6.
+	return s.finishTeardown(ctx, tenantID)
+}
+
+// fence runs DeleteTenant's steps 2 and 3: retire the id, then remove the
+// metadata record that makes it resolvable.
+//
+// It is the whole of the reversible half of a deletion. Neither write
+// destroys anything a later call could not reproduce, so a failure returns
+// with the tenant exactly as it was -- which is what lets the errors it
+// returns say "nothing changed" truthfully.
+//
+// The tombstone is written unconditionally rather than only when absent. A
+// re-issued delete that reaches here refreshes DeletedAt, which is the
+// honest reading -- the retirement that stuck is the one being completed --
+// and it keeps this a plain write rather than a read-modify-write over a
+// store several nodes share.
+// The id is taken as its own argument rather than read off info, because the
+// key the fence writes must be the one the caller asked about even when the
+// record it decoded disagrees.
+func (s *TenantService) fence(ctx context.Context, tenantID string, info *TenantInfo) error {
 	tombstone, err := json.Marshal(newTombstone(info, time.Now().UTC()))
 	if err != nil {
 		return &StoreError{Op: "marshal-tombstone", Err: err}
@@ -1045,35 +1091,37 @@ func (s *TenantService) DeleteTenant(ctx context.Context, tenantID string) error
 	if err := s.store.Put(ctx, tombstoneKey(tenantID), tombstone); err != nil {
 		return &StoreError{Op: "put-tombstone", Err: err}
 	}
-
-	// 4. Remove the metadata record.
 	if err := s.store.Delete(ctx, metadataPrefix+tenantID); err != nil {
 		return &StoreError{Op: "delete", Err: err}
 	}
-
-	s.logger.Info("tenant deleted",
-		slog.String("tenant_id", tenantID),
-		slog.String("isolation_type", string(info.EffectiveIsolationType())))
-
-	// 5 and 6.
-	return s.destroyAndReclaim(ctx, tenantID)
+	return nil
 }
 
-// destroyAndReclaim runs the last two steps of a deletion: destroy the
-// barrier and every durable record that would restore it, then reclaim the
-// keyspace.
+// finishTeardown runs DeleteTenant's last three steps: shred the DEK,
+// destroy the barrier and every durable record that would restore it, then
+// reclaim the keyspace.
 //
 // They are one function because they are what a re-issued delete resumes.
-// Both run after the tombstone and the metadata delete have committed, so by
-// the time either can fail the id is already retired; both are idempotent,
-// so running them again over a partly-finished teardown completes it.
-func (s *TenantService) destroyAndReclaim(ctx context.Context, tenantID string) error {
-	// Not-found is success: the registry may never have held this tenant
-	// (registration failed, or this is a node that never attached it), and
-	// the delete must stay re-issuable.
+// All three run after the fence has committed, so by the time any of them
+// can fail the id is already retired and the tenant no longer resolves; all
+// three are idempotent, so running them again over a partly-finished
+// teardown completes it. Every failure is wrapped in *TeardownError, which
+// is what tells the operator the tenant is gone from the system's view even
+// though this call failed.
+func (s *TenantService) finishTeardown(ctx context.Context, tenantID string) error {
+	// 4. Crypto-shred. First irreversible step, first step past the fence.
+	if s.dekShredder != nil {
+		if err := s.dekShredder.DeleteTenantDEK(ctx, tenantID); err != nil {
+			return &TeardownError{TenantID: tenantID, Err: &DEKShredError{TenantID: tenantID, Err: err}}
+		}
+	}
+
+	// 5. Not-found is success: the registry may never have held this tenant
+	//    (registration failed, or this is a node that never attached it), and
+	//    the delete must stay re-issuable.
 	if err := s.registry.DestroyTenant(ctx, tenantID); err != nil {
 		if !errors.Is(err, seal.ErrTenantNotFound) {
-			return &BarrierError{TenantID: tenantID, Op: "destroy", Err: err}
+			return &TeardownError{TenantID: tenantID, Err: &BarrierError{TenantID: tenantID, Op: "destroy", Err: err}}
 		}
 	}
 
@@ -1081,7 +1129,13 @@ func (s *TenantService) destroyAndReclaim(ctx context.Context, tenantID string) 
 	// enclaves and releases challenge state).
 	s.tenantCeremonies.Delete(tenantID)
 
-	return s.reclaim(ctx, tenantID)
+	// 6. Reclaim the keyspace.
+	if err := s.reclaim(ctx, tenantID); err != nil {
+		return &TeardownError{TenantID: tenantID, Err: err}
+	}
+
+	s.logger.Info("tenant deleted", slog.String("tenant_id", tenantID))
+	return nil
 }
 
 // refuseIfDatabasesRemain returns *TenantHasDatabasesError when the tenant

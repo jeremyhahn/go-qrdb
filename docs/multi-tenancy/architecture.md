@@ -113,8 +113,8 @@ is one the system cannot answer about a caller-supplied string. So it does not
 guess. `DeleteTenant` records the id in a **tombstone** and `CreateTenant`
 refuses a tombstoned id forever.
 
-The order of the whole operation is chosen by asking, at each step, which
-crash is survivable:
+The order of the whole operation follows one rule — **persist the retirement
+before anything irreversible**:
 
 0. **Refuse a reserved id outright**, before any read. The reserved set —
    `system`, `default`, `_*`, `*:*` — is declared in exactly one place and
@@ -123,21 +123,36 @@ crash is survivable:
 1. **Refuse while the tenant still owns databases.** Teardown is bottom-up. A
    database's own drop reclaims the keyspace that database owns, so by the
    time a tenant's delete runs, what is left under it is its identity records.
-2. **Shred the tenant DEK**, before anything else is touched. A failure here
-   aborts with nothing changed. Shred-then-delete can strand metadata for a
-   tenant whose key is gone — recoverable, inspectable, already unreadable.
-   Delete-then-shred can strand a key nothing names *and* leave the data
-   readable in the window.
-3. **Write the tombstone.** From here the id is retired, so no later principal
-   can inherit whatever step 6 has not yet removed. This step closes the
-   security half on its own.
-4. **Delete the metadata record.**
+2. **Write the tombstone.** From here the id is retired, so no later principal
+   can inherit whatever the remaining steps have not yet removed.
+3. **Delete the metadata record.** Steps 2 and 3 are the **fence**. Neither
+   destroys anything, and together they make the tenant unresolvable: nothing
+   reads it, nothing lists it, and the store resolver refuses its id outright
+   rather than serving it as an unregistered prefix tenant.
+4. **Shred the tenant DEK.** The first irreversible step, and deliberately the
+   first step after the fence.
 5. **Destroy the barrier**, including the durable records behind it — see
    "Unregistering a barrier is not destroying it" below.
 6. **Reclaim the keyspace.**
 
-A failure in step 6 leaves the id retired and is reported as such; re-issuing
-the delete resumes the reclamation, which is idempotent.
+**Why the shred is not first.** It was, and that was a defect. The ordering was
+argued from a choice of two — shred-then-delete can strand metadata for a
+tenant whose key is gone, delete-then-shred can strand a key nothing names *and*
+leave the data readable in the window — and the first was taken as the lesser.
+Its real cost is worse than "stranded metadata": a transient failure of the
+tombstone write returned an error reading *"the delete did not happen"* while
+leaving a live, listed, resolvable tenant whose every byte was already
+permanently undecryptable. A third ordering was not on that list and dominates
+both. Fencing first leaves no readable window, because nothing resolves the
+tenant after step 3, and leaves no live tenant without a key, because the
+metadata is gone before the key is. What it can leave is a **retired id whose
+DEK still exists** — residue of the same kind steps 5 and 6 already leave,
+reachable by nobody, removed by re-issuing the call.
+
+A failure in steps 4 to 6 leaves the id retired and is reported as such: the
+error names the retirement and the remedy, because "shred failed" read as
+"nothing changed" is what makes an operator stop. Re-issuing the delete resumes
+from step 4; every step past the fence is idempotent.
 
 ### One reserved set, two policies
 
@@ -146,7 +161,7 @@ system declares un-creatable were freely **deletable**: `DeleteTenant` took a
 caller-supplied `system` and ran the whole irreversible teardown against it.
 The reclamation in step 6 already refused the system tenant — *"a reclamation
 that accepted it would empty the store it was asked to tidy"* — but that
-guards the **last** step, and steps 2 to 4 are the irreversible ones. The same
+guards the **last** step, and steps 2 to 4 are the committing ones. The same
 judgement now sits at the front, where it prevents the commits rather than
 only the destructive read.
 

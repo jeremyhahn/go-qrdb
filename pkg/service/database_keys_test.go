@@ -58,45 +58,60 @@ func TestNamespacedKeyPrefixes_EmptyNamespaceYieldsNothing(t *testing.T) {
 	assert.Nil(t, NamespacedKeyPrefixes(""))
 }
 
-// TestCollectionKeyPrefixes_CoversCatalogAndDocuments names both halves. A
-// list with only one of them leaves either orphaned documents or a collection
-// that lists but cannot be read.
-func TestCollectionKeyPrefixes_CoversCatalogAndDocuments(t *testing.T) {
+// TestLegacyCollectionKeyPrefixes_CoversCatalogAndDocuments names both halves
+// of the pre-tenant-namespace layout. Nothing reclaims them, but the shape has
+// to be spelled correctly for the tests that assert nothing does.
+func TestLegacyCollectionKeyPrefixes_CoversCatalogAndDocuments(t *testing.T) {
 	assert.Equal(t, []string{
 		collectionMetadataPrefix + "reports/",
 		collectionDataPrefix + "reports:",
-	}, CollectionKeyPrefixes("reports"))
+	}, LegacyCollectionKeyPrefixes("reports"))
 }
 
-// TestCollectionKeyPrefixes_DoNotMatchASiblingByNamePrefix is the separator
-// test: "reports" must not reclaim "reportsarchive".
-func TestCollectionKeyPrefixes_DoNotMatchASiblingByNamePrefix(t *testing.T) {
-	for _, p := range CollectionKeyPrefixes("reports") {
+// TestLegacyCollectionKeyPrefixes_DoNotMatchASiblingByNamePrefix is the
+// separator test: "reports" must not name "reportsarchive".
+func TestLegacyCollectionKeyPrefixes_DoNotMatchASiblingByNamePrefix(t *testing.T) {
+	for _, p := range LegacyCollectionKeyPrefixes("reports") {
 		assert.False(t, strings.HasPrefix(collectionMetadataPrefix+"reportsarchive/users", p))
 		assert.False(t, strings.HasPrefix(collectionDataPrefix+"reportsarchive:users/1", p))
 	}
 }
 
-// TestCollectionKeyPrefixes_EmptyDatabaseYieldsNothing is the peer of the
-// empty-namespace refusal.
-func TestCollectionKeyPrefixes_EmptyDatabaseYieldsNothing(t *testing.T) {
-	assert.Nil(t, CollectionKeyPrefixes(""))
+// TestLegacyCollectionKeyPrefixes_EmptyDatabaseYieldsNothing is the peer of
+// the empty-namespace refusal.
+func TestLegacyCollectionKeyPrefixes_EmptyDatabaseYieldsNothing(t *testing.T) {
+	assert.Nil(t, LegacyCollectionKeyPrefixes(""))
 }
 
-// TestDatabaseIndexNamePrefixes_CoversBothNameShapes pins that the index
-// catalog is addressed in the same two shapes the keyspace is.
-func TestDatabaseIndexNamePrefixes_CoversBothNameShapes(t *testing.T) {
+// TestLegacyCollectionKeyPrefixes_CarryNoTenant is the reason nothing
+// reclaims them, asserted rather than asserted-in-prose: a prefix that does
+// not contain the tenant cannot be scoped to one, so any deletion of it is a
+// deletion of every tenant's.
+func TestLegacyCollectionKeyPrefixes_CarryNoTenant(t *testing.T) {
+	for _, p := range LegacyCollectionKeyPrefixes("reports") {
+		for _, tenantID := range []string{"acme", "globex", tenant.SystemTenantID} {
+			assert.NotContains(t, p, tenantID,
+				"a prefix carrying a tenant could be scoped; this one deliberately cannot be")
+		}
+	}
+}
+
+// TestDatabaseIndexNamePrefixes_IsTheCompositeNamespaceOnly pins that the
+// index catalog is addressed by the ONE shape that carries a tenant.
+//
+// The legacy "{database}." shape is deliberately absent: dropping an index
+// named for a database and no tenant drops it for every tenant that has one.
+func TestDatabaseIndexNamePrefixes_IsTheCompositeNamespaceOnly(t *testing.T) {
 	ns := tenant.ComposeNamespace("acme", "reports")
 
-	assert.Equal(t, []string{ns, "reports."}, DatabaseIndexNamePrefixes(ns, "reports"))
-	assert.Equal(t, []string{ns}, DatabaseIndexNamePrefixes(ns, ""))
-	assert.Equal(t, []string{"reports."}, DatabaseIndexNamePrefixes("", "reports"))
+	assert.Equal(t, []string{ns}, DatabaseIndexNamePrefixes(ns))
+	assert.NotContains(t, DatabaseIndexNamePrefixes(ns), "reports.")
 }
 
 // TestDatabaseIndexNamePrefixes_EmptyScopeYieldsNothing holds the refusal on
 // the third constructor too.
 func TestDatabaseIndexNamePrefixes_EmptyScopeYieldsNothing(t *testing.T) {
-	assert.Nil(t, DatabaseIndexNamePrefixes("", ""))
+	assert.Nil(t, DatabaseIndexNamePrefixes(""))
 }
 
 // TestReclaimErrors_CarryTheirSubjectAndCause covers the error vocabulary. An

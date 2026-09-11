@@ -119,14 +119,23 @@ path, not the body.
 - **`DropDatabase` deletes all of the database's data and is irreversible.**
   All of it means the keyspace as well as the directory — see
   [architecture.md](architecture.md) "What a drop reclaims" for the shapes and
-  the order. Three properties follow and are tested as such:
+  the order. Four properties follow and are tested as such:
+  - **Everything it deletes is scoped by tenant.** Every prefix and every index
+    name the reclamation is given is rooted at the composite `<tenant>/<db>/`
+    namespace. A drop is reachable by any tenant that owns a database and it
+    runs against a shared store, so a prefix carrying a database and no tenant
+    is one tenant's lever on another's data. Pre-tenant-namespace collection
+    records are the one shape that looks database-scoped, and they are reclaimed
+    by nothing — see architecture.md and
+    [../collections/engineering.md](../collections/engineering.md).
   - **The reclamation runs before the catalog record is removed**, so an
     interrupted drop leaves a live, empty database rather than an unreachable
     keyspace, and re-issuing the drop finishes it.
   - **The reclamation is idempotent.** An already-empty keyspace is success,
     not a not-found error.
   - **A reclamation failure fails the drop.** Nothing is removed, and the
-    drop is retried.
+    drop is retried. A drop whose store cannot be resolved deletes nothing at
+    all, because the resolution is the first thing it does.
 - **A second concurrent drop of the same database is refused**, not merged.
   Exactly one caller may report success, because the tenant-scoped drop
   releases quota on success.
@@ -210,9 +219,14 @@ bounded it.
 ## Test strategy
 
 - **Unit**: lifecycle (create/get/list/drop), **what a drop reclaims and in
-  what order** (every key shape, both index-name shapes, vector namespaces,
+  what order** (every key shape, the index-name shape, vector namespaces,
   idempotence, retry after a failed reclamation, and the refusal of an
-  unscoped request), each update verb, the
+  unscoped request), **what a drop must NOT reclaim** (two tenants with a
+  database of the same name and unattributable pre-namespace collection
+  records: one tenant's drop leaves the other's records and its own
+  namespaced data is still reclaimed — both halves, because a fix that stops
+  deleting everything by stopping the legitimate reclamation is not a fix),
+  each update verb, the
   shared-store barrier refusal, scale bounds, the `engine`/`backend`
   immutability rule, and `DatabaseScoped` producing an independent client.
 - **The shared-store barrier refusal is a security test**, not a config test —

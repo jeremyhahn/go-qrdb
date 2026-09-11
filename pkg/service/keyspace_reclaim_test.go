@@ -33,12 +33,18 @@ import (
 // This file covers go-qrdb#412: DROP DATABASE reclaimed the database
 // directory and left a shared-store database's data in the shared store.
 //
+// It also covers go-qrdb#481, which is the boundary of #412's answer: the
+// reclamation reached ROOT-KEYED collection keys, which carry a database and
+// no tenant, so one tenant's drop deleted every tenant's pre-tenant-namespace
+// collection residue for a database of that name. Those keys are now reclaimed
+// by nothing, which is what go-qrdb#441 decided; the namespaced keys a
+// collection writes TODAY are still reclaimed.
+//
 // The store here is memoryKVSvc, the same in-memory KVServicer the collection
 // tests use, keyed exactly as production keys it: the composite
-// "<tenant>/<db>/" namespace for everything resolved through service.Registry
-// and root-level "__sys:collections/{db}/" and "__col:{db}:" for the
-// collection surface, which is served by one server-wide CollectionServicer
-// over the system shard and therefore carries no tenant.
+// "<tenant>/<db>/" namespace for everything resolved through service.Registry,
+// plus root-level "__sys:collections/{db}/" and "__col:{db}:" residue from
+// before the collection surface moved behind that resolver.
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -194,7 +200,15 @@ func populatedStore() *memoryKVSvc {
 	put(timeseries.KeyPrefixMetricIndex + ns + "cpu")
 	put(timeseries.KeyPrefixRetention + ns + "cpu")
 
-	// Root-keyed collection surface: database segment, no tenant.
+	// Namespaced collection surface: this is where a collection created TODAY
+	// writes, and it is reclaimed by the composite prefix like everything else.
+	put(ns + collectionMetadataPrefix + "reports/users")
+	put(ns + collectionDataPrefix + "reports:users/1")
+
+	// Root-keyed collection residue: database segment, NO tenant. Written
+	// before the collection surface moved behind the per-(tenant, database)
+	// resolver, and therefore attributable to no tenant -- so it must survive
+	// this tenant's drop exactly as it survives every other tenant's.
 	put(collectionMetadataPrefix + "reports/users")
 	put(collectionDataPrefix + "reports:users/1")
 	put(collectionDataPrefix + "reports:users/2")
@@ -222,6 +236,15 @@ func survivors() []string {
 		tenant.ComposeNamespace("acme", "ledger") + "keep",
 		tenant.ComposeNamespace("other", "reports") + "keep",
 		timeseries.KeyPrefixTagIndex + "host:web1",
+
+		// The pre-tenant-namespace collection residue for "reports". It
+		// carries no tenant, so the tenant dropping "reports" does not own it
+		// and no scan can find out who does. go-qrdb#441 left it in place,
+		// inert and exportable; go-qrdb#481 is what happened when a drop began
+		// deleting it anyway.
+		collectionDataPrefix + "reports:users/1",
+		collectionDataPrefix + "reports:users/2",
+		collectionMetadataPrefix + "reports/users",
 	}
 	sort.Strings(keep)
 	return keep
@@ -261,29 +284,118 @@ func TestKeyspaceReclaim_ReclaimsEveryShapeADatabaseOwns(t *testing.T) {
 		"dropping a shared-store database must leave exactly the keys that belong to other databases and other tenants")
 }
 
-// TestKeyspaceReclaim_ReclaimsTheCollectionSurface pins the half of the
-// keyspace a composite-prefix scan alone would miss.
+// TestKeyspaceReclaim_ReclaimsTheNamespacedCollectionSurface pins the half of
+// the collection surface a drop DOES own: a collection created today is served
+// by a per-(tenant, database) view, so its catalog entry and its documents sit
+// inside the composite namespace and are the dropping tenant's to remove.
+func TestKeyspaceReclaim_ReclaimsTheNamespacedCollectionSurface(t *testing.T) {
+	ctx := context.Background()
+	kv := populatedStore()
+	ns := tenant.ComposeNamespace("acme", "reports")
+
+	before, err := kv.ListAll(ctx, ns+collectionDataPrefix)
+	require.NoError(t, err)
+	require.NotEmpty(t, before, "fixture must carry a namespaced collection document")
+
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+
+	for _, prefix := range []string{ns + collectionMetadataPrefix, ns + collectionDataPrefix} {
+		keys, lErr := kv.ListAll(ctx, prefix)
+		require.NoError(t, lErr)
+		assert.Empty(t, keys, "namespaced collection keys under %q survived the drop", prefix)
+	}
+}
+
+// TestKeyspaceReclaim_LeavesUnattributableCollectionResidue is go-qrdb#481's
+// failing-first test.
 //
-// Collections are served by ONE server-wide CollectionServicer over the
-// system shard's root KV rather than through service.Registry, so their keys
-// carry the database as a segment and carry no tenant. A teardown that
-// reclaimed only "<tenant>/<db>/" would report success with every document
-// still in the store.
-func TestKeyspaceReclaim_ReclaimsTheCollectionSurface(t *testing.T) {
+// Two tenants, a database of the same name, and pre-tenant-namespace
+// collection records that name that database and no tenant. One tenant drops
+// it. Before the fix, step 1 of the reclamation prefix-deleted
+// "__col:reports:" and "__sys:collections/reports/" from the shared system
+// store unconditionally, so the OTHER tenant's records went with it -- taking
+// the export-and-reimport upgrade that go-qrdb#441 documented as the only path
+// for that data.
+//
+// Both halves are asserted. A fix that stops deleting the residue by also
+// stopping the legitimate reclamation is not a fix, so the dropping tenant's
+// own namespaced collection data must still be gone.
+func TestKeyspaceReclaim_LeavesUnattributableCollectionResidue(t *testing.T) {
+	ctx := context.Background()
+	kv := newMemoryKVSvc()
+	put := func(k string) { require.NoError(t, kv.Put(ctx, k, []byte("v"))) }
+
+	nsA := tenant.ComposeNamespace("acme", "reports")
+	nsB := tenant.ComposeNamespace("globex", "reports")
+
+	// Each tenant has a namespaced collection in its own "reports".
+	put(nsA + collectionMetadataPrefix + "reports/orders")
+	put(nsA + collectionDataPrefix + "reports:orders/1")
+	put(nsB + collectionMetadataPrefix + "reports/orders")
+	put(nsB + collectionDataPrefix + "reports:orders/1")
+
+	// And a single pile of legacy records that names "reports" and no tenant.
+	// Which of the two wrote them is not recoverable from anywhere, which is
+	// exactly why neither tenant's drop may delete them.
+	legacy := LegacyCollectionKeyPrefixes("reports")
+	put(collectionMetadataPrefix + "reports/orders")
+	put(collectionDataPrefix + "reports:orders/1")
+	put(collectionDataPrefix + "reports:orders/2")
+
+	catalog := newReclaimIndexCatalog(nsA+"by_region", nsB+"by_region", "reports.orders.sku")
+	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv, Index: catalog})
+
+	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+
+	// 1. The unattributable residue is untouched -- all of it, including the
+	//    dropping tenant's share of it, because there is no such thing as a
+	//    share of it.
+	for _, prefix := range legacy {
+		keys, err := kv.ListAll(ctx, prefix)
+		require.NoError(t, err)
+		assert.NotEmpty(t, keys,
+			"a drop deleted pre-tenant-namespace collection records under %q; they belong to "+
+				"no tenant this call can identify, and they are the only thing left to export", prefix)
+	}
+	assert.Contains(t, catalog.remaining(), "reports.orders.sku",
+		"a legacy collection index name carries no tenant either")
+
+	// 2. The other tenant's database of the same name is entirely untouched.
+	for _, prefix := range []string{nsB + collectionMetadataPrefix, nsB + collectionDataPrefix} {
+		keys, err := kv.ListAll(ctx, prefix)
+		require.NoError(t, err)
+		assert.NotEmpty(t, keys, "the other tenant lost %q to a drop it did not issue", prefix)
+	}
+	assert.Contains(t, catalog.remaining(), nsB+"by_region")
+
+	// 3. And the drop still did its job: the dropping tenant's namespaced
+	//    collection data is gone.
+	for _, prefix := range []string{nsA + collectionMetadataPrefix, nsA + collectionDataPrefix} {
+		keys, err := kv.ListAll(ctx, prefix)
+		require.NoError(t, err)
+		assert.Empty(t, keys, "the dropping tenant's own namespaced collection data survived under %q", prefix)
+	}
+	assert.NotContains(t, catalog.remaining(), nsA+"by_region")
+}
+
+// TestKeyspaceReclaim_TenantTeardownLeavesTheResidueToo is the same decision
+// asked one scope up. A tenant delete cannot attribute the legacy keys either,
+// and DeleteTenant's bottom-up refusal means the database drops have already
+// run -- so if a drop leaves them, nothing removes them, which is what
+// go-qrdb#441 says should happen.
+func TestKeyspaceReclaim_TenantTeardownLeavesTheResidueToo(t *testing.T) {
 	ctx := context.Background()
 	kv := populatedStore()
 	svc := NewKeyspaceReclaimService(ReclaimTarget{KV: kv})
 
-	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
+	require.NoError(t, svc.ReclaimTenantKeyspace(ctx, "acme"))
 
-	for _, prefix := range CollectionKeyPrefixes("reports") {
+	for _, prefix := range LegacyCollectionKeyPrefixes("reports") {
 		keys, err := kv.ListAll(ctx, prefix)
 		require.NoError(t, err)
-		assert.Empty(t, keys, "collection keys under %q survived the drop", prefix)
+		assert.NotEmpty(t, keys, "a tenant teardown deleted unattributable residue under %q", prefix)
 	}
-	ledger, err := kv.ListAll(ctx, collectionDataPrefix+"ledger:")
-	require.NoError(t, err)
-	assert.Len(t, ledger, 1, "another database's documents must not be reclaimed")
 }
 
 // TestKeyspaceReclaim_ReclaimsEverySequenceUnderTheDatabase is the inheritance
@@ -329,7 +441,10 @@ func TestKeyspaceReclaim_ReclaimsBothIndexNameShapes(t *testing.T) {
 		"__sys_internal",
 		tenant.ComposeNamespace("acme", "ledger") + "by_region",
 		"ledger.users.email",
-	}, catalog.remaining(), "only the dropped database's indexes may be dropped")
+		"reports.users.email",
+	}, catalog.remaining(),
+		"only the dropped database's NAMESPACED indexes may be dropped; "+
+			"\"reports.users.email\" names a database and no tenant, so it is not this tenant's to drop")
 }
 
 // TestKeyspaceReclaim_ReclaimsVectorNamespaces covers the second namespace a
@@ -372,8 +487,12 @@ func TestKeyspaceReclaim_RecreatedNameInheritsNothing(t *testing.T) {
 	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
 
 	// Everything a database of that name would address, from a fresh create.
+	// The legacy root-keyed prefixes are NOT in this list, and that is not a
+	// gap: a recreated database is served through the per-(tenant, database)
+	// resolver, so it addresses the composite namespace only and cannot
+	// compose a bare "__col:reports:" key at all.
 	ns := tenant.ComposeNamespace("acme", "reports")
-	for _, prefix := range append(NamespacedKeyPrefixes(ns), CollectionKeyPrefixes("reports")...) {
+	for _, prefix := range NamespacedKeyPrefixes(ns) {
 		keys, err := kv.ListAll(ctx, prefix)
 		require.NoError(t, err)
 		assert.Empty(t, keys, "a database recreated under this name would inherit %v", keys)
@@ -603,12 +722,13 @@ func TestKeyspaceReclaim_RoutesToTheTenantsOwnStore(t *testing.T) {
 	require.NoError(t, svc.ReclaimDatabaseKeyspace(ctx, "acme", "reports"))
 
 	assert.Empty(t, allKeys(t, volume), "the tenant's own store must be reclaimed")
-	// The collection surface is in the SYSTEM store for every database, so it
-	// is reclaimed there even when the namespaced keys are elsewhere; the
-	// namespaced keys in the system store belong to no one and are left.
+	// The system store is not touched at all. Everything the drop owns is
+	// namespaced, and for this tenant the namespace lives on the volume; the
+	// only thing of that database's NAME in the system store is
+	// unattributable residue that belongs to no tenant this call can identify.
 	remaining, err := system.ListAll(ctx, collectionDataPrefix+"reports:")
 	require.NoError(t, err)
-	assert.Empty(t, remaining, "collections live in the system store for every database")
+	assert.NotEmpty(t, remaining, "a drop routed to a dedicated store must not reach into the shared one")
 	assert.Equal(t, 1, resolver.calls)
 }
 
@@ -641,11 +761,12 @@ func TestKeyspaceReclaim_ResolverFailureFailsTheDrop(t *testing.T) {
 	var want *ReclaimStoreUnavailableError
 	require.ErrorAs(t, err, &want)
 	assert.Equal(t, "acme", want.TenantID)
-	// The collection reclamation runs first and is not affected; the
-	// namespaced keys are untouched and the drop is retryable.
-	after := allKeys(t, kv)
-	assert.Contains(t, after, tenant.ComposeNamespace("acme", "reports")+"greeting")
-	assert.Less(t, len(after), len(before))
+	// The resolution is now the FIRST thing the reclamation does, so a drop
+	// that cannot find its store deletes nothing at all and is retryable in
+	// full. Before go-qrdb#481 an unscoped collection pass ran ahead of it and
+	// had already deleted keys by the time this error surfaced.
+	assert.Equal(t, before, allKeys(t, kv),
+		"a drop that could not resolve its store must not have deleted anything")
 }
 
 // TestKeyspaceReclaim_NilEnginesAreSkipped covers a composition that serves

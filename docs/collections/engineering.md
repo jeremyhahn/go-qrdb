@@ -328,6 +328,20 @@ because every transport's KV surface is namespaced too, so no caller can compose
 the bare key. An operator upgrading a deployment with existing collections
 exports them with the previous binary and re-imports them per tenant.
 
+**"Nothing deletes them" includes `DROP DATABASE` and `DELETE TENANT`**, and it
+is spelled out because leaving it implicit was enough to lose it. A keyspace
+reclamation added afterwards read `__col:{db}:` as database-scoped — which it
+is — and deleted it on a drop, which made any tenant's drop of a database named
+`X` destroy **every** tenant's legacy records for a database named `X`. Nothing
+was exposed, because that data is unreadable by design; what was destroyed was
+the export above, the only migration this document offers for it. The rule is
+not "a drop may not delete collections" — a drop reclaims the namespaced
+collection keys a collection writes today, and must. The rule is the sentence
+this section already contained: **the server does not delete data it cannot
+attribute**, and a key with a database in it and no tenant cannot be attributed
+by a call one tenant issues. `service.LegacyCollectionKeyPrefixes` is the one
+place that shape is named, and it is passed to no reclamation.
+
 **There is no interrupted-migration state, because nothing moves.** That is the
 decisive property, not a convenience: a migration that rewrote `__col:` keys
 through Raft would have a half-state, and no ordering makes that half-state
@@ -359,6 +373,14 @@ is a separate capability rather than part of closing the isolation hole.
   written must carry its own tenant's namespace. `prefix` is covered first
   because it is the exposed mode; `volume` and `raft` bound the blast radius at
   the shard.
+- **Cross-tenant teardown**: the same two tenants, plus legacy (tenant-less)
+  collection records naming that database. One tenant drops it; the other's
+  records — and the legacy pile as a whole, which belongs to neither as far as
+  the server can tell — must survive, while the dropping tenant's own
+  namespaced collection data is still reclaimed. Both halves are asserted,
+  because a teardown that stops deleting everything by also stopping the
+  legitimate reclamation is not a fix. The same is asserted one scope up, for
+  a tenant delete.
 - **Per-transport resolution**: each transport resolves its collection servicer
   from the registry using the database the request names, and does not reach the
   process-wide singleton when a registry is configured. Asserted per transport,

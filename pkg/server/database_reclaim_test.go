@@ -131,10 +131,17 @@ func TestReclaim_CollectionsWrittenThroughTheResolverAreReclaimed(t *testing.T) 
 }
 
 // TestReclaim_CollectionKeysAreInsideTheCompositeNamespace pins WHERE the
-// collection surface writes, because that is what decides which prefix
-// reclaims it. If a future change moves these keys back to the store root,
-// the root-level prefixes in service.CollectionKeyPrefixes become load
-// bearing again and this test is where that shows up.
+// collection surface writes, because that is what decides whether a drop can
+// reclaim it at all.
+//
+// A key inside the composite namespace carries the tenant, so the tenant
+// dropping the database owns it and the drop removes it. A key at the store
+// root carries the database and no tenant, so NO tenant can be shown to own it
+// and the drop must leave it (go-qrdb#441, go-qrdb#481). If a future change
+// moves these keys back to the root it does not make
+// service.LegacyCollectionKeyPrefixes load bearing again -- it makes every
+// collection written afterwards unreclaimable, and this test is where that
+// shows up.
 func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 	ctx := context.Background()
 	root := newMockKVService()
@@ -169,13 +176,14 @@ func TestReclaim_CollectionKeysAreInsideTheCompositeNamespace(t *testing.T) {
 	if len(inside) == 0 {
 		t.Errorf("no collection key under %q — the collection surface is not namespaced, and the root-level prefixes are what reclaims it", ns)
 	}
-	for _, prefix := range service.CollectionKeyPrefixes("reports") {
+	for _, prefix := range service.LegacyCollectionKeyPrefixes("reports") {
 		atRoot, lerr := root.ListAll(ctx, prefix)
 		if lerr != nil {
 			t.Fatalf("ListAll: %v", lerr)
 		}
 		if len(atRoot) != 0 {
-			t.Errorf("collection keys still at the store root under %q: %v", prefix, atRoot)
+			t.Errorf("collection keys still at the store root under %q: %v — "+
+				"nothing reclaims that layout, so a collection written there is unreclaimable", prefix, atRoot)
 		}
 	}
 }

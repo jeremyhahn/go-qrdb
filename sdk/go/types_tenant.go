@@ -149,9 +149,20 @@ type TenantDeletedError = tenant.TenantDeletedError
 // (Aliases pkg/tenant.TenantHasDatabasesError.)
 type TenantHasDatabasesError = tenant.TenantHasDatabasesError
 
+// TenantTeardownError wraps every DeleteTenant failure that happens AFTER the
+// tenant id has been durably retired -- the shred, the barrier destroy and the
+// keyspace reclaim. Seeing it means the tenant is already gone from every
+// reader's view and the remedy is always to re-issue the delete, which resumes.
+// A failure BEFORE the retirement is NOT wrapped in it and leaves the tenant
+// intact. Maps to 500 Internal / codes.Internal.
+// (Aliases pkg/tenant.TeardownError.)
+type TenantTeardownError = tenant.TeardownError
+
 // TenantDEKShredError is returned by DeleteTenant when the tenant's data
-// encryption key could not be destroyed. The shred runs first, so this
-// failure leaves the tenant entirely intact. (Aliases pkg/tenant.DEKShredError.)
+// encryption key could not be destroyed. The shred is the first irreversible
+// step and runs immediately AFTER the retirement is durable, so this failure
+// always arrives wrapped in TenantTeardownError and the tenant is already
+// retired. (Aliases pkg/tenant.DEKShredError.)
 type TenantDEKShredError = tenant.DEKShredError
 
 // TenantKeyspaceReclaimError is returned by DeleteTenant when the tenant's
@@ -180,7 +191,8 @@ type TenantDatabaseLister = tenant.DatabaseLister
 
 // TenantDEKShredder destroys a tenant's data encryption key, which is what
 // makes a dedicated-isolation tenant's data unreadable at the moment of
-// deletion. The tenant DEK manager satisfies it.
+// deletion. It must be idempotent, because a re-issued delete re-runs it. The
+// tenant DEK manager satisfies it.
 // (Aliases pkg/tenant.DEKShredder.)
 type TenantDEKShredder = tenant.DEKShredder
 
@@ -205,5 +217,5 @@ var WithTenantDatabaseLister = tenant.WithDatabaseLister
 var WithTenantDEKShredder = tenant.WithDEKShredder
 
 // WithTenantKeyspaceReclaimer injects the reclaimer DeleteTenant runs after
-// the tombstone commits. (Aliases pkg/tenant.WithKeyspaceReclaimer.)
+// the retirement commits. (Aliases pkg/tenant.WithKeyspaceReclaimer.)
 var WithTenantKeyspaceReclaimer = tenant.WithKeyspaceReclaimer

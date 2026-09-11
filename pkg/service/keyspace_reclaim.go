@@ -189,6 +189,28 @@ func (s *KeyspaceReclaimService) SetStoreResolver(r StoreResolver) {
 // does, and that is database.Manager.Drop's business: this runs first, and
 // the record that makes the database resolvable is removed last.
 //
+// # Everything it deletes is scoped to ONE tenant
+//
+// Every prefix and every index name below is rooted at the composite
+// "<tenant>/<db>/" namespace, so a drop cannot reach across tenants. That is a
+// property to keep rather than an accident: this call is reachable by any
+// tenant that owns a database, and the store it runs against is shared.
+//
+// The PRE-tenant-namespace collection layout is therefore NOT reclaimed here.
+// Those keys are "__col:{db}:…" and "__sys:collections/{db}/…" -- database in
+// the key, tenant nowhere -- so a reclamation of them scoped by database alone
+// deletes every tenant's residue for a database of that name, and there is no
+// scoping available that would not. go-qrdb#441 settled what happens to them:
+// the server cannot attribute data it cannot attribute, so they are left in
+// place, inert, and an operator upgrading a deployment that has them exports
+// them with the previous binary and re-imports them per tenant. Deleting them
+// here destroyed the only migration path the project documents, for tenants
+// that had not asked for anything (go-qrdb#481). See
+// LegacyCollectionKeyPrefixes and docs/collections/engineering.md.
+//
+// Collections created since that change are namespaced like everything else
+// and ARE reclaimed, by the very first prefix below.
+//
 // It is idempotent. A keyspace that is already empty is the success case, not
 // a not-found error, which is what lets a re-issued drop finish an
 // interrupted one.
@@ -197,27 +219,16 @@ func (s *KeyspaceReclaimService) ReclaimDatabaseKeyspace(ctx context.Context, te
 		return &ReclaimScopeError{TenantID: tenantID, Database: db}
 	}
 
-	// 1. Collections, from the SYSTEM store, unconditionally. They are served
-	//    by ONE server-wide CollectionServicer over the system shard's root KV
-	//    rather than by a per-(tenant, database) view, so their keys carry the
-	//    database as a key segment, carry no tenant, and sit in the system
-	//    store even for a database whose own data-plane keys live elsewhere.
-	//    A teardown that reclaimed only the composite namespace would leave
-	//    every document behind. See database_keys.go.
-	if err := s.reclaim(ctx, s.system, CollectionKeyPrefixes(db), DatabaseIndexNamePrefixes("", db), ""); err != nil {
-		return err
-	}
-
-	// 2. The database's own composite keyspace, in the store that serves it.
-	//    The namespace is ALWAYS a non-empty "<tenant>/<db>/"
-	//    (tenant.ComposeNamespace), so a bug that lost the scope deletes
-	//    nothing rather than everything.
+	// The database's own composite keyspace, in the store that serves it.
+	// The namespace is ALWAYS a non-empty "<tenant>/<db>/"
+	// (tenant.ComposeNamespace), so a bug that lost the scope deletes nothing
+	// rather than everything.
 	target, err := s.namespacedTarget(ctx, tenantID)
 	if err != nil {
 		return err
 	}
 	ns := tenant.ComposeNamespace(tenantID, db)
-	return s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns, ""), ns)
+	return s.reclaim(ctx, target, NamespacedKeyPrefixes(ns), DatabaseIndexNamePrefixes(ns), ns)
 }
 
 // ReclaimTenantKeyspace deletes everything tenantID owns in the system store:

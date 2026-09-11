@@ -103,13 +103,32 @@ reclaimed only the first would leave every document behind:
 |---|---|---|
 | `<tenant>/<db>/…` | plain KV and MVCC keys, the relational catalog, rows, index entries, every sequence counter (including the per-database table-id counter), the privilege catalog | tenant **and** database |
 | `ts:<tenant>/<db>/…`, metric-index and retention records | time-series points, metric index, retention policies | tenant and database, inside the series prefixes, because it is the metric NAME that is namespaced |
-| `__sys:collections/<db>/…`, `__col:<db>:…` | collection catalog entries and documents written before the collection surface moved behind the per-(tenant, database) resolver | **database only** — the surface that wrote them carried no tenant. A collection created today lands in the composite namespace above instead; these prefixes are kept to reclaim the older layout |
-| secondary index catalog | index names under `<tenant>/<db>/` and under `<db>.` | a namespace of its own inside the state machine, not reached by deleting keys |
+| `<tenant>/<db>/__sys:collections/…`, `<tenant>/<db>/__col:…` | collection catalog entries and documents | tenant and database — the collection surface is resolved per (tenant, database) like every other engine |
+| secondary index catalog | index names under `<tenant>/<db>/` | a namespace of its own inside the state machine, not reached by deleting keys |
 | vector namespaces | namespaces under `<tenant>/<db>/` | their own per-node store, likewise not reached by deleting keys |
 
-Two things are deliberately **not** reclaimed, because no single database owns
-them: the time-series tag index, whose keys are `tag key:value` and carry no
-metric, and any record that is database-agnostic (roles, users, tenants).
+**Everything in that table is scoped by tenant**, and that is a property to
+keep rather than an accident of how it was written. A drop is reachable by any
+tenant that owns a database, and the store it runs against is shared, so a
+prefix that does not carry the tenant is a prefix one tenant's drop uses to
+delete another's data.
+
+Three things are deliberately **not** reclaimed:
+
+- the **time-series tag index**, whose keys are `tag key:value` and carry no
+  metric, so no single database owns it;
+- any record that is **database-agnostic** — roles, users, tenants;
+- **collection records written before the collection surface was tenant-scoped**
+  — `__sys:collections/<db>/…` and `__col:<db>:…` at the store root. These name
+  a database and no tenant, so nothing can attribute them to the tenant issuing
+  the drop, and a drop that deleted them by database alone would delete every
+  other tenant's. They are left in place, inert: nothing reads them, because
+  every transport's key surface is namespaced and no caller can compose the bare
+  key, and nothing deletes them. An operator upgrading a deployment that has
+  them exports them with the previous binary and re-imports them per tenant —
+  which is the migration a reclamation would take away. See
+  [collections/engineering.md](../collections/engineering.md) "Upgrading across
+  the tenant-namespace change", which is the decision this follows.
 
 **The reclamation reads through an unfiltered enumeration**, not the
 user-facing one. Several of the shapes above are in the internal key
