@@ -59,6 +59,15 @@ the interface.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
   plaintext exists only transiently during a read; the enclave is destroyed on
   delete and on rotation.
+- **A read copies under a held borrow, and refuses an unreadable enclave.**
+  The copy out of protected memory runs inside a single coordinated borrow
+  (`secure.CopyOut`) rather than sizing the destination and then reading it,
+  which are two separate acquisitions of the process-wide purge lock with a gap
+  between them. An enclave whose pages a purge has already taken yields
+  nothing, and the read **fails closed** rather than returning a correctly
+  sized run of zeros that a caller cannot tell from the real credential. The
+  same applies to a resolved `SecretValue`: `Bytes()` answers `nil` and
+  `String()` answers `""` when the material can no longer be read.
 - **Rotation takes a grace period.** The previous version stays retrievable for
   that long; `0` wipes it immediately.
 - **`retrieve-version 0` means the current version.**

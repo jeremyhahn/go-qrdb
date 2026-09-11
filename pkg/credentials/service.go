@@ -270,15 +270,28 @@ func newSecretCopy(value []byte) (*secure.Secret, error) {
 
 // openSecretCopy materializes a sealed secret's plaintext into a fresh
 // caller-owned []byte, destroying the transient enclave buffer before return.
+//
+// The copy runs inside a COORDINATED borrow (go-qrdb#74). It used to size the
+// destination from buf.Size() and then read buf.Bytes(), which is two separate
+// acquisitions of the purge lock with a gap between them: a process-wide
+// memguard purge landing in that gap unmaps the pages, and the caller receives
+// a correctly sized run of zeros with nothing reporting a fault. secure.CopyOut
+// holds one borrow across both and refuses an empty source.
+//
+// Destroy stays OUTSIDE the borrow, and that placement is load-bearing: Destroy
+// is purge-class and takes the lock exclusively, so calling it from inside the
+// shared hold would deadlock the caller against itself.
+//
+// Traced callees: secure.CopyOut's callback is make + copy and reaches nothing
+// in pkg/secure. Asserted under the borrow guard by
+// TestOpenSecretCopy_TakesNoNestedBorrow.
 func openSecretCopy(sec *secure.Secret) ([]byte, error) {
 	buf, err := sec.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer buf.Destroy()
-	out := make([]byte, buf.Size())
-	copy(out, buf.Bytes())
-	return out, nil
+	return secure.CopyOut(buf)
 }
 
 // storeManual seals a credential into an in-memory memguard enclave. Any prior

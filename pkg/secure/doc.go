@@ -47,6 +47,32 @@
 //     what makes it safe against a process-wide purge (see below). Never
 //     call back into this package from inside a WithBytes callback — a
 //     nested borrow deadlocks.
+//  7. When the borrow must end in a caller-owned []byte because the calling
+//     signature says []byte, use CopyOut rather than writing the copy by
+//     hand. It holds ONE borrow across the whole copy and refuses an empty
+//     source; the hand-written version sizes from Size() and then reads
+//     Bytes(), which is two acquisitions with a purge-shaped gap between
+//     them.
+//  8. Arm the borrow guard in the tests for any path that reads protected
+//     memory: `defer secure.GuardBorrows(t.Fatalf)()`. See below.
+//
+// # The borrow guard
+//
+// Rule 6 is the one that cannot be enforced by reading, because whether a
+// callback is safe is a question about everything it can reach transitively,
+// through interfaces the caller does not own. Violating it produces no error
+// and no panic — the goroutine blocks on itself forever and the only symptom
+// is a job that hangs until its wall-clock limit.
+//
+// GuardBorrows and EnableBorrowGuard arm a detector that answers "does THIS
+// goroutine already hold a borrow" at every purge-class and borrow-class entry
+// point, and reports a *NestedBorrowError BEFORE taking the lock that would
+// wedge. A conversion that reaches an allocation then fails one test naming
+// both sites, instead of hanging the suite.
+//
+// It is opt-in and off by default: arming it costs a runtime.Stack call per
+// borrow, which is too much for the DEK read path. Disarmed, each instrumented
+// operation pays one atomic load.
 //
 // # Purge coordination
 //
@@ -63,6 +89,16 @@
 // need no change for it EXCEPT the one case a lock cannot cover: the slice
 // returned by Buffer.Bytes outlives the call, so nothing protects it once
 // Bytes has returned. That is why rule 6 exists (go-qrdb#71).
+//
+// Bytes still has callers, and they are not oversights. Each is a read whose
+// borrow CANNOT be held, because the material crosses into an injected
+// interface — seal.EncryptionBarrier, seal.SealingStrategy, ceremony's
+// BarrierUnseal — whose implementations are supplied by consumers and may
+// allocate protected memory, or into a go-quicraft enclave borrow, whose own
+// documentation forbids nesting a second protected-memory borrow inside it.
+// Converting those is go-qrdb#145 and rides on the go-enclave adoption wave;
+// until then they carry the residual purge exposure, which is a timing fault
+// rather than a key leak, and each one says so at the site.
 //
 // # Lifecycle
 //

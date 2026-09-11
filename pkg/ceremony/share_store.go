@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -163,43 +164,29 @@ func (s *sealedShareStore) Reset() {
 	}
 }
 
-// borrower is the borrow half of *secure.Buffer.
-//
-// Taken as an interface so copyShareOut's empty-source branch is reachable in
-// a test. It cannot be reached through a real *secure.Buffer: NewBuffer and
-// NewBufferFromBytes both reject a zero length, and WithBytes returns
-// *NilBufferError for a destroyed buffer without calling the callback at all.
-// The branch's condition — a LIVE buffer whose pages a process-wide memguard
-// purge has already taken — is not one a caller can construct, which is
-// exactly why it needed a seam rather than a cleverer test (go-qrdb#74).
-type borrower interface {
-	WithBytes(fn func([]byte) error) error
-}
-
 // copyShareOut copies a share's bytes out of protected memory, refusing to
 // return anything when the borrow yields nothing.
 //
-// The destination is allocated INSIDE the callback from len(src), never from
-// a size read beforehand. Size takes and releases the purge lock, so sizing
-// first leaves a gap before WithBytes reacquires it; a purge landing in that
-// gap gives a correctly sized destination and an empty source, and the copy
-// becomes a no-op. Claim would then return a zero-filled slice of the right
-// length while destroying the secret and marking the share consumed — one-time
-// recovery material spent, the caller holding zeros, nothing reporting a
-// fault.
+// The mechanism is secure.CopyOut, which is where this shape now lives: it was
+// written here for go-qrdb#74's ceremony half and five other call sites needed
+// the identical four lines, so it was hoisted rather than copied. The two
+// properties that make it correct are stated on CopyOut and are not restated
+// here — the destination is allocated INSIDE the callback from len(src) so no
+// purge can land between a size read and the copy, and an empty source is
+// refused rather than returned as zeros.
 //
-// An empty source is therefore refused rather than copied: nothing here should
-// destroy the secret and record the claim on material it did not read.
-func copyShareOut(buf borrower) ([]byte, error) {
-	var out []byte
-	if err := buf.WithBytes(func(src []byte) error {
-		if len(src) == 0 {
-			return ErrShareUnreadable
+// The refusal keeps this package's own error. A caller of Claim distinguishes
+// "the share could not be read" from every other ceremony failure by
+// ErrShareUnreadable, and a share is one-time material: the wrapper exists so
+// that contract does not become secure.EmptyBorrowError at the transport
+// boundary.
+func copyShareOut(buf secure.Borrower) ([]byte, error) {
+	out, err := secure.CopyOut(buf)
+	if err != nil {
+		var empty *secure.EmptyBorrowError
+		if errors.As(err, &empty) {
+			return nil, ErrShareUnreadable
 		}
-		out = make([]byte, len(src))
-		copy(out, src)
-		return nil
-	}); err != nil {
 		return nil, err
 	}
 	return out, nil

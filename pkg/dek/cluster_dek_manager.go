@@ -189,12 +189,22 @@ func (m *ClusterDEKManager) Initialize(ctx context.Context, algorithm string, ke
 	if err != nil {
 		return &CryptoError{Op: "ClusterDEKManager.Initialize", Detail: "allocate protected DEK buffer", Err: err}
 	}
-	if _, err := io.ReadFull(rand.Reader, dekBuf.Bytes()); err != nil {
+	if err := fillFromEntropy(dekBuf); err != nil {
 		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Initialize", Detail: "generate random DEK", Err: err}
 	}
 
 	// Encrypt DEK with barrier (epoch-based AES-256-GCM).
+	//
+	// UNBORROWED Bytes, deliberately. m.barrier is an injected
+	// seal.EncryptionBarrier; any conforming implementation may allocate
+	// protected memory, and a borrow held across it deadlocks at boot
+	// (go-qrdb#145, fenced by
+	// TestClusterDEKManager_ToleratesABarrierThatAllocatesProtectedMemory).
+	// The pages stay mlocked and the plaintext never reaches the ordinary
+	// heap; the residual is a purge landing mid-Encrypt, a timing fault rather
+	// than a key leak. Contrast fillFromEntropy above, whose callee is stdlib
+	// and therefore CAN be borrowed across.
 	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
 		dekBuf.Destroy()
@@ -218,6 +228,41 @@ func (m *ClusterDEKManager) Initialize(ctx context.Context, algorithm string, ke
 		"version", 1, "algorithm", algorithm, "key_bytes", keyBytes)
 
 	return nil
+}
+
+// fillFromEntropy fills buf with cryptographically secure random bytes,
+// holding the protected-memory borrow across the read.
+//
+// The borrow is the point (go-qrdb#74). buf.Bytes() covered only the
+// slice-header read: it returned a slice into mlocked pages with no lock held,
+// and a process-wide memguard purge landing while io.ReadFull wrote into them
+// unmaps the pages under the write. That is a fault, not an error return.
+//
+// # Why the borrow is safe here, and not two lines further down
+//
+// The callback must not reach any allocation of protected memory, because
+// WithBytes holds the purge lock shared and every allocation takes it
+// exclusively on the same goroutine, which cannot return. The trace here is
+// short and it ends outside this repository:
+//
+//	io.ReadFull -> crypto/rand.Reader.Read -> the platform entropy syscall
+//
+// crypto/rand is stdlib, holds no secure.Buffer, allocates no protected
+// memory, and its read is a syscall that cannot re-enter Go code. Asserted
+// under the borrow guard by TestClusterDEK_GenerationTakesNoNestedBorrow
+// rather than left as a reading of the source.
+//
+// The barrier encryption two lines below each caller is the OPPOSITE case and
+// is deliberately NOT converted: m.barrier is an injected seal.EncryptionBarrier
+// whose implementations are supplied by consumers, any conforming one may
+// allocate protected memory, and holding a borrow across it hangs the daemon at
+// boot. TestClusterDEKManager_ToleratesABarrierThatAllocatesProtectedMemory
+// fences that, and go-qrdb#145 owns the question.
+func fillFromEntropy(buf *secure.Buffer) error {
+	return buf.WithBytes(func(dek []byte) error {
+		_, err := io.ReadFull(rand.Reader, dek)
+		return err
+	})
 }
 
 // GetStatus returns the current cluster DEK status.
@@ -310,12 +355,13 @@ func (m *ClusterDEKManager) Rotate(ctx context.Context) error {
 	if err != nil {
 		return &CryptoError{Op: "ClusterDEKManager.Rotate", Detail: "allocate protected DEK buffer", Err: err}
 	}
-	if _, err := io.ReadFull(rand.Reader, dekBuf.Bytes()); err != nil {
+	if err := fillFromEntropy(dekBuf); err != nil {
 		dekBuf.Destroy()
 		return &CryptoError{Op: "ClusterDEKManager.Rotate", Detail: "generate random DEK", Err: err}
 	}
 
-	// Encrypt new DEK with barrier (epoch-based AES-256-GCM).
+	// Encrypt new DEK with barrier. UNBORROWED Bytes for the same reason as
+	// Initialize above: the injected barrier may allocate protected memory.
 	dekWrapped, err := m.barrier.Encrypt(dekBuf.Bytes())
 	if err != nil {
 		dekBuf.Destroy()

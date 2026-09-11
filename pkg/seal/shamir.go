@@ -208,6 +208,24 @@ func (b *StorageBarrier) updateSealedShamirParams(ctx context.Context, threshold
 // pkg/secure and go-quicraft's enclave package have SEPARATE purgeMu mutexes, so
 // allocating this secure.Buffer does not contend with the source enclave's
 // borrow.
+//
+// # Why dst is read with Bytes and not borrowed across the copy
+//
+// UNBORROWED, and not for the injected-interface reason the other surviving
+// Bytes readers give (go-qrdb#74). Holding dst's borrow across enc.WithBytes
+// would nest a SECOND protected-memory borrow inside the first, which
+// go-quicraft's MemoryEnclave.WithBytes forbids in terms — "Reading a DIFFERENT
+// enclave from inside fn is ALSO forbidden" — because the two packages hold
+// separate process-wide purge locks and Go's RWMutex admits no new reader once
+// a writer is queued. Taking them in one order here would also fix a
+// cross-package lock order for the whole process, which is not a decision this
+// function gets to make on its own.
+//
+// So the window on view is real and open: a purge landing during the copy
+// unmaps the destination. It closes when the underlying primitive stops having
+// a process-wide purge (go-qrdb#145 and the go-enclave adoption), not before.
+// TestCopyEnclaveToBuffer_AllocatesOutsideEveryBorrow pins what IS true today:
+// nothing purge-class runs under either borrow.
 func copyEnclaveToBuffer(enc *enclave.MemoryEnclave) (*secure.Buffer, error) {
 	dst, err := secure.NewBuffer(enc.Size())
 	if err != nil {

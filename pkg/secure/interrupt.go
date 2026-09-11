@@ -96,8 +96,8 @@ func watchSignals(ch <-chan os.Signal) {
 // Daemons that want to control their own exit code should use EnablePurge with
 // a deferred Purge rather than CatchInterrupt; that path is coordinated too.
 func coordinatedPurge() {
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("Purge")
+	defer unlockPurge()
 	purgeFn()
 }
 

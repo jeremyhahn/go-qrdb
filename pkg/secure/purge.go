@@ -71,4 +71,53 @@ import "sync"
 // once a writer is queued, so a second borrow taken from inside the first
 // deadlocks against any purge-class operation that began in between. The
 // callback should read the bytes and return.
+//
+// That rule is now CHECKABLE rather than merely written down: EnableBorrowGuard
+// arms a detector that reports a violation before the lock wedges, so a bad
+// conversion fails a test instead of hanging CI. See borrowguard.go.
 var purgeMu sync.RWMutex
+
+// The four helpers below are the ONLY places this package touches purgeMu.
+//
+// They exist so the borrow-guard hook has exactly one home per lock mode. Every
+// purge-class operation is one lockPurge call and every borrow one rLockBorrow,
+// so a new operation added later cannot acquire the lock correctly and forget
+// the check — the two are the same line. op names the caller for the violation
+// report; it is a compile-time constant at every call site and never carries
+// key material.
+
+// lockPurge takes purgeMu exclusively for a purge-class operation, after
+// asserting the calling goroutine holds no borrow.
+func lockPurge(op string) {
+	if borrowGuardArmed.Load() {
+		guardAssertNoBorrow(op)
+	}
+	purgeMu.Lock()
+}
+
+// unlockPurge releases what lockPurge took.
+func unlockPurge() {
+	purgeMu.Unlock()
+}
+
+// rLockBorrow takes purgeMu shared for a borrow-class operation, after
+// asserting the calling goroutine is not already inside one.
+func rLockBorrow(op string) {
+	if borrowGuardArmed.Load() {
+		guardEnterBorrow(op)
+	}
+	purgeMu.RLock()
+}
+
+// rUnlockBorrow releases what rLockBorrow took.
+//
+// The guard bookkeeping runs AFTER the unlock so the frame outlives the lock,
+// never the other way round: a goroutine that has released the borrow but is
+// still recorded as holding it would report a violation for an operation that
+// is now legal.
+func rUnlockBorrow() {
+	purgeMu.RUnlock()
+	if borrowGuardArmed.Load() {
+		guardExitBorrow()
+	}
+}

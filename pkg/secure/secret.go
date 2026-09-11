@@ -47,8 +47,8 @@ func NewSecret(src []byte) (*Secret, error) {
 	}
 	// Purge-class: sealing allocates, and a memguard allocation failure purges
 	// every live enclave in the process. See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("NewSecret")
+	defer unlockPurge()
 	s := &Secret{}
 	// memguard.NewEnclave copies src into an enclave and wipes the source.
 	enc := memguard.NewEnclave(src)
@@ -66,8 +66,8 @@ func NewSecretFromBuffer(buf *Buffer) (*Secret, error) {
 	// Purge-class: Seal both allocates the enclave and DESTROYS the buffer, and
 	// both halves can purge. Takes purgeMu directly rather than going through
 	// Buffer.Destroy, which would re-enter the lock. See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("NewSecretFromBuffer")
+	defer unlockPurge()
 	if buf.destroyed.Load() || buf.buf == nil {
 		return nil, &NilBufferError{}
 	}
@@ -93,8 +93,8 @@ func (s *Secret) Open() (*Buffer, error) {
 	}
 	// Purge-class: Open ALLOCATES the LockedBuffer it returns, so it can purge
 	// on failure like any other allocation. See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("Secret.Open")
+	defer unlockPurge()
 	enc := s.enclave.Load()
 	if enc == nil {
 		return nil, &NilSecretError{}
@@ -116,8 +116,8 @@ func (s *Secret) Destroy() {
 	// Purge-class on both halves: the Open allocates and the Destroy releases,
 	// and either can reach core.Panic. Raw memguard calls rather than
 	// Buffer.Destroy, so the lock is not re-entered. See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("Secret.Destroy")
+	defer unlockPurge()
 	enc := s.enclave.Swap(nil)
 	if enc == nil {
 		return

@@ -692,6 +692,15 @@ func (s *CeremonyService) reconstructAndUnseal(ctx context.Context, rawShares []
 	// distinct from the enclave package's, so allocating the buffer does not
 	// contend with the source borrow. The key never lands in ordinary heap
 	// memory, and the buffer is destroyed the moment UnsealWithKey returns.
+	//
+	// Both Bytes reads below are UNBORROWED and stay that way, for the two
+	// different reasons go-qrdb#74 distinguishes. `view` cannot be borrowed
+	// because the copy runs inside a go-quicraft enclave borrow and nesting a
+	// second protected-memory borrow inside one is forbidden by that package
+	// (see copyEnclaveToBuffer in pkg/seal, which is the same shape).
+	// UnsealWithKey cannot be borrowed across because BarrierUnseal is an
+	// injected interface that allocates protected memory. Neither is an
+	// unconverted leftover.
 	rootBuf, err := secure.NewBuffer(rootEnclave.Size())
 	if err != nil {
 		return err

@@ -137,3 +137,35 @@ func TestErrorTypes_Roundtrip(t *testing.T) {
 		_ = target.Error()
 	})
 }
+
+// NestedBorrowError's message must name the operation AND carry the outer
+// borrow's stack. The stack is the half a reader cannot recover from the
+// panic's own trace, and a report without it says "something nested" without
+// saying what.
+func TestNestedBorrowError(t *testing.T) {
+	err := &NestedBorrowError{Op: "NewSecret", BorrowStack: "goroutine 7 [running]:\nsome.Frame()"}
+	msg := err.Error()
+	for _, want := range []string{"NewSecret", "purgeMu is not reentrant", "some.Frame()"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() does not contain %q; got:\n%s", want, msg)
+		}
+	}
+	// The zero value must still produce a usable message rather than panic.
+	if (&NestedBorrowError{}).Error() == "" {
+		t.Error("the zero value produced an empty message")
+	}
+}
+
+// EmptyBorrowError must say what happened rather than what was expected: the
+// pages are gone, which is why the caller is being refused instead of handed
+// zeros.
+func TestEmptyBorrowError(t *testing.T) {
+	err := &EmptyBorrowError{}
+	if !strings.Contains(err.Error(), "yielded no bytes") {
+		t.Errorf("Error() = %q, want it to say the borrow yielded nothing", err.Error())
+	}
+	var target *EmptyBorrowError
+	if !errors.As(error(err), &target) {
+		t.Error("EmptyBorrowError does not satisfy errors.As against its own type")
+	}
+}

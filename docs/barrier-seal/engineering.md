@@ -171,6 +171,21 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
   compromised node key does not expose tenant keys elsewhere.
 - **Key material lives in `memguard.LockedBuffer`** and is destroyed on seal.
   After sealing, `GenerateClientCert()` returns `CAKeyNotAvailableError`.
+- **Reads of protected key material hold the borrow across the read**, not just
+  across the accessor. A tenant DEK served from cache and the recovery
+  strategy's root key are both copied inside one coordinated borrow
+  (`secure.CopyOut`), and both **fail closed** when the enclave yields nothing
+  rather than handing back zeros of the right length.
+- **A read whose material crosses into an injected interface is the exception,
+  and is marked as one.** `EncryptionBarrier.Encrypt`, `SealingStrategy` unseal
+  and the ceremony's barrier unseal are supplied by consumers; any conforming
+  implementation may allocate protected memory, and a borrow held across one
+  would deadlock at boot. Those sites read without a borrow deliberately, each
+  with a comment saying so, and are covered by a regression test that fails if
+  a borrow is reintroduced.
+- **The rule is checked, not just written down.** `secure.GuardBorrows`-armed
+  tests drive each converted path and report a nested borrow as a test failure
+  naming both sites, instead of a process that stops with no diagnostic.
 - **`ShareExchangeCoordinator` unseals exactly once** — `CompareAndSwap` on an
   atomic guards the handler. It is transport-agnostic, uses map-based message
   dispatch, and contains **no `time.Sleep`** (timer + select).

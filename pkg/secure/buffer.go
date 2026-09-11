@@ -45,8 +45,8 @@ func NewBuffer(size int) (*Buffer, error) {
 	}
 	// Purge-class: memguard purges the whole process if this allocation fails.
 	// See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("NewBuffer")
+	defer unlockPurge()
 	return &Buffer{buf: memguard.NewBuffer(size)}, nil
 }
 
@@ -58,8 +58,8 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 		return nil, &InvalidSizeError{Size: len(src)}
 	}
 	// Purge-class, as NewBuffer. See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("NewBufferFromBytes")
+	defer unlockPurge()
 	// memguard.NewBufferFromBytes copies and wipes the source.
 	return &Buffer{buf: memguard.NewBufferFromBytes(src)}, nil
 }
@@ -78,16 +78,33 @@ func NewBufferFromBytes(src []byte) (*Buffer, error) {
 // hazard purgeMu exists for, on the one path that cannot be closed from inside
 // this package (go-qrdb#71).
 //
-// Use WithBytes for anything that must be safe against that. It holds the
-// borrow for the whole read, which is the only shape a lock can cover. Bytes
-// remains because a large number of call sites take a slice and pass it
-// onward, and converting them is a separate change from adding the guarantee.
+// Use WithBytes for anything that must be safe against that — or CopyOut, when
+// the calling signature forces a []byte. Either holds the borrow for the whole
+// read, which is the only shape a lock can cover.
+//
+// # What Bytes is still FOR
+//
+// Not "everything not yet converted". The remaining callers are reads whose
+// borrow cannot be held at all, and they fall into two kinds:
+//
+//   - the material crosses into an INJECTED INTERFACE — seal.EncryptionBarrier,
+//     seal.SealingStrategy, ceremony's BarrierUnseal — whose implementations
+//     are supplied by consumers. Any conforming one may allocate protected
+//     memory, and a borrow held across it deadlocks the daemon at boot
+//     (go-qrdb#145);
+//   - the read happens inside a go-quicraft enclave borrow, whose own
+//     WithBytes documentation forbids nesting a second protected-memory borrow
+//     inside it.
+//
+// A call site using Bytes for any OTHER reason is one that has not been
+// converted yet. Each surviving one carries a comment saying which kind it is;
+// a new one that does not is a defect.
 func (b *Buffer) Bytes() []byte {
 	if b == nil {
 		return nil
 	}
-	purgeMu.RLock()
-	defer purgeMu.RUnlock()
+	rLockBorrow("Buffer.Bytes")
+	defer rUnlockBorrow()
 	if b.destroyed.Load() || b.buf == nil {
 		return nil
 	}
@@ -112,8 +129,8 @@ func (b *Buffer) WithBytes(fn func([]byte) error) error {
 	if b == nil || fn == nil {
 		return &NilBufferError{}
 	}
-	purgeMu.RLock()
-	defer purgeMu.RUnlock()
+	rLockBorrow("Buffer.WithBytes")
+	defer rUnlockBorrow()
 	if b.destroyed.Load() || b.buf == nil {
 		return &NilBufferError{}
 	}
@@ -128,8 +145,8 @@ func (b *Buffer) Size() int {
 	}
 	// Borrow-class despite looking like a scalar read: Size is
 	// len(buffer.Bytes()), a slice header a concurrent purge rewrites.
-	purgeMu.RLock()
-	defer purgeMu.RUnlock()
+	rLockBorrow("Buffer.Size")
+	defer rUnlockBorrow()
 	if b.destroyed.Load() || b.buf == nil {
 		return 0
 	}
@@ -148,8 +165,8 @@ func (b *Buffer) Destroy() {
 	// PURGE-class, not a read. memguard's destroy calls core.Panic when
 	// releasing pages fails, which purges every live enclave in the process.
 	// See purgeMu.
-	purgeMu.Lock()
-	defer purgeMu.Unlock()
+	lockPurge("Buffer.Destroy")
+	defer unlockPurge()
 	if b.buf != nil {
 		b.buf.Destroy()
 		b.buf = nil

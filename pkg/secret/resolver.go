@@ -121,6 +121,21 @@ func NewSecretValue(raw string, value []byte, strategy ResolvedStrategy) *Secret
 // fn is valid only for the duration of the call and must not be retained. fn
 // receives a nil slice for an empty value. This is the preferred,
 // enclave-respecting accessor: the plaintext never enters the Go heap.
+//
+// # Why the inner read is Bytes and not a held borrow
+//
+// UNBORROWED, and this is the one site in the migration where that is a
+// decision about a CONTRACT rather than about a traced callee. fn is supplied
+// by the caller, this method is re-exported through sdk/go, and consumers
+// outside this repository pass their own callbacks to it. Holding
+// secure.Buffer's borrow across fn would silently make "fn must not allocate
+// protected memory" a condition of an already-published API — and a consumer
+// that breaks it does not get an error, it gets a daemon that stops at boot in
+// a repository whose callbacks cannot be traced from here.
+//
+// Tightening it is a cross-repository contract change and belongs with the
+// go-enclave adoption that removes the restriction entirely, not with the
+// conversions whose callees are local and traceable (go-qrdb#74, #145).
 func (v *SecretValue) WithBytes(fn func([]byte) error) error {
 	if v.secret == nil {
 		return fn(nil)
@@ -162,8 +177,19 @@ func (v *SecretValue) Bytes() []byte {
 		return nil
 	}
 	defer buf.Destroy()
-	out := make([]byte, buf.Size())
-	copy(out, buf.Bytes())
+	// The copy runs inside a COORDINATED borrow (go-qrdb#74). Sizing from
+	// buf.Size() and then reading buf.Bytes() takes the purge lock twice, and
+	// a process-wide memguard purge landing in the gap yields a correctly
+	// sized run of zeros — which this method would return as the secret. nil
+	// is the documented answer for "no value", and it is the honest one for a
+	// value that can no longer be read.
+	//
+	// Traced callees: secure.CopyOut's callback is make + copy and reaches
+	// nothing in pkg/secure.
+	out, err := secure.CopyOut(buf)
+	if err != nil {
+		return nil
+	}
 	return out
 }
 
@@ -190,7 +216,22 @@ func (v *SecretValue) String() string {
 		return ""
 	}
 	defer buf.Destroy()
-	return string(buf.Bytes())
+	// The conversion runs inside a COORDINATED borrow (go-qrdb#74). string()
+	// over buf.Bytes() copied out of pages nothing was holding, so a
+	// process-wide memguard purge could unmap them mid-conversion; and a purge
+	// that had already taken them produced "" indistinguishable from an empty
+	// secret. secure.CopyOut holds the borrow and refuses an empty source.
+	//
+	// The intermediate slice is wiped, which the string it produces can never
+	// be. That is the exposure this method is deprecated FOR, not one this
+	// change adds: it is unchanged in kind and one wipeable copy smaller in
+	// residue than the version that returned string(buf.Bytes()) directly.
+	out, err := secure.CopyOut(buf)
+	if err != nil {
+		return ""
+	}
+	defer secure.Wipe(out)
+	return string(out)
 }
 
 // Redacted returns a printable description of the secret that never contains

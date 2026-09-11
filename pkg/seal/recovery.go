@@ -312,13 +312,26 @@ func (r *recoveryStrategy) UnsealRootKey(_ context.Context, _ *SealedRootKey, _ 
 	// Borrow the protected key only for the moment it takes to hand a copy to
 	// Barrier.Unseal, which owns and wipes the returned slice. The enclave is
 	// re-sealed the instant the buffer is destroyed.
+	//
+	// The copy runs inside a COORDINATED borrow (go-qrdb#74): the earlier
+	// Size-then-Bytes pair took the purge lock twice with a gap between, and a
+	// process-wide memguard purge landing in that gap would have handed
+	// Barrier.Unseal a correctly sized run of zeros. secure.CopyOut holds one
+	// borrow across the copy and refuses an empty source, so a purged enclave
+	// fails the unseal instead of silently unsealing with nothing.
+	//
+	// Traced callees: CopyOut's callback is make + copy. Nothing here reaches a
+	// SealingStrategy or the store, which is what makes THIS site convertible
+	// while Recover's own rootKey read (recovery.go, above) is not.
 	buf, err := r.rootKey.Open()
 	if err != nil {
 		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "open recovery key", Cause: err}
 	}
 	defer buf.Destroy()
-	key := make([]byte, buf.Size())
-	copy(key, buf.Bytes())
+	key, err := secure.CopyOut(buf)
+	if err != nil {
+		return nil, &ShamirError{Sentinel: ErrShamirCombineFailed, Op: "read recovery key", Cause: err}
+	}
 	return key, nil
 }
 
