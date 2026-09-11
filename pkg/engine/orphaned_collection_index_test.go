@@ -249,18 +249,26 @@ func TestMVCCEngine_IndexDropIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestMVCCEngine_IndexOnTheApplyPathIsNotKeyScoped characterises the behaviour
-// that decides how much an orphaned index costs while it survives: on the Raft
-// apply path index maintenance is offered EVERY written value, and the index
-// name is a routing label rather than a filter.
+// TestMVCCEngine_IndexOnTheApplyPathIsNotKeyScoped pins what an UNSCOPED index
+// still does on the Raft apply path, and it survives go-qrdb#410 deliberately.
 //
-// So a leaked `dbA.users.email` index does not merely sit there — it keeps
-// indexing every JSON value in the same state machine that carries an `email`
-// field, from other collections, other databases, and the plain KV keyspace.
-// This is a defect in its own right, tracked separately; it is pinned here
-// because docs/secondary-indexes/architecture.md now states it and because a
-// change that narrows it must update that statement deliberately rather than
-// by accident.
+// #410 narrowed apply-path index maintenance to the keys an index owns, where
+// ownership is the namespace carried in the index name plus any declared key
+// prefix. This index has NEITHER: the name `dbA.users.email` carries no
+// `{tenant}/{database}/` namespace, and the options below declare no prefix. So
+// it is the documented residual — an index nothing can attribute is offered
+// every written value, exactly as before — and that is why this test still
+// passes after the fix rather than being deleted with it.
+//
+// No transport can create such an index: every registry namespaces both keys
+// and index names. A single-tenant, registry-less in-process composer can, and
+// for that composer "the whole state machine" and "its own database" are the
+// same set.
+//
+// Written for go-qrdb#399 to size what a leaked index costs while it survives.
+// Retained, with this narrowed reading, so that a later change which closes the
+// unscoped residual has to update this statement deliberately rather than by
+// accident — which is the job a characterisation test exists to do.
 func TestMVCCEngine_IndexOnTheApplyPathIsNotKeyScoped(t *testing.T) {
 	eng, stg := newMVCCEngine(t)
 	defer func() { _ = stg.Close() }()

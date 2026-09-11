@@ -320,6 +320,12 @@ func (a *kvStoreAdapter) RegisterEntityIndexes(entityType string, indexes []kvst
 			Unique:        ei.Unique,
 			Sparse:        ei.Sparse,
 			CaseSensitive: ei.CaseSensitive,
+			// The key prefix this index covers, declared so the engine
+			// maintains it for THIS entity type's keys and nothing else. It
+			// is the same prefix kvstore.MemoryKVStore filters writes by, so
+			// both implementations of the store contract now scope index
+			// maintenance the same way (go-qrdb#410).
+			KeyPrefix: ei.ResolvedPrefix(entityType),
 		}
 		if ei.Unique {
 			cfg.Type = index.IndexTypeUnique

@@ -226,19 +226,29 @@ the same duplicate-encoding class as two scoping functions — and is a
 follow-on cleanup, not a correctness issue: the namespace is what enforces
 isolation, the embedded segment merely repeats it.
 
-**Consequence for indexes, and it is a real trade.** `KVEngine` decides which
-indexes a write maintains from `entityTypeFromKey`, which returns the FIRST path
-segment — so under a namespaced key `acme/system/workitem/1` the engine reads the
-entity type as `acme`. A namespace-qualified index therefore cannot be maintained
-by the engine, and the store refuses index operations with
-`kvstore.ErrIndexUnsupported` rather than serving an index nobody updates.
-`pkg/dao` detects the refusal and plans a full scan, so **results stay correct
-and only the access path is slower**. Isolation was chosen over the index; #40
-restores the index by teaching the engine about namespaced keys.
+**Consequence for indexes, and it is a real trade.** The identity store still
+refuses a namespace-qualified index with `kvstore.ErrIndexUnsupported` rather
+than serving an index nobody updates; `pkg/dao` detects the refusal and plans a
+full scan, so **results stay correct and only the access path is slower**.
+Isolation was chosen over the index.
+
+The reason has changed, and only half of it is left. The engine used to decide
+which indexes a write maintains by inferring an entity type from the key's FIRST
+path segment, which under a namespaced key `acme/system/workitem/1` reads as
+`acme` — so a namespace-qualified index could not be maintained at all. The
+engine no longer infers anything: an index carries the key prefix it covers and
+maintenance compares the key against it (#410, see
+[../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate)),
+which is what #40 asked for. What still refuses is `lifecycle.kvStoreAdapter`,
+whose own check accepts only the unqualified name — lifting that is #38/#40 and
+is a change to the identity plane's access paths, not to this boundary.
 
 Note the same "entity type is the leading key segment" assumption existed in
 `kvstore.MemoryKVStore` and is why `EntityIndex.KeyPrefix` exists: a store must
-be told which keys an index covers rather than inferring it from the entity type.
+be told which keys an index covers rather than inferring it from the entity
+type. `index.IndexConfig.KeyPrefix` is that same statement one layer down, so
+the Raft-backed engine and the in-memory store now scope index maintenance the
+same way.
 
 ## Per-node-independent key design
 
@@ -275,6 +285,14 @@ restarts through the persistent placement table and per-node replica re-attach.
 - **`barrier`, `volume` and `raft` tenants hold their own DEK.** `prefix` is
   logical separation, **not cryptographic isolation** — say so plainly to
   anybody who assumes otherwise.
+- **A secondary index is confined to its own tenant's keyspace by the same
+  prefix.** `prefix` tenants share one state machine, so index maintenance
+  compares each written key against the index's key scope — the namespace read
+  back off the index name plus the prefix its creator declared. Until #410 it
+  did not, and an index-name-addressed `IndexQuery` could return another
+  tenant's KEY NAMES (not their values) to a caller holding `index:query` on
+  its own tenant. See
+  [../secondary-indexes/architecture.md](../secondary-indexes/architecture.md#index-key-scope--a-name-is-not-a-predicate).
 - **Per-node key independence** is the property that makes multi-node tenant
   replication safe.
 - **Provisioning-governance permissions are distinct**:

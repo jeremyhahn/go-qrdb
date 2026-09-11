@@ -63,6 +63,66 @@ for example `qrdb.User.Email`, `myapp.User.Email`. This prevents collisions
 across entity types, lets the planner route a query to the right index, and
 makes multi-database deployments work without a shared namespace.
 
+Under a transport, the name additionally carries the composite
+`{tenant}/{database}/` namespace the registry prefixes every KEY with, so the
+name an index is created and queried under is
+`{tenant}/{database}/{database}.{entityType}.{FieldName}`. Both prefixes come
+from one function, `tenant.ComposeNamespace` — see
+[../multi-tenancy/architecture.md](../multi-tenancy/architecture.md).
+
+## Index key scope — a name is not a predicate
+
+**An index name routes a query. It does not decide which writes the index
+takes.** That is a separate property, the index's **key scope**: the byte
+prefix every key it indexes must carry. Maintenance on the Raft apply path
+consults the scope on every write, insert and delete.
+
+A scope has two halves, composed exactly the way the keyspace is:
+
+```
+scope = {tenant}/{database}/   +   declared key prefix
+        (read back off the        (what the creator knew:
+         index name)               a collection's documents,
+                                   a DAO entity type)
+```
+
+- The **namespace half** is read back off the index name. The registry that
+  prefixes a key with `{tenant}/{database}/` prefixes the index name with the
+  same string, so reading it back is the exact inverse of the wrapper, not an
+  inference.
+- The **declared half** is what the name cannot say. A collection index
+  declares `__col:{database}:{collection}/`, the prefix its documents are
+  keyed under; a DAO entity index declares `{entityType}/`. It is declared
+  **relative** to the namespace, so a declaration made below the registry stays
+  correct whether or not a registry is in play — exactly like the key it
+  describes.
+
+An index with neither half is **unscoped** and indexes every JSON value in the
+state machine. That is deliberate rather than accidental: a bare name is not
+attributable to a keyspace, and an index whose creator declared nothing is the
+creator's whole database by intent. It is reachable only from a single-tenant,
+registry-less composition, because every transport namespaces both keys and
+index names.
+
+**This was not always true, and the gap was a tenancy boundary.** Maintenance
+on the apply path used to iterate every registered index and decide purely on
+whether the written JSON happened to carry a field of the right name — so an
+index named for one database also indexed another database's keys, another
+collection's documents, and plain key-value keys, and under `prefix` tenant
+isolation (where tenants share one state machine) it indexed another tenant's
+keys, which `IndexQuery` then returned. The correctly scoped path existed and
+was wired only to the DAO helpers, which almost nothing takes. Both halves of
+the scope above, and the tests that pin them, exist to close that.
+
+Two consequences worth stating:
+
+- **Index creation backfills inside the scope**, and bounds its scan by it.
+  An unscoped backfill would do in one step what unscoped maintenance did over
+  time.
+- **A unique index cannot reject a write outside its scope.** The unique
+  pre-check is scoped too, so one tenant's stored value can neither deny
+  another tenant's write nor reveal, by denying it, that the value exists.
+
 ## Store capability: not every store can maintain an index
 
 The catalog above describes what the ENTITY declares. It is not the same
@@ -233,25 +293,26 @@ as an attack surface rather than a convenience:
 - **Zero-allocation expression parser** — the parser does not build intermediate
   strings from caller input.
 
-**Index-write scoping is NOT uniform across the two write paths**, and the
-earlier claim here that "each index write is scoped to the same (tenant,
-database) pair as the entity it indexes, so an index can never span tenants" is
-true of only one of them. Corrected against measured behaviour:
+**Index maintenance is key-scoped, and that is what keeps an index inside its
+tenant.** Every write is offered only to the indexes whose key scope covers the
+key (see [Index key scope](#index-key-scope--a-name-is-not-a-predicate) above),
+so an index created through any transport — where the name carries the
+`{tenant}/{database}/` namespace — can hold only its own tenant's and its own
+database's keys.
 
-| Write path | Scoping |
-|---|---|
-| DAO / entity writes (`KVEngine.PutWithIndexes`, `DeleteWithIndexes`) | filtered to the indexes whose names carry the entity type's prefix — scoped as described |
-| Raft apply path (`handlePut` / MVCC put, the path a KV, collection or SQL write actually takes) | **unfiltered** — every registered index on the state machine is offered every value, and any index whose field name appears in that JSON value indexes the key |
+The statement this replaces read *"Each index write is scoped to the same
+(tenant, database) pair as the entity it indexes, so an index can never span
+tenants"*, and it was **false when it was written**: it described the DAO
+helpers, while the Raft apply path — the path a key-value write, a collection
+document insert and a SQL row write all take — filtered nothing. It is recorded
+here rather than quietly deleted because it was the security section of this
+feature's own requirements contract, which is the document a reviewer consults
+to decide whether a change is safe.
 
-On the second path an index named `dbA.users.email` also indexes a
-`dbB`-prefixed key and a plain KV key whose value carries an `email` field. The
-name is a routing label, not a filter. Tenants under `volume` or `raft`
-isolation each get their own state machine, so the blast radius stops at the
-shard; tenants under **prefix** isolation share one, so it does not stop at the
-tenant. Narrowing the second path to a key-prefix filter changes the Raft
-command format and is tracked as its own defect — it is stated here rather than
-left implied, because the paragraph it replaces asserted the property as a
-guarantee.
+The residual is named rather than implied: an **unscoped** index — no namespace
+in its name and no declared prefix — still spans the whole state machine. No
+transport can create one; a single-tenant in-process composer can, and for it
+"the whole state machine" and "its own database" are the same set.
 
 ## What this feature deliberately does not do
 

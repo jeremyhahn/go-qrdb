@@ -120,6 +120,18 @@ significant** — the first field is the leading prefix field.
 
 - **Index names are `{database}.{entityType}.{FieldName}`.** A bare field name
   is not a valid index name and will not route.
+- **An index takes only the keys inside its key scope.** The scope is
+  `{tenant}/{database}/` read back off the index name, plus the key prefix the
+  creator declared relative to it (`index.IndexConfig.KeyPrefix`, carried on
+  the wire by `protocol.IndexCreateOptions.KeyPrefix`). Maintenance, the
+  unique-constraint pre-check and the create-time backfill all apply it. An
+  index with neither half is unscoped and takes every JSON value in the state
+  machine — no transport can create one. See
+  [architecture.md](architecture.md#index-key-scope--a-name-is-not-a-predicate).
+- **The declared prefix is relative, and the engine composes it.** A caller
+  below the namespacing registry declares the prefix it knows
+  (`__col:{database}:{collection}/`, `{entityType}/`) and the registry does not
+  touch it; prefixing it there as well would apply the namespace twice.
 - **Index updates are atomic with the entity write.** There is no window in
   which the entity is visible and its index entry is not, which is what makes a
   unique constraint enforceable.
@@ -283,6 +295,17 @@ settings are API-only. Storage backend selection follows
   plus the entity key — slightly larger than single-field entries.
 - **Compatibility**: the key encoding is part of the on-disk format. Changing it
   requires an index rebuild, not a migration in place.
+- **`OpIndexCreate` carries the key scope as a trailing
+  `[prefixLen:2 LE][prefix]` block.** A command written before that block
+  existed ends at the flag byte and decodes as an empty declared prefix, so a
+  Raft log holding both shapes replays without a migration. An index recorded
+  in such a log still gets the namespace half of its scope, because that half
+  is read back off the name the log already carries.
+- **An index PERSISTED before key scoping keeps the out-of-scope entries it
+  already accumulated.** Maintenance no longer adds any, and a memory-backed
+  index is rebuilt scoped on the next replay, but entries already written into
+  a Pebble-backed index are only removed by dropping and recreating it — which
+  backfills inside the scope.
 
 ## Test strategy
 

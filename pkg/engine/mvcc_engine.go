@@ -68,18 +68,26 @@ type mvccHandler func(s *mvcc.Store, lr *lease.Lessor, batch storage.Batch, payl
 // LocalBackend (and the Raft apply loop) serialize Update() calls, and
 // mvcc.Store and storage.Storage handle their own synchronization. The
 // indexes/indexFields maps, however, are owned by the engine itself and are
-// read by Lookup() concurrently with index create/drop in Update(); those two
-// maps are therefore guarded by indexMu (single-writer/multi-reader).
+// read by Lookup() concurrently with index create/drop in Update(); those
+// maps -- indexes, indexFields and indexScopes -- are therefore guarded by
+// indexMu (single-writer/multi-reader).
 type MVCCEngine struct {
 	store       *mvcc.Store
 	stg         storage.Storage
 	indexMu     sync.RWMutex
 	indexes     map[string]index.Index
 	indexFields map[string]string
-	lessor      *lease.Lessor
-	hub         *watch.Hub
-	ts          *timeseries.Storage
-	pebbleDB    *pebble.DB
+
+	// indexScopes holds the key scope of each index by name: the byte prefix
+	// every key it indexes must carry (see ComposeIndexScope). A nil entry is
+	// an index with no derivable and no declared scope, which covers the whole
+	// state machine. Guarded by indexMu with indexes and indexFields.
+	indexScopes map[string][]byte
+
+	lessor   *lease.Lessor
+	hub      *watch.Hub
+	ts       *timeseries.Storage
+	pebbleDB *pebble.DB
 
 	// updateHandlers maps op codes to their update handlers.
 	updateHandlers map[byte]mvccHandler
@@ -130,6 +138,7 @@ func NewMVCCEngine(stg storage.Storage, opts ...MVCCOption) (*MVCCEngine, error)
 		stg:         stg,
 		indexes:     make(map[string]index.Index),
 		indexFields: make(map[string]string),
+		indexScopes: make(map[string][]byte),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -622,7 +631,7 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -631,7 +640,7 @@ func (e *MVCCEngine) handleBaseKVPut(s *mvcc.Store, _ *lease.Lessor, batch stora
 
 	// Apply index updates. Uniqueness was pre-validated above, so any error
 	// here is a genuine storage fault and is correctly fatal.
-	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, prevKv); err != nil {
+	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -724,7 +733,7 @@ func (e *MVCCEngine) handleCompareAndDelete(s *mvcc.Store, lr *lease.Lessor, bat
 	if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
 		lr.DetachKey(prevKv.LeaseID, key)
 	}
-	if ierr := RemoveIndexes(e.indexes, e.indexFields, key, prevKv); ierr != nil {
+	if ierr := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); ierr != nil {
 		return sm.Result{}, nil, ierr
 	}
 
@@ -771,13 +780,13 @@ func (e *MVCCEngine) handleCompareAndSwap(s *mvcc.Store, lr *lease.Lessor, batch
 
 	// Read-only pre-check, as in handleMVCCPut: a unique-index violation is a
 	// non-fatal application error, not a reason to stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, next); verr != nil {
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, next); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, nil, aerr
 		}
 		return sm.Result{}, nil, verr
 	}
-	if ierr := UpdateIndexes(e.indexes, e.indexFields, key, next, current); ierr != nil {
+	if ierr := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, next, current); ierr != nil {
 		return sm.Result{}, nil, ierr
 	}
 
@@ -843,7 +852,7 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -852,7 +861,7 @@ func (e *MVCCEngine) putIfAbsentInBatch(s *mvcc.Store, lr *lease.Lessor, batch s
 
 	// The guard established the key is absent, so there is no previous value
 	// for the index update to retire, and none to report on the notification.
-	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, nil); err != nil {
+	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, nil); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -897,7 +906,7 @@ func (e *MVCCEngine) handleBaseKVDelete(s *mvcc.Store, lr *lease.Lessor, batch s
 		lr.DetachKey(prevKv.LeaseID, key)
 	}
 
-	if err := RemoveIndexes(e.indexes, e.indexFields, key, prevKv); err != nil {
+	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -933,7 +942,7 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 	// Read-only pre-check: reject a unique-index violation as a non-fatal
 	// application error (no state written) rather than letting idx.Put return a
 	// fatal error from the apply path, which would stall consensus.
-	if verr := CheckUniqueViolation(e.indexes, e.indexFields, key, value); verr != nil {
+	if verr := CheckUniqueViolation(e.indexes, e.indexFields, e.indexScopes, key, value); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -942,7 +951,7 @@ func (e *MVCCEngine) handleMVCCPut(s *mvcc.Store, lr *lease.Lessor, batch storag
 
 	// Apply index updates. Uniqueness was pre-validated above, so any error
 	// here is a genuine storage fault and is correctly fatal.
-	if err := UpdateIndexes(e.indexes, e.indexFields, key, value, prevKv); err != nil {
+	if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, key, value, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1009,7 +1018,7 @@ func (e *MVCCEngine) handleMVCCDelete(s *mvcc.Store, lr *lease.Lessor, batch sto
 		lr.DetachKey(prevKv.LeaseID, key)
 	}
 
-	if err := RemoveIndexes(e.indexes, e.indexFields, key, prevKv); err != nil {
+	if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 		return sm.Result{}, nil, err
 	}
 
@@ -1091,7 +1100,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1129,7 +1138,7 @@ func (e *MVCCEngine) handleBatch(s *mvcc.Store, lr *lease.Lessor, batch storage.
 	// Pre-validate unique-index constraints for the whole batch (read-only,
 	// delete-aware) so a violation rejects the batch atomically via a non-fatal
 	// application error rather than stalling consensus mid-apply.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, err := asAppErrResult(verr); handled {
 			return res, nil, err
 		}
@@ -1176,7 +1185,7 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		prevKv, _ := s.GetInBatch(batch, op.Key)
 		// Validate index constraints before writing to the batch so that a
 		// unique violation aborts the operation without leaving partial state.
-		if err := UpdateIndexes(e.indexes, e.indexFields, op.Key, op.Value, prevKv); err != nil {
+		if err := UpdateIndexes(e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
 			return nil, err
 		}
 		kvResult, err := s.PutInBatch(batch, op.Key, op.Value, op.LeaseID, rev)
@@ -1201,7 +1210,7 @@ func (e *MVCCEngine) executeDecodedOpWithNotify(s *mvcc.Store, lr *lease.Lessor,
 		if lr != nil && prevKv != nil && prevKv.LeaseID > 0 {
 			lr.DetachKey(prevKv.LeaseID, op.Key)
 		}
-		if err := RemoveIndexes(e.indexes, e.indexFields, op.Key, prevKv); err != nil {
+		if err := RemoveIndexes(e.indexes, e.indexFields, e.indexScopes, op.Key, prevKv); err != nil {
 			return nil, err
 		}
 		deleteKv := &service.KeyValue{
@@ -1369,6 +1378,11 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 		Unique:    opts.Unique,
 		Sparse:    opts.Sparse,
 		ValueType: valueType,
+		// The key scope the creator declared, relative to the namespace the
+		// name carries. Recorded on the config so the index's definition is
+		// complete; the apply path reads the composed scope out of
+		// e.indexScopes (go-qrdb#410).
+		KeyPrefix: opts.KeyPrefix,
 		// Derived from the command instead of left at its zero value. This
 		// engine used to discard the flag, so an index:"case_insensitive"
 		// definition became a case-SENSITIVE index and a lookup for "Alpha"
@@ -1390,6 +1404,12 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 
 	e.indexMu.Unlock()
 
+	// The key prefix every key this index may hold must carry: the namespace
+	// read back off the name plus the prefix the creator declared. It bounds
+	// both the backfill below and every subsequent maintenance call
+	// (go-qrdb#410).
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
+
 	// Backfill BEFORE publishing the index into e.indexes/e.indexFields, so a
 	// concurrent Lookup (which only takes indexMu.RLock() to fetch the *index.Index
 	// reference, then reads it unlocked) can never observe a partially-populated
@@ -1401,14 +1421,20 @@ func (e *MVCCEngine) handleIndexCreate(store *mvcc.Store, _ *lease.Lessor, batch
 	// keys written by earlier entries of the same batch. Scanning committed
 	// storage would make the index's contents depend on how the apply loop
 	// happened to group the log.
+	//
+	// The scan is bounded by the scope rather than filtered after the fact, so
+	// creating an index on one database does not read every other database's
+	// keys on the way past.
+	start, end := backfillRange(scope)
 	BackfillIndex(func() ([]*service.KeyValue, error) {
-		kvs, _, _, err := store.RangeInBatch(batch, []byte{0x00}, []byte{0xFF})
+		kvs, _, _, err := store.RangeInBatch(batch, start, end)
 		return kvs, err
-	}, idx, fieldName)
+	}, idx, fieldName, scope)
 
 	e.indexMu.Lock()
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
+	e.indexScopes[name] = scope
 	e.indexMu.Unlock()
 
 	return sm.Result{Value: 1}, nil, nil
@@ -1433,6 +1459,7 @@ func (e *MVCCEngine) handleIndexDrop(_ *mvcc.Store, _ *lease.Lessor, _ storage.B
 	}
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
+	delete(e.indexScopes, name)
 	e.indexMu.Unlock()
 
 	if err := idx.Clear(); err != nil {

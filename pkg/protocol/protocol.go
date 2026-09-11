@@ -563,6 +563,25 @@ type IndexCreateOptions struct {
 	// Named for the non-default so the zero value is the default, and so the
 	// wire flag and this field agree: both mark the positive claim.
 	CaseInsensitive bool
+
+	// KeyPrefix is the key scope the index covers, RELATIVE to the namespace
+	// carried by the index name. The apply path maintains the index only for
+	// keys under that scope, so an index declared for one collection never
+	// indexes another collection's documents, another database's keys or a
+	// plain key-value key (go-qrdb#410).
+	//
+	// Relative, because the "<tenant>/<database>/" namespace is applied to the
+	// index NAME and to every KEY by the same registry wrapper: the engine
+	// composes the namespace it reads back off the name with this prefix, so a
+	// declaration made below the wrapper stays correct whether or not a
+	// wrapper is in play. A caller that has no prefix to declare beyond its
+	// namespace leaves this empty and gets a namespace-wide scope.
+	//
+	// An empty KeyPrefix under a name that carries no namespace either is an
+	// UNSCOPED index: it indexes every JSON value in the state machine. That
+	// is the pre-go-qrdb#410 behaviour and is reachable only from a
+	// single-tenant, registry-less composition.
+	KeyPrefix string
 }
 
 // Flags renders the options as the command's flag byte.
@@ -608,17 +627,27 @@ func EncodeIndexCreate(name, fieldName string, unique, sparse, numeric bool) ([]
 }
 
 // EncodeIndexCreateOpts builds an Index Create command from opts.
-// Format: [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1].
+// Format:
+// [op:1][nameLen:2 LE][name][fieldLen:2 LE][field][flags:1][prefixLen:2 LE][prefix].
+//
+// The key-scope prefix is a TRAILING extension (go-qrdb#410). Commands written
+// before it exists end after the flag byte, and DecodeIndexCreateOpts reads
+// them as an empty prefix, so a Raft log containing both shapes replays
+// without a migration.
 func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]byte, error) {
 	nameBytes := []byte(name)
 	fieldBytes := []byte(fieldName)
+	prefixBytes := []byte(opts.KeyPrefix)
 	if err := checkUint16Len(len(nameBytes), "index name"); err != nil {
 		return nil, err
 	}
 	if err := checkUint16Len(len(fieldBytes), "index field"); err != nil {
 		return nil, err
 	}
-	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1)
+	if err := checkUint16Len(len(prefixBytes), "index key prefix"); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, headerSize+2+len(nameBytes)+2+len(fieldBytes)+1+2+len(prefixBytes))
 	off := 0
 
 	buf[off] = OpIndexCreate
@@ -639,6 +668,13 @@ func EncodeIndexCreateOpts(name, fieldName string, opts IndexCreateOptions) ([]b
 	off += len(fieldBytes)
 
 	buf[off] = opts.Flags()
+	off++
+
+	if err := putUint16Len(buf[off:], len(prefixBytes), "index key prefix"); err != nil {
+		return nil, err
+	}
+	off += 2
+	copy(buf[off:], prefixBytes)
 
 	return buf, nil
 }
@@ -1233,7 +1269,26 @@ func DecodeIndexCreateOpts(payload []byte) (name, fieldName string, opts IndexCr
 	if off >= len(payload) {
 		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: missing flags"}
 	}
-	return name, fieldName, indexCreateOptionsFromFlags(payload[off]), nil
+	opts = indexCreateOptionsFromFlags(payload[off])
+	off++
+
+	// The key-scope prefix is a trailing extension (go-qrdb#410). A payload
+	// that ends at the flag byte was written before it existed and carries no
+	// prefix; that is a valid command, not a truncated one. A payload that
+	// carries a length must carry the bytes the length promises.
+	if off == len(payload) {
+		return name, fieldName, opts, nil
+	}
+	if off+2 > len(payload) {
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: truncated key prefix length"}
+	}
+	prefixLen := int(binary.LittleEndian.Uint16(payload[off:]))
+	off += 2
+	if off+prefixLen > len(payload) {
+		return "", "", IndexCreateOptions{}, &InvalidCommandError{Reason: "index create: key prefix length exceeds payload"}
+	}
+	opts.KeyPrefix = string(payload[off : off+prefixLen])
+	return name, fieldName, opts, nil
 }
 
 // DecodeIndexDrop extracts the index name from an Index Drop payload.

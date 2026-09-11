@@ -68,15 +68,20 @@ type uniqueIndexChecker interface {
 }
 
 // CheckUniqueViolation reports the unique-constraint conflict that writing
-// value under key would cause, WITHOUT modifying any index. It mirrors the
-// constraint UpdateIndexes enforces but as a read-only pre-check, so an update
+// value under key would cause, WITHOUT modifying any index. Only indexes whose
+// key scope covers key are consulted: a unique index outside the key's scope
+// must not be able to reject the write, which would let one tenant's stored
+// value deny another tenant's -- and, by denying it, reveal that it exists.
+//
+// It mirrors the constraint UpdateIndexes enforces but as a read-only
+// pre-check, so an update
 // handler can reject the write via an application-error result instead of
 // letting idx.Put return a fatal error from the Raft apply path (which would
 // stall consensus). It returns a *UniqueConstraintError on conflict, a
 // non-typed error if an index read fails (a genuine IO fault the caller may
 // treat as fatal), or nil when the write is admissible.
-func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string]string, key, value []byte) error {
-	if len(indexes) == 0 {
+func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte) error {
+	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 	var fields map[string]json.RawMessage
@@ -84,6 +89,9 @@ func CheckUniqueViolation(indexes map[string]index.Index, indexFields map[string
 		return nil // not JSON; nothing to index, nothing to violate
 	}
 	for idxName, idx := range indexes {
+		if !KeyInScope(indexScopes[idxName], key) {
+			continue
+		}
 		u, ok := idx.(uniqueIndexChecker)
 		if !ok || !u.IsUnique() {
 			continue
@@ -129,7 +137,7 @@ type indexedPut struct {
 // on the apply path and never stalls consensus. Returns a *UniqueConstraintError
 // on the first conflict, a non-typed error on an index read failure, or nil
 // when every write is admissible.
-func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[string]string, puts []indexedPut, deletedKeys [][]byte) error {
+func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, puts []indexedPut, deletedKeys [][]byte) error {
 	if len(indexes) == 0 || len(puts) == 0 {
 		return nil
 	}
@@ -146,6 +154,9 @@ func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[
 			continue // not JSON; nothing to index
 		}
 		for idxName, idx := range indexes {
+			if !KeyInScope(indexScopes[idxName], p.Key) {
+				continue
+			}
 			u, ok := idx.(uniqueIndexChecker)
 			if !ok || !u.IsUnique() {
 				continue
@@ -183,16 +194,18 @@ func CheckUniqueViolationsBatch(indexes map[string]index.Index, indexFields map[
 }
 
 // UpdateIndexes extracts JSON field values from the written value and updates
-// all registered secondary indexes. If the key had a previous value with
-// different indexed fields, the old index entries are removed first.
+// every registered secondary index whose key scope covers key (see
+// indexScopes and ComposeIndexScope; an index with no scope covers the whole
+// state machine). If the key had a previous value with different indexed
+// fields, the old index entries are removed first.
 // Non-JSON values or missing fields are silently skipped.
 //
 // Old index entry deletions are best-effort: failures are ignored so that a
 // stale entry in a non-unique index does not block the write. New index entry
 // insertions are strict: any error (including unique constraint violations) is
 // returned immediately so the caller can abort the write before it commits.
-func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string, key, value []byte, prevKv *service.KeyValue) error {
-	if len(indexes) == 0 {
+func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte, prevKv *service.KeyValue) error {
+	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
@@ -209,6 +222,9 @@ func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string
 	}
 
 	for idxName, idx := range indexes {
+		if !KeyInScope(indexScopes[idxName], key) {
+			continue
+		}
 		fieldName, ok := indexFields[idxName]
 		if !ok {
 			continue
@@ -237,11 +253,12 @@ func UpdateIndexes(indexes map[string]index.Index, indexFields map[string]string
 }
 
 // UpdateIndexesBatch extracts JSON field values from the written value and
-// queues index updates into the provided batch for atomic commit. If the key
+// queues index updates into the provided batch for atomic commit. Only the
+// indexes whose key scope covers key are touched (see indexScopes). If the key
 // had a previous value with different indexed fields, the old index entries
 // are removed first. Each index must implement index.BatchableIndex.
-func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, key, value []byte, prevKv *qkv.KeyValue) error {
-	if len(indexes) == 0 {
+func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
+	if len(indexes) == 0 || !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
@@ -258,6 +275,9 @@ func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 	}
 
 	for idxName, idx := range indexes {
+		if !KeyInScope(indexScopes[idxName], key) {
+			continue
+		}
 		fieldName, ok := indexFields[idxName]
 		if !ok {
 			continue
@@ -289,11 +309,15 @@ func UpdateIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 	return nil
 }
 
-// RemoveIndexes removes index entries for a deleted key. The previous value
-// is parsed as JSON to find indexed field values. Returns the first deletion
-// error encountered; all indexes are still attempted regardless.
-func RemoveIndexes(indexes map[string]index.Index, indexFields map[string]string, key []byte, prevKv *service.KeyValue) error {
+// RemoveIndexes removes index entries for a deleted key from every index whose
+// key scope covers it (see indexScopes). The previous value is parsed as JSON
+// to find indexed field values. Returns the first deletion error encountered;
+// all indexes in scope are still attempted regardless.
+func RemoveIndexes(indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key []byte, prevKv *service.KeyValue) error {
 	if len(indexes) == 0 || prevKv == nil || len(prevKv.Value) == 0 {
+		return nil
+	}
+	if !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
@@ -304,6 +328,9 @@ func RemoveIndexes(indexes map[string]index.Index, indexFields map[string]string
 
 	var firstErr error
 	for idxName, idx := range indexes {
+		if !KeyInScope(indexScopes[idxName], key) {
+			continue
+		}
 		fieldName, ok := indexFields[idxName]
 		if !ok {
 			continue
@@ -319,10 +346,14 @@ func RemoveIndexes(indexes map[string]index.Index, indexFields map[string]string
 }
 
 // RemoveIndexesBatch removes index entries for a deleted key by queuing
-// deletions into the provided batch. The previous value is parsed as JSON
+// deletions into the provided batch, for every index whose key scope covers
+// the key (see indexScopes). The previous value is parsed as JSON
 // to find indexed field values. Each index must implement index.BatchableIndex.
-func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, key []byte, prevKv *qkv.KeyValue) error {
+func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, indexFields map[string]string, indexScopes map[string][]byte, key []byte, prevKv *qkv.KeyValue) error {
 	if len(indexes) == 0 || prevKv == nil || len(prevKv.Value) == 0 {
+		return nil
+	}
+	if !anyIndexInScope(indexes, indexScopes, key) {
 		return nil
 	}
 
@@ -332,6 +363,9 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 	}
 
 	for idxName, idx := range indexes {
+		if !KeyInScope(indexScopes[idxName], key) {
+			continue
+		}
 		fieldName, ok := indexFields[idxName]
 		if !ok {
 			continue
@@ -352,11 +386,18 @@ func RemoveIndexesBatch(batch storage.Batch, indexes map[string]index.Index, ind
 	return nil
 }
 
-// BackfillIndex scans all key-value pairs returned by the scanner function
+// BackfillIndex scans the key-value pairs returned by the scanner function
 // and populates the given index with entries for any JSON values containing
-// the specified field name. Errors on individual entries are silently skipped
-// to ensure partial data doesn't prevent index creation.
-func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string) {
+// the specified field name whose key falls inside scope. Errors on individual
+// entries are silently skipped to ensure partial data doesn't prevent index
+// creation.
+//
+// The scope filter is what keeps index CREATION from doing in one step what
+// unscoped maintenance did over time: a backfill that ignored it would seed a
+// new index with every matching key in the state machine, including keys
+// belonging to other databases and other tenants (go-qrdb#410). A nil scope
+// backfills everything, which is the unscoped index.
+func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index, fieldName string, scope []byte) {
 	kvs, err := scanner()
 	if err != nil {
 		// The scan must not fail an index-create apply (returning an error
@@ -368,7 +409,7 @@ func BackfillIndex(scanner func() ([]*service.KeyValue, error), idx index.Index,
 	}
 
 	for _, kv := range kvs {
-		if len(kv.Value) == 0 {
+		if len(kv.Value) == 0 || !KeyInScope(scope, kv.Key) {
 			continue
 		}
 
@@ -451,9 +492,10 @@ func UnquoteJSON(raw json.RawMessage) []byte {
 }
 
 // UpdateCompoundIndexesBatch extracts JSON field values and queues compound
-// index updates into the provided batch. Each compound index has multiple
+// index updates into the provided batch, for every compound index whose key
+// scope covers key (see compoundIndexScopes). Each compound index has multiple
 // JSON field names; all are extracted from a single JSON parse.
-func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, key, value []byte, prevKv *qkv.KeyValue) error {
+func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key, value []byte, prevKv *qkv.KeyValue) error {
 	if len(compoundIndexes) == 0 {
 		return nil
 	}
@@ -469,6 +511,9 @@ func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 	}
 
 	for idxName, idx := range compoundIndexes {
+		if !KeyInScope(compoundIndexScopes[idxName], key) {
+			continue
+		}
 		fieldNames, ok := compoundIndexFields[idxName]
 		if !ok {
 			continue
@@ -493,8 +538,9 @@ func UpdateCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 	return nil
 }
 
-// RemoveCompoundIndexesBatch removes compound index entries for a deleted key.
-func RemoveCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, key []byte, prevKv *qkv.KeyValue) error {
+// RemoveCompoundIndexesBatch removes compound index entries for a deleted key
+// from every compound index whose key scope covers it.
+func RemoveCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]*index.CompoundIndex, compoundIndexFields map[string][]string, compoundIndexScopes map[string][]byte, key []byte, prevKv *qkv.KeyValue) error {
 	if len(compoundIndexes) == 0 || prevKv == nil || len(prevKv.Value) == 0 {
 		return nil
 	}
@@ -505,6 +551,9 @@ func RemoveCompoundIndexesBatch(batch storage.Batch, compoundIndexes map[string]
 	}
 
 	for idxName, idx := range compoundIndexes {
+		if !KeyInScope(compoundIndexScopes[idxName], key) {
+			continue
+		}
 		fieldNames, ok := compoundIndexFields[idxName]
 		if !ok {
 			continue

@@ -148,7 +148,7 @@ func TestCheckUniqueViolationsBatch_IntraBatchConflict(t *testing.T) {
 		{Key: []byte("k1"), Value: val1},
 		{Key: []byte("k2"), Value: val2}, // same "name" → conflict
 	}
-	err := CheckUniqueViolationsBatch(indexes, indexFields, puts, nil)
+	err := CheckUniqueViolationsBatch(indexes, indexFields, nil, puts, nil)
 	if err == nil {
 		t.Fatal("expected UniqueConstraintError for intra-batch duplicate")
 	}
@@ -158,7 +158,7 @@ func TestCheckUniqueViolationsBatch_IntraBatchConflict(t *testing.T) {
 }
 
 func TestCheckUniqueViolationsBatch_EmptyBatch(t *testing.T) {
-	err := CheckUniqueViolationsBatch(nil, nil, nil, nil)
+	err := CheckUniqueViolationsBatch(nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected nil for empty batch, got: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestCheckUniqueViolationsBatch_DeletedKeyFreesValue(t *testing.T) {
 	}
 	deletedKeys := [][]byte{[]byte("old:1")}
 
-	err := CheckUniqueViolationsBatch(indexes, indexFields, puts, deletedKeys)
+	err := CheckUniqueViolationsBatch(indexes, indexFields, nil, puts, deletedKeys)
 	if err != nil {
 		t.Fatalf("expected nil when conflicting key is in deletedKeys, got: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestCheckUniqueViolationsBatch_NonJSONSkipped(t *testing.T) {
 	puts := []indexedPut{
 		{Key: []byte("k1"), Value: []byte("not-json")},
 	}
-	err := CheckUniqueViolationsBatch(indexes, indexFields, puts, nil)
+	err := CheckUniqueViolationsBatch(indexes, indexFields, nil, puts, nil)
 	if err != nil {
 		t.Fatalf("expected nil for non-JSON value, got: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestCheckUniqueViolation_IndexGetError(t *testing.T) {
 	indexFields := map[string]string{"by_name": "name"}
 
 	val, _ := json.Marshal(map[string]string{"name": "alice"})
-	err := CheckUniqueViolation(indexes, indexFields, []byte("k1"), val)
+	err := CheckUniqueViolation(indexes, indexFields, nil, []byte("k1"), val)
 	if err == nil {
 		t.Fatal("expected error when index.Get fails")
 	}
@@ -539,7 +539,7 @@ func TestCheckUniqueViolation_NonJSON(t *testing.T) {
 	indexes := map[string]index.Index{"by_name": idx}
 	indexFields := map[string]string{"by_name": "name"}
 
-	err := CheckUniqueViolation(indexes, indexFields, []byte("k1"), []byte("not-json"))
+	err := CheckUniqueViolation(indexes, indexFields, nil, []byte("k1"), []byte("not-json"))
 	if err != nil {
 		t.Fatalf("expected nil for non-JSON, got: %v", err)
 	}
@@ -553,7 +553,7 @@ func TestCheckUniqueViolation_FieldMissingFromJSON(t *testing.T) {
 
 	// JSON doesn't have "name" field.
 	val, _ := json.Marshal(map[string]string{"age": "30"})
-	err := CheckUniqueViolation(indexes, indexFields, []byte("k1"), val)
+	err := CheckUniqueViolation(indexes, indexFields, nil, []byte("k1"), val)
 	if err != nil {
 		t.Fatalf("expected nil when field missing from JSON, got: %v", err)
 	}
@@ -567,7 +567,7 @@ func TestCheckUniqueViolation_IndexNotInFieldsMap(t *testing.T) {
 	indexFields := map[string]string{}
 
 	val, _ := json.Marshal(map[string]string{"name": "alice"})
-	err := CheckUniqueViolation(indexes, indexFields, []byte("k1"), val)
+	err := CheckUniqueViolation(indexes, indexFields, nil, []byte("k1"), val)
 	if err != nil {
 		t.Fatalf("expected nil when index not in fields map, got: %v", err)
 	}
@@ -737,7 +737,7 @@ func TestCheckUniqueViolationsBatch_NonUniqueIndexSkipped(t *testing.T) {
 		{Key: []byte("k1"), Value: val1},
 		{Key: []byte("k2"), Value: val2},
 	}
-	err := CheckUniqueViolationsBatch(indexes, indexFields, puts, nil)
+	err := CheckUniqueViolationsBatch(indexes, indexFields, nil, puts, nil)
 	if err != nil {
 		t.Fatalf("expected nil for non-unique index with duplicate, got: %v", err)
 	}
@@ -907,7 +907,7 @@ func TestRemoveIndexes_WithPrevKV(t *testing.T) {
 		Key:   []byte("u:1"),
 		Value: []byte(`{"name":"alice"}`),
 	}
-	err := RemoveIndexes(indexes, indexFields, []byte("u:1"), prevKv)
+	err := RemoveIndexes(indexes, indexFields, nil, []byte("u:1"), prevKv)
 	if err != nil {
 		t.Fatalf("RemoveIndexes: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestRemoveIndexes_NilPrevKV(t *testing.T) {
 	indexFields := map[string]string{"by_name": "name"}
 
 	// nil prevKv → early return nil
-	err := RemoveIndexes(indexes, indexFields, []byte("u:1"), nil)
+	err := RemoveIndexes(indexes, indexFields, nil, []byte("u:1"), nil)
 	if err != nil {
 		t.Fatalf("RemoveIndexes(nil prevKv): %v", err)
 	}

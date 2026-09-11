@@ -239,6 +239,13 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 				Name:   idxName,
 				Unique: def.Unique,
 				Sparse: def.Sparse,
+				// The collection's own document keyspace, and the only thing
+				// this index may index. The index NAME says "{database}.
+				// {collection}.{field}" but a name is a routing label, not a
+				// key predicate: without this the apply path indexed every
+				// JSON value in the state machine, another database's and
+				// another tenant's included (go-qrdb#410).
+				KeyPrefix: collectionDataEntityType(req.Database, req.Name) + "/",
 				// A collection index definition has no case-sensitivity
 				// field, so it keeps the behaviour it has always had. Stated
 				// explicitly because index.IndexConfig names the field for the

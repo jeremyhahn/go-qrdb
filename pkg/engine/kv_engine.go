@@ -53,9 +53,14 @@ type extHandler func(payload []byte) (sm.Result, error)
 // notifications. No MVCC overhead, no revision tracking, no leases,
 // no time-series.
 type KVEngine struct {
-	stg           storage.Storage
-	indexes       map[string]index.Index
-	indexFields   map[string]string
+	stg         storage.Storage
+	indexes     map[string]index.Index
+	indexFields map[string]string
+	// indexScopes holds the key scope of each index by name: the byte prefix
+	// every key it indexes must carry (see ComposeIndexScope). A nil entry is
+	// an index with no derivable and no declared scope, which covers the whole
+	// state machine.
+	indexScopes   map[string][]byte
 	entityIndexes map[string][]EntityIndex
 	// compoundIndexes stores compound (multi-field) indexes keyed by
 	// their fully-qualified name (e.g., "mydb.messages.ConversationID_Timestamp").
@@ -63,6 +68,9 @@ type KVEngine struct {
 	// compoundIndexFields maps compound index name to an ordered list of
 	// JSON field names used for value extraction during updates.
 	compoundIndexFields map[string][]string
+	// compoundIndexScopes holds the key scope of each compound index by name,
+	// exactly as indexScopes does for single-field indexes.
+	compoundIndexScopes map[string][]byte
 	hub                 *watch.Hub
 	pebbleDB            *pebble.DB
 	logger              *logger.Logger
@@ -118,9 +126,11 @@ func NewKVEngine(stg storage.Storage, opts ...KVOption) *KVEngine {
 		stg:                 stg,
 		indexes:             make(map[string]index.Index),
 		indexFields:         make(map[string]string),
+		indexScopes:         make(map[string][]byte),
 		entityIndexes:       make(map[string][]EntityIndex),
 		compoundIndexes:     make(map[string]*index.CompoundIndex),
 		compoundIndexFields: make(map[string][]string),
+		compoundIndexScopes: make(map[string][]byte),
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -301,14 +311,14 @@ func kvHandlePut(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 
 	// Queue index updates into the SAME batch.
 	if len(e.indexes) > 0 {
-		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, cmd.Key, cmd.Value, prevKv); err != nil {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, cmd.Value, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
 
 	// Queue compound index updates into the SAME batch.
 	if len(e.compoundIndexes) > 0 {
-		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, cmd.Key, cmd.Value, prevKv); err != nil {
+		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, cmd.Key, cmd.Value, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
@@ -381,12 +391,12 @@ func kvHandlePutIfAbsent(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 	// for the index updates to retract: prevKv is nil by construction, not by
 	// omission.
 	if len(e.indexes) > 0 {
-		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, cmd.Key, cmd.Value, nil); err != nil {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, cmd.Value, nil); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
 	if len(e.compoundIndexes) > 0 {
-		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, cmd.Key, cmd.Value, nil); err != nil {
+		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, cmd.Key, cmd.Value, nil); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
@@ -447,12 +457,12 @@ func (e *KVEngine) handleCompareAndDelete(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 	if len(e.indexes) > 0 {
-		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, key, prevKv); err != nil {
+		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
 	if len(e.compoundIndexes) > 0 {
-		if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, key, prevKv); err != nil {
+		if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
@@ -504,12 +514,12 @@ func (e *KVEngine) handleCompareAndSwap(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, err
 	}
 	if len(e.indexes) > 0 {
-		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, key, next, prevKv); err != nil {
+		if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, key, next, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
 	if len(e.compoundIndexes) > 0 {
-		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, key, next, prevKv); err != nil {
+		if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, key, next, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
@@ -580,7 +590,7 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 	// (read-only, delete-aware) so a violation rejects the transaction
 	// atomically via a non-fatal application error — no partial writes, no
 	// consensus stall — matching the MVCC and batch handlers.
-	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
+	if verr := CheckUniqueViolationsBatch(e.indexes, e.indexFields, e.indexScopes, putsFromOps(ops), deleteKeysFromOps(ops)); verr != nil {
 		if res, handled, aerr := asAppErrResult(verr); handled {
 			return res, aerr
 		}
@@ -623,12 +633,12 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 				return sm.Result{}, err
 			}
 			if len(e.indexes) > 0 {
-				if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, op.Key, op.Value, prevKv); err != nil {
+				if err := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, prevKv); err != nil {
 					return sm.Result{}, err
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, op.Value, prevKv); err != nil {
+				if err := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, prevKv); err != nil {
 					return sm.Result{}, err
 				}
 			}
@@ -658,12 +668,12 @@ func (e *KVEngine) handleTransaction(payload []byte) (sm.Result, error) {
 				return sm.Result{}, err
 			}
 			if len(e.indexes) > 0 {
-				if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, op.Key, prevKv); err != nil {
+				if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, prevKv); err != nil {
 					return sm.Result{}, err
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, prevKv); err != nil {
+				if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, prevKv); err != nil {
 					return sm.Result{}, err
 				}
 			}
@@ -742,14 +752,14 @@ func kvHandleDelete(e *KVEngine, cmd kv.Command) (sm.Result, error) {
 
 	// Queue index removals into the SAME batch.
 	if len(e.indexes) > 0 {
-		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, cmd.Key, prevKv); err != nil {
+		if err := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, cmd.Key, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
 
 	// Queue compound index removals into the SAME batch.
 	if len(e.compoundIndexes) > 0 {
-		if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, cmd.Key, prevKv); err != nil {
+		if err := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, cmd.Key, prevKv); err != nil {
 			return sm.Result{Value: 1}, err
 		}
 	}
@@ -800,6 +810,9 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		// absent fields happens in the backfill/maintenance callers. Stated
 		// rather than claimed, since the field reads like a behaviour switch.
 		Sparse: opts.Sparse,
+		// The key scope the creator declared, relative to the namespace the
+		// name carries (go-qrdb#410).
+		KeyPrefix: opts.KeyPrefix,
 	}
 	if opts.Unique {
 		cfg.Type = index.IndexTypeUnique
@@ -819,11 +832,15 @@ func (e *KVEngine) handleIndexCreate(payload []byte) (sm.Result, error) {
 		return sm.Result{Value: 1}, idxErr
 	}
 
+	scope := ComposeIndexScope(name, opts.KeyPrefix)
 	e.indexes[name] = idx
 	e.indexFields[name] = fieldName
+	e.indexScopes[name] = scope
 
-	// Backfill the index with existing data.
-	BackfillIndex(e.scanAllKVs, idx, fieldName)
+	// Backfill the index with the existing data INSIDE its scope. An unscoped
+	// backfill would seed the new index with every matching key in the state
+	// machine, other databases' and other tenants' included (go-qrdb#410).
+	BackfillIndex(e.scanAllKVs, idx, fieldName, scope)
 
 	return sm.Result{}, nil
 }
@@ -843,6 +860,7 @@ func (e *KVEngine) handleIndexDrop(payload []byte) (sm.Result, error) {
 	_ = idx.Close()
 	delete(e.indexes, name)
 	delete(e.indexFields, name)
+	delete(e.indexScopes, name)
 
 	return sm.Result{}, nil
 }
@@ -879,13 +897,13 @@ func (e *KVEngine) handleBatch(payload []byte) (sm.Result, error) {
 				return sm.Result{Value: 1}, bErr
 			}
 			if len(e.indexes) > 0 {
-				if bErr := UpdateIndexesBatch(batch, e.indexes, e.indexFields, op.Key, op.Value, metas[i].prevKv); bErr != nil {
+				if bErr := UpdateIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, op.Value, metas[i].prevKv); bErr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, bErr
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if bErr := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, op.Value, metas[i].prevKv); bErr != nil {
+				if bErr := UpdateCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, op.Value, metas[i].prevKv); bErr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, bErr
 				}
@@ -902,13 +920,13 @@ func (e *KVEngine) handleBatch(payload []byte) (sm.Result, error) {
 				return sm.Result{Value: 1}, bErr
 			}
 			if len(e.indexes) > 0 {
-				if bErr := RemoveIndexesBatch(batch, e.indexes, e.indexFields, op.Key, metas[i].prevKv); bErr != nil {
+				if bErr := RemoveIndexesBatch(batch, e.indexes, e.indexFields, e.indexScopes, op.Key, metas[i].prevKv); bErr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, bErr
 				}
 			}
 			if len(e.compoundIndexes) > 0 {
-				if bErr := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, op.Key, metas[i].prevKv); bErr != nil {
+				if bErr := RemoveCompoundIndexesBatch(batch, e.compoundIndexes, e.compoundIndexFields, e.compoundIndexScopes, op.Key, metas[i].prevKv); bErr != nil {
 					_ = batch.Rollback()
 					return sm.Result{Value: 1}, bErr
 				}
@@ -981,12 +999,19 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 			idxType = index.IndexTypeUnique
 		}
 
+		// An entity index covers exactly the entity type's keyspace,
+		// "{entityType}/", which is also the prefix its backfill scans below.
+		// Declaring it here is what makes the guarantee filterIndexes gives
+		// the DAO path hold on the Raft apply path too (go-qrdb#410).
+		entityScope := entityType + "/"
+
 		cfg := index.IndexConfig{
 			Name:          idxName,
 			Type:          idxType,
 			Unique:        def.Unique,
 			Sparse:        def.Sparse,
 			CaseSensitive: def.CaseSensitive,
+			KeyPrefix:     entityScope,
 		}
 
 		idx, err := index.NewStoragePebbleIndex(e.stg, cfg, log)
@@ -996,9 +1021,10 @@ func (e *KVEngine) RegisterEntityType(entityType string, indexes []EntityIndex) 
 
 		e.indexes[idxName] = idx
 		e.indexFields[idxName] = def.JSONFieldName
+		e.indexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
 
 		// Backfill from existing keys matching the entity prefix.
-		prefix := []byte(entityType + "/")
+		prefix := []byte(entityScope)
 		if bErr := BackfillIndexWithPrefix(e.stg, idx, def.JSONFieldName, prefix); bErr != nil {
 			return bErr
 		}
@@ -1022,6 +1048,10 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 		idxType = index.IndexTypeUnique
 	}
 
+	// A compound entity index covers the entity type's keyspace, the same
+	// prefix its backfill scans below (go-qrdb#410).
+	entityScope := entityType + "/"
+
 	cfg := index.IndexConfig{
 		Name:          idxName,
 		Type:          idxType,
@@ -1029,6 +1059,7 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 		Unique:        def.Unique,
 		Sparse:        def.Sparse,
 		CaseSensitive: def.CaseSensitive,
+		KeyPrefix:     entityScope,
 	}
 
 	idx, err := index.NewCompoundIndex(e.stg, cfg, log)
@@ -1038,9 +1069,10 @@ func (e *KVEngine) registerCompoundIndex(entityType string, def EntityIndex, log
 
 	e.compoundIndexes[idxName] = idx
 	e.compoundIndexFields[idxName] = def.JSONFieldNames
+	e.compoundIndexScopes[idxName] = ComposeIndexScope(idxName, entityScope)
 
 	// Backfill from existing data.
-	prefix := []byte(entityType + "/")
+	prefix := []byte(entityScope)
 	if bErr := BackfillCompoundIndexWithPrefix(e.stg, idx, def.JSONFieldNames, prefix); bErr != nil {
 		return bErr
 	}
@@ -1113,10 +1145,10 @@ func (e *KVEngine) PutWithIndexes(key, value []byte) error {
 	if err := batch.Set(key, value); err != nil {
 		return err
 	}
-	if err := UpdateIndexesBatch(batch, filteredIndexes, filteredFields, key, value, prevKv); err != nil {
+	if err := UpdateIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, value, prevKv); err != nil {
 		return err
 	}
-	if err := UpdateCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, key, value, prevKv); err != nil {
+	if err := UpdateCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, value, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()
@@ -1141,10 +1173,10 @@ func (e *KVEngine) DeleteWithIndexes(key []byte) error {
 	if err := batch.Delete(key); err != nil {
 		return err
 	}
-	if err := RemoveIndexesBatch(batch, filteredIndexes, filteredFields, key, prevKv); err != nil {
+	if err := RemoveIndexesBatch(batch, filteredIndexes, filteredFields, e.indexScopes, key, prevKv); err != nil {
 		return err
 	}
-	if err := RemoveCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, key, prevKv); err != nil {
+	if err := RemoveCompoundIndexesBatch(batch, filteredCompound, filteredCompoundFields, e.compoundIndexScopes, key, prevKv); err != nil {
 		return err
 	}
 	return batch.Commit()

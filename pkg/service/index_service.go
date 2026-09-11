@@ -56,6 +56,11 @@ func (s *IndexService) CreateIndex(ctx context.Context, name, fieldName string, 
 		Sparse:          config.Sparse,
 		Numeric:         config.ValueType == index.IndexValueTypeNumeric,
 		CaseInsensitive: !config.CaseSensitive,
+		// The key scope the caller declared, carried to the apply path so
+		// index maintenance is confined to it (go-qrdb#410). A caller that
+		// declares nothing gets the scope its index NAME carries, which under
+		// a namespaced registry is its own (tenant, database).
+		KeyPrefix: config.KeyPrefix,
 	})
 	if err != nil {
 		return &EncodeRequestError{Err: err}

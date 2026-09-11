@@ -76,6 +76,25 @@ type IndexConfig struct {
 	// Unique enforces that each indexed value maps to at most one key.
 	Unique bool
 
+	// KeyPrefix is the key scope the index covers, RELATIVE to the namespace
+	// its Name carries. The engines maintain the index only for keys under
+	// that scope, so an index declared for one collection never indexes
+	// another collection's documents, another database's keys or a plain
+	// key-value key (go-qrdb#410).
+	//
+	// Relative, because the "<tenant>/<database>/" namespace is applied to
+	// the index NAME and to every KEY by the same registry wrapper; the
+	// engine composes the namespace it reads back off the name with this
+	// prefix (engine.ComposeIndexScope). A creator with nothing to declare
+	// beyond its namespace leaves this empty and gets a namespace-wide scope;
+	// a name with no namespace and no prefix is an UNSCOPED index covering
+	// the whole state machine.
+	//
+	// Recorded for fidelity with the definition; no Index implementation
+	// reads it. Scoping happens in the index-maintenance callers, as Sparse
+	// does below.
+	KeyPrefix string
+
 	// Sparse skips indexing keys where the indexed field is absent
 	// or empty.
 	//

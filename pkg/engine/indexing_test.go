@@ -41,7 +41,7 @@ func TestUpdateIndexes_JSONValue(t *testing.T) {
 	key := []byte("user:1")
 	value := []byte(`{"name":"alice","age":30}`)
 
-	if err := UpdateIndexes(indexes, indexFields, key, value, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateIndexes: %v", err)
 	}
 
@@ -63,7 +63,7 @@ func TestUpdateIndexes_NonJSONValue(t *testing.T) {
 	value := []byte("not-json")
 
 	// Should not panic or index anything.
-	if err := UpdateIndexes(indexes, indexFields, key, value, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateIndexes: %v", err)
 	}
 
@@ -85,14 +85,14 @@ func TestUpdateIndexes_PreviousValueCleanup(t *testing.T) {
 
 	// First insert.
 	oldValue := []byte(`{"name":"alice"}`)
-	if err := UpdateIndexes(indexes, indexFields, key, oldValue, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, oldValue, nil); err != nil {
 		t.Fatalf("UpdateIndexes (first insert): %v", err)
 	}
 
 	// Update with previous value.
 	newValue := []byte(`{"name":"bob"}`)
 	prevKv := &service.KeyValue{Key: key, Value: oldValue}
-	if err := UpdateIndexes(indexes, indexFields, key, newValue, prevKv); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, newValue, prevKv); err != nil {
 		t.Fatalf("UpdateIndexes (update): %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestUpdateIndexes_MissingField(t *testing.T) {
 	key := []byte("user:1")
 	value := []byte(`{"name":"alice"}`)
 
-	if err := UpdateIndexes(indexes, indexFields, key, value, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateIndexes: %v", err)
 	}
 
@@ -139,10 +139,10 @@ func TestUpdateIndexes_MissingField(t *testing.T) {
 
 func TestUpdateIndexes_EmptyIndexesMap(t *testing.T) {
 	// Should return immediately without error.
-	if err := UpdateIndexes(nil, nil, []byte("key"), []byte(`{"a":"b"}`), nil); err != nil {
+	if err := UpdateIndexes(nil, nil, nil, []byte("key"), []byte(`{"a":"b"}`), nil); err != nil {
 		t.Fatalf("UpdateIndexes(nil): %v", err)
 	}
-	if err := UpdateIndexes(map[string]index.Index{}, map[string]string{}, []byte("key"), []byte(`{"a":"b"}`), nil); err != nil {
+	if err := UpdateIndexes(map[string]index.Index{}, map[string]string{}, nil, []byte("key"), []byte(`{"a":"b"}`), nil); err != nil {
 		t.Fatalf("UpdateIndexes(empty): %v", err)
 	}
 }
@@ -156,14 +156,12 @@ func TestUpdateIndexes_UniqueViolationReturnsError(t *testing.T) {
 	indexFields := map[string]string{"by_email": "email"}
 
 	// First insert: should succeed.
-	if err := UpdateIndexes(indexes, indexFields,
-		[]byte("user:1"), []byte(`{"email":"alice@example.com"}`), nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, []byte("user:1"), []byte(`{"email":"alice@example.com"}`), nil); err != nil {
 		t.Fatalf("first insert: unexpected error: %v", err)
 	}
 
 	// Second insert with same email on a different key: must return an error.
-	err := UpdateIndexes(indexes, indexFields,
-		[]byte("user:2"), []byte(`{"email":"alice@example.com"}`), nil)
+	err := UpdateIndexes(indexes, indexFields, nil, []byte("user:2"), []byte(`{"email":"alice@example.com"}`), nil)
 	if err == nil {
 		t.Fatal("expected unique constraint error, got nil")
 	}
@@ -187,14 +185,14 @@ func TestUpdateIndexes_SameKeyUpdateNoViolation(t *testing.T) {
 	key := []byte("user:1")
 	oldVal := []byte(`{"email":"alice@example.com"}`)
 
-	if err := UpdateIndexes(indexes, indexFields, key, oldVal, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, oldVal, nil); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	// Updating the same key to a new email should not be a violation.
 	newVal := []byte(`{"email":"alice2@example.com"}`)
 	prevKv := &service.KeyValue{Key: key, Value: oldVal}
-	if err := UpdateIndexes(indexes, indexFields, key, newVal, prevKv); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, newVal, prevKv); err != nil {
 		t.Fatalf("update same key: unexpected error: %v", err)
 	}
 
@@ -230,7 +228,7 @@ func TestRemoveIndexes_JSONValue(t *testing.T) {
 	value := []byte(`{"name":"alice"}`)
 
 	// First add the index entry.
-	if err := UpdateIndexes(indexes, indexFields, key, value, nil); err != nil {
+	if err := UpdateIndexes(indexes, indexFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateIndexes: %v", err)
 	}
 	ids, _ := idx.Get([]byte("alice"))
@@ -240,7 +238,7 @@ func TestRemoveIndexes_JSONValue(t *testing.T) {
 
 	// Now remove it.
 	prevKv := &service.KeyValue{Key: key, Value: value}
-	if err := RemoveIndexes(indexes, indexFields, key, prevKv); err != nil {
+	if err := RemoveIndexes(indexes, indexFields, nil, key, prevKv); err != nil {
 		t.Fatalf("RemoveIndexes: %v", err)
 	}
 
@@ -259,7 +257,7 @@ func TestRemoveIndexes_NilPrevKv(t *testing.T) {
 	indexFields := map[string]string{"by_name": "name"}
 
 	// Should not panic when prevKv is nil.
-	if err := RemoveIndexes(indexes, indexFields, []byte("key"), nil); err != nil {
+	if err := RemoveIndexes(indexes, indexFields, nil, []byte("key"), nil); err != nil {
 		t.Fatalf("RemoveIndexes(nil prevKv): %v", err)
 	}
 
@@ -272,10 +270,10 @@ func TestRemoveIndexes_NilPrevKv(t *testing.T) {
 func TestRemoveIndexes_EmptyIndexes(t *testing.T) {
 	prevKv := &service.KeyValue{Key: []byte("key"), Value: []byte(`{"name":"alice"}`)}
 	// Should return immediately without error.
-	if err := RemoveIndexes(nil, nil, []byte("key"), prevKv); err != nil {
+	if err := RemoveIndexes(nil, nil, nil, []byte("key"), prevKv); err != nil {
 		t.Fatalf("RemoveIndexes(nil): %v", err)
 	}
-	if err := RemoveIndexes(map[string]index.Index{}, map[string]string{}, []byte("key"), prevKv); err != nil {
+	if err := RemoveIndexes(map[string]index.Index{}, map[string]string{}, nil, []byte("key"), prevKv); err != nil {
 		t.Fatalf("RemoveIndexes(empty): %v", err)
 	}
 }
@@ -287,7 +285,7 @@ func TestRemoveIndexes_NonJSONPrevValue(t *testing.T) {
 
 	prevKv := &service.KeyValue{Key: []byte("key"), Value: []byte("not-json")}
 	// Should not panic for non-JSON previous value.
-	if err := RemoveIndexes(indexes, indexFields, []byte("key"), prevKv); err != nil {
+	if err := RemoveIndexes(indexes, indexFields, nil, []byte("key"), prevKv); err != nil {
 		t.Fatalf("RemoveIndexes(non-JSON): %v", err)
 	}
 }
@@ -307,7 +305,7 @@ func TestBackfillIndex_MatchingEntries(t *testing.T) {
 		}, nil
 	}
 
-	BackfillIndex(scanner, idx, "city")
+	BackfillIndex(scanner, idx, "city", nil)
 
 	nycIDs, err := idx.Get([]byte("nyc"))
 	if err != nil {
@@ -337,7 +335,7 @@ func TestBackfillIndex_NonMatchingEntries(t *testing.T) {
 		}, nil
 	}
 
-	BackfillIndex(scanner, idx, "city")
+	BackfillIndex(scanner, idx, "city", nil)
 
 	all, err := idx.GetAll()
 	if err != nil {
@@ -356,7 +354,7 @@ func TestBackfillIndex_ScannerError(t *testing.T) {
 	}
 
 	// Should not panic on scanner error.
-	BackfillIndex(scanner, idx, "city")
+	BackfillIndex(scanner, idx, "city", nil)
 
 	all, _ := idx.GetAll()
 	if len(all) != 0 {
@@ -374,7 +372,7 @@ func TestBackfillIndex_EmptyValues(t *testing.T) {
 		}, nil
 	}
 
-	BackfillIndex(scanner, idx, "city")
+	BackfillIndex(scanner, idx, "city", nil)
 
 	all, _ := idx.GetAll()
 	if len(all) != 0 {
@@ -402,7 +400,7 @@ func TestBackfillIndex_PutErrorLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	defer slog.SetDefault(prev)
 
-	BackfillIndex(scanner, idx, "email")
+	BackfillIndex(scanner, idx, "email", nil)
 
 	all, err := idx.GetAll()
 	if err != nil {
@@ -497,8 +495,7 @@ func TestUpdateIndexesBatch_JSONValue(t *testing.T) {
 	indexFields := map[string]string{"by_name": "name"}
 
 	batch := stg.Batch()
-	bErr := UpdateIndexesBatch(batch, indexes, indexFields,
-		[]byte("user:1"), []byte(`{"name":"alice"}`), nil)
+	bErr := UpdateIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), []byte(`{"name":"alice"}`), nil)
 	if bErr != nil {
 		t.Fatalf("UpdateIndexesBatch: %v", bErr)
 	}
@@ -536,8 +533,7 @@ func TestUpdateIndexesBatch_NonJSON(t *testing.T) {
 	indexFields := map[string]string{"by_name": "name"}
 
 	batch := stg.Batch()
-	bErr := UpdateIndexesBatch(batch, indexes, indexFields,
-		[]byte("user:1"), []byte("not-json"), nil)
+	bErr := UpdateIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), []byte("not-json"), nil)
 	if bErr != nil {
 		t.Fatalf("UpdateIndexesBatch: %v", bErr)
 	}
@@ -574,8 +570,7 @@ func TestUpdateIndexesBatch_WithPreviousValue(t *testing.T) {
 
 	// First insert.
 	batch1 := stg.Batch()
-	bErr := UpdateIndexesBatch(batch1, indexes, indexFields,
-		[]byte("user:1"), []byte(`{"name":"alice"}`), nil)
+	bErr := UpdateIndexesBatch(batch1, indexes, indexFields, nil, []byte("user:1"), []byte(`{"name":"alice"}`), nil)
 	if bErr != nil {
 		t.Fatalf("UpdateIndexesBatch (first): %v", bErr)
 	}
@@ -586,8 +581,7 @@ func TestUpdateIndexesBatch_WithPreviousValue(t *testing.T) {
 	// Update with previous value -- old entry should be removed, new one added.
 	prevKv := &qkv.KeyValue{Key: []byte("user:1"), Value: []byte(`{"name":"alice"}`)}
 	batch2 := stg.Batch()
-	bErr = UpdateIndexesBatch(batch2, indexes, indexFields,
-		[]byte("user:1"), []byte(`{"name":"bob"}`), prevKv)
+	bErr = UpdateIndexesBatch(batch2, indexes, indexFields, nil, []byte("user:1"), []byte(`{"name":"bob"}`), prevKv)
 	if bErr != nil {
 		t.Fatalf("UpdateIndexesBatch (update): %v", bErr)
 	}
@@ -637,8 +631,7 @@ func TestRemoveIndexesBatch_RemovesEntry(t *testing.T) {
 
 	// Add an entry via batch.
 	batch1 := stg.Batch()
-	bErr := UpdateIndexesBatch(batch1, indexes, indexFields,
-		[]byte("user:1"), []byte(`{"name":"alice"}`), nil)
+	bErr := UpdateIndexesBatch(batch1, indexes, indexFields, nil, []byte("user:1"), []byte(`{"name":"alice"}`), nil)
 	if bErr != nil {
 		t.Fatalf("UpdateIndexesBatch: %v", bErr)
 	}
@@ -658,7 +651,7 @@ func TestRemoveIndexesBatch_RemovesEntry(t *testing.T) {
 	// Remove via RemoveIndexesBatch.
 	prevKv := &qkv.KeyValue{Key: []byte("user:1"), Value: []byte(`{"name":"alice"}`)}
 	batch2 := stg.Batch()
-	rErr := RemoveIndexesBatch(batch2, indexes, indexFields, []byte("user:1"), prevKv)
+	rErr := RemoveIndexesBatch(batch2, indexes, indexFields, nil, []byte("user:1"), prevKv)
 	if rErr != nil {
 		t.Fatalf("RemoveIndexesBatch: %v", rErr)
 	}
@@ -783,12 +776,12 @@ func TestUpdateIndexesBatch_EmptyIndexes(t *testing.T) {
 	defer func() { _ = batch.Close() }()
 
 	// Nil indexes map.
-	if err := UpdateIndexesBatch(batch, nil, nil, []byte("k"), []byte(`{"a":"b"}`), nil); err != nil {
+	if err := UpdateIndexesBatch(batch, nil, nil, nil, []byte("k"), []byte(`{"a":"b"}`), nil); err != nil {
 		t.Fatalf("UpdateIndexesBatch(nil): %v", err)
 	}
 
 	// Empty indexes map.
-	if err := UpdateIndexesBatch(batch, map[string]index.Index{}, map[string]string{}, []byte("k"), []byte(`{"a":"b"}`), nil); err != nil {
+	if err := UpdateIndexesBatch(batch, map[string]index.Index{}, map[string]string{}, nil, []byte("k"), []byte(`{"a":"b"}`), nil); err != nil {
 		t.Fatalf("UpdateIndexesBatch(empty): %v", err)
 	}
 }
@@ -810,8 +803,7 @@ func TestUpdateIndexesBatch_NonBatchableIndex(t *testing.T) {
 	defer func() { _ = batch.Close() }()
 
 	// Should skip the non-batchable index gracefully, no error.
-	err := UpdateIndexesBatch(batch, indexes, indexFields,
-		[]byte("user:1"), []byte(`{"name":"alice"}`), nil)
+	err := UpdateIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), []byte(`{"name":"alice"}`), nil)
 	if err != nil {
 		t.Fatalf("UpdateIndexesBatch with MemoryIndex: %v", err)
 	}
@@ -854,7 +846,7 @@ func TestRemoveIndexesBatch_NilPrevKv(t *testing.T) {
 	defer func() { _ = batch.Close() }()
 
 	// nil prevKv -- should return nil immediately.
-	rErr := RemoveIndexesBatch(batch, indexes, indexFields, []byte("user:1"), nil)
+	rErr := RemoveIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), nil)
 	if rErr != nil {
 		t.Fatalf("RemoveIndexesBatch(nil prevKv): %v", rErr)
 	}
@@ -886,7 +878,7 @@ func TestRemoveIndexesBatch_EmptyPrevValue(t *testing.T) {
 
 	// prevKv with empty Value -- should return nil immediately.
 	prevKv := &qkv.KeyValue{Key: []byte("user:1"), Value: []byte{}}
-	rErr := RemoveIndexesBatch(batch, indexes, indexFields, []byte("user:1"), prevKv)
+	rErr := RemoveIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), prevKv)
 	if rErr != nil {
 		t.Fatalf("RemoveIndexesBatch(empty value): %v", rErr)
 	}
@@ -918,7 +910,7 @@ func TestRemoveIndexesBatch_NonJSONPrevValue(t *testing.T) {
 
 	// prevKv with non-JSON Value -- should return nil (JSON parse fails gracefully).
 	prevKv := &qkv.KeyValue{Key: []byte("user:1"), Value: []byte("not-json-at-all")}
-	rErr := RemoveIndexesBatch(batch, indexes, indexFields, []byte("user:1"), prevKv)
+	rErr := RemoveIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), prevKv)
 	if rErr != nil {
 		t.Fatalf("RemoveIndexesBatch(non-JSON): %v", rErr)
 	}
@@ -944,7 +936,7 @@ func TestRemoveIndexesBatch_NonBatchableIndex(t *testing.T) {
 	defer func() { _ = batch.Close() }()
 
 	prevKv := &qkv.KeyValue{Key: []byte("user:1"), Value: []byte(`{"name":"alice"}`)}
-	rErr := RemoveIndexesBatch(batch, indexes, indexFields, []byte("user:1"), prevKv)
+	rErr := RemoveIndexesBatch(batch, indexes, indexFields, nil, []byte("user:1"), prevKv)
 	if rErr != nil {
 		t.Fatalf("RemoveIndexesBatch with MemoryIndex: %v", rErr)
 	}
@@ -1122,7 +1114,7 @@ func TestUpdateCompoundIndexesBatch_EmptyMap_NoOp(t *testing.T) {
 	batch := stg.Batch()
 	defer func() { _ = batch.Close() }()
 
-	err := UpdateCompoundIndexesBatch(batch, nil, nil, []byte("k"), []byte(`{"a":"1"}`), nil)
+	err := UpdateCompoundIndexesBatch(batch, nil, nil, nil, []byte("k"), []byte(`{"a":"1"}`), nil)
 	if err != nil {
 		t.Fatalf("expected nil error for empty compound indexes, got %v", err)
 	}
@@ -1148,7 +1140,7 @@ func TestUpdateCompoundIndexesBatch_NonJSONValue_Skipped(t *testing.T) {
 	compoundFields := map[string][]string{"entities.A_B": {"a", "b"}}
 
 	// Non-JSON value: should be silently skipped, not error.
-	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, []byte("entities/1"), []byte("not-json"), nil)
+	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, []byte("entities/1"), []byte("not-json"), nil)
 	if err != nil {
 		t.Fatalf("expected nil error for non-JSON value, got %v", err)
 	}
@@ -1173,7 +1165,7 @@ func TestUpdateCompoundIndexesBatch_HappyPath(t *testing.T) {
 	key := []byte("docs/1")
 	value := []byte(`{"author":"alice","year":"2024"}`)
 
-	if err := UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, value, nil); err != nil {
+	if err := UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateCompoundIndexesBatch: %v", err)
 	}
 	if err := batch.Commit(); err != nil {
@@ -1210,7 +1202,7 @@ func TestUpdateCompoundIndexesBatch_UpdateRemovesOldEntry(t *testing.T) {
 
 	// Insert old entry.
 	b1 := stg.Batch()
-	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, key, oldValue, nil); err != nil {
+	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, nil, key, oldValue, nil); err != nil {
 		t.Fatalf("first UpdateCompoundIndexesBatch: %v", err)
 	}
 	_ = b1.Commit()
@@ -1218,7 +1210,7 @@ func TestUpdateCompoundIndexesBatch_UpdateRemovesOldEntry(t *testing.T) {
 	// Update — provide prevKv so old entry is removed.
 	prevKv := &qkv.KeyValue{Key: key, Value: oldValue}
 	b2 := stg.Batch()
-	if err := UpdateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, key, newValue, prevKv); err != nil {
+	if err := UpdateCompoundIndexesBatch(b2, compoundIndexes, compoundFields, nil, key, newValue, prevKv); err != nil {
 		t.Fatalf("second UpdateCompoundIndexesBatch: %v", err)
 	}
 	_ = b2.Commit()
@@ -1252,7 +1244,7 @@ func TestRemoveCompoundIndexesBatch_EmptyMap_NoOp(t *testing.T) {
 	batch := stg.Batch()
 	defer func() { _ = batch.Close() }()
 
-	err := RemoveCompoundIndexesBatch(batch, nil, nil, []byte("k"), nil)
+	err := RemoveCompoundIndexesBatch(batch, nil, nil, nil, []byte("k"), nil)
 	if err != nil {
 		t.Fatalf("expected nil for empty map, got %v", err)
 	}
@@ -1278,7 +1270,7 @@ func TestRemoveCompoundIndexesBatch_NilPrevKv_NoOp(t *testing.T) {
 	compoundFields := map[string][]string{"things.X_Y": {"x", "y"}}
 
 	// prevKv is nil — should be a no-op.
-	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, []byte("things/1"), nil)
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, []byte("things/1"), nil)
 	if err != nil {
 		t.Fatalf("expected nil for nil prevKv, got %v", err)
 	}
@@ -1304,7 +1296,7 @@ func TestRemoveCompoundIndexesBatch_HappyPath(t *testing.T) {
 
 	// Insert entry.
 	b1 := stg.Batch()
-	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, key, value, nil); err != nil {
+	if err := UpdateCompoundIndexesBatch(b1, compoundIndexes, compoundFields, nil, key, value, nil); err != nil {
 		t.Fatalf("UpdateCompoundIndexesBatch: %v", err)
 	}
 	_ = b1.Commit()
@@ -1312,7 +1304,7 @@ func TestRemoveCompoundIndexesBatch_HappyPath(t *testing.T) {
 	// Remove entry.
 	prevKv := &qkv.KeyValue{Key: key, Value: value}
 	b2 := stg.Batch()
-	if err := RemoveCompoundIndexesBatch(b2, compoundIndexes, compoundFields, key, prevKv); err != nil {
+	if err := RemoveCompoundIndexesBatch(b2, compoundIndexes, compoundFields, nil, key, prevKv); err != nil {
 		t.Fatalf("RemoveCompoundIndexesBatch: %v", err)
 	}
 	_ = b2.Commit()
@@ -1496,7 +1488,7 @@ func TestRemoveCompoundIndexesBatch_NonJSONPrevKv(t *testing.T) {
 	prevKv := &qkv.KeyValue{Key: key, Value: []byte("not-json")}
 
 	// Non-JSON prevKv.Value: JSON unmarshal fails → function returns nil silently.
-	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, prevKv)
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, key, prevKv)
 	if err != nil {
 		t.Fatalf("expected nil for non-JSON prevKv.Value, got %v", err)
 	}
@@ -1527,7 +1519,7 @@ func TestRemoveCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
 	key := []byte("y/1")
 	prevKv := &qkv.KeyValue{Key: key, Value: []byte(`{"c":"v1","d":"v2"}`)}
 
-	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, prevKv)
+	err = RemoveCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, key, prevKv)
 	if err != nil {
 		t.Fatalf("expected nil when field names missing, got %v", err)
 	}
@@ -1558,7 +1550,7 @@ func TestUpdateCompoundIndexesBatch_MissingFieldsKey(t *testing.T) {
 	key := []byte("z/1")
 	value := []byte(`{"e":"v1","f":"v2"}`)
 
-	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, key, value, nil)
+	err = UpdateCompoundIndexesBatch(batch, compoundIndexes, compoundFields, nil, key, value, nil)
 	if err != nil {
 		t.Fatalf("expected nil when field names missing, got %v", err)
 	}
