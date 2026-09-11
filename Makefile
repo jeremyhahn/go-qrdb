@@ -902,7 +902,7 @@ integration-test-standalone: integration-image
 		INTEGRATION_TEST_PKGS='./test/integration/api/...' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
-		if [ $$rc -ne 0 ]; then $(MAKE) -s _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
+		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
 		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
 
@@ -928,6 +928,7 @@ integration-test-cluster: integration-image
 		INTEGRATION_TEST_PKGS='./test/integration/' \
 		docker compose -p $(INT_PROJECT) up --abort-on-container-exit integration-tests; \
 		rc=$$?; \
+		if [ $$rc -ne 0 ]; then $(MAKE) -s -C $(CURDIR) _integration-server-logs INT_PROJECT=$(INT_PROJECT); fi; \
 		docker compose -p $(INT_PROJECT) down -v; \
 		exit $$rc
 
