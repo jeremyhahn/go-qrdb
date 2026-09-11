@@ -2732,3 +2732,60 @@ func TestAuthConfig_IsEnabled_ZeroValueIsSecure(t *testing.T) {
 		t.Fatal("DefaultConfig must enable auth")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// auth.audit_failure_policy (go-qrdb#335)
+// ---------------------------------------------------------------------------
+
+// TestLoad_AuditFailurePolicyOmittedIsEmpty pins the DEFAULT at the config
+// layer. An omitted key must leave the field empty, because empty is what
+// middleware.ParseAuditFailurePolicy resolves to fail-closed. A YAML default
+// injected here -- "fail-open" by a copy-paste, or a non-empty string that
+// stops matching the parser's table -- would move the security posture
+// without touching the middleware that enforces it.
+func TestLoad_AuditFailurePolicyOmittedIsEmpty(t *testing.T) {
+	path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.AuditFailurePolicy != "" {
+		t.Fatalf("Auth.AuditFailurePolicy: got %q, want empty (the fail-closed default)",
+			cfg.Auth.AuditFailurePolicy)
+	}
+}
+
+// TestLoad_AuditFailurePolicyFromYAML proves the operator's value actually
+// reaches the struct. A setting that stops at the YAML file is one the node
+// will ignore.
+func TestLoad_AuditFailurePolicyFromYAML(t *testing.T) {
+	for _, want := range []string{"fail-open", "fail-closed"} {
+		t.Run(want, func(t *testing.T) {
+			path := writeTemp(t, validYAML+`
+auth:
+  enabled: true
+  audit_failure_policy: "`+want+`"
+`)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Auth.AuditFailurePolicy != want {
+				t.Errorf("Auth.AuditFailurePolicy: got %q, want %q", cfg.Auth.AuditFailurePolicy, want)
+			}
+		})
+	}
+}
+
+// TestAuthConfig_ZeroValueAuditFailurePolicy: an embedder that builds an
+// AuthConfig literal without an audit block gets the fail-closed posture,
+// same as an omitted YAML key.
+func TestAuthConfig_ZeroValueAuditFailurePolicy(t *testing.T) {
+	var c AuthConfig
+	if c.AuditFailurePolicy != "" {
+		t.Fatalf("zero AuthConfig.AuditFailurePolicy = %q, want empty", c.AuditFailurePolicy)
+	}
+}

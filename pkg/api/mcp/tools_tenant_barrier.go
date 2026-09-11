@@ -113,7 +113,7 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		passphrase := secretArg(req, "passphrase")
@@ -171,7 +171,7 @@ func handleTenantBarrierUnseal(svc tenant.TenantServicer, authorize tenantScopeA
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierUnseal); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		var key []byte
@@ -220,7 +220,7 @@ func handleTenantBarrierUnsealShare(svc tenant.TenantServicer, authorize tenantS
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierUnseal); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 		share := mcp.ParseString(req, "share", "")
 		if share == "" {
@@ -264,7 +264,7 @@ func handleTenantBarrierSeal(svc tenant.TenantServicer, authorize tenantScopeAut
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierSeal); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		if err := svc.TenantBarrierSeal(ctx, tenantID); err != nil {
@@ -299,7 +299,7 @@ func handleTenantBarrierStatus(svc tenant.TenantServicer, authorize tenantScopeA
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierStatus); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		status, err := svc.TenantBarrierStatus(ctx, tenantID)
@@ -357,7 +357,7 @@ func handleTenantBarrierOfficerRegister(svc tenant.TenantServicer, authorize ten
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerRegister); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		username := mcp.ParseString(req, "username", "")
@@ -415,7 +415,7 @@ func handleTenantBarrierOfficerList(svc tenant.TenantServicer, authorize tenantS
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerList); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		officers, err := svc.TenantBarrierOfficerList(ctx, tenantID)
@@ -468,7 +468,7 @@ func handleTenantBarrierShareClaimBegin(svc tenant.TenantServicer, authorize ten
 		// binding authorization (registry membership + thumbprint match +
 		// nonce-signature verification); officers are not RBAC users.
 		if err := authorize(ctx, tenantID, permission.IdentityGated); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		username := mcp.ParseString(req, "username", "")
@@ -544,7 +544,7 @@ func handleTenantBarrierShareClaimComplete(svc tenant.TenantServicer, authorize 
 		// binding authorization (registry membership + thumbprint match +
 		// nonce-signature verification); officers are not RBAC users.
 		if err := authorize(ctx, tenantID, permission.IdentityGated); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		username := mcp.ParseString(req, "username", "")
@@ -611,7 +611,7 @@ func handleTenantBarrierOfficerClaimStatus(svc tenant.TenantServicer, authorize 
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierOfficerList); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		statuses, err := svc.TenantBarrierOfficerClaimStatus(ctx, tenantID)
@@ -658,7 +658,7 @@ func handleTenantBarrierShamirSealVote(svc tenant.TenantServicer, authorize tena
 			return mcp.NewToolResultError("tenant_id is required"), nil
 		}
 		if err := authorize(ctx, tenantID, permission.TenantBarrierSealVote); err != nil {
-			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
+			return authzToolError(err), nil
 		}
 
 		share := mcp.ParseString(req, "share", "")

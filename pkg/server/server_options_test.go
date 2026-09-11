@@ -41,7 +41,7 @@ type stubLockService struct{ service.LockServicer }
 // stubAuditLogger satisfies audit.AuditLogger.
 type stubAuditLogger struct{}
 
-func (s *stubAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (s *stubAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (s *stubAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return nil, nil
 }

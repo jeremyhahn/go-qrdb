@@ -24,8 +24,13 @@ type NoopLogger struct{}
 // NewNoopLogger returns a NoopLogger.
 func NewNoopLogger() *NoopLogger { return &NoopLogger{} }
 
-// Emit discards the event.
-func (n *NoopLogger) Emit(_ context.Context, _ AuditEvent) {}
+// Emit discards the event and reports success.
+//
+// Nil is the truthful answer, not a stub: discarding IS this sink's
+// durability boundary. An operator who configures no audit backend has
+// chosen to keep no trail, and a middleware that fails closed on audit write
+// failure must not refuse every request because of that choice.
+func (n *NoopLogger) Emit(_ context.Context, _ AuditEvent) error { return nil }
 
 // Query returns an empty page with Total -1.
 func (n *NoopLogger) Query(_ context.Context, _ Filter) (*Page, error) {

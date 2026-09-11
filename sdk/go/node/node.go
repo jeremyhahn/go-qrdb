@@ -101,6 +101,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -2049,6 +2050,17 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		n.client.Store(nil)
 		return &AuthMiddlewareWiringError{Err: err}
 	}
+	// The audit failure posture: fail-closed unless the embedder's config says
+	// otherwise, and an unrecognised value fails the node's start rather than
+	// selecting a posture nobody asked for. The fail-open warning is emitted
+	// by the middleware option, so an embedded node warns identically to the
+	// daemon.
+	auditFailure, err := middleware.ParseAuditFailurePolicy(cfg.Auth.AuditFailurePolicy)
+	if err != nil {
+		_ = client.Close()
+		n.client.Store(nil)
+		return &AuthMiddlewareWiringError{Err: err}
+	}
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             cfg.Auth.IsEnabled(),
 		Authorizer:          n.authorizer,
@@ -2057,6 +2069,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		StrictSeparation:    strictSoD,
 		SPIFFETrustDomain:   cfg.Auth.SPIFFETrustDomain,
 		AuditLogger:         decisionAudit,
+		AuditFailurePolicy:  auditFailure,
 		ExtraAuthenticators: n.extraAuthenticators,
 		// Certificate revocation is enforced on the authentication path, so
 		// the certificate authority reaches the middleware and not only the

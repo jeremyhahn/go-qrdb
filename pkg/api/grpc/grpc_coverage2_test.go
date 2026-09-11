@@ -124,7 +124,7 @@ type mockAuditLogger struct {
 	queryErr    error
 }
 
-func (m *mockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (m *mockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 
 func (m *mockAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	if m.queryErr != nil {

@@ -522,8 +522,13 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 		}
 
 		if authErr := s.authorize(ctx, method); authErr != nil {
-			_ = wire.WriteResponse(stream, requestID, wire.StatusPermissionDenied, []byte(authErr.Error()))
-			s.logRequest(method, requestID, wire.StatusPermissionDenied, start)
+			// The status follows the CLASS of the failure, not the call site.
+			// Hard-coding PermissionDenied told a caller whose request this
+			// node merely could not RECORD that it was not permitted, and
+			// permission-denied is terminal in every client.
+			authStatus := authzStatus(authErr)
+			_ = wire.WriteResponse(stream, requestID, authStatus, []byte(authErr.Error()))
+			s.logRequest(method, requestID, authStatus, start)
 			return
 		}
 	}

@@ -16,14 +16,12 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
-	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
@@ -244,65 +242,13 @@ func injectTLSState(ctx context.Context) context.Context {
 	return auth.WithTLSState(ctx, &tlsInfo.State)
 }
 
-// mapGRPCAuthError converts authentication/authorization errors to
-// appropriate gRPC status codes. AuthError with code "unauthenticated"
-// maps to codes.Unauthenticated; "unauthorized" maps to
-// codes.PermissionDenied. UserDisabledError maps to
-// codes.PermissionDenied. All other errors map to codes.Unauthenticated.
+// mapGRPCAuthError converts authentication/authorization errors to gRPC
+// status codes for the gRPC auth interceptors.
+//
+// The per-type reasoning lives once in failure_class.go; this wrapper supplies
+// the fallback specific to this call site. codes.Unauthenticated for an
+// unrecognised failure, for the same reason mapHTTPAuthError answers 401: the
+// interceptors authenticate as well as authorize.
 func mapGRPCAuthError(err error) error {
-	var authErr *auth.AuthError
-	if errors.As(err, &authErr) {
-		switch authErr.Code {
-		case "unauthenticated", "no_peer_cert", "invalid_cert", "cert_revoked":
-			return status.Error(codes.Unauthenticated, authErr.Error())
-		case "unauthorized":
-			return status.Error(codes.PermissionDenied, authErr.Error())
-		}
-	}
-
-	var unavailable *StoreUnavailableError
-	if errors.As(err, &unavailable) {
-		return status.Error(codes.Unavailable, unavailable.Error())
-	}
-
-	// Unavailable, not Unauthenticated: the certificate may be perfectly good
-	// and this node could not read revocation state. The correct instruction
-	// to the client is "retry", not "your credential is bad".
-	var revocationErr *auth.RevocationCheckError
-	if errors.As(err, &revocationErr) {
-		return status.Error(codes.Unavailable, revocationErr.Error())
-	}
-
-	var disabled *UserDisabledError
-	if errors.As(err, &disabled) {
-		return status.Error(codes.PermissionDenied, disabled.Error())
-	}
-
-	// The credential is valid and the account is in good standing; this WAY in
-	// is not one the account may use. PermissionDenied, matching the disabled
-	// case: retrying the same method will never succeed, so Unauthenticated
-	// (which invites a credential retry) would be the wrong instruction.
-	var badMethod *AuthMethodNotPermittedError
-	if errors.As(err, &badMethod) {
-		return status.Error(codes.PermissionDenied, badMethod.Error())
-	}
-
-	var chainErr *AuthChainError
-	if errors.As(err, &chainErr) {
-		return status.Error(codes.Unauthenticated, chainErr.Error())
-	}
-
-	// ResourceExhausted, not PermissionDenied: the credential and the grant
-	// are both fine, and codes.ResourceExhausted is the standard gRPC
-	// signal a client library maps to "back off and retry" rather than
-	// "re-authenticate" or "do not retry at all". Covers the unix-socket
-	// listener too -- it registers this same interceptor (see
-	// pkg/api/unix/server.go), so a caller over its unix-transport quota
-	// sees the identical code a TCP gRPC caller would.
-	var rateLimited *RateLimitedError
-	if errors.As(err, &rateLimited) {
-		return status.Error(codes.ResourceExhausted, rateLimited.Error())
-	}
-
-	return status.Error(codes.Unauthenticated, err.Error())
+	return GRPCError(err, codes.Unauthenticated)
 }

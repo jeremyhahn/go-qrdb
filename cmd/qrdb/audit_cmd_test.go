@@ -44,8 +44,9 @@ type mockAuditLogger struct {
 
 var _ audit.AuditLogger = (*mockAuditLogger)(nil)
 
-func (m *mockAuditLogger) Emit(_ context.Context, ev audit.AuditEvent) {
+func (m *mockAuditLogger) Emit(_ context.Context, ev audit.AuditEvent) error {
 	m.emitted = append(m.emitted, ev)
+	return nil
 }
 
 func (m *mockAuditLogger) Query(ctx context.Context, f audit.Filter) (*audit.Page, error) {

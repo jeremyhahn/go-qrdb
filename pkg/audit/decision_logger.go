@@ -20,9 +20,14 @@ import "context"
 // (Log/Close over Entry) onto the canonical chained AuditLogger (Emit over
 // AuditEvent), so authorization decisions land in the SAME tamper-evident
 // event log as every other audited operation — one audit plane, not a
-// second sink. Emit is non-blocking and best-effort by contract, which
-// preserves the middleware's requirement that audit failures never block
-// or fail the decision being recorded.
+// second sink.
+//
+// It is a pure adapter: whatever the sink says about the record, Log says to
+// the middleware. Until go-qrdb#335 it discarded the sink's answer and
+// returned nil unconditionally, which made the middleware's fail-closed
+// branch structurally unreachable and the compliance property "no
+// authorization decision without a persisted record" unenforceable by
+// construction.
 type decisionLogger struct {
 	sink AuditLogger
 }
@@ -36,9 +41,11 @@ func NewDecisionLogger(sink AuditLogger) Logger {
 	return &decisionLogger{sink: sink}
 }
 
-// Log converts entry to an AuditEvent and emits it. It never returns an
-// error: Emit is best-effort by contract, and a decision must never fail
-// because its audit record could not be written.
+// Log converts entry to an AuditEvent and emits it, returning whatever the
+// sink reported — a *WriteError when the record did not reach the sink's
+// durability boundary, nil when it did.
+//
+// A nil entry is not an error: there is nothing to record and nothing failed.
 func (l *decisionLogger) Log(ctx context.Context, entry *Entry) error {
 	if entry == nil {
 		return nil
@@ -57,8 +64,7 @@ func (l *decisionLogger) Log(ctx context.Context, entry *Entry) error {
 			ev.Attributes[k] = v
 		}
 	}
-	l.sink.Emit(ctx, ev)
-	return nil
+	return l.sink.Emit(ctx, ev)
 }
 
 // Close is a no-op: the underlying AuditLogger's lifecycle belongs to its

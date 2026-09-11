@@ -129,8 +129,14 @@ func auditPageToTransport(p *audit.Page) *transport.AuditPage {
 }
 
 // EmitAudit records a compliance-grade audit event through the wrapped
-// AuditLogger. Emit is best-effort and non-blocking per the logger contract,
-// so this returns nil once the event has been handed off.
+// AuditLogger and returns whether it was recorded.
+//
+// PROPAGATED, not best-effort: the caller asked for this event to be
+// recorded and has nothing else to go on. A nil return means the sink
+// reached its durability boundary; a non-nil return is the sink's own
+// *audit.WriteError naming the backend that refused. Before go-qrdb#335 this
+// returned nil unconditionally, which told an embedder its compliance record
+// had landed when it had not.
 func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) error {
 	if c.transport.closed.Load() {
 		return &transport.ClosedError{}
@@ -138,8 +144,7 @@ func (c *auditClient) EmitAudit(ctx context.Context, ev transport.AuditEvent) er
 	if c.transport.auditLogger == nil {
 		return &MissingAuditLoggerError{}
 	}
-	c.transport.auditLogger.Emit(ctx, auditEventToDomain(ev))
-	return nil
+	return c.transport.auditLogger.Emit(ctx, auditEventToDomain(ev))
 }
 
 // QueryAudit returns a paginated page of audit events matching the filter

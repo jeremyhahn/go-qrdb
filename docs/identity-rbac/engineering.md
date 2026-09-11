@@ -442,3 +442,21 @@ Authentication and authorization decisions are audited through
 [../audit/](../audit/), including the actor, the role at event time, the
 resource, the action and the outcome (`success`, `failure:<reason>`,
 `denied:<reason>`).
+
+**The audit record is part of the decision, not a side effect of it.** When the
+audit sink cannot record an authorization decision, the middleware **refuses
+the request** — `*middleware.AuditError` wrapping the sink's error, answered as
+HTTP 503 / gRPC `Unavailable`. The refusal is uniform across every exit from
+`authorize()`: the RBAC grant, the RBAC denial, the `IdentityGated`
+short-circuit, the sealed-tenant `Unavailable` and the rate-limit refusal.
+
+An operator may select the availability reading with
+`auth.audit_failure_policy: "fail-open"`, which is compliance-relevant and
+documented in [../audit/engineering.md](../audit/engineering.md#configuration).
+It is not a fallback: nothing degrades to it, and selecting it warns at every
+startup.
+
+The refusal caused by an audit outage cannot itself be audited — the only sink
+is the one that failed. It is carried instead by
+`qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}` and an
+`ERROR` line on the operational log stream.

@@ -275,7 +275,7 @@ func (allowAllAuthorizer) Authorize(_ context.Context, _ *auth.Identity, _, _ st
 // recordingAuditLogger is a no-op audit.AuditLogger for the registration test.
 type recordingAuditLogger struct{}
 
-func (recordingAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (recordingAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 
 func (recordingAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return &audit.Page{}, nil

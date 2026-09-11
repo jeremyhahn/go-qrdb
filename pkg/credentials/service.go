@@ -143,7 +143,7 @@ func (s *CredentialService) emitAudit(ctx context.Context, action, name string, 
 		actor = id.Subject
 		tenantID = id.TenantID
 	}
-	logger.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, logger, "credentials", audit.AuditEvent{
 		Actor:      actor,
 		TenantID:   tenantID,
 		Resource:   "credential:" + name,

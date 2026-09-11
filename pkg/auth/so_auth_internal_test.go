@@ -118,7 +118,7 @@ func (m *internalMemKV) ScanCompoundIndex(_ context.Context, _ string, _ [][]byt
 
 type internalNoopAudit struct{}
 
-func (n *internalNoopAudit) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (n *internalNoopAudit) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (n *internalNoopAudit) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return &audit.Page{}, nil
 }

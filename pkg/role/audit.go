@@ -46,7 +46,7 @@ func (s *kvRoleStore) emitAudit(ctx context.Context, action, resource string, at
 		actor = id.Subject
 		tenantID = id.TenantID
 	}
-	s.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, s.audit, "role", audit.AuditEvent{
 		Actor:      actor,
 		TenantID:   tenantID,
 		Resource:   resource,

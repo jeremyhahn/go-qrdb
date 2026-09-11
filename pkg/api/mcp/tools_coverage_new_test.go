@@ -457,7 +457,7 @@ type covMockAuditLogger struct {
 	queryFn func(ctx context.Context, f audit.Filter) (*audit.Page, error)
 }
 
-func (m *covMockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (m *covMockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (m *covMockAuditLogger) Query(ctx context.Context, f audit.Filter) (*audit.Page, error) {
 	if m.queryFn != nil {
 		return m.queryFn(ctx, f)

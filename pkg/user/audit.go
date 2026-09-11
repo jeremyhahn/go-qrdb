@@ -48,7 +48,7 @@ func (s *kvUserStore) emitAudit(ctx context.Context, action string, userID uint6
 		actor = id.Subject
 		tenantID = id.TenantID
 	}
-	s.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, s.audit, "user", audit.AuditEvent{
 		Actor:      actor,
 		TenantID:   tenantID,
 		Resource:   "user:" + strconv.FormatUint(userID, 10),

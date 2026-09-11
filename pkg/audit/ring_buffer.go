@@ -45,9 +45,14 @@ func NewRingBuffer(capacity int) *RingBuffer {
 	}
 }
 
-// Emit appends ev to the ring buffer. If the buffer is full, the oldest event
-// is silently overwritten.
-func (r *RingBuffer) Emit(_ context.Context, ev AuditEvent) {
+// Emit appends ev to the ring buffer and reports success. If the buffer is
+// full, the oldest event is overwritten.
+//
+// It cannot fail: the backing array is allocated at construction, so there is
+// no write to a resource that could refuse it. Overwriting the oldest event is
+// the buffer's stated capacity policy, not a write failure -- a caller that
+// needs the older event to survive configures a durable sink beside this one.
+func (r *RingBuffer) Emit(_ context.Context, ev AuditEvent) error {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
@@ -61,6 +66,7 @@ func (r *RingBuffer) Emit(_ context.Context, ev AuditEvent) {
 		r.head = (r.head + 1) % r.capacity
 	}
 	r.mu.Unlock()
+	return nil
 }
 
 // Query returns a paginated Page of events matching f from the ring buffer

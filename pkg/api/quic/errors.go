@@ -228,6 +228,30 @@ func mapServiceError(err error) (uint16, []byte) {
 		return wire.StatusOK, nil
 	}
 
+	// AUTHORIZATION FIRST, and via the shared classifier rather than a clause
+	// per error type.
+	//
+	// The eleven tenant-barrier handlers gate on the auth middleware and
+	// `return nil, err`, so their refusals arrive HERE, not at the method-level
+	// gate in handleStream. Nothing below classified them: *AuditError,
+	// *StoreUnavailableError and *RateLimitedError all fell through to
+	// StatusError, and so did every RBAC denial from the tenant-scoped gate.
+	// The docs claimed QUIC answered StatusUnavailable for a failed audit write
+	// and it did not -- on precisely the handlers that claim was written about.
+	//
+	// Routing through authzStatus means REST, gRPC, MCP and QUIC all answer
+	// from one middleware.ClassifyAuthError. Fixing the mapper in one place and
+	// leaving eleven callers on the old path is the shape this defect already
+	// took once (go-qrdb#335 review round 2, the AuthorizationError unwrap), so
+	// it is fixed for the CALLERS here rather than for the one entry point that
+	// happened to be under the microscope.
+	//
+	// StatusError stays the fallback for an unclassified error, so nothing this
+	// package did not already recognise changes answer.
+	if class := authmw.ClassifyAuthError(err); class != authmw.AuthFailureUnknown {
+		return authzStatus(err), []byte(err.Error())
+	}
+
 	msg := []byte(err.Error())
 
 	// Unimplemented, not Error. The node is healthy; it simply was not built

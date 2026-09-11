@@ -108,8 +108,9 @@ type fakeAuditLogger struct {
 	events []audit.AuditEvent
 }
 
-func (f *fakeAuditLogger) Emit(_ context.Context, ev audit.AuditEvent) {
+func (f *fakeAuditLogger) Emit(_ context.Context, ev audit.AuditEvent) error {
 	f.events = append(f.events, ev)
+	return nil
 }
 
 func (f *fakeAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {

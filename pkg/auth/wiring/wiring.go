@@ -209,6 +209,16 @@ type AuthMiddlewareConfig struct {
 	// (middleware.WithAuditLogger).
 	AuditLogger audit.Logger
 
+	// AuditFailurePolicy selects what the middleware does when AuditLogger
+	// cannot record a decision (middleware.WithAuditFailurePolicy).
+	//
+	// The ZERO VALUE is middleware.AuditFailClosed, so an embedder that never
+	// sets this field gets the secure posture -- the request is refused rather
+	// than granted unrecorded. Resolve an operator's configured string with
+	// middleware.ParseAuditFailurePolicy at the call site, which fails the
+	// boot on an unrecognised value rather than guessing a posture.
+	AuditFailurePolicy middleware.AuditFailurePolicy
+
 	// RateLimitPolicies declares, per permission, the request-throttling
 	// Policy go-qrdb#201's centralized rate limiter enforces
 	// (middleware.WithRateLimitPolicies). Nil -- the default -- declares no
@@ -350,7 +360,14 @@ func BuildAuthMiddleware(cfg AuthMiddlewareConfig) (*middleware.AuthMiddleware, 
 		opts = append(opts, middleware.WithUserServiceFallback(cfg.UserServiceFallback))
 	}
 	if cfg.AuditLogger != nil {
-		opts = append(opts, middleware.WithAuditLogger(cfg.AuditLogger))
+		opts = append(opts,
+			middleware.WithAuditLogger(cfg.AuditLogger),
+			// Applied only alongside a logger: the option's warning names a
+			// property that a middleware with no audit logger at all never had
+			// to give up, and emitting it there would train operators to
+			// ignore it.
+			middleware.WithAuditFailurePolicy(cfg.AuditFailurePolicy),
+		)
 	}
 	if cfg.RateLimitPolicies != nil {
 		limiter := cfg.RateLimiter

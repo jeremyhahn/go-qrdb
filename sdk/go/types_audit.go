@@ -16,6 +16,7 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
@@ -67,3 +68,49 @@ type NodeAuditFilter = audit.Filter
 
 // NodeAuditPage is one page of queried audit events.
 type NodeAuditPage = audit.Page
+
+// NodeAuditWriteError is what a NodeAuditLogger returns from Emit when the
+// event did not reach its durability boundary (pkg/audit.WriteError). Backend
+// names the destination that failed.
+//
+// A composing host implementing its own NodeAuditLogger should return one of
+// these rather than an ad-hoc error: the authorization middleware unwraps to
+// it, and the audit feature's own tooling reports on it.
+type NodeAuditWriteError = audit.WriteError
+
+// ---------------------------------------------------------------------------
+// Audit failure posture
+//
+// What the authorization middleware does when a decision's audit record
+// cannot be written. Re-exported because it is a COMPLIANCE SETTING a
+// composing host has to be able to state, read back and test against without
+// importing pkg/auth/middleware.
+// ---------------------------------------------------------------------------
+
+// AuditFailurePolicy selects what the authorization middleware does when a
+// decision's audit record cannot be written. Its zero value is
+// AuditFailClosed.
+type AuditFailurePolicy = authmw.AuditFailurePolicy
+
+const (
+	// AuditFailClosed refuses the request when its audit record could not be
+	// written. The default, and the zero value.
+	AuditFailClosed = authmw.AuditFailClosed
+
+	// AuditFailOpen permits the request and counts the failure on
+	// qrdb_auth_audit_write_failures_total{outcome="permitted"}. Selecting it
+	// logs a warning at every startup naming the property given up.
+	AuditFailOpen = authmw.AuditFailOpen
+)
+
+// ParseAuditFailurePolicy resolves a configured spelling ("fail-closed",
+// "fail-open", or empty for the default) onto an AuditFailurePolicy. An
+// unrecognised value is an error, never a guessed posture.
+var ParseAuditFailurePolicy = authmw.ParseAuditFailurePolicy
+
+// AuditDecisionError is returned by the authorization middleware when a
+// decision's audit record could not be written and the policy is
+// AuditFailClosed (pkg/auth/middleware.AuditError). It wraps the sink's own
+// error -- typically a *NodeAuditWriteError -- and maps to HTTP 503 /
+// gRPC Unavailable.
+type AuditDecisionError = authmw.AuditError

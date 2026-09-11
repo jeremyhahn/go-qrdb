@@ -38,9 +38,15 @@ func NewSlogSinkWith(l *slog.Logger) *SlogSink {
 	return &SlogSink{logger: l}
 }
 
-// Emit mirrors ev to slog. It is always synchronous and does not block callers
-// beyond the slog handler's own latency.
-func (s *SlogSink) Emit(_ context.Context, ev AuditEvent) {
+// Emit mirrors ev to slog and reports success. It is synchronous and does not
+// block callers beyond the slog handler's own latency.
+//
+// It always returns nil because slog.Logger.LogAttrs reports nothing: a
+// handler that fails to write has already swallowed the failure before this
+// sink could see it. Inventing an error here would be a guess, and a sink
+// that guesses is worse than one that states its limit -- which is why the
+// durable record is ChainFileLogger's job and this sink mirrors.
+func (s *SlogSink) Emit(_ context.Context, ev AuditEvent) error {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
@@ -68,6 +74,7 @@ func (s *SlogSink) Emit(_ context.Context, ev AuditEvent) {
 	}
 
 	s.logger.LogAttrs(context.Background(), slog.LevelInfo, "audit", attrs...)
+	return nil
 }
 
 // Query returns an empty page; the slog sink does not store events.

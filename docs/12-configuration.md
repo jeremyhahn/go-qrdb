@@ -133,12 +133,10 @@ auth:
   # The window during which a REVOKED certificate still authenticates.
   revocation_cache_ttl: "30s"
   separation_of_duties: false
-
-audit:
-  enabled: true
-  kv_backend: false
-  file_backend: true
-  file_path: ""
+  # What to do when a decision's audit record cannot be written.
+  # "fail-closed" (default) refuses the request; "fail-open" permits it and
+  # counts the gap. See the note below before changing it.
+  audit_failure_policy: "fail-closed"
 
 cors:
   allowed_origins: ["*"]
@@ -576,6 +574,7 @@ Configures authentication and role-based access control (RBAC).
 | `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
+| `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when an authorization decision cannot be audited.** See the note below |
 
 **Validation rules:**
 
@@ -587,6 +586,11 @@ Configures authentication and role-based access control (RBAC).
   (e.g. `"30s"`, `"0"`). An unparseable value fails the boot rather than
   reverting to the default: it is a security window, and a value silently
   different from the configured one is worse than a refusal to start.
+- `audit_failure_policy` must be `"fail-closed"`, `"fail-open"`, or empty
+  (empty means `"fail-closed"`). An unrecognised value fails the boot rather
+  than resolving to either posture: guessing fail-closed denies a fleet the
+  operator meant to keep serving, and guessing fail-open weakens the security
+  posture on a typo.
 
 **Notes:**
 
@@ -595,6 +599,18 @@ Configures authentication and role-based access control (RBAC).
 - The `default_tenant` is used as the OU for the admin certificate, establishing the bootstrap admin's membership in the structurally privileged `system` tenant.
 - The `perm_cache_ttl` controls how long resolved permissions are cached per user in the RBAC authorizer's `sync.Map`. Setting to `0` disables caching.
 - **`revocation_cache_ttl` is a security window, not a performance knob.** Certificate revocation is enforced on the authentication path of every transport, on every request. To keep that off the replicated store in the overwhelmingly common not-revoked case, a NOT-REVOKED answer is cached for this duration — which makes it the maximum time a certificate that has *just been revoked* continues to authenticate on a node that had already seen it. Setting it to `0` closes the window entirely, at the cost of one key-value read per authenticated request. A REVOKED answer is cached without expiry and is unaffected, because revocation in go-qrdb is a one-way door (nothing un-revokes). See [certificate-authority/architecture.md](certificate-authority/architecture.md).
+- **`audit_failure_policy` is a compliance setting, not a tuning knob.** qrdb
+  audits every authorization decision. When the audit sink cannot write the
+  record, the default posture **refuses the request** (HTTP 503 / gRPC
+  `UNAVAILABLE`), because an unrecorded grant is precisely the event audit
+  exists to prevent. Setting `"fail-open"` makes the node serve requests it
+  cannot record: the trail acquires a gap whose size is exactly
+  `qrdb_auth_audit_write_failures_total{outcome="permitted"}`, and every
+  startup logs a `WARN` naming the property given up. It is not a fallback —
+  nothing degrades to it automatically and nothing retries and then permits.
+  For FedRAMP / PCI DSS / HIPAA, running `"fail-open"` is a reportable
+  condition. See [audit/architecture.md](audit/architecture.md) and
+  [audit/user.md](audit/user.md).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.
@@ -604,26 +620,29 @@ Configures authentication and role-based access control (RBAC).
 
 ### audit
 
-Configures the dual-backend audit logging system.
+> **There is no `audit:` block, and there is no `audit.Config`.** This section
+> described one — `enabled`, `kv_backend`, `file_backend`, `file_path`, and a
+> KV-backed sink under `__sys:audit/` — and none of those keys is read by any
+> code. Setting them has no effect. The description predates the sink rework;
+> it is corrected here rather than left in place.
 
-| Field          | Type   | Default | Required | CLI Flag           | Description                              |
-|----------------|--------|---------|----------|--------------------|------------------------------------------|
-| `enabled`      | bool   | `true`  | no       | `--audit-enabled`  | Enable audit logging                     |
-| `kv_backend`   | bool   | `false` | no       | N/A                | Store audit entries in KVStore           |
-| `file_backend` | bool   | `true`  | no       | N/A                | Write JSON audit log to file             |
-| `file_path`    | string | `""`    | no       | N/A                | Audit log file path                      |
+Audit logging is **always on** and is composed at the node's wiring site, not
+configured. Every node builds three sinks behind one fan-out:
 
-**Validation rules:**
+| Sink | Destination |
+|------|-------------|
+| `ChainFileLogger` | `{data_dir}/audit-events.ndjson` — append-only NDJSON, SHA-256 hash chain, mode `0600`, size/daily rotation, 90-day retention |
+| `RingBuffer` | the last 10,000 events, in memory, for `qrdb audit query` |
+| `SlogSink` | mirrored to the operational log stream |
 
-- When `enabled` is `true`, at least one of `kv_backend` or `file_backend` must be `true`.
-- `file_path`, when non-empty, must be a writable path.
+There is no master switch: FedRAMP, PCI DSS and HIPAA require a trail even
+where RBAC is disabled.
 
-**Notes:**
-
-- When `file_path` is empty, the audit log is written to `{data_dir}/audit.log`.
-- The KV backend stores audit entries as structured records in the KVStore under the `__sys:audit/` prefix, enabling query and replication via Raft.
-- The file backend writes one JSON object per line using `slog` structured logging, suitable for external log aggregation.
-- Both backends can be enabled simultaneously for redundancy.
+The one audit-related setting is [`auth.audit_failure_policy`](#auth) — what
+the authorization middleware does when a decision's audit record cannot be
+written. See [audit/architecture.md](audit/architecture.md),
+[audit/engineering.md](audit/engineering.md) and
+[audit/user.md](audit/user.md).
 
 ---
 

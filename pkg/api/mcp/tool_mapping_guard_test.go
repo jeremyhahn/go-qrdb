@@ -332,7 +332,7 @@ func (guardRebalanceSvc) GetImbalanceReport(context.Context) (*service.Imbalance
 
 type guardAuditLogger struct{}
 
-func (guardAuditLogger) Emit(context.Context, audit.AuditEvent) {}
+func (guardAuditLogger) Emit(context.Context, audit.AuditEvent) error { return nil }
 func (guardAuditLogger) Query(context.Context, audit.Filter) (*audit.Page, error) {
 	return &audit.Page{}, nil
 }

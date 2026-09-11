@@ -30,7 +30,7 @@ import (
 // errQueryLogger returns an error from Query.
 type errQueryLogger struct{ err error }
 
-func (e *errQueryLogger) Emit(_ context.Context, _ AuditEvent) {}
+func (e *errQueryLogger) Emit(_ context.Context, _ AuditEvent) error { return nil }
 func (e *errQueryLogger) Query(_ context.Context, _ Filter) (*Page, error) {
 	return nil, e.err
 }
@@ -39,7 +39,7 @@ func (e *errQueryLogger) Close() error { return nil }
 // errCloseLogger returns an error from Close.
 type errCloseLogger struct{ err error }
 
-func (e *errCloseLogger) Emit(_ context.Context, _ AuditEvent) {}
+func (e *errCloseLogger) Emit(_ context.Context, _ AuditEvent) error { return nil }
 func (e *errCloseLogger) Query(_ context.Context, _ Filter) (*Page, error) {
 	return &Page{Total: -1}, nil
 }
@@ -48,7 +48,7 @@ func (e *errCloseLogger) Close() error { return e.err }
 // trackCloseLogger records whether Close was called.
 type trackCloseLogger struct{ onClose func() }
 
-func (t *trackCloseLogger) Emit(_ context.Context, _ AuditEvent) {}
+func (t *trackCloseLogger) Emit(_ context.Context, _ AuditEvent) error { return nil }
 func (t *trackCloseLogger) Query(_ context.Context, _ Filter) (*Page, error) {
 	return &Page{Total: -1}, nil
 }

@@ -172,7 +172,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		return herr
 	})
 	if err != nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "set",
@@ -182,7 +182,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 	}
 
 	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "set",
@@ -192,7 +192,7 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 	}
 
 	a.logger.Info("SO PIN committed", slog.String("tenantID", tenantID))
-	a.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 		TenantID: tenantID,
 		Resource: "so-pin",
 		Action:   "set",
@@ -224,7 +224,7 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return &OperationError{Op: "store get", Cause: err}
 	}
 	if record == nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "verify",
@@ -244,7 +244,7 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 	if err := pinBuf.WithBytes(func(pin []byte) error {
 		return verifyPIN(pin, string(record))
 	}); err != nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "verify",
@@ -253,7 +253,7 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return ErrSOPINInvalid
 	}
 
-	a.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 		TenantID: tenantID,
 		Resource: "so-pin",
 		Action:   "verify",
@@ -298,7 +298,7 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 		return herr
 	})
 	if err != nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "rotate",
@@ -309,7 +309,7 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 
 	key := soPINCommitPrefix + tenantID
 	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
-		a.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,
 			Resource: "so-pin",
 			Action:   "rotate",
@@ -319,7 +319,7 @@ func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldP
 	}
 
 	a.logger.Info("SO PIN rotated", slog.String("tenantID", tenantID))
-	a.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 		TenantID: tenantID,
 		Resource: "so-pin",
 		Action:   "rotate",

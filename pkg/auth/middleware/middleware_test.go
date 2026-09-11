@@ -1424,7 +1424,7 @@ func TestAuthChainError(t *testing.T) {
 func TestAuditError(t *testing.T) {
 	inner := errors.New("disk full")
 	e := &AuditError{Err: inner}
-	want := "auth/middleware: audit log failed: disk full"
+	want := "auth/middleware: audit log failed, refusing request: disk full"
 	if e.Error() != want {
 		t.Errorf("got %q, want %q", e.Error(), want)
 	}

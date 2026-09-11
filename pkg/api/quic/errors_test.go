@@ -395,11 +395,28 @@ func TestAuthorizationError_Error_DifferentMethod(t *testing.T) {
 	}
 }
 
-func TestAuthorizationError_NoUnwrap(t *testing.T) {
-	ae := &AuthorizationError{Method: "kv.Delete", Reason: "read only"}
-	var unwrapper interface{ Unwrap() error }
-	if errors.As(ae, &unwrapper) {
-		t.Fatal("AuthorizationError should not implement Unwrap")
+// TestAuthorizationError_UnwrapsItsCause replaces TestAuthorizationError_NoUnwrap,
+// which asserted that this type does NOT implement Unwrap.
+//
+// That test described the type as it was rather than a property it had to
+// have, and the absence it pinned turned out to be a defect: with no Unwrap
+// the wrapper ERASED the middleware's typed error, so the QUIC gate could not
+// tell "you may not" from "this node could not answer" and wrote
+// permission-denied for both -- including for a failed audit write
+// (go-qrdb#335). The type now carries and exposes its cause.
+//
+// A value built with no cause still unwraps to nil, which is what keeps the
+// zero-value behaviour of every existing call site unchanged.
+func TestAuthorizationError_UnwrapsItsCause(t *testing.T) {
+	cause := errors.New("the middleware's own error")
+	ae := &AuthorizationError{Method: "kv.Delete", Reason: "read only", Err: cause}
+	if !errors.Is(ae, cause) {
+		t.Fatal("AuthorizationError must expose its cause: the wire status depends on classifying it")
+	}
+
+	bare := &AuthorizationError{Method: "kv.Delete", Reason: "read only"}
+	if errors.Unwrap(bare) != nil {
+		t.Fatal("an AuthorizationError with no cause must unwrap to nil")
 	}
 }
 

@@ -16,6 +16,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -70,6 +71,34 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 		return nil
 	}
 
+	// AN AUDIT FAILURE IS NOT AN RBAC VERDICT, so it must not open the
+	// bootstrap window.
+	//
+	// AuthorizeTenant can now return *AuditError instead of a decision
+	// (go-qrdb#335), and every test below treats a non-nil rbacErr as "RBAC
+	// said no" -- so the fallback ran on a request RBAC had never actually
+	// refused. It cost a TenantBarrierStatus call, then a SECOND
+	// auditDecision: another write to the sink that had just failed, which is
+	// the retry this feature forbids, and a second
+	// qrdb_auth_audit_write_failures_total{outcome="denied"} increment for ONE
+	// decision. That undercuts the counter's stated meaning -- a non-zero rate
+	// is meant to be the exact size of the gap in the trail, not a multiple of
+	// it.
+	//
+	// Returning immediately is also the right ANSWER: the caller is refused
+	// either way, and *AuditError carries "retry", which the RBAC denial it
+	// would otherwise be flattened into does not.
+	//
+	// NARROWLY *AuditError, not the whole AuthFailureUnavailable class. The
+	// other member of that class here is *StoreUnavailableError wrapping
+	// tenant.ErrTenantSealed, and that one is exactly the signal these
+	// fallbacks EXIST to act on -- a tenant whose IAM is encrypted behind the
+	// barrier it is trying to unseal. Short-circuiting the class would close
+	// the sealed window on the case it was written for.
+	if isAuditFailure(rbacErr) {
+		return rbacErr
+	}
+
 	// The bootstrap windows exist for PER-TENANT barriers only: the system
 	// tenant has no tenant barrier, and the tenant-scoped RBAC rule
 	// (ScopeTenantOnly) denies it deliberately — the fallback must never
@@ -87,8 +116,13 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierInit(ctx context.Context, tenantI
 	}
 	// The RBAC denial above was already audited; record the final decision
 	// too so the audit trail shows the request was ultimately allowed.
-	m.auditDecision(ctx, caller, permission.TenantBarrierInit, nil)
-	return nil
+	//
+	// PROPAGATED, not discarded: this line is the bootstrap window issuing a
+	// GRANT that RBAC refused, which is the single most consequential
+	// authorization decision on this surface. If it cannot be recorded, the
+	// configured audit failure policy decides, exactly as it does for every
+	// other grant (see auditDecision).
+	return m.auditDecision(ctx, caller, permission.TenantBarrierInit, nil)
 }
 
 // AuthorizeTenantBarrierSealedOp authorizes the tenant barrier operations
@@ -105,6 +139,14 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 		return nil
 	}
 
+	// Not an RBAC verdict, so not a reason to open the sealed window — see
+	// AuthorizeTenantBarrierInit for why this precedes every other check, and
+	// why it is *AuditError specifically rather than the Unavailable class
+	// (the class also contains the sealed-tenant signal this fallback acts on).
+	if isAuditFailure(rbacErr) {
+		return rbacErr
+	}
+
 	// Never for the system tenant — see AuthorizeTenantBarrierInit.
 	if tenant.IsSystemTenant(tenantID) {
 		return rbacErr
@@ -114,7 +156,19 @@ func (m *AuthMiddleware) AuthorizeTenantBarrierSealedOp(ctx context.Context, ten
 		return rbacErr
 	}
 	// The RBAC denial above was already audited; record the final decision
-	// too so the audit trail shows the request was ultimately allowed.
-	m.auditDecision(ctx, caller, perm, nil)
-	return nil
+	// too so the audit trail shows the request was ultimately allowed. It is
+	// propagated for the same reason as in AuthorizeTenantBarrierInit: this is
+	// a grant RBAC refused.
+	return m.auditDecision(ctx, caller, perm, nil)
+}
+
+// isAuditFailure reports whether err is the middleware refusing because it
+// could not RECORD a decision, as opposed to a decision it actually made.
+//
+// The distinction matters wherever a non-nil error is read as "RBAC said no".
+// Both bootstrap fallbacks did exactly that, and an *AuditError sent them down
+// a path meant for a genuine denial.
+func isAuditFailure(err error) bool {
+	var auditErr *AuditError
+	return errors.As(err, &auditErr)
 }

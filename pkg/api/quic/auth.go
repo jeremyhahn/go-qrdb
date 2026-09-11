@@ -19,7 +19,9 @@ import (
 
 	quicgo "github.com/quic-go/quic-go"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -54,7 +56,12 @@ func (s *Server) authenticate(ctx context.Context, conn *quicgo.Conn) (context.C
 // methods).
 func (s *Server) authorize(ctx context.Context, method string) error {
 	if err := s.authMW.AuthorizeQUIC(ctx, s.methodPerms, method); err != nil {
-		return &AuthorizationError{Method: method, Reason: err.Error()}
+		// Err carries the middleware's own typed error. Without it the
+		// wrapper ERASED the distinction between "you may not" and "this node
+		// could not answer" -- errors.As could see nothing through it, so the
+		// frame said permission-denied for every refusal including a failed
+		// audit write (go-qrdb#335).
+		return &AuthorizationError{Method: method, Reason: err.Error(), Err: err}
 	}
 	return nil
 }
@@ -74,9 +81,62 @@ type AuthorizationError struct {
 	Method     string
 	Permission permission.Permission
 	Reason     string
+
+	// Err is the underlying middleware error, so errors.As reaches the
+	// typed cause and Status can tell a denial apart from a node-side
+	// fault. Nil only for a value built by a caller that had no cause.
+	Err error
 }
 
 // Error returns a human-readable description.
+//
+// The wording follows the CLASS of the failure, because "permission denied"
+// is not merely imprecise for a retryable fault -- it is the sentence that
+// sends an operator to fix permissions that were never the problem. A full
+// audit disk refusing an unseal is not a permission problem, and this is the
+// only channel MCP-style readers of the message have.
 func (e *AuthorizationError) Error() string {
+	if authmw.ClassifyAuthError(e.Err).Retryable() {
+		return "quic: cannot authorize " + e.Method + ": " + e.Reason
+	}
 	return "quic: permission denied for " + e.Method + ": " + e.Reason
+}
+
+// Unwrap returns the underlying middleware error.
+func (e *AuthorizationError) Unwrap() error { return e.Err }
+
+// quicStatusByClass maps a classified auth failure onto the QUIC wire status.
+//
+// A rate-limited caller answers StatusResourceExhausted.
+//
+// This carried a NAMED PROTOCOL EXCLUSION until go-qrdb#437 (PR #461) landed:
+// the wire declared six statuses and none of them meant "quota", so
+// AuthFailureRateLimited rode StatusUnavailable -- right instruction (retry),
+// coarser reason. #461 added the status, which made the exclusion false, so it
+// is removed rather than left standing: an exclusion that outlives its cause
+// reads as a decision someone made about the current protocol.
+//
+// Recorded because the merge that made it stale did not conflict here. The two
+// changes touched different files, so nothing forced a reader to revisit this
+// clause -- it would have kept mapping quota to Unavailable, correct-looking
+// and wrong, with its own comment explaining why.
+var quicStatusByClass = map[authmw.AuthFailureClass]uint16{
+	authmw.AuthFailureUnauthenticated: wire.StatusUnauthenticated,
+	authmw.AuthFailureUnauthorized:    wire.StatusPermissionDenied,
+	authmw.AuthFailureUnavailable:     wire.StatusUnavailable,
+	authmw.AuthFailureRateLimited:     wire.StatusResourceExhausted,
+}
+
+// authzStatus returns the wire status for a failed authorization gate.
+//
+// PermissionDenied is the fallback, not StatusError: these gates run after
+// authentication, and it keeps the frame identical to what this path sent
+// before for anything the middleware does not classify. It mirrors
+// writeAuthzErrorJSON on REST and authzError on gRPC, all three over the same
+// middleware.ClassifyAuthError.
+func authzStatus(err error) uint16 {
+	if st, ok := quicStatusByClass[authmw.ClassifyAuthError(err)]; ok {
+		return st
+	}
+	return wire.StatusPermissionDenied
 }

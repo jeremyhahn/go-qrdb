@@ -615,25 +615,42 @@ func TestStreamInterceptor_UserDisabled(t *testing.T) {
 // authorize - audit log failure branch
 // ---------------------------------------------------------------------------
 
+// TestAuthorize_AuditLogFailure asserts the go-qrdb#335 policy: a GRANT the
+// middleware could not record is refused, not issued. This test previously
+// asserted the opposite ("authorize should not fail due to audit"), which was
+// accurate about the code and wrong about the property — audit.Emit had no
+// error return, so the middleware's own fail-closed branch could never fire
+// and the test was describing an unreachable-by-construction behaviour as a
+// policy.
 func TestAuthorize_AuditLogFailure(t *testing.T) {
 	authz := &mockAuthorizer{}
-	al := &mockAuditLogger{err: errors.New("disk full")}
+	sinkErr := errors.New("disk full")
+	al := &mockAuditLogger{err: sinkErr}
 
 	m := New(authz, WithAuditLogger(al))
 
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
-	// authorize should still succeed even when the audit logger fails;
-	// the error is logged but not propagated.
 	err := m.authorize(context.Background(), identity, "kv:put")
-	if err != nil {
-		t.Fatalf("unexpected error: authorize should not fail due to audit: %v", err)
+	if err == nil {
+		t.Fatal("expected refusal: an unrecorded grant is the case audit exists to prevent")
 	}
 
+	var auditErr *AuditError
+	if !errors.As(err, &auditErr) {
+		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, sinkErr) {
+		t.Errorf("AuditError must wrap the sink's own error, got %v", err)
+	}
 	if al.calls.Load() != 1 {
 		t.Fatalf("expected 1 audit call, got %d", al.calls.Load())
 	}
 }
 
+// TestAuthorize_AuditLogFailure_OnDenied asserts the refusal is UNIFORM: even
+// when the underlying decision was already a denial, an unrecordable decision
+// is answered with *AuditError. "We answer only what we could record" is one
+// rule a reader can check; carving out the denials would make it four.
 func TestAuthorize_AuditLogFailure_OnDenied(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
 	al := &mockAuditLogger{err: errors.New("disk full")}
@@ -646,13 +663,30 @@ func TestAuthorize_AuditLogFailure_OnDenied(t *testing.T) {
 		t.Fatal("expected authorization error")
 	}
 
-	// Audit should have been attempted and failed, but the authorization
-	// error is the one that gets returned.
 	if al.calls.Load() != 1 {
 		t.Fatalf("expected 1 audit call, got %d", al.calls.Load())
 	}
-	if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Errorf("expected ErrUnauthorized, got %v", err)
+	var auditErr *AuditError
+	if !errors.As(err, &auditErr) {
+		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+	}
+}
+
+// TestAuthorize_AuditLogFailure_FailOpen is the same request under the
+// operator's deliberate escape: the decision stands and the failure is
+// counted rather than refused.
+func TestAuthorize_AuditLogFailure_FailOpen(t *testing.T) {
+	authz := &mockAuthorizer{}
+	al := &mockAuditLogger{err: errors.New("disk full")}
+
+	m := New(authz, WithAuditLogger(al), WithAuditFailurePolicy(AuditFailOpen))
+
+	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
+	if err := m.authorize(context.Background(), identity, "kv:put"); err != nil {
+		t.Fatalf("fail-open must permit the decision, got %v", err)
+	}
+	if al.calls.Load() != 1 {
+		t.Fatalf("expected 1 audit call, got %d", al.calls.Load())
 	}
 }
 

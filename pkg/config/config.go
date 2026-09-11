@@ -816,6 +816,34 @@ type AuthConfig struct {
 	// the decoded value.
 	PeerAdminURLs []PeerAdminEntry `yaml:"peer_admin_urls"`
 
+	// AuditFailurePolicy selects what the authorization middleware does when
+	// a decision's audit record CANNOT BE WRITTEN (go-qrdb#335).
+	//
+	//   "fail-closed" (default, and what an empty value means)
+	//       The request is REFUSED, with 503 / UNAVAILABLE. No authorization
+	//       decision is made unless its audit record persisted -- an
+	//       unrecorded grant is precisely the event audit exists to prevent.
+	//
+	//   "fail-open"
+	//       The request PROCEEDS and the failure is counted on
+	//       qrdb_auth_audit_write_failures_total{outcome="permitted"}.
+	//
+	// IT IS A COMPLIANCE SETTING, NOT A TUNING KNOB. "fail-open" gives up the
+	// property that every authorization decision this node made is in the
+	// trail; the trail acquires a gap whose size is exactly that counter. The
+	// lever exists because fail-closed has a genuine availability cliff -- a
+	// full audit disk denies every authorized request -- and an operator
+	// facing that at 3am needs something better than patching the binary.
+	//
+	// Setting it to "fail-open" logs a warning at EVERY startup naming the
+	// property given up. It is not a fallback: nothing degrades to it
+	// automatically, nothing retries and then permits, and the node does
+	// exactly what this value says for as long as it says it.
+	//
+	// An unrecognised value FAILS THE BOOT rather than resolving to either
+	// posture. Default: "fail-closed".
+	AuditFailurePolicy string `yaml:"audit_failure_policy"`
+
 	// ABAC configures the optional attribute-based access control decorator
 	// layered over the RBAC authorizer. When enabled, YAML policies from
 	// PolicyDir are evaluated before RBAC: an explicit deny overrides an

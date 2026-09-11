@@ -133,7 +133,7 @@ func NewService(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *sl
 // method returns.
 func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
 	if err := validateRegisterRequest(req); err != nil {
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian",
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":" + err.Error(),
@@ -153,7 +153,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		// A refusal that cannot be explained afterwards is a weak refusal:
 		// this path rejects an enrolment because the store could not be read
 		// or holds a corrupt record, both of which an operator must act on.
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":duplicate-check",
@@ -164,7 +164,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 	if existingID != "" {
 		// Name the record that actually exists rather than the one this call
 		// would have created; on a legacy enrolment they differ.
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + existingID,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":already-exists",
@@ -199,7 +199,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		if errors.As(err, &incomplete) {
 			outcome = audit.OutcomeFailure + ":already-claimed"
 		}
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
 			Outcome:    outcome,
@@ -210,7 +210,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 	if !claimed {
 		// The username was committed to a custodian between the duplicate
 		// check and here.
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":already-claimed",
@@ -223,7 +223,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 	envelope, err := SealShareTo(req.ShareBytes, req.PublicKeyPEM)
 	if err != nil {
 		s.releaseClaim(ctx, claim)
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":envelope-seal",
@@ -245,7 +245,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 	}
 
 	if err := s.persistNew(ctx, c, claim); err != nil {
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "register",
 			Outcome:    audit.OutcomeFailure + ":persist",
@@ -260,7 +260,7 @@ func (s *service) RegisterCustodian(ctx context.Context, req RegisterRequest) (*
 		slog.String("tenantID", req.TenantID),
 		slog.Int("shareIndex", req.ShareIndex))
 
-	s.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 		Resource: "custodian:" + id,
 		Action:   "register",
 		Outcome:  audit.OutcomeSuccess,
@@ -323,7 +323,7 @@ func (s *service) ListCustodians(ctx context.Context, tenantID string) ([]*Custo
 func (s *service) RevokeCustodian(ctx context.Context, id string) error {
 	c, err := s.GetCustodian(ctx, id)
 	if err != nil {
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "revoke",
 			Outcome:    audit.OutcomeFailure + ":not-found",
@@ -341,7 +341,7 @@ func (s *service) RevokeCustodian(ctx context.Context, id string) error {
 	c.RevokedAt = &now
 
 	if err := s.persist(ctx, c); err != nil {
-		s.audit.Emit(ctx, audit.AuditEvent{
+		audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 			Resource:   "custodian:" + id,
 			Action:     "revoke",
 			Outcome:    audit.OutcomeFailure + ":store",
@@ -354,7 +354,7 @@ func (s *service) RevokeCustodian(ctx context.Context, id string) error {
 		slog.String("id", id),
 		slog.String("username", c.Username))
 
-	s.audit.Emit(ctx, audit.AuditEvent{
+	audit.EmitBestEffort(ctx, s.audit, "custodian", audit.AuditEvent{
 		Resource: "custodian:" + id,
 		Action:   "revoke",
 		Outcome:  audit.OutcomeSuccess,

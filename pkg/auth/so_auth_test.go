@@ -107,7 +107,7 @@ func (m *soMemKV) ScanCompoundIndex(_ context.Context, _ string, _ [][]byte, _, 
 
 type soNoopAudit struct{}
 
-func (n *soNoopAudit) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (n *soNoopAudit) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (n *soNoopAudit) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return &audit.Page{}, nil
 }
@@ -119,10 +119,11 @@ type recordingAudit struct {
 	events []audit.AuditEvent
 }
 
-func (r *recordingAudit) Emit(_ context.Context, e audit.AuditEvent) {
+func (r *recordingAudit) Emit(_ context.Context, e audit.AuditEvent) error {
 	r.mu.Lock()
 	r.events = append(r.events, e)
 	r.mu.Unlock()
+	return nil
 }
 func (r *recordingAudit) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return &audit.Page{}, nil

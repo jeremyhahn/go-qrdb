@@ -233,58 +233,17 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 	})
 }
 
-// mapHTTPAuthError maps auth errors to HTTP status codes.
+// mapHTTPAuthError maps auth errors to HTTP status codes for the REST auth
+// middleware.
+//
+// The per-type reasoning now lives once in failure_class.go, reached by every
+// transport rather than restated by each. This wrapper supplies the ONE thing
+// that is specific to this call site: an unrecognised failure here means 401,
+// because this middleware runs authentication as well as authorization and a
+// caller it cannot classify most likely never established who it was. A
+// handler-level gate running after authentication passes 403 instead.
 func mapHTTPAuthError(err error) int {
-	var authErr *auth.AuthError
-	if errors.As(err, &authErr) {
-		switch authErr.Code {
-		case "unauthorized":
-			return http.StatusForbidden
-		case "unauthenticated", "no_peer_cert", "invalid_cert", "cert_revoked":
-			return http.StatusUnauthorized
-		}
-	}
-
-	var unavailable *StoreUnavailableError
-	if errors.As(err, &unavailable) {
-		return http.StatusServiceUnavailable
-	}
-
-	// 503, not 401: the certificate may be perfectly good and this node could
-	// not read revocation state. Telling a legitimate caller its credential is
-	// bad would send it to re-enrol; telling it to retry is the truth.
-	var revocationErr *auth.RevocationCheckError
-	if errors.As(err, &revocationErr) {
-		return http.StatusServiceUnavailable
-	}
-
-	var disabled *UserDisabledError
-	if errors.As(err, &disabled) {
-		return http.StatusForbidden
-	}
-
-	// 403, not 401: the credential is valid and the account is fine — this way
-	// in is not one the account may use, and retrying it will never work. A 401
-	// would tell the client to present credentials again.
-	var badMethod *AuthMethodNotPermittedError
-	if errors.As(err, &badMethod) {
-		return http.StatusForbidden
-	}
-
-	var chainErr *AuthChainError
-	if errors.As(err, &chainErr) {
-		return http.StatusUnauthorized
-	}
-
-	// 429, not 403: the credential and the grant are both fine, and this is
-	// the one case in this function where retrying (after the wait
-	// RateLimitedError names) is exactly the right instruction.
-	var rateLimited *RateLimitedError
-	if errors.As(err, &rateLimited) {
-		return http.StatusTooManyRequests
-	}
-
-	return http.StatusUnauthorized
+	return HTTPStatus(err, http.StatusUnauthorized)
 }
 
 // setRetryAfterHeader sets the standard Retry-After header (RFC 9110

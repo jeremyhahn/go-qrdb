@@ -44,6 +44,12 @@ type AuthMiddleware struct {
 	usersFallback  user.UserServicer
 	audit          audit.Logger
 
+	// auditFailure is what authorize() does when m.audit cannot record a
+	// decision. Its ZERO VALUE is AuditFailClosed, so an AuthMiddleware built
+	// without WithAuditFailurePolicy refuses rather than grants -- see
+	// AuditFailClosed for why the security posture is the zero value.
+	auditFailure AuditFailurePolicy
+
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS
 	// authenticator's own revocation check. Nil means revocation is not
@@ -160,7 +166,8 @@ func (m *AuthMiddleware) RevocationChecker() auth.RevocationChecker {
 }
 
 // WithAuditLogger configures audit logging for authorization decisions.
-// When set, every authorize call is recorded with its outcome.
+// When set, every authorize call is recorded with its outcome, and a failure
+// to record one is acted on per WithAuditFailurePolicy.
 func WithAuditLogger(a audit.Logger) Option {
 	return func(m *AuthMiddleware) {
 		m.audit = a
@@ -451,7 +458,9 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	// declares one.
 	if identity != nil {
 		if err := m.checkRateLimit(identity, perm); err != nil {
-			m.auditDecision(ctx, identity, perm, err)
+			if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+				return auditErr
+			}
 			return err
 		}
 	}
@@ -460,8 +469,7 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 		if identity == nil {
 			return auth.ErrUnauthenticated
 		}
-		m.auditDecision(ctx, identity, perm, nil)
-		return nil
+		return m.auditDecision(ctx, identity, perm, nil)
 	}
 
 	// An identity whose tenant IAM was unreachable because the tenant's
@@ -483,11 +491,12 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	// node liveness only — no tenant data crosses the seal boundary.
 	if identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true" {
 		if perm == permission.AdminHealth {
-			m.auditDecision(ctx, identity, perm, nil)
-			return nil
+			return m.auditDecision(ctx, identity, perm, nil)
 		}
 		err := &StoreUnavailableError{Err: tenant.ErrTenantSealed}
-		m.auditDecision(ctx, identity, perm, err)
+		if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+			return auditErr
+		}
 		return err
 	}
 
@@ -495,15 +504,65 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 	action := permission.Action(perm)
 
 	err := m.authorizer.Authorize(ctx, identity, resource, action)
-	m.auditDecision(ctx, identity, perm, err)
+	if auditErr := m.auditDecision(ctx, identity, perm, err); auditErr != nil {
+		return auditErr
+	}
 	return err
 }
 
 // auditDecision records an authorization decision in the audit log when a
 // logger is configured. A nil err is recorded as success, non-nil as denied.
-func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Identity, perm permission.Permission, err error) {
+//
+// It returns a non-nil *AuditError -- wrapping whatever the sink reported,
+// typically an *audit.WriteError -- when the record could NOT be written and
+// the configured policy is AuditFailClosed. authorize() returns that error
+// instead of the decision it was about to return, so the request is refused.
+// Under AuditFailOpen it returns nil and the decision stands.
+//
+// The refusal is UNIFORM: it does not matter whether the decision being
+// recorded was a grant, a denial, a rate-limit refusal or a sealed-tenant
+// 503. "We answer only what we could record" is a property an auditor can
+// state and a reader can check; "we answer only what we could record, except
+// when we were going to refuse anyway" is four rules that will drift. The
+// dangerous case is the unrecorded grant, and carving out the others buys
+// nothing -- every one of them refuses the caller either way.
+//
+// THE AUDIT OF THE AUDIT. This refusal cannot itself be audited: the only
+// sink is the one that just failed, and writing to it again would be a retry
+// this feature explicitly forbids, on a sink that has already said no. So the
+// event is recorded on two planes that do not depend on the audit plane --
+// the qrdb_auth_audit_write_failures_total counter and an slog.Error on the
+// operational log stream. During an audit outage the trail therefore has a
+// GAP BY CONSTRUCTION; what the counter guarantees is that the gap is
+// visible and measurable rather than silent, and the hash chain guarantees
+// the gap cannot be back-filled with forged records.
+func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Identity, perm permission.Permission, err error) error {
 	if m.audit == nil {
-		return
+		return nil
+	}
+
+	// A NIL IDENTITY IS RECORDED, NOT DEREFERENCED AND NOT SKIPPED.
+	//
+	// authorize() admits a nil identity -- it guards on it three separate
+	// times (the rate-limit check, the IdentityGated branch, the
+	// tenant-IAM-sealed branch) -- and then reaches here, where reading
+	// identity.Subject would panic. Every transport that calls authorize()
+	// today refuses a nil identity before doing so (grpc.go:77, grpc.go:212,
+	// rest.go:222, quic.go:44, mcp.go:38, AuthorizeTenant), so the panic is
+	// not live on any path a request can take. It is guarded anyway: a
+	// function that defends against nil three times and then dereferences is
+	// one edit away from being wrong, and go-qrdb#335 is the change that makes
+	// a wired audit logger the universal case rather than the configured one.
+	//
+	// SKIPPING the record was the other option and is the wrong one here. An
+	// unattributable authorization decision is more interesting to an auditor,
+	// not less, and silently not recording it is the exact failure mode this
+	// issue exists to remove. anonymousActor is a sentinel rather than an
+	// empty string so the record cannot be confused with an identity that
+	// simply carried no subject.
+	subject, tenantID := anonymousActor, ""
+	if identity != nil {
+		subject, tenantID = identity.Subject, identity.TenantID
 	}
 
 	result := audit.ResultSuccess
@@ -513,21 +572,44 @@ func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Ident
 
 	entry := &audit.Entry{
 		Timestamp: time.Now().UTC(),
-		Subject:   identity.Subject,
-		TenantID:  identity.TenantID,
+		Subject:   subject,
+		TenantID:  tenantID,
 		Action:    "auth.authorize",
 		Resource:  perm.String(),
 		Result:    result,
 	}
 
-	if auditErr := m.audit.Log(ctx, entry); auditErr != nil {
-		slog.Error("auth/middleware: audit log failed",
-			"error", auditErr,
-			"subject", identity.Subject,
-			"permission", perm.String(),
-		)
+	auditErr := m.audit.Log(ctx, entry)
+	if auditErr == nil {
+		return nil
 	}
+
+	auditWriteFailures().With(auditFailureOutcomes[m.auditFailure]).Inc()
+
+	slog.Error("auth/middleware: audit log failed",
+		"error", auditErr,
+		"subject", subject,
+		"tenant", tenantID,
+		"permission", perm.String(),
+		"policy", m.auditFailure.String(),
+	)
+
+	if m.auditFailure == AuditFailOpen {
+		return nil
+	}
+	return &AuditError{Err: auditErr}
 }
+
+// anonymousActor is the Subject recorded for an authorization decision that
+// reached the audit log with no identity attached.
+//
+// It is a sentinel, not the empty string: an empty Subject already occurs
+// legitimately (a first-boot bootstrap write, a certificate with no CN), and
+// an auditor must be able to tell "no identity was present" from "the identity
+// present had no subject". The angle brackets cannot appear in a certificate
+// CN, a SPIFFE SAN or a username, so it cannot be forged by a caller naming
+// itself this.
+const anonymousActor = "<anonymous>"
 
 // AuthorizeTenant authorizes the authenticated identity in ctx to perform a
 // tenant-scoped operation against an explicit target tenant. It is intended

@@ -204,6 +204,7 @@ func TestBootstrapAuthEnforcement_WithSPIFFETrustDomain(t *testing.T) {
 		qrdbconfig.AuthABACConfig{},
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
+		"",  // audit failure policy: default (fail-closed)
 	)
 	require.NoError(t, err)
 	require.NotNil(t, authResult)
@@ -238,6 +239,7 @@ func TestBootstrapAuthEnforcement_NilComplianceAudit(t *testing.T) {
 		qrdbconfig.AuthABACConfig{},
 		nil, // no cert provider: revocation not enforced
 		"",  // revocation cache TTL: default
+		"",  // audit failure policy: default (fail-closed)
 	)
 	require.Error(t, err)
 	var abe *AuthBootstrapError

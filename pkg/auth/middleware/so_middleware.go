@@ -117,7 +117,7 @@ func SOMiddleware(
 		pinStr := r.Header.Get(SOPINHeader)
 		if pinStr == "" {
 			if auditLogger != nil {
-				auditLogger.Emit(ctx, audit.AuditEvent{
+				audit.EmitBestEffort(ctx, auditLogger, "so-dual-factor", audit.AuditEvent{
 					Actor:    identity.Subject,
 					TenantID: identity.TenantID,
 					Role:     role.RoleNameSO,
@@ -134,7 +134,7 @@ func SOMiddleware(
 		// Verify the PIN.
 		if err := verifier.VerifySOPIN(ctx, identity.TenantID, []byte(pinStr)); err != nil {
 			if auditLogger != nil {
-				auditLogger.Emit(ctx, audit.AuditEvent{
+				audit.EmitBestEffort(ctx, auditLogger, "so-dual-factor", audit.AuditEvent{
 					Actor:    identity.Subject,
 					TenantID: identity.TenantID,
 					Role:     role.RoleNameSO,
@@ -151,8 +151,23 @@ func SOMiddleware(
 			return
 		}
 
+		// BEST-EFFORT, and deliberately NOT fail-closed -- a stated
+		// asymmetry with AuthMiddleware.authorize, which refuses a decision
+		// it could not record.
+		//
+		// The reason is that this middleware runs BEHIND RESTMiddleware, so
+		// the request already carries an authorization decision that was
+		// audited under the fail-closed posture: if the sink is down, the
+		// request never reaches here. What this record adds is the SECOND
+		// factor's outcome, and making it fail closed would introduce a
+		// refusal path the operator's auth.audit_failure_policy lever does
+		// not reach (SOMiddleware is a free function wired from
+		// pkg/api/rest, with no access to the middleware's posture). A
+		// security control with two postures and one lever is worse than one
+		// posture stated plainly. Extending the lever here is a separate
+		// change and a separate decision.
 		if auditLogger != nil {
-			auditLogger.Emit(ctx, audit.AuditEvent{
+			audit.EmitBestEffort(ctx, auditLogger, "so-dual-factor", audit.AuditEvent{
 				Actor:    identity.Subject,
 				TenantID: identity.TenantID,
 				Role:     role.RoleNameSO,

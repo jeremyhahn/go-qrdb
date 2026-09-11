@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -611,6 +612,33 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 	return s.authMW.AuthorizeTenantBarrierSealedOp(ctx, tenantID, perm)
 }
 
+// writeAuthzErrorJSON answers a failed tenant-barrier authorization gate with
+// the status the error ACTUALLY MEANS, rather than assuming every refusal is a
+// permission problem.
+//
+// Eleven call sites on this surface each wrote http.StatusForbidden directly,
+// which was survivable only while nothing but a denial ever came back out of
+// the gate. go-qrdb#335 ended that: the authorization middleware now refuses a
+// decision whose audit record it could not write, and *middleware.AuditError
+// escapes these gates RELIABLY -- the bootstrap-window fallback's own audit
+// write fails for the same reason the first one did. Answering 403 would tell
+// an operator recovering a node with a full audit disk that they are not
+// permitted to unseal it, and 403 is terminal: no client retries it.
+//
+// The fallback is StatusForbidden, not the REST middleware's StatusUnauthorized,
+// and that is deliberate. These gates run AFTER authentication, so an
+// unrecognised failure here means "the gate refused you", never "who are
+// you" -- and it keeps the answer byte-identical to what these sites returned
+// before for anything the middleware does not classify.
+//
+// Being a helper rather than eleven expressions is the point: eleven call
+// sites each spelling out a status is how the surface drifted in the first
+// place, and the next handler added here is correct without its author having
+// to know any of this.
+func writeAuthzErrorJSON(w http.ResponseWriter, err error) {
+	writeErrorJSON(w, authmw.HTTPStatus(err, http.StatusForbidden), err)
+}
+
 // handleTenantBarrierInit handles POST /v1/tenants/{id}/barrier/init --
 // initializes the per-tenant barrier with the given threshold and shares.
 // Both fields are optional; when both are zero, the service uses default
@@ -633,7 +661,7 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierInit(ctx, id); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 	result, err := s.tenantSvc.TenantBarrierInitWithStrategy(ctx, id, req.Passphrase, req.Threshold, req.Shares, seal.StrategyID(req.Strategy))
@@ -676,7 +704,7 @@ func (s *Server) handleTenantBarrierUnsealShare(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -708,7 +736,7 @@ func (s *Server) handleTenantBarrierUnseal(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierUnseal); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 	if err := s.tenantSvc.TenantBarrierUnseal(ctx, id, req.Key); err != nil {
@@ -726,7 +754,7 @@ func (s *Server) handleTenantBarrierSeal(w http.ResponseWriter, r *http.Request,
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierSeal); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 	if err := s.tenantSvc.TenantBarrierSeal(ctx, id); err != nil {
@@ -748,7 +776,7 @@ func (s *Server) handleTenantBarrierStatus(w http.ResponseWriter, r *http.Reques
 	// by the same tenant-scoped authorizer as init/unseal/seal: a tenant admin
 	// may read only their own tenant's barrier, and the system tenant is denied.
 	if err := s.authorizeTenantBarrierSealedOp(ctx, id, permission.TenantBarrierStatus); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 	status, err := s.tenantSvc.TenantBarrierStatus(ctx, id)
@@ -793,7 +821,7 @@ func (s *Server) handleTenantBarrierOfficerRegister(w http.ResponseWriter, r *ht
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerRegister); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -836,7 +864,7 @@ func (s *Server) handleTenantBarrierOfficerList(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerList); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -859,7 +887,7 @@ func (s *Server) handleTenantBarrierOfficerClaimStatus(w http.ResponseWriter, r 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierOfficerList); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -884,7 +912,7 @@ func (s *Server) handleTenantBarrierShareClaimBegin(w http.ResponseWriter, r *ht
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.IdentityGated); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -915,7 +943,7 @@ func (s *Server) handleTenantBarrierShareClaimComplete(w http.ResponseWriter, r 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.IdentityGated); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 
@@ -971,7 +999,7 @@ func (s *Server) handleTenantBarrierSealVote(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()
 	if err := s.authorizeTenantBarrierOp(ctx, id, permission.TenantBarrierSealVote); err != nil {
-		writeErrorJSON(w, http.StatusForbidden, err)
+		writeAuthzErrorJSON(w, err)
 		return
 	}
 

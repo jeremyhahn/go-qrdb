@@ -123,7 +123,7 @@ type fullMockAuditLogger struct {
 	queryErr    error
 }
 
-func (m *fullMockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (m *fullMockAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (m *fullMockAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	if m.queryErr != nil {
 		return nil, m.queryErr

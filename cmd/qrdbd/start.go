@@ -160,6 +160,11 @@ type startFlags struct {
 	// Empty means the default. See qrdbconfig.AuthConfig.RevocationCacheTTL —
 	// it is the window during which a revoked certificate still authenticates.
 	revocationCacheTTL string
+	// auditFailurePolicy is the auth.audit_failure_policy string. Empty means
+	// the default, "fail-closed". See qrdbconfig.AuthConfig.AuditFailurePolicy
+	// — it decides whether a decision whose audit record could not be written
+	// is refused or permitted.
+	auditFailurePolicy string
 	abacEnabled        bool
 	abacPolicyDir      string
 	// clusterTrustDomain is the cluster-wide SPIFFE trust domain used for
@@ -702,6 +707,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.spiffeTrustDomain = cfg.Auth.SPIFFETrustDomain
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
+	f.auditFailurePolicy = cfg.Auth.AuditFailurePolicy
 	// ABAC decorator: config-only (no CLI flag), mirroring the SPIFFE
 	// trust domain above.
 	f.abacEnabled = cfg.Auth.ABAC.Enabled
@@ -1601,7 +1607,7 @@ func runStart(f *startFlags) error {
 			// already initialized above and reused here.
 			var authResult *authBootstrapResult
 			if f.authEnabled {
-				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL)
+				authResult, err = bootstrapAuthEnforcement(sigCtx, mgmtResult, authKVSvc, txSvc, f.dataDir, rnode, complianceAudit, strictSoD, f.spiffeTrustDomain, qrdbconfig.AuthABACConfig{Enabled: f.abacEnabled, PolicyDir: f.abacPolicyDir}, svcNode.CertProv, f.revocationCacheTTL, f.auditFailurePolicy)
 				if err != nil {
 					_ = shutdownNode(nodeCloser)
 					// Context cancellation from signal is a clean shutdown, not an error.
@@ -3159,7 +3165,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 // sdk/go/node.Node calls when wiring an embedded unified server — so a
 // daemon-run node and an embedded node (go-xkms xkmsd, go-quicbaas
 // quicbaasd) enforce authn/authz identically.
-func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string) (*authBootstrapResult, error) {
+func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, runtimeKVSvc service.KVServicer, runtimeTxSvc service.TransactionServicer, dataDir string, node raftNode, complianceAudit audit.AuditLogger, strictSoD bool, spiffeTrustDomain string, abacCfg qrdbconfig.AuthABACConfig, certProv cert.CertProvider, revocationCacheTTL string, auditFailurePolicy string) (*authBootstrapResult, error) {
 	_ = ctx
 	_ = node
 
@@ -3216,6 +3222,15 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		return nil, &AuthBootstrapError{Step: "auth.revocation_cache_ttl", Err: err}
 	}
 
+	// The audit failure posture is resolved HERE, at the boot, so an
+	// unrecognised value aborts rather than silently selecting a posture the
+	// operator did not ask for. Selecting fail-open logs its warning when the
+	// middleware option is applied — once, at every start.
+	auditFailure, err := middleware.ParseAuditFailurePolicy(auditFailurePolicy)
+	if err != nil {
+		return nil, &AuthBootstrapError{Step: "auth.audit_failure_policy", Err: err}
+	}
+
 	authMW, err := wiring.BuildAuthMiddleware(wiring.AuthMiddlewareConfig{
 		Enabled:             true,
 		RoleService:         mgmt.servedRoleSvc,
@@ -3227,6 +3242,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 		ABACEnabled:         abacCfg.Enabled,
 		ABACPolicyDir:       abacCfg.PolicyDir,
 		AuditLogger:         auditLogger,
+		AuditFailurePolicy:  auditFailure,
 		// Certificate revocation is enforced on the authentication path, so
 		// the certificate authority has to reach the middleware and not only
 		// the cert API handlers. Without this the daemon records revocations,

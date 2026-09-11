@@ -55,6 +55,31 @@ type tenantBarrierServer struct {
 	authMW *authmw.AuthMiddleware
 }
 
+// authzError converts a failed tenant-barrier authorization gate into the gRPC
+// code the error ACTUALLY MEANS, rather than assuming every refusal is a
+// permission problem.
+//
+// Eleven RPCs on this surface each wrote codes.PermissionDenied directly. That
+// was survivable only while nothing but a denial came back out of the gate;
+// go-qrdb#335 ended it, because the middleware now refuses a decision whose
+// audit record it could not write and *middleware.AuditError escapes these
+// gates RELIABLY -- the bootstrap-window fallback's own audit write fails for
+// the same reason the first one did. PermissionDenied is terminal in every
+// gRPC client library, so an operator recovering a node with a full audit disk
+// would be told, without recourse, that they may not unseal it.
+//
+// The fallback stays codes.PermissionDenied rather than the interceptors'
+// codes.Unauthenticated: these gates run AFTER authentication, and this keeps
+// the answer identical to what these RPCs returned before for anything the
+// middleware does not classify.
+//
+// It mirrors writeAuthzErrorJSON on the REST server and the wire-status
+// mapping on the QUIC server, all three over the same
+// middleware.ClassifyAuthError, so the four transports cannot drift again.
+func authzError(err error) error {
+	return authmw.GRPCError(err, codes.PermissionDenied)
+}
+
 // authorizeTenantBarrierOp enforces the tenant-scoped authorization gate for a
 // per-tenant barrier operation against the target tenant. When authMW is nil
 // the gate is a no-op (unauthenticated deployment).
@@ -130,7 +155,7 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierInit(ctx, req.GetTenantId()); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	result, err := s.svc.TenantBarrierInitWithStrategy(ctx, req.GetTenantId(), req.GetPassphrase(),
@@ -161,7 +186,7 @@ func (s *tenantBarrierServer) Unseal(ctx context.Context, req *pb.TenantBarrierU
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 	if err := s.svc.TenantBarrierUnseal(ctx, req.GetTenantId(), req.GetKey()); err != nil {
 		return nil, mapTenantError(err)
@@ -179,7 +204,7 @@ func (s *tenantBarrierServer) UnsealShare(ctx context.Context, req *pb.TenantBar
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierUnseal); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 	prog, err := s.svc.TenantBarrierUnsealShare(ctx, req.GetTenantId(), req.GetShare())
 	if err != nil {
@@ -206,7 +231,7 @@ func (s *tenantBarrierServer) Seal(ctx context.Context, req *pb.TenantBarrierSea
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierSeal); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 	if err := s.svc.TenantBarrierSeal(ctx, req.GetTenantId()); err != nil {
 		return nil, mapTenantError(err)
@@ -223,7 +248,7 @@ func (s *tenantBarrierServer) Status(ctx context.Context, req *pb.TenantBarrierS
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierSealedOp(ctx, req.GetTenantId(), permission.TenantBarrierStatus); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 	st, err := s.svc.TenantBarrierStatus(ctx, req.GetTenantId())
 	if err != nil {
@@ -256,7 +281,7 @@ func (s *tenantBarrierServer) OfficerRegister(ctx context.Context, req *pb.Tenan
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierOfficerRegister); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	svcReq := &ceremony.RegisterOfficerRequest{
@@ -284,7 +309,7 @@ func (s *tenantBarrierServer) OfficerList(ctx context.Context, req *pb.TenantBar
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierOfficerList); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	officers, err := s.svc.TenantBarrierOfficerList(ctx, req.GetTenantId())
@@ -310,7 +335,7 @@ func (s *tenantBarrierServer) ShareClaimBegin(ctx context.Context, req *pb.Tenan
 	// certificate is the credential; the service enforces the per-tenant
 	// registry lookup, thumbprint match, and nonce signature.
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.IdentityGated); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	thumbprint, err := peerCertThumbprintTenant(ctx)
@@ -340,7 +365,7 @@ func (s *tenantBarrierServer) ShareClaimComplete(ctx context.Context, req *pb.Te
 	}
 	// Identity-gated: see ShareClaimBegin.
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.IdentityGated); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	thumbprint, err := peerCertThumbprintTenant(ctx)
@@ -368,7 +393,7 @@ func (s *tenantBarrierServer) OfficerClaimStatus(ctx context.Context, req *pb.Te
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierOfficerList); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	officers, err := s.svc.TenantBarrierOfficerClaimStatus(ctx, req.GetTenantId())
@@ -391,7 +416,7 @@ func (s *tenantBarrierServer) ShamirSealVote(ctx context.Context, req *pb.Tenant
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	if err := s.authorizeTenantBarrierOp(ctx, req.GetTenantId(), permission.TenantBarrierSealVote); err != nil {
-		return nil, status.Error(codes.PermissionDenied, err.Error())
+		return nil, authzError(err)
 	}
 
 	progress, err := s.svc.TenantBarrierShamirSealVote(ctx, req.GetTenantId(), req.GetShareValue())

@@ -75,7 +75,7 @@ type stubAuditLogger struct {
 	page     *audit.Page
 }
 
-func (s *stubAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (s *stubAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 
 func (s *stubAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	if s.queryErr != nil {

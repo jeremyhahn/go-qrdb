@@ -87,7 +87,7 @@ var _ http.Handler = (*extraWebUI)(nil)
 // extraAuditLogger satisfies audit.AuditLogger for option tests.
 type extraAuditLogger struct{}
 
-func (a *extraAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) {}
+func (a *extraAuditLogger) Emit(_ context.Context, _ audit.AuditEvent) error { return nil }
 func (a *extraAuditLogger) Query(_ context.Context, _ audit.Filter) (*audit.Page, error) {
 	return nil, nil
 }

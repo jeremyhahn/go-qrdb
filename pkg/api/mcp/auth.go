@@ -23,6 +23,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
@@ -104,6 +105,24 @@ func (s *Server) bearerChallengeHandler(next http.Handler) http.Handler {
 	})
 }
 
+// authzToolError renders a failed authorization gate as an MCP tool error
+// whose WORDS match what actually happened.
+//
+// NAMED PROTOCOL EXCLUSION: MCP tool results carry text, not a status code.
+// REST answers 503, gRPC codes.Unavailable and QUIC wire.StatusUnavailable for
+// a node-side fault; MCP has no equivalent channel and cannot be made to
+// agree with them mechanically. What it CAN do is stop saying "authorization
+// denied" about a refusal that is not one -- an operator reading an MCP client
+// during a full audit disk was being told it was a permissions problem, which
+// is the exact misdiagnosis go-qrdb#335's 503 mapping exists to prevent. The
+// prose is the whole channel here, so the prose is where the distinction goes.
+func authzToolError(err error) *mcpgo.CallToolResult {
+	if authmw.ClassifyAuthError(err).Retryable() {
+		return mcpgo.NewToolResultError("authorization unavailable, retry: " + err.Error())
+	}
+	return mcpgo.NewToolResultError("authorization denied: " + err.Error())
+}
+
 // authorizeTenantBarrierOp authorizes a per-tenant barrier tool invocation
 // against the TRUE target tenant carried in the tool arguments (not the
 // caller's ambient tenant). It delegates to the tenant-scoped authorizer,
@@ -154,7 +173,7 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 			if err := s.authMW.AuthorizeMCP(ctx, s.toolPerms, req.Params.Name); err != nil {
 				slog.Warn("mcp: tool call denied",
 					"tool", req.Params.Name, "error", err)
-				return mcpgo.NewToolResultError("authorization denied: " + err.Error()), nil
+				return authzToolError(err), nil
 			}
 			return next(ctx, req)
 		}
