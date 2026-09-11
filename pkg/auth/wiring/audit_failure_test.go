@@ -32,7 +32,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -71,8 +70,8 @@ func TestBuildAuthMiddleware_AuditFailurePolicyDefaultsToFailClosed(t *testing.T
 	err = mw.AuthorizeTenant(ctx, tenant.SystemTenantID, permission.AdminStatus)
 	require.Error(t, err, "an unrecorded grant must be refused by default")
 
-	var auditErr *middleware.AuditError
-	assert.True(t, errors.As(err, &auditErr), "want *middleware.AuditError, got %T: %v", err, err)
+	var auditErr *audit.GateError
+	assert.True(t, errors.As(err, &auditErr), "want *audit.GateError, got %T: %v", err, err)
 	var writeErr *audit.WriteError
 	assert.True(t, errors.As(err, &writeErr), "want the sink's *audit.WriteError inside, got %v", err)
 }
@@ -86,7 +85,7 @@ func TestBuildAuthMiddleware_AuditFailurePolicyFailOpenIsHonoured(t *testing.T) 
 		RoleService:        adminRoleService(),
 		UserService:        &fakeUserService{},
 		AuditLogger:        brokenSink(t),
-		AuditFailurePolicy: middleware.AuditFailOpen,
+		AuditFailurePolicy: audit.FailOpen,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, mw)

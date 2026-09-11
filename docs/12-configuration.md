@@ -133,9 +133,10 @@ auth:
   # The window during which a REVOKED certificate still authenticates.
   revocation_cache_ttl: "30s"
   separation_of_duties: false
-  # What to do when a decision's audit record cannot be written.
-  # "fail-closed" (default) refuses the request; "fail-open" permits it and
-  # counts the gap. See the note below before changing it.
+  # What to do when a GATING audit record cannot be written -- the
+  # authorization decision AND the Security Officer's PIN verification, on this
+  # one setting. "fail-closed" (default) refuses the request; "fail-open"
+  # permits it and counts the gap. See the note below before changing it.
   audit_failure_policy: "fail-closed"
 
 cors:
@@ -574,7 +575,7 @@ Configures authentication and role-based access control (RBAC).
 | `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
-| `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when an authorization decision cannot be audited.** See the note below |
+| `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
 
 **Validation rules:**
 
@@ -611,6 +612,15 @@ Configures authentication and role-based access control (RBAC).
   For FedRAMP / PCI DSS / HIPAA, running `"fail-open"` is a reportable
   condition. See [audit/architecture.md](audit/architecture.md) and
   [audit/user.md](audit/user.md).
+- **It governs the Security Officer's second factor too, and it is the ONLY key
+  that does.** The authorization decision and the SO PIN verification are two
+  distinct assertions about the same request; both refuse an unrecordable
+  outcome under `"fail-closed"`, and `"fail-open"` gives up both at once. Their
+  gaps are sized by `qrdb_auth_audit_write_failures_total{outcome="permitted"}`
+  and `qrdb_audit_gate_failures_total{component,outcome="permitted"}`
+  respectively. There is deliberately no `auth.so_audit_failure_policy`: two
+  keys would let a deployment end up recording one assertion and not the other.
+  See [seal/so-dual-factor.md](seal/so-dual-factor.md).
 - `separation_of_duties` selects the RBAC posture:
   - **`false` (default, standard):** the bootstrap `admin` is also granted the `owner` role (full operational authority — `permission.All()`), so a single identity runs the entire database. This is the convenient posture for commercial deployments with no regulatory separation-of-duties requirement.
   - **`true` (strict):** the canonical six-role FIPS 140-3 / PCI-DSS least-privilege model is enforced — `admin` is control-plane only, the data plane requires the `operator` role, governance requires the `SO` role, and the SO→crypto deny-list applies. The `owner` role is neither seeded nor assigned.

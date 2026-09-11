@@ -101,7 +101,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/abac"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
@@ -2055,7 +2054,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// selecting a posture nobody asked for. The fail-open warning is emitted
 	// by the middleware option, so an embedded node warns identically to the
 	// daemon.
-	auditFailure, err := middleware.ParseAuditFailurePolicy(cfg.Auth.AuditFailurePolicy)
+	auditFailure, err := audit.ParseFailurePolicy(cfg.Auth.AuditFailurePolicy)
 	if err != nil {
 		_ = client.Close()
 		n.client.Store(nil)

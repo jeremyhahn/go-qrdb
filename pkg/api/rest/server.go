@@ -199,6 +199,15 @@ type Server struct {
 	// wired; otherwise the chain is unchanged.
 	soDualFactor bool
 
+	// auditFailure is what the SO dual-factor middleware does when it cannot
+	// record the second factor's outcome (go-qrdb#445). It is the operator's
+	// auth.audit_failure_policy, the SAME value the AuthMiddleware in authMW
+	// was built with -- one posture across both assertions, not two keys.
+	//
+	// Its ZERO VALUE is audit.FailClosed, so a server constructed without
+	// WithAuditFailurePolicy gates rather than proceeds unrecorded.
+	auditFailure audit.FailurePolicy
+
 	// serviceRegistry provides per-(tenant, database) service resolution.
 	// When nil, all handlers fall back to the singleton service fields above,
 	// preserving backward compatibility for single-DB/single-tenant deployments.
@@ -498,6 +507,19 @@ func WithSOAuthenticator(verifier soPINVerifier) ServerOption {
 	return func(s *Server) { s.soPINVerifier = verifier }
 }
 
+// WithAuditFailurePolicy selects what the SO dual-factor middleware does when
+// the second factor's audit record cannot be written: audit.FailClosed (the
+// default and the zero value) refuses the request with 503; audit.FailOpen
+// serves it and counts the gap.
+//
+// It takes the value the orchestrator already resolved from
+// auth.audit_failure_policy for the authorization middleware. go-qrdb#445
+// ruled ONE posture across both gates, so this option exists to carry that one
+// value down -- not to let the SO surface be configured separately.
+func WithAuditFailurePolicy(p audit.FailurePolicy) ServerOption {
+	return func(s *Server) { s.auditFailure = p }
+}
+
 // WithSODualFactor enables Security Officer dual-factor enforcement:
 // routes mapped to SO-gated permissions additionally require a valid
 // in-band SO PIN via the X-QRDB-SO-PIN header. The middleware is only
@@ -726,7 +748,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	// wired — default posture is unchanged.
 	var handler http.Handler = r
 	if s.soDualFactor && s.soPINVerifier != nil {
-		handler = authmw.SOMiddleware(s.routePerms, s.soPINVerifier, s.auditLogger, slog.Default(), handler)
+		handler = authmw.SOMiddleware(s.routePerms, s.soPINVerifier, s.auditLogger, s.auditFailure, slog.Default(), handler)
 	}
 	if s.authMW != nil {
 		handler = s.authMW.RESTMiddleware(s.routePerms, handler)

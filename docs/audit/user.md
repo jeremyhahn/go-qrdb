@@ -1,6 +1,6 @@
 # Audit — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 Who did what, when, and whether it worked. Auditing is on by default.
 
@@ -174,7 +174,8 @@ ls -l <data-dir>/audit-events.ndjson
 Watch the counters to confirm:
 
 ```
-qrdb_auth_audit_write_failures_total{outcome="denied"}   # refused decisions
+qrdb_auth_audit_write_failures_total{outcome="denied"}   # refused authorization decisions
+qrdb_audit_gate_failures_total{component,outcome}        # refused SO-PIN verifications
 qrdb_audit_write_failures_total                          # everything else
 ```
 
@@ -193,6 +194,12 @@ that buys and costs:
 - **Your audit trail acquires a gap** for the whole period, and
   `qrdb_auth_audit_write_failures_total{outcome="permitted"}` is the exact
   number of authorization decisions missing from it.
+- **The same setting governs the Security Officer's second factor.** It is one
+  posture, not two: with `"fail-open"` an SO PIN can verify and a rekey,
+  custodian enrolment or CSR signing can proceed with no record that the PIN was
+  ever presented.
+  `qrdb_audit_gate_failures_total{component="so-auth",outcome="permitted"}` and
+  `{component="so-dual-factor",outcome="permitted"}` size that gap.
 - Every startup logs a `WARN` naming the property you gave up. Do not suppress
   it — it is the only standing reminder.
 - **For FedRAMP / PCI DSS / HIPAA this is a reportable condition**, not a
@@ -200,6 +207,13 @@ that buys and costs:
 
 Revert it as soon as the sink is healthy. There is no automatic revert, by
 design: the node does exactly what the setting says for as long as it says it.
+
+**An SO request answered `503` is not a bad PIN.** With the default posture, a
+node that cannot write its trail answers every SO-gated route `503` — including
+the ones you would use to recover it — rather than `401 SO PIN verification
+failed`. If an officer reports that their PIN "stopped working", read the status
+code first: a `503` whose body says `audit log failed` means the audit sink is
+down and the PIN is fine.
 
 A typo in the value **fails the boot** rather than picking a posture for you.
 `"fail_open"`, `"true"` and `"permissive"` are all rejected; the accepted

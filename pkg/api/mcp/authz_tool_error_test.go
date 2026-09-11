@@ -55,7 +55,7 @@ func toolErrorText(t *testing.T, res *mcpgo.CallToolResult) string {
 // operator reading an MCP client during an audit outage was being told it was
 // a permissions problem.
 func TestAuthzToolError_RetryableIsNotWordedAsADenial(t *testing.T) {
-	cause := &authmw.AuditError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}}
+	cause := &audit.GateError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}}
 
 	text := toolErrorText(t, authzToolError(cause))
 	if strings.Contains(text, "authorization denied") {

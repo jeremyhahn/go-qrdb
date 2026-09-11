@@ -15,7 +15,6 @@
 package middleware
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -89,57 +88,21 @@ func (e *StoreUnavailableError) Unwrap() error {
 	return e.Err
 }
 
-// AuditError is returned when the audit logger fails to record an
-// authorization decision and the configured AuditFailurePolicy is
-// AuditFailClosed -- the default. The request is REFUSED.
+// The audit-failure error type and the audit-failure POSTURE both live in
+// pkg/audit now, not here (go-qrdb#445).
 //
-// Until go-qrdb#335 its doc comment read "the original request is not
-// blocked", and that was accurate in the only way that mattered: no code path
-// could construct one. audit.AuditLogger.Emit had no error return, so
-// audit.Logger.Log returned nil unconditionally and the middleware branch that
-// handled a non-nil audit error was structurally unreachable. Emit now reports
-// failure, Log propagates it, and this type is what the caller sees.
+// What was *middleware.AuditError is *audit.GateError, and what was
+// middleware.AuditFailurePolicy is audit.FailurePolicy. The move is not
+// cosmetic: pkg/auth/middleware imports pkg/auth, so the security-officer
+// factor in pkg/auth could never have read a posture owned here, and that
+// import edge is the whole reason the SO gate ran on a weaker posture than the
+// authorization gate it sits behind. One posture, one type, one operator
+// lever, both gates.
 //
-// It wraps the sink's own error -- typically an *audit.WriteError naming the
-// backend -- so errors.As reaches it and an operator learns which destination
-// failed, not merely that one did.
-//
-// On the wire it is a retryable server-side condition, not a denial: the
-// credential is valid and the grant may well have been valid too. REST answers
-// 503 and gRPC codes.Unavailable, matching StoreUnavailableError, because the
-// honest instruction to the caller is "retry", never "you are not permitted".
-type AuditError struct {
-	Err error
-}
-
-// Error returns a human-readable description of the audit failure.
-func (e *AuditError) Error() string {
-	return "auth/middleware: audit log failed, refusing request: " + e.Err.Error()
-}
-
-// Unwrap returns the underlying audit error.
-func (e *AuditError) Unwrap() error {
-	return e.Err
-}
-
-// InvalidAuditFailurePolicyError is returned by ParseAuditFailurePolicy when
-// the operator's configured auth.audit_failure_policy is not a value this
-// build understands.
-//
-// It fails the boot rather than resolving to either posture. Guessing
-// fail-closed on a typo denies a fleet the operator meant to keep serving;
-// guessing fail-open weakens the security posture on a typo. A daemon that
-// cannot tell which posture was asked for must not choose one.
-type InvalidAuditFailurePolicyError struct {
-	Value string
-}
-
-// Error returns a human-readable description naming the rejected value and
-// the accepted ones.
-func (e *InvalidAuditFailurePolicyError) Error() string {
-	return "auth/middleware: invalid audit failure policy " + strconv.Quote(e.Value) +
-		" (want \"fail-closed\" or \"fail-open\")"
-}
+// *audit.GateError's Component field says WHICH gate refused ("authorize",
+// "so-auth", "so-dual-factor"); ClassifyAuthError maps every one of them to
+// AuthFailureUnavailable, so REST answers 503 and gRPC codes.Unavailable
+// whichever gate produced it.
 
 // InvalidPublicGRPCMethodError is returned by RegisterPublicGRPCMethods when
 // a declared method name does not have the full gRPC method name shape

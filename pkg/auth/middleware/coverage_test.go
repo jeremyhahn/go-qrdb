@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -635,9 +636,9 @@ func TestAuthorize_AuditLogFailure(t *testing.T) {
 		t.Fatal("expected refusal: an unrecorded grant is the case audit exists to prevent")
 	}
 
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 	if !errors.Is(err, sinkErr) {
 		t.Errorf("AuditError must wrap the sink's own error, got %v", err)
@@ -649,7 +650,7 @@ func TestAuthorize_AuditLogFailure(t *testing.T) {
 
 // TestAuthorize_AuditLogFailure_OnDenied asserts the refusal is UNIFORM: even
 // when the underlying decision was already a denial, an unrecordable decision
-// is answered with *AuditError. "We answer only what we could record" is one
+// is answered with *audit.GateError. "We answer only what we could record" is one
 // rule a reader can check; carving out the denials would make it four.
 func TestAuthorize_AuditLogFailure_OnDenied(t *testing.T) {
 	authz := &mockAuthorizer{err: auth.ErrUnauthorized}
@@ -666,9 +667,9 @@ func TestAuthorize_AuditLogFailure_OnDenied(t *testing.T) {
 	if al.calls.Load() != 1 {
 		t.Fatalf("expected 1 audit call, got %d", al.calls.Load())
 	}
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 }
 
@@ -679,7 +680,7 @@ func TestAuthorize_AuditLogFailure_FailOpen(t *testing.T) {
 	authz := &mockAuthorizer{}
 	al := &mockAuditLogger{err: errors.New("disk full")}
 
-	m := New(authz, WithAuditLogger(al), WithAuditFailurePolicy(AuditFailOpen))
+	m := New(authz, WithAuditLogger(al), WithAuditFailurePolicy(audit.FailOpen))
 
 	identity := &auth.Identity{Subject: "alice", TenantID: "t1"}
 	if err := m.authorize(context.Background(), identity, "kv:put"); err != nil {

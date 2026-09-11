@@ -16,7 +16,6 @@ package sdk
 
 import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	qrdbserver "github.com/jeremyhahn/go-qrdb/pkg/server"
 )
 
@@ -81,36 +80,47 @@ type NodeAuditWriteError = audit.WriteError
 // ---------------------------------------------------------------------------
 // Audit failure posture
 //
-// What the authorization middleware does when a decision's audit record
-// cannot be written. Re-exported because it is a COMPLIANCE SETTING a
-// composing host has to be able to state, read back and test against without
-// importing pkg/auth/middleware.
+// What a GATING call site does when the event that gates an operation cannot
+// be written -- the authorization middleware's decision, and (go-qrdb#445) the
+// security officer's PIN verification. Re-exported because it is a COMPLIANCE
+// SETTING a composing host has to be able to state, read back and test against
+// without importing pkg/audit or pkg/auth/middleware.
+//
+// ONE posture governs both gates. There is no second setting and no second
+// type; auth.audit_failure_policy is the whole lever.
 // ---------------------------------------------------------------------------
 
-// AuditFailurePolicy selects what the authorization middleware does when a
-// decision's audit record cannot be written. Its zero value is
-// AuditFailClosed.
-type AuditFailurePolicy = authmw.AuditFailurePolicy
+// AuditFailurePolicy selects what a gating call site does when its audit
+// record cannot be written. Its zero value is AuditFailClosed.
+type AuditFailurePolicy = audit.FailurePolicy
 
 const (
-	// AuditFailClosed refuses the request when its audit record could not be
+	// AuditFailClosed refuses the operation when its audit record could not be
 	// written. The default, and the zero value.
-	AuditFailClosed = authmw.AuditFailClosed
+	AuditFailClosed = audit.FailClosed
 
-	// AuditFailOpen permits the request and counts the failure on
-	// qrdb_auth_audit_write_failures_total{outcome="permitted"}. Selecting it
-	// logs a warning at every startup naming the property given up.
-	AuditFailOpen = authmw.AuditFailOpen
+	// AuditFailOpen permits the operation and counts the failure on
+	// qrdb_auth_audit_write_failures_total{outcome="permitted"} (the
+	// authorization gate) or qrdb_audit_gate_failures_total{outcome="permitted"}
+	// (every other gate). Selecting it logs a warning at every startup naming
+	// the property given up.
+	AuditFailOpen = audit.FailOpen
 )
 
 // ParseAuditFailurePolicy resolves a configured spelling ("fail-closed",
 // "fail-open", or empty for the default) onto an AuditFailurePolicy. An
 // unrecognised value is an error, never a guessed posture.
-var ParseAuditFailurePolicy = authmw.ParseAuditFailurePolicy
+var ParseAuditFailurePolicy = audit.ParseFailurePolicy
 
-// AuditDecisionError is returned by the authorization middleware when a
-// decision's audit record could not be written and the policy is
-// AuditFailClosed (pkg/auth/middleware.AuditError). It wraps the sink's own
-// error -- typically a *NodeAuditWriteError -- and maps to HTTP 503 /
-// gRPC Unavailable.
-type AuditDecisionError = authmw.AuditError
+// AuditGateError is returned by a gating call site when the event that gates
+// the operation could not be written and the policy is AuditFailClosed
+// (pkg/audit.GateError). Component names the gate that refused --
+// "authorize", "so-auth", "so-dual-factor". It wraps the sink's own error --
+// typically a *NodeAuditWriteError -- and maps to HTTP 503 / gRPC Unavailable
+// on every transport.
+type AuditGateError = audit.GateError
+
+// InvalidAuditFailurePolicyError is what ParseAuditFailurePolicy returns for a
+// spelling this build does not understand. A typo fails the boot rather than
+// resolving to either posture.
+type InvalidAuditFailurePolicyError = audit.InvalidFailurePolicyError

@@ -212,12 +212,17 @@ type AuthMiddlewareConfig struct {
 	// AuditFailurePolicy selects what the middleware does when AuditLogger
 	// cannot record a decision (middleware.WithAuditFailurePolicy).
 	//
-	// The ZERO VALUE is middleware.AuditFailClosed, so an embedder that never
-	// sets this field gets the secure posture -- the request is refused rather
-	// than granted unrecorded. Resolve an operator's configured string with
-	// middleware.ParseAuditFailurePolicy at the call site, which fails the
-	// boot on an unrecognised value rather than guessing a posture.
-	AuditFailurePolicy middleware.AuditFailurePolicy
+	// The ZERO VALUE is audit.FailClosed, so an embedder that never sets this
+	// field gets the secure posture -- the request is refused rather than
+	// granted unrecorded. Resolve an operator's configured string with
+	// audit.ParseFailurePolicy at the call site, which fails the boot on an
+	// unrecognised value rather than guessing a posture.
+	//
+	// It is the SAME value the security-officer gate reads
+	// (auth.WithSOAuditFailurePolicy, rest.WithAuditFailurePolicy): go-qrdb#445
+	// ruled one posture across both assertions, so an embedder that resolves
+	// auth.audit_failure_policy once must pass the result to all three.
+	AuditFailurePolicy audit.FailurePolicy
 
 	// RateLimitPolicies declares, per permission, the request-throttling
 	// Policy go-qrdb#201's centralized rate limiter enforces

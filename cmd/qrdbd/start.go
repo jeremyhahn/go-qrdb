@@ -3248,7 +3248,7 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	// unrecognised value aborts rather than silently selecting a posture the
 	// operator did not ask for. Selecting fail-open logs its warning when the
 	// middleware option is applied — once, at every start.
-	auditFailure, err := middleware.ParseAuditFailurePolicy(auditFailurePolicy)
+	auditFailure, err := audit.ParseFailurePolicy(auditFailurePolicy)
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "auth.audit_failure_policy", Err: err}
 	}
@@ -3288,7 +3288,12 @@ func bootstrapAuthEnforcement(ctx context.Context, mgmt *mgmtBootstrapResult, ru
 	// SO authenticator: hash-commits the SO PIN at bootstrap (Argon2id or
 	// PBKDF2-SHA256 depending on GOFIPS140), verifies via constant-time
 	// compare on each SO-permissioned request. PIN itself is never stored.
-	soAuthenticator, err := auth.NewSOAuthenticator(runtimeStore, complianceAudit, slog.Default())
+	// The SO PIN verification is a GATE, so it reads the same audit failure
+	// posture the authorization middleware above was built with -- one
+	// operator lever, auth.audit_failure_policy, resolved once at line
+	// auditFailure and handed to both (go-qrdb#445).
+	soAuthenticator, err := auth.NewSOAuthenticator(runtimeStore, complianceAudit, slog.Default(),
+		auth.WithSOAuditFailurePolicy(auditFailure))
 	if err != nil {
 		return nil, &AuthBootstrapError{Step: "SO authenticator", Err: err}
 	}

@@ -59,6 +59,40 @@ Every decision — missing PIN, invalid PIN, success — is emitted to the
 compliance audit log with actor, tenant, resource, action, and client
 IP.
 
+## The record is part of the decision
+
+**A gated request is refused when its SO-factor record cannot be written.** The
+gate is fail-closed by default, on the operator's `auth.audit_failure_policy` —
+the same single setting that governs the authorization decision one layer out.
+There is no separate SO setting.
+
+An SO operation is the most privileged action the system offers, and an
+unrecorded second factor is exactly the event the trail exists to capture. Both
+halves of the check propagate a failed audit write:
+
+- `middleware.SOMiddleware`, for the route-level dual-factor record, and
+- `auth.SOAuthenticator.VerifySOPIN`, for the PIN verification itself.
+
+What the caller sees when the audit sink is down:
+
+| Condition | Healthy sink | Sink cannot write, `fail-closed` (default) | Sink cannot write, `fail-open` |
+|---|---|---|---|
+| PIN missing | `401 SO PIN required` | `503`, body names the audit failure | `401` as usual |
+| PIN wrong | `401 SO PIN verification failed` | `503`, body names the audit failure | `401` as usual |
+| PIN correct | handler runs | `503`, handler does **not** run | handler runs, gap counted |
+
+`503` and not `401`, because the credential is good and what failed is the
+node: `retry` is the honest instruction, and telling an officer holding a valid
+PIN that the PIN is wrong would send them to re-enrol. The refusal rides
+`qrdb_audit_gate_failures_total{component="so-dual-factor"|"so-auth"}` and an
+`ERROR` log line; it is **not** written to the sink that just failed.
+
+**`SetSOPIN` and `RotateSOPIN` are not gated the same way.** Their own
+completion records are post-commit — the hash is already replicated through
+Raft — so a failed write there is logged and counted rather than propagated;
+refusing would report a completed operation as failed. The *rotation* still
+verifies the old PIN through the gate above before it commits anything.
+
 ## Chain position
 
 The middleware is the innermost REST wrapper (directly around the mux),

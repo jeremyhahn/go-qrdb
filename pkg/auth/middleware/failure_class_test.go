@@ -47,7 +47,7 @@ var classCases = []struct {
 }{
 	{
 		name:  "AuditError -- the node could not RECORD the decision",
-		err:   &AuditError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}},
+		err:   &audit.GateError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}},
 		class: AuthFailureUnavailable, http: http.StatusServiceUnavailable, grpc: codes.Unavailable, retry: true,
 	},
 	{

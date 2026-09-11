@@ -1,6 +1,6 @@
 # Audit — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -33,12 +33,39 @@ type Logger interface {
 }
 
 func NewDecisionLogger(sink AuditLogger) Logger
+
+// The GATING posture, and the emit that honours it.
+type FailurePolicy uint8
+
+const (
+	FailClosed FailurePolicy = iota  // the ZERO VALUE
+	FailOpen
+)
+
+func ParseFailurePolicy(s string) (FailurePolicy, error)
+
+type InvalidFailurePolicyError struct{ Value string }
+type GateError struct {
+	Component string   // "authorize", "so-auth", "so-dual-factor"
+	Err       error
+}
+
+func EmitGated(ctx context.Context, sink AuditLogger, component string, policy FailurePolicy, ev AuditEvent) error
+func EmitBestEffort(ctx context.Context, sink AuditLogger, component string, ev AuditEvent)
 ```
 
 `sdk/go` re-exports the sink interface as `NodeAuditLogger`, the write error as
-`NodeAuditWriteError`, and the posture below as `AuditFailurePolicy` /
+`NodeAuditWriteError`, and the posture as `AuditFailurePolicy` /
 `AuditFailClosed` / `AuditFailOpen` / `ParseAuditFailurePolicy` /
-`AuditDecisionError`.
+`AuditGateError` / `InvalidAuditFailurePolicyError`.
+
+**The posture lives in `pkg/audit`, not in `pkg/auth/middleware`.** It started
+there and could not stay: `pkg/auth/middleware` imports `pkg/auth`, so the
+security-officer factor in `pkg/auth` could never read a policy the middleware
+owned — which is exactly why the SO gate ran on a weaker posture than the
+authorization gate it sits behind. `middleware.AuditFailurePolicy` and
+`middleware.AuditError` no longer exist; the canonical names are
+`audit.FailurePolicy` and `audit.GateError`.
 
 ## Composition
 
@@ -126,48 +153,75 @@ record survived or not.
 
 ## Fail-closed on audit write failure
 
-`decisionLogger.Log` propagates the sink's error verbatim. The authorization
-middleware acts on it:
+`decisionLogger.Log` propagates the sink's error verbatim. **Two gates** act on
+it, on **one** `audit.FailurePolicy` value:
 
-```go
-// pkg/auth/middleware
-type AuditFailurePolicy uint8
+| Gate | Where | Component | How the policy reaches it |
+|---|---|---|---|
+| authorization decision | `AuthMiddleware.authorize` → `auditDecision` | `authorize` | `middleware.WithAuditFailurePolicy` |
+| SO dual factor (route gate) | `middleware.SOMiddleware` | `so-dual-factor` | the `policy` **parameter**, set by `rest.WithAuditFailurePolicy` |
+| SO PIN verification | `auth.SOAuthenticator.VerifySOPIN` | `so-auth` | `auth.WithSOAuditFailurePolicy` |
 
-const (
-	AuditFailClosed AuditFailurePolicy = iota  // the ZERO VALUE
-	AuditFailOpen
-)
+All three read the operator's single `auth.audit_failure_policy`, resolved once
+per boot. **There is no second configuration key**: two keys would reintroduce
+the split this design exists to remove.
 
-func ParseAuditFailurePolicy(s string) (AuditFailurePolicy, error)
-func WithAuditFailurePolicy(p AuditFailurePolicy) Option
-```
-
-- **`AuditFailClosed` is the zero value**, so an `AuthMiddleware` built by any
+- **`audit.FailClosed` is the zero value**, so an `AuthMiddleware`, an
+  `SOAuthenticator`, a `rest.Server` or a `SOMiddleware` call built by any
   constructor that never mentions the field is fail-closed. The same holds for
   `wiring.AuthMiddlewareConfig.AuditFailurePolicy` and for an omitted YAML key.
   A security default that has to be assigned is one that will eventually not be.
-- Under `AuditFailClosed` the middleware returns `*middleware.AuditError`
-  wrapping the sink's error, **uniformly**, whatever the underlying decision
-  was. REST maps it to **503**, gRPC to **`codes.Unavailable`**.
-- Under `AuditFailOpen` the decision stands and the failure is counted.
+  `SOMiddleware` takes the posture as a **positional parameter** rather than a
+  variadic option so that "nobody passed one" and "somebody chose fail-closed"
+  are not the same shape at the call site.
+- Under `audit.FailClosed` the gate returns `*audit.GateError` wrapping the
+  sink's error, **uniformly**, whatever the underlying outcome was. REST maps it
+  to **503**, gRPC to **`codes.Unavailable`**.
+- Under `audit.FailOpen` the outcome stands and the failure is counted.
 - With **no audit logger configured** the posture is inert: nothing could fail,
   so nothing is refused.
+
+### The SO path specifically
+
+`SOMiddleware` distinguishes *a bad PIN* from *an unrecordable verification* by
+the **concrete type** `*audit.GateError`, not by the
+`AuthFailureUnavailable` class it belongs to. Guarding on the class would sweep
+in `*StoreUnavailableError` wrapping `tenant.ErrTenantSealed`, which is the
+signal the sealed-window fallbacks exist to act on. A wrong PIN on a healthy
+node is still `401 SO PIN verification failed`; the same wrong PIN on a node
+that cannot write its trail is `503`.
+
+**`SetSOPIN` and `RotateSOPIN` keep `EmitBestEffort` for their own mutation
+records, deliberately.** Their success record is written *after* `store.Put`
+has replicated the commit, so propagating a failed write would report a
+completed operation as failed and the operator would retry into
+`ErrSOPINAlreadySet`. There is no rollback an emitter may perform. The
+*rotation gate* is still fail-closed, because `RotateSOPIN` verifies the old
+PIN through `VerifySOPIN` before committing anything.
 
 ### Observability
 
 ```
-qrdb_auth_audit_write_failures_total{outcome="denied"}      # fail-closed refused
-qrdb_auth_audit_write_failures_total{outcome="permitted"}   # fail-open let through
-qrdb_audit_write_failures_total{component="..."}            # a post-hoc record was lost
-qrdb_audit_rotation_failures_total                         # the file stopped honouring maxBytes
+qrdb_auth_audit_write_failures_total{outcome="denied"}          # the authorization gate refused
+qrdb_auth_audit_write_failures_total{outcome="permitted"}       # the authorization gate let it through
+qrdb_audit_gate_failures_total{component,outcome}               # any OTHER gate: so-auth, so-dual-factor
+qrdb_audit_write_failures_total{component="..."}                # a post-hoc record was lost
+qrdb_audit_rotation_failures_total                              # the file stopped honouring maxBytes
 ```
 
-The first two count authorization decisions. The third counts **every other**
-audit record that failed to write, labelled by the subsystem whose trail now
-has the gap — `user`, `role`, `custodian`, `ceremony`, `credentials`,
-`so-auth`, `so-dual-factor`. Those call sites log and continue (see
-*Callers other than the middleware*), and a log line is not something anyone
-can alert on; the counter is.
+The first two count authorization decisions. The third counts every **other**
+gating record that failed to write, labelled by the gate and by what the policy
+did — `component="so-auth"` and `component="so-dual-factor"` today. The fourth
+counts **post-hoc** records that failed to write, labelled by the subsystem
+whose trail now has the gap — `user`, `role`, `custodian`, `ceremony`,
+`credentials`, `so-auth`. Those call sites log and continue (see *Callers other
+than the middleware*), and a log line is not something anyone can alert on; the
+counter is.
+
+`qrdb_auth_audit_write_failures_total` and `qrdb_audit_gate_failures_total`
+are deliberately separate rather than one relabelled counter: the first is
+older, and an operator's alert on it must keep meaning exactly what it meant
+rather than silently acquiring a new component.
 
 `qrdb_audit_rotation_failures_total` is **deliberately separate** from the
 write-failure counters. Those mean *a record was lost*; this one means *the
@@ -191,12 +245,20 @@ There are exactly two honest answers:
 
 | Answer | When | How |
 |---|---|---|
-| **Propagate** | the record is part of the decision being made | return it — the authorization middleware, and `sdk/go/transport/embedded.EmitAudit` |
+| **Propagate** | the record **gates** an operation that has not yet happened | `audit.EmitGated(ctx, sink, component, policy, ev)` — the SO gates. The authorization middleware propagates through `auditDecision`, which predates `EmitGated` and keeps its own counter; `sdk/go/transport/embedded.EmitAudit` returns the sink's error verbatim, because there the emit IS the caller's operation |
 | **Log and count** | the operation has **already committed** and this is its post-hoc record | `audit.EmitBestEffort(ctx, sink, component, ev)` |
 
 ```go
+func EmitGated(ctx context.Context, sink AuditLogger, component string, policy FailurePolicy, ev AuditEvent) error
 func EmitBestEffort(ctx context.Context, sink AuditLogger, component string, ev AuditEvent)
 ```
+
+**The line is drawn at "has it committed", not at "is it a success".** Within
+one gate every outcome is treated alike — success and refusal — because "we
+answer only what we could record, except when we were going to refuse anyway"
+is two rules that will drift and buys nothing: the caller is refused either
+way. What changes is that it is told to *retry* rather than told its credential
+was bad.
 
 A user was created, a custodian enrolled, a credential rotated: there is no
 decision left to refuse and no rollback the emitter could perform, so returning
@@ -210,12 +272,14 @@ measurable at those sites too.
 record *is* part of the decision has put the compliance property back where
 this feature found it.
 
-**One stated asymmetry.** The SO dual-factor middleware
-(`middleware.SOMiddleware`) uses `EmitBestEffort`, including for the
-PIN-verified success. It runs *behind* an already-fail-closed authorization
-decision, and it is a free function that `auth.audit_failure_policy` does not
-reach — two postures with one lever is worse than one posture stated plainly.
-Extending the lever there is a separate change.
+**The asymmetry is gone.** The SO dual-factor middleware and
+`auth.SOAuthenticator.VerifySOPIN` used to use `EmitBestEffort` for every
+outcome, including the PIN-verified success, on the argument that `SOMiddleware`
+runs *behind* an already-fail-closed authorization decision. That argument was
+real but partial — the authorization decision and the SO factor are two
+distinct assertions, written separately, and only one was guaranteed recorded.
+Both now propagate, on the same lever, and the lever reaches them because the
+posture type moved to `pkg/audit`.
 
 ## Event schema
 
@@ -256,8 +320,14 @@ Target compliance schema (`pkg/audit/types.go`):
   single sink failure must not suppress the trail in the healthy ones.
 - **`Emit` returns `nil` only if the event was recorded.** The caller decides
   what that means for the operation it was performing.
-- **An authorization decision that could not be recorded is refused** unless
-  `auth.audit_failure_policy` says otherwise.
+- **A GATING record that could not be written refuses its operation** unless
+  `auth.audit_failure_policy` says otherwise. That covers the authorization
+  decision, the SO dual-factor route gate and the SO PIN verification, on one
+  policy value.
+- **A refusal caused by an audit failure is never re-emitted to the sink.**
+  `EmitGated` writes exactly once whatever the posture; a second write would be
+  a retry on a sink that just said no, and would double-count the gap the
+  counter is meant to measure exactly.
 - **`kvLogger.Close()` is a no-op** — the KVStore lifecycle is managed
   externally.
 - **Permission denials are audited** as `auth.denied` with the `ResultDenied`
@@ -297,7 +367,7 @@ With metadata, as a nested group:
 ## Configuration
 
 There is no `audit:` block. The single audit-related setting is the failure
-posture, and it lives with the authorization middleware that enforces it:
+posture, and **one value governs every gate**:
 
 ```yaml
 auth:
@@ -306,15 +376,23 @@ auth:
 
 | Value | Behaviour |
 |---|---|
-| `"fail-closed"`, or **omitted** | An authorization decision whose audit record cannot be written is **refused** (503 / `Unavailable`). |
-| `"fail-open"` | The decision **proceeds**; the failure is counted on `qrdb_auth_audit_write_failures_total{outcome="permitted"}`. |
-| anything else | **The boot fails** with `*middleware.InvalidAuditFailurePolicyError`. |
+| `"fail-closed"`, or **omitted** | A gating record that cannot be written **refuses** its operation (503 / `Unavailable`) — the authorization decision and the SO PIN verification alike. |
+| `"fail-open"` | The operation **proceeds**; the failure is counted on `qrdb_auth_audit_write_failures_total{outcome="permitted"}` or `qrdb_audit_gate_failures_total{component,outcome="permitted"}`. |
+| anything else | **The boot fails** with `*audit.InvalidFailurePolicyError`. |
 
 **This is a compliance setting, not a tuning knob.** `"fail-open"` gives up the
-property that every authorization decision this node made is in the trail; the
-trail acquires a gap whose size is exactly that counter. Auditors of a
-FedRAMP / PCI DSS / HIPAA deployment should treat a node running `"fail-open"`
-as a node whose authorization trail is not complete for the duration.
+property that every authorization decision *and every SO second factor* this
+node made is in the trail; the trail acquires a gap whose size is exactly those
+counters. Auditors of a FedRAMP / PCI DSS / HIPAA deployment should treat a node
+running `"fail-open"` as a node whose authorization trail is not complete for
+the duration.
+
+**There is deliberately no second key.** An `auth.so_audit_failure_policy` would
+let a deployment record one of the two assertions and not the other, which is
+the split this design exists to remove. The daemon resolves the string once at
+boot and hands the resulting `audit.FailurePolicy` to
+`middleware.WithAuditFailurePolicy`, `rest.WithAuditFailurePolicy` and
+`auth.WithSOAuditFailurePolicy`.
 
 Three constraints on the setting, all enforced rather than documented:
 
@@ -354,12 +432,21 @@ there is no retention policy in this feature.
 - **The fan-out reaching every sink is the critical test** — a
   stop-at-first-error implementation would pass a naive "the aggregate returned
   an error" assertion and lose the trail in production, in the healthy sinks.
-- **The fail-closed proof is end-to-end**: a real `ChainFileLogger` on a real
-  file, faulted at `os.File.Write`, driven through a real HTTP request, is
-  asserted to produce HTTP 503 carrying a `*middleware.AuditError` that unwraps
-  to an `*audit.WriteError` naming the file — and the handler is asserted not
-  to have run. A test that merely constructs those error types proves the
-  constructors work and says nothing about whether any request produces one.
+- **The fail-closed proof is end-to-end, for both gates**: a real
+  `ChainFileLogger` on a real file, faulted at `os.File.Write`, driven through a
+  real HTTP request, is asserted to produce HTTP 503 carrying a
+  `*audit.GateError` that unwraps to an `*audit.WriteError` naming the file —
+  and the handler is asserted not to have run. The SO half additionally drives a
+  **real `*auth.SOAuthenticator`** over a real `*kvstore.MemoryKVStore` with a
+  real committed PIN, because "the SO factor passed and the handler still did
+  not run" is not observable against a stub verifier. A test that merely
+  constructs those error types proves the constructors work and says nothing
+  about whether any request produces one.
+- **Every refusal test has a control with a healthy sink.** A gate that refused
+  everything unconditionally would otherwise pass the whole suite.
+- **The deliberate non-gate is pinned too.** `SetSOPIN` with a faulted sink is
+  asserted to report success *and* to have really committed the PIN, so a later
+  reader does not "fix" a post-commit record into a gate.
 - **The default gets its own assertion** at three layers — the zero
   `AuditFailurePolicy`, the zero `wiring.AuthMiddlewareConfig` field, and the
   omitted YAML key — because the default *is* the security property.

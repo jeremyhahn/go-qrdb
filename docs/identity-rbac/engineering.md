@@ -445,7 +445,7 @@ resource, the action and the outcome (`success`, `failure:<reason>`,
 
 **The audit record is part of the decision, not a side effect of it.** When the
 audit sink cannot record an authorization decision, the middleware **refuses
-the request** — `*middleware.AuditError` wrapping the sink's error, answered as
+the request** — `*audit.GateError` wrapping the sink's error, answered as
 HTTP 503 / gRPC `Unavailable`. The refusal is uniform across every exit from
 `authorize()`: the RBAC grant, the RBAC denial, the `IdentityGated`
 short-circuit, the sealed-tenant `Unavailable` and the rate-limit refusal.

@@ -1168,6 +1168,19 @@ func (s *Server) startREST() error {
 	if s.config.Auth.SODualFactor {
 		restOpts = append(restOpts, rest.WithSODualFactor())
 	}
+	// The SO dual-factor gate reads the operator's audit failure posture from
+	// the SAME key the authorization middleware does (go-qrdb#445). It is
+	// resolved from config here rather than taken as a ServerOption so that an
+	// embedder driving pkg/server directly cannot end up with the two gates on
+	// different postures by setting the YAML key and forgetting the option --
+	// which is the split the ruling exists to remove. An unrecognised value
+	// fails the start for the same reason it fails the daemon's boot: a node
+	// that cannot tell which posture was asked for must not choose one.
+	auditFailure, err := audit.ParseFailurePolicy(s.config.Auth.AuditFailurePolicy)
+	if err != nil {
+		return err
+	}
+	restOpts = append(restOpts, rest.WithAuditFailurePolicy(auditFailure))
 	if reg := s.transportServiceRegistry(); reg != nil {
 		restOpts = append(restOpts, rest.WithServiceRegistry(reg))
 	}

@@ -1421,18 +1421,6 @@ func TestAuthChainError(t *testing.T) {
 	})
 }
 
-func TestAuditError(t *testing.T) {
-	inner := errors.New("disk full")
-	e := &AuditError{Err: inner}
-	want := "auth/middleware: audit log failed, refusing request: disk full"
-	if e.Error() != want {
-		t.Errorf("got %q, want %q", e.Error(), want)
-	}
-	if e.Unwrap() != inner {
-		t.Error("Unwrap should return inner error")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // mapGRPCAuthError tests
 // ---------------------------------------------------------------------------

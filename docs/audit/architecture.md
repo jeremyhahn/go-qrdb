@@ -1,6 +1,6 @@
 # Audit — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 Compliance-grade audit logging: who did what, to which resource, with what
 outcome.
@@ -93,11 +93,33 @@ suppress the trail in the healthy ones.
 
 ## Fail-closed on audit write failure
 
-**An authorization decision is not made unless its audit record persisted.**
+**A gating decision is not made unless its audit record persisted.**
 
-When the authorization middleware cannot record a decision, it **refuses the
-request** — `*middleware.AuditError` wrapping the sink's `*audit.WriteError`,
-which the transports answer as HTTP 503 / gRPC `Unavailable`.
+There are **two gates**, and they run on **one posture**:
+
+| Gate | What it asserts | Component |
+|---|---|---|
+| `AuthMiddleware.authorize` | the RBAC/ABAC decision | `authorize` |
+| `SOMiddleware` + `auth.SOAuthenticator.VerifySOPIN` | the security officer's second factor (PIN) | `so-dual-factor`, `so-auth` |
+
+They are **two distinct assertions about the same request**, which is why
+covering only the first was not enough: the sink can fail between them, and an
+SO operation — rekey, custodian enrolment, CSR signing — is the most privileged
+action the system offers. Before the SO gate was brought onto this posture an SO
+PIN could verify, its record could fail to write, and the gated handler ran
+anyway.
+
+When either gate cannot record its event, it **refuses the request** —
+`*audit.GateError` wrapping the sink's `*audit.WriteError`, which the
+transports answer as HTTP 503 / gRPC `Unavailable`. `GateError.Component` says
+which gate refused.
+
+**One type, one posture, one lever.** The posture is `audit.FailurePolicy` and
+it lives in `pkg/audit`, not in `pkg/auth/middleware` where it started.
+`pkg/auth/middleware` imports `pkg/auth`, so a policy owned by the middleware
+could never have been read by the SO factor — that import edge is precisely why
+the SO gate ran on the weaker posture. A second configuration key would have
+reintroduced the split.
 
 The reasoning: an unrecorded **grant** is precisely the event audit exists to
 prevent. A system that authorizes without recording has lost the property, and
@@ -105,11 +127,24 @@ doing so silently is worse than refusing. 503 rather than 403 because the
 credential is valid and the grant may well be valid too — what failed is the
 audit plane, and "retry" is the honest instruction.
 
-The refusal is **uniform**: it does not depend on whether the underlying
-decision was a grant, a denial, a rate-limit refusal or a sealed-tenant 503.
-"We answer only what we could record" is one rule a reader can check; carving
-out the cases that would have refused anyway makes it four rules that will
-drift, and buys nothing, since every one of them refuses the caller either way.
+The refusal is **uniform within a gate**: it does not depend on whether the
+underlying outcome was a grant, a denial, a rate-limit refusal, a sealed-tenant
+503, a missing SO PIN or a wrong one. "We answer only what we could record" is
+one rule a reader can check; carving out the cases that would have refused
+anyway makes it several rules that will drift, and buys nothing, since every
+one of them refuses the caller either way. What does change is *what the caller
+is told*: a wrong PIN on a healthy node is `401 SO PIN verification failed`,
+and the same wrong PIN on a node that cannot write its trail is `503`, because
+"retry" is the truth and "your PIN is wrong" would send a legitimate officer to
+re-enrol.
+
+**Gating records are not the same as post-hoc records, and the line is drawn at
+"has it committed".** `SetSOPIN` and `RotateSOPIN` write their success record
+*after* the commit has replicated through Raft; propagating a failed write
+there would report a completed operation as failed, and the operator would
+retry into `ErrSOPINAlreadySet`. Those stay on `EmitBestEffort` — deliberately,
+and tested as such. The **verification**, which gates an operation that has not
+yet happened, does not.
 
 ### What each transport answers
 
@@ -162,8 +197,20 @@ that has already said no, and is exactly the fallback this feature forbids.
 
 So the event is carried on two planes that do not depend on the audit plane:
 
-- the counter `qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}`,
+- the counter `qrdb_auth_audit_write_failures_total{outcome="denied"|"permitted"}`
+  for the authorization gate,
+- the counter `qrdb_audit_gate_failures_total{component,outcome}` for every
+  other gate — `component="so-auth"` and `component="so-dual-factor"` today,
 - an `ERROR`-level line on the operational log stream.
+
+The two counters are separate rather than one relabelled counter because the
+predates the second and an operator's alert on it must keep meaning exactly
+what it meant.
+
+**The refusal is written to the sink exactly once.** Neither gate re-emits the
+refusal it just produced: the only sink is the one that said no, and writing
+again is the retry this feature forbids. It would also double-count the gap the
+counter is supposed to measure exactly.
 
 **During an audit outage the trail has a gap by construction.** What these
 guarantee is that the gap is *visible and measurable* rather than silent — a
@@ -207,6 +254,8 @@ must not rewrite what the actor was allowed to do then.
   `denied`) — a failed attempt is exactly what a trail exists to record.
 - **An authorization decision that could not be recorded is refused** by
   default. The audit record is part of the decision, not a side effect of it.
+- **The same is true of the SO second factor.** The two gates share one posture
+  value; there is no separate SO setting.
 - **Querying the trail requires `audit:query`**, distinct from any operational
   permission.
 

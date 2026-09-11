@@ -37,7 +37,7 @@ import (
 // this node could merely not RECORD was told it was not permitted -- the same
 // mis-mapping REST answered 403 for.
 func TestAuthzStatus_AuditFailureIsUnavailable(t *testing.T) {
-	cause := &authmw.AuditError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}}
+	cause := &audit.GateError{Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")}}
 	err := &AuthorizationError{Method: "barrier.Unseal", Reason: cause.Error(), Err: cause}
 
 	if got := authzStatus(err); got != wire.StatusUnavailable {
@@ -52,7 +52,7 @@ func TestAuthzStatus_Classes(t *testing.T) {
 		err  error
 		want uint16
 	}{
-		{"audit write failed", &authmw.AuditError{Err: errors.New("disk full")}, wire.StatusUnavailable},
+		{"audit write failed", &audit.GateError{Err: errors.New("disk full")}, wire.StatusUnavailable},
 		{"user store unavailable", &authmw.StoreUnavailableError{Err: errors.New("raft")}, wire.StatusUnavailable},
 		{"revocation unreadable", &auth.RevocationCheckError{Err: errors.New("down")}, wire.StatusUnavailable},
 		{"ordinary denial", auth.ErrUnauthorized, wire.StatusPermissionDenied},
@@ -99,7 +99,7 @@ func TestAuthzStatus_FallbackIsPermissionDenied(t *testing.T) {
 func TestAuthorizationError_MessageFollowsTheClass(t *testing.T) {
 	retryable := &AuthorizationError{
 		Method: "barrier.Unseal", Reason: "audit log failed",
-		Err: &authmw.AuditError{Err: errors.New("disk full")},
+		Err: &audit.GateError{Err: errors.New("disk full")},
 	}
 	if strings.Contains(retryable.Error(), "permission denied") {
 		t.Errorf("a retryable fault must not be worded as a denial: %q", retryable.Error())
@@ -117,10 +117,10 @@ func TestAuthorizationError_MessageFollowsTheClass(t *testing.T) {
 // TestAuthorizationError_Unwrap: the wrapper previously erased the typed
 // cause, which is why the frame could not tell a denial from a node fault.
 func TestAuthorizationError_Unwrap(t *testing.T) {
-	cause := &authmw.AuditError{Err: errors.New("disk full")}
+	cause := &audit.GateError{Err: errors.New("disk full")}
 	err := &AuthorizationError{Method: "m", Reason: "r", Err: cause}
 
-	var got *authmw.AuditError
+	var got *audit.GateError
 	if !errors.As(err, &got) {
 		t.Fatal("errors.As must reach the middleware's typed error through the QUIC wrapper")
 	}
@@ -136,7 +136,7 @@ func TestAuthorizationError_Unwrap(t *testing.T) {
 // They gate on the auth middleware and `return nil, err`, so their refusals
 // arrive at mapServiceError -- NOT at the method-level gate in handleStream,
 // which is the only place authzStatus was originally wired. Nothing in
-// mapServiceError classified them, so *AuditError, *StoreUnavailableError,
+// mapServiceError classified them, so *audit.GateError, *StoreUnavailableError,
 // *RateLimitedError and every RBAC denial from the tenant-scoped gate all fell
 // through to wire.StatusError, while docs/audit/architecture.md claimed QUIC
 // answered StatusUnavailable on exactly those handlers.
@@ -150,7 +150,7 @@ func TestMapServiceError_ClassifiesAuthFailures(t *testing.T) {
 		err  error
 		want uint16
 	}{
-		{"audit write failed", &authmw.AuditError{
+		{"audit write failed", &audit.GateError{
 			Err: &audit.WriteError{Backend: "audit.ndjson", Err: errors.New("disk full")},
 		}, wire.StatusUnavailable},
 		{"user store unavailable", &authmw.StoreUnavailableError{Err: errors.New("raft")}, wire.StatusUnavailable},

@@ -101,11 +101,43 @@ type SOAuthenticator struct {
 	store  kvstore.KVStore
 	audit  audit.AuditLogger
 	logger *slog.Logger
+
+	// auditFailure is what VerifySOPIN does when a verification outcome
+	// cannot be recorded (go-qrdb#445).
+	//
+	// Its ZERO VALUE is audit.FailClosed, so an SOAuthenticator built without
+	// WithSOAuditFailurePolicy -- by a test, an embedder, or a future
+	// constructor nobody remembered to update -- refuses rather than reports a
+	// second factor that passed with nothing in the trail to say so.
+	//
+	// It is the SAME operator lever the authorization middleware reads,
+	// auth.audit_failure_policy, resolved once at the boot and handed to both.
+	// Two keys would reintroduce the split this field exists to remove.
+	auditFailure audit.FailurePolicy
 }
 
-// NewSOAuthenticator constructs an SOAuthenticator. Both store and logger
-// must be non-nil.
-func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *slog.Logger) (*SOAuthenticator, error) {
+// SOOption configures an SOAuthenticator at construction.
+type SOOption func(*SOAuthenticator)
+
+// WithSOAuditFailurePolicy selects what VerifySOPIN does when it cannot record
+// a verification outcome. Not applying it leaves audit.FailClosed, the zero
+// value.
+//
+// It takes the value an embedder already resolved from
+// auth.audit_failure_policy for the authorization middleware. There is no
+// second configuration key: go-qrdb#445 ruled ONE posture across both
+// assertions, because "two postures with one lever" is what left the most
+// privileged action in the system on the weaker one.
+func WithSOAuditFailurePolicy(p audit.FailurePolicy) SOOption {
+	return func(a *SOAuthenticator) { a.auditFailure = p }
+}
+
+// NewSOAuthenticator constructs an SOAuthenticator. store, auditLogger and
+// logger must all be non-nil.
+//
+// With no options the audit failure posture is audit.FailClosed: a PIN
+// verification whose outcome cannot be recorded is refused.
+func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, logger *slog.Logger, opts ...SOOption) (*SOAuthenticator, error) {
 	if store == nil {
 		return nil, ErrNilStore
 	}
@@ -115,8 +147,16 @@ func NewSOAuthenticator(store kvstore.KVStore, auditLogger audit.AuditLogger, lo
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
-	return &SOAuthenticator{store: store, audit: auditLogger, logger: logger}, nil
+	a := &SOAuthenticator{store: store, audit: auditLogger, logger: logger}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a, nil
 }
+
+// soAuthComponent names this subsystem on the audit-failure counters and on
+// the *audit.GateError VerifySOPIN returns.
+const soAuthComponent = "so-auth"
 
 var (
 	// ErrNilAuditLogger is returned when a nil audit logger is provided to auth constructors.
@@ -131,6 +171,23 @@ var (
 //
 // newPIN is wrapped in a *secure.Buffer and destroyed after hashing.
 // Returns ErrSOPINAlreadySet if a PIN is already committed for the tenant.
+//
+// ITS AUDIT RECORDS ARE BEST-EFFORT, AND THAT IS THE CONSIDERED ANSWER, not an
+// omission go-qrdb#445 missed. SetSOPIN is an administrative MUTATION, not a
+// gate: nothing is waiting on its record for permission to proceed. The
+// success record is written AFTER store.Put has already replicated the commit
+// through Raft, so propagating a failed write would report a completed
+// operation as failed -- the operator retries, gets ErrSOPINAlreadySet, and
+// now believes the PIN is both unset and already set. There is no rollback an
+// emitter may perform (a compensating delete is a second Raft write on the
+// strength of a failed audit write, which is the fallback this feature
+// forbids), so the honest posture is the one EmitBestEffort documents: log,
+// count qrdb_audit_write_failures_total{component="so-auth"}, and let the
+// truthful result stand. The two failure records are post-hoc for the same
+// reason -- the operation is already being refused and a lost record cannot
+// make it more refused.
+//
+// VerifySOPIN is the opposite shape and is gated; see emitVerify.
 func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN []byte) error {
 	if tenantID == "" {
 		return ErrSOPINEmptyTenant
@@ -204,6 +261,21 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 // VerifySOPIN checks whether presentedPIN matches the committed hash for the
 // tenant. Verification is constant-time to prevent timing attacks. The PIN
 // material is wrapped in a *secure.Buffer and destroyed after use.
+//
+// IT FAILS CLOSED ON AN UNRECORDABLE OUTCOME (go-qrdb#445). A nil return is
+// the second factor passing, and what the caller does next is rekey a barrier,
+// enrol a custodian or sign a CSR. So the verification record GATES that
+// operation exactly as the authorization decision one layer out does, and a
+// factor that passes with nothing in the trail to say so is precisely the
+// event an audit trail exists to capture.
+//
+// When the record cannot be written and the posture is audit.FailClosed --
+// the default -- the returned error is an *audit.GateError wrapping the sink's
+// own failure, NOT ErrSOPINInvalid. The distinction is load-bearing: a caller
+// that flattened them would tell a security officer holding a perfectly good
+// PIN that the PIN was wrong, on a node whose audit disk was full. Every
+// transport answers it 503 / UNAVAILABLE via
+// middleware.ClassifyAuthError -- "retry", never "you are not permitted".
 func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, presentedPIN []byte) error {
 	if tenantID == "" {
 		return ErrSOPINEmptyTenant
@@ -224,12 +296,9 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 		return &OperationError{Op: "store get", Cause: err}
 	}
 	if record == nil {
-		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
-			TenantID: tenantID,
-			Resource: "so-pin",
-			Action:   "verify",
-			Outcome:  audit.OutcomeFailure + ":not-set",
-		})
+		if gateErr := a.emitVerify(ctx, tenantID, audit.OutcomeFailure+":not-set"); gateErr != nil {
+			return gateErr
+		}
 		return ErrSOPINNotSet
 	}
 
@@ -244,26 +313,57 @@ func (a *SOAuthenticator) VerifySOPIN(ctx context.Context, tenantID string, pres
 	if err := pinBuf.WithBytes(func(pin []byte) error {
 		return verifyPIN(pin, string(record))
 	}); err != nil {
-		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
-			TenantID: tenantID,
-			Resource: "so-pin",
-			Action:   "verify",
-			Outcome:  audit.OutcomeFailure + ":invalid",
-		})
+		if gateErr := a.emitVerify(ctx, tenantID, audit.OutcomeFailure+":invalid"); gateErr != nil {
+			return gateErr
+		}
 		return ErrSOPINInvalid
 	}
 
-	audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
+	return a.emitVerify(ctx, tenantID, audit.OutcomeSuccess)
+}
+
+// emitVerify records one SO-PIN verification outcome and reports whether the
+// record landed, per the configured posture.
+//
+// EVERY verification outcome goes through here, success and refusal alike, and
+// all three are GATING rather than post-hoc: nothing has committed at this
+// point, and what follows a nil return is the caller performing the most
+// privileged operation the system offers. Before go-qrdb#445 all three were
+// audit.EmitBestEffort, so an SO factor could pass, its record could fail to
+// write, and the caller was told the factor passed.
+//
+// The refusal branches are gated too, and deliberately. Making only the
+// success fail closed would be two rules inside one function -- "we answer
+// only what we could record, except when we were going to refuse anyway" --
+// and the caller is refused either way; what changes is that it is told to
+// RETRY (the node could not record) rather than told its PIN was wrong, which
+// under an audit outage is the honest answer and the one a recovering operator
+// can act on.
+//
+// The refusal is NOT itself recorded: the only sink is the one that just
+// failed, and writing to it again is the retry this feature forbids. It rides
+// qrdb_audit_gate_failures_total{component="so-auth"} and an ERROR log line
+// instead -- see audit.EmitGated.
+func (a *SOAuthenticator) emitVerify(ctx context.Context, tenantID, outcome string) error {
+	return audit.EmitGated(ctx, a.audit, soAuthComponent, a.auditFailure, audit.AuditEvent{
 		TenantID: tenantID,
 		Resource: "so-pin",
 		Action:   "verify",
-		Outcome:  audit.OutcomeSuccess,
+		Outcome:  outcome,
 	})
-	return nil
 }
 
 // RotateSOPIN replaces the committed SO PIN hash for the tenant. It verifies
 // the old PIN before accepting the new one.
+//
+// THE GATE IS FAIL-CLOSED AND THE MUTATION RECORD IS NOT, which is the same
+// split SetSOPIN documents rather than an inconsistency. The old-PIN check
+// delegates to VerifySOPIN, so an unrecordable verification refuses the
+// rotation with an *audit.GateError before anything is written. The records of
+// the rotation ITSELF are post-hoc: the failure ones accompany an error the
+// caller is already getting, and the success one is written after store.Put
+// has committed the new hash, where refusing would leave the caller believing
+// the old PIN still works.
 func (a *SOAuthenticator) RotateSOPIN(ctx context.Context, tenantID string, oldPIN, newPIN []byte) error {
 	if tenantID == "" {
 		return ErrSOPINEmptyTenant

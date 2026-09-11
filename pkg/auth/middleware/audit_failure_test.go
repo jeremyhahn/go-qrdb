@@ -55,22 +55,19 @@ import (
 // through the option that sets it is a default that can silently flip.
 // ---------------------------------------------------------------------------
 
-// TestAuditFailurePolicy_ZeroValueIsFailClosed pins the representation, not
-// only the behaviour. AuditFailClosed must be the ZERO VALUE so that an
-// AuthMiddleware built by a future constructor, a test, or an embedder that
-// never mentions this field is fail-closed by construction.
-func TestAuditFailurePolicy_ZeroValueIsFailClosed(t *testing.T) {
-	var p AuditFailurePolicy
-	if p != AuditFailClosed {
-		t.Fatalf("the zero AuditFailurePolicy is %v, want AuditFailClosed", p)
-	}
-	if p.String() != "fail-closed" {
-		t.Errorf("String() = %q, want %q", p.String(), "fail-closed")
-	}
-
+// TestAuthMiddleware_ZeroValueIsFailClosed pins the representation, not only
+// the behaviour. A zero AuthMiddleware -- built by a future constructor, a
+// test, or an embedder that never mentions the field -- must be fail-closed by
+// construction.
+//
+// The posture TYPE's own zero value, its spellings and its parser are pinned
+// where they live, in pkg/audit (gate_test.go). They moved there with the type
+// in go-qrdb#445, because pkg/auth/middleware imports pkg/auth and a policy
+// owned here could never have reached the security-officer gate.
+func TestAuthMiddleware_ZeroValueIsFailClosed(t *testing.T) {
 	var m AuthMiddleware
-	if m.auditFailure != AuditFailClosed {
-		t.Fatalf("a zero AuthMiddleware is %v, want AuditFailClosed", m.auditFailure)
+	if m.auditFailure != audit.FailClosed {
+		t.Fatalf("a zero AuthMiddleware is %v, want audit.FailClosed", m.auditFailure)
 	}
 }
 
@@ -80,86 +77,15 @@ func TestAuditFailurePolicy_ZeroValueIsFailClosed(t *testing.T) {
 func TestAuthorize_DefaultPolicyFailsClosed(t *testing.T) {
 	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 
-	if m.auditFailure != AuditFailClosed {
-		t.Fatalf("unset policy resolved to %v, want AuditFailClosed", m.auditFailure)
+	if m.auditFailure != audit.FailClosed {
+		t.Fatalf("unset policy resolved to %v, want audit.FailClosed", m.auditFailure)
 	}
 
 	err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut)
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
 		t.Fatalf("the DEFAULT posture must refuse; got %T: %v", err, err)
-	}
-}
-
-// TestParseAuditFailurePolicy_EmptyIsFailClosed: an omitted configuration key
-// resolves to the secure posture. Read this beside
-// TestAuthorize_DefaultPolicyFailsClosed -- one covers the unset field, the
-// other the unset YAML key, and a regression could hit either alone.
-func TestParseAuditFailurePolicy_EmptyIsFailClosed(t *testing.T) {
-	p, err := ParseAuditFailurePolicy("")
-	if err != nil {
-		t.Fatalf("an empty value must resolve, not fail: %v", err)
-	}
-	if p != AuditFailClosed {
-		t.Fatalf("empty resolved to %v, want AuditFailClosed", p)
-	}
-}
-
-func TestParseAuditFailurePolicy_Spellings(t *testing.T) {
-	tests := []struct {
-		in   string
-		want AuditFailurePolicy
-	}{
-		{"fail-closed", AuditFailClosed},
-		{"FAIL-CLOSED", AuditFailClosed},
-		{"  fail-closed  ", AuditFailClosed},
-		{"failclosed", AuditFailClosed},
-		{"closed", AuditFailClosed},
-		{"fail-open", AuditFailOpen},
-		{"Fail-Open", AuditFailOpen},
-		{"failopen", AuditFailOpen},
-		{"open", AuditFailOpen},
-	}
-	for _, tc := range tests {
-		t.Run(tc.in, func(t *testing.T) {
-			got, err := ParseAuditFailurePolicy(tc.in)
-			if err != nil {
-				t.Fatalf("ParseAuditFailurePolicy(%q): %v", tc.in, err)
-			}
-			if got != tc.want {
-				t.Errorf("ParseAuditFailurePolicy(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestParseAuditFailurePolicy_InvalidFailsTheBoot: a typo must not resolve to
-// EITHER posture. Guessing fail-closed denies a fleet the operator meant to
-// keep serving; guessing fail-open weakens the posture on a typo.
-func TestParseAuditFailurePolicy_InvalidFailsTheBoot(t *testing.T) {
-	for _, in := range []string{"fail_open", "yes", "true", "permissive", "fail-opne"} {
-		t.Run(in, func(t *testing.T) {
-			p, err := ParseAuditFailurePolicy(in)
-			if err == nil {
-				t.Fatalf("ParseAuditFailurePolicy(%q) resolved to %v; an unrecognised value must fail", in, p)
-			}
-			var invalid *InvalidAuditFailurePolicyError
-			if !errors.As(err, &invalid) {
-				t.Fatalf("expected *InvalidAuditFailurePolicyError, got %T", err)
-			}
-			if invalid.Value != in {
-				t.Errorf("InvalidAuditFailurePolicyError.Value = %q, want %q", invalid.Value, in)
-			}
-			if !strings.Contains(invalid.Error(), "fail-closed") {
-				t.Errorf("the error must name the accepted values, got %q", invalid.Error())
-			}
-			// Even the returned value on the error path is the secure one, so
-			// a caller that ignores err is not thereby opened up.
-			if p != AuditFailClosed {
-				t.Errorf("the error path returned %v, want AuditFailClosed", p)
-			}
-		})
 	}
 }
 
@@ -178,10 +104,10 @@ func TestWithAuditFailurePolicy_FailOpenWarnsAtStartup(t *testing.T) {
 
 	m := New(&mockAuthorizer{},
 		WithAuditLogger(&mockAuditLogger{}),
-		WithAuditFailurePolicy(AuditFailOpen))
+		WithAuditFailurePolicy(audit.FailOpen))
 
-	if m.auditFailure != AuditFailOpen {
-		t.Fatalf("policy = %v, want AuditFailOpen", m.auditFailure)
+	if m.auditFailure != audit.FailOpen {
+		t.Fatalf("policy = %v, want audit.FailOpen", m.auditFailure)
 	}
 
 	out := buf.String()
@@ -202,19 +128,10 @@ func TestWithAuditFailurePolicy_FailClosedIsSilent(t *testing.T) {
 	restore := swapDefaultLogger(t, &buf)
 	defer restore()
 
-	New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}), WithAuditFailurePolicy(AuditFailClosed))
+	New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{}), WithAuditFailurePolicy(audit.FailClosed))
 
 	if strings.Contains(buf.String(), "WARN") {
 		t.Fatalf("fail-closed must not warn; log was %q", buf.String())
-	}
-}
-
-func TestAuditFailurePolicy_String(t *testing.T) {
-	if got := AuditFailOpen.String(); got != "fail-open" {
-		t.Errorf("AuditFailOpen.String() = %q, want %q", got, "fail-open")
-	}
-	if got := AuditFailClosed.String(); got != "fail-closed" {
-		t.Errorf("AuditFailClosed.String() = %q, want %q", got, "fail-closed")
 	}
 }
 
@@ -249,7 +166,7 @@ func faultedChainSink(t *testing.T) (audit.Logger, string) {
 // TestAuthorize_RealChainFileFailure_DeniesWithAuditErrorWrappingWriteError
 // is the assertion the issue asks for, spelled out: a real authorization
 // call, over a real file sink that cannot write, is refused with an
-// *AuditError that unwraps to an *audit.WriteError naming the file.
+// *audit.GateError that unwraps to an *audit.WriteError naming the file.
 func TestAuthorize_RealChainFileFailure_DeniesWithAuditErrorWrappingWriteError(t *testing.T) {
 	sink, path := faultedChainSink(t)
 	m := New(&mockAuthorizer{}, WithAuditLogger(sink))
@@ -260,9 +177,9 @@ func TestAuthorize_RealChainFileFailure_DeniesWithAuditErrorWrappingWriteError(t
 		t.Fatal("a grant that could not be recorded must be refused")
 	}
 
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 	var writeErr *audit.WriteError
 	if !errors.As(err, &writeErr) {
@@ -361,7 +278,7 @@ func TestRESTMiddleware_HealthyChainFileServesAndRecords(t *testing.T) {
 // mapping. ResourceExhausted or PermissionDenied would tell a client library
 // never to retry something a recovered audit sink answers perfectly well.
 func TestGRPCAuthError_AuditErrorMapsToUnavailable(t *testing.T) {
-	err := mapGRPCAuthError(&AuditError{Err: &audit.WriteError{
+	err := mapGRPCAuthError(&audit.GateError{Err: &audit.WriteError{
 		Backend: "audit-events.ndjson", Err: errors.New("no space left on device"),
 	}})
 	st, ok := status.FromError(err)
@@ -374,7 +291,7 @@ func TestGRPCAuthError_AuditErrorMapsToUnavailable(t *testing.T) {
 }
 
 func TestHTTPAuthError_AuditErrorMapsTo503(t *testing.T) {
-	got := mapHTTPAuthError(&AuditError{Err: &audit.WriteError{
+	got := mapHTTPAuthError(&audit.GateError{Err: &audit.WriteError{
 		Backend: "audit-events.ndjson", Err: errors.New("no space left on device"),
 	}})
 	if got != http.StatusServiceUnavailable {
@@ -422,7 +339,7 @@ func TestAuditDecision_FailOpenIsCounted(t *testing.T) {
 
 	m := New(&mockAuthorizer{},
 		WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}),
-		WithAuditFailurePolicy(AuditFailOpen))
+		WithAuditFailurePolicy(audit.FailOpen))
 	if err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "alice", TenantID: "t1"}, permission.KVPut); err != nil {
 		t.Fatalf("fail-open must permit: %v", err)
@@ -450,7 +367,7 @@ func TestAuditDecision_SuccessIsNotCounted(t *testing.T) {
 }
 
 func TestAuditFailureOutcomes_CoverEveryPolicy(t *testing.T) {
-	for _, p := range []AuditFailurePolicy{AuditFailClosed, AuditFailOpen} {
+	for _, p := range []audit.FailurePolicy{audit.FailClosed, audit.FailOpen} {
 		if _, ok := auditFailureOutcomes[p]; !ok {
 			t.Errorf("no metric label for policy %v: the counter and the branch have drifted", p)
 		}
@@ -470,9 +387,9 @@ func TestAuthorize_IdentityGated_FailsClosedOnAuditFailure(t *testing.T) {
 
 	err := m.authorize(context.Background(),
 		&auth.Identity{Subject: "so", TenantID: "t1"}, permission.IdentityGated)
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 }
 
@@ -488,7 +405,7 @@ func TestAuthorize_IdentityGated_SucceedsWhenRecordable(t *testing.T) {
 // has nothing that could fail, so the posture must be inert. Otherwise every
 // embedder that wires no audit sink would deny every request.
 func TestAuthorize_NoAuditLogger_NeverRefuses(t *testing.T) {
-	for _, p := range []AuditFailurePolicy{AuditFailClosed, AuditFailOpen} {
+	for _, p := range []audit.FailurePolicy{audit.FailClosed, audit.FailOpen} {
 		m := New(&mockAuthorizer{})
 		m.auditFailure = p
 		if err := m.authorize(context.Background(),
@@ -573,9 +490,9 @@ func TestAuditDecision_NilIdentityStillFailsClosed(t *testing.T) {
 	m := New(&mockAuthorizer{}, WithAuditLogger(&mockAuditLogger{err: errors.New("disk full")}))
 
 	err := m.auditDecision(context.Background(), nil, permission.KVPut, nil)
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 }
 
@@ -612,7 +529,7 @@ func (c *countingBarrierStatus) TenantBarrierStatus(_ context.Context, _ string)
 
 // TestAuthorizeTenantBarrierInit_AuditFailureDoesNotEnterTheWindow.
 //
-// AuthorizeTenant can return *AuditError instead of a decision, and this
+// AuthorizeTenant can return *audit.GateError instead of a decision, and this
 // function read any non-nil error as an RBAC denial -- so it entered the
 // bootstrap window on a request RBAC never refused, cost a barrier-status
 // call, and ran a SECOND auditDecision: another write to the sink that had
@@ -630,9 +547,9 @@ func TestAuthorizeTenantBarrierInit_AuditFailureDoesNotEnterTheWindow(t *testing
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-admin", TenantID: "acme"})
 	err := m.AuthorizeTenantBarrierInit(ctx, "acme", status)
 
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 	if status.calls != 0 {
 		t.Errorf("the bootstrap window was consulted %d times; an audit failure is not an RBAC verdict", status.calls)
@@ -654,9 +571,9 @@ func TestAuthorizeTenantBarrierSealedOp_AuditFailureDoesNotEnterTheWindow(t *tes
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-admin", TenantID: "acme"})
 	err := m.AuthorizeTenantBarrierSealedOp(ctx, "acme", permission.TenantBarrierUnseal)
 
-	var auditErr *AuditError
+	var auditErr *audit.GateError
 	if !errors.As(err, &auditErr) {
-		t.Fatalf("expected *AuditError, got %T: %v", err, err)
+		t.Fatalf("expected *audit.GateError, got %T: %v", err, err)
 	}
 	if al.calls.Load() != 1 {
 		t.Errorf("the sink was written %d times for one decision", al.calls.Load())
@@ -668,7 +585,7 @@ func TestAuthorizeTenantBarrierSealedOp_AuditFailureDoesNotEnterTheWindow(t *tes
 
 // TestIsAuditFailure_IsNarrowerThanTheUnavailableClass is the control for the
 // bug I nearly introduced fixing this: guarding on AuthFailureUnavailable
-// instead of *AuditError closes the sealed window on the very signal it exists
+// instead of *audit.GateError closes the sealed window on the very signal it exists
 // to act on -- a tenant whose IAM is encrypted behind the barrier it is trying
 // to unseal arrives as *StoreUnavailableError wrapping tenant.ErrTenantSealed.
 func TestIsAuditFailure_IsNarrowerThanTheUnavailableClass(t *testing.T) {
@@ -680,7 +597,7 @@ func TestIsAuditFailure_IsNarrowerThanTheUnavailableClass(t *testing.T) {
 		t.Fatal("the sealed-tenant signal must NOT be treated as an audit failure; " +
 			"it is what opens the sealed window")
 	}
-	if !isAuditFailure(&AuditError{Err: errors.New("disk full")}) {
-		t.Fatal("an *AuditError must be recognised")
+	if !isAuditFailure(&audit.GateError{Err: errors.New("disk full")}) {
+		t.Fatal("an *audit.GateError must be recognised")
 	}
 }

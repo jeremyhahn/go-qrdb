@@ -45,10 +45,13 @@ type AuthMiddleware struct {
 	audit          audit.Logger
 
 	// auditFailure is what authorize() does when m.audit cannot record a
-	// decision. Its ZERO VALUE is AuditFailClosed, so an AuthMiddleware built
+	// decision. Its ZERO VALUE is audit.FailClosed, so an AuthMiddleware built
 	// without WithAuditFailurePolicy refuses rather than grants -- see
-	// AuditFailClosed for why the security posture is the zero value.
-	auditFailure AuditFailurePolicy
+	// audit.FailClosed for why the security posture is the zero value.
+	//
+	// It is the SAME value the security-officer gate reads (go-qrdb#445): one
+	// operator lever, auth.audit_failure_policy, governs both assertions.
+	auditFailure audit.FailurePolicy
 
 	// revocation gates the ON-BEHALF forwarding path, which bypasses the
 	// authenticator chain entirely and therefore does not inherit the mTLS
@@ -513,11 +516,11 @@ func (m *AuthMiddleware) authorize(ctx context.Context, identity *auth.Identity,
 // auditDecision records an authorization decision in the audit log when a
 // logger is configured. A nil err is recorded as success, non-nil as denied.
 //
-// It returns a non-nil *AuditError -- wrapping whatever the sink reported,
-// typically an *audit.WriteError -- when the record could NOT be written and
-// the configured policy is AuditFailClosed. authorize() returns that error
-// instead of the decision it was about to return, so the request is refused.
-// Under AuditFailOpen it returns nil and the decision stands.
+// It returns a non-nil *audit.GateError -- wrapping whatever the sink
+// reported, typically an *audit.WriteError -- when the record could NOT be
+// written and the configured policy is audit.FailClosed. authorize() returns
+// that error instead of the decision it was about to return, so the request is
+// refused. Under audit.FailOpen it returns nil and the decision stands.
 //
 // The refusal is UNIFORM: it does not matter whether the decision being
 // recorded was a grant, a denial, a rate-limit refusal or a sealed-tenant
@@ -594,10 +597,10 @@ func (m *AuthMiddleware) auditDecision(ctx context.Context, identity *auth.Ident
 		"policy", m.auditFailure.String(),
 	)
 
-	if m.auditFailure == AuditFailOpen {
+	if m.auditFailure == audit.FailOpen {
 		return nil
 	}
-	return &AuditError{Err: auditErr}
+	return &audit.GateError{Component: authorizeComponent, Err: auditErr}
 }
 
 // anonymousActor is the Subject recorded for an authorization decision that

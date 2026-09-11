@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
 
@@ -32,7 +33,7 @@ import (
 // seven gRPC ones hard-coded "permission denied" for every error the
 // authorization gate could return. That was survivable while
 // *StoreUnavailableError almost never escaped those gates -- and stopped being
-// survivable with go-qrdb#335, because *AuditError escapes them RELIABLY (the
+// survivable with go-qrdb#335, because *audit.GateError escapes them RELIABLY (the
 // bootstrap-window fallback's own audit write fails for the same reason the
 // first one did). An operator recovering a node with a full audit disk would
 // have been told "you are not permitted" by the unseal endpoint.
@@ -62,7 +63,7 @@ const (
 
 	// AuthFailureUnavailable -- NEITHER the credential nor the grant failed.
 	// This node could not answer: it could not record the decision
-	// (*AuditError), could not read the user store (*StoreUnavailableError),
+	// (*audit.GateError), could not read the user store (*StoreUnavailableError),
 	// or could not read revocation state (*auth.RevocationCheckError).
 	// RETRY IS THE HONEST INSTRUCTION. 503 / Unavailable.
 	AuthFailureUnavailable
@@ -129,10 +130,13 @@ var authFailureRules = []struct {
 		var e *StoreUnavailableError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
-	// The audit plane failed, not the caller. See AuditError: the credential
-	// is valid and the grant may be too.
-	{"AuditError", func(err error) (AuthFailureClass, bool) {
-		var e *AuditError
+	// The audit plane failed, not the caller. See audit.GateError: the
+	// credential is valid and the grant -- or the SO PIN -- may be too. ONE
+	// rule covers every gate, because go-qrdb#445 made them one type; a second
+	// error type for the SO factor would have meant a second rule here and a
+	// second mapping in each of the four transports.
+	{"audit.GateError", func(err error) (AuthFailureClass, bool) {
+		var e *audit.GateError
 		return AuthFailureUnavailable, errors.As(err, &e)
 	}},
 	// The certificate may be perfectly good and this node could not read
