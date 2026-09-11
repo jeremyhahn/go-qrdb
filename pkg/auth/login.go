@@ -127,11 +127,19 @@ func (r *LoginResolver) Resolve(ctx context.Context, t AuthFactorType, lookupKey
 	}
 
 	// Best-effort async last-used update. Failures here are non-fatal.
+	//
+	// Detached with context.WithoutCancel, NOT context.Background: the update
+	// must outlive the login response, but it must not lose the request's
+	// VALUES. The factor store is tenant-routed (go-qrdb#393) and reads the
+	// tenant off this context, so a background context would resolve the
+	// system tenant, look for the factor in the wrong store, and silently stop
+	// recording LastUsedAt for every tenant but one.
 	now := time.Now().UTC()
+	detached := context.WithoutCancel(ctx)
 	// #nosec G118 -- deliberately detached: the update must not be cancelled
 	// when the login response returns; it carries its own timeout.
 	go func(id string, t time.Time) {
-		bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		bg, cancel := context.WithTimeout(detached, 5*time.Second)
 		defer cancel()
 		_ = r.store.MarkUsed(bg, id, t)
 	}(factor.ID, now)

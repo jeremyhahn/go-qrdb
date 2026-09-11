@@ -43,7 +43,7 @@ func (s *stubUserStateUpdater) SetUserActive(_ context.Context, id uint64, activ
 	return nil
 }
 
-func newUserAuthFactorService(t *testing.T, users UserStateUpdater) (UserAuthFactorServicer, *afMockKV) {
+func newTestUserAuthFactorService(t *testing.T, users UserStateUpdater) (UserAuthFactorServicer, *afMockKV) {
 	t.Helper()
 	kv := newAFMockKV()
 	svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{
@@ -98,7 +98,7 @@ func TestNewUserAuthFactorService_nilKV(t *testing.T) {
 }
 
 func TestNewUserAuthFactorService_ok(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	if svc == nil {
 		t.Fatal("nil svc")
 	}
@@ -109,7 +109,7 @@ func TestNewUserAuthFactorService_ok(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAdd_List_Get_eachType(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	cases := []*auth.AuthFactor{
@@ -144,7 +144,7 @@ func TestAdd_List_Get_eachType(t *testing.T) {
 }
 
 func TestAdd_invalidUserID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.Add(context.Background(), 0, mtlsFactor("x", 0, []byte("k")))
 	if !errors.Is(err, auth.ErrInvalidFactor) {
 		t.Fatalf("want ErrInvalidFactor, got %v", err)
@@ -152,7 +152,7 @@ func TestAdd_invalidUserID(t *testing.T) {
 }
 
 func TestAdd_unsupportedType(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	bad := &auth.AuthFactor{
 		Type:       auth.AuthFactorType("bogus"),
 		Credential: []byte("k"),
@@ -164,7 +164,7 @@ func TestAdd_unsupportedType(t *testing.T) {
 }
 
 func TestAdd_emptyCredential(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.Add(context.Background(), 1, &auth.AuthFactor{
 		Type: auth.AuthFactorMTLS,
 	})
@@ -174,7 +174,7 @@ func TestAdd_emptyCredential(t *testing.T) {
 }
 
 func TestAdd_duplicateCredential(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k"))); err != nil {
 		t.Fatalf("first Add: %v", err)
@@ -186,7 +186,7 @@ func TestAdd_duplicateCredential(t *testing.T) {
 }
 
 func TestGet_notFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	_, err := svc.Get(context.Background(), "missing")
 	if !errors.Is(err, auth.ErrFactorNotFound) {
 		t.Fatalf("want ErrFactorNotFound, got %v", err)
@@ -194,7 +194,7 @@ func TestGet_notFound(t *testing.T) {
 }
 
 func TestGet_emptyID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	_, err := svc.Get(context.Background(), "")
 	if !errors.Is(err, auth.ErrInvalidFactor) {
 		t.Fatalf("want ErrInvalidFactor, got %v", err)
@@ -206,7 +206,7 @@ func TestGet_emptyID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLookupByCredentialKey_active(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("m1", 1, []byte("fp"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -221,7 +221,7 @@ func TestLookupByCredentialKey_active(t *testing.T) {
 }
 
 func TestLookupByCredentialKey_revoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("primary", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add primary: %v", err)
@@ -239,7 +239,7 @@ func TestLookupByCredentialKey_revoked(t *testing.T) {
 }
 
 func TestLookupByCredentialKey_notFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	_, err := svc.LookupByCredentialKey(context.Background(), auth.AuthFactorMTLS, []byte("missing"))
 	if !errors.Is(err, auth.ErrFactorNotFound) {
 		t.Fatalf("want ErrFactorNotFound, got %v", err)
@@ -247,7 +247,7 @@ func TestLookupByCredentialKey_notFound(t *testing.T) {
 }
 
 func TestLookupByCredentialKey_unsupportedType(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	_, err := svc.LookupByCredentialKey(context.Background(), "totp", []byte("k"))
 	if !errors.Is(err, auth.ErrFactorTypeUnsupported) {
 		t.Fatalf("want ErrFactorTypeUnsupported, got %v", err)
@@ -255,7 +255,7 @@ func TestLookupByCredentialKey_unsupportedType(t *testing.T) {
 }
 
 func TestLookupByCredentialKey_emptyKey(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	_, err := svc.LookupByCredentialKey(context.Background(), auth.AuthFactorMTLS, nil)
 	if !errors.Is(err, auth.ErrInvalidFactor) {
 		t.Fatalf("want ErrInvalidFactor, got %v", err)
@@ -267,7 +267,7 @@ func TestLookupByCredentialKey_emptyKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemove_lastFactorBlocks(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("only", 1, []byte("k"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -280,7 +280,7 @@ func TestRemove_lastFactorBlocks(t *testing.T) {
 
 func TestRemove_lastFactorForce(t *testing.T) {
 	users := newStubUserStateUpdater()
-	svc, _ := newUserAuthFactorService(t, users)
+	svc, _ := newTestUserAuthFactorService(t, users)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 7, mtlsFactor("only", 7, []byte("k"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -301,7 +301,7 @@ func TestRemove_lastFactorForce(t *testing.T) {
 }
 
 func TestRemove_nonLastSucceeds(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -315,7 +315,7 @@ func TestRemove_nonLastSucceeds(t *testing.T) {
 }
 
 func TestRemove_alreadyRevoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add a: %v", err)
@@ -333,7 +333,7 @@ func TestRemove_alreadyRevoked(t *testing.T) {
 }
 
 func TestRemove_notFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.Remove(context.Background(), "missing", false)
 	if !errors.Is(err, auth.ErrFactorNotFound) {
 		t.Fatalf("want ErrFactorNotFound, got %v", err)
@@ -345,7 +345,7 @@ func TestRemove_notFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRotate_atomic(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 9, mtlsFactor("old", 9, []byte("oldkey"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -382,7 +382,7 @@ func TestRotate_atomic(t *testing.T) {
 }
 
 func TestRotate_oldNotFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.Rotate(context.Background(), "missing", mtlsFactor("new", 1, []byte("k")))
 	if !errors.Is(err, auth.ErrFactorNotFound) {
 		t.Fatalf("want ErrFactorNotFound, got %v", err)
@@ -390,7 +390,7 @@ func TestRotate_oldNotFound(t *testing.T) {
 }
 
 func TestRotate_collisionWithThirdParty(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("user1", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add user1: %v", err)
@@ -406,7 +406,7 @@ func TestRotate_collisionWithThirdParty(t *testing.T) {
 }
 
 func TestRotate_crossUserRejected(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -423,7 +423,7 @@ func TestRotate_crossUserRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRelabel(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -441,7 +441,7 @@ func TestRelabel(t *testing.T) {
 }
 
 func TestRelabel_notFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.Relabel(context.Background(), "missing", "x")
 	if !errors.Is(err, auth.ErrFactorNotFound) {
 		t.Fatalf("want ErrFactorNotFound, got %v", err)
@@ -453,7 +453,7 @@ func TestRelabel_notFound(t *testing.T) {
 // Rotate. Renaming a revoked factor is meaningless and would obscure
 // audit trails.
 func TestRelabel_revoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("primary", 1, []byte("k1"))); err != nil {
 		t.Fatalf("Add primary: %v", err)
@@ -476,7 +476,7 @@ func TestRelabel_revoked(t *testing.T) {
 }
 
 func TestMarkUsed_updates(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 1, mtlsFactor("a", 1, []byte("k"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -495,7 +495,7 @@ func TestMarkUsed_updates(t *testing.T) {
 }
 
 func TestMarkUsed_emptyID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	err := svc.MarkUsed(context.Background(), "", time.Now())
 	if !errors.Is(err, auth.ErrInvalidFactor) {
 		t.Fatalf("want ErrInvalidFactor, got %v", err)
@@ -676,7 +676,7 @@ func TestMarkUsed_ConcurrentRemove_CannotResurrectRevokedFactor(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAdd_sameBytesDifferentType_noCollision(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	key := []byte("ambiguous-32-byte-blob-XXXXXXXXX")
 
@@ -720,7 +720,7 @@ func TestAdd_sameBytesDifferentType_noCollision(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestService_implementsFactorStore_andResolves(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	store, ok := svc.(auth.FactorStore)
 	if !ok {
 		t.Fatal("service does not implement auth.FactorStore")
@@ -771,7 +771,7 @@ func checkerFor(t *testing.T, svc UserAuthFactorServicer) ActiveFactorChecker {
 }
 
 func TestHasActiveFactor_ActiveAndRevoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	c := checkerFor(t, svc)
 
@@ -801,7 +801,7 @@ func TestHasActiveFactor_ActiveAndRevoked(t *testing.T) {
 }
 
 func TestHasActiveFactor_ZeroUserIDRejected(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	if _, err := checkerFor(t, svc).HasActiveFactor(context.Background(), 0); err == nil {
 		t.Fatal("expected error for zero userID")
 	}
@@ -813,7 +813,7 @@ func TestHasActiveFactor_ZeroUserIDRejected(t *testing.T) {
 // leaves an active primary no index entry names. List misses it by design;
 // the fail-closed checker must not.
 func TestHasActiveFactor_SeesOrphanedPrimary(t *testing.T) {
-	svc, kv := newUserAuthFactorService(t, nil)
+	svc, kv := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 7, fido2Factor("f1", 7, []byte("k1"))); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -923,7 +923,7 @@ func TestHasActiveFactor_SerializedWithAdd(t *testing.T) {
 // TestHasActiveFactor_IgnoresOtherUsersFactors asserts another user's
 // factors — active or revoked — never count toward this user.
 func TestHasActiveFactor_IgnoresOtherUsersFactors(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 8, fido2Factor("f8", 8, []byte("k8"))); err != nil {
 		t.Fatalf("Add: %v", err)

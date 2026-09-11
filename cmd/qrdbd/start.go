@@ -2040,10 +2040,12 @@ func runStart(f *startFlags) error {
 			// the standalone daemon the same "qrdb auth login" / "qrdb auth
 			// factor" surface the SDK's embedded transport already exposes
 			// (sdk/go/node.go buildLoginOpts). See buildUserAuthFactorServiceOption.
-			if opt, err := buildUserAuthFactorServiceOption(authKVSvc); err == nil {
+			if opt, err := buildUserAuthFactorServiceOption(
+				sigCtx, mgmtResult.storeResolver, mgmtResult.legacyFactorStore, slog.Default(),
+			); err == nil {
 				serverOpts = append(serverOpts, opt)
 			} else {
-				slog.Warn("user auth-factor service (M14) disabled", slog.Any("error", err))
+				slog.Error("user auth-factor service (M14) disabled", slog.Any("error", err))
 			}
 
 			if authResult != nil {
@@ -2981,6 +2983,20 @@ type mgmtBootstrapResult struct {
 	servedRoleSvc role.RoleServicer // resolver-routed service exposed on the API surface
 	bootUserSvc   user.UserServicer // StaleRead-backed fallback for auth middleware
 	bootRoleSvc   role.RoleServicer // StaleRead-backed fallback for RBAC authorizer
+
+	// storeResolver maps a tenant to the store holding its IAM data. It is
+	// the same resolver servedUserSvc and servedRoleSvc route through, and it
+	// is carried out of here so the user-side auth-factor service routes
+	// through THAT resolver rather than a second one built over the same
+	// store — two resolvers over one store would be two caches of the same
+	// per-tenant wrappers, and the sealed/unsealed decision each one makes is
+	// only as live as its own view. Nil when no tenant servicer was available
+	// to build one.
+	storeResolver tenant.StoreResolver
+
+	// legacyFactorStore is the UNCONFINED root store the pre-tenant
+	// auth-factor records live in, handed to the go-qrdb#393 migration.
+	legacyFactorStore kvstore.KVStore
 }
 
 // authBootstrapResult holds the auth enforcement middleware and audit logger
@@ -3127,6 +3143,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// honour its ask. So the only precondition left is a tenant servicer.
 	servedUserSvc := userSvc
 	servedRoleSvc := roleSvc
+	var storeResolver tenant.StoreResolver
 	if tenantSvc != nil {
 		resolver, resErr := tenant.NewStoreResolver(runtimeStore, barriers, tenantSvc)
 		if resErr != nil {
@@ -3142,6 +3159,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		}
 		servedUserSvc = routedUsers
 		servedRoleSvc = routedRoles
+		storeResolver = resolver
 	}
 
 	return &mgmtBootstrapResult{
@@ -3151,6 +3169,9 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		servedRoleSvc: servedRoleSvc,
 		bootUserSvc:   bootUserSvc,
 		bootRoleSvc:   bootRoleSvc,
+
+		storeResolver:     storeResolver,
+		legacyFactorStore: runtimeStore,
 	}, nil
 }
 

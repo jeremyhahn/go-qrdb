@@ -162,7 +162,8 @@ pre-existing unnamespaced documents are left in place rather than migrated.
 ### The resolver-served store is confined by construction
 
 `tenant.StoreResolver.Resolve` returns the `kvstore.KVStore` backing a tenant's
-resolver-served records (IAM, invitations, permission scopes — and any
+resolver-served records (IAM — users, roles and the user-side **auth factors**
+that authenticate them — invitations, permission scopes, and any
 `dao.GenericDAO` a consumer builds). For a shared-prefix tenant it returns the
 system store **confined to `{tenant}/`** — the tenant alone.
 
@@ -184,6 +185,29 @@ context, so it landed under `{tenant}/system/` while every request carrying a
 database resolved elsewhere and found nothing. Single-database unit tests
 cannot see that; the integration stack, which authenticates for real, fails
 every suite.
+
+### A credential is separated by the store it is looked up in
+
+An auth factor's lookup index is keyed `__sys:auth/lookup/{type}/{credKeyHex}`
+and carries no tenant segment — and a `(type, credential)` tuple is genuinely
+not unique across a deployment, because two organizations can hold the same
+certificate or enrol the same token. What separates them is which store the
+lookup reaches, which is the resolver's answer for the tenant the login was
+begun under.
+
+Routing it rather than putting a tenant in that one key is the same decision
+made once for the whole plane: this repository has ONE mechanism for
+per-tenant IAM data. A second mechanism for one surface would mean every later
+reader has to know which surface uses which, and there is no version of that
+which stays true. Routing is also the better move — records relocate under a
+new prefix rather than being rewritten in place.
+
+Enrolment routes on the tenant that owns the USER id, through the identity
+index described next, so a factor lands where the login that follows will look
+for it rather than wherever the enrolling call's context happened to point. A
+caller that may not reach the owning tenant is REFUSED, which is the one place
+this plane's write path is stricter than its read path: a redirected write
+would bind a credential of the caller's choosing to another tenant's user id.
 
 ### A global id needs a global answer to "which store?"
 

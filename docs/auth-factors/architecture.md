@@ -48,8 +48,42 @@ surface. Nil-check it.
 That table is the reason PINs are not credentials: lockout is backend-native and
 `pkg/credentials` has no equivalent.
 
+### Credentials are separated by the STORE, not by the key
+
+A `(method, lookup key)` tuple is not unique across a deployment: two
+organizations can hold the same certificate, or enrol the same token. The
+lookup index is keyed `__sys:auth/lookup/{type}/{credKeyHex}` and carries no
+tenant segment, so what decides whether two tenants collide is which STORE the
+key is looked up in.
+
+The user-side auth-factor records are therefore routed through
+`tenant.StoreResolver`, the same resolver the user and role stores route
+through, and for the same reason: they are the same class of data — per-tenant
+IAM. A prefix tenant gets the shared store confined to its identity namespace;
+a dedicated-isolation tenant gets a store backed by its own barrier, so the
+record holding the credential material is encrypted with that tenant's DEK.
+
+Enrolment routes on the tenant that owns the USER, not on the enrolling
+context, so a record lands where the login that follows will look for it. A
+caller that may not reach the owning tenant is refused rather than redirected
+into its own — see [engineering.md](engineering.md#which-id-a-call-routes-on).
+
 ### Alternatives rejected
 
+- **Putting the tenant in the lookup key** (`.../lookup/{tenant}/{type}/...`).
+  Rejected. It is the smaller change and the wrong shape: this repository has
+  exactly one mechanism for per-tenant IAM data, and a tenant segment in this
+  one key would inaugurate a second, divergent one for the same class of data.
+  Every later reader would have to know which surface uses which, and that
+  divergence is where the next isolation defect gets written. Routing also has
+  the better migration: records MOVE rather than being rewritten in place,
+  which is the safer operation to interrupt.
+- **Checking the tenant after resolving the factor** — resolve the credential
+  in one flat keyspace, then compare the factor's owner's tenant against the
+  session's. Rejected. It leaves one record per credential, so the second
+  tenant to enrol a credential is refused for a collision with a record it
+  cannot see, and told the factor id that caused it. A boundary enforced after
+  the read is also one any new caller of the store can skip.
 - **Verifying hardware factors in qrdb.** Rejected — the whole point of the
   registry is that qrdb never imports a hardware SDK. It ships the framework and
   one reference factor.
@@ -98,6 +132,11 @@ can verify a CTAP2 hash implement the optional `FIDO2HashVerifier` interface.
 - **qrdb does not perform hardware verification.** The CLI's `auth login`
   resolves a `(method, lookup key)` tuple to a user; it does not touch a device.
   End-to-end hardware login is `xkmsctl auth login` or `platformctl auth login`.
+- **A credential resolves only inside the tenant that holds it.** The store a
+  lookup reaches is selected from the tenant the login was begun under, and
+  nothing downstream re-checks it — so every path to the factor records goes
+  through the routed service, and a composition that cannot resolve a tenant
+  is refused the surface rather than served an unrouted one.
 - **A caller cannot supply an attestation claim.** Factor metadata keys under
   `attest_` are server-owned and refused on `Add` and `Rotate`. Enforced once
   in the user auth-factor **service**, not per handler, so REST, gRPC, MCP, the

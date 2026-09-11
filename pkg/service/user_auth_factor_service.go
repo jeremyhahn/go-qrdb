@@ -32,11 +32,25 @@ import (
 // ---------------------------------------------------------------------------
 //
 // The user auth-factor service persists three coordinated records per
-// factor in the platform-wide KV namespace:
+// factor in the store it is constructed over:
 //
 //	__sys:auth/factors/{factorID}                         -> AuthFactor JSON
 //	__sys:auth/users/{userID}/factors/{factorID}          -> factorID (bytes)
 //	__sys:auth/lookup/{type}/{credKeyHex}                 -> factorID (bytes)
+//
+// Those keys carry NO tenant segment and are not meant to. This service is a
+// PER-TENANT store: the tenant dimension is the STORE it is built over, never
+// the key. routingUserAuthFactorService resolves that store from the
+// request's tenant through a tenant.StoreResolver, exactly as pkg/user's
+// routingUserService does for the User/Role IAM surface, so the physical keys
+// are "{tenant}/__sys:auth/..." and a credential enrolled under one tenant
+// cannot resolve a login begun under another (go-qrdb#393).
+//
+// Putting the tenant INTO the key was the rejected alternative. It is less
+// code, and it would have inaugurated a second, divergent tenancy mechanism
+// for the same class of data — per-tenant IAM — beside the one this
+// repository already has. Two mechanisms drift, and the drift is where the
+// next isolation bug is written.
 //
 // The first record is the canonical AuthFactor. The second is a per-user
 // secondary index used by List. The third is a (type, credential lookup
@@ -159,10 +173,41 @@ type UserStateUpdater interface {
 	SetUserActive(ctx context.Context, userID uint64, active bool) error
 }
 
+// AuthFactorKV is the whole key-value surface the user auth-factor service
+// uses: three verbs over a flat keyspace.
+//
+// It is declared rather than reusing KVServicer because the service must be
+// constructible over EITHER of the two stores this repository hands out — the
+// replicated KVServicer a composition root holds, and the per-tenant
+// kvstore.KVStore a tenant.StoreResolver returns — and both satisfy these
+// three signatures verbatim. Narrowing the dependency is what lets the routed
+// service build one inner service per tenant without an adapter standing
+// between them.
+//
+// The two stores disagree about one thing, and the service is written to
+// tolerate both: a missing key reads back as a typed KeyNotFoundError from
+// KVServicer and as (nil, nil) from kvstore.KVStore. Every read here treats
+// "error or empty" as absent, so neither convention is privileged.
+type AuthFactorKV interface {
+	// Put stores value under key.
+	Put(ctx context.Context, key string, value []byte) error
+
+	// Get returns the value stored under key. An absent key may be reported
+	// either as an error or as an empty value; see above.
+	Get(ctx context.Context, key string) ([]byte, error)
+
+	// List returns the keys carrying prefix.
+	List(ctx context.Context, prefix string) ([]string, error)
+}
+
 // UserAuthFactorServiceConfig holds the dependencies for the service.
 type UserAuthFactorServiceConfig struct {
-	// KV is the durable kv-service used to persist factor records.
-	KV KVServicer
+	// KV is the durable store used to persist factor records. It is ONE
+	// TENANT's store: see the storage-layout comment at the top of this file.
+	// Composition roots that serve more than one tenant build the routed
+	// service (NewRoutingUserAuthFactorService) instead of passing a shared
+	// store here.
+	KV AuthFactorKV
 
 	// UserStateUpdater is invoked when force=true Remove revokes the last
 	// active factor. May be nil to skip the user-state hook.
@@ -181,7 +226,7 @@ var _ ActiveFactorChecker = (*userAuthFactorService)(nil)
 var _ AttestationRecorder = (*userAuthFactorService)(nil)
 
 type userAuthFactorService struct {
-	kv      KVServicer
+	kv      AuthFactorKV
 	users   UserStateUpdater
 	idGen   func() string
 	nowFunc func() time.Time
@@ -195,11 +240,25 @@ var (
 	_ auth.FactorStore       = (*userAuthFactorService)(nil)
 )
 
-// NewUserAuthFactorService constructs the M14 user auth-factor service.
-// KV must be non-nil.
+// NewUserAuthFactorService constructs the M14 user auth-factor service over
+// ONE tenant's store. KV must be non-nil.
+//
+// A composition that serves several tenants builds
+// NewRoutingUserAuthFactorService instead; this constructor is what that
+// router builds per tenant, and what a genuinely single-tenant composition
+// builds directly over a store already confined to its tenant's identity
+// namespace (tenant.IdentityNamespace).
 func NewUserAuthFactorService(cfg UserAuthFactorServiceConfig) (UserAuthFactorServicer, error) {
+	return newUserAuthFactorService(cfg)
+}
+
+// newUserAuthFactorService is NewUserAuthFactorService returning the concrete
+// type. The router builds inner services through it so it reaches
+// ActiveFactorChecker and AttestationRecorder directly rather than asserting
+// for interfaces it just constructed.
+func newUserAuthFactorService(cfg UserAuthFactorServiceConfig) (*userAuthFactorService, error) {
 	if cfg.KV == nil {
-		return nil, &auth.InvalidFactorError{Reason: "kv servicer is required"}
+		return nil, &auth.InvalidFactorError{Reason: "kv store is required"}
 	}
 	return &userAuthFactorService{
 		kv:      cfg.KV,

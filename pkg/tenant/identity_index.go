@@ -19,10 +19,28 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
+
+// IdentityID renders a numeric identity id as the index's key segment.
+//
+// Numeric ids are decimal here rather than the fixed-width big-endian
+// encoding the user store's own keys use: the index is never scanned in id
+// order, and the CLI and every transport name a user by its decimal id.
+//
+// It is exported for the same reason IdentityNamespace is. More than one
+// package composes an index key for a user id — pkg/user's store and router
+// write and read entries, and the auth-factor migration in pkg/service reads
+// them to establish which tenant owns a legacy record — and a reader that
+// rendered the id differently from the writer would find nothing and report
+// it as "no claim", which is indistinguishable from an id that genuinely has
+// none. One formula, called by both sides.
+func IdentityID(id uint64) string {
+	return strconv.FormatUint(id, 10)
+}
 
 // IdentityKind names the family of identity record an index entry
 // describes. The kind is the first key segment, so the families occupy

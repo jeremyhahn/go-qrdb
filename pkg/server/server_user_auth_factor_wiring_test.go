@@ -15,11 +15,34 @@
 package server
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
+
+// newWiringStoreResolver returns the PRODUCTION tenant store resolver over an
+// in-memory store. The wiring under test turns on whether a resolver is
+// present, and on the routed service it produces actually working, so a stub
+// resolver would test the stub.
+func newWiringStoreResolver(t *testing.T) tenant.StoreResolver {
+	t.Helper()
+	store := kvstore.NewMemoryKVStore()
+	tenants, err := tenant.NewKVTenantService(store, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("NewKVTenantService: %v", err)
+	}
+	resolver, err := tenant.NewStoreResolver(store, nil, tenants)
+	if err != nil {
+		t.Fatalf("NewStoreResolver: %v", err)
+	}
+	return resolver
+}
 
 // ---------------------------------------------------------------------------
 // In-test stubs
@@ -71,14 +94,15 @@ func TestWithUserAuthFactorService_ViaNewServer(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestEnsureUserAuthFactorService_WithUserService verifies that Start()
-// auto-constructs userAuthFactorSvc when a User service is configured and no
-// explicit UserAuthFactorServicer was supplied.
+// auto-constructs userAuthFactorSvc when a User service AND a tenant store
+// resolver are configured and no explicit UserAuthFactorServicer was supplied.
 func TestEnsureUserAuthFactorService_WithUserService(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, false, false) // no protocols → Start() exits quickly
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithUserService(&stubUserServiceForFactorWiring{}),
+		WithTenantStoreResolver(newWiringStoreResolver(t)),
 	)
 
 	if err := srv.Start(); err != nil {
@@ -99,7 +123,8 @@ func TestEnsureUserAuthFactorService_NoUserService(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, false, false)
-	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA))
+	srv := New(cfg, newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA),
+		WithTenantStoreResolver(newWiringStoreResolver(t)))
 
 	if err := srv.Start(); err != nil {
 		t.Fatalf("Start() without WithUserService: %v", err)
@@ -123,6 +148,7 @@ func TestEnsureUserAuthFactorService_ExplicitServiceRetained(t *testing.T) {
 	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithUserAuthFactorService(explicit),
 		WithUserService(&stubUserServiceForFactorWiring{}),
+		WithTenantStoreResolver(newWiringStoreResolver(t)),
 	)
 
 	if err := srv.Start(); err != nil {
@@ -135,23 +161,63 @@ func TestEnsureUserAuthFactorService_ExplicitServiceRetained(t *testing.T) {
 	}
 }
 
-// TestEnsureUserAuthFactorService_NilKVSkipsConstruction verifies that
-// auto-construction is skipped (not an error) when no KV servicer is
-// available, since service.NewUserAuthFactorService requires one.
-func TestEnsureUserAuthFactorService_NilKVSkipsConstruction(t *testing.T) {
+// TestEnsureUserAuthFactorService_NoResolverFailsClosed verifies the
+// go-qrdb#393 refusal: with a User service but NO tenant store resolver,
+// Start() constructs no auth-factor service at all rather than one serving
+// every tenant out of a single keyspace. The surface is withheld; it is never
+// served unrouted.
+func TestEnsureUserAuthFactorService_NoResolverFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	cfg := testConfig(t, false, false)
-	srv := New(cfg, nil, &mockAdminService{},
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
 		WithUserService(&stubUserServiceForFactorWiring{}),
 	)
 
 	if err := srv.Start(); err != nil {
-		t.Fatalf("Start() with nil kvSvc: %v", err)
+		t.Fatalf("Start() without a resolver: %v", err)
 	}
 	defer srv.Stop()
 
 	if srv.opts.userAuthFactorSvc != nil {
-		t.Fatal("ensureUserAuthFactorService: userAuthFactorSvc should stay nil when kvSvc is nil")
+		t.Fatal("ensureUserAuthFactorService: a service was constructed with no tenant routing")
+	}
+}
+
+// TestEnsureUserAuthFactorService_RoutedServiceIsTenantScoped verifies the
+// auto-constructed service is the ROUTED one, by exercising the boundary
+// rather than the type: a factor enrolled under one tenant must not resolve a
+// lookup made under another. A wiring that silently reverted to the unrouted
+// service would satisfy a non-nil check and fail this.
+func TestEnsureUserAuthFactorService_RoutedServiceIsTenantScoped(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig(t, false, false)
+	srv := New(cfg, newMockKVService(), &mockAdminService{},
+		WithUserService(&stubUserServiceForFactorWiring{}),
+		WithTenantStoreResolver(newWiringStoreResolver(t)),
+	)
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	defer srv.Stop()
+
+	svc := srv.opts.userAuthFactorSvc
+	if svc == nil {
+		t.Fatal("no auth-factor service was constructed")
+	}
+	cred := []byte("wiring-credential")
+	acme := tenant.WithTenantID(context.Background(), "acme")
+	globex := tenant.WithTenantID(context.Background(), "globex")
+	if err := svc.Add(acme, 1, &auth.AuthFactor{
+		ID: "wired", UserID: 1, Type: auth.AuthFactorMTLS, Credential: cred,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := svc.LookupByCredentialKey(globex, auth.AuthFactorMTLS, cred); err == nil {
+		t.Fatal("the auto-constructed service resolved across tenants")
+	}
+	if _, err := svc.LookupByCredentialKey(acme, auth.AuthFactorMTLS, cred); err != nil {
+		t.Fatalf("the enrolling tenant cannot resolve its own factor: %v", err)
 	}
 }

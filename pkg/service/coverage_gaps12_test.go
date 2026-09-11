@@ -265,7 +265,7 @@ func TestCollectionService_InsertDocument_NonJSONCodec(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Add_DuplicateCredential(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(500)
 

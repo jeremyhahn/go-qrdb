@@ -69,7 +69,7 @@ func TestAdd_RefusesReservedMetadata(t *testing.T) {
 		"ATTEST_LEVEL",
 	} {
 		t.Run(key, func(t *testing.T) {
-			svc, kv := newUserAuthFactorService(t, nil)
+			svc, kv := newTestUserAuthFactorService(t, nil)
 			f := reservedMetadataFactor("f1", 7, []byte("cred-"+key), map[string]string{key: "hardware"})
 
 			err := svc.Add(context.Background(), 7, f)
@@ -93,7 +93,7 @@ func TestAdd_RefusesReservedMetadata(t *testing.T) {
 // factor must also survive -- a refused rotation that revoked the old factor
 // would be a denial of service on top of the forged claim.
 func TestRotate_RefusesReservedMetadata(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	old := mtlsFactor("old", 7, []byte("cred-old"))
@@ -122,7 +122,7 @@ func TestRotate_RefusesReservedMetadata(t *testing.T) {
 // serial / slot info as legitimate, and a key that merely CONTAINS the prefix
 // away from the start is not in the namespace.
 func TestAdd_AllowsOrdinaryMetadata(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{
 		"vendor":         "yubico",
 		"slot":           "9a",
@@ -191,7 +191,7 @@ func persistedMetadata(t *testing.T, svc UserAuthFactorServicer, factorID string
 // written before the field existed looks like.
 func TestAdd_StampsUnattested(t *testing.T) {
 	t.Run("nil metadata", func(t *testing.T) {
-		svc, _ := newUserAuthFactorService(t, nil)
+		svc, _ := newTestUserAuthFactorService(t, nil)
 		if err := svc.Add(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred"))); err != nil {
 			t.Fatalf("Add: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestAdd_StampsUnattested(t *testing.T) {
 	})
 
 	t.Run("ordinary metadata is kept beside the stamp", func(t *testing.T) {
-		svc, _ := newUserAuthFactorService(t, nil)
+		svc, _ := newTestUserAuthFactorService(t, nil)
 		f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{"vendor": "yubico"})
 		if err := svc.Add(context.Background(), 7, f); err != nil {
 			t.Fatalf("Add: %v", err)
@@ -220,7 +220,7 @@ func TestAdd_StampsUnattested(t *testing.T) {
 // TestRotate_StampsUnattested: rotation is a new factor the server never
 // verified, so it is stamped none too.
 func TestRotate_StampsUnattested(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 	if err := svc.Add(ctx, 7, mtlsFactor("old", 7, []byte("cred-old"))); err != nil {
 		t.Fatalf("seed Add: %v", err)
@@ -237,7 +237,7 @@ func TestRotate_StampsUnattested(t *testing.T) {
 // ceremony proved hardware, rotated through the ordinary path, comes out
 // none. The old record's proof is about the OLD key.
 func TestRotate_DoesNotInheritAttestation(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 
@@ -261,7 +261,7 @@ func TestRotate_DoesNotInheritAttestation(t *testing.T) {
 // reached by type assertion on the servicer a host already holds, the same
 // way ActiveFactorChecker is.
 func TestAttestationRecorder_ReachableFromTheServicer(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	if _, ok := svc.(AttestationRecorder); !ok {
 		t.Fatalf("%T does not implement AttestationRecorder", svc)
 	}
@@ -271,7 +271,7 @@ func TestAttestationRecorder_ReachableFromTheServicer(t *testing.T) {
 // the host that verified the attestation can record it, and every read path
 // -- Get, List, and the login resolver's LookupByCredentialKey -- sees it.
 func TestAddAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 
@@ -311,7 +311,7 @@ func TestAddAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
 // TestAddAttested_SoftwareWithoutModel: a level with no attested model records
 // the level and no aaguid key at all.
 func TestAddAttested_SoftwareWithoutModel(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	err := rec.AddAttested(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred")),
 		auth.VerifiedAttestation{Level: auth.AttestationLevelSoftware})
@@ -331,7 +331,7 @@ func TestAddAttested_SoftwareWithoutModel(t *testing.T) {
 // a second way to hand the server a map with attest_* in it. The typed
 // attestation is the ONLY input, and #234's refusal holds on this path too.
 func TestAddAttested_RefusesCallerSuppliedReservedKeys(t *testing.T) {
-	svc, kv := newUserAuthFactorService(t, nil)
+	svc, kv := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 
 	f := reservedMetadataFactor("f1", 7, []byte("cred"), map[string]string{"attest_level": "hardware"})
@@ -348,7 +348,7 @@ func TestAddAttested_RefusesCallerSuppliedReservedKeys(t *testing.T) {
 func TestAddAttested_RefusesUndefinedLevel(t *testing.T) {
 	for _, level := range []auth.AttestationLevel{"", "hardwre", "HARDWARE"} {
 		t.Run(string(level), func(t *testing.T) {
-			svc, kv := newUserAuthFactorService(t, nil)
+			svc, kv := newTestUserAuthFactorService(t, nil)
 			rec := svc.(AttestationRecorder)
 
 			err := rec.AddAttested(context.Background(), 7, mtlsFactor("f1", 7, []byte("cred")),
@@ -371,7 +371,7 @@ func TestAddAttested_RefusesUndefinedLevel(t *testing.T) {
 // different stamp, not a looser Add. The checks that precede the stamp are
 // the same ones.
 func TestAddAttested_SharesAddValidation(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 	hardware := auth.VerifiedAttestation{Level: auth.AttestationLevelHardware}
@@ -392,7 +392,7 @@ func TestAddAttested_SharesAddValidation(t *testing.T) {
 
 // TestRotateAttested_RecordsWhatTheCeremonyProved: the rotation twin.
 func TestRotateAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 
@@ -421,7 +421,7 @@ func TestRotateAttested_RecordsWhatTheCeremonyProved(t *testing.T) {
 // touched -- a refused rotation that revoked the old factor would be a denial
 // of service on top of the bad input.
 func TestRotateAttested_RefusesUndefinedLevel(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 
@@ -444,7 +444,7 @@ func TestRotateAttested_RefusesUndefinedLevel(t *testing.T) {
 
 // TestRotateAttested_RefusesCallerSuppliedReservedKeys mirrors the Add case.
 func TestRotateAttested_RefusesCallerSuppliedReservedKeys(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	rec := svc.(AttestationRecorder)
 	ctx := context.Background()
 

@@ -17,7 +17,6 @@ package user
 import (
 	"context"
 	"errors"
-	"strconv"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -43,12 +42,15 @@ func WithIdentityIndex(index tenant.IdentityIndex) Option {
 	return func(s *kvUserStore) { s.identity = index }
 }
 
-// identityID renders a user id as the identity index's key segment. User
-// ids are decimal here rather than the fixed-width big-endian encoding the
-// user store's own keys use: the identity index is not scanned in id
-// order, and the CLI and every transport name a user by its decimal id.
+// identityID renders a user id as the identity index's key segment.
+//
+// It delegates to tenant.IdentityID rather than re-deriving the rendering:
+// the index is read by more than this package — the auth-factor migration
+// resolves a legacy record's owning tenant through it — and a reader that
+// rendered the id differently would report "no claim" for an id that has
+// one.
 func identityID(id uint64) string {
-	return strconv.FormatUint(id, 10)
+	return tenant.IdentityID(id)
 }
 
 // recordIdentity places a user id in its tenant. It is a no-op when no

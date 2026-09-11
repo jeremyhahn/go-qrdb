@@ -29,7 +29,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Add_EmptyIDAutoAssigned(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(12000)
 
@@ -58,7 +58,7 @@ func TestUserAuthFactorService_Add_EmptyIDAutoAssigned(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Add_ZeroRegisteredAt(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(12001)
 

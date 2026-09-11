@@ -165,7 +165,7 @@ func TestUserAuthFactorService_Rotate_OldFactorRevokeFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Rotate_OldFactorRevoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(6000)
 
@@ -238,7 +238,7 @@ func TestUserAuthFactorService_Remove_KVPutFails(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_LookupByCredentialKey_NotFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	// Look up a key that was never enrolled.
@@ -253,7 +253,7 @@ func TestUserAuthFactorService_LookupByCredentialKey_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_MarkUsed_FactorFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(8000)
 

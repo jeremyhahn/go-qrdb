@@ -35,7 +35,7 @@ func spkiMtlsFactor(id string, userID uint64, cred, spki []byte) *auth.AuthFacto
 // ---------------------------------------------------------------------------
 
 func TestAdd_writesSPKILookupIndex(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	spki := []byte("spki-digest-1")
@@ -63,7 +63,7 @@ func TestAdd_writesSPKILookupIndex(t *testing.T) {
 }
 
 func TestAdd_withoutSPKICredential_noSPKIIndex(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	if err := svc.Add(ctx, 1, mtlsFactor("f1", 1, []byte("cert-digest-1"))); err != nil {
@@ -78,7 +78,7 @@ func TestAdd_withoutSPKICredential_noSPKIIndex(t *testing.T) {
 }
 
 func TestAdd_spkiCollisionRejected(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	spki := []byte("spki-digest-shared")
@@ -97,7 +97,7 @@ func TestAdd_spkiCollisionRejected(t *testing.T) {
 }
 
 func TestAdd_spkiCollisionRejectedEvenWhenRevoked(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	spki := []byte("spki-digest-shared")
@@ -127,7 +127,7 @@ func TestAdd_spkiCollisionRejectedEvenWhenRevoked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRotate_sameSPKIRenewalRepointsIndex(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	spki := []byte("spki-digest-stable")
@@ -169,7 +169,7 @@ func TestRotate_sameSPKIRenewalRepointsIndex(t *testing.T) {
 }
 
 func TestRotate_spkiCollisionWithOtherFactorRejected(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	if err := svc.Add(ctx, 1, spkiMtlsFactor("f1", 1, []byte("cert-digest-1"), []byte("spki-a"))); err != nil {
@@ -195,7 +195,7 @@ func TestRotate_spkiCollisionWithOtherFactorRejected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGet_roundTripsSPKICredential(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, nil)
+	svc, _ := newTestUserAuthFactorService(t, nil)
 	ctx := context.Background()
 
 	spki := []byte("spki-digest-1")

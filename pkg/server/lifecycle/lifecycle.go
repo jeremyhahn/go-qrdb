@@ -231,6 +231,13 @@ type Node struct {
 	// forward seam for the SDK to expose; there is no SDK accessor yet.
 	StoreResolver tenant.StoreResolver
 
+	// UserAuthFactor is the M14 user-side auth-factor service, TENANT-ROUTED
+	// through StoreResolver. It is non-nil exactly when StoreResolver is: the
+	// resolver is the tenant boundary of factor resolution (go-qrdb#393), so a
+	// composition that cannot resolve a tenant gets no factor service rather
+	// than one serving every tenant out of one keyspace.
+	UserAuthFactor service.UserAuthFactorServicer
+
 	// KeyspaceReclaim reclaims a dropped database's data from the store it
 	// shares with other databases. It is always non-nil and is already wired
 	// into the database manager; it is exposed so a composer that serves
@@ -526,6 +533,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				return nil, &RoleServiceError{Err: err}
 			}
 			n.Role = routedRoles
+
+			if err := n.buildUserAuthFactorService(ctx, resolver, authStore, log); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		// When the seal subsystem is disabled, wire a KV-backed tenant service
@@ -568,6 +579,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 			return nil, &RoleServiceError{Err: roerr}
 		}
 		n.Role = routedRoles
+
+		if uafErr := n.buildUserAuthFactorService(ctx, resolver, authStore, log); uafErr != nil {
+			return nil, uafErr
+		}
 	}
 
 	// Wire tenant-driven quota and entitlement enforcement into the database
@@ -849,4 +864,34 @@ func newMinimalLogger(log *slog.Logger) *logger.Logger {
 		panic("lifecycle: failed to create minimal logger: " + err.Error())
 	}
 	return l
+}
+
+// buildUserAuthFactorService migrates any legacy untenanted auth-factor
+// records into their owning tenants and assigns the tenant-routed M14 service
+// to n.UserAuthFactor.
+//
+// It is called from BOTH IAM-routing branches — seal-enabled and seal-disabled
+// — for the same reason routing itself is: keyspace isolation is not a
+// property of encryption, and a node with the seal subsystem off still has
+// tenants whose credentials must not resolve each other's logins
+// (go-qrdb#393).
+//
+// legacy is the UNCONFINED shared store, which is exactly what the resolver
+// wraps; the migration reads the flat "__sys:auth/..." keys out of it and
+// writes each record into "{tenant}/__sys:auth/...". It runs inside the
+// service, before the service answers anything — NOT here. This function is
+// called while the shard is still electing, and a linearizable read at that
+// moment fails with "not leader, leader unknown" on a node that is otherwise
+// healthy, which would turn a migration into a failed boot.
+func (n *Node) buildUserAuthFactorService(_ context.Context, resolver tenant.StoreResolver, legacy kvstore.KVStore, log *slog.Logger) error {
+	svc, err := service.NewRoutingUserAuthFactorService(service.RoutingUserAuthFactorServiceConfig{
+		Resolver:    resolver,
+		LegacyStore: legacy,
+		Logger:      log,
+	})
+	if err != nil {
+		return &UserAuthFactorServiceError{Err: err}
+	}
+	n.UserAuthFactor = svc
+	return nil
 }

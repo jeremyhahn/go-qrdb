@@ -36,6 +36,14 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   `kvstore.NewNamespacedKVStore` at `{tenant}/` for every shared-prefix tenant
   (including the system tenant and unknown tenants). Returning the bare shared store gave every prefix tenant one
   keyspace — the #41 defect. A caller must never have to remember to prefix.
+- **The user-side auth-factor service is routed like the user and role
+  services.** `service.NewRoutingUserAuthFactorService` over the same
+  `StoreResolver`; a composition with no resolver gets NO factor surface rather
+  than an unrouted one. The lookup key carries no tenant and is not supposed
+  to: the store is the tenant dimension, and nothing downstream re-checks it.
+  Enrolment (`Add`) routes on the tenant owning the named user id and REFUSES a
+  caller that may not reach it; `LookupByCredentialKey` routes on the context
+  tenant, which is the tenant the login was begun under.
 - **The resolver-served store namespaces at `{tenant}/`, not
   `{tenant}/{db}/`.** It serves identity, and identity is tenant-wide — a user
   authenticates whichever database a request names. Per-database namespacing

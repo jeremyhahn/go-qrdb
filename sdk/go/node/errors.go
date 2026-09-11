@@ -125,10 +125,20 @@ func (e *UnsealError) Error() string {
 // Unwrap returns the underlying error.
 func (e *UnsealError) Unwrap() error { return e.Err }
 
+// ErrNoTenantRouting indicates the node lifecycle produced no tenant-routed
+// user auth-factor service, so there is nothing to wire the unified-login
+// ceremony onto.
+//
+// It is a refusal rather than a fallback. The routed service IS the tenant
+// boundary of factor resolution (go-qrdb#393): a login surface built over the
+// node's bare KV servicer resolves every tenant's credentials out of one
+// keyspace, which is the defect, so a node that cannot route offers no login
+// rather than an unrouted one.
+var ErrNoTenantRouting = errors.New("node: no tenant-routed user auth-factor service")
+
 // LoginWiringError indicates that the unified-login ceremony could not be
-// wired into the embedded transport — typically because the
-// UserAuthFactor service backing the LoginResolver could not be
-// constructed from the node's KV servicer.
+// wired into the embedded transport — typically because the node lifecycle
+// produced no tenant-routed UserAuthFactor service to back the LoginResolver.
 type LoginWiringError struct {
 	Err error
 }

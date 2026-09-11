@@ -2331,14 +2331,20 @@ func (n *Node) ABACPolicyReloader() abac.PolicyReloader {
 // ceremony: the UserAuthFactor service, the LoginResolver, the optional
 // SessionIssuer, and any injected hardware FactorVerifiers. Caller must have
 // verified svcNode.User != nil.
+//
+// The factor service is the TENANT-ROUTED one the node lifecycle built
+// alongside the routed user and role services, taken rather than rebuilt: one
+// construction site means one resolver, one per-tenant service cache, and one
+// process-local mutex serialising a tenant's factor mutations. Rebuilding it
+// here over svcNode.KV is what go-qrdb#393 measured — a single flat keyspace
+// in which a credential enrolled under one tenant resolved a login begun under
+// another — so its absence is a wiring refusal, not a reason to fall back.
 func (n *Node) buildLoginOpts(svcNode *lifecycle.Node) ([]embedded.Option, error) {
-	factorSvc, err := service.NewUserAuthFactorService(service.UserAuthFactorServiceConfig{
-		KV: svcNode.KV,
-	})
-	if err != nil {
-		return nil, &LoginWiringError{Err: err}
+	factorSvc := svcNode.UserAuthFactor
+	if factorSvc == nil {
+		return nil, &LoginWiringError{Err: ErrNoTenantRouting}
 	}
-	var loginFactorSvc service.UserAuthFactorServicer = factorSvc
+	loginFactorSvc := factorSvc
 	n.loginFactorSvc.Store(&loginFactorSvc)
 
 	userLookup := auth.UserLookupFunc(func(ctx context.Context, id uint64) (*auth.Principal, error) {

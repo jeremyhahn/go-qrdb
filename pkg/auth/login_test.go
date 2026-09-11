@@ -28,12 +28,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type stubFactorStore struct {
-	mu        sync.Mutex
-	factors   map[string]*AuthFactor // by lookup-key+type composite
-	lookupErr error
-	markedID  string
-	markCalls atomic.Int32
-	markDone  chan struct{}
+	mu          sync.Mutex
+	factors     map[string]*AuthFactor // by lookup-key+type composite
+	lookupErr   error
+	markedID    string
+	markedScope string
+	markCalls   atomic.Int32
+	markDone    chan struct{}
 }
 
 func newStubFactorStore() *stubFactorStore {
@@ -62,9 +63,23 @@ func (s *stubFactorStore) LookupByCredentialKey(_ context.Context, t AuthFactorT
 	return f, nil
 }
 
-func (s *stubFactorStore) MarkUsed(_ context.Context, id string, _ time.Time) error {
+// loginScopeKey is a request-scoped context key standing in for whatever the
+// caller binds to a login context. pkg/auth cannot import pkg/tenant — the
+// dependency runs the other way — so the real binding under test,
+// tenant.WithTenantID, is modelled by its mechanism: a context VALUE.
+type loginScopeKey struct{}
+
+// MarkUsed records the scope value it was called with, not merely that it was
+// called.
+//
+// The store is tenant-routed in production and reads that value off this
+// context to pick which tenant's records to update, so a double that dropped
+// the context — as this one did — cannot tell a detach that preserves request
+// values from one that discards them. Both call MarkUsed exactly once.
+func (s *stubFactorStore) MarkUsed(ctx context.Context, id string, _ time.Time) error {
 	s.mu.Lock()
 	s.markedID = id
+	s.markedScope, _ = ctx.Value(loginScopeKey{}).(string)
 	s.mu.Unlock()
 	s.markCalls.Add(1)
 	select {
@@ -277,5 +292,59 @@ func TestUserLookupFunc_invokes(t *testing.T) {
 	}
 	if p.ID != 7 {
 		t.Fatalf("p.ID = %d, want 7", p.ID)
+	}
+}
+
+// TestResolve_markUsedKeepsTheRequestScope asserts the detached LastUsedAt
+// update still carries the values bound to the resolve context.
+//
+// The update is deliberately detached so a returning login response cannot
+// cancel it. Detaching with context.Background() would also drop the tenant
+// binding the routed factor store reads, which would not fail the login and
+// would not fail this test either unless the scope is asserted: MarkUsed is
+// still called, just against the wrong tenant's store, and LastUsedAt would
+// silently stop advancing for every tenant but the default one.
+func TestResolve_markUsedKeepsTheRequestScope(t *testing.T) {
+	store := newStubFactorStore()
+	users := &stubUserLookup{users: map[uint64]*Principal{77: {ID: 77, Username: "scoped", Active: true}}}
+	store.put(AuthFactorMTLS, []byte("scoped-key"), &AuthFactor{ID: "factor-scope", UserID: 77, Type: AuthFactorMTLS})
+
+	r := NewLoginResolver(store, users)
+	ctx := context.WithValue(context.Background(), loginScopeKey{}, "acme")
+	if _, _, err := r.Resolve(ctx, AuthFactorMTLS, []byte("scoped-key")); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	select {
+	case <-store.markDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async MarkUsed")
+	}
+	store.mu.Lock()
+	scope := store.markedScope
+	store.mu.Unlock()
+	if scope != "acme" {
+		t.Fatalf("MarkUsed ran with scope %q, want \"acme\": the detached context dropped the request values", scope)
+	}
+}
+
+// TestResolve_markUsedSurvivesTheRequestContext asserts the other half of the
+// same detach: cancelling the request context must not cancel the update.
+func TestResolve_markUsedSurvivesTheRequestContext(t *testing.T) {
+	store := newStubFactorStore()
+	users := &stubUserLookup{users: map[uint64]*Principal{78: {ID: 78, Username: "detached", Active: true}}}
+	store.put(AuthFactorMTLS, []byte("detach-key"), &AuthFactor{ID: "factor-detach", UserID: 78, Type: AuthFactorMTLS})
+
+	r := NewLoginResolver(store, users)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, _, err := r.Resolve(ctx, AuthFactorMTLS, []byte("detach-key")); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	cancel()
+
+	select {
+	case <-store.markDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelling the request cancelled the detached MarkUsed")
 	}
 }

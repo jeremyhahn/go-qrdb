@@ -99,6 +99,32 @@ you need real lockout, the deployment must inject a hardware PIN backend.
 A FIPS binary can verify a PIN hashed by a non-FIPS binary and vice versa —
 the algorithm is stored with each record and resolved at verification time.
 
+## Upgrading from a build without tenant-scoped factors
+
+Earlier builds stored every factor in one keyspace with no tenant in it. The first time the
+server serves an authentication after upgrading, it moves each record into the
+tenant that owns its user and logs what it did.
+
+You do not have to run anything. Two log lines matter:
+
+- `auth-factor records migrated into their owning tenants` — informational, with
+  a count. Nothing to do.
+- `auth-factor migration refused a record` at **ERROR**, naming the record's key
+  and its factor and user ids. The server could not establish which tenant the
+  record belongs to and **will not guess**, because a credential placed in the
+  wrong organization authenticates the wrong person. The record is left where it
+  is and resolves for nobody, so the user it belonged to must re-enrol that
+  factor — or, if the user is gone, the record can be deleted.
+- `auth-factor migration could not reach every owning tenant` at **WARN**. This
+  one needs no action. A tenant with its own barrier is sealed until its
+  administrator unseals it, and a server that has not yet been given a tenant's
+  key cannot write to that tenant either — so those records wait, and the server
+  places them on its own once the tenant becomes reachable. Every other tenant
+  signs in normally in the meantime.
+
+Everything else keeps working during and after the move: only the refused
+records are affected, and the server names every one of them.
+
 ## Troubleshooting
 
 **`auth login` succeeded but nothing is authorized.** Login resolves a factor to

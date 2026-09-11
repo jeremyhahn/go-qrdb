@@ -198,6 +198,26 @@ func (e *RoleServiceError) Unwrap() error {
 	return e.Err
 }
 
+// UserAuthFactorServiceError is returned when the tenant-routed user
+// auth-factor service fails to initialize, including when the go-qrdb#393
+// migration of legacy untenanted records could not be completed. A REFUSED
+// record does not produce this error — see
+// service.NewMigratedRoutingUserAuthFactorService — only a run whose outcome
+// is unknown does.
+type UserAuthFactorServiceError struct {
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *UserAuthFactorServiceError) Error() string {
+	return "lifecycle: user auth-factor service initialization failed: " + e.Err.Error()
+}
+
+// Unwrap returns the underlying error.
+func (e *UserAuthFactorServiceError) Unwrap() error {
+	return e.Err
+}
+
 // EmptyVectorDataDirError is returned when the vector storage subsystem is
 // about to be opened but infra.DataDir is empty. The vector store is backed
 // exclusively by PebbleDB and requires a valid absolute data directory; an

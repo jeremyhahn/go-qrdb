@@ -186,6 +186,7 @@ type serverOptions struct {
 	barrierRegistry    *seal.BarrierRegistry
 	tenantDEKMgr       dek.TenantDEKManager
 	tenantSvc          tenant.TenantServicer
+	tenantStoreRes     tenant.StoreResolver
 	backupSvc          service.BackupServicer
 	rebalanceSvc       service.RebalanceServicer
 	dbRegistry         *DatabaseServiceRegistry
@@ -505,6 +506,16 @@ func WithTenantService(svc tenant.TenantServicer) ServerOption {
 	}
 }
 
+// WithTenantStoreResolver sets the resolver that maps a tenant to the store
+// holding that tenant's IAM data. It is what makes an auto-constructed
+// user-side auth-factor service tenant-scoped; without it Start() constructs
+// no such service at all (see ensureUserAuthFactorService).
+func WithTenantStoreResolver(resolver tenant.StoreResolver) ServerOption {
+	return func(o *serverOptions) {
+		o.tenantStoreRes = resolver
+	}
+}
+
 // WithBackupService sets the backup/restore service. When set, backups can be
 // created, listed, restored, and verified across all wire transports.
 func WithBackupService(svc service.BackupServicer) ServerOption {
@@ -613,9 +624,10 @@ func WithAuthFactorService(svc service.AuthFactorServicer) ServerOption {
 // that support it (REST, gRPC, QUIC, MCP, Unix). This is the service the SDK
 // client's UserAuthFactors() accessor talks to (Add / List / Get / Remove /
 // Rotate / Relabel / Login) and is distinct from WithAuthFactorService (the
-// ceremony-time enrollment surface). When not supplied explicitly and a User
-// service is configured, Start() constructs one automatically from the KV
-// servicer via ensureUserAuthFactorService — see that method for details.
+// ceremony-time enrollment surface). When not supplied explicitly, and a User
+// service AND a tenant store resolver are configured, Start() constructs the
+// tenant-routed service automatically via ensureUserAuthFactorService — see
+// that method, including why there is no unrouted fallback.
 func WithUserAuthFactorService(svc service.UserAuthFactorServicer) ServerOption {
 	return func(o *serverOptions) { o.userAuthFactorSvc = svc }
 }
@@ -809,26 +821,32 @@ func (s *Server) ensureAuthFactorService() error {
 // sdk/go/node.go's buildLoginOpts: when a User service is configured
 // (WithUserService) but no explicit UserAuthFactorServicer was supplied via
 // WithUserAuthFactorService, this method constructs the M14 user-side
-// auth-factor service (service.NewUserAuthFactorService) from the same KV
-// servicer passed to New/Start and assigns it so every transport that checks
-// s.opts.userAuthFactorSvc sees a valid instance — the same construction
-// shape the embedded transport uses (KV only; UserStateUpdater is left nil,
-// matching sdk/go/node.go's buildLoginOpts exactly). This gives the CLI's
+// auth-factor service and assigns it so every transport that checks
+// s.opts.userAuthFactorSvc sees a valid instance. This gives the CLI's
 // "auth login" / "auth factor" family (cmd/qrdb/auth.go) the same working
 // surface against the standalone daemon that it already has against an
 // embedded node.
 //
-// It is a no-op when userAuthFactorSvc is already set, when no User service
-// is configured (mirrors sdk/go/node.go's buildEmbeddedOpts, which only
-// wires the login ceremony when svcNode.User != nil — no user model means
-// no principal to resolve logins against), or when no KV servicer is
-// available to persist factor records.
+// The service it constructs is the TENANT-ROUTED one
+// (service.NewRoutingUserAuthFactorService), built over the resolver supplied
+// by WithTenantStoreResolver. It used to be built over the bare KV servicer,
+// and that is precisely the defect go-qrdb#393 records: one flat keyspace, so
+// a credential enrolled under one tenant resolved a login begun under another.
+//
+// It is a no-op when userAuthFactorSvc is already set, when no User service is
+// configured (mirrors sdk/go/node.go's buildEmbeddedOpts, which only wires the
+// login ceremony when svcNode.User != nil — no user model means no principal
+// to resolve logins against), and — the fail-closed case — when NO tenant
+// store resolver was supplied. There is no unrouted fallback: a composition
+// that cannot say which tenant a request belongs to cannot serve a surface
+// whose whole isolation boundary is that answer. A composer that wants the
+// surface supplies a resolver; the daemon supplies the service outright.
 func (s *Server) ensureUserAuthFactorService() error {
-	if s.opts.userAuthFactorSvc != nil || s.opts.userSvc == nil || s.kvSvc == nil {
+	if s.opts.userAuthFactorSvc != nil || s.opts.userSvc == nil || s.opts.tenantStoreRes == nil {
 		return nil
 	}
-	svc, err := service.NewUserAuthFactorService(service.UserAuthFactorServiceConfig{
-		KV: s.kvSvc,
+	svc, err := service.NewRoutingUserAuthFactorService(service.RoutingUserAuthFactorServiceConfig{
+		Resolver: s.opts.tenantStoreRes,
 	})
 	if err != nil {
 		return err

@@ -146,6 +146,131 @@ Storage keys: `so-pin` and `user-pin`, each a JSON-encoded `PINRecord`.
 | `fido2` | WebAuthn `credentialID` bytes |
 | `piv` | SHA-256 of the slot certificate DER |
 
+**A lookup key is not unique across the deployment, and is not meant to be.**
+Two organizations can hold the same certificate or enrol the same token, and
+the credential itself says nothing about which of them is presenting it. The
+tenant that separates them is the STORE, never the key — see the next section.
+
+## Tenant scoping — the store, not the key
+
+The user-side auth-factor records are per-tenant IAM, and they are routed
+exactly as users and roles are: through `tenant.StoreResolver`.
+
+```go
+func NewUserAuthFactorService(cfg UserAuthFactorServiceConfig) (UserAuthFactorServicer, error)               // ONE tenant's store
+func NewRoutingUserAuthFactorService(cfg RoutingUserAuthFactorServiceConfig) (UserAuthFactorServicer, error) // tenant-routed
+func MigrateFactorsToTenants(ctx, shared kvstore.KVStore, resolver, owners, logger) (*FactorMigrationReport, error)
+```
+
+- **`UserAuthFactorServiceConfig.KV` is an `AuthFactorKV`** — `Put`, `Get`,
+  `List` — satisfied verbatim by both `service.KVServicer` and
+  `kvstore.KVStore`, which is what lets the router hand a resolved per-tenant
+  store straight to the per-tenant service with no adapter between them. A
+  missing key reads back as a typed error from one and as `(nil, nil)` from the
+  other; every read treats "error or empty" as absent, so neither convention is
+  privileged.
+- **The keys are unchanged** — `__sys:auth/factors/{id}`,
+  `__sys:auth/users/{userID}/factors/{id}`,
+  `__sys:auth/lookup/{type}/{credKeyHex}` — and carry no tenant segment. The
+  physical key is `{tenant}/` + that, supplied by the resolver's confinement,
+  and `{tenant}/` is `tenant.IdentityNamespace`, the same prefix the routed
+  user and role stores write under.
+- **Composition roots build the ROUTED service, always.** Where no resolver
+  exists the surface is withheld rather than served flat: `pkg/server`'s
+  `Start()` constructs nothing without `WithTenantStoreResolver`, and the
+  embedded node refuses to wire the login ceremony with `ErrNoTenantRouting`.
+  There is no unrouted fallback, because an unrouted fallback is the defect.
+
+### Which id a call routes on
+
+| Call | Routes on | Rationale |
+|---|---|---|
+| `Add`, `AddAttested` | the tenant that **owns the user id**, via `tenant.IdentityIndex`; a caller that may not reach it is refused with `*tenant.CrossTenantDeniedError` | an enrolment must land where the user lives, or the login that follows — begun under the user's tenant — finds nothing and reports a bad credential |
+| `List`, `HasActiveFactor` | the tenant that owns the user id, via `tenant.OwningTenant`; an unreachable or unindexed id routes to the caller's own tenant and finds nothing | the shared by-id read rule; it discloses nothing about where the id lives |
+| `Get`, `Remove`, `Rotate`, `Relabel`, `MarkUsed` | the **context** tenant | a factor id is issued inside a tenant and only travels back to it; there is no index for it and none is wanted |
+| `LookupByCredentialKey` | the **context** tenant — the tenant the login was begun under | this is the isolation boundary; nothing downstream re-checks it |
+
+The write path is stricter than the read path on purpose. A write routed to
+the caller's own tenant on a denial would bind a credential of the caller's
+choosing to another tenant's user id, leaving the boundary resting on the
+downstream user lookup refusing the same cross-tenant read — two components
+having to agree. The refusal holds it where the write is.
+
+### `LastUsedAt` is detached with `context.WithoutCancel`
+
+`LoginResolver.Resolve` updates `LastUsedAt` in a goroutine so a returning
+login response cannot cancel it. The detached context is derived with
+`context.WithoutCancel`, **not** `context.Background()`: the store is
+tenant-routed and reads the tenant off that context, so a background context
+would resolve the system tenant, look in the wrong store, and silently stop
+advancing `LastUsedAt` for every other tenant. Nothing would fail; the value
+would simply stop moving.
+
+### Migrating records written before routing
+
+Deployments written by an earlier build hold their factor records at the flat
+root, with no tenant anywhere in the key or in the record.
+`service.MigrateFactorsToTenants` moves them, and the routed service runs it
+itself: hand it the legacy store as `RoutingUserAuthFactorServiceConfig.LegacyStore`
+and it migrates ONCE, before it answers anything.
+
+- **It runs at first use, not at construction.** The records are read through
+  Raft, and a composition root builds its services while the shard is still
+  electing — a linearizable read there fails with "not leader, leader unknown"
+  on a node that is otherwise healthy. First use is the earliest moment the
+  store can answer.
+- **No operation can outrun it**, which is why it lives in the service rather
+  than in a second call a root makes. Serving before migrating would strand
+  every already-enrolled credential for as long as the gap lasted, and that
+  failure looks like a bad credential rather than a migration that has not run.
+- **What consumes the one-shot depends on the outcome.** A STORE failure does
+  not, and is returned: the next call tries again. A TERMINAL refusal does, and
+  is not returned: re-running would only re-refuse. A TRANSIENT refusal does
+  **not**, and is not returned either: the service serves every other tenant
+  normally and the next call re-runs over what is left, which by then is the
+  refused records alone. Latching on a transient refusal would make the
+  resumability above false — a barrier sealed for ten minutes would strand its
+  records for the life of the process.
+
+- **The tenant is established from the owning USER**, through
+  `tenant.IdentityIndex`. Nothing in the key or the record supplies it: an
+  `AuthFactor` has a `UserID` and no tenant, so unlike an index name — which
+  carries the namespace the write path prefixed onto it — there is nothing here
+  to read it back off.
+- **A record that cannot be placed is REFUSED**, named in
+  `*FactorMigrationRefusedError`, logged, and left exactly where it is. It is
+  never placed in a guessed tenant.
+- **A refusal is per record and the run completes.** One record must never
+  decide the fate of the others, or of every other TENANT: a refused record
+  resolves for nobody — the fail-closed outcome — while everything placeable is
+  placed and the service serves.
+- **Refusals are TERMINAL or TRANSIENT, and the reason says which.**
+  `refusalIsTransient` is the single authority and lists every reason;
+  `FactorMigrationRefusal.Transient` carries the answer so no call site
+  re-derives it.
+
+  | Reason | Kind | Meaning |
+  |---|---|---|
+  | `ErrFactorOwnerUnindexed` | terminal | the owning user has no claim in the identity index |
+  | `ErrFactorOwnerAbsent` | terminal | the record names no user at all |
+  | `ErrFactorRecordUnreadable` | terminal | the value is absent or is not an `AuthFactor` |
+  | `ErrFactorOwnerTenantUnreachable` | **transient** | the owning tenant is KNOWN; its store is not reachable from this node right now |
+
+- **An unreachable destination is not a store failure.** A self-managed barrier
+  tenant is registered **sealed at creation** and stays sealed until its admin
+  unseals it, and a node that does not host a tenant's barrier has none
+  registered until key delivery arrives. Both are designed states. Classified as
+  a store failure, one such record aborts the run — and because the run gates
+  the routed service, it takes the login surface down for **every tenant on the
+  node**, permanently, since nothing deletes the record and every retry reaches
+  it again. It is a per-record refusal instead, and only the unreachable
+  tenant's own callers ever see `ErrTenantSealed`.
+- **The run is per record and resumable.** Destination writes happen first and
+  the legacy primary is deleted last, so an interruption leaves work that can be
+  finished rather than a record only the destination knows about. Values are
+  copied verbatim, so a field a newer build wrote survives a run by an older
+  one. Index entries naming a record that no longer exists are pruned.
+
 ## Error semantics
 
 Sentinels (`pkg/pin/errors.go`):

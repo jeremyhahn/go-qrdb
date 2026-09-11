@@ -34,7 +34,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Rotate_NilNewFactor(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	err := svc.Rotate(ctx, "old-id", nil)
@@ -44,7 +44,7 @@ func TestUserAuthFactorService_Rotate_NilNewFactor(t *testing.T) {
 }
 
 func TestUserAuthFactorService_Rotate_EmptyOldID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	newFactor := &auth.AuthFactor{Type: auth.AuthFactorMTLS, Credential: []byte("cert")}
@@ -55,7 +55,7 @@ func TestUserAuthFactorService_Rotate_EmptyOldID(t *testing.T) {
 }
 
 func TestUserAuthFactorService_Rotate_DifferentUser(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(600)
 
@@ -78,7 +78,7 @@ func TestUserAuthFactorService_Rotate_DifferentUser(t *testing.T) {
 }
 
 func TestUserAuthFactorService_Rotate_InvalidType(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(700)
 
@@ -101,7 +101,7 @@ func TestUserAuthFactorService_Rotate_InvalidType(t *testing.T) {
 }
 
 func TestUserAuthFactorService_Rotate_EmptyCredential(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(800)
 
@@ -128,7 +128,7 @@ func TestUserAuthFactorService_Rotate_EmptyCredential(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_List_ZeroUserID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	_, err := svc.List(ctx, uint64(0))

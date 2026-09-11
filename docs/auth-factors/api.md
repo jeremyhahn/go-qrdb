@@ -132,12 +132,37 @@ The namespace is refused as *input* and always written as *output*:
   (`none`, `software`, `hardware`) with `ErrInvalidAttestation` before
   anything is written. The typed attestation is the only input.
 
+## Every call is scoped to the caller's tenant
+
+The user-side factor surface is per-tenant IAM, and the tenant is the store the
+call is routed to rather than anything in the request:
+
+- **A login resolves only credentials enrolled in the tenant the login names.**
+  The same `(method, lookup key)` presented under a different tenant is a
+  `404` / `NOT_FOUND`, not somebody else's factor.
+- **Two tenants may enrol the same credential.** Neither is refused for a
+  collision with the other, and neither learns the other exists.
+- **A factor id from another tenant is not found**, on every by-id verb —
+  `Get`, `Remove`, `Rotate`, `Relabel`. There is no cross-tenant form of these
+  calls.
+- **Enrolment follows the user, not the caller's context.** `Add` places the
+  record in the tenant that owns the named user id. A caller that may not reach
+  that tenant is refused (`403` / `PERMISSION_DENIED`) rather than having the
+  record redirected into its own tenant.
+- **`List` for a user in another tenant returns an empty list**, not a denial:
+  answering differently would confirm, to a caller who supplied only an id,
+  both that the user exists and where it lives.
+- **A sealed tenant refuses** with `503` / `UNAVAILABLE` on every verb. It never
+  falls back to a readable store.
+
 ## Status and error mapping
 
 | Condition | REST | gRPC / Unix |
 |---|---|---|
 | Success | 200 | `OK` |
-| Factor not found | 404 | `NOT_FOUND` |
+| Factor not found, including one held by another tenant | 404 | `NOT_FOUND` |
+| Enrolling a factor for a user in a tenant the caller may not reach | 403 | `PERMISSION_DENIED` — `*tenant.CrossTenantDeniedError` |
+| The caller's tenant is sealed | 503 | `UNAVAILABLE` — `tenant.ErrTenantSealed` |
 | Removing the last factor without force | 409 | `FAILED_PRECONDITION` |
 | Unknown factor type or method | 400 | `INVALID_ARGUMENT` |
 | Metadata key inside the server-owned `attest_*` namespace | 400 | `INVALID_ARGUMENT` — `ErrReservedMetadata` |

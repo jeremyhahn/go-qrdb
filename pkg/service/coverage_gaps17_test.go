@@ -29,7 +29,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Rotate_AutoAssignUserID(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(9000)
 
@@ -67,7 +67,7 @@ func TestUserAuthFactorService_Remove_LastFactorForce_SetUserInactive(t *testing
 	_ = ru
 
 	// Use the real stub — it records calls. Just verify Remove with force=true works.
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(9100)
 
@@ -91,7 +91,7 @@ func TestUserAuthFactorService_Remove_LastFactorForce_SetUserInactive(t *testing
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Remove_WithActiveCount(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(9200)
 

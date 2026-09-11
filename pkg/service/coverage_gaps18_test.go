@@ -29,7 +29,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Add_NilFactor(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	err := svc.Add(ctx, uint64(1), nil)

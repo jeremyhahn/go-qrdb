@@ -221,7 +221,7 @@ func TestHasJSONExtension_False(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUserAuthFactorService_Rotate_OldIDNotFound(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(200)
 
@@ -234,7 +234,7 @@ func TestUserAuthFactorService_Rotate_OldIDNotFound(t *testing.T) {
 }
 
 func TestUserAuthFactorService_MarkUsed_NoFactor(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	err := svc.MarkUsed(ctx, "no-such-factor-id", time.Now())
@@ -243,7 +243,7 @@ func TestUserAuthFactorService_MarkUsed_NoFactor(t *testing.T) {
 }
 
 func TestUserAuthFactorService_List_AfterAdd(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 	userID := uint64(100)
 
@@ -258,7 +258,7 @@ func TestUserAuthFactorService_List_AfterAdd(t *testing.T) {
 }
 
 func TestUserAuthFactorService_LookupByCredentialKey_Miss(t *testing.T) {
-	svc, _ := newUserAuthFactorService(t, newStubUserStateUpdater())
+	svc, _ := newTestUserAuthFactorService(t, newStubUserStateUpdater())
 	ctx := context.Background()
 
 	_, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("no-such-key"))
