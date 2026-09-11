@@ -26,6 +26,7 @@ import (
 
 // generateDeterministicVectors creates reproducible random vectors using a fixed seed.
 func generateDeterministicVectors(seed int64, dim int) ([]float32, []float32) {
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(seed))
 	a := make([]float32, dim)
 	b := make([]float32, dim)

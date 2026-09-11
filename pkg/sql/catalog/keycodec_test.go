@@ -133,6 +133,7 @@ func TestKeyCodec_OrderPreserving_Int8(t *testing.T) {
 
 func TestKeyCodec_OrderPreserving_Float64(t *testing.T) {
 	kc := singleColumnKeyCodec(t, "DOUBLE")
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	r := rand.New(rand.NewSource(1))
 	vals := make([]any, 200)
 	for i := range vals {

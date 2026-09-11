@@ -46,7 +46,7 @@ func TestNewPebbleVectorStorage_DBOpenError(t *testing.T) {
 // TestLoadNamespaces_ShortSequenceBytes tests loading with short sequence bytes
 func TestLoadNamespaces_ShortSequenceBytes(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -173,7 +173,7 @@ func TestBatchDeleteVectors_EmptyBatch(t *testing.T) {
 // TestCreateNamespace_WithSyncWrites tests namespace creation with sync writes enabled
 func TestCreateNamespace_WithSyncWrites(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -203,7 +203,7 @@ func TestCreateNamespace_WithSyncWrites(t *testing.T) {
 // TestUpsertVector_WithSyncWrites tests upsert with sync writes enabled
 func TestUpsertVector_WithSyncWrites(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -259,7 +259,7 @@ func TestDeleteVector_NonexistentVector(t *testing.T) {
 // TestDeleteNamespace_WithSyncWrites tests namespace deletion with sync writes enabled
 func TestDeleteNamespace_WithSyncWrites(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -380,7 +380,7 @@ func TestCleanupTombstones_WithShortKey(t *testing.T) {
 // TestCleanupTombstones_WithSyncWrites tests tombstone cleanup with sync writes
 func TestCleanupTombstones_WithSyncWrites(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)

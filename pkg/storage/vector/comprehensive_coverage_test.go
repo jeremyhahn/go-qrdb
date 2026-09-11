@@ -28,7 +28,7 @@ import (
 // TestNewPebbleVectorStorage_LoadNamespacesSuccess tests successful namespace loading
 func TestNewPebbleVectorStorage_LoadNamespacesSuccess(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -533,7 +533,7 @@ func TestScanByMultipleFilters_NoFilters(t *testing.T) {
 // TestClose_MultipleCalls tests multiple close calls
 func TestClose_MultipleCalls(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)
@@ -557,7 +557,7 @@ func TestClose_MultipleCalls(t *testing.T) {
 // TestOperationsOnClosedStorage tests all operations on closed storage
 func TestOperationsOnClosedStorage(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)

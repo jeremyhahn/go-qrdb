@@ -374,6 +374,7 @@ func TestHNSWIndex_LargeScale(t *testing.T) {
 	const dimensions = 128
 
 	// Generate random vectors
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 	vectors := make([][]float32, numVectors)
 	for i := 0; i < numVectors; i++ {
@@ -486,6 +487,7 @@ func BenchmarkHNSW_Insert(b *testing.B) {
 
 func BenchmarkHNSW_Search_10K(b *testing.B) {
 	idx, _ := NewHNSWIndex(nil)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	// Insert 10K vectors
@@ -513,6 +515,7 @@ func BenchmarkHNSW_Search_10K(b *testing.B) {
 
 func BenchmarkHNSW_Search_100K(b *testing.B) {
 	idx, _ := NewHNSWIndex(nil)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	const numVectors = 100000
@@ -544,6 +547,7 @@ func BenchmarkHNSW_Search_100K(b *testing.B) {
 
 func BenchmarkHNSW_ConcurrentSearch(b *testing.B) {
 	idx, _ := NewHNSWIndex(nil)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	const numVectors = 10000
@@ -588,6 +592,7 @@ func TestHNSWIndex_Recall(t *testing.T) {
 	idx, err := NewHNSWIndex(nil)
 	require.NoError(t, err)
 
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	// Generate and insert vectors

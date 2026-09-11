@@ -543,6 +543,7 @@ func generateRandomVectors(count, dims int) [][]float32 {
 	for i := 0; i < count; i++ {
 		vectors[i] = make([]float32, dims)
 		for j := 0; j < dims; j++ {
+			// #nosec G404 -- test fixture vectors only; no key, nonce, token or identifier derives from these values.
 			vectors[i][j] = rand.Float32()*2 - 1 // Range [-1, 1]
 		}
 	}

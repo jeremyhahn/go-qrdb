@@ -147,8 +147,16 @@ linters:
       # they differ in soundness rather than strictness, so these two exclusion
       # lists are NOT copies of each other and must not be made into copies.
       # GOSEC_EXCLUDE in the Makefile carries its own measurements and they do
-      # not agree with these: G602 reports 15 here and 0 there, because that
-      # leg passes no -tests and so builds less of each package's SSA.
+      # not agree with these.
+      #
+      # G602 IS THE ONE TO UNDERSTAND BEFORE CHANGING EITHER LIST, because TWO
+      # separate things keep it off the other leg and fixing one changes
+      # nothing (#395). `make gosec` passes no -tests, so it does not build the
+      # test variant's SSA and never REACHES these 15 root / 4 sdk sites; and it
+      # runs at -severity=medium while gosec grades G602 LOW/HIGH, so it would
+      # not PRINT them if it did. Deleting this entry therefore reddens THIS leg
+      # alone and arms nothing over there. Both halves are measured beside
+      # GOSEC_EXCLUDE in the Makefile, along with why -tests is still off.
       #
       # G304 and G703 are NOT here. G304 is suppressed per-path under
       # `exclusions.rules` below, at the files an audit actually enumerated, so
@@ -249,12 +257,25 @@ linters:
       #     1147. Fixed in the Makefile.
       #   - `make gosec` passes no -tests, and the analyzer rules build less of
       #     a package's SSA without the test variant, so it loses findings in
-      #     PRODUCTION files that this leg reports. Still open (#395); measured
-      #     in the Makefile beside GOSEC_EXCLUDE.
+      #     PRODUCTION files that this leg reaches. STILL OFF, and #395 closed
+      #     the question rather than the gap: gosec's -tests hands go/packages a
+      #     file list, so an external `_test` package cannot see what an
+      #     `export_test.go` exports, and the run exits 1 on loader errors with
+      #     zero findings. pkg/seal and sdk/go both hit it. Measured in the
+      #     Makefile above the `gosec` target; carried by #408.
       #
-      # With tags corrected and -tests supplied, gosec v2.29.0 reports exactly
-      # this leg's G304 and G602 sets. The residue is G703 and it is the
+      # With the tags corrected and -tests supplied, gosec v2.29.0 reaches
+      # exactly this leg's G304 and G602 sets. The residue is G703 and it is the
       # soundness difference above, not a count.
+      #
+      # THIS LEG DROPS gosec ENTIRELY IN `_test\.go` (see the test-file rule
+      # under `exclusions.rules`), so it reports nothing there and is not the
+      # authority on test files; arming it costs 295 findings, 237 of them G104
+      # from the audit mode golangci-lint's gosec runs by default (measured
+      # 2026-09-10). What #395 DID land is the other half of that: every finding
+      # a `gosec -tests` run raises in a _test.go file is now fixed at the site
+      # (39 directory and file modes tightened to 0750/0600) or carries an
+      # inline `#nosec <RULE> -- reason` that BOTH scanner versions honour.
       #
       # EACH RULE BELOW IS LOAD-BEARING, measured 2026-09-10 by removing all six
       # and counting what came back: 18 findings, distributed as the per-entry

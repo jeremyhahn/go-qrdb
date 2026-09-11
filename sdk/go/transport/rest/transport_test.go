@@ -702,6 +702,7 @@ func TestBuildTLSConfig_InvalidCertPair(t *testing.T) {
 		t.Fatalf("read cert file: %v", err)
 	}
 	mismatchCertFile := filepath.Join(dir, "mismatch-cert.pem")
+	// #nosec G703 -- mismatchCertFile is filepath.Join(t.TempDir(), "mismatch-cert.pem"); the only non-literal component is the temp root the test runtime chose.
 	if err := os.WriteFile(mismatchCertFile, certData, 0o600); err != nil {
 		t.Fatalf("write mismatch cert file: %v", err)
 	}

@@ -61,6 +61,7 @@ func (m *mockHSMStrategy) BarrierEncryptor(context.Context, []byte) (SymmetricEn
 }
 
 func (m *mockHSMStrategy) SealRootKey(_ context.Context, rootKey []byte, _ Credentials) (*SealedRootKey, error) {
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which samples a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
 	ct := m.aeadNoT().Seal(nil, nil, rootKey, nil)
 	return &SealedRootKey{Strategy: m.id, Version: 1, Ciphertext: ct}, nil
 }

@@ -1061,9 +1061,10 @@ func TestNewServer_CloseSeal_OnStorageFailure(t *testing.T) {
 	// then use an invalid (read-only root) dataDir so createServerStorage fails.
 	// This exercises the closeSeal() call in the storage error path.
 	roDir := t.TempDir()
-	if err := os.Chmod(roDir, 0o444); err != nil {
+	if err := os.Chmod(roDir, 0o400); err != nil {
 		t.Skip("cannot set directory to read-only:", err)
 	}
+	// #nosec G302 -- a directory needs the owner execute bit to be traversable, so t.TempDir()'s cleanup cannot remove this tree at 0600 or less.
 	t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) })
 
 	_, err := NewServer(ctx, &ServerConfig{

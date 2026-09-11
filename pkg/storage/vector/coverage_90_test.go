@@ -648,7 +648,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("GetVector_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -667,7 +667,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("DeleteVector_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -686,7 +686,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("ScanByMetadata_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -705,7 +705,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("ScanNamespace_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -724,7 +724,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("CreateNamespace_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -743,7 +743,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("DeleteNamespace_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -762,7 +762,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("NextID_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -781,7 +781,7 @@ func TestAdapter_AdditionalCoverage(t *testing.T) {
 
 	t.Run("BatchAllocateIDs_Closed", func(t *testing.T) {
 		tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-		require.NoError(t, os.MkdirAll(tmpDir, 0755))
+		require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		config := DefaultConfig(tmpDir)
@@ -841,7 +841,7 @@ func TestBatch_ResetAndReuse(t *testing.T) {
 // TestClose_DoubleClose tests calling Close multiple times
 func TestClose_DoubleClose(t *testing.T) {
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	config := DefaultConfig(tmpDir)

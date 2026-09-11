@@ -1043,6 +1043,7 @@ func TestStartBootstrapServers_StartFails(t *testing.T) {
 // A port that is genuinely taken refuses every uid alike.
 func occupiedTCPPort(t *testing.T) int {
 	t.Helper()
+	// #nosec G102 -- the wildcard address is the point: this reserves a port that the code under test, which itself binds the wildcard address, must then collide with. A loopback-only reservation does not reproduce the EADDRINUSE this fault injection needs.
 	l, err := net.Listen("tcp", "0.0.0.0:0")
 	require.NoError(t, err, "reserving a port to occupy")
 	t.Cleanup(func() { _ = l.Close() })

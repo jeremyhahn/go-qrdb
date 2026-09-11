@@ -26,6 +26,7 @@ import (
 
 // generateBatchVectors creates a batch of reproducible random vectors.
 func generateBatchVectors(seed int64, count, dim int) ([]float32, [][]float32) {
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(seed))
 	query := make([]float32, dim)
 	for i := range query {

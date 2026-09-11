@@ -33,7 +33,7 @@ import (
 func setupSyncStorage(t *testing.T) (*PebbleVectorStorage, func()) {
 	t.Helper()
 	tmpDir := filepath.Join(os.TempDir(), fmt.Sprintf("vector_sync_test_%d", time.Now().UnixNano()))
-	require.NoError(t, os.MkdirAll(tmpDir, 0755))
+	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
 
 	config := DefaultConfig(tmpDir)
 	config.SyncWrites = true

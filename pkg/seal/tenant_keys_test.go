@@ -142,6 +142,7 @@ func (b *testBarrier) Encrypt(plaintext []byte) ([]byte, error) {
 	if b.sealed.Load() {
 		return nil, &BarrierSealedError{}
 	}
+	// #nosec G407 -- the nonce argument MUST be nil here: this AEAD is cipher.NewGCMWithRandomNonce, which samples a fresh 96-bit nonce inside the FIPS module on every Seal and prepends it to the ciphertext. gosec reads the nil as a hardcoded IV; passing anything else makes Seal panic.
 	return b.aead.Seal(nil, nil, plaintext, nil), nil
 }
 

@@ -88,7 +88,7 @@ func TestMigrateIfNeeded_MigratePebble(t *testing.T) {
 		t.Fatalf("MkdirAll(pebble) returned unexpected error: %v", err)
 	}
 	sentinelPath := filepath.Join(oldPebbleDir, "CURRENT")
-	if err := os.WriteFile(sentinelPath, []byte("manifest"), 0o640); err != nil {
+	if err := os.WriteFile(sentinelPath, []byte("manifest"), 0o600); err != nil {
 		t.Fatalf("WriteFile(CURRENT) returned unexpected error: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestMigrateIfNeeded_MigratePebbleAndVectors(t *testing.T) {
 	if err := os.MkdirAll(oldPebbleDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll(pebble) returned unexpected error: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(oldPebbleDir, "CURRENT"), []byte("manifest"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(oldPebbleDir, "CURRENT"), []byte("manifest"), 0o600); err != nil {
 		t.Fatalf("WriteFile(CURRENT) returned unexpected error: %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestMigrateIfNeeded_MigratePebbleAndVectors(t *testing.T) {
 		t.Fatalf("MkdirAll(vectors) returned unexpected error: %v", err)
 	}
 	vectorSentinel := filepath.Join(oldVectorDir, "index.bin")
-	if err := os.WriteFile(vectorSentinel, []byte("vector-data"), 0o640); err != nil {
+	if err := os.WriteFile(vectorSentinel, []byte("vector-data"), 0o600); err != nil {
 		t.Fatalf("WriteFile(index.bin) returned unexpected error: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestMigrateIfNeeded_VectorsOnly(t *testing.T) {
 	if err := os.MkdirAll(oldVectorDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll(vectors) returned unexpected error: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(oldVectorDir, "embeddings.dat"), []byte("embed"), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(oldVectorDir, "embeddings.dat"), []byte("embed"), 0o600); err != nil {
 		t.Fatalf("WriteFile(embeddings.dat) returned unexpected error: %v", err)
 	}
 

@@ -281,6 +281,7 @@ func TestIndex_Search_DefaultNProbe(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		vec := make([]float32, 128)
 		for j := range vec {
+			// #nosec G404 -- test fixture vectors only; no key, nonce, token or identifier derives from these values.
 			vec[j] = rand.Float32()
 		}
 		_ = idx.Add(fmt.Sprintf("vec%d", i), vec, nil)
@@ -288,6 +289,7 @@ func TestIndex_Search_DefaultNProbe(t *testing.T) {
 
 	query := make([]float32, 128)
 	for i := range query {
+		// #nosec G404 -- test fixture vectors only; no key, nonce, token or identifier derives from these values.
 		query[i] = rand.Float32()
 	}
 
@@ -472,7 +474,7 @@ func TestIndex_Load_InvalidJSON(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "invalid.json")
-	require.NoError(t, os.WriteFile(path, []byte("invalid json"), 0644))
+	require.NoError(t, os.WriteFile(path, []byte("invalid json"), 0o600))
 
 	err := idx.Load(path)
 	assert.Error(t, err)
@@ -529,6 +531,7 @@ func TestIndex_ConcurrentOperations(t *testing.T) {
 		go func(id int) {
 			vec := make([]float32, 128)
 			for j := range vec {
+				// #nosec G404 -- test fixture vectors only; no key, nonce, token or identifier derives from these values.
 				vec[j] = rand.Float32()
 			}
 			_ = idx.Add(fmt.Sprintf("vec%d", id), vec, nil)
@@ -545,6 +548,7 @@ func TestIndex_ConcurrentOperations(t *testing.T) {
 		go func() {
 			query := make([]float32, 128)
 			for j := range query {
+				// #nosec G404 -- test fixture vectors only; no key, nonce, token or identifier derives from these values.
 				query[j] = rand.Float32()
 			}
 			_, _ = idx.Search(query, 5, 2)
@@ -646,7 +650,8 @@ func TestIndex_SearchAccuracy(t *testing.T) {
 // seededVectors builds a reproducible dataset. A local source rather than the
 // global one, so the fixture is unaffected by anything else the package does.
 func seededVectors(count, dims int, seed int64) [][]float32 {
-	r := rand.New(rand.NewSource(seed)) //nolint:gosec // G404: test fixture, reproducibility is the point
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
+	r := rand.New(rand.NewSource(seed))
 	vectors := make([][]float32, count)
 	for i := range vectors {
 		vectors[i] = make([]float32, dims)

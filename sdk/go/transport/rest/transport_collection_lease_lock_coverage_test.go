@@ -795,6 +795,7 @@ func TestRESTBatch_ImportFile_MultipartRoundTrip(t *testing.T) {
 	var gotFile, gotFormat, gotKeyField, gotValueMode, gotContentType string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotContentType = r.Header.Get("Content-Type")
+		// #nosec G120 -- an httptest handler defined inside this test and reached only by the request this test makes. gosec flags every ParseMultipartForm on an *http.Request regardless of any limit applied, as its own G120 sample acknowledges.
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("ParseMultipartForm: %v", err)
 		}
@@ -846,6 +847,7 @@ func TestRESTBatch_ImportFile_EmptyFilenameStillUploadsAsFile(t *testing.T) {
 	// files only when Content-Disposition carries a non-empty filename.
 	var sawFile bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// #nosec G120 -- an httptest handler defined inside this test and reached only by the request this test makes. gosec flags every ParseMultipartForm on an *http.Request regardless of any limit applied, as its own G120 sample acknowledges.
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("ParseMultipartForm: %v", err)
 		}

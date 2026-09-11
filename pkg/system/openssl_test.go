@@ -88,7 +88,7 @@ basicConstraints = critical, CA:TRUE
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestParseOpenSSLConfig_InvalidPath(t *testing.T) {
 func TestFindOpenSSLConfig_EnvVar(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "custom-openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte("[req]\n"), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte("[req]\n"), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -348,7 +348,7 @@ Corp
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -379,7 +379,7 @@ Corp
 func TestParseOpenSSLConfig_EmptyFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(""), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -407,7 +407,7 @@ default_bits = 2048
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -436,7 +436,7 @@ stateOrProvinceName_default = Texas
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -465,7 +465,7 @@ stateOrProvinceName_default = England
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 
@@ -490,7 +490,7 @@ StateOrProvinceName_Default = Oregon
 
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "openssl.cnf")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 

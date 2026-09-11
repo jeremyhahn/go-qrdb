@@ -251,6 +251,7 @@ func TestEmbeddedServerWithBarrier_FormatSentinelWritten(t *testing.T) {
 		if info.IsDir() {
 			return nil
 		}
+		// #nosec G122 -- the tree being walked is a t.TempDir() this test created and no other process can reach, so there is no window between the walk and the read for a path to be substituted.
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -285,6 +286,7 @@ func scanForPlaintext(t *testing.T, dir string, needle []byte) {
 		if strings.HasSuffix(path, "LOCK") {
 			return nil
 		}
+		// #nosec G122 -- the tree being walked is a t.TempDir() this test created and no other process can reach, so there is no window between the walk and the read for a path to be substituted.
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err

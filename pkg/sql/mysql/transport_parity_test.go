@@ -470,6 +470,7 @@ func TestTransportParity_BigintUnsigned_Boundaries(t *testing.T) {
 	}
 
 	for i, tc := range cases {
+		// #nosec G202 -- tc.text is a literal from the case table above. A BIGINT UNSIGNED past math.MaxInt64 cannot go through a placeholder, because the driver would bind it as int64 -- which is the wrap this test exists to catch.
 		_, err := s.embedded.Exec("INSERT INTO ledger VALUES (?, 0.0, "+tc.text+")", i+1)
 		require.NoError(t, err, tc.name)
 	}

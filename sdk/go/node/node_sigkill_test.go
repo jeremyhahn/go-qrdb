@@ -97,6 +97,7 @@ func TestHelperProcess_StandaloneNodeBoot1Kill(t *testing.T) {
 func TestNewStandaloneNode_SurvivesSIGKILLRestart(t *testing.T) {
 	dataDir := t.TempDir()
 
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess_StandaloneNodeBoot1Kill$", "-test.v")
 	cmd.Env = append(os.Environ(),
 		nodeSigkillHelperEnvVar+"=1",

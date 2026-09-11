@@ -1238,7 +1238,7 @@ func TestCertsExportCmd_Success(t *testing.T) {
 	keyFile := filepath.Join(tmpDir, "key.pem")
 	outFile := filepath.Join(tmpDir, "client.p12")
 
-	if err := os.WriteFile(certFile, []byte(certPEM), 0644); err != nil {
+	if err := os.WriteFile(certFile, []byte(certPEM), 0o600); err != nil {
 		t.Fatalf("failed to write cert file: %v", err)
 	}
 	if err := os.WriteFile(keyFile, []byte(keyPEM), 0600); err != nil {

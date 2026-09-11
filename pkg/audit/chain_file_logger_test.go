@@ -117,6 +117,7 @@ func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 	tampered, _ := json.Marshal(ev)
 	lines[2] = string(tampered)
 
+	// #nosec G703 -- path is filepath.Join(t.TempDir(), "audit.ndjson"); the only non-literal component is the temp root the test runtime chose.
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

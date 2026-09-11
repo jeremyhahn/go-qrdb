@@ -416,6 +416,7 @@ func TestFlatIndex_LargeDataset(t *testing.T) {
 		k          = 10
 	)
 
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 	idx := NewIndex(hnsw.L2Distance)
 
@@ -520,6 +521,7 @@ func TestFlatIndex_ConcurrentInsertSearch(t *testing.T) {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			rng := rand.New(rand.NewSource(int64(workerID)))
 			base := uint64(workerID*opsPerGo) + 1
 			for i := 0; i < opsPerGo; i++ {
@@ -537,6 +539,7 @@ func TestFlatIndex_ConcurrentInsertSearch(t *testing.T) {
 		wg.Add(1)
 		go func(readerID int) {
 			defer wg.Done()
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			rng := rand.New(rand.NewSource(int64(readerID + 100)))
 			for i := 0; i < opsPerGo; i++ {
 				query := make([]float32, dims)
@@ -674,6 +677,7 @@ func TestFlatIndex_SearchResultsDoNotShareMemory(t *testing.T) {
 // TestFlatIndex_SearchResultsSorted verifies ascending sort on various dataset sizes.
 func TestFlatIndex_SearchResultsSorted(t *testing.T) {
 	idx := NewIndex(hnsw.L2Distance)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(99))
 
 	for i := uint64(1); i <= 500; i++ {
@@ -744,6 +748,7 @@ func BenchmarkFlatIndex_Search_100K(b *testing.B) {
 // BenchmarkFlatIndex_Insert benchmarks insert performance.
 func BenchmarkFlatIndex_Insert(b *testing.B) {
 	idx := NewIndex(hnsw.L2Distance)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 	dims := 32
 
@@ -760,6 +765,7 @@ func BenchmarkFlatIndex_Insert(b *testing.B) {
 
 func benchmarkFlatSearch(b *testing.B, numVectors, dims, k int) {
 	b.Helper()
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 	idx := NewIndex(hnsw.L2Distance)
 

@@ -631,7 +631,7 @@ func TestManager_OpenAll_SkipsNonDirectoryEntries(t *testing.T) {
 		t.Fatalf("MkdirAll() returned unexpected error: %v", err)
 	}
 	spuriousFile := filepath.Join(dbsDir, "not-a-database.txt")
-	if err := os.WriteFile(spuriousFile, []byte("junk"), 0o640); err != nil {
+	if err := os.WriteFile(spuriousFile, []byte("junk"), 0o600); err != nil {
 		t.Fatalf("WriteFile() returned unexpected error: %v", err)
 	}
 
@@ -715,7 +715,7 @@ func TestManager_Open_CorruptedMetaJSON(t *testing.T) {
 		t.Fatalf("MkdirAll() returned unexpected error: %v", err)
 	}
 	metaPath := filepath.Join(dbDir, metaFile)
-	if err := os.WriteFile(metaPath, []byte("{invalid json"), 0o640); err != nil {
+	if err := os.WriteFile(metaPath, []byte("{invalid json"), 0o600); err != nil {
 		t.Fatalf("WriteFile() returned unexpected error: %v", err)
 	}
 

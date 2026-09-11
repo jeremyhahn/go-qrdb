@@ -191,6 +191,7 @@ func TestSearchAccuracy(t *testing.T) {
 	idx, err := NewHNSWIndex(config)
 	require.NoError(t, err)
 
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	// Generate and insert vectors
@@ -232,6 +233,7 @@ func TestSearchWithDifferentEf(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert vectors
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 	const numVectors = 500
 
@@ -324,6 +326,7 @@ func BenchmarkSearchLayer(b *testing.B) {
 
 func BenchmarkSearchBatch(b *testing.B) {
 	idx, _ := NewHNSWIndex(nil)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	// Insert vectors
@@ -346,6 +349,7 @@ func BenchmarkSearchBatch(b *testing.B) {
 
 func BenchmarkSearchRadius(b *testing.B) {
 	idx, _ := NewHNSWIndex(nil)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewSource(42))
 
 	// Insert vectors

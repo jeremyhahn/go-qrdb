@@ -212,6 +212,7 @@ func TestLogger_Fatal(t *testing.T) {
 	}
 
 	// Run the test in a subprocess
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
 	cmd := exec.Command(os.Args[0], "-test.run=TestLogger_Fatal")
 	cmd.Env = append(os.Environ(), "BE_FATAL=1")
 	err := cmd.Run()
@@ -242,6 +243,7 @@ func TestLogger_Fatalf(t *testing.T) {
 	}
 
 	// Run the test in a subprocess
+	// #nosec G204,G702 -- re-exec of this test binary: argv[0] is os.Args[0], the path `go test` invoked, and every other argument is a compile-time literal. No shell is involved and nothing from outside the process reaches this argv.
 	cmd := exec.Command(os.Args[0], "-test.run=TestLogger_Fatalf")
 	cmd.Env = append(os.Environ(), "BE_FATALF=1")
 	err := cmd.Run()

@@ -362,7 +362,7 @@ func TestAdapter_NewPebbleVectorStorage_InvalidDataDir(t *testing.T) {
 
 	// Use a path that's likely to fail (like a file instead of directory)
 	tmpFile := filepath.Join(os.TempDir(), "test_file.txt")
-	err := os.WriteFile(tmpFile, []byte("test"), 0644)
+	err := os.WriteFile(tmpFile, []byte("test"), 0o600)
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpFile) }()
 

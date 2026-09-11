@@ -273,6 +273,7 @@ func TestStartAdvertiserRejectsAnUnusablePort(t *testing.T) {
 	// fails for every privilege level — a privileged low port does not: root
 	// binds port 1 without complaint, and CI runners execute as root, where
 	// the previous fixture stopped failing.
+	// #nosec G102 -- the wildcard address is the point: this reserves a port that the code under test, which itself binds the wildcard address, must then collide with. A loopback-only reservation does not reproduce the EADDRINUSE this fault injection needs.
 	occupied, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		t.Fatalf("occupy port: %v", err)

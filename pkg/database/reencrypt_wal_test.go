@@ -332,7 +332,7 @@ func TestSwapStoreDir_And_RemoveStoreBackup(t *testing.T) {
 
 func mustMkdir(t *testing.T, dir string) string {
 	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
 	return dir
@@ -340,7 +340,7 @@ func mustMkdir(t *testing.T, dir string) string {
 
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }

@@ -41,6 +41,7 @@ func grepDirForMarker(t *testing.T, root string, marker []byte) bool {
 		if info.IsDir() {
 			return nil
 		}
+		// #nosec G122 -- the tree being walked is a t.TempDir() this test created and no other process can reach, so there is no window between the walk and the read for a path to be substituted.
 		data, rerr := os.ReadFile(path)
 		if rerr != nil {
 			// Files may legitimately disappear/rotate mid-walk (e.g. a

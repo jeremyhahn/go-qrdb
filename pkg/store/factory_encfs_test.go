@@ -103,6 +103,7 @@ func TestWithEncryptingFS_PebbleRoundTrip(t *testing.T) {
 		if d.IsDir() || strings.HasSuffix(p, "LOCK") {
 			return nil
 		}
+		// #nosec G122 -- the tree being walked is a t.TempDir() this test created and no other process can reach, so there is no window between the walk and the read for a path to be substituted.
 		body, err := os.ReadFile(p)
 		if err != nil {
 			return err

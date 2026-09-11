@@ -41,6 +41,7 @@ import (
 func generateRandomVectors(n, dim int) [][]float32 {
 	// Any fixed seed works; this one is verified to give the PQ recall test
 	// comfortable headroom over its threshold.
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewPCG(0x5EED, 0xC0FFEE))
 	vectors := make([][]float32, n)
 	for i := range vectors {
