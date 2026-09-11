@@ -51,6 +51,75 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed — BREAKING
 
+- **Two barrier-passphrase config fields are `*secure.Buffer`, and an unusable
+  one is now an error rather than a downgrade** (#429). Arming
+  `pkg/secure/analyzer` as a build gate left exactly two findings that were
+  neither a wire DTO, a generated struct, a flag target nor a test fixture —
+  two Go config structs that a caller fills from its own key source and that
+  live as long as the process they configure. Those are *holders* of key
+  material, which is the population rule 3 exists for, so both changed type:
+
+  | surface | before | after |
+  |---|---|---|
+  | `bootstrap.SystemConfig.Passphrase`, re-exported as `sdk.BootstrapSystemConfig` | `string` | `*secure.Buffer` |
+  | `embedded.BarrierConfig.Passphrase` (`sdk/go/transport/embedded`) | `[]byte` | `*secure.Buffer` |
+
+  Use `secure.NewBufferFromBytes`; `sdk/go/secure` re-exports the type and its
+  constructors, so no consumer needs the internal `pkg/secure` path. The
+  caller keeps ownership — neither `BootstrapSystem` nor `NewServer` destroys
+  the buffer; each copies out of it once, inside a `WithBytes` borrow, at the
+  point the material becomes the `seal.Credentials` the barrier demands.
+  `string` cannot be zeroized at all and `[]byte` only by the caller's own
+  discipline; a `Buffer` is mlocked, canary-guarded and wiped on `Destroy`.
+
+  **A `*secure.Buffer` has a LIFECYCLE that neither previous type had, and
+  that is a behaviour change, not only a type change.** `Buffer.WithBytes`
+  returns the same `*NilBufferError` for a nil receiver, a destroyed buffer
+  and a zero value, so the obvious single error check reads all three as "no
+  passphrase configured". For `embedded.BarrierConfig` that is not a wrong
+  error message, it is a **wrong security posture**: on a fresh data dir the
+  resulting `seal.StrategyNone` barrier initializes successfully, `IsSealed()`
+  is false, `encfs` wraps the Pebble data plane with a root key sealed by
+  nothing, and an embedder that asked for a passphrase barrier gets plaintext
+  at rest, permanently, with nothing said about it. The two cases are
+  therefore separated:
+
+  - `Passphrase == nil` — **not configured**. Unchanged behaviour: with
+    `StrategyPassphrase` or the empty default the embedded transport comes up
+    with no barrier, which go-quicraft announces at initialize (`barrier
+    performs NO encryption`).
+  - `Passphrase != nil` but unreadable — **a configuration error**.
+    `NewServer` fails with the new `*BarrierPassphraseError` and does not
+    fall back. Destroying the buffer after one server and constructing another
+    is exactly what the ownership rule above invites, and it is the sequence
+    that must fail loudly.
+
+  Covered by four shapes in both directions — nil, destroyed, zero value,
+  live — in `sdk/go/transport/embedded/barrier_passphrase_test.go`. Three of
+  them are red without the guard; the live case additionally asserts the
+  written value is not on disk in the clear. `pkg/bootstrap` keeps treating an
+  unreadable buffer as `*MissingPassphraseError`, which is the error that
+  branch already returned when the field was a `string`, and no barrier is
+  weakened there.
+
+  **Also corrected in the same change:** `BarrierConfig.Passphrase`'s doc
+  claimed that with no passphrase `NewServer` "falls back to the deterministic
+  bootstrap passphrase keyed by deployment ID 0". No such derivation exists
+  anywhere in `sdk/go` — the only thing resembling it is a string a test
+  builds and passes to `BarrierInitialize` explicitly — and the code ten lines
+  into `setupBarrier` says so itself: "there is no deployment-derived
+  passphrase". On a public SDK field whose doc is the only thing an embedder
+  reads, the gap between "derives a passphrase" and "comes up with no barrier"
+  is the gap between encrypted and not.
+
+  **Consumer verification (pre-publication exception,
+  `conventions/release-versioning.md`):** inside this repository the changed
+  fields are referenced only by `cmd/qrdbd`, `sdk/go/types_bootstrap.go` and
+  the two packages' own tests, all updated here. go-xkms and go-quicbaas were
+  not checked out on the host that made this change and could not be grepped;
+  both are filed rather than assumed — go-xkms#550 and go-quicbaas#830. Not a
+  zero-consumer change and not claimed as one.
+
 - **Barrier credentials are wipeable bytes at every layer** (#184). Every field
   that carries a caller-supplied barrier credential changed from `string` to
   `[]byte`: `BarrierInitializeRequest.Secret`, `BarrierUnsealRequest.Secret`,

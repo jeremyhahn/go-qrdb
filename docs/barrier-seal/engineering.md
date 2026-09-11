@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-11
 
 ## Exported surface
 
@@ -282,6 +282,65 @@ and per-tenant barrier configuration lives in
   `__sys:cert_ca/{tenantID}/cert_pem`.
 - **Compatibility**: the sealed blob format carries a version sentinel — see
   [seal/sealed-window.md](../seal/sealed-window.md).
+
+## Secure-memory rules, and what enforces them
+
+Key material in this repository is held through `pkg/secure`, a facade over a
+process-wide mlocking allocator. Three rules protect that boundary, and they
+are enforced by a `go vet` plugin under `pkg/secure/analyzer/` that `make
+secure-analyzer` runs in CI's Lint job over **every Go module in the tree**
+under **every combination in the Makefile's `SUPPORTED_TAG_SETS`**.
+
+| # | Rule | Scope |
+|---|---|---|
+| 1 | No raw `memguard` import outside `pkg/secure` / `sdk/go/secure` | Every file, tests included |
+| 2 | No `ssh.ParsePrivateKey`; use `ParsePrivateKeyWithPassphrase` on Buffer-backed bytes | Every file, tests included |
+| 3 | No struct field named `Passphrase`, `Password`, `PIN`, `Secret`, `PrivateKey`, `KeyMaterial` or `RecoveryShare` typed `string` or `[]byte` | Scoped — see below |
+
+Both the sweep and its module coverage matter. `./...` does not cross a module
+boundary, so `sdk/go` needs its own pass; and a single tag combination reports
+on the files that combination compiles and says nothing about the others.
+
+### Why rule 3 is scoped
+
+Rule 3's remedy is `*secure.Secret` / `*secure.Buffer`, and that remedy only
+exists where **this code chooses the representation**. Where another mechanism
+materialises the plaintext into memory this code did not allocate, the field
+type sits downstream of the copy that matters. Four clauses follow, and the
+argument for each is written out in `pkg/secure/analyzer/scope.go`, which is
+the document of record:
+
+- **Generated files** — the generator rewrites them, so they can carry neither
+  a hand-edit nor an inline suppression, and the wire type has no mapping to a
+  Buffer in any case.
+- **Fields carrying a codec struct tag** — by the time a handler sees
+  `req.Passphrase` the decoder has already allocated the plaintext. A custom
+  unmarshaler receives those same bytes and copies them; it does not prevent
+  them.
+- **Command-line flag targets** — the value is in `os.Args` before `main`
+  runs, unwipeable and world-readable through the process's own command line.
+- **`_test.go` files** — a fixture holds a literal from its own source, which
+  is in the binary's read-only data before the field exists. Rules 1 and 2
+  still apply in tests, and that asymmetry is deliberate: rule 1 is a
+  containment rule about a process-wide effect, rule 3 is a representation
+  rule about a value's lifetime in a long-running process.
+
+**At the codec boundary the standard is stated, not left silent**: a
+sensitive-named field is declared `[]byte`, never `string`, and every handler
+that reads one wipes it before returning. `string` is immutable in Go and
+cannot be wiped; `[]byte` can, and the wipe is the control. The analyzer does
+not yet enforce the `[]byte` half — converting the remaining `string` fields
+is a wire-format break, since JSON renders `[]byte` as base64 — and that gap
+is tracked rather than assumed away.
+
+### The gate is checked against a known instance
+
+`make test-secure-analyzer` plants a raw `memguard` import and a raw holder
+field, requires both to be reported, and requires `go vet` to exit nonzero —
+a diagnostic that does not fail the command does not block a merge. It also
+requires the four scoped populations to stay silent through the real binary.
+A clean sweep and a neutered analyzer print the same thing; only the red run
+distinguishes them.
 
 ## Test strategy
 

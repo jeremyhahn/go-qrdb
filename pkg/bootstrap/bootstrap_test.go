@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	qrdbpool "github.com/jeremyhahn/go-qrdb/pkg/storage/pool"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -49,6 +50,21 @@ import (
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// passphraseBuffer builds the *secure.Buffer SystemConfig.Passphrase takes.
+//
+// The buffer is destroyed by the test, not by BootstrapSystem: the caller
+// owns what it allocated, and a bootstrap that destroyed a caller's buffer
+// would be a surprise for the one production caller that reuses it.
+func passphraseBuffer(t *testing.T, pp string) *secure.Buffer {
+	t.Helper()
+	buf, err := secure.NewBufferFromBytes([]byte(pp))
+	if err != nil {
+		t.Fatalf("secure.NewBufferFromBytes: %v", err)
+	}
+	t.Cleanup(buf.Destroy)
+	return buf
 }
 
 // realCertPEM generates a valid self-signed certificate PEM for cert-binding
@@ -301,7 +317,7 @@ func TestBootstrapSystem_PassphraseStrategy(t *testing.T) {
 
 	result, err := BootstrapSystem(context.Background(), SystemConfig{
 		Strategy:   StrategyPassphrase,
-		Passphrase: "correct horse battery staple",
+		Passphrase: passphraseBuffer(t, "correct horse battery staple"),
 	}, Dependencies{
 		Tenants: tenants, Users: users, Roles: roles,
 		Barriers: reg, Logger: discardLogger(),
@@ -321,8 +337,7 @@ func TestBootstrapSystem_PassphraseStrategy_EmptyPassphraseRejected(t *testing.T
 	reg := newRegistry(t, seal.NewDeferredSoftwareStrategy())
 
 	_, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy:   StrategyPassphrase,
-		Passphrase: "",
+		Strategy: StrategyPassphrase,
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
@@ -358,8 +373,7 @@ func TestBootstrapSystem_PassphraseEmptyButAlreadyUnsealed(t *testing.T) {
 
 	// Empty passphrase — exactly what cmd/qrdbd supplies post-unseal.
 	result, err := BootstrapSystem(context.Background(), SystemConfig{
-		Strategy:   StrategyPassphrase,
-		Passphrase: "",
+		Strategy: StrategyPassphrase,
 	}, Dependencies{
 		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
 		Barriers: reg, Logger: discardLogger(),
@@ -1608,10 +1622,173 @@ func (s *fakeSignerEmpty) SignAdminCSR(_ context.Context, _, _ string, _ []byte)
 // branch is unreachable through the public API (BootstrapSystem calls
 // validateStrategy first), but it is a defensive check that must be covered.
 func TestCredentialsForStrategy_InvalidStrategyReturnsError(t *testing.T) {
-	_, err := credentialsForStrategy(seal.StrategyID("tpm2"), "ignored")
+	_, err := credentialsForStrategy(seal.StrategyID("tpm2"), passphraseBuffer(t, "ignored"))
 	var want *UnsupportedStrategyError
 	if !errors.As(err, &want) {
 		t.Fatalf("err = %v, want *UnsupportedStrategyError", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The copy-out is wiped (go-qrdb#429)
+//
+// credentialsForStrategy copies the passphrase out of the *secure.Buffer into
+// seal.Credentials.Secret, an ORDINARY, PAGEABLE HEAP SLICE. mlocking the
+// source and then leaving an unrecoverable plaintext copy behind would be a
+// net LOSS on the exact measure the conversion exists to improve, so
+// BootstrapSystem destroys it when its lifetime ends.
+//
+// retainingStrategy is what makes that observable. It embeds a REAL strategy —
+// so the barrier genuinely initializes and the test exercises the production
+// flow — and overrides SealRootKey to keep an ALIAS of creds.Secret rather
+// than a copy. SoftwareStrategy copies the passphrase into its own enclave, so
+// only a deliberate aliasing double can see the caller's backing array. After
+// BootstrapSystem returns, that array must read as zeros.
+//
+// Delete the `defer secure.Wipe(creds.Secret)` and this fails.
+// ---------------------------------------------------------------------------
+
+type retainingStrategy struct {
+	seal.SealingStrategy
+	retained []byte
+}
+
+func (r *retainingStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds seal.Credentials) (*seal.SealedRootKey, error) {
+	// ALIAS, deliberately not a copy. The whole mechanism is that the barrier
+	// borrows the credential and the caller wipes the backing array after.
+	r.retained = creds.Secret
+	return r.SealingStrategy.SealRootKey(ctx, rootKey, creds)
+}
+
+// assertWiped fails unless every byte of b is zero. A zero-length slice is a
+// failure too: it means the strategy was never handed a credential, so the
+// test would be proving nothing.
+func assertWiped(t *testing.T, what string, b []byte) {
+	t.Helper()
+	if len(b) == 0 {
+		t.Fatalf("%s: the strategy was never handed a credential; this test proves nothing", what)
+	}
+	for i, c := range b {
+		if c != 0 {
+			t.Fatalf("%s: byte %d survived at %q — the passphrase copy was not zeroized", what, i, b)
+		}
+	}
+}
+
+// TestBootstrapSystem_WipesTheCredentialCopy asserts the SUCCESS path.
+func TestBootstrapSystem_WipesTheCredentialCopy(t *testing.T) {
+	const passphrase = "correct horse battery staple"
+	strategy := &retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy()}
+	reg := newRegistry(t, strategy)
+
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:   StrategyPassphrase,
+		Passphrase: passphraseBuffer(t, passphrase),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("BootstrapSystem: %v", err)
+	}
+
+	if len(strategy.retained) != len(passphrase) {
+		t.Fatalf("the strategy saw a %d-byte credential, want %d — the alias is not "+
+			"the copy credentialsForStrategy made", len(strategy.retained), len(passphrase))
+	}
+	assertWiped(t, "BootstrapSystem credential copy", strategy.retained)
+}
+
+// TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure covers the path a
+// wipe placed after Initialize instead of deferred would miss. The strategy
+// retains the credential and THEN fails, so the copy exists and
+// BootstrapSystem returns through an error path.
+func TestBootstrapSystem_WipesTheCredentialCopyOnInitFailure(t *testing.T) {
+	const passphrase = "a passphrase the barrier will refuse"
+	strategy := &failingRetainingStrategy{
+		retainingStrategy: retainingStrategy{SealingStrategy: seal.NewDeferredSoftwareStrategy()},
+	}
+	reg := newRegistry(t, strategy)
+
+	_, err := BootstrapSystem(context.Background(), SystemConfig{
+		Strategy:   StrategyPassphrase,
+		Passphrase: passphraseBuffer(t, passphrase),
+	}, Dependencies{
+		Tenants: &fakeTenants{}, Users: &fakeUsers{}, Roles: &fakeRoles{},
+		Barriers: reg, Logger: discardLogger(),
+	})
+	if err == nil {
+		t.Fatal("expected BootstrapSystem to fail when the strategy refuses the seal")
+	}
+
+	assertWiped(t, "BootstrapSystem credential copy on the error path", strategy.retained)
+}
+
+// failingRetainingStrategy retains the credential and then refuses to seal, so
+// BootstrapSystem leaves through SystemBarrierInitError with the copy already
+// made.
+type failingRetainingStrategy struct {
+	retainingStrategy
+}
+
+func (f *failingRetainingStrategy) SealRootKey(_ context.Context, _ []byte, creds seal.Credentials) (*seal.SealedRootKey, error) {
+	f.retained = creds.Secret
+	return nil, errRefusedSeal
+}
+
+var errRefusedSeal = errors.New("bootstrap_test: strategy refuses to seal")
+
+// TestCredentialsForStrategy_DestroyedBufferIsAMissingPassphrase pins the
+// branch the *secure.Buffer conversion introduced (go-qrdb#429). A destroyed
+// buffer is indistinguishable from no buffer at this call site, and both must
+// surface as MissingPassphraseError rather than as a barrier-init failure —
+// an operator who supplied no passphrase should not be told the barrier
+// broke.
+func TestCredentialsForStrategy_DestroyedBufferIsAMissingPassphrase(t *testing.T) {
+	buf, err := secure.NewBufferFromBytes([]byte("gone in a moment"))
+	if err != nil {
+		t.Fatalf("secure.NewBufferFromBytes: %v", err)
+	}
+	buf.Destroy()
+
+	_, err = credentialsForStrategy(StrategyPassphrase, buf)
+	var want *MissingPassphraseError
+	if !errors.As(err, &want) {
+		t.Fatalf("err = %v, want *MissingPassphraseError", err)
+	}
+}
+
+// TestCredentialsForStrategy_CopiesOutOfTheBuffer verifies the borrow yields
+// the material and that the returned Secret is a COPY: destroying the buffer
+// afterwards must not blank the credentials already handed to the barrier.
+func TestCredentialsForStrategy_CopiesOutOfTheBuffer(t *testing.T) {
+	buf := passphraseBuffer(t, "correct horse battery staple")
+
+	creds, err := credentialsForStrategy(StrategyPassphrase, buf)
+	if err != nil {
+		t.Fatalf("credentialsForStrategy: %v", err)
+	}
+	if string(creds.Secret) != "correct horse battery staple" {
+		t.Fatalf("Secret = %q, want the supplied passphrase", creds.Secret)
+	}
+	buf.Destroy()
+	if string(creds.Secret) != "correct horse battery staple" {
+		t.Errorf("Secret aliased the enclave: destroying the buffer changed it to %q", creds.Secret)
+	}
+}
+
+// TestCredentialsForStrategy_NonPassphraseStrategyNeedsNoBuffer confirms that
+// none and shamir demand no credential at all, so a nil buffer is not an
+// error for them.
+func TestCredentialsForStrategy_NonPassphraseStrategyNeedsNoBuffer(t *testing.T) {
+	for _, strategy := range []seal.StrategyID{StrategyNone, StrategyShamir} {
+		creds, err := credentialsForStrategy(strategy, nil)
+		if err != nil {
+			t.Fatalf("credentialsForStrategy(%q, nil): %v", strategy, err)
+		}
+		if len(creds.Secret) != 0 {
+			t.Errorf("credentialsForStrategy(%q, nil) returned a secret", strategy)
+		}
 	}
 }
 

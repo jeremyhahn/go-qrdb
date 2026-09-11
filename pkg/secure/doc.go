@@ -16,8 +16,23 @@
 // handling sensitive byte material (keys, passphrases, PINs, Shamir
 // shares, recovery keys) in memory. It is a thin, opinionated facade over
 // github.com/awnumar/memguard — raw memguard usage anywhere outside this
-// package is forbidden and enforced by a custom go vet analyzer under
-// pkg/secure/analyzer/.
+// package is forbidden.
+//
+// The ban is enforced by the go vet analyzer under pkg/secure/analyzer/,
+// which `make secure-analyzer` runs over every module in this repository
+// under every combination in the Makefile's SUPPORTED_TAG_SETS, in CI's
+// Lint job. That sentence was FALSE from the day the analyzer was written
+// until go-qrdb#429 armed it: the analyzer existed, was unit-tested, and
+// ran nowhere, so the rules were enforced by the analyzer's own tests and
+// not over this tree. A raw memguard import sat in pkg/ceremony's
+// share-store test the whole time. Do not restore the claim without the
+// target — an agent reading it concludes the invariant holds.
+//
+// The ban covers THIS repository. Downstream consumers (go-xkms,
+// go-quicbaas) import this package and are bound by the same rules, but an
+// analyzer runs where its make target runs; each of those repositories has
+// to wire up its own, and until it does its compliance is unmeasured
+// (go-xkms#549, go-quicbaas#827).
 //
 // # Types
 //

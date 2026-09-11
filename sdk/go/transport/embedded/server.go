@@ -37,9 +37,25 @@ import (
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/secure"
 )
 
 const serverDefaultShardID uint64 = 1
+
+// wipeFn is secure.Wipe, indirected so a test can observe the one thing this
+// package must do with its passphrase copy-out and cannot otherwise see.
+//
+// The copy setupBarrier makes is a LOCAL. No caller holds it, nothing
+// downstream retains it, and it is unreachable the instant setupBarrier
+// returns — so the wipe is the only observable event in its entire lifetime,
+// and "was it wiped" is not a question any assertion on a returned value can
+// answer. Swapping this is also what lets a test assert the wipe happened
+// BEFORE setupBarrier returned rather than at some unspecified later point,
+// which is the property that actually matters.
+//
+// Same device, and the same reason, as purgeFn and signalExit in pkg/secure.
+// It is never swapped outside a test.
+var wipeFn = secure.Wipe
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -96,6 +112,40 @@ func (e *BarrierCreateError) Error() string {
 
 // Unwrap returns the underlying error.
 func (e *BarrierCreateError) Unwrap() error { return e.Err }
+
+// BarrierPassphraseError indicates that BarrierConfig.Passphrase was SUPPLIED
+// but could not be read: the buffer was destroyed, or it is a zero value, or
+// its borrow yielded no bytes.
+//
+// It exists to keep an unusable credential from being mistaken for an absent
+// one (go-qrdb#429). secure.Buffer.WithBytes returns the same *NilBufferError
+// for nil and for destroyed, so a single error check reads both as "no
+// passphrase configured" — and on a fresh data dir that difference is silent
+// and permanent: the barrier initializes under seal.StrategyNone, IsSealed()
+// is false, encfs wraps the data plane with a root key sealed by nothing, and
+// an embedder that asked for a passphrase barrier gets plaintext at rest with
+// nothing to indicate it.
+//
+// A nil Passphrase is still "not configured" and still yields a none barrier.
+// Only a NON-NIL buffer that cannot be read produces this error.
+type BarrierPassphraseError struct {
+	// Err is the borrow failure, or nil when the borrow succeeded and
+	// returned no bytes.
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *BarrierPassphraseError) Error() string {
+	const head = "embedded: Barrier.Passphrase was supplied but could not be read"
+	const tail = "; refusing to fall back to an unsealed barrier"
+	if e.Err == nil {
+		return head + " (it holds no bytes)" + tail
+	}
+	return head + " (" + e.Err.Error() + ")" + tail
+}
+
+// Unwrap returns the underlying error.
+func (e *BarrierPassphraseError) Unwrap() error { return e.Err }
 
 // ServerTransportCreateError indicates that the embedded transport could not
 // be created during server initialization.
@@ -240,12 +290,45 @@ type BarrierConfig struct {
 	AutoUnseal bool
 
 	// Passphrase is the secret used by software / passphrase-style
-	// strategies during AutoUnseal. When AutoUnseal is true, Strategy
-	// is StrategyPassphrase (or empty), and Passphrase is empty,
-	// NewServer falls back to the deterministic bootstrap passphrase
-	// keyed by deployment ID 0 (matching the behavior of the daemon's
-	// bootstrap path).
-	Passphrase []byte
+	// strategies during AutoUnseal.
+	//
+	// NIL AND DESTROYED ARE DIFFERENT, and the difference is the
+	// difference between encrypted and not:
+	//
+	//   nil        No passphrase was configured. With StrategyPassphrase
+	//              (or the empty default) the embedded transport comes up
+	//              with NO barrier — seal.StrategyNone, at-rest data in
+	//              plaintext. go-quicraft announces it at initialize
+	//              ("barrier performs NO encryption"). This is the
+	//              long-standing behaviour of leaving the field unset.
+	//   non-nil    A credential WAS configured. If it cannot be read —
+	//              destroyed, or the zero value — NewServer FAILS with
+	//              *BarrierPassphraseError. It does not fall back.
+	//
+	// THIS DOC PREVIOUSLY CLAIMED A FALLBACK TO "the deterministic
+	// bootstrap passphrase keyed by deployment ID 0". That was false and
+	// is corrected here (go-qrdb#429): no such derivation exists anywhere
+	// in this module — the only thing resembling it is a string a test
+	// builds and passes to BarrierInitialize explicitly — and the
+	// resolution ten lines into setupBarrier says so in its own comment,
+	// "there is no deployment-derived passphrase". On a field whose doc
+	// is the only thing an embedder reads, the gap between "derives a
+	// passphrase" and "comes up with no barrier" is the gap between
+	// encrypted and not.
+	//
+	// It is a *secure.Buffer and not a []byte. An embedder fills this
+	// struct from its own key source — nothing decodes it and no flag
+	// parser writes it — so it is a HOLDER of key material for the whole
+	// life of the process it configures, which is exactly the population
+	// pkg/secure's rule 3 exists for (go-qrdb#429). Use
+	// secure.NewBufferFromBytes; the SDK re-exports the type and its
+	// constructors as sdk/go/secure so no consumer needs the internal
+	// path. The buffer stays the CALLER'S to destroy — NewServer copies
+	// out of it under a borrow and never takes ownership. Destroying it
+	// and then constructing another Server with the same config is the
+	// obvious consequence of that ownership rule, and it is exactly the
+	// case that must fail loudly rather than quietly drop the barrier.
+	Passphrase *secure.Buffer
 
 	// ShamirShares supplies the unseal shares when AutoUnseal is true
 	// and Strategy is StrategyShamir.
@@ -576,13 +659,101 @@ func (s *Server) setupBarrier(
 	// present, is supplied to the deferred software strategy at init/unseal and
 	// run through the KDF.
 	effStrategy := strategy
+	// A LOCAL, not a field. The material has to become a []byte before it
+	// reaches seal.Credentials, whose Secret is a []byte that go-quicraft
+	// owns; what rule 3 asks is that the long-lived DECLARATION be the
+	// wipeable type, which BarrierConfig.Passphrase now is. The copy-out
+	// happens once, here, inside the borrow.
 	var softwareSecret []byte
 	if effStrategy == seal.StrategyPassphrase || effStrategy == "" {
-		if len(config.Barrier.Passphrase) > 0 {
-			effStrategy = seal.StrategyPassphrase
-			softwareSecret = config.Barrier.Passphrase
-		} else {
+		// NIL IS "NOT CONFIGURED". NON-NIL-BUT-UNREADABLE IS AN ERROR.
+		//
+		// secure.Buffer.WithBytes returns the same *NilBufferError for a nil
+		// receiver, a destroyed buffer and a zero value, so one error check
+		// reads all three as "no passphrase" — and the consequence is not a
+		// wrong error message, it is a WRONG SECURITY POSTURE. On a fresh data
+		// dir the none branch below initializes successfully, IsSealed() is
+		// false, encfs wraps the pebble data plane with a root key sealed by
+		// nothing, and an embedder that asked for a passphrase barrier has
+		// plaintext at rest, permanently, with nothing said about it.
+		//
+		// The lifecycle is why this needs guarding rather than documenting.
+		// When this field was a []byte the unreadable case could only be
+		// reached by passing an empty slice, which is plainly a caller bug. A
+		// *secure.Buffer can be DESTROYED, the field doc says the buffer stays
+		// the caller's to destroy, and destroying after one NewServer and
+		// constructing again lands exactly here (go-qrdb#429).
+		if config.Barrier.Passphrase == nil {
+			// Not configured: the documented, long-standing meaning of
+			// leaving the field unset. go-quicraft warns at initialize
+			// ("barrier performs NO encryption"), so this is announced
+			// rather than silent, and no second warning is emitted here.
 			effStrategy = seal.StrategyNone
+		} else {
+			if copyErr := config.Barrier.Passphrase.WithBytes(func(b []byte) error {
+				softwareSecret = append([]byte(nil), b...)
+				return nil
+			}); copyErr != nil {
+				_ = sealStore.Close()
+				s.sealStore = nil
+				return nil, nil, &BarrierPassphraseError{Err: copyErr}
+			}
+			// THIS COPY IS ORDINARY, PAGEABLE HEAP, AND IT IS OURS TO WIPE.
+			//
+			// Before the *secure.Buffer conversion this line was
+			// `softwareSecret = config.Barrier.Passphrase` — an ALIAS of the
+			// embedder's own slice. There was exactly one copy of the
+			// plaintext and it belonged to the caller, so the caller's own
+			// wipe removed it (go-quicbaas zeroes its sealPassphrase byte by
+			// byte right after handing it over). Copying out of the enclave
+			// silently broke that: the embedder's wipe now reaches a slice
+			// nobody else holds, while THIS copy lives in pageable memory
+			// that no caller can reach, for the life of the process, created
+			// on every NewServer.
+			//
+			// The mlocked buffer is a real improvement and this would have
+			// been a net LOSS without the wipe: +1 unrecoverable plaintext
+			// copy, exposed to exactly the disclosure routes the rule exists
+			// for — a core dump, a swapped page, /proc/<pid>/mem. It is also
+			// the standard pkg/secure/analyzer's own scope.go writes down for
+			// the codec boundary ("every handler that reads one wipes it
+			// before returning"), and this site reads one (go-qrdb#429).
+			//
+			// OWNERSHIP ENDS WHEN runAutoUnseal RETURNS — verified, not
+			// assumed, because a defer here would otherwise wipe the slice
+			// out from under a live reader:
+			//
+			//   runAutoUnseal        stores nothing on s; wraps the slice in
+			//                        a seal.Credentials VALUE and passes it
+			//                        down.
+			//   StorageBarrier       Initialize/Unseal forward creds to the
+			//                        EpochBarrier and retain nothing.
+			//   quicraft Barrier     Initialize/Unseal hand creds to the
+			//                        strategy and retain nothing.
+			//   SoftwareStrategy     newSoftwareStrategy COPIES the
+			//                        passphrase into its own slice and stores
+			//                        that in a ProtectedKey enclave; the
+			//                        deferred path additionally Closes the
+			//                        inner strategy.
+			//   NoneStrategy         never references creds at all.
+			//   Shamir               initializeShamirDirect ignores creds;
+			//                        the credential-mode branch already wipes
+			//                        the caller's slice via SealAndDistribute,
+			//                        so this wipe is a no-op there.
+			//
+			// setupBarrier outlives runAutoUnseal, so the defer fires after
+			// the last read on every path, including every error path.
+			defer wipeFn(softwareSecret)
+			if len(softwareSecret) == 0 {
+				// Defensive. Every constructor in pkg/secure rejects a
+				// zero length, so a live buffer holding nothing should not
+				// exist — and if one ever does, it is still a configured
+				// credential that cannot seal anything.
+				_ = sealStore.Close()
+				s.sealStore = nil
+				return nil, nil, &BarrierPassphraseError{}
+			}
+			effStrategy = seal.StrategyPassphrase
 		}
 	}
 

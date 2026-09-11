@@ -342,6 +342,39 @@ jobs:
       - name: go vet across every supported tag set
         run: make vet-tags
 
+      # go-qrdb#429. pkg/secure/analyzer is a go vet plugin enforcing three
+      # rules that exist because this stack handles key material, and until now
+      # it ran NOWHERE -- no target, no job, no .golangci.yml entry. Its rules
+      # were enforced by its own unit tests, which prove the ANALYZER works and
+      # say nothing about the tree, while pkg/secure's package doc claimed the
+      # memguard ban was "enforced by a custom go vet analyzer". A raw memguard
+      # import sat in pkg/ceremony's share-store test the whole time, breaching
+      # the containment boundary the entire pkg/secure design rests on.
+      #
+      # It is check-publication-bound's sibling in KIND -- a whole-TREE
+      # property, invisible in a single diff, silent when violated; a reviewer
+      # cannot see that a new DTO three packages away introduced a raw holder
+      # for key material. It sits here rather than beside it in ORDER because
+      # this one BUILDS GO, and this job front-loads the sub-second shell
+      # guards so that a real violation, not a compile, is the first failure a
+      # reader sees.
+      #
+      # It sweeps BOTH modules under EVERY combination in SUPPORTED_TAG_SETS,
+      # via vet-modules.sh. Neither is decoration: `./...` stops at a module
+      # boundary and sdk/go held 14 findings of its own that two separate
+      # root-module runs never saw, and one root-module finding was visible
+      # only under the full tag set.
+      - name: pkg/secure rules hold across every module and tag set
+        run: make secure-analyzer
+
+      # The gate driven RED on planted violations. A clean tree exercises only
+      # the accepting path, and a sweep whose analyzer was neutered or whose
+      # -vettool never started prints exactly what a clean one prints. Runs
+      # after the gate for the same reason its neighbours do: a real violation
+      # should be the first failure a reader sees, not a self-test.
+      - name: Test the pkg/secure gate
+        run: make test-secure-analyzer
+
       - name: golangci-lint
         run: make lint
 

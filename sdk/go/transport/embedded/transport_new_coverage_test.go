@@ -1073,7 +1073,7 @@ func TestNewServer_CloseSeal_OnStorageFailure(t *testing.T) {
 		Barrier: &BarrierConfig{
 			Strategy:   seal.StrategyPassphrase,
 			AutoUnseal: true,
-			Passphrase: []byte("test-passphrase"),
+			Passphrase: barrierPassphrase(t, "test-passphrase"),
 		},
 	})
 	if err == nil {

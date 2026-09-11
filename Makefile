@@ -172,6 +172,49 @@ GOVULNCHECK   := govulncheck
 # roughly double for the rules that fire in non-test code (G115 prints 1044).
 GOSEC_EXCLUDE := G115,G304,G704
 
+# DIRECTORIES THE ROOT-MODULE SCAN DOES NOT ENTER. One variable, consumed by
+# `gosec` AND `gosec-sarif`, so the gate and the dashboard cannot disagree
+# about what was skipped -- the drift behind #293, #397 and #395 was a flag
+# that reached one invocation and not the other, and two literals here is how
+# that happens again.
+#
+#   test/performance        its own modules, pinned to RELEASED go-qrdb
+#                           versions with no `replace`, so scanning them from
+#                           here judges released code against this checkout's
+#                           tags. Pre-existing.
+#
+#   pkg/secure/analyzer/testdata   analyzer FIXTURES (#429). Excluded because
+#                           gosec CANNOT TYPECHECK THEM CORRECTLY, not because
+#                           their findings are unwelcome.
+#
+# The fixture tree is GOPATH-shaped: `testdata/src/<import path>/...` holds
+# SHIM packages standing in for real dependencies -- memguard, x/crypto/ssh,
+# spf13/pflag. `analysistest` is the only reader that resolves them, because it
+# sets GOPATH=testdata and GO111MODULE=off. Every module-mode typechecker,
+# gosec included, resolves `github.com/spf13/pflag` to the REAL module and then
+# reads the fixture against an API it was never written for. The result is a
+# parse failure, and gosec exits NONZERO on one even with `Issues : 0` -- which
+# is what turned a green security gate red on a commit that added no code to
+# any binary.
+#
+# THIS IS LATENT FOR THE WHOLE FIXTURE TREE, not only the file that surfaced
+# it. The older shims typecheck against the real modules by COINCIDENCE: their
+# signatures happen to match. Any shim that narrows, widens or invents a symbol
+# breaks this scan, so the durable fix is the directory, not that one file.
+#
+# NOTHING HERE IS COMPILED INTO A BINARY OR REACHABLE AT RUNTIME. The Go tool
+# never matches a `testdata` element in `./...`, which is exactly why `go vet`,
+# `vet-tags`, `lint` and `lint-sdk` were all green on the same commit: gosec is
+# the only analyser in this file that walks the filesystem itself. That
+# asymmetry is the whole explanation for why this surfaced in one gate.
+#
+# THE PATH IS THE NARROWEST ONE THAT WORKS: pkg/secure/analyzer/testdata, not
+# pkg/secure/analyzer and certainly not pkg/secure. The analyzer's own source
+# and its tests are still scanned. Measured: it is also the ONLY testdata
+# directory in the repository, and sdk/go has none -- which is why gosec-sdk
+# takes no -exclude-dir (see the comment there).
+GOSEC_EXCLUDE_DIRS := -exclude-dir=test/performance -exclude-dir=pkg/secure/analyzer/testdata
+
 # Coverage
 COVER_MIN     := 91
 
@@ -1341,6 +1384,10 @@ ci:
 # a developer could run the advertised entrypoint, get green, and be blocked by
 # the pull-request job. Both steps run in the Lint job, so both run here.
 #
+# secure-analyzer and its self-test are here for exactly that reason and no
+# other (#429). They are Lint-job steps, so leaving them out would reintroduce
+# the gap the sentence above describes.
+#
 # The self-test is included rather than left CI-only (which is where
 # test-require-tool and test-tag-lockstep sit) because this guard is the one
 # whose own defects are invisible by construction: it fails by staying silent,
@@ -1366,7 +1413,7 @@ ci:
 # finding that should be the first thing a reader sees rather than the last.
 # The gate costs hundredths of a second and needs neither network nor binary,
 # so running it twice is cheaper than reading it late.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound security build-server test
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -1455,6 +1502,65 @@ test-require-tool:
 # internal host name, a workstation path and an agent principal. Scope and
 # pattern choices, including what each rule deliberately does NOT match and
 # why, are documented at the top of the script.
+# pkg/secure/analyzer's three rules, run over the tree they are about (#429).
+#
+# The analyzer was a complete, unit-tested go vet plugin that ran NOWHERE --
+# no target here, no CI job, no .golangci.yml entry. Grepping this file, the
+# workflows and scripts/ for `secure-analyzer`, `securecheck` and `vettool`
+# found exactly one hit, and it was the doc comment on the tool's own main.go.
+# So the rules were enforced by the analyzer's unit tests, which prove the
+# ANALYZER works and say nothing whatever about this repository -- and
+# pkg/secure's package doc claimed the memguard ban was "enforced by a custom
+# go vet analyzer", which is the worse half: an agent reading it concludes the
+# invariant holds. A raw memguard import sat in pkg/ceremony's share-store
+# test, breaching the containment boundary the whole pkg/secure design rests
+# on, for as long as both were true.
+#
+# WHY IT WAS NEVER ARMED, and what moved. Wiring it in as-written failed on 46
+# findings, and most of them could not be fixed in the shape rule 3 demanded:
+# generated .pb.go that protoc rewrites, transport DTOs the JSON decoder has
+# already materialised, cobra flag targets that os.Args already holds. Leaving
+# it unwired is how the rule-1 breach went unseen. The deadlock broke by
+# SCOPING RULE 3 -- four structural clauses, each argued in
+# pkg/secure/analyzer/scope.go, with the count each silenced written down --
+# and fixing everything outside them. Rules 1 and 2 are not scoped.
+#
+# NOT A BASELINE FILE, on the same reasoning this file already records for
+# vet-tags: a baseline makes a green result mean "clean except where it is
+# not", which is what running nothing already said. Every clause is a property
+# of the declaration, evaluated fresh; none names a file, a package or a line.
+#
+# THE SWEEP IS vet-modules.sh WITH GOVET OVERRIDDEN, not a second loop. That
+# buys the module discovery, the exhaustive-or-fail module mapping and the
+# per-rung PACKAGE COUNT that fails closed on zero -- the discovery floor that
+# keeps a vacuous pass from looking like a clean one. It also buys the two
+# things that cost a measurement each while this issue was being sized:
+# `./...` does not cross a module boundary, and sdk/go held 14 findings of its
+# own that two separate root-module runs never saw; and ONE root-module finding
+# was visible only under the full tag set, so a single combination is not an
+# answer about the tree.
+.PHONY: secure-analyzer
+secure-analyzer:
+	@GO="$(GO)" GOLIST="$(GO) list" ./scripts/secure-analyzer.sh --sweep "$(SUPPORTED_TAG_SETS)" "$(GORM_TAGS)"
+
+# The gate driven RED, deliberately, on violations planted for the purpose.
+#
+# A clean tree exercises only the accepting path, and a sweep whose analyzer
+# was neutered, whose -vettool never started, or whose rule 3 was narrowed
+# until nothing matched prints exactly what a clean one prints. The handbook's
+# rule for auditing suppressions is this rule: the instrument must find a known
+# instance FIRST, or its output is measuring something else.
+#
+# It asserts both directions. A raw memguard import and a holder field must be
+# reported AND must make `go vet` exit nonzero -- a diagnostic that does not
+# fail the command does not block a merge. A decoder-owned field, a generated
+# declaration, a flag target and a test fixture must stay silent, through the
+# real binary rather than under analysistest, because the unitchecker path is
+# the one CI runs and it is a different code path.
+.PHONY: test-secure-analyzer
+test-secure-analyzer:
+	@GO="$(GO)" ./scripts/secure-analyzer_test.sh
+
 .PHONY: check-publication-bound
 check-publication-bound:
 	@./scripts/check-publication-bound.sh
@@ -2218,12 +2324,20 @@ TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/
 .PHONY: gosec
 gosec:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./...
+	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./...
 
 # The SDK module, scanned with the same exclusions so the two legs cannot
 # disagree about what is suppressed. sdk/go/gorm/conformance is a module nested
 # inside it, so `./...` does not descend there and needs no exclusion -- its
 # go.mod is untidy on main (#233) and `go vet` already refuses it.
+#
+# NO -exclude-dir, and that is measured rather than assumed: neither path in
+# GOSEC_EXCLUDE_DIRS exists under sdk/go. `find . -type d -name testdata`
+# returns exactly ONE directory in this repository, pkg/secure/analyzer/testdata,
+# in the ROOT module, and test/performance is root-module too. Passing the flag
+# here would be a claim about a path that is not there -- and the day sdk/go
+# grows a testdata tree, this comment is where the decision gets made rather
+# than silently inherited.
 .PHONY: gosec-sdk
 gosec-sdk:
 	$(call require-scanner,$(GOSEC),$(GOSEC_INSTALL))
@@ -2234,7 +2348,7 @@ gosec-sdk:
 # gate.
 .PHONY: gosec-sarif
 gosec-sarif:
-	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) -exclude-dir=test/performance -severity=medium -confidence=medium ./... || true
+	$(GOSEC) -concurrency 4 -tags "$(LINT_TAGS)" -fmt=sarif -out=gosec.sarif -exclude=$(GOSEC_EXCLUDE) $(GOSEC_EXCLUDE_DIRS) -severity=medium -confidence=medium ./... || true
 
 # Blocking. govulncheck is the forcing function for toolchain currency
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable

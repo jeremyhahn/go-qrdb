@@ -33,7 +33,7 @@ import (
 func TestEmbeddedServerWithBarrier_PebbleEncrypted(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
-	passphrase := []byte("encfs-embedded-test-passphrase")
+	passphrase := barrierPassphrase(t, "encfs-embedded-test-passphrase")
 
 	const (
 		key       = "ribosome-key"
@@ -142,7 +142,7 @@ func TestEmbeddedServerWithBarrier_AutoUnsealWrongPassphrase(t *testing.T) {
 		Barrier: &BarrierConfig{
 			Strategy:   seal.StrategyPassphrase,
 			AutoUnseal: true,
-			Passphrase: []byte("right-passphrase"),
+			Passphrase: barrierPassphrase(t, "right-passphrase"),
 		},
 	})
 	if err != nil {
@@ -158,7 +158,7 @@ func TestEmbeddedServerWithBarrier_AutoUnsealWrongPassphrase(t *testing.T) {
 		Barrier: &BarrierConfig{
 			Strategy:   seal.StrategyPassphrase,
 			AutoUnseal: true,
-			Passphrase: []byte("wrong-passphrase"),
+			Passphrase: barrierPassphrase(t, "wrong-passphrase"),
 		},
 	})
 	if err == nil {
@@ -182,7 +182,7 @@ func TestEmbeddedServerWithBarrier_MemoryAutoUnsealNoFSWrap(t *testing.T) {
 		Barrier: &BarrierConfig{
 			Strategy:   seal.StrategyPassphrase,
 			AutoUnseal: true,
-			Passphrase: []byte("memory-pass"),
+			Passphrase: barrierPassphrase(t, "memory-pass"),
 		},
 	})
 	if err != nil {
@@ -227,7 +227,7 @@ func TestEmbeddedServerWithBarrier_FormatSentinelWritten(t *testing.T) {
 		Barrier: &BarrierConfig{
 			Strategy:   seal.StrategyPassphrase,
 			AutoUnseal: true,
-			Passphrase: []byte("sentinel-test"),
+			Passphrase: barrierPassphrase(t, "sentinel-test"),
 		},
 	})
 	if err != nil {

@@ -17,9 +17,10 @@ package ceremony
 import (
 	"testing"
 
-	"github.com/awnumar/memguard"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 func TestMemguardShareStore_StoreAndClaim(t *testing.T) {
@@ -267,12 +268,21 @@ func TestMemguardShareStore_ClaimDestroysTheEnclave(t *testing.T) {
 // marked consumed by a claim that returned an error is unrecoverable: the
 // custodian holds nothing and the store will refuse to hand it over again.
 //
-// The failure is provoked with a real memguard purge rather than a stub,
-// because the purge IS the condition — it is what a memguard allocation
-// failure anywhere in the process does to every live enclave, including this
-// share's (go-qrdb#74). A test that faked the error would prove the error
-// path returns; only the purge proves the store survives the thing that
-// causes it.
+// The failure is provoked with a real purge rather than a stub, because the
+// purge IS the condition — it is what a memguard allocation failure anywhere
+// in the process does to every live enclave, including this share's
+// (go-qrdb#74). A test that faked the error would prove the error path
+// returns; only the purge proves the store survives the thing that causes it.
+//
+// It is driven through secure.Purge, NOT memguard.Purge. Importing memguard
+// here was a live rule-1 violation — the containment boundary the whole
+// pkg/secure design rests on, unreported for as long as it was because
+// nothing ran the analyzer (go-qrdb#429). secure.Purge reaches the same
+// memguard.Purge and additionally takes the package's purge lock
+// exclusively, so it waits for any in-flight borrow instead of unmapping
+// pages underneath one — which is what this package's callers are entitled
+// to assume happens. EnablePurge is the arming half of the lifecycle a
+// binary's main() performs; Purge refuses to run without it.
 func TestMemguardShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
 	store := newSealedShareStore()
 
@@ -280,7 +290,8 @@ func TestMemguardShareStore_FailedClaimDoesNotConsumeTheShare(t *testing.T) {
 	require.True(t, store.Exists("alice"))
 
 	// Destroys every live enclave in the process, this share's included.
-	memguard.Purge()
+	secure.EnablePurge()
+	require.NoError(t, secure.Purge())
 
 	_, err := store.Claim("alice")
 	require.Error(t, err, "a claim on purged material must not report success")

@@ -45,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -134,7 +135,15 @@ type SystemConfig struct {
 
 	// Passphrase is REQUIRED when Strategy is passphrase. There is no derived
 	// default. Ignored for none and shamir.
-	Passphrase string
+	//
+	// It is a *secure.Buffer and not a string or a []byte. This struct is
+	// the caller's own choice of representation — nothing decodes it, no
+	// generator writes it, no flag parser fills it — so it is a HOLDER, and
+	// pkg/secure's rule 3 applies with its remedy available (go-qrdb#429).
+	// The material is copied out under a borrow exactly once, at the point
+	// it becomes the seal.Credentials the barrier demands, and the caller
+	// keeps ownership of the buffer: BootstrapSystem does not destroy it.
+	Passphrase *secure.Buffer
 
 	// SeparationOfDuties selects the first-boot RBAC posture. See
 	// firstboot.Dependencies.SeparationOfDuties.
@@ -218,6 +227,32 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		if credErr != nil {
 			return nil, credErr
 		}
+		// creds.Secret is an ORDINARY HEAP COPY of the passphrase and this is
+		// where its lifetime ends, so this is where it is destroyed.
+		//
+		// The copy is not new — `[]byte(passphrase)` allocated one just the
+		// same when the field was a string — but the *secure.Buffer
+		// conversion is what makes leaving it unwiped indefensible: mlocking
+		// the source and then dropping an unrecoverable plaintext copy in
+		// pageable memory is a net LOSS, not a gain (go-qrdb#429). The same
+		// omission at the embedded transport's copy-out was the finding that
+		// prompted this one; both sites are fixed rather than only the one
+		// that was reported.
+		//
+		// Safe here for the same reason it is safe there: system.Initialize
+		// forwards creds to the EpochBarrier, which hands it to the strategy,
+		// and SoftwareStrategy COPIES the passphrase into its own
+		// ProtectedKey enclave rather than aliasing the caller's slice.
+		// Nothing downstream holds it past the call.
+		//
+		// DEFERRED TO FUNCTION EXIT RATHER THAN WIPED INLINE AFTER
+		// Initialize. That holds the plaintext for the remainder of
+		// BootstrapSystem — bounded, in-process, and the price of the wipe
+		// running on EVERY path, including the early return that a failed
+		// Initialize takes. A guaranteed wipe a few hundred microseconds late
+		// beats a tighter one with a return around it. secure.Wipe is a no-op
+		// on an empty slice, so the none strategy's empty Credentials is fine.
+		defer secure.Wipe(creds.Secret)
 		if initErr := system.Initialize(ctx, creds); initErr != nil {
 			if errors.Is(initErr, seal.ErrAlreadyInitialized) {
 				result.BarrierAlreadyInitialized = true
@@ -636,17 +671,44 @@ func InitializeTenantBarrier(ctx context.Context, tenantID string, strategy seal
 // seal credentials for the chosen system strategy. The passphrase strategy
 // requires a non-empty passphrase with no derived default; none and shamir
 // carry no passphrase.
-func credentialsForStrategy(strategy seal.StrategyID, passphrase string) (seal.Credentials, error) {
+func credentialsForStrategy(strategy seal.StrategyID, passphrase *secure.Buffer) (seal.Credentials, error) {
 	if err := validateStrategy(strategy); err != nil {
 		return seal.Credentials{}, err
 	}
-	if seal.IsPassphraseStrategy(strategy) {
-		if passphrase == "" {
-			return seal.Credentials{}, &MissingPassphraseError{}
-		}
-		return seal.Credentials{Secret: []byte(passphrase)}, nil
+	if !seal.IsPassphraseStrategy(strategy) {
+		return seal.Credentials{}, nil
 	}
-	return seal.Credentials{}, nil
+	// The copy-out is held INSIDE the borrow. seal.Credentials.Secret is a
+	// []byte because go-quicraft owns that type and this repository does not
+	// get to change it, so the material does leave the enclave here — but it
+	// leaves under the purge lock rather than through a bare Bytes() whose
+	// slice outlives the call (pkg/secure rule 6).
+	var creds seal.Credentials
+	if err := passphrase.WithBytes(func(b []byte) error {
+		creds.Secret = append([]byte(nil), b...)
+		return nil
+	}); err != nil {
+		// WithBytes fails for exactly three shapes — nil, destroyed, and the
+		// zero value — and all three mean the same thing at this call site:
+		// the passphrase strategy was selected and no passphrase came with
+		// it. That is MissingPassphraseError, the error this branch returned
+		// when the field was a string, and it stays the error callers match
+		// on.
+		//
+		// THE EMBEDDED TRANSPORT DELIBERATELY DOES NOT DO THIS, and the
+		// divergence is a decision rather than an inconsistency to tidy
+		// (go-qrdb#429). There, collapsing nil into destroyed selects
+		// seal.StrategyNone and a fresh data dir comes up with a barrier
+		// sealed by nothing — an unusable credential silently WEAKENS the
+		// posture, so a non-nil-but-unreadable buffer is a hard configuration
+		// error. Here, every shape FAILS CLOSED: this function's only outputs
+		// are a credential or an error, nothing downstream substitutes a
+		// weaker strategy on the strength of the error, and the caller
+		// already matches on MissingPassphraseError. Do not "align" the two
+		// without re-reading which one can lose a barrier.
+		return seal.Credentials{}, &MissingPassphraseError{}
+	}
+	return creds, nil
 }
 
 // validateStrategy rejects strategies the bootstrap orchestrator does not

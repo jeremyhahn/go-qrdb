@@ -13,8 +13,7 @@
 // limitations under the License.
 
 // Package analyzer provides a go vet plugin that enforces the secure-
-// memory rules for go-qrdb and downstream consumers (go-xkms,
-// go-quicbaas). The analyzer reports — it does not auto-fix.
+// memory rules for go-qrdb. The analyzer reports — it does not auto-fix.
 //
 // Rules enforced:
 //
@@ -25,10 +24,51 @@
 //     KeyMaterial, or RecoveryShare with Go type `string` or `[]byte`
 //     are flagged. The fix is to switch to `*secure.Secret` or
 //     `*secure.Buffer`.
+//
+// # Where it runs
+//
+// `make secure-analyzer` builds the singlechecker under
+// cmd/secure-analyzer and sweeps it over EVERY Go module in the tree under
+// EVERY combination in the Makefile's SUPPORTED_TAG_SETS. It runs in CI's
+// Lint job beside check-publication-bound, and a green result is a
+// precondition for merge.
+//
+// TWO THINGS THAT LOOK LIKE COVERAGE AND ARE NOT, both of which cost a
+// measurement each before they were understood (go-qrdb#429):
+//
+//   - `go vet ./...` DOES NOT CROSS A MODULE BOUNDARY. sdk/go is its own
+//     module and held 14 findings of its own; two separate root-module runs
+//     saw none of them.
+//   - A single tag combination answers about the files that combination
+//     compiles and says nothing about the others. One finding on main was
+//     visible only under the full tag set — the same blindness `make
+//     vet-tags` exists to remove.
+//
+// Both are why this is a make target driving scripts/vet-modules.sh rather
+// than a command line anyone is expected to remember.
+//
+// # Scope
+//
+// Rule 3 is scoped; rules 1 and 2 are not. The clauses, the argument for
+// each and the counts they silenced are in scope.go, which is the document
+// of record for that decision.
+//
+// # Downstream consumers
+//
+// This analyzer enforces the rules for THIS REPOSITORY. go-xkms and
+// go-quicbaas import pkg/secure and are bound by the same rules, but
+// nothing here reaches into their trees: an analyzer runs where its make
+// target runs, and those repositories must wire up their own. Until they
+// do, their compliance is unmeasured — stated here rather than implied
+// away, because the sentence this replaces claimed a reach the tooling did
+// not have, and a false claim of enforcement is worse than none.
+//
+// Tracked as go-xkms#549 and go-quicbaas#827 rather than asserted here.
 package analyzer
 
 import (
 	"go/ast"
+	"go/types"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -148,25 +188,53 @@ func run(pass *analysis.Pass) (any, error) {
 	})
 
 	// Rule 3: flag sensitive-named struct fields typed string or []byte.
-	insp.Preorder([]ast.Node{(*ast.StructType)(nil)}, func(n ast.Node) {
-		st, ok := n.(*ast.StructType)
-		if !ok || st.Fields == nil {
-			return
+	//
+	// Walked per FILE rather than through the shared inspector, because two of
+	// the four scope clauses are properties of the file — whether it is
+	// generated, and whether it is a test — and the inspector's Preorder hands
+	// out nodes with no file attached. Deriving the file from a position for
+	// every struct in the package would be the same walk with a lookup in it.
+	//
+	// The flag-target clause is the one that cannot be decided per file: a
+	// field declared in one file is bound to a flag in another, so the binding
+	// set is collected across the whole package first.
+	flagBound := flagBoundFields(pass, insp)
+	for _, file := range pass.Files {
+		if generatedFileScope(file) {
+			continue
 		}
-		for _, field := range st.Fields.List {
-			if !isSensitiveType(field.Type) {
-				continue
+		if testFileScope(pass.Fset.Position(file.Pos()).Filename) {
+			continue
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			st, ok := n.(*ast.StructType)
+			if !ok || st.Fields == nil {
+				return true
 			}
-			for _, name := range field.Names {
-				if _, hit := sensitiveFieldNames[name.Name]; !hit {
+			for _, field := range st.Fields.List {
+				if !isSensitiveType(field.Type) {
 					continue
 				}
-				pass.Reportf(name.Pos(),
-					"field %q holds sensitive material as %s; switch to *secure.Secret or *secure.Buffer",
-					name.Name, typeDescription(field.Type))
+				if codecTaggedScope(field.Tag) {
+					continue
+				}
+				for _, name := range field.Names {
+					if _, hit := sensitiveFieldNames[name.Name]; !hit {
+						continue
+					}
+					if obj, isVar := pass.TypesInfo.Defs[name].(*types.Var); isVar {
+						if _, isFlag := flagBound[obj]; isFlag {
+							continue
+						}
+					}
+					pass.Reportf(name.Pos(),
+						"field %q holds sensitive material as %s; switch to *secure.Secret or *secure.Buffer",
+						name.Name, typeDescription(field.Type))
+				}
 			}
-		}
-	})
+			return true
+		})
+	}
 
 	return nil, nil
 }

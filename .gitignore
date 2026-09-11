@@ -59,6 +59,13 @@ go.work.sum
 # for the package. It was committed once (#337) before this line existed.
 /deadcode
 
+# scripts/secure-analyzer_test.sh plants its probe package here (#429). It has
+# to be INSIDE the root module for memguard to resolve, and the leading dot is
+# what keeps `./...` from ever matching it. The script removes it on every exit
+# path including a signal; this entry covers the one it cannot trap, a hard
+# kill mid-run, so a stray probe never reaches a commit.
+/.secure-analyzer-probe/
+
 # devcontainer secrets (Gitea module-fetch token)
 .devcontainer/.env
 
