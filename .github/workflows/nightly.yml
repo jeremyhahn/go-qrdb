@@ -27,7 +27,16 @@
 #     is making it green dishonestly — setting it back to fips140=on, adding
 #     continue-on-error, tag-gating a failing package out, or trimming the
 #     package list.
-#   * trivy — go-qrdb#42.
+#   * trivy — go-qrdb#48, and the reason is the PHASE, not a known-red job.
+#     This line read "go-qrdb#42" until #451; #42 is the golangci-lint panic
+#     that reddened Lint, closed long ago, and it never had anything to do with
+#     trivy. The governing rule is devops.md §8a: while a repo is alpha and
+#     nothing is published to the github.com mirror, `trivy fs` runs here and
+#     does not block a merge; from the first published release it moves into
+#     ci.yml and into ci-gate's `needs`. The cost is stated there and is real —
+#     a CVE published today surfaces at the next nightly rather than at the
+#     push that introduces it, which is how #451's grpc advisory sat in three
+#     go.mod files while every pull request stayed green.
 
 name: Nightly
 
@@ -263,26 +272,16 @@ jobs:
           sarif_file: trivy-results.sarif
           category: trivy-fs
 
-      - name: Trivy gate (fail on CRITICAL/HIGH)
-        if: github.server_url == 'https://github.com'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          severity: CRITICAL,HIGH
-          exit-code: 1
-          format: table
-          skip-dirs: test,cmd/qrdbd/data
-
-      # Gitea leg: trivy-action's setup step cannot authenticate to github.com
-      # from a Gitea runner, so install the CLI and run the identical gate.
+      # trivy-action's setup step cannot authenticate to github.com from a
+      # Gitea runner, so the CLI is installed directly. NO `if:` — it is
+      # installed on BOTH hosts now, because the gate below is one step for
+      # both rather than two steps that have to be kept in step.
+      #
       # Retried: raw.githubusercontent.com intermittently answers the Gitea
       # runner with transient HTTP errors (curl exit 22), which failed the
       # whole job on a fetch that succeeds seconds later. Backoff keeps one
       # network blip from reading as a security-gate failure.
       - name: Install Trivy CLI
-        if: github.server_url != 'https://github.com'
         run: |
           for i in 1 2 3 4 5; do
             curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && exit 0
@@ -292,6 +291,25 @@ jobs:
           echo "trivy install failed after 5 attempts" >&2
           exit 1
 
+      # ONE gate, on both hosts, through the Makefile (devops.md §4, #451).
+      #
+      # This was two steps guarded on `github.server_url` — a trivy-action leg
+      # and a shell leg — each carrying its own copy of the scanner flags, and
+      # a third copy lived in the Makefile as `make trivy`. The Makefile's own
+      # comment claimed the skip-dirs list was "kept identical to the list in
+      # .github/workflows/ci.yml", which had not been true since #48 moved the
+      # job into this file: three command lines, one of them describing a
+      # fourth that no longer existed.
+      #
+      # `make trivy` is the contract, so the gate calls it. What that buys
+      # beyond removing the copies is the database-age guard it now carries: it
+      # refreshes, refuses to certify anything with a database older than
+      # TRIVY_DB_MAX_AGE_HOURS, and only then scans, with --skip-db-update so
+      # the database checked is the database used. Before this, a green Trivy
+      # job said a scan ran and nothing about what it knew.
+      #
+      # The SARIF step above deliberately stays on trivy-action: it uploads to
+      # GitHub code scanning, is explicitly non-gating (exit-code: 0), and is
+      # not the thing that decides this job.
       - name: Trivy gate (fail on CRITICAL/HIGH)
-        if: github.server_url != 'https://github.com'
-        run: trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-dirs test,cmd/qrdbd/data .
+        run: make trivy

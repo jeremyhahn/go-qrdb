@@ -87,8 +87,16 @@ const (
 	minWorkflowFiles = 6
 
 	// minActionRefs is the number of `uses: <action>@<ref>` refs those files
-	// carry. Measured 2026-09-10 at 21 (#367 pinned all of them).
-	minActionRefs = 21
+	// carry. Measured 2026-09-10 at 21 (#367 pinned all of them); lowered to
+	// 20 on 2026-09-11 by #451, which deleted nightly.yml's SECOND
+	// `aquasecurity/trivy-action` step — the GitHub-side gate — because both
+	// hosts now reach the one gate through `make trivy`. The remaining
+	// trivy-action ref is the SARIF step, still pinned at the same commit.
+	//
+	// The floor fired on that deletion, which is exactly the behaviour it is
+	// for: the number is lowered here, in the same commit, by someone who
+	// counted.
+	minActionRefs = 20
 )
 
 // isWorkflowFile reports whether name is a file Actions loads.

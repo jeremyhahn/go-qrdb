@@ -1413,7 +1413,13 @@ ci:
 # finding that should be the first thing a reader sees rather than the last.
 # The gate costs hundredths of a second and needs neither network nor binary,
 # so running it twice is cheaper than reading it late.
-_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
+#
+# test-trivy-db sits with the other scanner guards rather than beside
+# `security`, and ahead of it: it needs no trivy and no network, and what it
+# asserts is that `security`'s trivy leg refuses a database too old to know
+# about a current advisory (#451). A guard for the suite belongs before the
+# suite, so a broken guard reports as a broken guard.
+_ci: check-tool-versions test-tool-versions check-bundled-gosec test-bundled-gosec test-trivy-db check-compose-targets test-compose-targets check-action-pins fmt vet vet-sdk vet-tags lint lint-sdk check-publication-bound test-publication-bound secure-analyzer test-secure-analyzer security build-server test
 	@echo "CI pipeline passed"
 
 # ============================================================================
@@ -2354,6 +2360,25 @@ gosec-sarif:
 # (devops.md §9) — swallowing its exit code is what lets a known-vulnerable
 # stdlib sit in a release for months, which is exactly the failure mode the
 # section exists to prevent.
+#
+# THIS LEG HAS NO DATABASE-AGE GUARD, and that is measured rather than an
+# omission (#451 scope item 4). govulncheck carries no database: nothing in
+# this repository sets GOVULNDB, so it fetches https://vuln.go.dev over the
+# network on every run, and the images bake the binary only. There is no cache
+# here that can go stale the way trivy's can.
+#
+# What it has instead is a COVERAGE gap, which no freshness check would close.
+# Measured 2026-09-11: https://vuln.go.dev/index/modules.json lists four
+# advisories for google.golang.org/grpc, the newest GO-2026-6061 (fixed
+# 1.82.1). CVE-2026-84445 / GHSA-2v4p-qf9q-27wj — HIGH, fixed in 1.83.2 — has
+# no Go-curated entry at all. So govulncheck being clean on v1.83.1 was not
+# "the affected symbols are unreachable"; it was the advisory not being in the
+# database it reads.
+#
+# That is precisely why this suite runs both and why neither substitutes for
+# the other: govulncheck judges a call graph against a curated Go database,
+# trivy judges package versions against the GHSA stream. A clean govulncheck
+# is not evidence about anything trivy would report.
 .PHONY: vuln
 vuln:
 	$(call require-scanner,$(GOVULNCHECK),$(GOVULNCHECK_INSTALL))
@@ -2370,9 +2395,14 @@ mod-verify:
 	$(GO) mod verify
 	cd sdk/go && $(GO) mod verify
 
-# Directories excluded from the filesystem scan, kept identical to the
-# skip-dirs list in .github/workflows/ci.yml so `make trivy` and CI agree
-# (devops.md §4). test/ holds benchmark harnesses that ship in no release.
+# Directories excluded from the filesystem scan. This is now the ONLY copy:
+# nightly.yml's gate calls `make trivy` on both hosts, so the list cannot
+# disagree with CI rather than being kept in agreement with it (devops.md §4,
+# #451). The line above used to say it was "kept identical to the skip-dirs
+# list in .github/workflows/ci.yml", which had not been true since #48 moved
+# the job to nightly.yml -- a hand-sync against a file that no longer had
+# anything to sync with.
+# test/ holds benchmark harnesses that ship in no release.
 # cmd/qrdbd/data/ is the daemon's runtime data directory: gitignored, created
 # by running qrdbd locally, and full of the dev CA/node/admin keys it mints on
 # first boot. Nothing there can reach history, so scanning it only makes the
@@ -2381,10 +2411,55 @@ mod-verify:
 # Suppressions belong in a .trivyignore with a reason and a date, not here.
 TRIVY_SKIP_DIRS := --skip-dirs test,cmd/qrdbd/data
 
+# The oldest vulnerability database this leg will certify a tree with (#451).
+#
+# It is not a second expiry policy layered over trivy's. trivy-db is rebuilt
+# upstream every six hours and its metadata sets NextUpdate = UpdatedAt + 24h,
+# so 24 is trivy's own horizon; what the check adds is the comparison against
+# the WALL CLOCK that trivy does not make. trivy decides whether to refresh by
+# reading NextUpdate out of the artifact it already holds -- data inside that
+# artifact rather than a test of how old it is. Measured on v0.74.0: a database
+# stamped 2026-06-30 declaring NextUpdate 2027-01-01 scanned this tree offline
+# and exited 0, with no warning and no age anywhere in its output.
+#
+# Raising this number widens exactly one thing: how far behind the advisory
+# stream a green Security leg is allowed to be. The rationale, the measurement
+# and the discovery floor are in scripts/check-trivy-db.sh.
+TRIVY_DB_MAX_AGE_HOURS := 24
+
+# THREE COMMANDS, AND THE ORDER IS THE POINT.
+#
+# The refresh is separated from the scan so a database can be certified BEFORE
+# anything is judged with it, and the scan then runs `--skip-db-update` so the
+# database the check ruled on is the database the scan rules with. Folding them
+# back into one invocation returns to the state #451 describes: a verdict with
+# no statement about what produced it.
+#
+# `--download-db-only` takes a scan target it does not read; the `.` is that
+# argument, not a scope. The secret scanner needs no database, so the refresh
+# asks only for vuln.
+#
+# The check is deliberately NOT its own phony target. It has exactly one
+# correct call site -- between these two -- and a second entry point would be a
+# way to run it against a database no scan then uses, which is a report rather
+# than a gate.
 .PHONY: trivy
 trivy:
 	$(call require-scanner,trivy,$(TRIVY_INSTALL))
-	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 $(TRIVY_SKIP_DIRS) .
+	trivy fs --scanners vuln --download-db-only .
+	@./scripts/check-trivy-db.sh $(TRIVY_DB_MAX_AGE_HOURS)
+	trivy fs --scanners vuln,secret --severity CRITICAL,HIGH --exit-code 1 --skip-db-update $(TRIVY_SKIP_DIRS) .
+
+# The rejecting branches of that check, which the target above never reaches
+# while the database is fresh -- and on any host where the suite is meant to
+# run it is fresh, which is the point. Same reasoning as test-tool-versions and
+# test-bundled-gosec, and it carries more weight here: the property is that the
+# gate FAILS rather than warns, and an assertion nobody has watched fail is not
+# that property. Needs no network, no trivy and no Go build, so it runs in the
+# Lint job on every push rather than only where a scanner is installed.
+.PHONY: test-trivy-db
+test-trivy-db: ## Test the trivy database-age guard
+	@./scripts/check-trivy-db_test.sh
 
 # The contract CI calls (devops.md §8): gosec, govulncheck, go mod verify and
 # trivy fs, in the same form a developer runs locally.

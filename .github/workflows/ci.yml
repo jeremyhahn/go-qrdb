@@ -218,6 +218,23 @@ jobs:
       - name: Test the scanner-pin guard
         run: make test-tool-versions
 
+      # #451. The pins above say WHICH scanner runs; this is about the DATA it
+      # rules with. trivy decides whether to refresh by reading NextUpdate out
+      # of the database artifact it already holds, so a database that declares
+      # itself not yet due is used however old it is -- measured on v0.74.0, a
+      # June database claiming NextUpdate 2027 scanned this tree offline and
+      # exited 0, with no age and no warning anywhere in its output. A green
+      # verdict from a database that predates the advisory is the worst shape a
+      # gate can take, because unlike a false red nobody investigates it.
+      #
+      # `make trivy` now refuses that, and this is the leg that demonstrates the
+      # refusal rather than asserting it: the guard's rejecting branches --
+      # including the exact stale-but-unexpired cache above -- run here on every
+      # push, with no trivy, no network and no Go build, which is why this step
+      # belongs in Lint rather than in the Security job or in nightly.yml.
+      - name: Test the trivy database-age guard
+        run: make test-trivy-db
+
       # #327: compose merges overlay keys individually, so an overlay that
       # redirects `dockerfile:` inherits the base file's `target:`. That pointed
       # the GPU lane at a stage Dockerfile.gpu did not declare, and
