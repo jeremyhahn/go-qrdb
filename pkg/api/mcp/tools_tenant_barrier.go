@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -115,7 +116,8 @@ func handleTenantBarrierInit(svc tenant.TenantServicer, authorize func(ctx conte
 			return mcp.NewToolResultError("authorization denied: " + err.Error()), nil
 		}
 
-		passphrase := mcp.ParseString(req, "passphrase", "")
+		passphrase := secretArg(req, "passphrase")
+		defer secure.Wipe(passphrase)
 		threshold := mcp.ParseInt(req, "threshold", 0)
 		shares := mcp.ParseInt(req, "shares", 0)
 		strategy := mcp.ParseString(req, "strategy", "")

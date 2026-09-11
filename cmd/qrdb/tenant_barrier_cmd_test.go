@@ -43,7 +43,7 @@ import (
 // was invoked with.
 type capturedBarrierInitCall struct {
 	tenantID   string
-	passphrase string
+	passphrase []byte
 	threshold  int
 	shares     int
 	strategy   seal.StrategyID
@@ -72,13 +72,18 @@ func newStrategyCapturingTenantService() *strategyCapturingTenantService {
 // returned TenantBarrierInitResult.
 func (m *strategyCapturingTenantService) TenantBarrierInitWithStrategy(
 	ctx context.Context,
-	tenantID, passphrase string,
+	tenantID string,
+	passphrase []byte,
 	threshold, shares int,
 	strategy seal.StrategyID,
 ) (*tenant.TenantBarrierInitResult, error) {
+	// passphrase is a BORROW valid only for this call — the CLI zeroizes the
+	// request's slice once TenantBarrierInit returns — so the recorded copy
+	// must be deep. Recording the slice header would hand the assertions a
+	// buffer that is legitimately wiped out from under them.
 	call := capturedBarrierInitCall{
 		tenantID:   tenantID,
-		passphrase: passphrase,
+		passphrase: bytes.Clone(passphrase),
 		threshold:  threshold,
 		shares:     shares,
 		strategy:   strategy,
@@ -167,7 +172,7 @@ func TestTenantBarrierInitCmd_PassphraseStrategyFlags(t *testing.T) {
 	if svc.captured.strategy != seal.StrategyPassphrase {
 		t.Fatalf("expected strategy=passphrase, got %q", svc.captured.strategy)
 	}
-	if svc.captured.passphrase != "s3cr3t-passphrase" {
+	if string(svc.captured.passphrase) != "s3cr3t-passphrase" {
 		t.Fatalf("expected passphrase to be threaded through, got %q", svc.captured.passphrase)
 	}
 	if !strings.Contains(out, "OK") {
@@ -191,7 +196,7 @@ func TestTenantBarrierInitCmd_NoneStrategyOmitsPassphrase(t *testing.T) {
 	if svc.captured.strategy != seal.StrategyNone {
 		t.Fatalf("expected strategy=none, got %q", svc.captured.strategy)
 	}
-	if svc.captured.passphrase != "" {
+	if string(svc.captured.passphrase) != "" {
 		t.Fatalf("expected empty passphrase for the none strategy, got %q", svc.captured.passphrase)
 	}
 	if !strings.Contains(out, "OK") {
@@ -283,7 +288,7 @@ func TestTenantBarrierInitCmd_EmptyPassphraseServiceError(t *testing.T) {
 	svc := newStrategyCapturingTenantService()
 	svc.resultFn = func(call capturedBarrierInitCall) (*tenant.TenantBarrierInitResult, error) {
 		if call.strategy == seal.StrategyPassphrase || call.strategy == "" {
-			if call.passphrase == "" {
+			if string(call.passphrase) == "" {
 				return nil, tenant.ErrEmptyPassphrase
 			}
 		}

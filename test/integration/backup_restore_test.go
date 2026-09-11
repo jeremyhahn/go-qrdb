@@ -202,7 +202,7 @@ func unsealOnlyBarrier(t *testing.T, ca *testCA, port int) {
 	t.Helper()
 
 	client := mtlsHTTPClient(t, ca, 10*time.Second)
-	body, err := json.Marshal(map[string]interface{}{"secret": ""})
+	body, err := json.Marshal(map[string]interface{}{"secret": []byte(nil)})
 	if err != nil {
 		t.Fatalf("unsealOnlyBarrier: marshal unseal body: %v", err)
 	}

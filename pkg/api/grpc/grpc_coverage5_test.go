@@ -709,7 +709,7 @@ func TestTenantBarrier_Init_EmptyPassphrase(t *testing.T) {
 
 	_, err := server.Init(context.Background(), &pb.TenantBarrierInitRequest{
 		TenantId:   "t1",
-		Passphrase: "",
+		Passphrase: []byte(""),
 		Strategy:   "shamir",
 	})
 	if err != nil {

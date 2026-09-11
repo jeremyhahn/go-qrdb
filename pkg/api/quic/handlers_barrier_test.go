@@ -36,7 +36,7 @@ import (
 
 func TestHandleBarrierInitialize_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := proto.Marshal(&pb.BarrierInitializeRequest{Secret: "mysecret"})
+	payload, _ := proto.Marshal(&pb.BarrierInitializeRequest{Secret: []byte("mysecret")})
 
 	_, err := srv.handleBarrierInitialize(context.Background(), payload)
 	if err == nil {
@@ -51,9 +51,9 @@ func TestHandleBarrierInitialize_NilService(t *testing.T) {
 func TestHandleBarrierInitialize_Success(t *testing.T) {
 	called := false
 	barrierSvc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret string) error {
+		barrierInitializeFn: func(_ context.Context, secret []byte) error {
 			called = true
-			if secret != "mysecret" {
+			if string(secret) != "mysecret" {
 				t.Errorf("expected secret 'mysecret', got %q", secret)
 			}
 			return nil
@@ -61,7 +61,7 @@ func TestHandleBarrierInitialize_Success(t *testing.T) {
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
 
-	payload, err := proto.Marshal(&pb.BarrierInitializeRequest{Secret: "mysecret"})
+	payload, err := proto.Marshal(&pb.BarrierInitializeRequest{Secret: []byte("mysecret")})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -81,11 +81,11 @@ func TestHandleBarrierInitialize_Success(t *testing.T) {
 func TestHandleBarrierInitialize_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "init failed"}
 	barrierSvc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, _ string) error { return svcErr },
+		barrierInitializeFn: func(_ context.Context, _ []byte) error { return svcErr },
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
 
-	payload, _ := proto.Marshal(&pb.BarrierInitializeRequest{Secret: "s"})
+	payload, _ := proto.Marshal(&pb.BarrierInitializeRequest{Secret: []byte("s")})
 	_, err := srv.handleBarrierInitialize(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
@@ -114,7 +114,7 @@ func TestHandleBarrierInitialize_UnmarshalError(t *testing.T) {
 
 func TestHandleBarrierUnseal_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: "s"})
+	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: []byte("s")})
 	_, err := srv.handleBarrierUnseal(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
@@ -127,8 +127,8 @@ func TestHandleBarrierUnseal_NilService(t *testing.T) {
 
 func TestHandleBarrierUnseal_Success(t *testing.T) {
 	barrierSvc := &mockBarrierService{
-		barrierUnsealFn: func(_ context.Context, secret string) error {
-			if secret != "unseal-secret" {
+		barrierUnsealFn: func(_ context.Context, secret []byte) error {
+			if string(secret) != "unseal-secret" {
 				t.Errorf("expected secret 'unseal-secret', got %q", secret)
 			}
 			return nil
@@ -136,7 +136,7 @@ func TestHandleBarrierUnseal_Success(t *testing.T) {
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
 
-	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: "unseal-secret"})
+	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: []byte("unseal-secret")})
 	resp, err := srv.handleBarrierUnseal(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -149,10 +149,10 @@ func TestHandleBarrierUnseal_Success(t *testing.T) {
 func TestHandleBarrierUnseal_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "unseal failed"}
 	barrierSvc := &mockBarrierService{
-		barrierUnsealFn: func(_ context.Context, _ string) error { return svcErr },
+		barrierUnsealFn: func(_ context.Context, _ []byte) error { return svcErr },
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
-	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: "s"})
+	payload, _ := proto.Marshal(&pb.BarrierUnsealRequest{Secret: []byte("s")})
 	_, err := srv.handleBarrierUnseal(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
@@ -289,7 +289,7 @@ func TestHandleBarrierStatus_ServiceError(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: "s", Threshold: 2, TotalShares: 3})
+	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: []byte("s"), Threshold: 2, TotalShares: 3})
 	_, err := srv.handleBarrierShamirInitialize(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
@@ -298,7 +298,7 @@ func TestHandleBarrierShamirInitialize_NilService(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 	barrierSvc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error) {
+		barrierInitializeShamirFn: func(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
 				Threshold:   threshold,
 				TotalShares: total,
@@ -308,7 +308,7 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
 
-	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: "s", Threshold: 2, TotalShares: 3})
+	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: []byte("s"), Threshold: 2, TotalShares: 3})
 	resp, err := srv.handleBarrierShamirInitialize(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -333,12 +333,12 @@ func TestHandleBarrierShamirInitialize_Success(t *testing.T) {
 func TestHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "shamir init error"}
 	barrierSvc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+		barrierInitializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 			return nil, svcErr
 		},
 	}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBarrierService(barrierSvc))
-	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: "s", Threshold: 2, TotalShares: 3})
+	payload, _ := proto.Marshal(&pb.BarrierShamirInitializeRequest{Secret: []byte("s"), Threshold: 2, TotalShares: 3})
 	_, err := srv.handleBarrierShamirInitialize(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")

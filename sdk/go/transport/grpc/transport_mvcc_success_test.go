@@ -422,12 +422,12 @@ func TestGRPCBarrier_RemainingMethods_Success(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("BarrierInitialize", func(t *testing.T) {
-		if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: "p"}); err != nil {
+		if err := tr.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{Secret: []byte("p")}); err != nil {
 			t.Fatalf("BarrierInitialize: %v", err)
 		}
 	})
 	t.Run("BarrierUnseal", func(t *testing.T) {
-		if err := tr.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: "p"}); err != nil {
+		if err := tr.BarrierUnseal(ctx, &transport.BarrierUnsealRequest{Secret: []byte("p")}); err != nil {
 			t.Fatalf("BarrierUnseal: %v", err)
 		}
 	})

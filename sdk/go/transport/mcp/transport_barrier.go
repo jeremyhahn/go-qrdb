@@ -55,7 +55,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 	}
 
 	args := map[string]any{
-		"secret": req.Secret,
+		"secret": secretArg(req.Secret),
 	}
 	if req.SOPin != "" {
 		args["so_pin"] = req.SOPin
@@ -78,7 +78,7 @@ func (t *Transport) BarrierUnseal(ctx context.Context, req *transport.BarrierUns
 	}
 
 	if _, err := t.callTool(ctx, "qrdb_barrier_unseal", map[string]any{
-		"secret": req.Secret,
+		"secret": secretArg(req.Secret),
 	}); err != nil {
 		return &transport.RequestError{Method: "BarrierUnseal", Err: err}
 	}
@@ -129,7 +129,7 @@ func (t *Transport) BarrierInitializeShamir(ctx context.Context, req *transport.
 	}
 
 	args := map[string]any{
-		"secret":       req.Secret,
+		"secret":       secretArg(req.Secret),
 		"threshold":    req.Threshold,
 		"total_shares": req.TotalShares,
 	}

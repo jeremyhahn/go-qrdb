@@ -43,11 +43,11 @@ import (
 // mockBarrierService implements service.BarrierServicer with configurable
 // function fields for per-test behavior injection.
 type mockBarrierService struct {
-	initializeFn       func(ctx context.Context, secret string) error
-	unsealFn           func(ctx context.Context, secret string) error
+	initializeFn       func(ctx context.Context, secret []byte) error
+	unsealFn           func(ctx context.Context, secret []byte) error
 	sealFn             func(ctx context.Context) error
 	statusFn           func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn func(ctx context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error)
+	initializeShamirFn func(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error)
 	unsealShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealSharesFn     func(ctx context.Context, shares []string) error
 	rekeyFn            func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -70,14 +70,14 @@ type mockBarrierService struct {
 
 var _ service.BarrierServicer = (*mockBarrierService)(nil)
 
-func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, secret)
 	}
 	return nil
 }
 
-func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, secret)
 	}
@@ -103,7 +103,7 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, total)
 	}

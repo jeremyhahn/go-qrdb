@@ -240,7 +240,10 @@ type TenantServicer interface {
 	// seal.StrategyPassphrase. The threshold and shares parameters are
 	// reserved for Shamir secret-sharing configuration. An empty
 	// passphrase is rejected; there is no derived credential fallback.
-	TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*TenantBarrierInitResult, error)
+	// passphrase is []byte, matching TenantBarrierUnseal's key, because a
+	// Go string cannot be zeroized. It is borrowed for the call and never
+	// retained, so the caller is free to wipe it on return.
+	TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierInitWithStrategy initializes the per-tenant barrier
 	// using an explicitly selected seal strategy resolved from the
@@ -253,7 +256,9 @@ type TenantServicer interface {
 	// injected, only the built-in software strategies (passphrase, none,
 	// shamir) are accepted and hardware/cloud strategy requests return
 	// InvalidStrategyError.
-	TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, strategyID seal.StrategyID) (*TenantBarrierInitResult, error)
+	// passphrase is a borrow the caller may wipe on return; see
+	// TenantBarrierInit.
+	TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, strategyID seal.StrategyID) (*TenantBarrierInitResult, error)
 
 	// TenantBarrierUnseal unseals the per-tenant barrier using the
 	// caller-supplied key material. There is no derived credential
@@ -1338,7 +1343,7 @@ func enforceTenantScope(ctx context.Context, targetTenantID, op string) error {
 //
 // Authorization — who may call this — is enforced at the API/transport
 // layer; tenant-scope containment is enforced here.
-func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*TenantBarrierInitResult, error) {
+func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*TenantBarrierInitResult, error) {
 	return s.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, seal.StrategyPassphrase)
 }
 
@@ -1355,7 +1360,8 @@ func (s *TenantService) TenantBarrierInit(ctx context.Context, tenantID, passphr
 // layer, not here.
 func (s *TenantService) TenantBarrierInitWithStrategy(
 	ctx context.Context,
-	tenantID, passphrase string,
+	tenantID string,
+	passphrase []byte,
 	threshold, shares int,
 	strategyID seal.StrategyID,
 ) (*TenantBarrierInitResult, error) {
@@ -1386,7 +1392,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	// The passphrase strategy requires caller-supplied key material.
 	// Hardware/cloud strategies wrap the root key via their own KEK;
 	// no passphrase is needed.
-	if seal.IsPassphraseStrategy(strategyID) && passphrase == "" {
+	if seal.IsPassphraseStrategy(strategyID) && len(passphrase) == 0 {
 		return nil, ErrEmptyPassphrase
 	}
 
@@ -1409,7 +1415,7 @@ func (s *TenantService) TenantBarrierInitWithStrategy(
 	// Credentials struct is empty (the strategy's KEK handles wrapping).
 	creds := seal.Credentials{}
 	if seal.IsPassphraseStrategy(strategyID) {
-		creds.Secret = []byte(passphrase)
+		creds.Secret = passphrase
 	}
 
 	// Register a sealed shell when the tenant barrier is not yet

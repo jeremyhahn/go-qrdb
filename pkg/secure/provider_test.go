@@ -137,22 +137,106 @@ func TestTerminalProvider_NonTTY(t *testing.T) {
 	}
 }
 
-func TestTrimTrailingNewline(t *testing.T) {
+// TestStdinProvider_LineEndings pins the line-ending handling that used to
+// live in the trimTrailingNewline helper. The helper is gone: the read now
+// goes byte-at-a-time straight into mlocked memory (a bufio.Reader staged the
+// passphrase in an unwipeable heap buffer), so the trimming is part of the
+// read and is tested through the provider.
+func TestStdinProvider_LineEndings(t *testing.T) {
 	tests := []struct {
-		in, want string
+		name  string
+		in    string
+		want  string
+		isErr bool
 	}{
-		{"", ""},
-		{"abc", "abc"},
-		{"abc\n", "abc"},
-		{"abc\r\n", "abc"},
-		{"\n", ""},
-		{"\r\n", ""},
+		{name: "no terminator", in: "abc", want: "abc"},
+		{name: "lf", in: "abc\n", want: "abc"},
+		{name: "crlf", in: "abc\r\n", want: "abc"},
+		{name: "lf only", in: "\n", isErr: true},
+		{name: "crlf only", in: "\r\n", isErr: true},
+		// A CR is half of a CRLF, not a terminator in its own right: with no
+		// newline behind it the byte is part of the passphrase and is kept.
+		{name: "bare cr at eof", in: "abc\r", want: "abc\r"},
+		// Only the first line is consumed, and nothing past the newline is
+		// read from the underlying reader.
+		{name: "stops at first newline", in: "abc\ndef\n", want: "abc"},
 	}
 	for _, tc := range tests {
-		got := trimTrailingNewline([]byte(tc.in))
-		if string(got) != tc.want {
-			t.Fatalf("trim(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewStdinProviderFromReader(strings.NewReader(tc.in))
+			buf, err := p.Passphrase(context.Background(), "")
+			if tc.isErr {
+				if err == nil {
+					buf.Destroy()
+					t.Fatalf("Passphrase(%q): expected an error", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Passphrase(%q): %v", tc.in, err)
+			}
+			defer buf.Destroy()
+			if string(buf.Bytes()) != tc.want {
+				t.Fatalf("Passphrase(%q) = %q, want %q", tc.in, buf.Bytes(), tc.want)
+			}
+		})
+	}
+}
+
+// TestStdinProvider_DoesNotOverRead is the reason the bufio.Reader had to go
+// beyond the un-wipeable staging buffer: bufio consumes up to its whole
+// buffer from the underlying reader, so everything after the passphrase's
+// newline was swallowed and unavailable to the next reader of the same
+// stream. This asserts the remainder is still there.
+func TestStdinProvider_DoesNotOverRead(t *testing.T) {
+	r := strings.NewReader("hunter2\nthe-rest-of-the-stream\n")
+	p := NewStdinProviderFromReader(r)
+	buf, err := p.Passphrase(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Passphrase: %v", err)
+	}
+	defer buf.Destroy()
+	if string(buf.Bytes()) != "hunter2" {
+		t.Fatalf("passphrase = %q, want %q", buf.Bytes(), "hunter2")
+	}
+	rest, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(rest) != "the-rest-of-the-stream\n" {
+		t.Fatalf("remaining stream = %q, want %q", rest, "the-rest-of-the-stream\n")
+	}
+}
+
+// TestStdinProvider_TooLong verifies that input exceeding the mlocked line
+// buffer is REFUSED, not truncated. Truncation would unseal against a prefix
+// of the operator's passphrase without telling anyone.
+func TestStdinProvider_TooLong(t *testing.T) {
+	long := strings.Repeat("a", MaxStdinPassphraseLen+1) + "\n"
+	p := NewStdinProviderFromReader(strings.NewReader(long))
+	buf, err := p.Passphrase(context.Background(), "")
+	if err == nil {
+		buf.Destroy()
+		t.Fatalf("expected an error for input longer than %d bytes", MaxStdinPassphraseLen)
+	}
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *ProviderError, got %T", err)
+	}
+}
+
+// TestStdinProvider_AtMaxLength verifies the boundary is inclusive: a
+// passphrase of exactly MaxStdinPassphraseLen bytes is accepted.
+func TestStdinProvider_AtMaxLength(t *testing.T) {
+	want := strings.Repeat("a", MaxStdinPassphraseLen)
+	p := NewStdinProviderFromReader(strings.NewReader(want + "\n"))
+	buf, err := p.Passphrase(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Passphrase at exactly MaxStdinPassphraseLen: %v", err)
+	}
+	defer buf.Destroy()
+	if string(buf.Bytes()) != want {
+		t.Fatalf("length = %d, want %d", buf.Size(), MaxStdinPassphraseLen)
 	}
 }
 
@@ -194,8 +278,9 @@ type errReader struct{ err error }
 func (r *errReader) Read(_ []byte) (int, error) { return 0, r.err }
 
 // TestStdinProvider_IOError exercises the branch in StdinProvider.Passphrase
-// where br.ReadBytes returns an error that is NOT io.EOF. That path wraps the
-// error in *ProviderError and returns it to the caller.
+// where the byte-at-a-time read returns an error that is NOT io.EOF (nor
+// io.ErrUnexpectedEOF). That path wraps the error in *ProviderError and
+// returns it to the caller.
 func TestStdinProvider_IOError(t *testing.T) {
 	injected := errors.New("injected read error")
 	p := NewStdinProviderFromReader(&errReader{err: injected})

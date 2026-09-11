@@ -1,6 +1,6 @@
 # Barrier and Seal — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Exported surface
 
@@ -63,6 +63,46 @@ For field documentation and the complete struct definition, see `pkg/seal/barrie
 - `strategiesMu`, `accumulatorMu` (sync.RWMutex, sync.Mutex): synchronization for concurrent access
 
 ## Invariants
+
+- **A barrier credential is a wipeable byte slice at every layer, and it is a
+  borrow.** The transport request field, the protobuf field, the service-layer
+  parameter and `seal.Credentials.Secret` are all `[]byte`, never `string`,
+  because a Go string is immutable and therefore cannot be zeroized.
+
+  The ownership rule that makes the type useful:
+
+  - **The callee borrows and retains nothing.** `BarrierServicer`,
+    `TenantServicer` and the sealing strategies read the slice for the duration
+    of the call. `NewSoftwareStrategy` copies into its own enclave;
+    `InitializeShamir` hands the credential to `SealAndDistribute`, which wipes
+    it. Nothing keeps a reference past the call, which is what makes the caller
+    free to wipe.
+  - **The owner is whoever decoded it, and it wipes on every exit path.** Each
+    protocol handler `defer secure.Wipe`s the slice its decoder produced, so a
+    rejected unseal leaves no plaintext behind either.
+  - **The exception is `enable-encryption`, and it is deliberate.** That
+    migration runs in a goroutine that OUTLIVES the request, so ownership
+    passes to the goroutine and the wipe is deferred there. A handler-level
+    `defer` would zero the credential out from under a running migration.
+  - **A test double must therefore deep-copy anything it records.** A double
+    that stores the slice header is holding a borrow, and it will read back as
+    zeros once the handler returns — correctly.
+  - **A wipe does not reach the encoders.** It destroys the slice and its
+    aliases, not the transient copy serialization makes — base64 in a REST
+    body, protobuf's out-of-place marshalling, the MCP JSON-RPC body. Those go
+    unreferenced and are collected, not zeroized, and nothing at this layer can
+    change that: serializing means copying and the wire format owns the copy.
+    The guarantee is that the caller's copy and the daemon's decoded copy are
+    destroyable on demand, not that no plaintext exists anywhere.
+
+  MCP is the one transport that cannot honour this end to end: tool arguments
+  are JSON strings, so `pkg/api/mcp.secretArg` and
+  `sdk/go/transport/mcp.secretArg` are the single documented conversion points
+  on each side. The residue is one string per call and goes no further.
+
+  The rule does **not** yet reach Shamir share fields or SO/User PINs, which
+  are still text strings on every transport. See
+  [api.md](api.md#known-limitation--share-and-pin-fields-are-still-text-strings).
 
 - **The default registry holds exactly two strategies**: `StrategyPassphrase`
   (via `NewDeferredSoftwareStrategy`, so the passphrase arrives at

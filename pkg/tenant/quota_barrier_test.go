@@ -582,7 +582,7 @@ func TestTenantService_BarrierSeal_Success(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "seal-ok", "Seal OK", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInit(ctx, "seal-ok", "seal-ok-pw", 0, 0); err != nil {
+	if _, err := svc.TenantBarrierInit(ctx, "seal-ok", []byte("seal-ok-pw"), 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 
@@ -665,7 +665,7 @@ func TestTenantService_BarrierStatus_Initialized(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "status-init", "Status Init", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInit(ctx, "status-init", "status-init-pw", 0, 0); err != nil {
+	if _, err := svc.TenantBarrierInit(ctx, "status-init", []byte("status-init-pw"), 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 
@@ -725,7 +725,7 @@ func TestTenantService_BarrierStatus_Sealed(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, "status-sealed", "Status Sealed", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInit(ctx, "status-sealed", "status-sealed-pw", 0, 0); err != nil {
+	if _, err := svc.TenantBarrierInit(ctx, "status-sealed", []byte("status-sealed-pw"), 0, 0); err != nil {
 		t.Fatalf("TenantBarrierInit: %v", err)
 	}
 	if err := reg.SealTenant("status-sealed"); err != nil {
@@ -1103,7 +1103,7 @@ func TestKVTenantBarrierInitWithStrategy_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	_, err := svc.TenantBarrierInitWithStrategy(ctx, "acme", "pw", 0, 0, seal.StrategyPassphrase)
+	_, err := svc.TenantBarrierInitWithStrategy(ctx, "acme", []byte("pw"), 0, 0, seal.StrategyPassphrase)
 	if !errors.Is(err, ErrBarrierNotEnabled) {
 		t.Fatalf("want ErrBarrierNotEnabled, got %v", err)
 	}

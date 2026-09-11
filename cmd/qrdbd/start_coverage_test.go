@@ -558,11 +558,11 @@ func (m *mockTenantServicer) UpdateEntitlements(ctx context.Context, id string, 
 	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 

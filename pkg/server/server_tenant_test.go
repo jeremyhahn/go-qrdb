@@ -63,11 +63,11 @@ func (m *mockTenantServicer) ListTenants(_ context.Context) ([]tenant.TenantInfo
 	return nil, nil
 }
 func (m *mockTenantServicer) DeleteTenant(_ context.Context, _ string) error { return nil }
-func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantServicer) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 
-func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantServicer) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 

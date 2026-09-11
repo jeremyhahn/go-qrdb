@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -108,8 +109,11 @@ type setTenantEntitlementsRequest struct {
 // threshold and shares fields are reserved for Shamir configuration.
 // Strategy selects the seal strategy; when empty the passphrase (software)
 // strategy is used for backward compatibility.
+//
+// Passphrase is []byte (base64 on the wire, matching tenantBarrierUnsealRequest's
+// key) so it can be zeroized; a Go string cannot be.
 type tenantBarrierInitRequest struct {
-	Passphrase string `json:"passphrase,omitempty"`
+	Passphrase []byte `json:"passphrase,omitempty"`
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`
@@ -621,6 +625,10 @@ func (s *Server) handleTenantBarrierInit(w http.ResponseWriter, r *http.Request,
 			return
 		}
 	}
+	// The decoded credential is this handler's to own and to destroy. The
+	// tenant service borrows it for the call and retains nothing, so a
+	// deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.Passphrase)
 
 	ctx, cancel := context.WithTimeout(r.Context(), tenantRequestTimeout)
 	defer cancel()

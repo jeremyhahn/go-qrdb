@@ -91,9 +91,9 @@ var _ pin.PINBackend = (*stubPINBackend)(nil)
 func TestEmbedded_BarrierInitialize_PersistsPINs(t *testing.T) {
 	called := false
 	svc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret string) error {
+		barrierInitializeFn: func(_ context.Context, secret []byte) error {
 			called = true
-			if secret != "s" {
+			if string(secret) != "s" {
 				t.Errorf("secret = %q, want %q", secret, "s")
 			}
 			return nil
@@ -108,7 +108,7 @@ func TestEmbedded_BarrierInitialize_PersistsPINs(t *testing.T) {
 	}
 
 	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret:  "s",
+		Secret:  []byte("s"),
 		SOPin:   "so-1234",
 		UserPin: "u-5678",
 	}); err != nil {

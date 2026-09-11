@@ -1094,13 +1094,13 @@ func TestRecoveryInterceptor_PanicRecovered(t *testing.T) {
 // stubBarrierSvc satisfies service.BarrierServicer for option propagation tests.
 type stubBarrierSvc struct{}
 
-func (s *stubBarrierSvc) BarrierInitialize(_ context.Context, _ string) error { return nil }
-func (s *stubBarrierSvc) BarrierUnseal(_ context.Context, _ string) error     { return nil }
+func (s *stubBarrierSvc) BarrierInitialize(_ context.Context, _ []byte) error { return nil }
+func (s *stubBarrierSvc) BarrierUnseal(_ context.Context, _ []byte) error     { return nil }
 func (s *stubBarrierSvc) BarrierSeal(_ context.Context) error                 { return nil }
 func (s *stubBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return nil, nil
 }
-func (s *stubBarrierSvc) BarrierInitializeShamir(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+func (s *stubBarrierSvc) BarrierInitializeShamir(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 	return nil, nil
 }
 func (s *stubBarrierSvc) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {

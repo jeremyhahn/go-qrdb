@@ -2034,7 +2034,7 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 	// Initialize the barrier.
 	initBody, initStatus := iraftAPIPost(t, client,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/initialize", port),
-		map[string]interface{}{"secret": passphrase},
+		map[string]interface{}{"secret": []byte(passphrase)},
 	)
 	if initStatus != http.StatusNoContent {
 		t.Fatalf("barrier init on port %d: status %d, body: %s", port, initStatus, initBody)
@@ -2054,7 +2054,7 @@ func initAndUnsealBarrier(t *testing.T, ca *testCA, port int, passphrase string)
 	// above rather than a genuine failure -- retry briefly to absorb it,
 	// and tolerate the connection continuing to be refused (the listener
 	// really is gone because the barrier really is unsealed).
-	body, err := json.Marshal(map[string]interface{}{"secret": passphrase})
+	body, err := json.Marshal(map[string]interface{}{"secret": []byte(passphrase)})
 	if err != nil {
 		t.Fatalf("initAndUnsealBarrier: marshal unseal body: %v", err)
 	}

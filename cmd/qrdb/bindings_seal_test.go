@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
 )
 
@@ -77,8 +78,8 @@ func TestNewSealBinding_NilServer(t *testing.T) {
 func TestSealBinding_Initialize_Success(t *testing.T) {
 	var gotSecret string
 	svc := &mockBarrierService{
-		initializeFn: func(_ context.Context, secret string) error {
-			gotSecret = secret
+		initializeFn: func(_ context.Context, secret []byte) error {
+			gotSecret = string(secret)
 			return nil
 		},
 	}
@@ -109,7 +110,7 @@ func TestSealBinding_Initialize_MarksConfigInitialized(t *testing.T) {
 func TestSealBinding_Initialize_ServiceError(t *testing.T) {
 	log := testLogger(t)
 	svc := &mockBarrierService{
-		initializeFn: func(_ context.Context, _ string) error { return errBarrierTest },
+		initializeFn: func(_ context.Context, _ []byte) error { return errBarrierTest },
 	}
 	b := newSealTestBinding(t, svc)
 	cb := NewConfigBinding(log, nil, b.conn)
@@ -146,8 +147,8 @@ func TestSealBinding_InitializeShamir_ShareFree(t *testing.T) {
 	var gotSecret string
 	var gotThreshold, gotTotal int
 	svc := &mockBarrierService{
-		initializeShamirFn: func(_ context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error) {
-			gotSecret = secret
+		initializeShamirFn: func(_ context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
+			gotSecret = string(secret)
 			gotThreshold = threshold
 			gotTotal = total
 			return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
@@ -195,7 +196,7 @@ func TestSealBinding_InitializeShamir_MarksConfigInitialized(t *testing.T) {
 func TestSealBinding_InitializeShamir_ServiceError(t *testing.T) {
 	log := testLogger(t)
 	svc := &mockBarrierService{
-		initializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+		initializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 			return nil, errBarrierTest
 		},
 	}
@@ -288,8 +289,8 @@ func TestSealBinding_Unseal_PassphraseRoute(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{Sealed: true, Strategy: "passphrase"}, nil
 		},
-		unsealFn: func(_ context.Context, secret string) error {
-			gotSecret = secret
+		unsealFn: func(_ context.Context, secret []byte) error {
+			gotSecret = string(secret)
 			return nil
 		},
 		unsealShareFn: func(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
@@ -348,7 +349,7 @@ func TestSealBinding_Unseal_PassphraseError(t *testing.T) {
 		statusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
 			return &service.BarrierStatusInfo{Sealed: true, Strategy: "passphrase"}, nil
 		},
-		unsealFn: func(_ context.Context, _ string) error { return errBarrierTest },
+		unsealFn: func(_ context.Context, _ []byte) error { return errBarrierTest },
 	}
 	b := newSealTestBinding(t, svc)
 
@@ -499,5 +500,56 @@ func TestSealBinding_Status_NotConnected(t *testing.T) {
 	var nce *NotConnectedError
 	if !errors.As(err, &nce) {
 		t.Fatalf("expected NotConnectedError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Credential ownership at the GUI boundary
+//
+// Every other method on SealBinding takes a string and runs it through
+// secretBytes, which allocates, so the slice it wipes is its own.
+// EnableEncryption is the one that receives the caller's struct, and the Wails
+// frontend still holds that pointer after the promise settles. Wiping
+// req.Passphrase there hands the GUI back a zeroed field of its own request
+// object; the binding must copy first and wipe only the copy.
+// ---------------------------------------------------------------------------
+
+// TestSealBinding_EnableEncryption_LeavesTheCallersPassphraseIntact fails if
+// the binding goes back to wiping req.Passphrase directly.
+//
+// The transport returns NotImplementedError for enable-encryption on the
+// embedded path, which is deliberate here rather than incidental: the deferred
+// wipe runs on the error path too, so the error return is the strictest place
+// to observe which slice got zeroed.
+func TestSealBinding_EnableEncryption_LeavesTheCallersPassphraseIntact(t *testing.T) {
+	b := newSealTestBinding(t, &mockBarrierService{})
+
+	const want = "caller-owned-passphrase"
+	req := &transport.BarrierEnableEncryptionRequest{
+		Strategy:   "passphrase",
+		Passphrase: []byte(want),
+	}
+
+	// Error is expected on the embedded transport; ownership is the assertion.
+	_, _ = b.EnableEncryption(req)
+
+	if string(req.Passphrase) != want {
+		t.Fatalf("the caller's passphrase was zeroed by the binding: got %q, want %q — "+
+			"EnableEncryption must copy before it wipes", req.Passphrase, want)
+	}
+}
+
+// TestSealBinding_EnableEncryption_WipesItsOwnCopy is the other half: the fix
+// must not be "delete the wipe". A nil passphrase must stay nil rather than
+// becoming an empty non-nil slice, so an absent credential is still absent on
+// the wire.
+func TestSealBinding_EnableEncryption_WipesItsOwnCopy(t *testing.T) {
+	b := newSealTestBinding(t, &mockBarrierService{})
+
+	req := &transport.BarrierEnableEncryptionRequest{Strategy: "shamir"}
+	_, _ = b.EnableEncryption(req)
+
+	if req.Passphrase != nil {
+		t.Fatalf("an absent passphrase must stay nil, got %#v", req.Passphrase)
 	}
 }

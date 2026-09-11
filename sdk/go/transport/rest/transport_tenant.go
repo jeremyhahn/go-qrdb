@@ -49,7 +49,7 @@ type restTenant struct {
 // It matches the server-side handler payload (omitting the tenant ID, which
 // is carried in the URL path).
 type restTenantBarrierInitRequest struct {
-	Passphrase string `json:"passphrase,omitempty"`
+	Passphrase []byte `json:"passphrase,omitempty"`
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`

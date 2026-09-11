@@ -241,7 +241,7 @@ func TestClusterEnableEncryption_SystemScope_RF3(t *testing.T) {
 			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
 			unsealBody, unsealStatus := iraftAPIPost(t, sysClient,
 				fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", adminPorts[idx]),
-				map[string]interface{}{"secret": newPassphrase},
+				map[string]interface{}{"secret": []byte(newPassphrase)},
 			)
 			if unsealStatus != http.StatusNoContent && unsealStatus != http.StatusConflict {
 				t.Errorf("node %d post-migration unseal: status %d, body: %s", idx+1, unsealStatus, unsealBody)
@@ -376,7 +376,7 @@ func TestClusterEnableEncryption_TenantScope_RF3(t *testing.T) {
 	// Initialize the dedicated barrier as none (unsealed) on the leader.
 	if b, s := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", leaderPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": ""},
+		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
 	); s != http.StatusOK && s != http.StatusNoContent && s != http.StatusCreated {
 		t.Fatalf("tenant barrier init: status %d, body: %s", s, b)
 	}

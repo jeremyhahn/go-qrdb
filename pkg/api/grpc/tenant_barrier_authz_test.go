@@ -87,7 +87,7 @@ func ctxWithIdentity(tenantID string) context.Context {
 func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
-	req := &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: "pw"}
+	req := &pb.TenantBarrierInitRequest{TenantId: "acme", Passphrase: []byte("pw")}
 	if _, err := srv.Init(ctx, req); err != nil {
 		t.Fatalf("tenant admin init own barrier: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestTenantBarrierGate_TenantAdmin_OwnTenant_Allowed(t *testing.T) {
 func TestTenantBarrierGate_TenantAdmin_CrossTenant_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity("acme")
-	req := &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: "pw"}
+	req := &pb.TenantBarrierInitRequest{TenantId: "bob-corp", Passphrase: []byte("pw")}
 	_, err := srv.Init(ctx, req)
 	if err == nil {
 		t.Fatal("cross-tenant init must be denied")
@@ -115,7 +115,7 @@ func TestTenantBarrierGate_SystemAdmin_Denied(t *testing.T) {
 	srv := newBarrierGateServer()
 	ctx := ctxWithIdentity(tenantpkg.SystemTenantID)
 	for _, target := range []string{"acme", tenantpkg.SystemTenantID} {
-		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: "pw"}
+		req := &pb.TenantBarrierInitRequest{TenantId: target, Passphrase: []byte("pw")}
 		_, err := srv.Init(ctx, req)
 		if err == nil {
 			t.Fatalf("system admin init on %q must be denied", target)

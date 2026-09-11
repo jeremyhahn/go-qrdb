@@ -116,7 +116,7 @@ func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, erro
 	return &quota.Quotas{}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id string, _ []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastBarrierID = id
@@ -128,7 +128,7 @@ func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, thres
 	return &tenant.TenantBarrierInitResult{TenantID: id}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
 }
 
@@ -248,7 +248,7 @@ func TestTenantBarrierInit_Success(t *testing.T) {
 
 	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "acme",
-		Passphrase: "supplied-secret",
+		Passphrase: []byte("supplied-secret"),
 		Threshold:  3,
 		Shares:     5,
 	})
@@ -273,7 +273,7 @@ func TestTenantBarrierInit_DefaultsOmitted(t *testing.T) {
 
 	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "acme",
-		Passphrase: "supplied-secret",
+		Passphrase: []byte("supplied-secret"),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -291,7 +291,7 @@ func TestTenantBarrierInit_ServiceError(t *testing.T) {
 
 	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{
 		TenantID:   "missing",
-		Passphrase: "supplied-secret",
+		Passphrase: []byte("supplied-secret"),
 	})
 	if err == nil {
 		t.Fatal("expected error")

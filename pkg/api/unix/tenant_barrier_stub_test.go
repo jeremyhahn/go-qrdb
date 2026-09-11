@@ -74,7 +74,7 @@ func (s *stubTenantBarrierSvc) UpdateEntitlements(ctx context.Context, id string
 }
 
 // TenantBarrierInit records arguments and returns the configured error.
-func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID, _ string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID string, _ []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	s.initCalled = true
 	s.lastInitID = tenantID
 	s.lastInitT = threshold
@@ -83,7 +83,7 @@ func (s *stubTenantBarrierSvc) TenantBarrierInit(_ context.Context, tenantID, _ 
 }
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit for test simplicity.
-func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return s.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 

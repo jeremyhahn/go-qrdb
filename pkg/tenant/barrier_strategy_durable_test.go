@@ -98,7 +98,7 @@ func TestTenantBarrierInitWithStrategy_DurableUnregisteredPath(t *testing.T) {
 	}
 
 	// Initialize with the "none" strategy via the unregistered path.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(none): %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestTenantBarrierInitWithStrategy_IdempotentRegistrationOnRegistered(t *tes
 	}
 
 	// First call registers the durable barrier and initializes it.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyNone); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(first): %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestTenantBarrierInitWithStrategy_IdempotentRegistrationOnRegistered(t *tes
 	// already registered, so the durable backend is reused as-is. Re-init
 	// of an already-initialized barrier is a separate, expected error; what
 	// must NOT happen is a register-phase error or a swapped backend.
-	_, secondErr := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 0, 0, seal.StrategyNone)
+	_, secondErr := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 0, 0, seal.StrategyNone)
 	var barrierErr *BarrierError
 	if errors.As(secondErr, &barrierErr) && barrierErr.Op == "register" {
 		t.Fatalf("second call re-registered the barrier (register-phase error): %v", secondErr)
@@ -216,7 +216,7 @@ func TestTenantBarrierShamir_InitReturnsShareCountAndUnseals(t *testing.T) {
 	}
 
 	const threshold, total = 2, 3
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", threshold, total, seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir)
 	if err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
 	}

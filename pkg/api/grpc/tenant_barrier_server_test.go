@@ -74,14 +74,14 @@ func TestTenantBarrier_Init_Success(t *testing.T) {
 		threshold  int
 		shares     int
 	}{}
-	svc.barrierInitFn = func(_ context.Context, id, passphrase string, th, sh int) error {
-		captured.id, captured.passphrase, captured.threshold, captured.shares = id, passphrase, th, sh
+	svc.barrierInitFn = func(_ context.Context, id string, passphrase []byte, th, sh int) error {
+		captured.id, captured.passphrase, captured.threshold, captured.shares = id, string(passphrase), th, sh
 		return nil
 	}
 
 	conn := connect(t, svc)
 	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
-		TenantId: "acme", Passphrase: "supplied-secret", Threshold: 3, Shares: 5,
+		TenantId: "acme", Passphrase: []byte("supplied-secret"), Threshold: 3, Shares: 5,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,7 +118,7 @@ func TestTenantBarrier_Init_EmptyTenantID(t *testing.T) {
 
 func TestTenantBarrier_Init_NotFound(t *testing.T) {
 	svc := newMockTenantService()
-	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		return tenantpkg.ErrTenantNotFound
 	}
 	conn, cleanup := startTenantBarrierTestServer(t, svc)
@@ -135,7 +135,7 @@ func TestTenantBarrier_Init_NotFound(t *testing.T) {
 
 func TestTenantBarrier_Init_BarrierError(t *testing.T) {
 	svc := newMockTenantService()
-	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		return &tenantpkg.BarrierError{TenantID: "acme", Op: "initialize", Err: errors.New("boom")}
 	}
 	conn, cleanup := startTenantBarrierTestServer(t, svc)

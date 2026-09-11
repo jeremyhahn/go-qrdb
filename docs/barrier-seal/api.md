@@ -1,6 +1,6 @@
 # Barrier and Seal — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 gRPC service `qrdb.v1.QRDBService`. The Unix socket transport serves the same
 gRPC wire over a UDS, so its methods match the gRPC column.
@@ -52,31 +52,82 @@ call rather than a named permission — a tenant acts on its own barrier.
 
 ## Schemas
 
+### The barrier credential is bytes, and therefore base64 in REST JSON
+
+Every field that carries a caller-supplied barrier credential — `secret` on
+initialize, unseal and shamir-initialize; `passphrase` on enable-encryption and
+tenant barrier init — is a **byte string**, not a text string:
+
+- In REST JSON it is **base64**. `{"secret":"aHVudGVyMg=="}` is the passphrase
+  `hunter2`. Sending the plaintext where base64 is expected is a `400`, not a
+  silently-wrong credential.
+- In protobuf (gRPC, Unix, QUIC) the field is `bytes`. proto3 encodes `bytes`
+  and `string` identically, so this costs nothing on the wire.
+- In the Go SDK the request field is `[]byte`.
+
+The reason is memory hygiene, and it is the same reason at every layer. A Go
+string is **immutable**, so a passphrase held as one cannot be zeroized: it
+survives on the heap until the garbage collector happens to reuse the page, and
+is recoverable from a core dump or a memory scrape for an unbounded period. A
+byte slice can be wiped, and is:
+
+- The **caller** owns the slice it puts in the request and may zeroize it as
+  soon as the call returns. Nothing in the SDK retains it.
+- The **daemon** owns the slice its decoder produced and zeroizes it before the
+  handler returns — on the success path and on every error path, including a
+  rejected unseal.
+
+Read that as a claim about **retention**, not about the total absence of
+plaintext. A wipe destroys the slice and its aliases; it does not reach the
+transient copy each encoder makes — the base64 in the JSON body, protobuf's
+out-of-place marshalling. Those go unreferenced at the end of the call and are
+collected rather than zeroized, and no API at this layer can change that, since
+serializing a value means copying it and the wire format owns that copy. What
+you get is that the two long-lived copies — the caller's and the daemon's — are
+destroyable on demand, which a `string` never was.
+
+One transport is an exception and says so: **MCP** tool arguments are JSON
+strings by definition of the protocol, so the MCP client and server each carry
+the credential through one Go string at a single documented conversion point.
+Callers who cannot accept that should not drive barrier operations over MCP.
+
+### Request bodies
+
 `POST /v1/barrier/initialize`:
 
 ```json
-{ "strategy": "passphrase", "passphrase": "<passphrase>",
+{ "secret": "<base64 passphrase>", "barrier_strategy": "passphrase",
   "so_pin": "SO123", "user_pin": "USR123" }
 ```
 
-`strategy`: `none` · `passphrase` · `shamir`. `passphrase` is required for
-`passphrase`/`shamir` and **rejected** for `none`. PINs come as a pair or not at
-all, and are rejected outright with `none`.
+`secret` is required for `passphrase`/`shamir` and **rejected** for `none`.
+PINs come as a pair or not at all, and are rejected outright with `none`.
 
-`POST /v1/barrier/shamir/initialize`: adds `threshold` (M) and `total` (N).
-**The response is share-free** — shares are sealed server side to the enrolled
-officers' enclaves.
+Those two rules are enforced **client side**, in `qrdb barrier init`
+(`validateBarrierInitFlags`), before any network call, so an operator gets a
+local and actionable error. `barrier_strategy` (`none` · `passphrase` ·
+`shamir`) is carried on the wire so a client can state its intent, but **the
+daemon takes its strategy from its own boot-time seal config** —
+`BarrierInitialize` has no strategy parameter on any transport, and a server
+that receives the field ignores it.
+
+`POST /v1/barrier/shamir/initialize`: same base64 `secret`, plus `threshold`
+(M) and `total_shares` (N). **The response is share-free** — shares are sealed
+server side to the enrolled officers' enclaves.
+
+`POST /v1/barrier/unseal`: the base64 `secret` alone.
 
 `POST /v1/barrier/shamir/unseal-shares`: a list of shares. Submitting ≥ M
 unseals in one call; fewer accumulate and the response reports progress toward
-the threshold.
+the threshold. Share fields are text strings, not byte strings — see the
+limitation note below.
 
 `POST /v1/barrier/enable-encryption`:
 
 ```json
-{ "strategy": "passphrase", "passphrase": "…",
+{ "strategy": "passphrase", "passphrase": "<base64 passphrase>",
   "shamir_threshold": 0, "shamir_total": 0,
-  "tenant": "", "mechanism": "swap", "availability": "quiesced" }
+  "tenant_id": "", "mechanism": "swap", "availability": "quiesced" }
 ```
 
 `mechanism`: `swap` (default) · `in-place`. `availability`: `quiesced`
@@ -118,8 +169,30 @@ The complete HTTP status mapping table is in
 [seal/README.md](../seal/README.md#barrier-http-status-mapping) if that file is
 still present in your tree; the rows above are the ones this feature guarantees.
 
+## Known limitation — share and PIN fields are still text strings
+
+The wipeable-bytes rule above covers the **wrapping credential**. It does not
+yet cover every secret on this surface:
+
+- Shamir **share** fields (`share`, `shares`, recovery `keys`, seal-vote
+  `share`) are text strings on all transports.
+- `so_pin` and `user_pin` are text strings.
+
+Those are secrets too, and a Go string is no more wipeable for a share than it
+is for a passphrase. They are named here so the gap is visible rather than
+implied by the absence of a sentence, and so a reader does not conclude from
+the section above that the whole surface is covered.
+
 ## Versioning
 
 Barrier REST paths are under `/v1/`. Nothing here is deprecated, but note the
 config-level alias: `seal.strategy: software` is a **deprecated alias** for
 `passphrase`, canonicalized at load.
+
+**Breaking change — credential fields moved from string to bytes.** The
+credential fields listed under *Schemas* were text strings in earlier
+pre-publication releases and are byte strings now. A REST client that sends the
+plaintext gets a `400`; a Go SDK caller assigning a string literal gets a
+compile error. Both failures are loud, which is why the field was changed in
+place rather than duplicated: a parallel byte-typed field would have left the
+unwipeable one reachable, and the whole point is that it is not.

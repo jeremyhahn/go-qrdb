@@ -40,7 +40,7 @@ type mockTenantService struct {
 	listFn               func(ctx context.Context) ([]tenant.TenantInfo, error)
 	deleteFn             func(ctx context.Context, tenantID string) error
 	updateFn             func(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
-	barrierInitFn        func(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
+	barrierInitFn        func(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) error
 	barrierUnsealFn      func(ctx context.Context, tenantID string, key []byte) error
 	barrierUnsealShareFn func(ctx context.Context, tenantID, share string) (*tenant.TenantBarrierUnsealProgress, error)
 	barrierStatusFn      func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
@@ -102,14 +102,14 @@ func (m *mockTenantService) DeleteTenant(ctx context.Context, tenantID string) e
 	return nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
 		return nil, m.barrierInitFn(ctx, tenantID, passphrase, threshold, shares)
 	}
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
@@ -395,7 +395,7 @@ func TestTenantBinding_BarrierInit_Success(t *testing.T) {
 
 func TestTenantBinding_BarrierInit_ServiceError(t *testing.T) {
 	svc := &mockTenantService{
-		barrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+		barrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
 			return &tenant.BarrierError{TenantID: "tenant-001", Op: "init", Err: errors.New("already initialized")}
 		},
 	}

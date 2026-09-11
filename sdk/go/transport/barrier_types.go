@@ -31,8 +31,26 @@ import "time"
 // Secret is the strategy wrapping passphrase. SOPin/UserPin, when
 // provided, are routed to the canonical pin.PINBackend on the server
 // (qrdb/pkg/pin) — independent of and complementary to Secret.
+//
+// Secret is []byte rather than string because a Go string is immutable and
+// therefore cannot be zeroized: a passphrase materialized as one survives on
+// the heap until the collector happens to reuse the page. The caller owns
+// Secret, may hand it straight out of a secure.Buffer, and MUST
+// secure.Wipe it once the call returns. Every transport in this SDK treats
+// it as a borrow for the duration of the call and retains nothing.
+//
+// "Retains nothing" is the precise claim, and it is narrower than "the
+// plaintext is gone". Wiping this slice destroys THIS slice and every alias of
+// it; it does not reach the transient copy each encoder necessarily makes —
+// the base64 rendering in a REST JSON body, protobuf's out-of-place
+// marshalling, the MCP JSON-RPC request body. Those are short-lived and
+// unreferenced once the call completes, so the collector reclaims them, but
+// they are not zeroized and nothing here can zeroize them: serializing a value
+// means copying it, and the wire format owns that copy. What the []byte buys
+// is that the copy the CALLER holds, and the one the daemon decodes, are both
+// destroyable on demand — which a string never was.
 type BarrierInitializeRequest struct {
-	Secret          string `json:"secret"`
+	Secret          []byte `json:"secret"`
 	BarrierStrategy string `json:"barrier_strategy,omitempty"`
 	SOPin           string `json:"so_pin,omitempty"`
 	UserPin         string `json:"user_pin,omitempty"`
@@ -43,8 +61,10 @@ type BarrierInitializeRequest struct {
 // (--barrier-strategy=software). PIN fields are intentionally absent —
 // unseal uses the strategy's passphrase directly and requires no PIN
 // authorization.
+//
+// Secret is caller-owned wipeable bytes; see BarrierInitializeRequest.
 type BarrierUnsealRequest struct {
-	Secret string `json:"secret"`
+	Secret []byte `json:"secret"`
 }
 
 // BarrierStatusResponse describes the current state of the cryptographic
@@ -79,8 +99,9 @@ type BarrierSealRequest struct {
 // SOPin/UserPin, when provided, are routed to the canonical
 // pin.PINBackend on the server — independent of and complementary to
 // Secret.
+// Secret is caller-owned wipeable bytes; see BarrierInitializeRequest.
 type BarrierInitializeShamirRequest struct {
-	Secret      string `json:"secret"`
+	Secret      []byte `json:"secret"`
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
 	SOPin       string `json:"so_pin,omitempty"`
@@ -145,12 +166,14 @@ type BarrierRekeyResponse struct {
 // keyed strategy (enable encryption after the fact). TenantID, when set, scopes
 // the migration to that tenant's dedicated barrier; empty means the system
 // barrier (admin scope). The migration runs asynchronously on the server.
+//
+// Passphrase is caller-owned wipeable bytes; see BarrierInitializeRequest.
 type BarrierEnableEncryptionRequest struct {
 	TenantID        string `json:"tenant_id,omitempty"`
 	Strategy        string `json:"strategy"`
 	Mechanism       string `json:"mechanism,omitempty"`
 	Availability    string `json:"availability,omitempty"`
-	Passphrase      string `json:"passphrase,omitempty"`
+	Passphrase      []byte `json:"passphrase,omitempty"`
 	ShamirThreshold int    `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int    `json:"shamir_total,omitempty"`
 }

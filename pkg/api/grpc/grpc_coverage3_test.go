@@ -763,7 +763,7 @@ func TestTenantBarrierInitHandler_WithInterceptor(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 
 	_, err = pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
-		TenantId: "t1", Passphrase: "s",
+		TenantId: "t1", Passphrase: []byte("s"),
 	})
 	if err != nil {
 		t.Fatalf("Init with interceptor failed: %v", err)

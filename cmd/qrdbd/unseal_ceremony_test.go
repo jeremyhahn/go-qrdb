@@ -196,7 +196,10 @@ func initializeBarrier(t *testing.T, bundle *TLSBundle, adminPort int, secret st
 		},
 	}
 
-	body, err := json.Marshal(map[string]string{"secret": secret})
+	// The wire field is []byte so the daemon can zeroize it, and
+	// encoding/json renders a []byte as base64. Marshaling the plaintext as a
+	// string would be accepted by the encoder and REJECTED by the server.
+	body, err := json.Marshal(map[string]any{"secret": []byte(secret)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

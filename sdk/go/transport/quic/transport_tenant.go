@@ -246,7 +246,7 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 // tenant.BarrierInit.
 type quicTenantBarrierInitRequest struct {
 	TenantID   string `json:"tenant_id"`
-	Passphrase string `json:"passphrase,omitempty"`
+	Passphrase []byte `json:"passphrase,omitempty"`
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`

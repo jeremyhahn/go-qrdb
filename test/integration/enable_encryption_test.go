@@ -242,7 +242,7 @@ func TestEnableEncryption_SystemScope_DataSurvivesInProcessRecycle(t *testing.T)
 	waitForBarrierStatusReachable(t, ca, adminPort, 90*time.Second)
 	unsealBody, unsealStatus := iraftAPIPost(t, client,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", adminPort),
-		map[string]interface{}{"secret": newPassphrase},
+		map[string]interface{}{"secret": []byte(newPassphrase)},
 	)
 	if unsealStatus != http.StatusNoContent && unsealStatus != http.StatusConflict {
 		t.Fatalf("post-migration unseal: status %d, body: %s", unsealStatus, unsealBody)
@@ -353,7 +353,7 @@ func TestEnableEncryption_TenantScope_OnlineRecycleNoServerRestart(t *testing.T)
 	// none (unencrypted) dedicated barrier, unsealed and ready to serve.
 	if initBody, initStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": ""},
+		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
 	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
 		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
 	}

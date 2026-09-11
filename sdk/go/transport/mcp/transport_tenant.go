@@ -272,7 +272,7 @@ func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.Tenant
 
 	args := map[string]any{
 		"tenant_id":  req.TenantID,
-		"passphrase": req.Passphrase,
+		"passphrase": secretArg(req.Passphrase),
 	}
 	if req.Threshold != 0 {
 		args["threshold"] = req.Threshold

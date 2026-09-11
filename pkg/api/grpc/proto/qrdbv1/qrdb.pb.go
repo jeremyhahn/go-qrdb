@@ -14319,9 +14319,14 @@ func (x *DatabaseUpdateConnectionRequest) GetConnection() *DatabaseConnectionCon
 // They are independent of and complementary to secret: secret protects
 // the wrapping key; the PINs gate two-PIN authorization on administrative
 // operations.
+//
+// secret is `bytes`, not `string`, so the generated Go field is a []byte the
+// caller can zeroize after the call. proto3 encodes string and bytes
+// identically (length-delimited), so this is a source-level change only and
+// the wire format is unchanged.
 type BarrierInitializeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Secret        string                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
+	Secret        []byte                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
 	SoPin         string                 `protobuf:"bytes,2,opt,name=so_pin,json=soPin,proto3" json:"so_pin,omitempty"`
 	UserPin       string                 `protobuf:"bytes,3,opt,name=user_pin,json=userPin,proto3" json:"user_pin,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -14358,11 +14363,11 @@ func (*BarrierInitializeRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{217}
 }
 
-func (x *BarrierInitializeRequest) GetSecret() string {
+func (x *BarrierInitializeRequest) GetSecret() []byte {
 	if x != nil {
 		return x.Secret
 	}
-	return ""
+	return nil
 }
 
 func (x *BarrierInitializeRequest) GetSoPin() string {
@@ -14379,10 +14384,11 @@ func (x *BarrierInitializeRequest) GetUserPin() string {
 	return ""
 }
 
-// BarrierUnsealRequest unseals the barrier with a master key.
+// BarrierUnsealRequest unseals the barrier with a master key. secret is
+// `bytes` so callers can zeroize it; see BarrierInitializeRequest.
 type BarrierUnsealRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Secret        string                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
+	Secret        []byte                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14417,11 +14423,11 @@ func (*BarrierUnsealRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{218}
 }
 
-func (x *BarrierUnsealRequest) GetSecret() string {
+func (x *BarrierUnsealRequest) GetSecret() []byte {
 	if x != nil {
 		return x.Secret
 	}
-	return ""
+	return nil
 }
 
 // BarrierStatusResponse describes the current barrier state.
@@ -14514,13 +14520,14 @@ func (x *BarrierStatusResponse) GetShamirTotal() int32 {
 // BarrierEnableEncryptionRequest migrates a barrier from none to a keyed
 // strategy. tenant_id, when set, scopes the migration to that tenant's
 // dedicated barrier; empty means the system barrier (admin scope).
+// passphrase is `bytes` so callers can zeroize it.
 type BarrierEnableEncryptionRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	TenantId        string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	Strategy        string                 `protobuf:"bytes,2,opt,name=strategy,proto3" json:"strategy,omitempty"`         // "passphrase" or "shamir"
 	Mechanism       string                 `protobuf:"bytes,3,opt,name=mechanism,proto3" json:"mechanism,omitempty"`       // "swap" (default) or "in-place"
 	Availability    string                 `protobuf:"bytes,4,opt,name=availability,proto3" json:"availability,omitempty"` // "quiesced" (default) or "online"
-	Passphrase      string                 `protobuf:"bytes,5,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
+	Passphrase      []byte                 `protobuf:"bytes,5,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
 	ShamirThreshold int32                  `protobuf:"varint,6,opt,name=shamir_threshold,json=shamirThreshold,proto3" json:"shamir_threshold,omitempty"`
 	ShamirTotal     int32                  `protobuf:"varint,7,opt,name=shamir_total,json=shamirTotal,proto3" json:"shamir_total,omitempty"`
 	unknownFields   protoimpl.UnknownFields
@@ -14585,11 +14592,11 @@ func (x *BarrierEnableEncryptionRequest) GetAvailability() string {
 	return ""
 }
 
-func (x *BarrierEnableEncryptionRequest) GetPassphrase() string {
+func (x *BarrierEnableEncryptionRequest) GetPassphrase() []byte {
 	if x != nil {
 		return x.Passphrase
 	}
-	return ""
+	return nil
 }
 
 func (x *BarrierEnableEncryptionRequest) GetShamirThreshold() int32 {
@@ -14661,11 +14668,12 @@ func (x *BarrierEnableEncryptionResponse) GetScope() string {
 
 // BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
 //
-// secret is the strategy wrapping passphrase. so_pin and user_pin, when
-// supplied, are routed to the canonical pin.PINBackend on the server.
+// secret is the strategy wrapping passphrase and is `bytes` so callers can
+// zeroize it. so_pin and user_pin, when supplied, are routed to the canonical
+// pin.PINBackend on the server.
 type BarrierShamirInitializeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Secret        string                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
+	Secret        []byte                 `protobuf:"bytes,1,opt,name=secret,proto3" json:"secret,omitempty"`
 	Threshold     int32                  `protobuf:"varint,2,opt,name=threshold,proto3" json:"threshold,omitempty"`
 	TotalShares   int32                  `protobuf:"varint,3,opt,name=total_shares,json=totalShares,proto3" json:"total_shares,omitempty"`
 	SoPin         string                 `protobuf:"bytes,4,opt,name=so_pin,json=soPin,proto3" json:"so_pin,omitempty"`
@@ -14704,11 +14712,11 @@ func (*BarrierShamirInitializeRequest) Descriptor() ([]byte, []int) {
 	return file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDescGZIP(), []int{222}
 }
 
-func (x *BarrierShamirInitializeRequest) GetSecret() string {
+func (x *BarrierShamirInitializeRequest) GetSecret() []byte {
 	if x != nil {
 		return x.Secret
 	}
-	return ""
+	return nil
 }
 
 func (x *BarrierShamirInitializeRequest) GetThreshold() int32 {
@@ -21794,10 +21802,11 @@ func (x *CeremonySubmitUnsealShareResponse) GetUnsealed() bool {
 }
 
 // TenantBarrierInitRequest initializes the barrier for tenant_id.
+// passphrase is `bytes` so callers can zeroize it.
 type TenantBarrierInitRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TenantId      string                 `protobuf:"bytes,1,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
-	Passphrase    string                 `protobuf:"bytes,2,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
+	Passphrase    []byte                 `protobuf:"bytes,2,opt,name=passphrase,proto3" json:"passphrase,omitempty"`
 	Threshold     int32                  `protobuf:"varint,3,opt,name=threshold,proto3" json:"threshold,omitempty"`
 	Shares        int32                  `protobuf:"varint,4,opt,name=shares,proto3" json:"shares,omitempty"`
 	Strategy      string                 `protobuf:"bytes,5,opt,name=strategy,proto3" json:"strategy,omitempty"`
@@ -21842,11 +21851,11 @@ func (x *TenantBarrierInitRequest) GetTenantId() string {
 	return ""
 }
 
-func (x *TenantBarrierInitRequest) GetPassphrase() string {
+func (x *TenantBarrierInitRequest) GetPassphrase() []byte {
 	if x != nil {
 		return x.Passphrase
 	}
-	return ""
+	return nil
 }
 
 func (x *TenantBarrierInitRequest) GetThreshold() int32 {
@@ -25886,11 +25895,11 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"connection\x18\x02 \x01(\v2!.qrdb.v1.DatabaseConnectionConfigR\n" +
 	"connection\"d\n" +
 	"\x18BarrierInitializeRequest\x12\x16\n" +
-	"\x06secret\x18\x01 \x01(\tR\x06secret\x12\x15\n" +
+	"\x06secret\x18\x01 \x01(\fR\x06secret\x12\x15\n" +
 	"\x06so_pin\x18\x02 \x01(\tR\x05soPin\x12\x19\n" +
 	"\buser_pin\x18\x03 \x01(\tR\auserPin\".\n" +
 	"\x14BarrierUnsealRequest\x12\x16\n" +
-	"\x06secret\x18\x01 \x01(\tR\x06secret\"\xe9\x01\n" +
+	"\x06secret\x18\x01 \x01(\fR\x06secret\"\xe9\x01\n" +
 	"\x15BarrierStatusResponse\x12\x16\n" +
 	"\x06sealed\x18\x01 \x01(\bR\x06sealed\x12\x1a\n" +
 	"\bstrategy\x18\x02 \x01(\tR\bstrategy\x12'\n" +
@@ -25904,7 +25913,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tmechanism\x18\x03 \x01(\tR\tmechanism\x12\"\n" +
 	"\favailability\x18\x04 \x01(\tR\favailability\x12\x1e\n" +
 	"\n" +
-	"passphrase\x18\x05 \x01(\tR\n" +
+	"passphrase\x18\x05 \x01(\fR\n" +
 	"passphrase\x12)\n" +
 	"\x10shamir_threshold\x18\x06 \x01(\x05R\x0fshamirThreshold\x12!\n" +
 	"\fshamir_total\x18\a \x01(\x05R\vshamirTotal\"O\n" +
@@ -25912,7 +25921,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n" +
 	"\x05scope\x18\x02 \x01(\tR\x05scope\"\xab\x01\n" +
 	"\x1eBarrierShamirInitializeRequest\x12\x16\n" +
-	"\x06secret\x18\x01 \x01(\tR\x06secret\x12\x1c\n" +
+	"\x06secret\x18\x01 \x01(\fR\x06secret\x12\x1c\n" +
 	"\tthreshold\x18\x02 \x01(\x05R\tthreshold\x12!\n" +
 	"\ftotal_shares\x18\x03 \x01(\x05R\vtotalShares\x12\x15\n" +
 	"\x06so_pin\x18\x04 \x01(\tR\x05soPin\x12\x19\n" +
@@ -26457,7 +26466,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x18TenantBarrierInitRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1e\n" +
 	"\n" +
-	"passphrase\x18\x02 \x01(\tR\n" +
+	"passphrase\x18\x02 \x01(\fR\n" +
 	"passphrase\x12\x1c\n" +
 	"\tthreshold\x18\x03 \x01(\x05R\tthreshold\x12\x16\n" +
 	"\x06shares\x18\x04 \x01(\x05R\x06shares\x12\x1a\n" +

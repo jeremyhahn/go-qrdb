@@ -95,9 +95,9 @@ var _ pin.PINBackend = (*stubPINBackend)(nil)
 func TestQUIC_HandleBarrierInitialize_PersistsPINs(t *testing.T) {
 	called := false
 	barrierSvc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret string) error {
+		barrierInitializeFn: func(_ context.Context, secret []byte) error {
 			called = true
-			if secret != "s" {
+			if string(secret) != "s" {
 				t.Errorf("secret = %q, want %q", secret, "s")
 			}
 			return nil
@@ -109,7 +109,7 @@ func TestQUIC_HandleBarrierInitialize_PersistsPINs(t *testing.T) {
 		WithPINBackend(backend))
 
 	payload, err := proto.Marshal(&pb.BarrierInitializeRequest{
-		Secret:  "s",
+		Secret:  []byte("s"),
 		SoPin:   "so-1234",
 		UserPin: "u-5678",
 	})

@@ -47,11 +47,11 @@ type embeddableBarrierService struct{}
 
 var _ service.BarrierServicer = (*embeddableBarrierService)(nil)
 
-func (s *embeddableBarrierService) BarrierInitialize(_ context.Context, _ string) error {
+func (s *embeddableBarrierService) BarrierInitialize(_ context.Context, _ []byte) error {
 	return nil
 }
 
-func (s *embeddableBarrierService) BarrierUnseal(_ context.Context, _ string) error {
+func (s *embeddableBarrierService) BarrierUnseal(_ context.Context, _ []byte) error {
 	return nil
 }
 
@@ -68,7 +68,7 @@ func (s *embeddableBarrierService) BarrierStatus(_ context.Context) (*service.Ba
 	}, nil
 }
 
-func (s *embeddableBarrierService) BarrierInitializeShamir(_ context.Context, _ string, threshold, total int) (*service.ShamirInitInfo, error) {
+func (s *embeddableBarrierService) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, total int) (*service.ShamirInitInfo, error) {
 	return &service.ShamirInitInfo{Threshold: threshold, TotalShares: total, ShareCount: total}, nil
 }
 
@@ -167,7 +167,7 @@ func TestEmbeddable_BarrierStatus_NoKVNoAdmin(t *testing.T) {
 func TestEmbeddable_BarrierInitialize_NoKVNoAdmin(t *testing.T) {
 	srv := newBarrierOnlyServer(&embeddableBarrierService{})
 
-	body, _ := json.Marshal(map[string]string{"secret": "my-master-secret"})
+	body, _ := json.Marshal(map[string]any{"secret": []byte("my-master-secret")}) // []byte -> base64, the wire shape of a secret field
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestEmbeddable_BarrierInitialize_NoKVNoAdmin(t *testing.T) {
 func TestEmbeddable_BarrierUnseal_NoKVNoAdmin(t *testing.T) {
 	srv := newBarrierOnlyServer(&embeddableBarrierService{})
 
-	body, _ := json.Marshal(map[string]string{"secret": "my-master-secret"})
+	body, _ := json.Marshal(map[string]any{"secret": []byte("my-master-secret")}) // []byte -> base64, the wire shape of a secret field
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -203,7 +203,8 @@ func TestEmbeddable_BarrierShamirInitialize_NoKVNoAdmin(t *testing.T) {
 	srv := newBarrierOnlyServer(&embeddableBarrierService{})
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"secret":       "my-master-secret",
+		// []byte -> base64, the wire shape of a secret field.
+		"secret":       []byte("my-master-secret"),
 		"threshold":    2,
 		"total_shares": 3,
 	})

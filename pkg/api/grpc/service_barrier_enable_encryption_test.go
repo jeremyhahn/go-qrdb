@@ -48,7 +48,7 @@ func TestBarrierEnableEncryption_NotConfigured(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierEnableEncryption(context.Background(), &pb.BarrierEnableEncryptionRequest{
-		Strategy: "passphrase", Passphrase: "pw",
+		Strategy: "passphrase", Passphrase: []byte("pw"),
 	})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("expected codes.Unimplemented, got %v", status.Code(err))
@@ -83,7 +83,7 @@ func TestBarrierEnableEncryption_SystemStarts(t *testing.T) {
 	resp, err := client.BarrierEnableEncryption(context.Background(), &pb.BarrierEnableEncryptionRequest{
 		Strategy:   "passphrase",
 		Mechanism:  "swap",
-		Passphrase: "pw",
+		Passphrase: []byte("pw"),
 	})
 	if err != nil {
 		t.Fatalf("BarrierEnableEncryption failed: %v", err)
@@ -119,7 +119,7 @@ func TestBarrierEnableEncryption_AcceptanceFailureSurfacesSynchronously(t *testi
 	defer cleanup()
 
 	resp, err := client.BarrierEnableEncryption(context.Background(), &pb.BarrierEnableEncryptionRequest{
-		TenantId: "acme", Strategy: "passphrase", Passphrase: "pw",
+		TenantId: "acme", Strategy: "passphrase", Passphrase: []byte("pw"),
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("expected codes.PermissionDenied, got %v (err=%v)", status.Code(err), err)

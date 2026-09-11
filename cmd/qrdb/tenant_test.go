@@ -587,7 +587,7 @@ func TestTenantBarrierInitCmd_Success(t *testing.T) {
 func TestTenantBarrierInitCmd_WithThresholdAndShares(t *testing.T) {
 	var capturedThreshold, capturedShares int
 	svc := &mockTenantService{
-		barrierInitFn: func(_ context.Context, _, _ string, threshold, shares int) error {
+		barrierInitFn: func(_ context.Context, _ string, _ []byte, threshold, shares int) error {
 			capturedThreshold = threshold
 			capturedShares = shares
 			return nil
@@ -615,7 +615,7 @@ func TestTenantBarrierInitCmd_MissingID(t *testing.T) {
 
 func TestTenantBarrierInitCmd_ServiceError(t *testing.T) {
 	svc := &mockTenantService{
-		barrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+		barrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
 			return &tenant.BarrierError{TenantID: "tenant-001", Op: "init", Err: errors.New("already initialized")}
 		},
 	}

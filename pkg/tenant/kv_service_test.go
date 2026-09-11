@@ -470,7 +470,7 @@ func TestKVTenantBarrierInit_NotEnabled(t *testing.T) {
 	ctx := context.Background()
 	svc := newKVService(t)
 
-	_, err := svc.TenantBarrierInit(ctx, "acme", "pw", 2, 3)
+	_, err := svc.TenantBarrierInit(ctx, "acme", []byte("pw"), 2, 3)
 	if !errors.Is(err, ErrBarrierNotEnabled) {
 		t.Fatalf("want ErrBarrierNotEnabled, got %v", err)
 	}

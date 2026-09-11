@@ -947,7 +947,7 @@ func TestTenantBarrierService_Init_Success(t *testing.T) {
 	defer cleanup()
 
 	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
-		TenantId: "acme", Passphrase: "secret", Threshold: 2, Shares: 3,
+		TenantId: "acme", Passphrase: []byte("secret"), Threshold: 2, Shares: 3,
 	})
 	if err != nil {
 		t.Fatalf("TenantBarrierInit failed: %v", err)
@@ -960,7 +960,7 @@ func TestTenantBarrierService_Init_EmptyTenantID(t *testing.T) {
 	defer cleanup()
 
 	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
-		TenantId: "", Passphrase: "secret",
+		TenantId: "", Passphrase: []byte("secret"),
 	})
 	if err == nil {
 		t.Fatal("expected error for empty tenant_id, got nil")
@@ -978,7 +978,7 @@ func TestTenantBarrierService_Init_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	_, err := pb.NewTenantBarrierServiceClient(conn).Init(context.Background(), &pb.TenantBarrierInitRequest{
-		TenantId: "acme", Passphrase: "s",
+		TenantId: "acme", Passphrase: []byte("s"),
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1181,10 +1181,10 @@ func (m *mockTenantBarrierOnlySvc) DecrementQuotaUsage(_ context.Context, _ stri
 func (m *mockTenantBarrierOnlySvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
-func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierOnlySvc) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return nil, m.barrierInitErr
 }
 func (m *mockTenantBarrierOnlySvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {

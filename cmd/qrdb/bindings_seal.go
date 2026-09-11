@@ -17,9 +17,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -63,9 +65,9 @@ func (b *SealBinding) Initialize(secret string) error {
 		b.logger.Error("Initialize failed", "error", err)
 		return err
 	}
-	if err := cl.Barrier().BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: secret,
-	}); err != nil {
+	req := &transport.BarrierInitializeRequest{Secret: secretBytes(secret)}
+	defer secure.Wipe(req.Secret)
+	if err := cl.Barrier().BarrierInitialize(context.Background(), req); err != nil {
 		b.logger.Error("Initialize failed", "error", err)
 		return err
 	}
@@ -90,11 +92,13 @@ func (b *SealBinding) InitializeShamir(secret string, threshold, totalShares int
 		b.logger.Error("InitializeShamir failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Barrier().BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      secret,
+	req := &transport.BarrierInitializeShamirRequest{
+		Secret:      secretBytes(secret),
 		Threshold:   threshold,
 		TotalShares: totalShares,
-	})
+	}
+	defer secure.Wipe(req.Secret)
+	resp, err := cl.Barrier().BarrierInitializeShamir(context.Background(), req)
 	if err != nil {
 		b.logger.Error("InitializeShamir failed", "error", err)
 		return nil, err
@@ -147,9 +151,9 @@ func (b *SealBinding) Unseal(share string) (*UnsealProgress, error) {
 		}, nil
 	}
 
-	if err := cl.Barrier().BarrierUnseal(ctx, &transport.BarrierUnsealRequest{
-		Secret: share,
-	}); err != nil {
+	unsealReq := &transport.BarrierUnsealRequest{Secret: secretBytes(share)}
+	defer secure.Wipe(unsealReq.Secret)
+	if err := cl.Barrier().BarrierUnseal(ctx, unsealReq); err != nil {
 		b.logger.Error("Unseal failed", "error", err)
 		return nil, err
 	}
@@ -189,7 +193,20 @@ func (b *SealBinding) EnableEncryption(req *transport.BarrierEnableEncryptionReq
 		b.logger.Error("EnableEncryption failed", "error", err)
 		return nil, err
 	}
-	resp, err := cl.Barrier().BarrierEnableEncryption(context.Background(), req)
+	// req belongs to the CALLER. The Wails bridge hands this pointer in and the
+	// frontend still holds it after the promise settles, so the passphrase
+	// inside it is not ours to destroy -- wiping it here would hand the GUI back
+	// a zeroed field of its own request object.
+	//
+	// Every other method on this binding takes a string and runs it through
+	// secretBytes, which allocates; that is why they can wipe what they pass.
+	// This one receives the struct already built, so the copy has to be made
+	// here. We own `call.Passphrase` and nothing else.
+	call := *req
+	call.Passphrase = bytes.Clone(req.Passphrase)
+	defer secure.Wipe(call.Passphrase)
+
+	resp, err := cl.Barrier().BarrierEnableEncryption(context.Background(), &call)
 	if err != nil {
 		b.logger.Error("EnableEncryption failed", "error", err)
 		return nil, err

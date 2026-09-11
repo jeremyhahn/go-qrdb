@@ -31,11 +31,11 @@ import (
 // mockBarrierService implements service.BarrierServicer with function-field
 // injection so each test can control the behavior of every method.
 type mockBarrierService struct {
-	barrierInitializeFn         func(ctx context.Context, secret string) error
-	barrierUnsealFn             func(ctx context.Context, secret string) error
+	barrierInitializeFn         func(ctx context.Context, secret []byte) error
+	barrierUnsealFn             func(ctx context.Context, secret []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	barrierInitializeShamirFn   func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	barrierInitializeShamirFn   func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	barrierUnsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
 	barrierRekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -46,14 +46,14 @@ type mockBarrierService struct {
 	barrierGenRootTokenFn       func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 }
 
-func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.barrierInitializeFn != nil {
 		return m.barrierInitializeFn(ctx, secret)
 	}
 	return nil
 }
 
-func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, secret)
 	}
@@ -74,7 +74,7 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	return &service.BarrierStatusInfo{}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	if m.barrierInitializeShamirFn != nil {
 		return m.barrierInitializeShamirFn(ctx, secret, threshold, totalShares)
 	}
@@ -209,15 +209,15 @@ var errBarrier = errors.New("barrier: test error")
 func TestEmbeddedBarrier_Initialize(t *testing.T) {
 	var capturedSecret string
 	svc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret string) error {
-			capturedSecret = secret
+		barrierInitializeFn: func(_ context.Context, secret []byte) error {
+			capturedSecret = string(secret)
 			return nil
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "my-master-key",
+		Secret: []byte("my-master-key"),
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -231,7 +231,7 @@ func TestEmbeddedBarrier_Initialize_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "secret",
+		Secret: []byte("secret"),
 	})
 	if err == nil {
 		t.Fatal("expected error on closed transport")
@@ -246,7 +246,7 @@ func TestEmbeddedBarrier_Initialize_NilService(t *testing.T) {
 	tr := newBarrierTransport(t, nil)
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "secret",
+		Secret: []byte("secret"),
 	})
 	if err == nil {
 		t.Fatal("expected error for nil barrier service")
@@ -262,14 +262,14 @@ func TestEmbeddedBarrier_Initialize_NilService(t *testing.T) {
 
 func TestEmbeddedBarrier_Initialize_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, _ string) error {
+		barrierInitializeFn: func(_ context.Context, _ []byte) error {
 			return errBarrier
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "secret",
+		Secret: []byte("secret"),
 	})
 	if !errors.Is(err, errBarrier) {
 		t.Errorf("expected errBarrier, got %v", err)
@@ -283,15 +283,15 @@ func TestEmbeddedBarrier_Initialize_ServiceError(t *testing.T) {
 func TestEmbeddedBarrier_Unseal(t *testing.T) {
 	var capturedSecret string
 	svc := &mockBarrierService{
-		barrierUnsealFn: func(_ context.Context, secret string) error {
-			capturedSecret = secret
+		barrierUnsealFn: func(_ context.Context, secret []byte) error {
+			capturedSecret = string(secret)
 			return nil
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{
-		Secret: "unseal-key",
+		Secret: []byte("unseal-key"),
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -305,7 +305,7 @@ func TestEmbeddedBarrier_Unseal_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
 	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{
-		Secret: "secret",
+		Secret: []byte("secret"),
 	})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
@@ -317,7 +317,7 @@ func TestEmbeddedBarrier_Unseal_NilService(t *testing.T) {
 	tr := newBarrierTransport(t, nil)
 
 	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{
-		Secret: "secret",
+		Secret: []byte("secret"),
 	})
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
@@ -469,8 +469,8 @@ func TestEmbeddedBarrier_Status_ServiceError(t *testing.T) {
 
 func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
-			if secret != "shamir-secret" {
+		barrierInitializeShamirFn: func(_ context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+			if string(secret) != "shamir-secret" {
 				t.Errorf("expected secret 'shamir-secret', got %q", secret)
 			}
 			if threshold != 3 {
@@ -489,7 +489,7 @@ func TestEmbeddedBarrier_ShamirInitialize(t *testing.T) {
 	tr := newBarrierTransport(t, svc)
 
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "shamir-secret",
+		Secret:      []byte("shamir-secret"),
 		Threshold:   3,
 		TotalShares: 5,
 	})
@@ -511,7 +511,7 @@ func TestEmbeddedBarrier_ShamirInitialize_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "s",
+		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -525,7 +525,7 @@ func TestEmbeddedBarrier_ShamirInitialize_NilService(t *testing.T) {
 	tr := newBarrierTransport(t, nil)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "s",
+		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -537,14 +537,14 @@ func TestEmbeddedBarrier_ShamirInitialize_NilService(t *testing.T) {
 
 func TestEmbeddedBarrier_ShamirInitialize_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+		barrierInitializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 			return nil, errBarrier
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "s",
+		Secret:      []byte("s"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -1101,15 +1101,15 @@ func TestEmbeddedBarrier_RootToken_ServiceError(t *testing.T) {
 func TestEmbeddedBarrier_Request_BarrierInitialize(t *testing.T) {
 	var capturedSecret string
 	svc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret string) error {
-			capturedSecret = secret
+		barrierInitializeFn: func(_ context.Context, secret []byte) error {
+			capturedSecret = string(secret)
 			return nil
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	err := tr.Request(context.Background(), "BarrierInitialize",
-		&transport.BarrierInitializeRequest{Secret: "dispatch-secret"}, nil)
+		&transport.BarrierInitializeRequest{Secret: []byte("dispatch-secret")}, nil)
 	if err != nil {
 		t.Fatalf("Request BarrierInitialize failed: %v", err)
 	}
@@ -1171,15 +1171,15 @@ func TestEmbeddedBarrier_Request_BarrierStatus(t *testing.T) {
 func TestEmbeddedBarrier_Request_BarrierUnseal(t *testing.T) {
 	var capturedSecret string
 	svc := &mockBarrierService{
-		barrierUnsealFn: func(_ context.Context, secret string) error {
-			capturedSecret = secret
+		barrierUnsealFn: func(_ context.Context, secret []byte) error {
+			capturedSecret = string(secret)
 			return nil
 		},
 	}
 	tr := newBarrierTransport(t, svc)
 
 	err := tr.Request(context.Background(), "BarrierUnseal",
-		&transport.BarrierUnsealRequest{Secret: "unseal-via-dispatch"}, nil)
+		&transport.BarrierUnsealRequest{Secret: []byte("unseal-via-dispatch")}, nil)
 	if err != nil {
 		t.Fatalf("Request BarrierUnseal failed: %v", err)
 	}
@@ -1219,7 +1219,7 @@ func TestEmbeddedBarrier_Request_BarrierSeal(t *testing.T) {
 
 func TestEmbeddedBarrier_Request_BarrierInitializeShamir(t *testing.T) {
 	svc := &mockBarrierService{
-		barrierInitializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+		barrierInitializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 			return &service.ShamirInitInfo{
 				ShareCount:  3,
 				Threshold:   2,
@@ -1231,7 +1231,7 @@ func TestEmbeddedBarrier_Request_BarrierInitializeShamir(t *testing.T) {
 
 	var resp *transport.BarrierInitializeShamirResponse
 	err := tr.Request(context.Background(), "BarrierInitializeShamir",
-		&transport.BarrierInitializeShamirRequest{Secret: "s", Threshold: 2, TotalShares: 3}, &resp)
+		&transport.BarrierInitializeShamirRequest{Secret: []byte("s"), Threshold: 2, TotalShares: 3}, &resp)
 	if err != nil {
 		t.Fatalf("Request BarrierInitializeShamir failed: %v", err)
 	}

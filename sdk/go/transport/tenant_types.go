@@ -136,9 +136,13 @@ type ListTenantsResponse struct {
 // the per-tenant barrier; it is required for the passphrase strategy (there
 // is no derived fallback). Strategy selects the seal strategy; when empty,
 // the passphrase (software) strategy is used for backward compatibility.
+//
+// Passphrase is []byte, matching TenantBarrierUnsealRequest.Key, so the caller
+// can zeroize it after the call — a Go string cannot be. The caller owns the
+// slice and MUST secure.Wipe it once the call returns; no transport retains it.
 type TenantBarrierInitRequest struct {
 	TenantID   string `json:"tenant_id"`
-	Passphrase string `json:"passphrase,omitempty"`
+	Passphrase []byte `json:"passphrase,omitempty"`
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	// Strategy selects the seal strategy for the per-tenant barrier. When

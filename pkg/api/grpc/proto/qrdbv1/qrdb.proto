@@ -3026,15 +3026,21 @@ message DatabaseUpdateConnectionRequest {
 // They are independent of and complementary to secret: secret protects
 // the wrapping key; the PINs gate two-PIN authorization on administrative
 // operations.
+//
+// secret is `bytes`, not `string`, so the generated Go field is a []byte the
+// caller can zeroize after the call. proto3 encodes string and bytes
+// identically (length-delimited), so this is a source-level change only and
+// the wire format is unchanged.
 message BarrierInitializeRequest {
-    string secret = 1;
+    bytes secret = 1;
     string so_pin = 2;
     string user_pin = 3;
 }
 
-// BarrierUnsealRequest unseals the barrier with a master key.
+// BarrierUnsealRequest unseals the barrier with a master key. secret is
+// `bytes` so callers can zeroize it; see BarrierInitializeRequest.
 message BarrierUnsealRequest {
-    string secret = 1;
+    bytes secret = 1;
 }
 
 // BarrierStatusResponse describes the current barrier state.
@@ -3052,12 +3058,13 @@ message BarrierStatusResponse {
 // BarrierEnableEncryptionRequest migrates a barrier from none to a keyed
 // strategy. tenant_id, when set, scopes the migration to that tenant's
 // dedicated barrier; empty means the system barrier (admin scope).
+// passphrase is `bytes` so callers can zeroize it.
 message BarrierEnableEncryptionRequest {
     string tenant_id = 1;
     string strategy = 2;      // "passphrase" or "shamir"
     string mechanism = 3;     // "swap" (default) or "in-place"
     string availability = 4;  // "quiesced" (default) or "online"
-    string passphrase = 5;
+    bytes passphrase = 5;
     int32 shamir_threshold = 6;
     int32 shamir_total = 7;
 }
@@ -3070,10 +3077,11 @@ message BarrierEnableEncryptionResponse {
 
 // BarrierShamirInitializeRequest initializes the barrier with Shamir secret sharing.
 //
-// secret is the strategy wrapping passphrase. so_pin and user_pin, when
-// supplied, are routed to the canonical pin.PINBackend on the server.
+// secret is the strategy wrapping passphrase and is `bytes` so callers can
+// zeroize it. so_pin and user_pin, when supplied, are routed to the canonical
+// pin.PINBackend on the server.
 message BarrierShamirInitializeRequest {
-    string secret = 1;
+    bytes secret = 1;
     int32 threshold = 2;
     int32 total_shares = 3;
     string so_pin = 4;
@@ -4106,9 +4114,10 @@ service TenantBarrierService {
 }
 
 // TenantBarrierInitRequest initializes the barrier for tenant_id.
+// passphrase is `bytes` so callers can zeroize it.
 message TenantBarrierInitRequest {
     string tenant_id  = 1;
-    string passphrase = 2;
+    bytes  passphrase = 2;
     int32  threshold  = 3;
     int32  shares     = 4;
     string strategy   = 5;

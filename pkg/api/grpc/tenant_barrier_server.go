@@ -32,6 +32,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	tenantpkg "github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -121,6 +122,10 @@ func (s *tenantBarrierServer) Init(ctx context.Context, req *pb.TenantBarrierIni
 	if s.svc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "tenant barrier"}).Error())
 	}
+	// The decoded credential is this handler's to own and to destroy. The
+	// tenant service borrows it for the call and retains nothing, so a
+	// deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.GetPassphrase())
 	if req.GetTenantId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}

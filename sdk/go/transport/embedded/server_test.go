@@ -475,7 +475,7 @@ func TestNewServer_BarrierInitializeAndUnseal(t *testing.T) {
 
 	// Initialize the barrier.
 	err = barrierClient.BarrierInitialize(ctx, &transport.BarrierInitializeRequest{
-		Secret: string(passphrase),
+		Secret: passphrase,
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)

@@ -102,7 +102,7 @@ func TestGRPC_BarrierInitialize_PersistsPINs(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{
-		Secret:  "s",
+		Secret:  []byte("s"),
 		SoPin:   "so-1234",
 		UserPin: "u-5678",
 	})

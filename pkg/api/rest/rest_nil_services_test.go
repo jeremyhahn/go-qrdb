@@ -169,7 +169,7 @@ func TestNilServices_BarrierInitialize_WorksWithoutKV(t *testing.T) {
 		WithBarrierService(&embeddableBarrierService{}),
 	)
 
-	body, _ := json.Marshal(map[string]string{"secret": "test-secret"})
+	body, _ := json.Marshal(map[string]any{"secret": []byte("test-secret")}) // []byte -> base64, the wire shape of a secret field
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

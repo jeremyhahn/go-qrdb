@@ -303,12 +303,17 @@ implementations. Every transport implements the same methods on `transport.Tenan
 ```go
 type TenantBarrierInitRequest struct {
     TenantID   string // required
-    Passphrase string // required for "passphrase" strategy
+    Passphrase []byte // required for "passphrase" strategy; base64 on the REST wire
     Threshold  int    // Shamir threshold
     Shares     int    // Shamir shares
     Strategy   string // seal strategy ID; empty = "passphrase"
 }
 ```
+
+`Passphrase` is `[]byte`, matching `TenantBarrierUnsealRequest.Key`. A Go
+string is immutable and so cannot be zeroized; a byte slice can, and both ends
+do — the caller wipes what it supplied, the daemon wipes what it decoded. The
+REST and QUIC JSON encodings therefore carry it as base64.
 
 ### Per-protocol wire surface
 

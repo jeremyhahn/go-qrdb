@@ -292,7 +292,7 @@ func TestTenantBarrierOfficerLifecycle_RoundTrip(t *testing.T) {
 	}
 
 	// Init with Shamir; no shares in result.
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", threshold, total, seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir)
 	if err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
 	}
@@ -394,7 +394,7 @@ func TestTenantBarrierSeal_ShamirRequiresQuorumINV8(t *testing.T) {
 		t.Fatalf("UnregisterTenant: %v", err)
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 2, 3, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 2, 3, seal.StrategyShamir); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(shamir): %v", err)
 	}
 
@@ -420,7 +420,7 @@ func TestTenantBarrierSeal_PassphraseSealsDirectly(t *testing.T) {
 	}
 	// CreateTenant with "" isolation uses IsolationPrefix — no pre-registered barrier.
 	// Init with passphrase strategy.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "correct-horse-battery", 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("correct-horse-battery"), 0, 0, seal.StrategyPassphrase); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy(passphrase): %v", err)
 	}
 
@@ -462,7 +462,7 @@ func TestTenantBarrierShamirSealVote_QuorumSeals(t *testing.T) {
 	}
 
 	const threshold, total = 2, 3
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", threshold, total, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 
@@ -660,7 +660,7 @@ func TestTenantBarrierShamirSealVote_NotShamirBarrier(t *testing.T) {
 	if _, err := svc.CreateTenant(ctx, tenantID, "Passphrase Vote", ""); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "test-pass", 0, 0, seal.StrategyPassphrase); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte("test-pass"), 0, 0, seal.StrategyPassphrase); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 
@@ -766,7 +766,7 @@ func TestTenantBarrierShamir_CaptureDist_Roundtrip(t *testing.T) {
 	}
 
 	const threshold, total = 2, 3
-	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", threshold, total, seal.StrategyShamir)
+	res, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir)
 	if err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
@@ -996,7 +996,7 @@ func TestTenantBarrierOfficerList_PostInitBarrierBacked(t *testing.T) {
 	}
 
 	// Init with Shamir so the barrier is now registered.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 2, 3, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 2, 3, seal.StrategyShamir); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 
@@ -1038,7 +1038,7 @@ func TestTenantBarrierOfficerClaimStatus_PostInitBarrierBacked(t *testing.T) {
 		t.Fatalf("UnregisterTenant: %v", err)
 	}
 
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", 2, 3, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), 2, 3, seal.StrategyShamir); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 
@@ -1104,7 +1104,7 @@ func TestTenantBarrierShareClaimComplete_InvalidSignature(t *testing.T) {
 	}
 
 	// Init Shamir so shares are distributed to all three officers.
-	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, "", threshold, total, seal.StrategyShamir); err != nil {
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, tenantID, []byte(""), threshold, total, seal.StrategyShamir); err != nil {
 		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
 	}
 

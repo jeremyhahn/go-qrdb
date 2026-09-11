@@ -45,7 +45,7 @@ type mockTenantSvc struct {
 	updateFn        func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
 	deleteFn        func(ctx context.Context, id string) error
 	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
-	barrierInitFn   func(ctx context.Context, id, passphrase string, threshold, total int) error
+	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
 	barrierUnsealFn func(ctx context.Context, id string, share []byte) error
 	barrierSealFn   func(ctx context.Context, id string) error
 	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
@@ -105,14 +105,14 @@ func (m *mockTenantSvc) Quotas(_ context.Context, _ string) (*quota.Quotas, erro
 	return &quota.Quotas{}, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
 		return nil, m.barrierInitFn(ctx, id, passphrase, threshold, total)
 	}
 	return nil, nil
 }
 
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 
@@ -549,7 +549,7 @@ func TestHandleTenantBarrierInit_MissingTenantID_Extra(t *testing.T) {
 
 func TestHandleTenantBarrierInit_Success_Extra(t *testing.T) {
 	called := false
-	svc := &mockTenantSvc{barrierInitFn: func(_ context.Context, id, _ string, _, _ int) error {
+	svc := &mockTenantSvc{barrierInitFn: func(_ context.Context, id string, _ []byte, _, _ int) error {
 		called = true
 		if id != "acme" {
 			return errors.New("wrong id")
@@ -557,7 +557,7 @@ func TestHandleTenantBarrierInit_Success_Extra(t *testing.T) {
 		return nil
 	}}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))
-	payload, _ := json.Marshal(quicTenantBarrierInitRequest{TenantID: "acme", Passphrase: "secret", Threshold: 2, Shares: 3})
+	payload, _ := json.Marshal(quicTenantBarrierInitRequest{TenantID: "acme", Passphrase: []byte("secret"), Threshold: 2, Shares: 3})
 	_, err := srv.handleTenantBarrierInit(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -568,7 +568,7 @@ func TestHandleTenantBarrierInit_Success_Extra(t *testing.T) {
 }
 
 func TestHandleTenantBarrierInit_ServiceError_Extra(t *testing.T) {
-	svc := &mockTenantSvc{barrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+	svc := &mockTenantSvc{barrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}}
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(svc))

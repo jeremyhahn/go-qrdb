@@ -120,10 +120,15 @@ services:
         # qrdbd tears down the sealed-window listener and continues the full
         # boot. Idempotent: re-init on an already-initialized barrier is
         # tolerated via || true.
+        # The secret field is []byte on the wire, so its value is base64:
+        # aW50ZWdyYXRpb24tdGVzdC1zZWNyZXQ= decodes to integration-test-secret.
+        # (Comments go HERE, not between the continuation lines below: a
+        # backslash-continued command is one logical line, so a `#` inside it
+        # comments out the remainder of the command.)
         echo "Initializing barrier..."
         curl -ks --max-time 10 -X POST $$AUTH \
           -H 'Content-Type: application/json' \
-          --data-binary '{"secret":"integration-test-secret"}' \
+          --data-binary '{"secret":"aW50ZWdyYXRpb24tdGVzdC1zZWNyZXQ="}' \
           https://localhost:63002/v1/barrier/initialize || true
         # Wait for the full-boot admin endpoint: after unseal the data plane
         # opens, the host elects a leader, and /health flips to 200. Gating
@@ -261,10 +266,12 @@ services:
           # the root key into one enclave-held share per registered officer
           # and unseals the barrier in direct mode, after which qrdbd tears
           # down the sealed-window listener and continues the full boot.
+          # base64: aW50ZWdyYXRpb24tdGVzdC1zaGFtaXItc2VjcmV0 decodes to
+          # integration-test-shamir-secret. See the barrier init above.
           echo "Initializing Shamir barrier..."
           curl -ks --max-time 10 -X POST $$AUTH \
             -H 'Content-Type: application/json' \
-            --data-binary '{"secret":"integration-test-shamir-secret","threshold":2,"total_shares":3}' \
+            --data-binary '{"secret":"aW50ZWdyYXRpb24tdGVzdC1zaGFtaXItc2VjcmV0","threshold":2,"total_shares":3}' \
             -o /data/raft/shamir-init-response.json \
             https://localhost:64002/v1/barrier/shamir/initialize || true
           echo "Shamir init response:"

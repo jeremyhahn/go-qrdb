@@ -29,7 +29,7 @@ func TestE2E_BarrierInitialize_HappyPath(t *testing.T) {
 		return wire.StatusOK, nil
 	})
 	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "s", SOPin: "1234", UserPin: "5678",
+		Secret: []byte("s"), SOPin: "1234", UserPin: "5678",
 	}); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestE2E_BarrierUnseal_HappyPath(t *testing.T) {
 	srv.SetResponder("barrier.Unseal", func(_ []byte) (uint16, []byte) {
 		return wire.StatusOK, nil
 	})
-	if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: "s"}); err != nil {
+	if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("s")}); err != nil {
 		t.Fatalf("BarrierUnseal: %v", err)
 	}
 }
@@ -79,7 +79,7 @@ func TestE2E_BarrierInitializeShamir_HappyPath(t *testing.T) {
 		})
 	})
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret: "s", Threshold: 2, TotalShares: 3,
+		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)

@@ -1,6 +1,6 @@
 # Multi-Tenancy — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Two gRPC services: tenant lifecycle and governance on
 `qrdb.v1.QRDBService`, and the per-tenant barrier on the dedicated
@@ -95,6 +95,13 @@ fail-closed**.
 Tenant barrier init takes `strategy` (`none`/`passphrase`/`shamir`/a registered
 hardware id; empty means `passphrase`), `passphrase`, and `threshold`/`shares`
 for shamir. **Share material is never returned** — officers claim individually.
+
+`passphrase` is a **byte string** — base64 in REST JSON, `bytes` in protobuf,
+`[]byte` in the Go SDK — matching the `key` field the unseal endpoint already
+uses. A Go string cannot be zeroized, so a credential is never one: the caller
+may wipe the slice it supplied as soon as the call returns, and the daemon
+wipes the slice its decoder produced before the handler returns. See
+[../barrier-seal/api.md](../barrier-seal/api.md#the-barrier-credential-is-bytes-and-therefore-base64-in-rest-json).
 
 ## Governance ordering
 

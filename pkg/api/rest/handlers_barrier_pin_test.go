@@ -114,7 +114,7 @@ func TestBarrierHandlers_Initialize_PersistsPINs(t *testing.T) {
 	srv := newBarrierPINTestServer(t, &mockBarrierService{}, backend)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize",
-		strings.NewReader(`{"secret":"s","so_pin":"so-1234","user_pin":"u-5678"}`))
+		strings.NewReader(`{"secret":"cw==","so_pin":"so-1234","user_pin":"u-5678"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -135,7 +135,7 @@ func TestBarrierHandlers_Initialize_NoPINs(t *testing.T) {
 	srv := newBarrierPINTestServer(t, &mockBarrierService{}, backend)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize",
-		strings.NewReader(`{"secret":"s"}`))
+		strings.NewReader(`{"secret":"cw=="}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)

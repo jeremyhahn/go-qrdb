@@ -85,10 +85,10 @@ func (m *mockTenantSvc) UpdateQuotas(ctx context.Context, id string, q *quota.Qu
 func (m *mockTenantSvc) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
-func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id, _ string, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInit(_ context.Context, id string, _ []byte, _, _ int) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
-func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id, _ string, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantSvc) TenantBarrierInitWithStrategy(_ context.Context, id string, _ []byte, _, _ int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
 func (m *mockTenantSvc) TenantBarrierUnsealShare(_ context.Context, id, _ string) (*tenantpkg.TenantBarrierUnsealProgress, error) {

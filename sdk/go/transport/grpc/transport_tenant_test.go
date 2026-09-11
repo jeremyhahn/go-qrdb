@@ -72,15 +72,15 @@ func (f *fakeTenantServicer) UpdateQuotas(_ context.Context, id string, q *quota
 func (f *fakeTenantServicer) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenantpkg.TenantInfo, error) {
 	return &tenantpkg.TenantInfo{ID: id, Entitlements: e}, nil
 }
-func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
-	if err := f.callInitFn(ctx, id, passphrase, threshold, shares); err != nil {
+func (f *fakeTenantServicer) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+	if err := f.callInitFn(ctx, id, string(passphrase), threshold, shares); err != nil {
 		return nil, err
 	}
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil
 }
 
-func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
-	if err := f.callInitFn(ctx, id, passphrase, threshold, shares); err != nil {
+func (f *fakeTenantServicer) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
+	if err := f.callInitFn(ctx, id, string(passphrase), threshold, shares); err != nil {
 		return nil, err
 	}
 	return &tenantpkg.TenantBarrierInitResult{TenantID: id}, nil

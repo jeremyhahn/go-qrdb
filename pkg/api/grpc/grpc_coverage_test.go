@@ -83,10 +83,10 @@ func newMockBarrierService() *mockBarrierService {
 	}
 }
 
-func (m *mockBarrierService) BarrierInitialize(_ context.Context, _ string) error {
+func (m *mockBarrierService) BarrierInitialize(_ context.Context, _ []byte) error {
 	return m.initErr
 }
-func (m *mockBarrierService) BarrierUnseal(_ context.Context, _ string) error {
+func (m *mockBarrierService) BarrierUnseal(_ context.Context, _ []byte) error {
 	return m.unsealErr
 }
 func (m *mockBarrierService) BarrierSeal(_ context.Context) error {
@@ -98,7 +98,7 @@ func (m *mockBarrierService) BarrierStatus(_ context.Context) (*service.BarrierS
 	}
 	return m.statusResult, nil
 }
-func (m *mockBarrierService) BarrierInitializeShamir(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 	if m.shamirInitErr != nil {
 		return nil, m.shamirInitErr
 	}
@@ -1116,7 +1116,7 @@ func TestGRPC_BarrierInitialize_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "mysecret"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("mysecret")})
 	if err != nil {
 		t.Fatalf("BarrierInitialize failed: %v", err)
 	}
@@ -1128,7 +1128,7 @@ func TestGRPC_BarrierInitialize_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "s"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1142,7 +1142,7 @@ func TestGRPC_BarrierInitialize_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "s"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1157,7 +1157,7 @@ func TestGRPC_BarrierUnseal_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: "mysecret"})
+	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: []byte("mysecret")})
 	if err != nil {
 		t.Fatalf("BarrierUnseal failed: %v", err)
 	}
@@ -1167,7 +1167,7 @@ func TestGRPC_BarrierUnseal_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: "s"})
+	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1236,7 +1236,7 @@ func TestGRPC_BarrierShamirInitialize_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret:      "secret",
+		Secret:      []byte("secret"),
 		Threshold:   2,
 		TotalShares: 3,
 	})

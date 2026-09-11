@@ -54,11 +54,11 @@ func (stubCeremonyCA) IssueCertificate(_ context.Context, _ *ceremony.IssueCertR
 // ---------------------------------------------------------------------------
 
 type mockBarrierService struct {
-	barrierInitializeFn         func(ctx context.Context, secret string) error
-	barrierUnsealFn             func(ctx context.Context, secret string) error
+	barrierInitializeFn         func(ctx context.Context, secret []byte) error
+	barrierUnsealFn             func(ctx context.Context, secret []byte) error
 	barrierSealFn               func(ctx context.Context) error
 	barrierStatusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	barrierInitializeShamirFn   func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	barrierInitializeShamirFn   func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	barrierUnsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	barrierUnsealWithSharesFn   func(ctx context.Context, shares []string) error
 	barrierRekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -69,14 +69,14 @@ type mockBarrierService struct {
 	barrierGenerateRootTokenFn  func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 }
 
-func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.barrierInitializeFn != nil {
 		return m.barrierInitializeFn(ctx, secret)
 	}
 	return nil
 }
 
-func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.barrierUnsealFn != nil {
 		return m.barrierUnsealFn(ctx, secret)
 	}
@@ -102,7 +102,7 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	if m.barrierInitializeShamirFn != nil {
 		return m.barrierInitializeShamirFn(ctx, secret, threshold, totalShares)
 	}

@@ -97,7 +97,7 @@ func TestStart_UnixOnly_EncryptionMigratorReachable(t *testing.T) {
 
 	resp, err := tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
 		Strategy:   "passphrase",
-		Passphrase: "pw",
+		Passphrase: []byte("pw"),
 	})
 	if err != nil {
 		t.Fatalf("BarrierEnableEncryption over unix: %v (migrator not reachable)", err)

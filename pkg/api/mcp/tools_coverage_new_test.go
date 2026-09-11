@@ -41,11 +41,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type covMockBarrierSvc struct {
-	initializeFn           func(ctx context.Context, secret string) error
-	unsealFn               func(ctx context.Context, secret string) error
+	initializeFn           func(ctx context.Context, secret []byte) error
+	unsealFn               func(ctx context.Context, secret []byte) error
 	sealFn                 func(ctx context.Context) error
 	statusFn               func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn     func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	initializeShamirFn     func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	unsealWithShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealWithSharesFn     func(ctx context.Context, shares []string) error
 	rekeyFn                func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -58,13 +58,13 @@ type covMockBarrierSvc struct {
 
 func newCovMockBarrierSvc() *covMockBarrierSvc { return &covMockBarrierSvc{} }
 
-func (m *covMockBarrierSvc) BarrierInitialize(ctx context.Context, s string) error {
+func (m *covMockBarrierSvc) BarrierInitialize(ctx context.Context, s []byte) error {
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, s)
 	}
 	return nil
 }
-func (m *covMockBarrierSvc) BarrierUnseal(ctx context.Context, s string) error {
+func (m *covMockBarrierSvc) BarrierUnseal(ctx context.Context, s []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, s)
 	}
@@ -82,7 +82,7 @@ func (m *covMockBarrierSvc) BarrierStatus(ctx context.Context) (*service.Barrier
 	}
 	return &service.BarrierStatusInfo{Sealed: false, Strategy: "software"}, nil
 }
-func (m *covMockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *covMockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
@@ -175,7 +175,7 @@ type covMockTenantSvc struct {
 	updateFn        func(ctx context.Context, id string, p tenant.TenantPatch) (*tenant.TenantInfo, error)
 	deleteFn        func(ctx context.Context, id string) error
 	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
-	barrierInitFn   func(ctx context.Context, id, passphrase string, threshold, total int) error
+	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
 	barrierUnsealFn func(ctx context.Context, id string, key []byte) error
 	barrierSealFn   func(ctx context.Context, id string) error
 	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
@@ -264,7 +264,7 @@ func (m *covMockTenantSvc) DecrementQuotaUsage(_ context.Context, _ string, _ qu
 func (m *covMockTenantSvc) GetQuotaUsage(_ context.Context, _ string, _ quota.Resource) (int64, error) {
 	return 0, nil
 }
-func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
+func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
 		if err := m.barrierInitFn(ctx, id, passphrase, threshold, total); err != nil {
 			return nil, err
@@ -272,7 +272,7 @@ func (m *covMockTenantSvc) TenantBarrierInit(ctx context.Context, id, passphrase
 	}
 	return &tenant.TenantBarrierInitResult{TenantID: id, Strategy: string(seal.StrategyPassphrase)}, nil
 }
-func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *covMockTenantSvc) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 func (m *covMockTenantSvc) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {
@@ -541,9 +541,9 @@ func TestCovHandleBarrierInitialize_MissingSecret(t *testing.T) {
 	svc := newCovMockBarrierSvc()
 	var gotSecret string
 	gotCalled := false
-	svc.initializeFn = func(_ context.Context, secret string) error {
+	svc.initializeFn = func(_ context.Context, secret []byte) error {
 		gotCalled = true
-		gotSecret = secret
+		gotSecret = string(secret)
 		return nil
 	}
 	handler := handleBarrierInitialize(svc, nil)
@@ -565,7 +565,7 @@ func TestCovHandleBarrierInitialize_MissingSecret(t *testing.T) {
 
 func TestCovHandleBarrierInitialize_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	svc.initializeFn = func(_ context.Context, _ string) error { return errors.New("already initialized") }
+	svc.initializeFn = func(_ context.Context, _ []byte) error { return errors.New("already initialized") }
 	handler := handleBarrierInitialize(svc, nil)
 	req := buildCallToolRequest(t, "qrdb_barrier_initialize", map[string]any{"secret": "s"})
 	_, err := handler(context.Background(), req)
@@ -608,7 +608,7 @@ func TestCovHandleBarrierUnseal_MissingSecret(t *testing.T) {
 
 func TestCovHandleBarrierUnseal_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	svc.unsealFn = func(_ context.Context, _ string) error { return errors.New("bad key") }
+	svc.unsealFn = func(_ context.Context, _ []byte) error { return errors.New("bad key") }
 	handler := handleBarrierUnseal(svc)
 	req := buildCallToolRequest(t, "qrdb_barrier_unseal", map[string]any{"secret": "bad"})
 	_, err := handler(context.Background(), req)
@@ -744,7 +744,7 @@ func TestCovHandleBarrierShamirInitialize_MissingTotalShares(t *testing.T) {
 
 func TestCovHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 	svc := newCovMockBarrierSvc()
-	svc.initializeShamirFn = func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+	svc.initializeShamirFn = func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 		return nil, errors.New("failed")
 	}
 	handler := handleBarrierShamirInitialize(svc, nil)
@@ -1558,7 +1558,7 @@ func TestCovHandleTenantBarrierInit_MissingID(t *testing.T) {
 
 func TestCovHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	svc := newCovMockTenantSvc()
-	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)

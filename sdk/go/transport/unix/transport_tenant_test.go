@@ -65,9 +65,9 @@ func (m *mockTenantBarrierSvc) UpdateEntitlements(ctx context.Context, id string
 }
 
 // TenantBarrierInit dispatches to initFn or returns nil.
-func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*tenantpkg.TenantBarrierInitResult, error) {
 	if m.initFn != nil {
-		if err := m.initFn(ctx, tenantID, passphrase, threshold, shares); err != nil {
+		if err := m.initFn(ctx, tenantID, string(passphrase), threshold, shares); err != nil {
 			return nil, err
 		}
 	}
@@ -75,7 +75,7 @@ func (m *mockTenantBarrierSvc) TenantBarrierInit(ctx context.Context, tenantID, 
 }
 
 // TenantBarrierInitWithStrategy delegates to TenantBarrierInit.
-func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
+func (m *mockTenantBarrierSvc) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenantpkg.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
@@ -221,7 +221,7 @@ func TestTransport_TenantBarrierUnseal_RoundTrip_KeyTakesPrecedence(t *testing.T
 	var gotKey []byte
 	mock := &mockTenantBarrierSvc{
 		unsealFn: func(_ context.Context, tenantID string, key []byte) error {
-			gotID = tenantID
+			gotID = string(tenantID)
 			gotKey = key
 			return nil
 		},

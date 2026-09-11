@@ -45,7 +45,7 @@ func (m *captureQUICMigrator) EnableEncryption(_ context.Context, scope service.
 
 func TestHandleBarrierEnableEncryption_NilService(t *testing.T) {
 	srv := newTestServer(&mockKVService{}, &mockAdminService{})
-	payload, _ := proto.Marshal(&pb.BarrierEnableEncryptionRequest{Strategy: "passphrase", Passphrase: "pw"})
+	payload, _ := proto.Marshal(&pb.BarrierEnableEncryptionRequest{Strategy: "passphrase", Passphrase: []byte("pw")})
 
 	_, err := srv.handleBarrierEnableEncryption(context.Background(), payload)
 	var sncErr *ServiceNotConfiguredError
@@ -78,7 +78,7 @@ func TestHandleBarrierEnableEncryption_SystemStarts(t *testing.T) {
 	payload, _ := proto.Marshal(&pb.BarrierEnableEncryptionRequest{
 		Strategy:   "passphrase",
 		Mechanism:  "swap",
-		Passphrase: "pw",
+		Passphrase: []byte("pw"),
 	})
 
 	respBytes, err := srv.handleBarrierEnableEncryption(context.Background(), payload)
@@ -117,7 +117,7 @@ func TestHandleBarrierEnableEncryption_AcceptanceFailureSurfacesSynchronously(t 
 	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithEncryptionMigrator(mig))
 
 	payload, _ := proto.Marshal(&pb.BarrierEnableEncryptionRequest{
-		TenantId: "acme", Strategy: "passphrase", Passphrase: "pw",
+		TenantId: "acme", Strategy: "passphrase", Passphrase: []byte("pw"),
 	})
 	respBytes, err := srv.handleBarrierEnableEncryption(context.Background(), payload)
 	if !errors.Is(err, service.ErrSharedBarrierImmutable) {

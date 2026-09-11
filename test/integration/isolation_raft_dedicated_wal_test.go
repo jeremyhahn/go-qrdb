@@ -143,7 +143,7 @@ func TestIsolationRaftDedicatedWAL_EndToEnd(t *testing.T) {
 				}
 				_, st := iraftAPIPost(t, mtlsHTTPClient(t, ca, 10*time.Second),
 					fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", adminPorts[idx]),
-					map[string]interface{}{"secret": barrierPassphrase})
+					map[string]interface{}{"secret": []byte(barrierPassphrase)})
 				if st != http.StatusNoContent {
 					t.Errorf("unseal node %d: status %d", idx+1, st)
 				}

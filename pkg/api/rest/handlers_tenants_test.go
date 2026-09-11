@@ -48,7 +48,7 @@ type mockTenantService struct {
 	deleteTenantFn        func(ctx context.Context, tenantID string) error
 	updateTenantFn        func(ctx context.Context, tenantID string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
 	updateQuotasFn        func(ctx context.Context, tenantID string, quotas *quota.Quotas) (*tenant.TenantInfo, error)
-	tenantBarrierInitFn   func(ctx context.Context, tenantID, passphrase string, threshold, shares int) error
+	tenantBarrierInitFn   func(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) error
 	tenantBarrierUnsealFn func(ctx context.Context, tenantID string, key []byte) error
 	tenantBarrierSealFn   func(ctx context.Context, tenantID string) error
 	tenantBarrierStatusFn func(ctx context.Context, tenantID string) (*tenant.TenantBarrierStatus, error)
@@ -100,14 +100,14 @@ func (m *mockTenantService) UpdateEntitlements(ctx context.Context, id string, e
 	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	if m.tenantBarrierInitFn != nil {
 		return nil, m.tenantBarrierInitFn(ctx, tenantID, passphrase, threshold, shares)
 	}
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
 
@@ -1089,9 +1089,9 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	var sawTenant, sawPassphrase string
 	var sawThreshold, sawShares int
 	svc := &mockTenantService{
-		tenantBarrierInitFn: func(_ context.Context, tenantID, passphrase string, threshold, shares int) error {
+		tenantBarrierInitFn: func(_ context.Context, tenantID string, passphrase []byte, threshold, shares int) error {
 			sawTenant = tenantID
-			sawPassphrase = passphrase
+			sawPassphrase = string(passphrase)
 			sawThreshold = threshold
 			sawShares = shares
 			return nil
@@ -1099,7 +1099,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	}
 	srv := newTenantServer(svc)
 
-	body := `{"passphrase":"super-secret","threshold":3,"shares":5}`
+	body := `{"passphrase":"c3VwZXItc2VjcmV0","threshold":3,"shares":5}` // passphrase is []byte: base64 on the wire
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/barrier/init", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -1122,7 +1122,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 func TestHandleTenantBarrierInit_EmptyBodyDefaults(t *testing.T) {
 	var sawThreshold, sawShares int
 	svc := &mockTenantService{
-		tenantBarrierInitFn: func(_ context.Context, _, _ string, threshold, shares int) error {
+		tenantBarrierInitFn: func(_ context.Context, _ string, _ []byte, threshold, shares int) error {
 			sawThreshold = threshold
 			sawShares = shares
 			return nil
@@ -1153,7 +1153,7 @@ func TestHandleTenantBarrierInit_InvalidBody(t *testing.T) {
 
 func TestHandleTenantBarrierInit_NotFound(t *testing.T) {
 	svc := &mockTenantService{
-		tenantBarrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+		tenantBarrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
 			return tenant.ErrTenantNotFound
 		},
 	}
@@ -1168,7 +1168,7 @@ func TestHandleTenantBarrierInit_NotFound(t *testing.T) {
 
 func TestHandleTenantBarrierInit_EmptyID(t *testing.T) {
 	svc := &mockTenantService{
-		tenantBarrierInitFn: func(_ context.Context, _, _ string, _, _ int) error {
+		tenantBarrierInitFn: func(_ context.Context, _ string, _ []byte, _, _ int) error {
 			return tenant.ErrEmptyTenantID
 		},
 	}
@@ -1197,7 +1197,7 @@ func TestHandleTenantBarrierInit_ServiceNil(t *testing.T) {
 
 func TestHandleTenantBarrierInit_BarrierError(t *testing.T) {
 	svc := &mockTenantService{
-		tenantBarrierInitFn: func(_ context.Context, tenantID, _ string, _, _ int) error {
+		tenantBarrierInitFn: func(_ context.Context, tenantID string, _ []byte, _, _ int) error {
 			return &tenant.BarrierError{TenantID: tenantID, Op: "initialize", Err: errSentinel}
 		},
 	}
@@ -1538,10 +1538,10 @@ func (e *extMockTenantService) UpdateTenant(ctx context.Context, tenantID string
 func (e *extMockTenantService) UpdateQuotas(ctx context.Context, tenantID string, quotas *quota.Quotas) (*tenant.TenantInfo, error) {
 	return e.mockTenantService.UpdateQuotas(ctx, tenantID, quotas)
 }
-func (e *extMockTenantService) TenantBarrierInit(ctx context.Context, tenantID, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockTenantService) TenantBarrierInit(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, tenantID, passphrase, threshold, shares)
 }
-func (e *extMockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID, passphrase string, threshold, shares int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, tenantID string, passphrase []byte, threshold, shares int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, tenantID, passphrase, threshold, shares, sid)
 }
 func (e *extMockTenantService) TenantBarrierUnseal(ctx context.Context, tenantID string, key []byte) error {

@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -346,11 +347,12 @@ func newTenantBarrierInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			req := &transport.TenantBarrierInitRequest{
 				TenantID:   tenantID,
-				Passphrase: passphrase,
+				Passphrase: secretBytes(passphrase),
 				Threshold:  threshold,
 				Shares:     shares,
 				Strategy:   strategy,
 			}
+			defer secure.Wipe(req.Passphrase)
 
 			resp, err := client.Tenants().TenantBarrierInit(cmd.Context(), req)
 			if err != nil {

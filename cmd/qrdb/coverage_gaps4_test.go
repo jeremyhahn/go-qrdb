@@ -195,7 +195,7 @@ func TestAdminBinding_Drain_ServiceError(t *testing.T) {
 // the canonical `barrier init` verb.
 func TestBarrierInitCmd_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		initializeFn: func(_ context.Context, _ string) error {
+		initializeFn: func(_ context.Context, _ []byte) error {
 			return errors.New("init: barrier already initialized")
 		},
 	}
@@ -214,7 +214,7 @@ func TestBarrierInitCmd_ServiceError(t *testing.T) {
 // newBarrierUnsealCmd.
 func TestBarrierUnsealCmd_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, _ string) error {
+		unsealFn: func(_ context.Context, _ []byte) error {
 			return errors.New("unseal: invalid secret")
 		},
 	}

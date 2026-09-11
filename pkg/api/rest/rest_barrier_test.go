@@ -37,11 +37,11 @@ import (
 // mockBarrierService implements service.BarrierServicer for REST handler
 // testing. Each method delegates to an overridable function field.
 type mockBarrierService struct {
-	initializeFn         func(ctx context.Context, secret string) error
-	unsealFn             func(ctx context.Context, secret string) error
+	initializeFn         func(ctx context.Context, secret []byte) error
+	unsealFn             func(ctx context.Context, secret []byte) error
 	sealFn               func(ctx context.Context) error
 	statusFn             func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn   func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	initializeShamirFn   func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	unsealWithShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealWithSharesFn   func(ctx context.Context, shares []string) error
 	rekeyFn              func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -55,14 +55,14 @@ type mockBarrierService struct {
 // Compile-time interface check.
 var _ service.BarrierServicer = (*mockBarrierService)(nil)
 
-func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, secret)
 	}
 	return nil
 }
 
-func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, secret)
 	}
@@ -88,7 +88,7 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
@@ -228,11 +228,11 @@ func TestBarrierHandlers_NilService(t *testing.T) {
 		body    string
 		handler func(http.ResponseWriter, *http.Request)
 	}{
-		{"Initialize", http.MethodPost, "/v1/barrier/initialize", `{"secret":"s"}`, srv.handleBarrierInitialize},
-		{"Unseal", http.MethodPost, "/v1/barrier/unseal", `{"secret":"s"}`, srv.handleBarrierUnseal},
+		{"Initialize", http.MethodPost, "/v1/barrier/initialize", `{"secret":"cw=="}`, srv.handleBarrierInitialize},
+		{"Unseal", http.MethodPost, "/v1/barrier/unseal", `{"secret":"cw=="}`, srv.handleBarrierUnseal},
 		{"Seal", http.MethodPost, "/v1/barrier/seal", "", srv.handleBarrierSeal},
 		{"Status", http.MethodGet, "/v1/barrier/status", "", srv.handleBarrierStatus},
-		{"ShamirInitialize", http.MethodPost, "/v1/barrier/shamir/initialize", `{"secret":"s","threshold":2,"total_shares":3}`, srv.handleBarrierShamirInitialize},
+		{"ShamirInitialize", http.MethodPost, "/v1/barrier/shamir/initialize", `{"secret":"cw==","threshold":2,"total_shares":3}`, srv.handleBarrierShamirInitialize},
 		{"ShamirUnsealShare", http.MethodPost, "/v1/barrier/shamir/unseal-share", `{"share":"abc"}`, srv.handleBarrierShamirUnsealShare},
 		{"ShamirUnsealShares", http.MethodPost, "/v1/barrier/shamir/unseal-shares", `{"shares":["a","b"]}`, srv.handleBarrierShamirUnsealShares},
 		{"Rekey", http.MethodPost, "/v1/barrier/rekey", `{"threshold":2,"total":3}`, srv.handleBarrierRekey},
@@ -266,8 +266,8 @@ func TestBarrierHandlers_NilService(t *testing.T) {
 func TestBarrierHandlers_Initialize(t *testing.T) {
 	called := false
 	svc := &mockBarrierService{
-		initializeFn: func(_ context.Context, secret string) error {
-			if secret != "my-secret" {
+		initializeFn: func(_ context.Context, secret []byte) error {
+			if string(secret) != "my-secret" {
 				t.Fatalf("secret = %q, want %q", secret, "my-secret")
 			}
 			called = true
@@ -277,7 +277,7 @@ func TestBarrierHandlers_Initialize(t *testing.T) {
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize",
-		strings.NewReader(`{"secret":"my-secret"}`))
+		strings.NewReader(`{"secret":"bXktc2VjcmV0"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -302,14 +302,14 @@ func TestBarrierHandlers_Initialize_BadJSON(t *testing.T) {
 
 func TestBarrierHandlers_Initialize_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		initializeFn: func(_ context.Context, _ string) error {
+		initializeFn: func(_ context.Context, _ []byte) error {
 			return errors.New("already initialized")
 		},
 	}
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize",
-		strings.NewReader(`{"secret":"s"}`))
+		strings.NewReader(`{"secret":"cw=="}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -326,8 +326,8 @@ func TestBarrierHandlers_Initialize_ServiceError(t *testing.T) {
 func TestBarrierHandlers_Unseal(t *testing.T) {
 	called := false
 	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, secret string) error {
-			if secret != "my-secret" {
+		unsealFn: func(_ context.Context, secret []byte) error {
+			if string(secret) != "my-secret" {
 				t.Fatalf("secret = %q, want %q", secret, "my-secret")
 			}
 			called = true
@@ -337,7 +337,7 @@ func TestBarrierHandlers_Unseal(t *testing.T) {
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
-		strings.NewReader(`{"secret":"my-secret"}`))
+		strings.NewReader(`{"secret":"bXktc2VjcmV0"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -361,14 +361,14 @@ func TestBarrierHandlers_Unseal_BadJSON(t *testing.T) {
 
 func TestBarrierHandlers_Unseal_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, _ string) error {
+		unsealFn: func(_ context.Context, _ []byte) error {
 			return errors.New("bad secret")
 		},
 	}
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
-		strings.NewReader(`{"secret":"wrong"}`))
+		strings.NewReader(`{"secret":"d3Jvbmc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -383,7 +383,7 @@ func TestBarrierHandlers_Unseal_ServiceError(t *testing.T) {
 // guard: a wrong passphrase used to leak the raw decryption error as a 500.
 func TestBarrierHandlers_Unseal_WrongPassphrase(t *testing.T) {
 	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, _ string) error {
+		unsealFn: func(_ context.Context, _ []byte) error {
 			return &quicraftseal.UnsealError{
 				Strategy: "passphrase",
 				Err:      quicraftseal.ErrDecryptionFailed,
@@ -393,7 +393,7 @@ func TestBarrierHandlers_Unseal_WrongPassphrase(t *testing.T) {
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
-		strings.NewReader(`{"secret":"wrong"}`))
+		strings.NewReader(`{"secret":"d3Jvbmc="}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -406,14 +406,14 @@ func TestBarrierHandlers_Unseal_WrongPassphrase(t *testing.T) {
 // wrapped go-quicraft error does.
 func TestBarrierHandlers_Unseal_WrongPassphraseSentinel(t *testing.T) {
 	svc := &mockBarrierService{
-		unsealFn: func(_ context.Context, _ string) error {
+		unsealFn: func(_ context.Context, _ []byte) error {
 			return seal.ErrDecryptionFailed
 		},
 	}
 	srv := newBarrierTestServer(t, svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/unseal",
-		strings.NewReader(`{"secret":"wrong"}`))
+		strings.NewReader(`{"secret":"d3Jvbmc="}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
@@ -551,8 +551,8 @@ func TestBarrierHandlers_Status_ServiceError(t *testing.T) {
 
 func TestBarrierHandlers_ShamirInitialize(t *testing.T) {
 	svc := &mockBarrierService{
-		initializeShamirFn: func(_ context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
-			if secret != "root" {
+		initializeShamirFn: func(_ context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+			if string(secret) != "root" {
 				t.Fatalf("secret = %q, want %q", secret, "root")
 			}
 			if threshold != 2 {
@@ -570,7 +570,7 @@ func TestBarrierHandlers_ShamirInitialize(t *testing.T) {
 	}
 	srv := newBarrierTestServer(t, svc)
 
-	body := `{"secret":"root","threshold":2,"total_shares":5}`
+	body := `{"secret":"cm9vdA==","threshold":2,"total_shares":5}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/initialize",
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -610,13 +610,13 @@ func TestBarrierHandlers_ShamirInitialize_BadJSON(t *testing.T) {
 
 func TestBarrierHandlers_ShamirInitialize_ServiceError(t *testing.T) {
 	svc := &mockBarrierService{
-		initializeShamirFn: func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+		initializeShamirFn: func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 			return nil, errors.New("shamir init failed")
 		},
 	}
 	srv := newBarrierTestServer(t, svc)
 
-	body := `{"secret":"s","threshold":2,"total_shares":3}`
+	body := `{"secret":"cw==","threshold":2,"total_shares":3}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/shamir/initialize",
 		strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -1437,7 +1437,7 @@ func TestBarrierHandlers_NilService_ErrorBody(t *testing.T) {
 	srv := &Server{barrierSvc: nil}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/initialize",
-		strings.NewReader(`{"secret":"s"}`))
+		strings.NewReader(`{"secret":"cw=="}`))
 	rec := httptest.NewRecorder()
 	srv.handleBarrierInitialize(rec, req)
 

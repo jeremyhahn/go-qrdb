@@ -160,7 +160,7 @@ func TestGRPC_BarrierUnseal_Error(t *testing.T) {
 		WithBarrierService(barrierSvc))
 	defer cleanup()
 
-	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: "bad"})
+	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: []byte("bad")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -204,7 +204,7 @@ func TestGRPC_BarrierShamirInitialize_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: "s", Threshold: 2, TotalShares: 3,
+		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")

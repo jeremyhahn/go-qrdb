@@ -34,11 +34,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockBarrierService struct {
-	initializeFn           func(ctx context.Context, secret string) error
-	unsealFn               func(ctx context.Context, secret string) error
+	initializeFn           func(ctx context.Context, secret []byte) error
+	unsealFn               func(ctx context.Context, secret []byte) error
 	sealFn                 func(ctx context.Context) error
 	statusFn               func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	initializeShamirFn     func(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error)
+	initializeShamirFn     func(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error)
 	unsealWithShareFn      func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealWithSharesFn     func(ctx context.Context, shares []string) error
 	rekeyFn                func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -53,14 +53,14 @@ func newMockBarrierService() *mockBarrierService {
 	return &mockBarrierService{}
 }
 
-func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.initializeFn != nil {
 		return m.initializeFn(ctx, secret)
 	}
 	return nil
 }
 
-func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, secret)
 	}
@@ -86,7 +86,7 @@ func (m *mockBarrierService) BarrierStatus(ctx context.Context) (*service.Barrie
 	}, nil
 }
 
-func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	if m.initializeShamirFn != nil {
 		return m.initializeShamirFn(ctx, secret, threshold, totalShares)
 	}
@@ -298,9 +298,9 @@ func TestHandleBarrierInitialize_MissingSecret(t *testing.T) {
 	svc := newMockBarrierService()
 	var gotSecret string
 	gotCalled := false
-	svc.initializeFn = func(_ context.Context, secret string) error {
+	svc.initializeFn = func(_ context.Context, secret []byte) error {
 		gotCalled = true
-		gotSecret = secret
+		gotSecret = string(secret)
 		return nil
 	}
 	handler := handleBarrierInitialize(svc, nil)
@@ -324,7 +324,7 @@ func TestHandleBarrierInitialize_MissingSecret(t *testing.T) {
 
 func TestHandleBarrierInitialize_ServiceError(t *testing.T) {
 	svc := newMockBarrierService()
-	svc.initializeFn = func(_ context.Context, _ string) error {
+	svc.initializeFn = func(_ context.Context, _ []byte) error {
 		return errors.New("barrier already initialized")
 	}
 	handler := handleBarrierInitialize(svc, nil)
@@ -387,7 +387,7 @@ func TestHandleBarrierUnseal_MissingSecret(t *testing.T) {
 
 func TestHandleBarrierUnseal_ServiceError(t *testing.T) {
 	svc := newMockBarrierService()
-	svc.unsealFn = func(_ context.Context, _ string) error {
+	svc.unsealFn = func(_ context.Context, _ []byte) error {
 		return errors.New("wrong secret")
 	}
 	handler := handleBarrierUnseal(svc)
@@ -653,7 +653,7 @@ func TestHandleBarrierShamirInitialize_MissingTotalShares(t *testing.T) {
 
 func TestHandleBarrierShamirInitialize_ServiceError(t *testing.T) {
 	svc := newMockBarrierService()
-	svc.initializeShamirFn = func(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+	svc.initializeShamirFn = func(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 		return nil, errors.New("already initialized")
 	}
 	handler := handleBarrierShamirInitialize(svc, nil)

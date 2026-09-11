@@ -92,9 +92,9 @@ var _ pin.PINBackend = (*stubPINBackend)(nil)
 func TestMCP_HandleBarrierInitialize_PersistsPINs(t *testing.T) {
 	called := false
 	svc := newMockBarrierService()
-	svc.initializeFn = func(_ context.Context, secret string) error {
+	svc.initializeFn = func(_ context.Context, secret []byte) error {
 		called = true
-		if secret != "s" {
+		if string(secret) != "s" {
 			t.Errorf("secret = %q, want %q", secret, "s")
 		}
 		return nil

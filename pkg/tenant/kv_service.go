@@ -551,13 +551,13 @@ func (s *kvTenantService) GetQuotaUsage(ctx context.Context, tenantID string, re
 
 // TenantBarrierInit returns ErrBarrierNotEnabled. The seal subsystem is not
 // configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*TenantBarrierInitResult, error) {
+func (s *kvTenantService) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
 
 // TenantBarrierInitWithStrategy returns ErrBarrierNotEnabled. The seal
 // subsystem is not configured when this service implementation is in use.
-func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*TenantBarrierInitResult, error) {
+func (s *kvTenantService) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*TenantBarrierInitResult, error) {
 	return nil, ErrBarrierNotEnabled
 }
 

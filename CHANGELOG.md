@@ -49,22 +49,74 @@ are not reconstructed here — their history is in the git log.
   (`transportKind.carriesTypedCapabilityRefusal`) rather than papered over;
   #169's error-typing sweep owns that surface.
 
-### Fixed
-
-- **`ExportPKCS12` refuses a revoked certificate** (#287). It parses the
-  supplied `certPEM`, derives the serial with `FormatSerial` (the single
-  definition of that format), and refuses with `*CertRevokedError` when
-  `IsRevoked` says the serial is revoked. There is no override flag: a
-  forensic or archival export of a revoked bundle needs that added
-  deliberately, not defaulted. This is an OPERATOR SIGNAL, not a containment
-  control — the caller already supplies `certPEM`/`keyPEM`, so refusal
-  withholds nothing it did not already have; its value is that the system
-  stops silently packaging a credential it will not honour anywhere in the
-  cluster. Gives `cert.CertRevokedError` its first producer: both REST (409)
-  and gRPC (`FAILED_PRECONDITION`) mappings were previously unreachable
-  except through a mock.
-
 ### Changed — BREAKING
+
+- **Barrier credentials are wipeable bytes at every layer** (#184). Every field
+  that carries a caller-supplied barrier credential changed from `string` to
+  `[]byte`: `BarrierInitializeRequest.Secret`, `BarrierUnsealRequest.Secret`,
+  `BarrierInitializeShamirRequest.Secret`,
+  `BarrierEnableEncryptionRequest.Passphrase` and
+  `TenantBarrierInitRequest.Passphrase` in `sdk/go/transport`; the matching
+  `secret` / `passphrase` fields in `qrdb.proto` (`string` → `bytes`); the
+  `secret` / `passphrase` parameters on `service.BarrierServicer` and
+  `tenant.TenantServicer`; and the REST and QUIC JSON request structs on both
+  the client and the server.
+
+  A Go `string` is immutable and therefore **cannot be zeroized**. A consumer
+  holding a passphrase in protected memory had to convert it to a `string` to
+  populate the request, and that copy then lived on the heap until the
+  collector happened to reuse the page — recoverable from a core dump or a
+  memory scrape for an unbounded period. The field type was the only thing
+  forcing that, and `TenantBarrierUnsealRequest.Key` was already `[]byte`, so
+  the fix is to make the outliers match rather than to add anything.
+
+  The type change makes the credential *wipeable*; the rest of the change
+  makes it *wiped*. The caller owns the slice it supplies and may zeroize it
+  the moment the call returns, because no transport, service or sealing
+  strategy retains it.
+
+  **What "retains nothing" does and does not cover.** Wiping the slice destroys
+  that slice and every alias of it. It does not reach the transient copy each
+  encoder necessarily makes — base64 in a REST body, protobuf's out-of-place
+  marshalling, the MCP JSON-RPC body. Those are unreferenced once the call
+  completes and the collector reclaims them, but they are not zeroized, and
+  nothing at this layer can zeroize them: serializing a value means copying it
+  and the wire format owns that copy. The claim is that the copy the CALLER
+  holds and the copy the DAEMON decodes are both destroyable on demand, which
+  a string never was — not that no plaintext exists anywhere. The daemon owns the slice its decoder produced and
+  `secure.Wipe`s it before the handler returns — on the success path and on
+  every error path, including a rejected unseal, which is the case that
+  matters most. `enable-encryption` is the one deliberate exception: its
+  migration outlives the request, so ownership passes to that goroutine and
+  the wipe is deferred there instead.
+
+  **Wire format.** proto3 encodes `bytes` and `string` identically, so gRPC,
+  Unix and QUIC protobuf frames are byte-for-byte unchanged. REST JSON and the
+  QUIC tenant JSON frame now carry these fields as **base64**, the same
+  convention every other `[]byte` field on those surfaces already uses. The
+  TypeScript SDK encodes and decodes this for its callers; its own API is
+  unchanged and still takes plaintext.
+
+  **MCP is the documented exception.** An MCP tool argument is a JSON string
+  by definition of the protocol, so `pkg/api/mcp.secretArg` and
+  `sdk/go/transport/mcp.secretArg` are single, commented conversion points on
+  each side. Callers who cannot accept that residue should not drive barrier
+  operations over MCP.
+
+  **Not covered:** Shamir share fields and SO/User PINs are still text strings
+  on every transport. They are secrets too; the gap is stated in
+  `docs/barrier-seal/api.md` rather than left implied.
+
+  **Consumer verification (pre-publication exception,
+  `conventions/release-versioning.md`):** inside this repository the changed
+  types are referenced only by `sdk/go/transport/*`, `pkg/api/*`, `pkg/service`,
+  `pkg/tenant` and `cmd/qrdb`, all updated here. go-xkms, go-quicbaas and
+  go-trusted-platform were **not checked out on the host that made this
+  change** and could not be grepped. go-quicbaas is a known consumer — it is
+  the repository that raised this issue — and will need a mechanical update at
+  its call sites, after which it can delete the `passphraseString` conversion
+  it documents as residue today. This is not a zero-consumer change and is not
+  claimed as one.
 
 - **`RevokeCert` reports what it did, on every transport** (#287).
   `cert.CertProvider.RevokeCert`, `transport.CertClient.RevokeCert` (`sdk/go`)
@@ -91,6 +143,34 @@ are not reconstructed here — their history is in the git log.
   the method name but has no go-qrdb dependency in its `go.mod`, so its
   `RevokeCert` is an unrelated API, not a consumer of this one. Zero verified
   external consumers at the time of this change.
+
+### Fixed
+
+- **`secure.StdinProvider` no longer leaves the passphrase in an unwipeable
+  heap buffer** (#184). It read through a `bufio.Reader`, which staged the
+  passphrase in an ordinary heap allocation that was never wiped — in the one
+  provider whose entire purpose is to keep passphrases out of unprotected
+  memory. It now reads a bounded line one byte at a time straight into an
+  mlocked `Buffer`, which is destroyed (and so zeroed) on every exit path
+  including the error ones. Two behaviour changes follow: the provider no
+  longer **over-reads** past the newline, so a subsequent reader of the same
+  stream still sees the remainder; and input longer than
+  `secure.MaxStdinPassphraseLen` (1024) is **refused** rather than truncated,
+  because silently accepting a prefix would unseal against a credential the
+  operator did not type.
+
+- **`ExportPKCS12` refuses a revoked certificate** (#287). It parses the
+  supplied `certPEM`, derives the serial with `FormatSerial` (the single
+  definition of that format), and refuses with `*CertRevokedError` when
+  `IsRevoked` says the serial is revoked. There is no override flag: a
+  forensic or archival export of a revoked bundle needs that added
+  deliberately, not defaulted. This is an OPERATOR SIGNAL, not a containment
+  control — the caller already supplies `certPEM`/`keyPEM`, so refusal
+  withholds nothing it did not already have; its value is that the system
+  stops silently packaging a credential it will not honour anywhere in the
+  cluster. Gives `cert.CertRevokedError` its first producer: both REST (409)
+  and gRPC (`FAILED_PRECONDITION`) mappings were previously unreachable
+  except through a mock.
 
 ## [0.16.3-alpha] - 2026-09-06
 

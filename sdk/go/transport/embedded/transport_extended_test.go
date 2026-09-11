@@ -1361,7 +1361,7 @@ type mockTenantService struct {
 	deleteFn        func(ctx context.Context, id string) error
 	updateFn        func(ctx context.Context, id string, patch tenant.TenantPatch) (*tenant.TenantInfo, error)
 	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
-	barrierInitFn   func(ctx context.Context, id, passphrase string, threshold, shares int) error
+	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, shares int) error
 	barrierUnsealFn func(ctx context.Context, id string, key []byte) error
 	barrierSealFn   func(ctx context.Context, id string) error
 	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
@@ -1413,7 +1413,7 @@ func (m *mockTenantService) UpdateEntitlements(ctx context.Context, id string, e
 	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, shares int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
 		if err := m.barrierInitFn(ctx, id, passphrase, threshold, shares); err != nil {
 			return nil, err
@@ -1422,7 +1422,7 @@ func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id, passphras
 	return &tenant.TenantBarrierInitResult{TenantID: id}, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, shares int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, shares)
 }
 
@@ -1785,7 +1785,7 @@ func TestEmbeddedTenant_BarrierInit(t *testing.T) {
 	var capturedID string
 	var capturedT, capturedS int
 	svc := &mockTenantService{
-		barrierInitFn: func(_ context.Context, id, _ string, threshold, shares int) error {
+		barrierInitFn: func(_ context.Context, id string, _ []byte, threshold, shares int) error {
 			capturedID = id
 			capturedT = threshold
 			capturedS = shares
@@ -2621,7 +2621,7 @@ func TestEmbeddedDEK_Initialize(t *testing.T) {
 	var capturedKB int
 	svc := &mockDEKService{
 		initializeFn: func(_ context.Context, alg string, kb int) error {
-			capturedAlg = alg
+			capturedAlg = string(alg)
 			capturedKB = kb
 			return nil
 		},

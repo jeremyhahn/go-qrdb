@@ -120,17 +120,17 @@ func newMockBarrierSvc() *mockBarrierSvc {
 	}
 }
 
-func (m *mockBarrierSvc) BarrierInitialize(_ context.Context, secret string) error {
+func (m *mockBarrierSvc) BarrierInitialize(_ context.Context, secret []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lastSecret = secret
+	m.lastSecret = string(secret)
 	return m.initErr
 }
 
-func (m *mockBarrierSvc) BarrierUnseal(_ context.Context, secret string) error {
+func (m *mockBarrierSvc) BarrierUnseal(_ context.Context, secret []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lastUnsealSecret = secret
+	m.lastUnsealSecret = string(secret)
 	return m.unsealErr
 }
 
@@ -145,10 +145,10 @@ func (m *mockBarrierSvc) BarrierStatus(_ context.Context) (*service.BarrierStatu
 	return m.statusResp, nil
 }
 
-func (m *mockBarrierSvc) BarrierInitializeShamir(_ context.Context, secret string, threshold, totalShares int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierSvc) BarrierInitializeShamir(_ context.Context, secret []byte, threshold, totalShares int) (*service.ShamirInitInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.lastSecret = secret
+	m.lastSecret = string(secret)
 	m.lastInitThreshold = threshold
 	m.lastInitTotalShares = totalShares
 	if m.initShamirErr != nil {
@@ -301,7 +301,7 @@ func TestBarrierInitialize_Success(t *testing.T) {
 	defer cleanup()
 
 	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret:  "passphrase",
+		Secret:  []byte("passphrase"),
 		SOPin:   "1234",
 		UserPin: "5678",
 	})
@@ -322,7 +322,7 @@ func TestBarrierInitialize_ServiceError(t *testing.T) {
 	tr, cleanup := connectBarrierInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{Secret: "s"})
+	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -341,7 +341,7 @@ func TestBarrierUnseal_Success(t *testing.T) {
 	tr, cleanup := connectBarrierInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: "passphrase"})
+	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("passphrase")})
 	if err != nil {
 		t.Fatalf("BarrierUnseal: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestBarrierUnseal_ServiceError(t *testing.T) {
 	tr, cleanup := connectBarrierInProcess(t, svc)
 	defer cleanup()
 
-	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: "s"})
+	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error from service")
 	}
@@ -450,7 +450,7 @@ func TestBarrierInitializeShamir_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "passphrase",
+		Secret:      []byte("passphrase"),
 		Threshold:   2,
 		TotalShares: 3,
 		SOPin:       "1111",
@@ -480,7 +480,7 @@ func TestBarrierInitializeShamir_ServiceError(t *testing.T) {
 	defer cleanup()
 
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret: "s", Threshold: 1, TotalShares: 1,
+		Secret: []byte("s"), Threshold: 1, TotalShares: 1,
 	})
 	if err == nil {
 		t.Fatal("expected error from service")

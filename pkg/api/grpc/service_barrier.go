@@ -29,6 +29,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -44,6 +45,11 @@ func (s *qrdbServiceServer) BarrierInitialize(ctx context.Context, req *pb.Barri
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
 	}
+
+	// The decoded credential is this handler's to own and to destroy. The
+	// service layer and pkg/seal borrow it for the call and retain nothing,
+	// so a deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapPINError(err)
@@ -61,6 +67,8 @@ func (s *qrdbServiceServer) BarrierUnseal(ctx context.Context, req *pb.BarrierUn
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
 	}
+
+	defer secure.Wipe(req.GetSecret())
 
 	if err := s.barrierSvc.BarrierUnseal(ctx, req.GetSecret()); err != nil {
 		return nil, mapServiceError(err)
@@ -119,6 +127,8 @@ func (s *qrdbServiceServer) BarrierShamirInitialize(ctx context.Context, req *pb
 	if s.barrierSvc == nil {
 		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "barrier"}).Error())
 	}
+
+	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, mapPINError(err)
@@ -234,11 +244,12 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
 		Mechanism:       mechanism,
 		Availability:    availability,
-		Credentials:     seal.Credentials{Secret: []byte(req.GetPassphrase())},
+		Credentials:     seal.Credentials{Secret: req.GetPassphrase()},
 		ShamirThreshold: int(req.GetShamirThreshold()),
 		ShamirTotal:     int(req.GetShamirTotal()),
 	}
 	if err := opts.Validate(); err != nil {
+		secure.Wipe(req.GetPassphrase())
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -250,6 +261,11 @@ func (s *qrdbServiceServer) BarrierEnableEncryption(_ context.Context, req *pb.B
 	// #nosec G118 -- detaching from the request context is the point: the
 	// migration must survive the response returning.
 	go func() {
+		// The migration OWNS the credential from here: it outlives this
+		// request, so a deferred wipe in the handler would zero the
+		// passphrase out from under a running migration. The wipe belongs
+		// to the last reader, and that is this goroutine.
+		defer secure.Wipe(req.GetPassphrase())
 		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 

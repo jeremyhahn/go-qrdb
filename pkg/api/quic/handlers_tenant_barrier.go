@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // authorizeTenantBarrierOp authorizes a per-tenant barrier operation against
@@ -84,9 +85,12 @@ func (s *Server) authorizeTenantBarrierSealedOp(ctx context.Context, tenantID st
 // Passphrase carries the tenant admin's caller-supplied secret (required for
 // the passphrase strategy; no derived fallback). Strategy selects the seal
 // strategy; when empty the passphrase (software) strategy is used.
+//
+// Passphrase is []byte (base64 on the wire, matching the unseal frame's key)
+// so it can be zeroized; a Go string cannot be.
 type quicTenantBarrierInitRequest struct {
 	TenantID   string `json:"tenant_id"`
-	Passphrase string `json:"passphrase,omitempty"`
+	Passphrase []byte `json:"passphrase,omitempty"`
 	Threshold  int    `json:"threshold,omitempty"`
 	Shares     int    `json:"shares,omitempty"`
 	Strategy   string `json:"strategy,omitempty"`
@@ -177,6 +181,10 @@ func (s *Server) handleTenantBarrierInit(ctx context.Context, payload []byte) ([
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	// The decoded credential is this handler's to own and to destroy. The
+	// tenant service borrows it for the call and retains nothing, so a
+	// deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.Passphrase)
 	if req.TenantID == "" {
 		return nil, &InvalidArgumentError{Reason: (&missingTenantIDError{}).Error()}
 	}

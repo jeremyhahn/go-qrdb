@@ -52,6 +52,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -206,11 +207,12 @@ Examples:
 				return err
 			}
 			req := &transport.BarrierInitializeRequest{
-				Secret:          f.passphrase,
+				Secret:          secretBytes(f.passphrase),
 				BarrierStrategy: f.strategy,
 				SOPin:           f.soPin,
 				UserPin:         f.userPin,
 			}
+			defer secure.Wipe(req.Secret)
 			if err := client.Barrier().BarrierInitialize(cmd.Context(), req); err != nil {
 				return err
 			}
@@ -311,12 +313,13 @@ Example:
 				return err
 			}
 			req := &transport.BarrierInitializeShamirRequest{
-				Secret:      f.passphrase,
+				Secret:      secretBytes(f.passphrase),
 				Threshold:   f.threshold,
 				TotalShares: f.total,
 				SOPin:       f.soPin,
 				UserPin:     f.userPin,
 			}
+			defer secure.Wipe(req.Secret)
 			resp, err := client.Barrier().BarrierInitializeShamir(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -400,7 +403,8 @@ Example:
   qrdb barrier unseal --passphrase '<passphrase>'`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			req := &transport.BarrierUnsealRequest{Secret: passphrase}
+			req := &transport.BarrierUnsealRequest{Secret: secretBytes(passphrase)}
+			defer secure.Wipe(req.Secret)
 			if err := client.Barrier().BarrierUnseal(cmd.Context(), req); err != nil {
 				return err
 			}
@@ -650,10 +654,11 @@ Examples:
 				Strategy:        f.strategy,
 				Mechanism:       f.mechanism,
 				Availability:    f.availability,
-				Passphrase:      f.passphrase,
+				Passphrase:      secretBytes(f.passphrase),
 				ShamirThreshold: f.threshold,
 				ShamirTotal:     f.total,
 			}
+			defer secure.Wipe(req.Passphrase)
 			resp, err := client.Barrier().BarrierEnableEncryption(cmd.Context(), req)
 			if err != nil {
 				return err

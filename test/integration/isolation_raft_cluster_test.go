@@ -520,7 +520,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 			// On restart the barrier is already initialized; skip init, just unseal.
 			unsealBody, unsealStatus := iraftAPIPost(t, mtlsHTTPClient(t, ca, 10*time.Second),
 				fmt.Sprintf("https://127.0.0.1:%d/v1/barrier/unseal", adminPorts[idx]),
-				map[string]interface{}{"secret": iraftBarrierPassphrase},
+				map[string]interface{}{"secret": []byte(iraftBarrierPassphrase)},
 			)
 			if unsealStatus != http.StatusNoContent {
 				t.Errorf("restart: barrier unseal node %d: status %d, body: %s",

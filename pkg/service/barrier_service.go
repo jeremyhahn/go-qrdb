@@ -28,10 +28,14 @@ import (
 // recovery, and root token generation.
 type BarrierServicer interface {
 	// BarrierInitialize initializes the barrier with a secret credential.
-	BarrierInitialize(ctx context.Context, secret string) error
+	// secret is []byte rather than string because a Go string cannot be
+	// zeroized; it is borrowed for the duration of the call and never
+	// retained, so the caller is free to wipe it on return.
+	BarrierInitialize(ctx context.Context, secret []byte) error
 
-	// BarrierUnseal unseals the barrier with a secret credential.
-	BarrierUnseal(ctx context.Context, secret string) error
+	// BarrierUnseal unseals the barrier with a secret credential. secret is
+	// a borrow the caller may wipe on return; see BarrierInitialize.
+	BarrierUnseal(ctx context.Context, secret []byte) error
 
 	// BarrierSeal transitions the barrier to the sealed state. Returns
 	// ErrShamirBarrierRequiresQuorum when the active strategy is Shamir;
@@ -45,7 +49,8 @@ type BarrierServicer interface {
 	// sharing, splitting the root key into threshold-of-totalShares shares.
 	// Shares are distributed to enrolled Security Officers via the
 	// CeremonyService; they do not appear in the returned ShamirInitInfo.
-	BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*ShamirInitInfo, error)
+	// secret is a borrow the caller may wipe on return; see BarrierInitialize.
+	BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*ShamirInitInfo, error)
 
 	// BarrierUnsealWithShare submits a single Shamir share toward the
 	// quorum threshold.
@@ -291,14 +296,14 @@ func NewBarrierServiceWithCeremony(barrier *seal.StorageBarrier, svc *ceremony.C
 
 // BarrierInitialize initializes the barrier with a secret credential by
 // delegating to the StorageBarrier's Initialize method.
-func (s *BarrierService) BarrierInitialize(ctx context.Context, secret string) error {
-	return s.barrier.Initialize(ctx, seal.Credentials{Secret: []byte(secret)})
+func (s *BarrierService) BarrierInitialize(ctx context.Context, secret []byte) error {
+	return s.barrier.Initialize(ctx, seal.Credentials{Secret: secret})
 }
 
 // BarrierUnseal unseals the barrier with a secret credential by delegating
 // to the StorageBarrier's Unseal method.
-func (s *BarrierService) BarrierUnseal(ctx context.Context, secret string) error {
-	return s.barrier.Unseal(ctx, seal.Credentials{Secret: []byte(secret)})
+func (s *BarrierService) BarrierUnseal(ctx context.Context, secret []byte) error {
+	return s.barrier.Unseal(ctx, seal.Credentials{Secret: secret})
 }
 
 // BarrierSeal transitions the barrier to the sealed state. For Shamir-protected
@@ -331,7 +336,7 @@ func (s *BarrierService) BarrierStatus(_ context.Context) (*BarrierStatusInfo, e
 // zero the existing daemon configuration is preserved as the fallback.
 // Shares are distributed to enrolled Security Officers via the CeremonyService
 // and do not appear in the returned ShamirInitInfo.
-func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret string, threshold, totalShares int) (*ShamirInitInfo, error) {
+func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, totalShares int) (*ShamirInitInfo, error) {
 	if threshold != 0 || totalShares != 0 {
 		s.barrier.SetShamirConfig(&seal.ShamirConfig{
 			Threshold:   threshold,
@@ -339,7 +344,7 @@ func (s *BarrierService) BarrierInitializeShamir(ctx context.Context, secret str
 		})
 	}
 
-	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: []byte(secret)})
+	result, err := s.barrier.InitializeShamir(ctx, seal.Credentials{Secret: secret})
 	if err != nil {
 		return nil, err
 	}

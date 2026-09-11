@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -34,21 +35,25 @@ import (
 // ---------------------------------------------------------------------------
 
 // barrierInitializeRequest is the JSON payload for POST /v1/barrier/initialize.
+//
+// Secret is []byte, so it is base64 on the wire and a wipeable slice in the
+// process. A Go string cannot be zeroized, which is the whole reason the
+// barrier credential is not one anywhere in this stack.
 type barrierInitializeRequest struct {
-	Secret  string `json:"secret"`
+	Secret  []byte `json:"secret"`
 	SOPin   string `json:"so_pin,omitempty"`
 	UserPin string `json:"user_pin,omitempty"`
 }
 
 // barrierUnsealRequest is the JSON payload for POST /v1/barrier/unseal.
 type barrierUnsealRequest struct {
-	Secret string `json:"secret"`
+	Secret []byte `json:"secret"`
 }
 
 // barrierShamirInitializeRequest is the JSON payload for
 // POST /v1/barrier/shamir/initialize.
 type barrierShamirInitializeRequest struct {
-	Secret      string `json:"secret"`
+	Secret      []byte `json:"secret"`
 	Threshold   int    `json:"threshold"`
 	TotalShares int    `json:"total_shares"`
 	SOPin       string `json:"so_pin,omitempty"`
@@ -151,6 +156,10 @@ func (s *Server) handleBarrierInitialize(w http.ResponseWriter, r *http.Request)
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
+	// The decoded credential is this handler's to own and to destroy. The
+	// service layer and pkg/seal borrow it for the call and retain nothing,
+	// so a deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.Secret)
 
 	// Apply optional SO PIN / User PIN to the pin.PINBackend before
 	// initializing the barrier. When the backend is nil the call is a
@@ -182,6 +191,7 @@ func (s *Server) handleBarrierUnseal(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
+	defer secure.Wipe(req.Secret)
 
 	if err := s.barrierSvc.BarrierUnseal(r.Context(), req.Secret); err != nil {
 		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
@@ -258,6 +268,7 @@ func (s *Server) handleBarrierShamirInitialize(w http.ResponseWriter, r *http.Re
 		writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 		return
 	}
+	defer secure.Wipe(req.Secret)
 
 	// Apply optional SO PIN / User PIN to the pin.PINBackend before
 	// initializing the barrier (no-op when no backend is configured).
@@ -365,8 +376,10 @@ type barrierEnableEncryptionRequest struct {
 	Mechanism string `json:"mechanism,omitempty"`
 	// Availability is "quiesced" (default) or "online".
 	Availability string `json:"availability,omitempty"`
-	// Passphrase is the unseal credential for a passphrase target.
-	Passphrase string `json:"passphrase,omitempty"`
+	// Passphrase is the unseal credential for a passphrase target. It is
+	// []byte (base64 on the wire) so it can be zeroized; see
+	// barrierInitializeRequest.
+	Passphrase []byte `json:"passphrase,omitempty"`
 	// ShamirThreshold / ShamirTotal configure an M-of-N Shamir target.
 	ShamirThreshold int `json:"shamir_threshold,omitempty"`
 	ShamirTotal     int `json:"shamir_total,omitempty"`
@@ -422,13 +435,14 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 		TargetStrategy:  seal.StrategyID(req.Strategy),
 		Mechanism:       migrationMechanism(req.Mechanism),
 		Availability:    migrationAvailability(req.Availability),
-		Credentials:     seal.Credentials{Secret: []byte(req.Passphrase)},
+		Credentials:     seal.Credentials{Secret: req.Passphrase},
 		ShamirThreshold: req.ShamirThreshold,
 		ShamirTotal:     req.ShamirTotal,
 	}
 	// Validate synchronously so the caller gets immediate feedback on bad input
 	// (the async path can no longer surface a structured error to this client).
 	if err := opts.Validate(); err != nil {
+		secure.Wipe(req.Passphrase)
 		writeErrorJSON(w, mapBarrierCeremonyHTTPError(err), err)
 		return
 	}
@@ -438,6 +452,11 @@ func (s *Server) handleBarrierEnableEncryption(w http.ResponseWriter, r *http.Re
 	// of this request's lifetime.
 	resultCh := make(chan error, 1)
 	go func() {
+		// The migration OWNS the credential from here: it outlives this
+		// request, so a deferred wipe in the handler would zero the
+		// passphrase out from under a running migration. The wipe belongs
+		// to the last reader, and that is this goroutine.
+		defer secure.Wipe(req.Passphrase)
 		resultCh <- s.encMigrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 

@@ -45,7 +45,7 @@ type mockTenantService struct {
 	deleteFn        func(ctx context.Context, id string) error
 	updateQuotasFn  func(ctx context.Context, id string, q *quota.Quotas) (*tenant.TenantInfo, error)
 	quotasFn        func(ctx context.Context, id string) (*quota.Quotas, error)
-	barrierInitFn   func(ctx context.Context, id, passphrase string, threshold, total int) error
+	barrierInitFn   func(ctx context.Context, id string, passphrase []byte, threshold, total int) error
 	barrierUnsealFn func(ctx context.Context, id string, share []byte) error
 	barrierSealFn   func(ctx context.Context, id string) error
 	barrierStatusFn func(ctx context.Context, id string) (*tenant.TenantBarrierStatus, error)
@@ -112,14 +112,14 @@ func (m *mockTenantService) Quotas(ctx context.Context, id string) (*quota.Quota
 	return &quota.Quotas{}, nil
 }
 
-func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	if m.barrierInitFn != nil {
 		return nil, m.barrierInitFn(ctx, id, passphrase, threshold, total)
 	}
 	return nil, nil
 }
 
-func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (m *mockTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return m.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
 

@@ -112,10 +112,10 @@ func (f *fakeTenants) UpdateQuotas(_ context.Context, _ string, _ *quota.Quotas)
 func (f *fakeTenants) UpdateEntitlements(ctx context.Context, id string, e *quota.Entitlements) (*tenant.TenantInfo, error) {
 	return &tenant.TenantInfo{ID: id, Entitlements: e}, nil
 }
-func (f *fakeTenants) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+func (f *fakeTenants) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
-func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (f *fakeTenants) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 func (f *fakeTenants) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {

@@ -78,13 +78,13 @@ func newBarrierSvcMini() *barrierSvcMini {
 	}
 }
 
-func (m *barrierSvcMini) BarrierInitialize(_ context.Context, _ string) error { return m.initErr }
-func (m *barrierSvcMini) BarrierUnseal(_ context.Context, _ string) error     { return m.unsealErr }
+func (m *barrierSvcMini) BarrierInitialize(_ context.Context, _ []byte) error { return m.initErr }
+func (m *barrierSvcMini) BarrierUnseal(_ context.Context, _ []byte) error     { return m.unsealErr }
 func (m *barrierSvcMini) BarrierSeal(_ context.Context) error                 { return m.sealErr }
 func (m *barrierSvcMini) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return m.statusResult, m.statusErr
 }
-func (m *barrierSvcMini) BarrierInitializeShamir(_ context.Context, _ string, _, _ int) (*service.ShamirInitInfo, error) {
+func (m *barrierSvcMini) BarrierInitializeShamir(_ context.Context, _ []byte, _, _ int) (*service.ShamirInitInfo, error) {
 	return m.shamirInitResult, m.shamirInitErr
 }
 func (m *barrierSvcMini) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {
@@ -402,7 +402,7 @@ func TestBarrier_Initialize_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "mysecret"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("mysecret")})
 	if err != nil {
 		t.Fatalf("BarrierInitialize failed: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestBarrier_Initialize_NilService(t *testing.T) {
 	client, cleanup := startTestServerFull(t)
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "s"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -428,7 +428,7 @@ func TestBarrier_Initialize_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: "s"})
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -447,7 +447,7 @@ func TestBarrier_Initialize_WithPINBackend(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{
-		Secret: "s", SoPin: "sopin", UserPin: "userpin",
+		Secret: []byte("s"), SoPin: "sopin", UserPin: "userpin",
 	})
 	if err != nil {
 		t.Fatalf("BarrierInitialize with PINs failed: %v", err)
@@ -463,7 +463,7 @@ func TestBarrier_Initialize_PINError(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{
-		Secret: "s", SoPin: "x",
+		Secret: []byte("s"), SoPin: "x",
 	})
 	if err == nil {
 		t.Fatal("expected error from PIN validation, got nil")
@@ -479,7 +479,7 @@ func TestBarrier_Unseal_Success(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: "s"})
+	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: []byte("s")})
 	if err != nil {
 		t.Fatalf("BarrierUnseal failed: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestBarrier_Unseal_Error(t *testing.T) {
 	client, cleanup := startTestServerFull(t, WithBarrierService(svc))
 	defer cleanup()
 
-	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: "s"})
+	_, err := client.BarrierUnseal(context.Background(), &pb.BarrierUnsealRequest{Secret: []byte("s")})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -552,7 +552,7 @@ func TestBarrier_ShamirInitialize_Success(t *testing.T) {
 	defer cleanup()
 
 	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: "s", Threshold: 2, TotalShares: 3,
+		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
 	})
 	if err != nil {
 		t.Fatalf("BarrierShamirInitialize failed: %v", err)
@@ -571,7 +571,7 @@ func TestBarrier_ShamirInitialize_WithPINs(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: "s", Threshold: 2, TotalShares: 3, SoPin: "sopin",
+		Secret: []byte("s"), Threshold: 2, TotalShares: 3, SoPin: "sopin",
 	})
 	if err != nil {
 		t.Fatalf("BarrierShamirInitialize with PINs failed: %v", err)
@@ -585,7 +585,7 @@ func TestBarrier_ShamirInitialize_Error(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
-		Secret: "s", Threshold: 2, TotalShares: 3,
+		Secret: []byte("s"), Threshold: 2, TotalShares: 3,
 	})
 	if err == nil {
 		t.Fatal("expected error, got nil")

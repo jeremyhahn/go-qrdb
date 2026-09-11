@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -39,6 +40,10 @@ func (s *Server) handleBarrierInitialize(ctx context.Context, payload []byte) ([
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	// The decoded credential is this handler's to own and to destroy. The
+	// service layer and pkg/seal borrow it for the call and retain nothing,
+	// so a deferred wipe covers every exit path including the error ones.
+	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, err
@@ -62,6 +67,7 @@ func (s *Server) handleBarrierUnseal(ctx context.Context, payload []byte) ([]byt
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	defer secure.Wipe(req.GetSecret())
 
 	if err := s.barrierSvc.BarrierUnseal(ctx, req.GetSecret()); err != nil {
 		return nil, err
@@ -121,6 +127,7 @@ func (s *Server) handleBarrierShamirInitialize(ctx context.Context, payload []by
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
+	defer secure.Wipe(req.GetSecret())
 
 	if err := applyBarrierInitializePINs(s.pinBackend, req.GetSoPin(), req.GetUserPin()); err != nil {
 		return nil, err
@@ -271,11 +278,12 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 		TargetStrategy:  seal.StrategyID(req.GetStrategy()),
 		Mechanism:       mechanism,
 		Availability:    availability,
-		Credentials:     seal.Credentials{Secret: []byte(req.GetPassphrase())},
+		Credentials:     seal.Credentials{Secret: req.GetPassphrase()},
 		ShamirThreshold: int(req.GetShamirThreshold()),
 		ShamirTotal:     int(req.GetShamirTotal()),
 	}
 	if err := opts.Validate(); err != nil {
+		secure.Wipe(req.GetPassphrase())
 		return nil, err
 	}
 
@@ -287,6 +295,11 @@ func (s *Server) handleBarrierEnableEncryption(_ context.Context, payload []byte
 	// #nosec G118 -- detaching from the request context is the point: the
 	// migration must survive the response returning.
 	go func() {
+		// The migration OWNS the credential from here: it outlives this
+		// request, so a deferred wipe in the handler would zero the
+		// passphrase out from under a running migration. The wipe belongs
+		// to the last reader, and that is this goroutine.
+		defer secure.Wipe(req.GetPassphrase())
 		resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 	}()
 

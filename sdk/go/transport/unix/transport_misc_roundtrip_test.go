@@ -41,10 +41,10 @@ import (
 
 type mockBarrierSvc struct {
 	initFn           func(ctx context.Context, secret string) error
-	unsealFn         func(ctx context.Context, secret string) error
+	unsealFn         func(ctx context.Context, secret []byte) error
 	sealFn           func(ctx context.Context) error
 	statusFn         func(ctx context.Context) (*service.BarrierStatusInfo, error)
-	shamirInitFn     func(ctx context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error)
+	shamirInitFn     func(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error)
 	unsealShareFn    func(ctx context.Context, share string) (*service.UnsealShareProgress, error)
 	unsealSharesFn   func(ctx context.Context, shares []string) error
 	rekeyFn          func(ctx context.Context, threshold, total int) (*service.ShamirInitInfo, error)
@@ -55,14 +55,14 @@ type mockBarrierSvc struct {
 	rootTokenFn      func(ctx context.Context, shares []string) (*service.RootTokenInfo, error)
 }
 
-func (m *mockBarrierSvc) BarrierInitialize(ctx context.Context, secret string) error {
+func (m *mockBarrierSvc) BarrierInitialize(ctx context.Context, secret []byte) error {
 	if m.initFn != nil {
-		return m.initFn(ctx, secret)
+		return m.initFn(ctx, string(secret))
 	}
 	return nil
 }
 
-func (m *mockBarrierSvc) BarrierUnseal(ctx context.Context, secret string) error {
+func (m *mockBarrierSvc) BarrierUnseal(ctx context.Context, secret []byte) error {
 	if m.unsealFn != nil {
 		return m.unsealFn(ctx, secret)
 	}
@@ -87,7 +87,7 @@ func (m *mockBarrierSvc) BarrierStatus(ctx context.Context) (*service.BarrierSta
 	}, nil
 }
 
-func (m *mockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret string, threshold, total int) (*service.ShamirInitInfo, error) {
+func (m *mockBarrierSvc) BarrierInitializeShamir(ctx context.Context, secret []byte, threshold, total int) (*service.ShamirInitInfo, error) {
 	if m.shamirInitFn != nil {
 		return m.shamirInitFn(ctx, secret, threshold, total)
 	}
@@ -210,7 +210,7 @@ func TestUnixRT_BarrierInitialize(t *testing.T) {
 	defer cleanup()
 
 	if err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: "master-secret",
+		Secret: []byte("master-secret"),
 	}); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestUnixRT_BarrierUnseal(t *testing.T) {
 	defer cleanup()
 
 	if err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{
-		Secret: "master-secret",
+		Secret: []byte("master-secret"),
 	}); err != nil {
 		t.Fatalf("BarrierUnseal: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestUnixRT_BarrierInitializeShamir(t *testing.T) {
 	defer cleanup()
 
 	resp, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{
-		Secret:      "secret",
+		Secret:      []byte("secret"),
 		Threshold:   2,
 		TotalShares: 3,
 	})
@@ -385,7 +385,7 @@ func TestUnixRT_BarrierInitialize_ServiceError(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithBarrierService(svc))
 	defer cleanup()
 
-	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{Secret: "x"})
+	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{Secret: []byte("x")})
 	if err == nil {
 		t.Fatal("expected error from server")
 	}

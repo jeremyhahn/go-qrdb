@@ -37,13 +37,13 @@ type fakeBarrierServicer struct{}
 
 var _ service.BarrierServicer = (*fakeBarrierServicer)(nil)
 
-func (f *fakeBarrierServicer) BarrierInitialize(_ context.Context, _ string) error { return nil }
-func (f *fakeBarrierServicer) BarrierUnseal(_ context.Context, _ string) error     { return nil }
+func (f *fakeBarrierServicer) BarrierInitialize(_ context.Context, _ []byte) error { return nil }
+func (f *fakeBarrierServicer) BarrierUnseal(_ context.Context, _ []byte) error     { return nil }
 func (f *fakeBarrierServicer) BarrierSeal(_ context.Context) error                 { return nil }
 func (f *fakeBarrierServicer) BarrierStatus(_ context.Context) (*service.BarrierStatusInfo, error) {
 	return &service.BarrierStatusInfo{Sealed: false, Strategy: "passphrase", InitializedAt: time.Unix(1700000000, 0)}, nil
 }
-func (f *fakeBarrierServicer) BarrierInitializeShamir(_ context.Context, _ string, threshold, total int) (*service.ShamirInitInfo, error) {
+func (f *fakeBarrierServicer) BarrierInitializeShamir(_ context.Context, _ []byte, threshold, total int) (*service.ShamirInitInfo, error) {
 	return &service.ShamirInitInfo{ShareCount: 2, Threshold: threshold, TotalShares: total}, nil
 }
 func (f *fakeBarrierServicer) BarrierUnsealWithShare(_ context.Context, _ string) (*service.UnsealShareProgress, error) {

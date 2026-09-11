@@ -16,6 +16,7 @@
 package rest
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,13 @@ type migrateCall struct {
 	opts  seal.MigrationOptions
 }
 
+// EnableEncryption records the call. opts.Credentials.Secret is a BORROW
+// valid only for the duration of this call — the handler owns that slice and
+// zeroizes it once the migration returns — so the recorded copy must be
+// deep. Recording the slice header instead would hand the assertions a
+// buffer that is legitimately zeroed out from under them.
 func (m *captureMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	opts.Credentials.Secret = bytes.Clone(opts.Credentials.Secret)
 	m.ch <- migrateCall{scope: scope, opts: opts}
 	return m.err
 }
@@ -57,7 +64,7 @@ func TestHandleBarrierEnableEncryption_NotWired(t *testing.T) {
 	// is a 404/405; assert it is not a success and not a 202-style start.
 	srv := newEnableEncTestServer(t, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
-		strings.NewReader(`{"strategy":"passphrase","passphrase":"pw"}`))
+		strings.NewReader(`{"strategy":"passphrase","passphrase":"cHc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 	if rec.Code == http.StatusOK {
@@ -87,7 +94,7 @@ func TestHandleBarrierEnableEncryption_SystemStarts(t *testing.T) {
 	mig := &captureMigrator{ch: make(chan migrateCall, 1)}
 	srv := newEnableEncTestServer(t, mig)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
-		strings.NewReader(`{"strategy":"passphrase","mechanism":"swap","passphrase":"pw"}`))
+		strings.NewReader(`{"strategy":"passphrase","mechanism":"swap","passphrase":"cHc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -130,7 +137,7 @@ func TestHandleBarrierEnableEncryption_AcceptanceFailureSurfacesSynchronously(t 
 	mig := &captureMigrator{ch: make(chan migrateCall, 1), err: service.ErrSharedBarrierImmutable}
 	srv := newEnableEncTestServer(t, mig)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
-		strings.NewReader(`{"tenant_id":"acme","strategy":"passphrase","passphrase":"pw"}`))
+		strings.NewReader(`{"tenant_id":"acme","strategy":"passphrase","passphrase":"cHc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 
@@ -154,7 +161,7 @@ func TestHandleBarrierEnableEncryption_TenantScope(t *testing.T) {
 	mig := &captureMigrator{ch: make(chan migrateCall, 1)}
 	srv := newEnableEncTestServer(t, mig)
 	req := httptest.NewRequest(http.MethodPost, "/v1/barrier/enable-encryption",
-		strings.NewReader(`{"tenant_id":"acme","strategy":"passphrase","passphrase":"pw"}`))
+		strings.NewReader(`{"tenant_id":"acme","strategy":"passphrase","passphrase":"cHc="}`))
 	rec := httptest.NewRecorder()
 	srv.dispatch(rec, req)
 

@@ -141,7 +141,9 @@ describe('seal client – initialize (passphrase / none)', () => {
         const init = calls.find((c) => c.path === '/v1/barrier/initialize');
         expect(init).toBeDefined();
         expect(init?.method).toBe('POST');
-        expect(init?.body).toEqual({ secret: 'hunter2' });
+        // The secret is base64 on the wire: the server field is `[]byte` so
+        // the daemon can zeroize it, and `[]byte` is base64 in REST JSON.
+        expect(init?.body).toEqual({ secret: 'aHVudGVyMg==' });
     });
 });
 
@@ -205,7 +207,8 @@ describe('seal client – unseal routes by strategy', () => {
         expect(calls.some((c) => c.path === '/v1/barrier/shamir/unseal-share')).toBe(false);
         const unseal = calls.find((c) => c.path === '/v1/barrier/unseal');
         expect(unseal?.method).toBe('POST');
-        expect(unseal?.body).toEqual({ secret: 'my-passphrase' });
+        // base64 on the wire; see the initialize contract test.
+        expect(unseal?.body).toEqual({ secret: 'bXktcGFzc3BocmFzZQ==' });
         expect(progress.sealed).toBe(false);
     });
 
@@ -285,5 +288,62 @@ describe('seal client – seal', () => {
 
         const seal = calls.find((c) => c.path === '/v1/barrier/seal');
         expect(seal?.method).toBe('POST');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Secret-bearing wire fields are base64
+//
+// The server types every barrier credential as `[]byte` rather than `string`
+// so the daemon can zeroize it — a Go string is immutable and cannot be
+// wiped. `[]byte` is base64 in REST JSON, so these fields are base64 on the
+// wire while the SDK-facing arguments stay plaintext. These tests fail if the
+// encoding is dropped, which would silently send the wrong bytes: the server
+// would base64-DECODE the plaintext and unseal against garbage.
+// ---------------------------------------------------------------------------
+
+describe('seal client – secret-bearing fields are base64 on the wire', () => {
+    beforeEach(() => vi.unstubAllGlobals());
+
+    it('base64-encodes the shamir initialize secret', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/barrier/shamir/initialize': { body: { threshold: 2, total_shares: 3, share_count: 3 } },
+        });
+
+        await client.seal.initializeShamir('hunter2', 2, 3);
+
+        const req = calls.find((c) => c.path === '/v1/barrier/shamir/initialize');
+        expect(req?.body).toEqual({ secret: 'aHVudGVyMg==', threshold: 2, total_shares: 3 });
+    });
+
+    it('base64-encodes the enable-encryption passphrase', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/barrier/enable-encryption': { body: { status: 'migration_started', scope: 'system' } },
+        });
+
+        await client.seal.enableEncryption({ strategy: 'passphrase', passphrase: 'hunter2' });
+
+        const req = calls.find((c) => c.path === '/v1/barrier/enable-encryption');
+        expect(req?.body).toEqual({ strategy: 'passphrase', passphrase: 'aHVudGVyMg==' });
+    });
+
+    it('base64-encodes the tenant barrier-init passphrase', async () => {
+        const client = await connectedClient();
+        const { calls } = installRouter({
+            'POST /v1/tenants/acme/barrier/init': { status: 204 },
+        });
+
+        await client.tenants.barrierInit({
+            tenantId: 'acme',
+            passphrase: 'tenant-pw',
+            threshold: 0,
+            shares: 0,
+            strategy: 'passphrase',
+        });
+
+        const req = calls.find((c) => c.path === '/v1/tenants/acme/barrier/init');
+        expect((req?.body as Record<string, unknown>)?.passphrase).toBe('dGVuYW50LXB3');
     });
 });

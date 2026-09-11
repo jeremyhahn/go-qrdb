@@ -171,7 +171,7 @@ func initAndUnsealSoftwareBarrier(t *testing.T) BarrierServicer {
 	barrier, _ := newTestSoftwareBarrier(t)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
-	if err := svc.BarrierInitialize(ctx, "my-secret"); err != nil {
+	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
 	return svc
@@ -194,7 +194,7 @@ func initShamirBarrier(t *testing.T) (BarrierServicer, *ShamirInitInfo, *testCap
 	barrier.SetRecoveryDistributor(recDist)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
-	info, err := svc.BarrierInitializeShamir(ctx, "", 2, 3)
+	info, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestBarrierService_BarrierInitialize(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	err := svc.BarrierInitialize(ctx, "my-secret")
+	err := svc.BarrierInitialize(ctx, []byte("my-secret"))
 	if err != nil {
 		t.Fatalf("BarrierInitialize returned unexpected error: %v", err)
 	}
@@ -256,11 +256,11 @@ func TestBarrierService_BarrierInitialize_AlreadyInitialized(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if err := svc.BarrierInitialize(ctx, "my-secret"); err != nil {
+	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
 		t.Fatalf("first BarrierInitialize: %v", err)
 	}
 
-	err := svc.BarrierInitialize(ctx, "my-secret")
+	err := svc.BarrierInitialize(ctx, []byte("my-secret"))
 	if !errors.Is(err, seal.ErrAlreadyInitialized) {
 		t.Errorf("second BarrierInitialize = %v, want %v", err, seal.ErrAlreadyInitialized)
 	}
@@ -271,7 +271,7 @@ func TestBarrierService_BarrierUnseal(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if err := svc.BarrierInitialize(ctx, "my-secret"); err != nil {
+	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestBarrierService_BarrierUnseal(t *testing.T) {
 		t.Fatalf("BarrierSeal: %v", err)
 	}
 
-	err := svc.BarrierUnseal(ctx, "my-secret")
+	err := svc.BarrierUnseal(ctx, []byte("my-secret"))
 	if err != nil {
 		t.Fatalf("BarrierUnseal returned unexpected error: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestBarrierService_BarrierUnseal_NotInitialized(t *testing.T) {
 	ctx := context.Background()
 
 	// Attempt to unseal a barrier that was never initialized.
-	err := svc.BarrierUnseal(ctx, "my-secret")
+	err := svc.BarrierUnseal(ctx, []byte("my-secret"))
 	if !errors.Is(err, seal.ErrNotInitialized) {
 		t.Errorf("BarrierUnseal on uninitialized = %v, want %v", err, seal.ErrNotInitialized)
 	}
@@ -311,12 +311,12 @@ func TestBarrierService_BarrierUnseal_AlreadyUnsealed(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if err := svc.BarrierInitialize(ctx, "my-secret"); err != nil {
+	if err := svc.BarrierInitialize(ctx, []byte("my-secret")); err != nil {
 		t.Fatalf("BarrierInitialize: %v", err)
 	}
 
 	// Barrier is already unsealed after initialization.
-	err := svc.BarrierUnseal(ctx, "my-secret")
+	err := svc.BarrierUnseal(ctx, []byte("my-secret"))
 	if !errors.Is(err, seal.ErrAlreadyUnsealed) {
 		t.Errorf("BarrierUnseal on already unsealed = %v, want %v", err, seal.ErrAlreadyUnsealed)
 	}
@@ -417,7 +417,7 @@ func TestBarrierService_BarrierInitializeShamir(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	info, err := svc.BarrierInitializeShamir(ctx, "", 2, 3)
+	info, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir returned unexpected error: %v", err)
 	}
@@ -449,12 +449,12 @@ func TestBarrierService_BarrierInitializeShamir_AlreadyInitialized(t *testing.T)
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	_, err := svc.BarrierInitializeShamir(ctx, "", 2, 3)
+	_, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3)
 	if err != nil {
 		t.Fatalf("first BarrierInitializeShamir: %v", err)
 	}
 
-	_, err = svc.BarrierInitializeShamir(ctx, "", 2, 3)
+	_, err = svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3)
 	if !errors.Is(err, seal.ErrAlreadyInitialized) {
 		t.Errorf("second BarrierInitializeShamir = %v, want %v", err, seal.ErrAlreadyInitialized)
 	}
@@ -467,7 +467,7 @@ func TestBarrierService_BarrierInitializeShamir_CredentialMode(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	info, err := svc.BarrierInitializeShamir(ctx, "my-secret", 2, 3)
+	info, err := svc.BarrierInitializeShamir(ctx, []byte("my-secret"), 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir (credential mode): %v", err)
 	}
@@ -660,7 +660,7 @@ func TestBarrierService_BarrierGenerateRecoveryKeys(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize first so recovery keys can be generated.
-	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+	if _, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3); err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 
@@ -723,7 +723,7 @@ func TestBarrierService_BarrierRecoverWithKeys(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize first.
-	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+	if _, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3); err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 
@@ -767,7 +767,7 @@ func TestBarrierService_BarrierRecoverWithKeys_InsufficientKeys(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+	if _, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3); err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 
@@ -821,7 +821,7 @@ func TestBarrierService_BarrierDeleteRecoveryKeys(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+	if _, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3); err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 
@@ -872,7 +872,7 @@ func TestBarrierService_BarrierHasRecoveryKeys(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	if _, err := svc.BarrierInitializeShamir(ctx, "", 2, 3); err != nil {
+	if _, err := svc.BarrierInitializeShamir(ctx, []byte(""), 2, 3); err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
 
@@ -1003,7 +1003,7 @@ func TestBarrierService_BarrierUnsealWithShares_CredentialMode(t *testing.T) {
 	svc := NewBarrierService(barrier)
 	ctx := context.Background()
 
-	_, err := svc.BarrierInitializeShamir(ctx, "my-secret", 2, 3)
+	_, err := svc.BarrierInitializeShamir(ctx, []byte("my-secret"), 2, 3)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
@@ -1104,7 +1104,7 @@ func TestBarrierService_InitializeShamir_RequestParamsWin(t *testing.T) {
 			svc := NewBarrierService(barrier)
 			ctx := context.Background()
 
-			info, err := svc.BarrierInitializeShamir(ctx, "", tc.requestThreshold, tc.requestTotal)
+			info, err := svc.BarrierInitializeShamir(ctx, []byte(""), tc.requestThreshold, tc.requestTotal)
 			if err != nil {
 				t.Fatalf("BarrierInitializeShamir: %v", err)
 			}
@@ -1155,7 +1155,7 @@ func TestBarrierService_InitializeShamir_ZeroValueFallsBackToConfig(t *testing.T
 	ctx := context.Background()
 
 	// Pass threshold=0, totalShares=0 — request omits the params.
-	info, err := svc.BarrierInitializeShamir(ctx, "", 0, 0)
+	info, err := svc.BarrierInitializeShamir(ctx, []byte(""), 0, 0)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir with zero params: %v", err)
 	}
@@ -1200,7 +1200,7 @@ func TestBarrierService_InitializeShamir_CredentialMode_RequestParamsWin(t *test
 	ctx := context.Background()
 
 	// Request 3-of-5 — must override daemon config.
-	info, err := svc.BarrierInitializeShamir(ctx, "my-secret", 3, 5)
+	info, err := svc.BarrierInitializeShamir(ctx, []byte("my-secret"), 3, 5)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}
@@ -1259,7 +1259,7 @@ func TestBarrierService_BarrierStatus_ShamirFields(t *testing.T) {
 			svc := NewBarrierService(barrier)
 			ctx := context.Background()
 
-			_, err = svc.BarrierInitializeShamir(ctx, "", tc.threshold, tc.total)
+			_, err = svc.BarrierInitializeShamir(ctx, []byte(""), tc.threshold, tc.total)
 			if err != nil {
 				t.Fatalf("BarrierInitializeShamir: %v", err)
 			}
@@ -1309,7 +1309,7 @@ func TestBarrierService_BarrierStatus_ShamirFields_AfterRequestOverride(t *testi
 	ctx := context.Background()
 
 	// Request 3-of-5.
-	_, err = svc.BarrierInitializeShamir(ctx, "", 3, 5)
+	_, err = svc.BarrierInitializeShamir(ctx, []byte(""), 3, 5)
 	if err != nil {
 		t.Fatalf("BarrierInitializeShamir: %v", err)
 	}

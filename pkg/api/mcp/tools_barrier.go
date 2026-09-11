@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -151,15 +152,18 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 			availability = seal.AvailabilityOnline
 		}
 
+		passphrase := secretArg(req, "passphrase")
+
 		opts := seal.MigrationOptions{
 			TargetStrategy:  seal.StrategyID(strategy),
 			Mechanism:       mechanism,
 			Availability:    availability,
-			Credentials:     seal.Credentials{Secret: []byte(mcp.ParseString(req, "passphrase", ""))},
+			Credentials:     seal.Credentials{Secret: passphrase},
 			ShamirThreshold: mcp.ParseInt(req, "shamir_threshold", 0),
 			ShamirTotal:     mcp.ParseInt(req, "shamir_total", 0),
 		}
 		if err := opts.Validate(); err != nil {
+			secure.Wipe(passphrase)
 			return nil, &ToolError{Tool: "qrdb_barrier_enable_encryption", Err: err}
 		}
 
@@ -170,6 +174,11 @@ func handleBarrierEnableEncryption(migrator service.EncryptionMigrator) mcpserve
 		// #nosec G118 -- detaching from the request context is the point: the
 		// migration must survive the tool result returning.
 		go func() {
+			// The migration OWNS the credential from here: it outlives this
+			// tool call, so wiping in the handler would zero the passphrase
+			// out from under a running migration. The wipe belongs to
+			// whoever the last reader is, and that is this goroutine.
+			defer secure.Wipe(passphrase)
 			resultCh <- migrator.EnableEncryption(context.Background(), scope, opts)
 		}()
 
@@ -244,7 +253,8 @@ func toolBarrierInitialize() mcp.Tool {
 // empty-secret guard here would break parity with every other transport.
 func handleBarrierInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		secret := mcp.ParseString(req, "secret", "")
+		secret := secretArg(req, "secret")
+		defer secure.Wipe(secret)
 
 		soPIN := mcp.ParseString(req, "so_pin", "")
 		userPIN := mcp.ParseString(req, "user_pin", "")
@@ -275,10 +285,11 @@ func toolBarrierUnseal() mcp.Tool {
 // svc.BarrierUnseal.
 func handleBarrierUnseal(svc service.BarrierServicer) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		secret := mcp.ParseString(req, "secret", "")
-		if secret == "" {
+		secret := secretArg(req, "secret")
+		if len(secret) == 0 {
 			return mcp.NewToolResultError("secret is required"), nil
 		}
+		defer secure.Wipe(secret)
 
 		if err := svc.BarrierUnseal(ctx, secret); err != nil {
 			return nil, &ToolError{Tool: "qrdb_barrier_unseal", Err: err}
@@ -394,10 +405,11 @@ func toolBarrierShamirInitialize() mcp.Tool {
 // initialization.
 func handleBarrierShamirInitialize(svc service.BarrierServicer, pinBackend pin.PINBackend) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		secret := mcp.ParseString(req, "secret", "")
-		if secret == "" {
+		secret := secretArg(req, "secret")
+		if len(secret) == 0 {
 			return mcp.NewToolResultError("secret is required"), nil
 		}
+		defer secure.Wipe(secret)
 
 		threshold := mcp.ParseInt(req, "threshold", 0)
 		if threshold <= 0 {

@@ -57,9 +57,9 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 	var gotID, gotPassphrase string
 	var gotThreshold, gotShares int
 	svc := newMockTenantService()
-	svc.barrierInitFn = func(_ context.Context, id, passphrase string, threshold, shares int) error {
+	svc.barrierInitFn = func(_ context.Context, id string, passphrase []byte, threshold, shares int) error {
 		gotID = id
-		gotPassphrase = passphrase
+		gotPassphrase = string(passphrase)
 		gotThreshold = threshold
 		gotShares = shares
 		return nil
@@ -98,7 +98,7 @@ func TestHandleTenantBarrierInit_Success(t *testing.T) {
 
 func TestHandleTenantBarrierInit_ServiceError(t *testing.T) {
 	svc := newMockTenantService()
-	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		return tenant.ErrTenantNotFound
 	}
 	handler := handleTenantBarrierInit(svc, allowAllTenantInit)
@@ -415,7 +415,7 @@ func TestTenantBarrierHandlers_ScopeDenied(t *testing.T) {
 	}
 
 	svc := newMockTenantService()
-	svc.barrierInitFn = func(_ context.Context, _, _ string, _, _ int) error {
+	svc.barrierInitFn = func(_ context.Context, _ string, _ []byte, _, _ int) error {
 		t.Error("service must not be reached on scope denial")
 		return nil
 	}
@@ -543,10 +543,10 @@ func (e *extMockMCPTenantService) UpdateQuotas(ctx context.Context, id string, q
 func (e *extMockMCPTenantService) UpdateEntitlements(ctx context.Context, id string, ent *quota.Entitlements) (*tenant.TenantInfo, error) {
 	return &tenant.TenantInfo{ID: id, Entitlements: ent}, nil
 }
-func (e *extMockMCPTenantService) TenantBarrierInit(ctx context.Context, id, passphrase string, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockMCPTenantService) TenantBarrierInit(ctx context.Context, id string, passphrase []byte, threshold, total int) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInit(ctx, id, passphrase, threshold, total)
 }
-func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id, passphrase string, threshold, total int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (e *extMockMCPTenantService) TenantBarrierInitWithStrategy(ctx context.Context, id string, passphrase []byte, threshold, total int, sid seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return e.mockTenantService.TenantBarrierInitWithStrategy(ctx, id, passphrase, threshold, total, sid)
 }
 func (e *extMockMCPTenantService) TenantBarrierUnseal(ctx context.Context, id string, key []byte) error {

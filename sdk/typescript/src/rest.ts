@@ -1824,9 +1824,13 @@ export class RestClient implements Client {
             initialize: async (secret: string): Promise<void> => {
                 this.ensureConnected();
                 // Passphrase (or none, when secret is "") barrier bootstrap.
+                // The wire field is `[]byte` on the server so the caller can
+                // zeroize it there; a `[]byte` is base64 in REST JSON, which is
+                // the same convention `[]byte` fields use everywhere else in
+                // this SDK. The SDK-facing argument stays plaintext.
                 await this.fetchVoid('/v1/barrier/initialize', {
                     method: 'POST',
-                    ...jsonBody({ secret }),
+                    ...jsonBody({ secret: encodeBase64Utf8(secret) }),
                 });
             },
             initializeShamir: async (secret: string, threshold: number, totalShares: number): Promise<BootstrapResult> => {
@@ -1841,8 +1845,9 @@ export class RestClient implements Client {
                     readonly totalShares: number;
                     readonly shareCount: number;
                 }
+                // secret is base64 on the wire; see initialize.
                 const init = await this.fetchJSON<ShamirInitResponse>('/v1/barrier/shamir/initialize',
-                    { method: 'POST', ...jsonBody({ secret, threshold, total_shares: totalShares }) },
+                    { method: 'POST', ...jsonBody({ secret: encodeBase64Utf8(secret), threshold, total_shares: totalShares }) },
                 );
                 // No root token is derived here: root-token generation
                 // requires a quorum of Shamir shares as a deliberate consent
@@ -1883,9 +1888,10 @@ export class RestClient implements Client {
                     };
                 }
                 // Passphrase / none: the provided value carries the secret.
+                // base64 on the wire; see initialize.
                 await this.fetchVoid('/v1/barrier/unseal', {
                     method: 'POST',
-                    ...jsonBody({ secret: share }),
+                    ...jsonBody({ secret: encodeBase64Utf8(share) }),
                 });
                 return { sealed: false, sharesProvided: 0, sharesRequired: 0 };
             },
@@ -1942,7 +1948,9 @@ export class RestClient implements Client {
                 if (req.tenantId) payload.tenant_id = req.tenantId;
                 if (req.mechanism) payload.mechanism = req.mechanism;
                 if (req.availability) payload.availability = req.availability;
-                if (req.passphrase) payload.passphrase = req.passphrase;
+                // base64 on the wire; the server field is `[]byte` so it can
+                // be zeroized. See seal.initialize.
+                if (req.passphrase) payload.passphrase = encodeBase64Utf8(req.passphrase);
                 if (req.shamirThreshold) payload.shamir_threshold = req.shamirThreshold;
                 if (req.shamirTotal) payload.shamir_total = req.shamirTotal;
                 return this.fetchJSON<EnableEncryptionResponse>('/v1/barrier/enable-encryption',
@@ -2159,9 +2167,13 @@ export class RestClient implements Client {
                 // fetchJSON cannot parse an empty body, so we issue the request
                 // directly and synthesize a response for the 204 case.
                 const path = `/v1/tenants/${encodeURIComponent(req.tenantId)}/barrier/init`;
+                // passphrase is base64 on the wire; the server field is
+                // `[]byte` so it can be zeroized. See seal.initialize.
+                const initBody: Record<string, unknown> = { ...req };
+                if (req.passphrase) initBody.passphrase = encodeBase64Utf8(req.passphrase);
                 let resp: Response;
                 try {
-                    resp = await fetch(this.baseUrl + path, { method: 'POST', ...jsonBody(req) });
+                    resp = await fetch(this.baseUrl + path, { method: 'POST', ...jsonBody(initBody) });
                 } catch (err: unknown) {
                     throw new TransportError(
                         `POST ${path}`,

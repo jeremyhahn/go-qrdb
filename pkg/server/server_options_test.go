@@ -97,11 +97,11 @@ func (s *stubTenantServicerForRegistry) DeleteTenant(_ context.Context, _ string
 func (s *stubTenantServicerForRegistry) UpdateTenant(_ context.Context, _ string, _ tenant.TenantPatch) (*tenant.TenantInfo, error) {
 	return nil, nil
 }
-func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _, _ string, _, _ int) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantServicerForRegistry) TenantBarrierInit(_ context.Context, _ string, _ []byte, _, _ int) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 
-func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _, _ string, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
+func (s *stubTenantServicerForRegistry) TenantBarrierInitWithStrategy(_ context.Context, _ string, _ []byte, _, _ int, _ seal.StrategyID) (*tenant.TenantBarrierInitResult, error) {
 	return nil, nil
 }
 func (s *stubTenantServicerForRegistry) TenantBarrierUnsealShare(_ context.Context, _, _ string) (*tenant.TenantBarrierUnsealProgress, error) {

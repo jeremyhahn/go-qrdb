@@ -772,7 +772,7 @@ func TestCLI_BarrierEnableEncryption_TenantScope(t *testing.T) {
 	// the source state for enable-encryption.
 	if initBody, initStatus := iraftAPIPost(t, tenantClient,
 		fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/init", adminPort, tenantID),
-		map[string]interface{}{"strategy": "none", "secret": ""},
+		map[string]interface{}{"strategy": "none", "secret": []byte(nil)},
 	); initStatus != http.StatusOK && initStatus != http.StatusNoContent && initStatus != http.StatusCreated {
 		t.Fatalf("tenant barrier init: status %d, body: %s", initStatus, initBody)
 	}

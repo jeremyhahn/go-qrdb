@@ -15,7 +15,6 @@
 package secure
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -78,8 +77,32 @@ func (p *TerminalProvider) Passphrase(ctx context.Context, prompt string) (*Buff
 	return NewBufferFromBytes(raw)
 }
 
+// MaxStdinPassphraseLen bounds a passphrase read by StdinProvider. The bound
+// exists because the read lands directly in a fixed mlocked allocation, and
+// mlocked memory is a scarce, RLIMIT_MEMLOCK-governed resource that an
+// unbounded stdin stream must not be able to size. Input longer than this
+// is refused rather than truncated: silently accepting a prefix would unseal
+// against a credential the operator did not type.
+const MaxStdinPassphraseLen = 1024
+
 // StdinProvider reads a passphrase from os.Stdin up to the first newline.
 // Intended for CI / piped invocations. The trailing newline is stripped.
+//
+// The read goes one byte at a time straight into mlocked memory. That is not
+// a performance choice, and it is deliberately not a bufio.Reader: a
+// bufio.Reader stages the passphrase in an ordinary heap buffer that this
+// package never gets to wipe, which would leave a plaintext copy behind in
+// exactly the provider whose job is to prevent one. Byte-at-a-time is also
+// the only shape that does not OVER-READ — a buffered reader consumes past
+// the newline, stealing bytes from whatever reads os.Stdin next.
+//
+// The cost is one read(2) per byte. That is a known, accepted tradeoff on a
+// path that runs once per process start and already blocks on a human or a
+// pipe; it is not a regression, since bufio made the same blocking reads and
+// merely amortized them. If it ever needs amortizing, the shape is a small
+// (32-64 byte) mlocked read ring that scans for the newline inside protected
+// memory — NOT a return to bufio, which reintroduces both the unwipeable
+// staging buffer and the over-read. See go-qrdb#440.
 type StdinProvider struct {
 	// reader is optional; if nil, os.Stdin is used. Exported for tests.
 	reader io.Reader
@@ -94,8 +117,13 @@ func NewStdinProviderFromReader(r io.Reader) *StdinProvider {
 	return &StdinProvider{reader: r}
 }
 
-// Passphrase reads until newline. Returns *ProviderError on I/O failure
-// or empty input.
+// Passphrase reads until newline. Returns *ProviderError on I/O failure,
+// empty input, or input longer than MaxStdinPassphraseLen.
+//
+// Every byte read lands in the scratch Buffer's mlocked pages and nowhere
+// else; the scratch is destroyed (and therefore zeroed) on every exit path
+// including the error ones, so a rejected or failed read leaves no plaintext
+// behind either.
 func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, &ProviderError{Source: "stdin", Err: err}
@@ -104,19 +132,55 @@ func (p *StdinProvider) Passphrase(ctx context.Context, _ string) (*Buffer, erro
 	if r == nil {
 		r = os.Stdin
 	}
-	// Use a bufio.Reader sized to hold a single line; this allocates one
-	// small buffer but reads bytes through a single copy into our Buffer.
-	br := bufio.NewReader(r)
-	line, err := br.ReadBytes('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+
+	// One mlocked line buffer. Destroy zeroes it, and the defer covers the
+	// error returns below as well as the success path.
+	scratch, err := NewBuffer(MaxStdinPassphraseLen + 1)
+	if err != nil {
 		return nil, &ProviderError{Source: "stdin", Err: err}
 	}
-	// Strip trailing \n and \r.
-	line = trimTrailingNewline(line)
-	if len(line) == 0 {
+	defer scratch.Destroy()
+
+	// A bare Bytes() borrow rather than WithBytes: the loop below blocks on
+	// a read, and WithBytes would hold purgeMu shared for that whole time,
+	// stalling the emergency Purge path behind an operator's typing. The
+	// borrow is short-lived in code even when it is long-lived in wall time,
+	// and no allocation of protected memory happens inside it.
+	line := scratch.Bytes()
+	if line == nil {
+		return nil, &ProviderError{Source: "stdin", Err: &NilBufferError{}}
+	}
+
+	n := 0
+	sawNewline := false
+	for n < len(line) {
+		if _, rerr := io.ReadFull(r, line[n:n+1]); rerr != nil {
+			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
+				break
+			}
+			return nil, &ProviderError{Source: "stdin", Err: rerr}
+		}
+		if line[n] == '\n' {
+			sawNewline = true
+			break
+		}
+		n++
+	}
+	if n == len(line) {
+		return nil, &ProviderError{Source: "stdin", Err: errPassphraseTooLong}
+	}
+	// A CR is stripped only as the first half of a CRLF. A passphrase that
+	// genuinely ends in CR and was terminated by EOF keeps it: truncating
+	// there would silently accept a different credential than was supplied.
+	if sawNewline && n > 0 && line[n-1] == '\r' {
+		n--
+	}
+	if n == 0 {
 		return nil, &ProviderError{Source: "stdin", Err: errEmptyPassphrase}
 	}
-	return NewBufferFromBytes(line)
+	// NewBufferFromBytes copies into a fresh enclave and wipes what it read;
+	// the scratch's remaining pages are zeroed by the deferred Destroy.
+	return NewBufferFromBytes(line[:n])
 }
 
 // CallbackProvider wraps a user-supplied function that returns the
@@ -153,19 +217,8 @@ func (p *CallbackProvider) Passphrase(ctx context.Context, prompt string) (*Buff
 
 // sentinel errors used by providers.
 var (
-	errNotATerminal    = errors.New("stdin is not a terminal")
-	errEmptyPassphrase = errors.New("empty passphrase")
-	errNilCallback     = errors.New("nil callback")
+	errNotATerminal      = errors.New("stdin is not a terminal")
+	errEmptyPassphrase   = errors.New("empty passphrase")
+	errNilCallback       = errors.New("nil callback")
+	errPassphraseTooLong = errors.New("passphrase exceeds the maximum stdin length")
 )
-
-// trimTrailingNewline returns b with a trailing \n or \r\n removed.
-func trimTrailingNewline(b []byte) []byte {
-	n := len(b)
-	if n > 0 && b[n-1] == '\n' {
-		n--
-		if n > 0 && b[n-1] == '\r' {
-			n--
-		}
-	}
-	return b[:n]
-}
