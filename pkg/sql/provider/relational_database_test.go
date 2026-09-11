@@ -135,6 +135,9 @@ type fakeRelationalRegistry struct {
 	txnSvc     service.TransactionServicer
 	seqSvc     service.SequenceServicer
 
+	collectionSvc service.CollectionServicer
+	collectionErr error
+
 	calls []relationalScopeCall
 }
 
@@ -203,6 +206,11 @@ func (r *fakeRelationalRegistry) PrivilegeService(tenantID, db string) (service.
 	return nil, nil
 }
 
+func (r *fakeRelationalRegistry) CollectionService(tenantID, db string) (service.CollectionServicer, error) {
+	r.record("collection", tenantID, db)
+	return r.collectionSvc, r.collectionErr
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -241,7 +249,8 @@ func TestDatabase_GetTableInsensitive_RelationalShadowsCollection(t *testing.T) 
 		},
 	}
 
-	db := &Database{name: "shop", kvSvc: &mockKVService{}, registry: reg, collectionSvc: collSvc}
+	reg.collectionSvc = collSvc
+	db := &Database{name: "shop", kvSvc: &mockKVService{}, registry: reg}
 
 	tbl, found, err := db.GetTableInsensitive(newTestContext(), "users")
 	require.NoError(t, err)
@@ -265,7 +274,8 @@ func TestDatabase_GetTableInsensitive_TableNotFoundFallsThroughToCollection(t *t
 		},
 	}
 
-	db := &Database{name: "shop", kvSvc: &mockKVService{}, registry: reg, collectionSvc: collSvc}
+	reg.collectionSvc = collSvc
+	db := &Database{name: "shop", kvSvc: &mockKVService{}, registry: reg}
 
 	tbl, found, err := db.GetTableInsensitive(newTestContext(), "legacy_docs")
 	require.NoError(t, err)

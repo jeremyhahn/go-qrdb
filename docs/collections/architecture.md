@@ -19,9 +19,13 @@ database  →  collection  →  document (uint64 ID)
 ```
 
 Collection metadata lives under `__sys:collections/{database}/{name}`; documents
-are stored beneath the collection. Both are inside the reserved internal
-namespace, so a collection's storage layout is not something a KV caller trips
-over or can enumerate.
+live under `__col:{database}:{collection}/{id}`. Both are inside the reserved
+internal namespace, so a collection's storage layout is not something a KV
+caller trips over or can enumerate.
+
+Neither key carries a tenant segment. The tenant dimension comes from the
+namespace the transport registry applies underneath — see
+[Trust boundaries](#trust-boundaries).
 
 ### ID strategies
 
@@ -167,8 +171,51 @@ a separate capability.
   `collections:read`, `collections:list`, `collections:drop`,
   `collections:insert`, `collections:update`, `collections:delete`. Dropping a
   collection is a distinct grant from deleting a document in it.
-- Documents are stored under the reserved `__sys:` namespace, so they are
-  invisible to user KV enumeration.
+- Documents and metadata are stored under reserved key prefixes (`__col:`,
+  `__sys:collections/`), so they are invisible to user KV enumeration.
+
+### Tenant isolation is a property of the SERVICE, not of the key
+
+A collection key names the database and never the tenant, so the isolation of a
+document is entirely the isolation of the engines the collection service was
+built over. Every transport therefore resolves its collection servicer per
+request, through `service.Registry.CollectionService(tenant, database)`, exactly
+as it resolves KV and MVCC. What that accessor returns is a collection service
+built over the `<tenant>/<database>/`-namespaced engines, so the physical key
+is `<tenant>/<database>/__col:{database}:{collection}/{id}`.
+
+**This was not always true, and the failure mode is worth recording.** Until the
+accessor existed, every transport held ONE process-wide collection servicer
+built over the raw, pre-namespace engines. Under `prefix` isolation — where
+tenants share one state machine and are separated only by that prefix — two
+tenants naming the same database and the same collection addressed the same
+documents: one could read another's, one's insert could overwrite another's at a
+`field_hash`-derived ID, and one's collection name denied the other's. The
+registry wrapper that isolates every other engine was applied to the bundle's
+KV and index servicers, and the collection service was copied past it.
+
+The lesson generalises beyond collections: **a service inherits isolation from
+the engines it holds, never from the engines its neighbours hold.** A composite
+service that is copied rather than rebuilt over the wrapped engines is
+unisolated no matter how well isolated the rest of the bundle is.
+
+The database appears twice in the physical key — once in the namespace and once
+inside `__col:` — which is redundant and deliberately left alone: removing it
+would change the key format and require moving existing documents, and this
+design moves no keys (see the upgrade note in
+[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)).
+
+Two compositions legitimately keep a single collection servicer, and both are
+recorded rather than treated as exceptions to explain away:
+
+- **A registry-less composition** — the embedded transport and single-database
+  servers — where the whole store and the caller's own keyspace are the same
+  set.
+- **A resolution that already reached a dedicated store** — a `raft`-isolated
+  tenant's per-database shard, a `volume`-isolated tenant's own Host, or a
+  database carrying its own barrier over its own store. Those bundles are built
+  over a store belonging to exactly one `(tenant, database)` pair already, and
+  the accessor returns their collection service unchanged.
 
 ## What this feature deliberately does not do
 

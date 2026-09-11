@@ -103,7 +103,7 @@ type listDocumentsResponse struct {
 // handleCreateCollection handles POST /v1/collections -- creates a new
 // collection in the specified database.
 func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
-	if s.collectionSvc == nil {
+	if !s.collectionSurfaceConfigured() {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "collection"})
 		return
 	}
@@ -114,7 +114,14 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	info, err := s.collectionSvc.CreateCollection(r.Context(), &service.CreateCollectionRequest{
+	// The database is resolved from the request body, which is where this
+	// route names it; collectionSvcFor writes the response on failure.
+	collectionSvc := s.collectionSvcFor(w, r.Context(), req.Database)
+	if collectionSvc == nil {
+		return
+	}
+
+	info, err := collectionSvc.CreateCollection(r.Context(), &service.CreateCollectionRequest{
 		Name:       req.Name,
 		Database:   req.Database,
 		IDStrategy: req.IDStrategy,
@@ -133,7 +140,7 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 // handleListCollections handles GET /v1/collections/list?database={db} --
 // returns all collections in the specified database.
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
-	if s.collectionSvc == nil {
+	if !s.collectionSurfaceConfigured() {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "collection"})
 		return
 	}
@@ -144,7 +151,12 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.collectionSvc.ListCollections(r.Context(), &service.ListCollectionsRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.ListCollections(r.Context(), &service.ListCollectionsRequest{
 		Database: database,
 	})
 	if err != nil {
@@ -174,7 +186,12 @@ func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 //	PUT    /v1/collections/{database}/{name}/documents/{id}     -> UpdateDocument
 //	DELETE /v1/collections/{database}/{name}/documents/{id}     -> DeleteDocument
 func (s *Server) handleCollectionByPath(w http.ResponseWriter, r *http.Request) {
-	if s.collectionSvc == nil {
+	// Whether the surface exists at all is knowable here; WHICH servicer
+	// serves it is not, because the database this request addresses is in the
+	// path and the path has not been parsed yet. So this reports the absent
+	// surface, and each leaf handler resolves its own scope through
+	// collectionSvcFor once it knows the database.
+	if !s.collectionSurfaceConfigured() {
 		writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "collection"})
 		return
 	}
@@ -255,7 +272,12 @@ func (s *Server) handleCollectionByPath(w http.ResponseWriter, r *http.Request) 
 // handleGetCollectionInfo handles GET /v1/collections/{database}/{name} --
 // returns metadata about a specific collection.
 func (s *Server) handleGetCollectionInfo(w http.ResponseWriter, r *http.Request, database, name string) {
-	info, err := s.collectionSvc.GetCollectionInfo(r.Context(), database, name)
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	info, err := collectionSvc.GetCollectionInfo(r.Context(), database, name)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -267,7 +289,12 @@ func (s *Server) handleGetCollectionInfo(w http.ResponseWriter, r *http.Request,
 // handleDropCollection handles DELETE /v1/collections/{database}/{name} --
 // removes a collection and all its documents.
 func (s *Server) handleDropCollection(w http.ResponseWriter, r *http.Request, database, name string) {
-	if err := s.collectionSvc.DropCollection(r.Context(), &service.DropCollectionRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	if err := collectionSvc.DropCollection(r.Context(), &service.DropCollectionRequest{
 		Name:     name,
 		Database: database,
 	}); err != nil {
@@ -287,7 +314,12 @@ func (s *Server) handleInsertDocument(w http.ResponseWriter, r *http.Request, da
 		return
 	}
 
-	resp, err := s.collectionSvc.InsertDocument(r.Context(), &service.InsertDocumentRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.InsertDocument(r.Context(), &service.InsertDocumentRequest{
 		Collection: name,
 		Database:   database,
 		Document:   req.Document,
@@ -305,7 +337,12 @@ func (s *Server) handleInsertDocument(w http.ResponseWriter, r *http.Request, da
 // handleGetDocument handles GET /v1/collections/{database}/{name}/documents/{id} --
 // retrieves a document by its ID from the specified collection.
 func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request, database, name string, id uint64) {
-	resp, err := s.collectionSvc.GetDocument(r.Context(), &service.GetDocumentRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.GetDocument(r.Context(), &service.GetDocumentRequest{
 		Collection: name,
 		Database:   database,
 		ID:         id,
@@ -330,7 +367,12 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request, da
 		return
 	}
 
-	resp, err := s.collectionSvc.UpdateDocument(r.Context(), &service.UpdateDocumentRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.UpdateDocument(r.Context(), &service.UpdateDocumentRequest{
 		Collection: name,
 		Database:   database,
 		ID:         id,
@@ -347,7 +389,12 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request, da
 // handleDeleteDocument handles DELETE /v1/collections/{database}/{name}/documents/{id} --
 // removes a document from the specified collection.
 func (s *Server) handleDeleteDocument(w http.ResponseWriter, r *http.Request, database, name string, id uint64) {
-	resp, err := s.collectionSvc.DeleteDocument(r.Context(), &service.DeleteDocumentRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.DeleteDocument(r.Context(), &service.DeleteDocumentRequest{
 		Collection: name,
 		Database:   database,
 		ID:         id,
@@ -376,7 +423,12 @@ func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request, dat
 		pageSize = int32(parsed)
 	}
 
-	resp, err := s.collectionSvc.ListDocuments(r.Context(), &service.ListDocumentsRequest{
+	collectionSvc := s.collectionSvcFor(w, r.Context(), database)
+	if collectionSvc == nil {
+		return
+	}
+
+	resp, err := collectionSvc.ListDocuments(r.Context(), &service.ListDocumentsRequest{
 		Collection: name,
 		Database:   database,
 		PageSize:   pageSize,

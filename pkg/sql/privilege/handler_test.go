@@ -464,6 +464,10 @@ func (r *failingRegistry) PrivilegeService(string, string) (service.PrivilegeSer
 	return nil, r.err
 }
 
+func (r *failingRegistry) CollectionService(string, string) (service.CollectionServicer, error) {
+	return nil, r.err
+}
+
 func TestHandler_RegistryFailurePropagatesAndFailsClosed(t *testing.T) {
 	sentinel := errors.New("tenant not found")
 	h := &handler{registry: &failingRegistry{err: sentinel}}
@@ -518,6 +522,14 @@ type conditionalRegistry struct {
 	ok  *sqltest.Harness
 	err error
 	bad string
+}
+
+// CollectionService is implemented explicitly for the reason failingRegistry's
+// is: the SQL provider's table lookup reaches it, and a method promoted off the
+// embedded nil service.Registry compiles and then dereferences nil. Serving no
+// collections is a nil servicer and a nil error, not an error.
+func (r *conditionalRegistry) CollectionService(string, string) (service.CollectionServicer, error) {
+	return nil, nil
 }
 
 func (r *conditionalRegistry) PrivilegeService(_, db string) (service.PrivilegeServicer, error) {

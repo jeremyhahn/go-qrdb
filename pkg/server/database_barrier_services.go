@@ -36,6 +36,12 @@ import (
 // keyed by the OWNING TENANT's barrier), never from a database-level barrier
 // independent of tenant isolation.
 //
+// The Collection service built here is the one the registry accessor returns
+// for this path: it is NOT rebuilt over a namespace wrapper, because this
+// database's own encrypting store belongs to exactly one (tenant, database)
+// pair already -- there is no shared keyspace to separate from. Contrast
+// applyComposite, which must rebuild for exactly the opposite reason.
+//
 // It provides KV and a KV-backed Collection service (no secondary indexes,
 // since IndexServicer has no direct-storage implementation over a plain
 // database.Backend today). Every other engine -- MVCC, Batch, Transaction,

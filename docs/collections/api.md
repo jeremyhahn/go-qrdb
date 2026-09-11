@@ -23,6 +23,26 @@ REST additionally registers wildcard routes (`GET`, `POST`, `PUT`, `DELETE` on
 `/v1/collections/*`) carrying the same permissions, for paths the explicit
 patterns do not cover.
 
+The MySQL and PostgreSQL wire protocols expose a collection as a table in the
+connected database, alongside relational tables. They are not a tenth row above
+because they carry no collection DDL — only reads and DML against a collection
+that already exists — but they read and write the same documents, through the
+same per-`(tenant, database)` resolution.
+
+## Which database a request addresses
+
+Every capability names its database EXPLICITLY — in the URL path, the request
+body, the protobuf message, or the tool argument — and that is the database
+whose keyspace the operation resolves into. The transport-level database
+selector (`X-QRDB-Database` and its per-transport equivalents) does **not**
+override it: a request to `/v1/collections/app/products` addresses `app`
+whatever the header says. The tenant, as everywhere else, comes from the
+authenticated identity and never from the request.
+
+One consequence is visible to callers: a collection request naming a database
+that does not exist for the caller's tenant is refused with the standard
+not-found, rather than silently operating in a database nothing created.
+
 ## Schemas
 
 `CreateCollectionRequest`:
@@ -86,8 +106,18 @@ bounded by an operator action.
 | `field_hash` strategy without `field_hash`, or unknown strategy | 400 | `INVALID_ARGUMENT` |
 | Malformed document JSON | 400 | `INVALID_ARGUMENT` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
+| Unknown tenant | 404 | `NOT_FOUND` — `service.TenantNotFoundError` |
+| Unknown database for this tenant | 404 | `NOT_FOUND` — `service.DatabaseNotFoundError` |
+| Collection surface not configured | 501 | `UNIMPLEMENTED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
+| Isolation backend unavailable | 503 | `UNAVAILABLE` — `service.IsolationBackendUnavailableError` |
 | Not leader, no resolver | 503 | `UNAVAILABLE` |
+
+The tenant, database, sealed-barrier and isolation-backend rows are the
+resolution outcomes every other data-plane surface already reports; the
+collection surface reports them because it resolves through the same
+`service.Registry` accessors. A refused resolution is never downgraded to a
+servicer the caller was refused.
 
 ## Versioning
 

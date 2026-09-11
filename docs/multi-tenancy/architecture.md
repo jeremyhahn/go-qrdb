@@ -123,6 +123,42 @@ field. The database is selected separately by `X-QRDB-Database` (or its
 per-transport equivalent). Keyspace and vector namespaces are tenant-partitioned
 on top of that. Detail: [scoping.md](../scoping.md).
 
+### Every data-plane surface resolves per `(tenant, database)`
+
+The transports never hold a data-plane servicer. Each one resolves per request
+through `service.Registry`, whose accessors return the servicer for a
+`(tenant, database)` pair wrapped at `tenant.ComposeNamespace`'s
+`{tenant}/{db}/`:
+
+```
+KVService  MVCCService  WatchService   LeaseService     IndexService
+TimeSeriesService       VectorService  TransactionService
+BatchService            TableService   SequenceService  PrivilegeService
+CollectionService
+```
+
+**A surface missing from that list is a surface with no tenancy.** That is not
+a theoretical risk. `CollectionService` was the last accessor to be added, and
+until it was, every transport served document collections from one process-wide
+servicer built over the raw, pre-namespace engines: under `prefix` isolation two
+tenants naming the same database and the same collection addressed the same
+documents, and each could read, overwrite and deny the other's. The registry
+wrapper isolated the bundle's KV and index servicers; the collection service was
+copied past it, holding the engines it had been constructed with.
+
+The general rule the miss came from: **a service inherits isolation from the
+engines it HOLDS, never from the engines its neighbours in the same bundle
+hold.** A bundle member that composes other engines must be REBUILT over the
+wrapped ones, not copied — and a comment asserting that it "inherits their
+isolation" is a claim about construction that only the construction site can
+make true. The one at `applyComposite` asserted it, the construction site did
+not do it, and the assertion is what kept the miss out of review.
+
+See [../collections/architecture.md](../collections/architecture.md) for the
+collection surface's key layout, and
+[../collections/engineering.md](../collections/engineering.md) for why the
+pre-existing unnamespaced documents are left in place rather than migrated.
+
 ### The resolver-served store is confined by construction
 
 `tenant.StoreResolver.Resolve` returns the `kvstore.KVStore` backing a tenant's

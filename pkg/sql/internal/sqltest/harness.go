@@ -383,6 +383,12 @@ type Harness struct {
 	MVCCSvc  service.MVCCKVServicer
 	BatchSvc service.BatchServicer
 	Registry service.Registry
+
+	// CollectionSvc is the collection servicer FakeRegistry serves for every
+	// (tenant, database) pair. It is nil unless a test sets it, which makes a
+	// collection lookup through the registry report "not available" rather
+	// than resolving a stand-in nobody asked for.
+	CollectionSvc service.CollectionServicer
 }
 
 // NewHarness creates a Harness backed by a fresh, empty MemStore.
@@ -411,6 +417,7 @@ func NewHarness() *Harness {
 		TransactionServiceFn: func(string, string) (service.TransactionServicer, error) { return txn, nil },
 		SequenceServiceFn:    func(string, string) (service.SequenceServicer, error) { return h.SeqSvc, nil },
 		PrivilegeServiceFn:   func(string, string) (service.PrivilegeServicer, error) { return h.PrivSvc, nil },
+		CollectionServiceFn:  func(string, string) (service.CollectionServicer, error) { return h.CollectionSvc, nil },
 	}
 	return h
 }
@@ -448,6 +455,7 @@ type FakeRegistry struct {
 	TransactionServiceFn func(tenant, db string) (service.TransactionServicer, error)
 	SequenceServiceFn    func(tenant, db string) (service.SequenceServicer, error)
 	PrivilegeServiceFn   func(tenant, db string) (service.PrivilegeServicer, error)
+	CollectionServiceFn  func(tenant, db string) (service.CollectionServicer, error)
 }
 
 // KVService implements service.Registry.
@@ -483,6 +491,18 @@ func (r *FakeRegistry) SequenceService(tenant, db string) (service.SequenceServi
 // PrivilegeService implements service.Registry.
 func (r *FakeRegistry) PrivilegeService(tenant, db string) (service.PrivilegeServicer, error) {
 	return r.PrivilegeServiceFn(tenant, db)
+}
+
+// CollectionService implements service.Registry. Unlike its siblings it
+// tolerates an unset function field and reports "no collection surface"
+// instead of dereferencing nil: every FakeRegistry literal written before the
+// interface carried this method leaves the field nil, and the SQL provider's
+// table lookup calls it on every unresolved name.
+func (r *FakeRegistry) CollectionService(tenant, db string) (service.CollectionServicer, error) {
+	if r.CollectionServiceFn == nil {
+		return nil, nil
+	}
+	return r.CollectionServiceFn(tenant, db)
 }
 
 // ---------------------------------------------------------------------------

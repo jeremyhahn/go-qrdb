@@ -412,6 +412,12 @@ func buildDataPlaneServices(host service.Host, shardID uint64, hub *watch.Hub) *
 		// process-local counter that would otherwise restart at 0 on every
 		// process restart and diverge across replicas -- see
 		// service.CollectionService.WithSequenceService.
+		//
+		// This Collection is built over the RAW kv/idx, which is correct for
+		// the dedicated per-database raft shard (the shard is the tenant's
+		// keyspace) and is NOT what a prefix/volume tenant is served: there
+		// restServiceRegistry.applyComposite rebuilds it over the namespaced
+		// engines, because a struct copy would carry these raw ones through.
 		Collection: service.NewCollectionServiceWithIndex(kv, idx).
 			WithSequenceService(service.NewSequenceService(mvcc, txn)),
 	}

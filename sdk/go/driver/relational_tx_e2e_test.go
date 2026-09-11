@@ -371,6 +371,12 @@ type memRegistry struct {
 	batchSvc service.BatchServicer
 	seqSvc   service.SequenceServicer
 	privSvc  service.PrivilegeServicer
+
+	// collSvc is nil in every fixture here: these tests are about relational
+	// tables. It is a FIELD rather than an omitted method because a method
+	// promoted off the nil embedded interface compiles and then segfaults --
+	// see CollectionService below.
+	collSvc service.CollectionServicer
 }
 
 func (r *memRegistry) KVService(string, string) (service.KVServicer, error) { return r.kvSvc, nil }
@@ -391,6 +397,23 @@ func (r *memRegistry) SequenceService(string, string) (service.SequenceServicer,
 }
 func (r *memRegistry) PrivilegeService(string, string) (service.PrivilegeServicer, error) {
 	return r.privSvc, nil
+}
+
+// CollectionService is implemented EXPLICITLY, returning a nil servicer and a
+// nil error: this fixture serves no collections, and "no collection surface"
+// is the answer provider.Database.collectionService expects for that.
+//
+// Leaving it to the embedded service.Registry is what the embedding buys and
+// it is a trap. A method promoted off a NIL embedded interface compiles --
+// which is why widening service.Registry did not break this file -- and then
+// dereferences nil the first time the SQL provider's table lookup calls it,
+// thirty frames from the cause, inside go-mysql-server's plan builder, in a
+// concurrent test. Widening an interface is a compile-time break for an
+// explicit implementer and a RUNTIME break for an embedding double; a
+// `var _ service.Registry = (*memRegistry)(nil)` assertion does not catch it,
+// because the promoted method satisfies the assertion. Implement explicitly.
+func (r *memRegistry) CollectionService(string, string) (service.CollectionServicer, error) {
+	return r.collSvc, nil
 }
 
 // newRelationalRegistry builds a memRegistry backed by a real

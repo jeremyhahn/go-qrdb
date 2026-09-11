@@ -41,6 +41,7 @@ type scopeCall struct {
 type recordingRegistry struct {
 	calls []scopeCall
 	kv    service.KVServicer
+	coll  service.CollectionServicer
 }
 
 func (r *recordingRegistry) record(svc, t, d string) {
@@ -94,6 +95,10 @@ func (r *recordingRegistry) SequenceService(t, d string) (service.SequenceServic
 func (r *recordingRegistry) PrivilegeService(t, d string) (service.PrivilegeServicer, error) {
 	r.record("privilege", t, d)
 	return nil, nil
+}
+func (r *recordingRegistry) CollectionService(t, d string) (service.CollectionServicer, error) {
+	r.record("collection", t, d)
+	return r.coll, nil
 }
 
 func TestMCPResolveKVUsesRegistryScope(t *testing.T) {

@@ -136,8 +136,10 @@ func NewCollectionServiceWithIndex(kvSvc kvService, indexSvc indexService) *Coll
 	}
 }
 
-// WithDatabaseCodecLookup returns a copy of the CollectionService configured
-// with a callback that resolves the default storage codec for a given database.
+// WithDatabaseCodecLookup configures the CollectionService with a callback that
+// resolves the default storage codec for a given database and returns the SAME
+// service for chaining -- it mutates the receiver rather than copying it, like
+// the two options below. (The comment here claimed a copy; nothing copied.)
 // When the callback returns a non-empty string it is used as the fallback when
 // a collection has no per-collection StorageCodec set.
 func (s *CollectionService) WithDatabaseCodecLookup(fn func(database string) string) *CollectionService {

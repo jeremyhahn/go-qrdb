@@ -27,9 +27,9 @@ const StandaloneModeHint = "requires mode: raft"
 // composition. The transports' per-(tenant, db) service registry is
 // wrapped so the raft-only resolutions — MVCC, watch and lease — are
 // refused with a typed error naming the remedy, while the
-// standard-operations surface (KV, batch, index, timeseries, vector, the
-// transaction/CAS family, and the SQL catalog services, which consume the
-// MVCC-capable engine internally) resolves as usual. The caller is
+// standard-operations surface (KV, batch, index, timeseries, vector,
+// collections, the transaction/CAS family, and the SQL catalog services,
+// which consume the MVCC-capable engine internally) resolves as usual. The caller is
 // responsible for not passing the raft-only singleton services
 // (WithMVCC/WithWatch/WithLease/WithLockService/WithRebalance/
 // WithBackupService) in this mode.
@@ -113,6 +113,14 @@ func (r *raftOnlyGatedRegistry) SequenceService(tenant, db string) (service.Sequ
 
 func (r *raftOnlyGatedRegistry) PrivilegeService(tenant, db string) (service.PrivilegeServicer, error) {
 	return r.inner.PrivilegeService(tenant, db)
+}
+
+// CollectionService passes through: a collection is a document container over
+// the KV engine, which standalone serves. It is listed explicitly rather than
+// left to a default so that adding a registry resolution cannot silently
+// acquire or lose a standalone gate.
+func (r *raftOnlyGatedRegistry) CollectionService(tenant, db string) (service.CollectionServicer, error) {
+	return r.inner.CollectionService(tenant, db)
 }
 
 // compile-time interface check.

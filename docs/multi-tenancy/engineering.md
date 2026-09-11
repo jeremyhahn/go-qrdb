@@ -42,6 +42,19 @@ Server option: `WithTenantBarrierService(svc tenant.TenantServicer)`.
   here breaks login, because firstboot writes the admin user with no database
   bound. Data-plane database scoping is the transports' and SQL provider's job
   and is unaffected.
+- **Every data-plane servicer a transport uses comes from
+  `service.Registry`, resolved per `(tenant, database)`.** The thirteen
+  accessors are the complete list of namespaced data-plane surfaces; a surface
+  a transport holds as a process-wide singleton instead has NO tenancy,
+  whatever the isolation mode says. `CollectionService` was the last of the
+  thirteen to exist, and while it was missing document collections were shared
+  across tenants under `prefix` isolation. Adding a data-plane surface means
+  adding its accessor in the same change.
+- **A composite servicer is REBUILT over the wrapped engines, never copied.**
+  `applyComposite` wraps each engine and then constructs the collection service
+  from the wrapped pair; copying the bundle's own would carry the raw engines
+  through. Isolation is a property of the engines a service holds, not of the
+  struct it sits in.
 - **No prefix is exempt from namespacing**, the reserved `__sys:` keyspace
   included. An exemption would be a second tenancy mechanism beside the
   namespace; it also let a crafted tenant id, a crafted DAO entity type, and

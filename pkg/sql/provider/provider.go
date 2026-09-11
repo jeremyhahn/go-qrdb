@@ -544,11 +544,17 @@ func (d *Database) GetTableInsensitive(ctx *sqle.Context, name string) (sqle.Tab
 		}
 	}
 
-	// Fall back to dynamic collection lookup.
-	if d.collectionSvc != nil {
-		info, err := d.collectionSvc.GetCollectionInfo(ctx, d.name, lower)
-		if err == nil && info != nil {
-			tbl := NewCollectionTable(d.collectionSvc, d.name, info.Name, info.Schema, d.indexSvc)
+	// Fall back to dynamic collection lookup. A refused RESOLUTION fails the
+	// lookup; a failed LOOKUP means the collection is not there, which is the
+	// not-found this function reports by returning found=false.
+	collectionSvc, err := d.collectionService(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if collectionSvc != nil {
+		info, infoErr := collectionSvc.GetCollectionInfo(ctx, d.name, lower)
+		if infoErr == nil && info != nil {
+			tbl := NewCollectionTable(collectionSvc, d.name, info.Name, info.Schema, d.indexSvc)
 			return d.maybeReadOnly(tbl), true, nil
 		}
 	}
@@ -565,6 +571,36 @@ func (d *Database) sessionTenantID(ctx *sqle.Context) string {
 		return sess.TenantID()
 	}
 	return tenant.SystemTenantID
+}
+
+// collectionService returns the CollectionServicer this session's collection
+// tables are served from, or a nil servicer with a nil error when collections
+// are not available at all.
+//
+// When a registry is configured it is resolved per (session tenant, database),
+// exactly as relationalTable resolves the relational catalog. The
+// provider-level d.collectionSvc is a PROCESS-WIDE servicer built over the raw,
+// un-namespaced engines, so serving collection tables from it let two tenants
+// connected to the same database name read and write each other's documents
+// over the MySQL and PostgreSQL wire protocols (go-qrdb#441) -- the relational
+// half of the same database was already tenant-scoped, and the collection half
+// was not.
+//
+// It falls back to the provider-level servicer when no registry is configured,
+// which is the single-tenant, legacy-provider composition.
+//
+// A REFUSED resolution is returned, not swallowed. An earlier draft returned a
+// nil servicer on error, which turned "this tenant's barrier is sealed" and
+// "this database is not yours" into "there is no such table" -- the fail-OPEN
+// answer, given by a keyspace that was never consulted, in the one PR whose
+// whole subject is not answering for a keyspace you did not resolve. It also
+// matches relationalTable one frame above, which propagates its own resolution
+// errors and swallows only the specific not-found that means "no such table".
+func (d *Database) collectionService(ctx *sqle.Context) (service.CollectionServicer, error) {
+	if d.registry == nil {
+		return d.collectionSvc, nil
+	}
+	return d.registry.CollectionService(d.sessionTenantID(ctx), d.name)
 }
 
 // namespacePrefix returns the composite key prefix used to scope KV and
@@ -629,12 +665,18 @@ func (d *Database) GetTableNames(ctx *sqle.Context) ([]string, error) {
 		}
 	}
 
-	// Append collection names if the service is available.
-	if d.collectionSvc != nil {
-		resp, err := d.collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
+	// Append collection names if the service is available. A refused
+	// resolution fails the listing rather than returning a silently
+	// incomplete one -- see collectionService.
+	collectionSvc, err := d.collectionService(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if collectionSvc != nil {
+		resp, lerr := collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
 			Database: d.name,
 		})
-		if err == nil {
+		if lerr == nil {
 			for _, col := range resp.Collections {
 				tables = append(tables, col.Name)
 			}

@@ -79,6 +79,11 @@ func (s *stubRegistry) PrivilegeService(tenant, db string) (service.PrivilegeSer
 	return nil, nil
 }
 
+func (s *stubRegistry) CollectionService(tenant, db string) (service.CollectionServicer, error) {
+	s.calls = append(s.calls, "collection")
+	return nil, nil
+}
+
 // TestRaftOnlyGatedRegistry_RefusesRaftOnlyFamilies pins the standalone
 // API gate: the raft-only registry resolutions are refused with the typed
 // hinted error and NEVER reach the inner registry.
@@ -172,8 +177,11 @@ func TestRaftOnlyGatedRegistry_PassesThroughStandardAndSQL(t *testing.T) {
 	if _, err := gated.PrivilegeService("t", "db"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := gated.CollectionService("t", "db"); err != nil {
+		t.Fatal(err)
+	}
 
-	want := []string{"kv", "batch", "index", "timeseries", "vector", "table", "sequence", "privilege"}
+	want := []string{"kv", "batch", "index", "timeseries", "vector", "table", "sequence", "privilege", "collection"}
 	if len(inner.calls) != len(want) {
 		t.Fatalf("inner calls = %v, want %v", inner.calls, want)
 	}

@@ -94,6 +94,21 @@ func (e *CeremonyCANotConfiguredError) Error() string {
 // ErrCeremonyCANotConfigured is a convenience instance.
 var ErrCeremonyCANotConfigured = &CeremonyCANotConfiguredError{}
 
+// ServiceNotConfiguredError is returned when a data-plane tool resolves
+// neither a per-(tenant, database) registry nor a fallback singleton for the
+// service it needs. It is the fail-closed answer to a tool that was registered
+// because a registry was configured but invoked without the scope middleware
+// that binds one -- reported rather than dereferenced.
+type ServiceNotConfiguredError struct {
+	// Service names the unresolvable service, e.g. "collection".
+	Service string
+}
+
+// Error returns a human-readable description.
+func (e *ServiceNotConfiguredError) Error() string {
+	return "mcp: service not configured: " + e.Service
+}
+
 // ToolError is returned when an MCP tool execution fails.
 type ToolError struct {
 	Tool string

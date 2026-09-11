@@ -71,6 +71,16 @@ type Registry interface {
 	// caller's (tenant, db) namespace, so one tenant's grants are
 	// invisible to another.
 	PrivilegeService(tenant, db string) (PrivilegeServicer, error)
+
+	// CollectionService returns the CollectionServicer for the given
+	// (tenant, db) scope -- the document-collection surface. A collection
+	// document key is "__col:{database}:{collection}/{id}" and the database
+	// name travels in the request, so the returned servicer MUST key into
+	// the caller's own namespace: two tenants naming the same database and
+	// the same collection otherwise address the same documents
+	// (go-qrdb#441). Every transport resolves collections through here
+	// rather than holding one process-wide servicer.
+	CollectionService(tenant, db string) (CollectionServicer, error)
 }
 
 // TenantNotFoundError is returned when the tenant ID from the authenticated

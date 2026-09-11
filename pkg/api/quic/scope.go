@@ -135,3 +135,24 @@ func (s *Server) vectorSvcFor(ctx context.Context) (service.VectorServicer, erro
 	}
 	return s.registry.VectorService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
 }
+
+// collectionSvcFor resolves the CollectionServicer for the (tenant, database)
+// scope of this request. The database is passed in rather than read from the
+// stream's database scope: every collection frame names its database in the
+// request message, and that is the database whose keyspace the operation must
+// resolve into.
+//
+// Before go-qrdb#441 this surface held one process-wide servicer built over
+// the raw, un-namespaced engines, so two tenants naming the same database and
+// collection read and wrote the same documents. When no registry is configured
+// the singleton is returned unchanged -- the single-tenant composition, where
+// the whole store and the caller's own keyspace coincide.
+func (s *Server) collectionSvcFor(ctx context.Context, database string) (service.CollectionServicer, error) {
+	if s.registry == nil {
+		if s.collectionSvc == nil {
+			return nil, &ServiceNotConfiguredError{Service: "collection"}
+		}
+		return s.collectionSvc, nil
+	}
+	return s.registry.CollectionService(tenant.FromContext(ctx), database)
+}

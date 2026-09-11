@@ -1285,8 +1285,12 @@ func (s *Server) registerRoutes() {
 	s.route(http.MethodPost, "/v1/databases/{name}/unseal", permission.DatabasesUnseal, s.handleDatabaseByName)
 	s.route(http.MethodGet, "/v1/databases/{name}/barrier/status", permission.DatabasesBarrierStatus, s.handleDatabaseByName)
 
-	// Collection management routes.
-	collOn := s.collectionSvc != nil
+	// Collection management routes. Attached when either the singleton is
+	// wired or a registry is configured, for the reason the lease routes give
+	// above: the per-(tenant, database) collection servicer resolves at
+	// request time, so gating on the singleton alone would answer
+	// StatusNotImplemented before collectionSvcFor could resolve one.
+	collOn := s.collectionSvc != nil || s.serviceRegistry != nil
 	s.routeIf(collOn, http.MethodPost, "/v1/collections", permission.CollectionsCreate, s.handleCreateCollection)
 	s.routeIf(collOn, http.MethodGet, "/v1/collections/list", permission.CollectionsList, s.handleListCollections)
 

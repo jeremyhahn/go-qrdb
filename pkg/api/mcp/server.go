@@ -544,7 +544,12 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 	if s.certProv != nil {
 		s.addTools(certTools(s.certProv)...)
 	}
-	if s.collectionSvc != nil {
+	// Registered when either the singleton is wired or a registry is
+	// configured: the per-(tenant, database) collection servicer resolves at
+	// call time through resolveCollection, so gating on the singleton alone
+	// would omit the tools entirely from a multi-tenant server that resolves
+	// them per request.
+	if s.collectionSvc != nil || s.registry != nil {
 		s.addTools(collectionTools(s.collectionSvc)...)
 	}
 	if s.dbSvc != nil {

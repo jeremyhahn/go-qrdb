@@ -33,11 +33,12 @@ import (
 
 // CreateCollection creates a new document collection in a database.
 func (s *qrdbServiceServer) CreateCollection(ctx context.Context, req *pb.CreateCollectionRequest) (*pb.CollectionInfoResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	info, err := s.collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
+	info, err := collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
 		Database:   req.GetDatabase(),
 		Name:       req.GetName(),
 		IDStrategy: req.GetIdStrategy(),
@@ -52,11 +53,12 @@ func (s *qrdbServiceServer) CreateCollection(ctx context.Context, req *pb.Create
 
 // GetCollectionInfo returns metadata about a specific collection.
 func (s *qrdbServiceServer) GetCollectionInfo(ctx context.Context, req *pb.GetCollectionInfoRequest) (*pb.CollectionInfoResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	info, err := s.collectionSvc.GetCollectionInfo(ctx, req.GetDatabase(), req.GetName())
+	info, err := collectionSvc.GetCollectionInfo(ctx, req.GetDatabase(), req.GetName())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -66,11 +68,12 @@ func (s *qrdbServiceServer) GetCollectionInfo(ctx context.Context, req *pb.GetCo
 
 // ListCollections returns all collections within a database.
 func (s *qrdbServiceServer) ListCollections(ctx context.Context, req *pb.ListCollectionsRequest) (*pb.ListCollectionsResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
+	resp, err := collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
 		Database: req.GetDatabase(),
 	})
 	if err != nil {
@@ -88,11 +91,12 @@ func (s *qrdbServiceServer) ListCollections(ctx context.Context, req *pb.ListCol
 
 // DropCollection removes a collection and all its documents.
 func (s *qrdbServiceServer) DropCollection(ctx context.Context, req *pb.DropCollectionRequest) (*emptypb.Empty, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if err := s.collectionSvc.DropCollection(ctx, &service.DropCollectionRequest{
+	if err := collectionSvc.DropCollection(ctx, &service.DropCollectionRequest{
 		Database: req.GetDatabase(),
 		Name:     req.GetName(),
 	}); err != nil {
@@ -104,8 +108,9 @@ func (s *qrdbServiceServer) DropCollection(ctx context.Context, req *pb.DropColl
 
 // InsertDocument inserts a document into a collection.
 func (s *qrdbServiceServer) InsertDocument(ctx context.Context, req *pb.InsertDocumentRequest) (*pb.InsertDocumentResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var doc map[string]interface{}
@@ -113,7 +118,7 @@ func (s *qrdbServiceServer) InsertDocument(ctx context.Context, req *pb.InsertDo
 		return nil, status.Error(codes.InvalidArgument, (&DocumentUnmarshalError{Err: err}).Error())
 	}
 
-	resp, err := s.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+	resp, err := collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		Document:   doc,
@@ -127,11 +132,12 @@ func (s *qrdbServiceServer) InsertDocument(ctx context.Context, req *pb.InsertDo
 
 // GetDocument retrieves a single document by ID.
 func (s *qrdbServiceServer) GetDocument(ctx context.Context, req *pb.GetDocumentRequest) (*pb.DocumentResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
+	resp, err := collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -153,8 +159,9 @@ func (s *qrdbServiceServer) GetDocument(ctx context.Context, req *pb.GetDocument
 
 // UpdateDocument replaces an existing document in a collection.
 func (s *qrdbServiceServer) UpdateDocument(ctx context.Context, req *pb.UpdateDocumentRequest) (*emptypb.Empty, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
 	var doc map[string]interface{}
@@ -162,7 +169,7 @@ func (s *qrdbServiceServer) UpdateDocument(ctx context.Context, req *pb.UpdateDo
 		return nil, status.Error(codes.InvalidArgument, (&DocumentUnmarshalError{Err: err}).Error())
 	}
 
-	if _, err := s.collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
+	if _, err := collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -176,11 +183,12 @@ func (s *qrdbServiceServer) UpdateDocument(ctx context.Context, req *pb.UpdateDo
 
 // DeleteDocument removes a document from a collection by ID.
 func (s *qrdbServiceServer) DeleteDocument(ctx context.Context, req *pb.DeleteDocumentRequest) (*emptypb.Empty, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	if _, err := s.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+	if _, err := collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -193,11 +201,12 @@ func (s *qrdbServiceServer) DeleteDocument(ctx context.Context, req *pb.DeleteDo
 
 // ListDocuments returns a paginated list of documents in a collection.
 func (s *qrdbServiceServer) ListDocuments(ctx context.Context, req *pb.ListDocumentsRequest) (*pb.ListDocumentsResponse, error) {
-	if s.collectionSvc == nil {
-		return nil, status.Error(codes.Unimplemented, (&ServiceNotConfiguredError{Service: "collection"}).Error())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, mapServiceError(svcErr)
 	}
 
-	resp, err := s.collectionSvc.ListDocuments(ctx, &service.ListDocumentsRequest{
+	resp, err := collectionSvc.ListDocuments(ctx, &service.ListDocumentsRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		PageSize:   req.GetPageSize(),

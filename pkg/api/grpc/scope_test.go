@@ -33,6 +33,7 @@ type recordingRegistry struct {
 	gotDB     string
 	kv        service.KVServicer
 	mvcc      service.MVCCKVServicer
+	coll      service.CollectionServicer
 	err       error
 }
 
@@ -81,6 +82,13 @@ func (r *recordingRegistry) SequenceService(t, db string) (service.SequenceServi
 }
 func (r *recordingRegistry) PrivilegeService(t, db string) (service.PrivilegeServicer, error) {
 	return nil, r.err
+}
+func (r *recordingRegistry) CollectionService(t, db string) (service.CollectionServicer, error) {
+	r.gotTenant, r.gotDB = t, db
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.coll, nil
 }
 
 func TestDatabaseScopeUnaryInterceptor_DefaultWhenAbsent(t *testing.T) {

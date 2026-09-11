@@ -166,3 +166,41 @@ func (s *Server) batchSvcFor(w http.ResponseWriter, ctx context.Context) service
 	}
 	return svc
 }
+
+// collectionSvcFor resolves the CollectionServicer for the (tenant, database)
+// scope of this request. Unlike every other resolver here, the database is
+// passed in rather than read from the scope context: the collection surface
+// addresses its database in the URL path (or the request body / query string),
+// not in the X-QRDB-Database header, and the database the operation names is
+// the one whose keyspace it must resolve into.
+//
+// Before go-qrdb#441 this surface held one process-wide servicer built over
+// the raw, un-namespaced engines, so two tenants naming the same database and
+// collection read and wrote the same documents. When no registry is configured
+// the singleton is still returned unchanged -- that is the single-tenant,
+// registry-less composition, where the whole store and the caller's own
+// keyspace are the same set.
+// collectionSurfaceConfigured reports whether this server can serve the
+// collection surface at all -- through a registry, or through the singleton.
+// It is knowable WITHOUT the database, which is what lets the handlers keep
+// answering "not implemented" ahead of parameter validation, as they did
+// before the surface became per-(tenant, database) resolved.
+func (s *Server) collectionSurfaceConfigured() bool {
+	return s.serviceRegistry != nil || s.collectionSvc != nil
+}
+
+func (s *Server) collectionSvcFor(w http.ResponseWriter, ctx context.Context, database string) service.CollectionServicer {
+	if s.serviceRegistry == nil {
+		if s.collectionSvc == nil {
+			writeErrorJSON(w, http.StatusNotImplemented, &ServiceNotImplementedError{Service: "collection"})
+			return nil
+		}
+		return s.collectionSvc
+	}
+	svc, err := s.serviceRegistry.CollectionService(tenantFromContext(ctx), database)
+	if err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return nil
+	}
+	return svc
+}

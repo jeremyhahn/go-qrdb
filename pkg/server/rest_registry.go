@@ -90,6 +90,13 @@ type restServiceRegistry struct {
 	// resolveDedicatedDatabaseBarrier for the non-raft (direct encrypting
 	// Backend()) case. Always non-nil; unused when dbManager is nil.
 	dedicatedStore *dedicatedStoreServiceCache
+
+	// collections caches the (tenant, db)-namespaced collection services
+	// applyComposite builds over the wrapped engines. Always non-nil. Like
+	// dedicatedStore, its entries carry process-local increment ID
+	// generators, so its lifetime is observable -- see
+	// compositeCollectionCache and Server.buildServiceRegistry.
+	collections *compositeCollectionCache
 }
 
 // NewRESTServiceRegistry creates a rest.ServiceRegistry that resolves
@@ -115,6 +122,7 @@ func NewRESTServiceRegistry(
 		barrierReg:     barrierReg,
 		systemTenant:   systemTenant,
 		dedicatedStore: newDedicatedStoreServiceCache(),
+		collections:    newCompositeCollectionCache(),
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -526,10 +534,18 @@ func (r *restServiceRegistry) checkTenantBarrier(tenantID string) error {
 // tenant.ComposeNamespace, so every (tenant, db) pair — including the
 // bootstrap (system, "system") pair — is wrapped and isolated.
 //
-// Collection is intentionally not wrapped: it composes the namespaced KV and
-// MVCC engines below it rather than keying into the shared store directly, so
-// it inherits their isolation. The remaining data engines key into the shared
-// store and are each wrapped explicitly.
+// Collection is REBUILT over the wrapped engines rather than copied. This
+// comment previously claimed the opposite — that Collection "is intentionally
+// not wrapped: it composes the namespaced KV and MVCC engines below it rather
+// than keying into the shared store directly, so it inherits their isolation"
+// — and that claim is what hid go-qrdb#441 from review. A struct copy carries
+// the collection service the BUNDLE was built with, and every bundle is built
+// over the raw, pre-wrap engines (buildDataPlaneServices,
+// lifecycle.BuildServices), so the copy keyed straight into the shared store:
+// under prefix isolation two tenants naming the same database and collection
+// wrote the same "__col:{database}:{collection}/{id}" keys. A service inherits
+// isolation from the engines it HOLDS, never from the engines its neighbours
+// in the struct hold. See buildCompositeCollectionService.
 func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix string) *DatabaseServices {
 	out := *svcs
 	if svcs.KV != nil {
@@ -559,6 +575,7 @@ func (r *restServiceRegistry) applyComposite(svcs *DatabaseServices, prefix stri
 	if svcs.Vector != nil {
 		out.Vector = newNamespacedVectorService(svcs.Vector, prefix)
 	}
+	out.Collection = r.collections.getOrBuild(svcs, &out, prefix)
 	return &out
 }
 
@@ -722,4 +739,26 @@ func (r *restServiceRegistry) PrivilegeService(tenantID, db string) (service.Pri
 		return nil, &rest.ServiceNotImplementedError{Service: "privilege"}
 	}
 	return service.NewPrivilegeService(svcs.KV, svcs.MVCC, svcs.Transaction), nil
+}
+
+// CollectionService returns the CollectionServicer for the given (tenant, db)
+// scope. It resolves exactly like KVService and MVCCService -- the resolved
+// bundle's Collection is the one applyComposite built over that scope's
+// namespaced engines, so a document written through it lands under the
+// caller's "<tenant>/<database>/" prefix rather than at the bare
+// "__col:{database}:{collection}/{id}" key every tenant would otherwise share
+// (go-qrdb#441).
+//
+// The dedicated-store and dedicated-raft resolution paths return their own
+// bundle's Collection unchanged, because those bundles are already built over
+// a store that belongs to exactly one (tenant, database) pair.
+func (r *restServiceRegistry) CollectionService(tenantID, db string) (service.CollectionServicer, error) {
+	svcs, err := r.resolve(tenantID, db)
+	if err != nil {
+		return nil, err
+	}
+	if svcs.Collection == nil {
+		return nil, &rest.ServiceNotImplementedError{Service: "collection"}
+	}
+	return svcs.Collection, nil
 }

@@ -106,6 +106,10 @@ func handleCollectionCreate(svc service.CollectionServicer) mcpserver.ToolHandle
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
 		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -160,6 +164,10 @@ func handleCollectionDrop(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
 		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
@@ -194,6 +202,10 @@ func handleCollectionList(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		database := mcp.ParseString(req, "database", "")
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
+		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
 		}
 
 		resp, err := svc.ListCollections(ctx, &service.ListCollectionsRequest{
@@ -234,6 +246,10 @@ func handleCollectionInfo(svc service.CollectionServicer) mcpserver.ToolHandlerF
 		database := mcp.ParseString(req, "database", "")
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
+		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
 		}
 		name := mcp.ParseString(req, "name", "")
 		if name == "" {
@@ -280,6 +296,10 @@ func handleCollectionInsert(svc service.CollectionServicer) mcpserver.ToolHandle
 		database := mcp.ParseString(req, "database", "")
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
+		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -340,6 +360,10 @@ func handleCollectionGet(svc service.CollectionServicer) mcpserver.ToolHandlerFu
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
 		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
 			return mcp.NewToolResultError("collection is required"), nil
@@ -397,6 +421,10 @@ func handleCollectionUpdate(svc service.CollectionServicer) mcpserver.ToolHandle
 		database := mcp.ParseString(req, "database", "")
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
+		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
@@ -462,6 +490,10 @@ func handleCollectionDelete(svc service.CollectionServicer) mcpserver.ToolHandle
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
 		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
+		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {
 			return mcp.NewToolResultError("collection is required"), nil
@@ -518,6 +550,10 @@ func handleCollectionListDocuments(svc service.CollectionServicer) mcpserver.Too
 		database := mcp.ParseString(req, "database", "")
 		if database == "" {
 			return mcp.NewToolResultError("database is required"), nil
+		}
+		svc, rerr := resolveCollection(ctx, svc, database)
+		if rerr != nil {
+			return mcp.NewToolResultError(rerr.Error()), nil
 		}
 		collection := mcp.ParseString(req, "collection", "")
 		if collection == "" {

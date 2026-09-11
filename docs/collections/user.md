@@ -100,11 +100,36 @@ continuing where the old one left off. If a drop reports an error, nothing is
 half-deleted in a way you have to clean up by hand — run the same command again
 and it finishes.
 
+## Collections belong to your tenant
+
+A collection lives inside one `(tenant, database)` pair. The `--database` you
+pass selects the database; the tenant comes from the certificate you connect
+with and is never something you send. Two tenants can use the same database
+name and the same collection name without seeing, overwriting or blocking each
+other — the names are yours, not the cluster's. That extends to the `increment`
+counter above: it is your collection's, not the name's.
+
+If you are upgrading a deployment that already had collections, read
+[engineering.md](engineering.md#upgrading-across-the-tenant-namespace-change)
+first: collections written before the tenant namespace existed are not listed
+after the upgrade, and nothing moves them for you. Export them with the older
+binary and re-import them as the tenant that should own them.
+
 ## Troubleshooting
 
 **"collection not found" on an insert.** Collections are never created
 implicitly. Check the spelling and the `--database` — a typo would otherwise
 have quietly produced a second collection that then diverges from the first.
+
+**Your collections vanished after an upgrade.** If they were created before the
+tenant namespace existed, they are still on disk but no longer reachable, for
+the reason above. Nothing deleted them. Roll back to the previous binary,
+export, upgrade, re-import.
+
+**"database not found" on a collection command that used to work.** A
+collection request resolves the database you name, so a database that was never
+created is now refused rather than silently used. Create it
+(`qrdb database create <name>`) or correct the `--database` value.
 
 **`--id-strategy field_hash` was rejected.** It needs `--field-hash <field>`
 naming which document field to hash. Without it there is nothing to derive the

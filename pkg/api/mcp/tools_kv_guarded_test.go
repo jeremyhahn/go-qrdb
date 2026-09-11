@@ -486,6 +486,15 @@ func (f *failingRegistry) KVService(string, string) (service.KVServicer, error) 
 	return nil, f.err
 }
 
+// CollectionService reports the same failure. It is implemented rather than
+// left to the embedded nil interface because a promoted method compiles and
+// then dereferences nil; the embedding is there to make an UNIMPLEMENTED call
+// a loud panic, and a method the interface gained after this double was
+// written is not unimplemented on purpose.
+func (f *failingRegistry) CollectionService(string, string) (service.CollectionServicer, error) {
+	return nil, f.err
+}
+
 // TestGuardedArgs_UnresolvableScope covers the branch every guarded handler
 // shares: a request whose database scope does not resolve is an ARGUMENT-level
 // tool error, not a guarded answer. Returning false here would tell a caller

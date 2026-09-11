@@ -161,3 +161,25 @@ func resolveVector(ctx context.Context, fallback service.VectorServicer) (servic
 	}
 	return reg.VectorService(tenant.FromContext(ctx), tenant.DatabaseFromContext(ctx))
 }
+
+// resolveCollection resolves the CollectionServicer for the (tenant, database)
+// scope of this tool call. Unlike its neighbours the database is passed in
+// rather than read from the "database" tool argument via the scope context:
+// every collection tool already requires and parses that argument itself, and
+// the database the tool names is the one whose keyspace it must resolve into.
+//
+// Before go-qrdb#441 the collection tools closed over one process-wide
+// servicer built over the raw, un-namespaced engines, so two tenants naming
+// the same database and collection read and wrote the same documents. With no
+// registry bound to ctx the captured singleton is returned unchanged, which is
+// the single-database, embedded and unit-test path.
+func resolveCollection(ctx context.Context, fallback service.CollectionServicer, database string) (service.CollectionServicer, error) {
+	reg := registryFromContext(ctx)
+	if reg == nil {
+		if fallback == nil {
+			return nil, &ServiceNotConfiguredError{Service: "collection"}
+		}
+		return fallback, nil
+	}
+	return reg.CollectionService(tenant.FromContext(ctx), database)
+}

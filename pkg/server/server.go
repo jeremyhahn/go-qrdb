@@ -1157,12 +1157,14 @@ func (s *Server) ServiceRegistry() service.Registry {
 // A fresh restServiceRegistry is deliberately built per call rather than
 // memoized on the Server. Every input it closes over is fixed at server.New
 // time, so a memoized instance would be built from identical inputs -- but it
-// would also SHARE its dedicatedStoreServiceCache across transports, and that
-// cache's *DatabaseServices bundles carry the per-collection, process-local
-// increment ID generators of service.CollectionService (see
-// buildDedicatedStoreServices). Sharing them across transports would change
-// observable ID allocation, so memoization is not a pure optimization and is
-// not applied here.
+// would also SHARE its two collection-service caches across transports:
+// dedicatedStoreServiceCache, whose *DatabaseServices bundles carry the
+// per-collection, process-local increment ID generators of
+// service.CollectionService (see buildDedicatedStoreServices), and
+// compositeCollectionCache, which holds the same state for the namespaced
+// shared-shard path. Sharing them across transports would change observable ID
+// allocation, so memoization is not a pure optimization and is not applied
+// here.
 func (s *Server) buildServiceRegistry() service.Registry {
 	if s.opts.dbRegistry == nil {
 		return nil

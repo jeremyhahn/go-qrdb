@@ -167,6 +167,15 @@ func (m *mockRegistry) TableService(tenantID, db string) (service.TableServicer,
 	return nil, &service.SubsystemNotConfiguredError{Subsystem: "table"}
 }
 
+// CollectionService is implemented explicitly rather than left to the embedded
+// nil interface: the SQL provider's table lookup calls it on every unresolved
+// name, and a method promoted off a nil embedded interface compiles and then
+// dereferences nil. This engine serves no collections, which is a nil servicer
+// and a nil error.
+func (m *mockRegistry) CollectionService(string, string) (service.CollectionServicer, error) {
+	return nil, nil
+}
+
 func (m *mockRegistry) PrivilegeService(tenantID, db string) (service.PrivilegeServicer, error) {
 	if m.privilegeServiceFn != nil {
 		return m.privilegeServiceFn(tenantID, db)

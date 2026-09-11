@@ -27,14 +27,15 @@ import (
 
 // handleCollectionCreate creates a new document collection.
 func (s *Server) handleCollectionCreate(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.CreateCollectionRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	info, err := s.collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	info, err := collectionSvc.CreateCollection(ctx, &service.CreateCollectionRequest{
 		Database:   req.GetDatabase(),
 		Name:       req.GetName(),
 		IDStrategy: req.GetIdStrategy(),
@@ -52,14 +53,15 @@ func (s *Server) handleCollectionCreate(ctx context.Context, payload []byte) ([]
 
 // handleCollectionGetInfo returns metadata about a specific collection.
 func (s *Server) handleCollectionGetInfo(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.GetCollectionInfoRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	info, err := s.collectionSvc.GetCollectionInfo(ctx, req.GetDatabase(), req.GetName())
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	info, err := collectionSvc.GetCollectionInfo(ctx, req.GetDatabase(), req.GetName())
 	if err != nil {
 		return nil, err
 	}
@@ -72,14 +74,15 @@ func (s *Server) handleCollectionGetInfo(ctx context.Context, payload []byte) ([
 
 // handleCollectionList returns all collections within a database.
 func (s *Server) handleCollectionList(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.ListCollectionsRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	svcResp, err := s.collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	svcResp, err := collectionSvc.ListCollections(ctx, &service.ListCollectionsRequest{
 		Database: req.GetDatabase(),
 	})
 	if err != nil {
@@ -99,14 +102,15 @@ func (s *Server) handleCollectionList(ctx context.Context, payload []byte) ([]by
 
 // handleCollectionDrop removes a collection and all its documents.
 func (s *Server) handleCollectionDrop(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.DropCollectionRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if err := s.collectionSvc.DropCollection(ctx, &service.DropCollectionRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	if err := collectionSvc.DropCollection(ctx, &service.DropCollectionRequest{
 		Database: req.GetDatabase(),
 		Name:     req.GetName(),
 	}); err != nil {
@@ -117,18 +121,19 @@ func (s *Server) handleCollectionDrop(ctx context.Context, payload []byte) ([]by
 
 // handleCollectionInsertDocument inserts a document into a collection.
 func (s *Server) handleCollectionInsertDocument(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.InsertDocumentRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
 	}
 	var doc map[string]interface{}
 	if err := json.Unmarshal([]byte(req.GetDocument()), &doc); err != nil {
 		return nil, &InvalidArgumentError{Reason: "invalid document JSON: " + err.Error()}
 	}
-	svcResp, err := s.collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
+	svcResp, err := collectionSvc.InsertDocument(ctx, &service.InsertDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		Document:   doc,
@@ -145,14 +150,15 @@ func (s *Server) handleCollectionInsertDocument(ctx context.Context, payload []b
 
 // handleCollectionGetDocument retrieves a single document by ID.
 func (s *Server) handleCollectionGetDocument(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.GetDocumentRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	svcResp, err := s.collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	svcResp, err := collectionSvc.GetDocument(ctx, &service.GetDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -176,18 +182,19 @@ func (s *Server) handleCollectionGetDocument(ctx context.Context, payload []byte
 
 // handleCollectionUpdateDocument replaces an existing document.
 func (s *Server) handleCollectionUpdateDocument(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.UpdateDocumentRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
 	}
 	var doc map[string]interface{}
 	if err := json.Unmarshal([]byte(req.GetDocument()), &doc); err != nil {
 		return nil, &InvalidArgumentError{Reason: "invalid document JSON: " + err.Error()}
 	}
-	if _, err := s.collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
+	if _, err := collectionSvc.UpdateDocument(ctx, &service.UpdateDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -200,14 +207,15 @@ func (s *Server) handleCollectionUpdateDocument(ctx context.Context, payload []b
 
 // handleCollectionDeleteDocument removes a document by ID.
 func (s *Server) handleCollectionDeleteDocument(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.DeleteDocumentRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	if _, err := s.collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	if _, err := collectionSvc.DeleteDocument(ctx, &service.DeleteDocumentRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		ID:         req.GetId(),
@@ -219,14 +227,15 @@ func (s *Server) handleCollectionDeleteDocument(ctx context.Context, payload []b
 
 // handleCollectionListDocuments returns a paginated list of documents.
 func (s *Server) handleCollectionListDocuments(ctx context.Context, payload []byte) ([]byte, error) {
-	if s.collectionSvc == nil {
-		return nil, &ServiceNotConfiguredError{Service: "collection"}
-	}
 	var req pb.ListDocumentsRequest
 	if err := proto.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
 	}
-	svcResp, err := s.collectionSvc.ListDocuments(ctx, &service.ListDocumentsRequest{
+	collectionSvc, svcErr := s.collectionSvcFor(ctx, req.GetDatabase())
+	if svcErr != nil {
+		return nil, svcErr
+	}
+	svcResp, err := collectionSvc.ListDocuments(ctx, &service.ListDocumentsRequest{
 		Database:   req.GetDatabase(),
 		Collection: req.GetCollection(),
 		PageSize:   req.GetPageSize(),
