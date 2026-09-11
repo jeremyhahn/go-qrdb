@@ -315,6 +315,174 @@ func TestSequenceService_Reset_RetryExhausted(t *testing.T) {
 	require.ErrorAs(t, err, &conflict)
 }
 
+// ---------------------------------------------------------------------------
+// Delete -- the teardown verb (go-qrdb#411)
+// ---------------------------------------------------------------------------
+
+// TestSequenceService_Delete_ReclaimsTheCounterKey is the distinction that
+// justifies Delete existing at all: Reset writes a zero counter and leaves
+// the key in the store forever, Delete removes it. Both leave the same
+// observable sequence state, so the key itself is what has to be asserted.
+func TestSequenceService_Delete_ReclaimsTheCounterKey(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+	key := tableSequenceKey("db", "seq")
+
+	_, err := svc.Allocate(ctx, "db", "seq", 5)
+	require.NoError(t, err)
+	_, err = store.Get(ctx, key)
+	require.NoError(t, err, "allocating must have created the counter key")
+
+	require.NoError(t, svc.Delete(ctx, "db", "seq"))
+
+	_, err = store.Get(ctx, key)
+	var notFound *KeyNotFoundError
+	require.ErrorAs(t, err, &notFound, "Delete must remove the counter key, not zero it")
+}
+
+// TestSequenceService_Reset_LeavesTheCounterKeyBehind is the control for the
+// test above, and the measured reason DropCollection could not have been
+// fixed by calling Reset.
+func TestSequenceService_Reset_LeavesTheCounterKeyBehind(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+	key := tableSequenceKey("db", "seq")
+
+	_, err := svc.Allocate(ctx, "db", "seq", 5)
+	require.NoError(t, err)
+	require.NoError(t, svc.Reset(ctx, "db", "seq"))
+
+	raw, err := store.Get(ctx, key)
+	require.NoError(t, err, "Reset is defined to zero the counter, not reclaim it")
+	assert.Equal(t, uint64(0), decodeSequenceCounter(raw))
+}
+
+func TestSequenceService_Delete_ThenAllocateStartsOverAtOne(t *testing.T) {
+	svc, _ := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq", 10)
+	require.NoError(t, err)
+	require.NoError(t, svc.Delete(ctx, "db", "seq"))
+
+	first, err := svc.Allocate(ctx, "db", "seq", 1)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), first, "a deleted sequence materializes fresh on next use")
+
+	peek, err := svc.Peek(ctx, "db", "seq")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), peek)
+}
+
+// TestSequenceService_Delete_AbsentSequenceIsSuccess pins the contract half
+// of the doc comment: not-found is success. A teardown interrupted partway
+// through is completed by re-issuing it, and the re-issue necessarily
+// re-deletes what the first attempt removed -- so an error here would wedge
+// every retry short of the step that follows it.
+func TestSequenceService_Delete_AbsentSequenceIsSuccess(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+
+	before := store.executeCallsSnapshot()
+	require.NoError(t, svc.Delete(ctx, "db", "never-allocated"))
+	assert.Equal(t, before, store.executeCallsSnapshot(), "an absent sequence is already the replicated state; deleting one must propose nothing")
+}
+
+func TestSequenceService_Delete_IsIdempotent(t *testing.T) {
+	svc, _ := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq", 3)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Delete(ctx, "db", "seq"))
+	require.NoError(t, svc.Delete(ctx, "db", "seq"), "a re-issued teardown must succeed over an already-deleted sequence")
+	require.NoError(t, svc.Delete(ctx, "db", "seq"))
+}
+
+func TestSequenceService_Delete_DistinctSequencesUnaffected(t *testing.T) {
+	svc, _ := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq_a", 4)
+	require.NoError(t, err)
+	_, err = svc.Allocate(ctx, "db", "seq_b", 7)
+	require.NoError(t, err)
+	_, err = svc.Allocate(ctx, "other", "seq_a", 9)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.Delete(ctx, "db", "seq_a"))
+
+	b, err := svc.Peek(ctx, "db", "seq_b")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(7), b, "deleting one sequence must not disturb a sibling in the same database")
+
+	otherA, err := svc.Peek(ctx, "other", "seq_a")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(9), otherA, "sequence names are scoped per database")
+}
+
+func TestSequenceService_Delete_Validation(t *testing.T) {
+	svc, _ := newTestSequenceService()
+	ctx := context.Background()
+
+	var emptyDB *SequenceEmptyDatabaseError
+	assert.ErrorAs(t, svc.Delete(ctx, "", "seq"), &emptyDB)
+
+	var emptyName *SequenceEmptyNameError
+	assert.ErrorAs(t, svc.Delete(ctx, "db", ""), &emptyName)
+}
+
+// TestSequenceService_Delete_RetryThenSucceed shows the delete carries the
+// same compare-and-swap guard every other mutation does: a lost race is
+// retried against a freshly read ModRevision rather than blindly reapplied.
+func TestSequenceService_Delete_RetryThenSucceed(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	require.NoError(t, err)
+
+	store.forceConflicts = 2
+	require.NoError(t, svc.Delete(ctx, "db", "seq"))
+
+	_, err = store.Get(ctx, tableSequenceKey("db", "seq"))
+	var notFound *KeyNotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
+func TestSequenceService_Delete_RetryExhausted(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	require.NoError(t, err)
+
+	store.forceConflicts = 1000
+	var conflict *SequenceConflictError
+	require.ErrorAs(t, svc.Delete(ctx, "db", "seq"), &conflict)
+}
+
+func TestSequenceService_Delete_ReadError(t *testing.T) {
+	svc, store := newTestSequenceService()
+	sentinel := errors.New("boom")
+	store.injectGetRevisionErr = sentinel
+
+	require.ErrorIs(t, svc.Delete(context.Background(), "db", "seq"), sentinel)
+}
+
+func TestSequenceService_Delete_ExecuteError(t *testing.T) {
+	svc, store := newTestSequenceService()
+	ctx := context.Background()
+
+	_, err := svc.Allocate(ctx, "db", "seq", 1)
+	require.NoError(t, err)
+
+	sentinel := errors.New("boom")
+	store.injectExecuteErr = sentinel
+	require.ErrorIs(t, svc.Delete(ctx, "db", "seq"), sentinel)
+}
+
 func TestEncodeDecodeSequenceCounter(t *testing.T) {
 	assert.Equal(t, uint64(0), decodeSequenceCounter(nil))
 	assert.Equal(t, uint64(0), decodeSequenceCounter([]byte{1, 2, 3}))

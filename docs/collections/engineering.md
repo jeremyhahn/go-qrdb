@@ -118,14 +118,22 @@ Metadata is keyed `__sys:collections/{database}/{name}`.
 - **`UpdateDocument` replaces the whole document.** There is no partial update
   or merge.
 - **`DropCollection` deletes every document, drops every secondary index the
-  collection declared, and is irreversible.** The order is documents → indexes →
+  collection declared, reclaims the collection's replicated `increment`
+  counter, and is irreversible.** The order is documents → indexes → sequence →
   metadata, and the metadata key is deleted **last** so the operation is
-  retryable at every interruption point — see the architecture note. An index
-  that cannot be dropped fails the drop with
-  `service.CollectionMetadataError{Op: "drop-index"}`; the collection still
-  resolves and the drop can be re-issued. An index reported as *already absent*
-  (`index.IndexServicer` permits `IndexNotFoundError` from `DropIndex`) is
-  treated as success, so a retry is never wedged short of the metadata delete.
+  retryable at every interruption point — see the architecture note. A
+  collection recreated under a dropped name therefore issues ID 1 again; it does
+  not inherit the previous collection's high-water mark.
+- **A drop that cannot reclaim a step fails, and is retryable.** Every step
+  returns `service.CollectionMetadataError` with the failing `Op`
+  (`list-documents`, `delete-document`, `drop-index`, `delete-sequence`,
+  `delete-metadata`), and the metadata — the record that makes the collection
+  resolvable — survives until the end, so re-issuing the same `DropCollection`
+  completes it. Each reclamation step is idempotent, so a retry costs nothing
+  where it already ran: a step reported as *already absent* is treated as
+  success (`index.IndexServicer` permits `IndexNotFoundError` from `DropIndex`,
+  and `SequenceServicer.Delete` requires not-found-is-success of
+  implementations), so a retry is never wedged short of the metadata delete.
 - **Collection metadata that cannot be parsed fails the drop**, with
   `service.CollectionMetadataError{Op: "unmarshal-metadata"}`. The index
   definitions live in that metadata, so a drop that cannot read it does not know

@@ -1243,8 +1243,16 @@ func (s *TableService) NextUserSequenceValue(ctx context.Context, database, name
 }
 
 // ResetUserSequence implements UserSequencer.
+//
+// It reaches SequenceServicer.Delete rather than Reset. Under
+// materialize-on-first-use the two are observationally identical -- Peek
+// reads 0 and the next allocation returns 1 either way -- but Reset writes
+// a zero counter and so leaves the key behind forever, which is the leak
+// go-qrdb#411 describes in the collection drop path. DROP SEQUENCE is the
+// only caller (see pkg/sql/pgsql's handleSequenceDDL), so this reclaims the
+// key with no change to what a SQL client can observe.
 func (s *TableService) ResetUserSequence(ctx context.Context, database, name string) error {
-	return s.seq.Reset(ctx, database, UserSequenceName(name))
+	return s.seq.Delete(ctx, database, UserSequenceName(name))
 }
 
 // Compile-time assertion that the table catalog also serves client-named

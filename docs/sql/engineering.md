@@ -406,7 +406,10 @@ statement text alone cannot express:
 - **Sequences.** `nextval('name')` allocates from a Raft-linearizable
   per-database counter (`service.UserSequencer`); sequences materialize on
   first use and start at 1. `CREATE/ALTER SEQUENCE` are accepted (creation is
-  implicit), `DROP SEQUENCE` resets the counter. `ADD GENERATED ... AS
+  implicit), and `DROP SEQUENCE` reclaims the counter — under
+  materialize-on-first-use that is indistinguishable from a sequence that was
+  never created, so a re-created name starts at 1, exactly the observable
+  effect PostgreSQL's drop-and-recreate has. `ADD GENERATED ... AS
   IDENTITY` becomes a sequence default. `information_schema.columns` restates
   such defaults as `nextval('name'::regclass)`, the exact shape PostgreSQL
   clients pattern-match for auto-increment classification.

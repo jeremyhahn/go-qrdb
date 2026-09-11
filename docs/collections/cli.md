@@ -64,6 +64,10 @@ interrupted drop leaves the collection still listed and re-running the command
 finishes it. If the index teardown fails the command reports the failure instead
 of succeeding — retry it once the cluster has a leader again.
 
+Also discards the collection's `increment` counter, so a collection later
+created with the same name starts at ID 1. The command is safe to re-run: if it
+fails partway, re-issuing it completes the drop.
+
 | Flag | Type | Default |
 |---|---|---|
 | `--database` | string | `system` |

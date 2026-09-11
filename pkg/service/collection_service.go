@@ -264,56 +264,62 @@ func (s *CollectionService) CreateCollection(ctx context.Context, req *CreateCol
 }
 
 // DropCollection removes a collection: every document in it, every secondary
-// index CreateCollection built for it, and finally its metadata.
+// index CreateCollection built for it, the replicated ID sequence backing
+// IDStrategyIncrement, the process-local ID generator cache entry, and finally
+// the metadata that makes the collection resolvable.
 //
-// The teardown order is deliberate and mirrors Database.DropTable in
-// pkg/sql/provider: dependent structures are reclaimed FIRST and the metadata
-// key -- the record that makes the collection resolvable at all -- is deleted
-// LAST. The metadata key is therefore the drop's own commit record, and every
-// intermediate state is one a re-issued DropCollection completes:
+// The order -- documents, indexes, sequence, metadata -- is deliberate and
+// mirrors Database.DropTable in pkg/sql/provider: dependent structures are
+// reclaimed FIRST and the metadata key is deleted LAST. The metadata key is
+// therefore the drop's own commit record, and every intermediate state is one
+// a re-issued DropCollection completes.
 //
-//   - interrupted mid-documents: the collection still resolves with fewer
-//     documents and consistent indexes;
-//   - interrupted between the documents and the indexes: exactly the state
-//     this change exists to eliminate, but reachable and retryable rather
-//     than permanent;
-//   - interrupted between the indexes and the metadata: the indexes are gone
-//     and the retry drops them again as a no-op (see indexService).
+// Documents go first because each delete retracts that document's entries from
+// every index maintained over it, so the indexes are already empty by the time
+// they are dropped.
 //
-// That last state is the ordering's cost and is stated rather than hidden:
-// until the retry lands, the collection still resolves and still accepts
-// writes, with its declared indexes -- and therefore its unique constraints --
-// no longer maintained. READS in that state fail rather than mislead (a query
-// naming a dropped index returns "index not found"); writes are the unguarded
-// side. A drop that fails PARTWAY THROUGH a multi-index collection widens the
-// window from one metadata delete to however long it takes someone to retry,
-// with the collection live and partially indexed.
+// Sequence before documents would leave a LIVE, fully populated collection
+// whose counter had restarted at 1 for as long as the document deletion ran,
+// so a concurrent insert would reissue an ID an existing document already holds
+// and silently overwrite it. That is the one ordering that turns a storage leak
+// into data loss. Metadata before either would strand the dependents with
+// nothing naming them: the retry that would have reclaimed them fails with
+// CollectionNotFoundError first. The chosen order leaves at worst a live but
+// EMPTY collection -- nothing remains for a restarted counter to collide with
+// -- and the window is one metadata delete wide, closed by a retry.
 //
-// It is still the SMALLEST window available, because every ordering has one:
-// dropping the indexes first makes the window the whole document deletion --
-// the longest step, with the collection fully populated -- and deleting the
-// metadata first replaces it with a PERMANENT orphan on a crash, which is the
-// defect being fixed. Closing it entirely needs a persisted "dropping" state
-// that other verbs refuse, which changes the metadata format and is a design
-// decision, not an implementation one.
+// The cost is stated rather than hidden: interrupted between the indexes and
+// the metadata, the collection still resolves and still accepts writes with its
+// declared indexes -- and therefore its unique constraints -- no longer
+// maintained. READS in that state fail rather than mislead (a query naming a
+// dropped index returns "index not found"); writes are the unguarded side. It
+// is still the SMALLEST window available, because every ordering has one.
+// Closing it entirely needs a persisted "dropping" state that other verbs
+// refuse, which changes the metadata format and is a design decision
+// (go-qrdb#425), not an implementation one.
 //
-// An index that cannot be dropped fails the whole operation. The engine's
-// index-create handler is idempotent by NAME and the original definition
-// wins, so an index left behind silently overrides the definition a later
-// CreateCollection asks for on the same (database, collection, field) -- a
-// unique constraint the new collection requested then goes unenforced
-// (go-qrdb#399). Reporting success over that is worse than reporting the
-// failure, and because the metadata survives the operator can simply retry.
+// A dependent that cannot be reclaimed FAILS the whole drop rather than being
+// skipped, and for the same reason in both cases: the surviving metadata is
+// what makes the drop retryable, and reporting success over an unreclaimed
+// dependent is what produced go-qrdb#399 and go-qrdb#411. For indexes the
+// engine's index-create handler is idempotent by NAME and the original
+// definition wins, so an index left behind silently overrides the definition a
+// later CreateCollection asks for on the same (database, collection, field) --
+// a unique constraint the new collection requested then goes unenforced. A
+// dependent reported as already absent is success: SequenceServicer.Delete
+// requires that of implementations (see its doc comment), and indexAlreadyGone
+// gives the index drop the same property, which is what lets a retry reach the
+// metadata delete.
 //
-// Ownership is derived from the NAME, not tracked. If an index called
+// Index ownership is derived from the NAME, not tracked. If an index called
 // {database}.{collection}.{field} already existed when the collection was
-// created -- created through the explicit index API, or by a DAO -- then
+// created -- through the explicit index API, or by a DAO -- then
 // CreateCollection adopted it silently (its create was a name-idempotent
 // no-op) and this drop destroys it. That is a real collision and it is
 // deliberate rather than overlooked: the metadata declares the index as the
 // collection's, and refusing to drop what the collection believes it owns
-// re-opens the orphan. Distinguishing the two needs persisted ownership,
-// which is a separate capability.
+// re-opens the orphan. Distinguishing the two needs persisted ownership
+// (go-qrdb#426), which is a separate capability.
 func (s *CollectionService) DropCollection(ctx context.Context, req *DropCollectionRequest) error {
 	if err := validateCollectionRequest(req.Database, req.Name); err != nil {
 		return err
@@ -351,6 +357,16 @@ func (s *CollectionService) DropCollection(ctx context.Context, req *DropCollect
 			if err := s.indexSvc.DropIndex(ctx, idxName); err != nil && !indexAlreadyGone(err) {
 				return &CollectionMetadataError{Op: "drop-index", Err: err}
 			}
+		}
+	}
+
+	// Reclaim the replicated ID sequence. Issued unconditionally rather than
+	// only for IDStrategyIncrement: the name is derived from (database,
+	// collection) alone, so this does not depend on parsing the metadata,
+	// and a collection with no counter costs one read and proposes nothing.
+	if s.seqSvc != nil {
+		if err := s.seqSvc.Delete(ctx, req.Database, collectionSequenceName(req.Name)); err != nil {
+			return &CollectionMetadataError{Op: "delete-sequence", Err: err}
 		}
 	}
 

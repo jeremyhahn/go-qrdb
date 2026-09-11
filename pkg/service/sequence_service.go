@@ -56,6 +56,28 @@ type SequenceServicer interface {
 	// sequence backing a live AUTO_INCREMENT column are responsible for the
 	// consequences of any resulting collisions with existing data.
 	Reset(ctx context.Context, database, name string) error
+
+	// Delete removes the sequence entirely, reclaiming its storage. It is
+	// the teardown verb an owning object's drop path calls; Reset is not,
+	// because Reset writes a zero counter and so leaves the key behind
+	// forever. A sequence that has been deleted and is then named again
+	// materializes fresh, so the next Allocate returns 1 -- the same
+	// observable state Reset leaves, without the residue.
+	//
+	// Deleting a sequence that does not exist is SUCCESS, not an error.
+	// That is part of this contract, not merely what an implementation
+	// happens to do today: a teardown interrupted partway through is
+	// completed by re-issuing it, and a re-issued teardown necessarily
+	// re-deletes whatever the first attempt already removed. Callers may
+	// rely on it, and an implementation may not return a not-found error
+	// here.
+	//
+	// Delete is replicated on the same path as every other mutation on this
+	// interface -- a compare-and-swap over the counter's observed MVCC
+	// ModRevision, committed through Raft -- so a replica that applies it
+	// cannot diverge from one that has not yet. An absent sequence is
+	// already the replicated state, so deleting one proposes nothing.
+	Delete(ctx context.Context, database, name string) error
 }
 
 // sequenceKVService is the narrow read interface SequenceService needs: it
@@ -149,6 +171,61 @@ func (s *SequenceService) Reset(ctx context.Context, database, name string) erro
 	return err
 }
 
+// Delete removes the sequence, reclaiming its counter key.
+func (s *SequenceService) Delete(ctx context.Context, database, name string) error {
+	if err := validateSequenceRef(database, name); err != nil {
+		return err
+	}
+
+	key := tableSequenceKey(database, name)
+	err := doWithCatalogRetry(ctx, func(ctx context.Context) error {
+		_, modRevision, err := s.readCounter(ctx, key)
+		if err != nil {
+			return err
+		}
+
+		// modRevision == 0 is the "absent" encoding readCounter returns for
+		// a key that was never written (see sequenceKVService). Absence is
+		// already the replicated state, so there is nothing to propose and
+		// -- per the interface contract -- nothing to report.
+		if modRevision == 0 {
+			return nil
+		}
+
+		return s.proposeCAS(ctx, key, modRevision, Op{Type: OpDelete, Key: []byte(key)})
+	})
+	if err != nil {
+		if isTransactionConflict(err) {
+			return &SequenceConflictError{Database: database, Name: name}
+		}
+		return err
+	}
+	return nil
+}
+
+// proposeCAS proposes op guarded by a compare against the counter key's
+// observed ModRevision, reporting TransactionConflictError when another
+// writer committed first. It is the single write path shared by every
+// mutating method on SequenceService, so an allocation, a reset and a
+// delete all carry the identical guard and all commit through Raft.
+func (s *SequenceService) proposeCAS(ctx context.Context, key string, modRevision int64, op Op) error {
+	compares := []Compare{{
+		Key:         []byte(key),
+		Target:      CompareModRevision,
+		Result:      CompareEqual,
+		ModRevision: modRevision,
+	}}
+
+	resp, err := s.txn.Execute(ctx, compares, []Op{op}, nil)
+	if err != nil {
+		return err
+	}
+	if !resp.Succeeded {
+		return &TransactionConflictError{Key: key}
+	}
+	return nil
+}
+
 // casLoop reads the counter's current value, applies compute to decide the
 // next value, and -- when compute reports a change -- proposes a Raft
 // compare-and-swap over the counter's observed ModRevision. It retries with
@@ -174,20 +251,12 @@ func (s *SequenceService) casLoop(ctx context.Context, database, name string, co
 			return nil
 		}
 
-		compares := []Compare{{
-			Key:         []byte(key),
-			Target:      CompareModRevision,
-			Result:      CompareEqual,
-			ModRevision: modRevision,
-		}}
-		ops := []Op{{Type: OpPut, Key: []byte(key), Value: encodeSequenceCounter(next)}}
-
-		resp, err := s.txn.Execute(ctx, compares, ops, nil)
-		if err != nil {
+		if err := s.proposeCAS(ctx, key, modRevision, Op{
+			Type:  OpPut,
+			Key:   []byte(key),
+			Value: encodeSequenceCounter(next),
+		}); err != nil {
 			return err
-		}
-		if !resp.Succeeded {
-			return &TransactionConflictError{Key: key}
 		}
 
 		result = next
@@ -277,6 +346,8 @@ type UserSequencer interface {
 	// ResetUserSequence returns the sequence to its zero state, so the
 	// next allocation starts at 1 again. It is DROP SEQUENCE's effect
 	// here: with materialize-on-first-use semantics, a dropped sequence is
-	// indistinguishable from one that was never created.
+	// indistinguishable from one that was never created -- so this is a
+	// full teardown and reclaims the counter's storage rather than zeroing
+	// it. Dropping a sequence that was never allocated from is success.
 	ResetUserSequence(ctx context.Context, database, name string) error
 }

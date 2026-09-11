@@ -94,6 +94,12 @@ finishes.
 qrdb collection drop scratch --database app
 ```
 
+A drop also discards the collection's `increment` counter, so creating a
+collection with the same name afterwards starts its IDs at 1 again rather than
+continuing where the old one left off. If a drop reports an error, nothing is
+half-deleted in a way you have to clean up by hand — run the same command again
+and it finishes.
+
 ## Troubleshooting
 
 **"collection not found" on an insert.** Collections are never created

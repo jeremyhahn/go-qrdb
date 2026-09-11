@@ -30,8 +30,22 @@ Chosen at creation, fixed for the collection's life:
 | Strategy | Behaviour | Use when |
 |---|---|---|
 | `unix_nano` (default) | ID from the insert timestamp in nanoseconds | you want roughly time-ordered IDs and no coordination |
-| `increment` | monotonic counter | you want dense, small, predictable IDs |
+| `increment` | monotonic counter, Raft-committed per `(database, collection)` | you want dense, small, predictable IDs |
 | `field_hash` | ID hashed from a named document field (`--field-hash`) | the document has a natural key and re-inserting it must be idempotent |
+
+`increment`'s counter is a replicated sequence owned by the collection, and it
+is **torn down with the collection**: a name that is dropped and created again
+starts over at 1. The alternative — carrying the old high-water mark into the
+new collection — was rejected because it delivers neither property the table
+above promises, and because there is nothing for a restarted counter to collide
+with: a drop deletes every document in the collection before it reclaims the
+counter (see [Data flow](#data-flow)).
+
+The counter is *not* reserved by an explicitly supplied `_id`. A document
+inserted with its own `_id` is stored under that ID without advancing the
+sequence, so a later auto-generated ID can reach a value an explicit insert
+already used. Do not mix explicit and generated IDs in one `increment`
+collection.
 
 ### Alternatives rejected
 
@@ -67,9 +81,17 @@ Chosen at creation, fixed for the collection's life:
    as any other write.
 3. `ListDocuments` is **paginated** (`page_size` / `page_token`), because a
    collection is an unbounded set by construction.
-4. `DropCollection` deletes every document in the collection, then drops every
-   secondary index the collection declared, then deletes the metadata —
-   irreversible.
+4. `DropCollection` reclaims everything the collection owns — irreversible.
+   The order is fixed: **documents, then every secondary index the collection
+   declared, then the `increment` counter, then the metadata**. The metadata is
+   what makes the collection resolvable, so it goes last and an interrupted
+   drop is completed by re-issuing it. Documents go first because each delete
+   retracts that document's index entries, so the indexes are already empty
+   when they are dropped; the counter goes after the documents, because a
+   counter restarted while documents still existed could reissue an ID a live
+   document already held. A step that fails fails the whole drop rather than
+   being skipped — reporting success over an unreclaimed index or counter is
+   what leaves an orphan behind forever.
 
 ### Drop order, and why the metadata key goes last
 
