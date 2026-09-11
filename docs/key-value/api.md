@@ -1,6 +1,6 @@
 # Key-Value Store — API
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Six transports, one capability set. The gRPC service is `qrdb.v1.QRDBService`;
 the **Unix socket transport serves the same gRPC wire over a UDS**, so its
@@ -17,9 +17,9 @@ Go call on the SDK client.
 | List keys | `GET /kv?prefix=` | `List` | `kv.List` | `qrdb_list` | `Client.KV().List` | `kv:list` |
 | Scan (keys + values) | `GET /kv/scan?prefix=` | `Scan` | `kv.Scan` | `qrdb_scan` | `Client.KV().Scan` | `kv:list` |
 | Exists | derived — client-side `Get` | derived | derived | derived | `Client.KV().Exists` | `kv:exists` |
-| Put if absent | `POST /kv/put-if-absent` | `PutIfAbsent` | `kv.PutIfAbsent` | — | `Client.KV().(GuardedKVClient).PutIfAbsent` | `kv:put` |
-| Compare and delete | `POST /kv/compare-and-delete` | `CompareAndDelete` | `kv.CompareAndDelete` | — | `Client.KV().(GuardedKVClient).CompareAndDelete` | `kv:delete` |
-| Compare and swap | `POST /kv/compare-and-swap` | `CompareAndSwap` | `kv.CompareAndSwap` | — | `Client.KV().(GuardedKVClient).CompareAndSwap` | `kv:put` |
+| Put if absent | `POST /kv/put-if-absent` | `PutIfAbsent` | `kv.PutIfAbsent` | `qrdb_put_if_absent` | `Client.KV().(GuardedKVClient).PutIfAbsent` | `kv:put` |
+| Compare and delete | `POST /kv/compare-and-delete` | `CompareAndDelete` | `kv.CompareAndDelete` | `qrdb_compare_and_delete` | `Client.KV().(GuardedKVClient).CompareAndDelete` | `kv:delete` |
+| Compare and swap | `POST /kv/compare-and-swap` | `CompareAndSwap` | `kv.CompareAndSwap` | `qrdb_compare_and_swap` | `Client.KV().(GuardedKVClient).CompareAndSwap` | `kv:put` |
 | Put with lease | `PUT /kv/{key}` + lease field | `PutWithLease` | `mvcc.PutWithLease` | `qrdb_mvcc_put_with_lease` | `Client.MVCC().PutWithLease` | `mvcc:put_with_lease` |
 | Get with revision metadata | `GET /kv/{key}?revision=true` | `GetRevision` | `mvcc.GetRevision` | `qrdb_mvcc_get_revision` | `Client.MVCC().GetRevision` | `mvcc:get_revision` |
 | Get at revision | `GET /kv/{key}?at-revision=N` | `GetAtRevision` | `mvcc.GetAtRevision` | `qrdb_mvcc_get_at_revision` | `Client.MVCC().GetAtRevision` | `mvcc:get_at_revision` |
@@ -55,21 +55,34 @@ The separation is deliberate. A transport can only offer these once its wire
 contract carries them, and a transport that answered the assertion while
 emulating a guarded write with a read and a write would be strictly worse than
 one that declined it — the consumer would build a distributed lock on top of
-something that never arbitrated anything. Every transport listed in the matrix
-above now carries them natively; **MCP does not, and its assertion correctly
-returns false** rather than promising a verb it cannot honour.
+something that never arbitrated anything. **Every transport listed in the matrix
+above now carries them natively**, MCP included: its three tools each make one
+call to the atomic service method, with no tool call before and no fallback
+after.
 
 The capability contract also holds across a **version skew**. A client that has
 the verbs talking to a server that does not gets
 `transport.CapabilityUnsupportedError` — an older gRPC or unix server answers
 `UNIMPLEMENTED`, an older QUIC server's dispatch answers its Unimplemented
-status, and an older REST server answers 404/405 on the absent route, all of
-which the SDK reconstitutes into the same typed refusal. A consumer can
-therefore degrade instead of retrying a call that can never succeed.
+status, an older REST server answers 404/405 on the absent route, and an older
+MCP server has no such tool to call, all of which the SDK reconstitutes into the
+same typed refusal. A consumer can therefore degrade instead of retrying a call
+that can never succeed.
 
 A refused guard is a **200 / `OK`** carrying `stored`, `deleted` or `swapped`
-set to false. Losing the race is the normal outcome of a claim, not an error: a
-caller told the call "failed" would retry the one thing that can never succeed.
+set to false — on MCP, a successful tool result whose text is the same
+single-field JSON object, `{"stored": false}`. Losing the race is the normal
+outcome of a claim, not an error: a caller told the call "failed" would retry
+the one thing that can never succeed.
+
+On MCP the three tools take the key as a plain string and every value —
+`value`, `expected`, `next` — base64-encoded (RFC 4648), matching `qrdb_put`
+and the REST bodies. An absent value argument is the empty value rather than an
+error: a guard compares bytes, and the empty value must not be the one value a
+claim can never be released from. Each tool requires the permission of the
+write it performs — `kv:put` for `qrdb_put_if_absent` and
+`qrdb_compare_and_swap`, `kv:delete` for `qrdb_compare_and_delete` — so no
+separate grant is needed to reach the guarded plane over MCP.
 
 Request and response bodies on REST carry values as base64 JSON `[]byte`, not
 as JSON strings. A guard compares bytes, and a value that did not survive a

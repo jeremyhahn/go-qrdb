@@ -11,6 +11,44 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **The MCP transport carries the guarded write verbs** (#127).
+  `sdk/go/transport/mcp` now implements `transport.GuardedKVClient`, so a
+  consumer's `client.KV().(transport.GuardedKVClient)` succeeds over MCP as it
+  already did over embedded, gRPC, unix, QUIC and REST (#119/#124/#125/#126).
+  Three new tools carry the verbs — `qrdb_put_if_absent`,
+  `qrdb_compare_and_delete`, `qrdb_compare_and_swap` — each requiring the
+  permission of the write it performs (`kv:put`, `kv:delete`, `kv:put`), each
+  taking its values base64-encoded, and each answering with a single-field JSON
+  object (`{"stored": …}`, `{"deleted": …}`, `{"swapped": …}`) that mirrors the
+  REST response bodies. A refused guard is a SUCCESSFUL tool result carrying
+  false, never a tool error: losing the race is the normal outcome of a claim.
+
+  Every handler makes exactly ONE call, to `service.KVServicer`'s matching
+  atomic method — no `Get` before it, no read-then-write fallback after it —
+  and that is asserted rather than asserted-in-prose. The MCP transport gets
+  the guarded conformance matrix's four full-passage cells and the
+  cross-transport contention suite's MCP row (`sdk/go/conformance`), plus a
+  delegation test that counts which service methods the handler reached.
+  Verified by mutation: replacing the single `PutIfAbsent` call with a `Get`
+  followed by a `Put` leaves every sequential assertion green and turns both
+  the delegation counters and the contention suite red.
+
+  A client with the verbs talking to an MCP server without the tools gets
+  `transport.CapabilityUnsupportedError`, matching the version-skew half of the
+  contract the other transports carry. The classification is by JSON-RPC error
+  CODE, not message text.
+
+  **Known limit:** MCP does not walk the matrix's four typed-refusal cells,
+  which require a transport that can present the multi-key transaction plane's
+  capability refusal *by type*. MCP reports a service-layer failure as a tool
+  result carrying a message string, so that refusal reaches the client as
+  prose; admitting it would mean loosening `classifyRefusal` from a type
+  assertion back to a substring match. Excluded and named
+  (`transportKind.carriesTypedCapabilityRefusal`) rather than papered over;
+  #169's error-typing sweep owns that surface.
+
 ### Fixed
 
 - **`ExportPKCS12` refuses a revoked certificate** (#287). It parses the

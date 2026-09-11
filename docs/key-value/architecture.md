@@ -1,6 +1,6 @@
 # Key-Value Store — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Problem
 
@@ -128,8 +128,8 @@ assertion. A transport gets the assertion only once its wire contract carries
 the verbs; until then `client.(GuardedKVClient)` correctly reports false and a
 consumer knows to look elsewhere. Answering the assertion without the atomicity
 would be worse than refusing it — the consumer would build a lock on top of
-something that never decided anything. Embedded, gRPC, unix, QUIC and REST
-carry them; MCP does not yet.
+something that never decided anything. Every transport the SDK ships now
+carries them: embedded, gRPC, unix, QUIC, REST and MCP.
 
 A state machine with no handler for a guarded opcode **refuses and keeps
 serving**. The refusal is typed all the way to the caller

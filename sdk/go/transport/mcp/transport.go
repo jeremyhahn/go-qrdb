@@ -86,13 +86,21 @@ func (t *Transport) WithDatabase(database string) transport.Transport {
 // prefix (KV and watch). Only data-plane tool calls carry the database scope
 // argument; management, admin, and barrier tools are tenant- or cluster-global
 // and ignore it.
+// The three guarded write verbs belong here for the same reason the plain
+// ones do, and more sharply: a guard decided against the WRONG database would
+// compare a claim's value against a key of the same name in another keyspace,
+// so a missing scope argument would not fail — it would answer confidently and
+// wrongly.
 var mcpDataPlaneExactTools = map[string]bool{
-	"qrdb_put":    true,
-	"qrdb_get":    true,
-	"qrdb_delete": true,
-	"qrdb_list":   true,
-	"qrdb_scan":   true,
-	"qrdb_watch":  true,
+	"qrdb_put":                true,
+	"qrdb_get":                true,
+	"qrdb_delete":             true,
+	"qrdb_list":               true,
+	"qrdb_scan":               true,
+	"qrdb_watch":              true,
+	"qrdb_put_if_absent":      true,
+	"qrdb_compare_and_delete": true,
+	"qrdb_compare_and_swap":   true,
 }
 
 // mcpDataPlanePrefixes are the name prefixes of the remaining data-plane MCP

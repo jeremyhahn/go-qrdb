@@ -1,6 +1,6 @@
 # Key-Value Store — Engineering Contract
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-02
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Exported surface
 
@@ -52,9 +52,8 @@ type GuardedKVClient interface {
 Every transport carries the compile-time proof that it implements both:
 `var _ transport.KVClient = (*Transport)(nil)`.
 
-`GuardedKVClient` carries the same proof on every transport that offers it —
-embedded, gRPC, unix, QUIC and REST — and deliberately does NOT on `mcp`, whose
-tool surface does not yet carry the verbs. **The assertion is the contract**:
+`GuardedKVClient` carries the same proof on every transport the SDK ships —
+embedded, gRPC, unix, QUIC, REST and `mcp`. **The assertion is the contract**:
 adding the line makes a consumer's type assertion start succeeding, so it may
 only be added alongside methods that carry the verb's atomicity. A single call
 per verb, no preceding read, no read-then-write fallback; the server handler

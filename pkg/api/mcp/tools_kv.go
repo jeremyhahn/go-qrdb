@@ -26,9 +26,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// kvTools returns the MCP tool registrations for KV data-plane operations.
+// kvTools returns the MCP tool registrations for KV data-plane operations —
+// the plain verbs here, plus the guarded (conditional) write verbs from
+// guardedKVTools appended to them. One registration site for the whole KV
+// surface: a guarded tool must not be reachable on a server whose plain KV
+// tools are absent, since the guard is decided against the same keyspace.
 func kvTools(kvSvc service.KVServicer) []serverTool {
-	return []serverTool{
+	return append([]serverTool{
 		{
 			Tool:    toolPut(),
 			Perm:    permission.KVPut,
@@ -54,7 +58,7 @@ func kvTools(kvSvc service.KVServicer) []serverTool {
 			Perm:    permission.KVRange,
 			Handler: handleScan(kvSvc),
 		},
-	}
+	}, guardedKVTools(kvSvc)...)
 }
 
 // toolPut defines the qrdb_put tool schema.

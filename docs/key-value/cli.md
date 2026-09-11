@@ -1,6 +1,6 @@
 # Key-Value Store — CLI
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 Command group: `qrdb kv`. Three top-level aliases exist for the most common
 verbs: `qrdb put`, `qrdb get`, `qrdb del` are identical to their `kv`
@@ -163,7 +163,42 @@ Plan output columns: `ACTION`, `KEY`, `FROM-REV`, `TO-REV`, `VALUE-SIZE`.
 Actions are `revert` (value differs), `recreate` (key deleted since) and
 `delete` (key added since).
 
+## The guarded write verbs have no CLI surface
+
+`PutIfAbsent`, `CompareAndSwap` and `CompareAndDelete` — the conditional writes
+that let exactly one of several callers win a race — are **not** `qrdb kv`
+subcommands. There is no `qrdb kv put-if-absent`. This is recorded here rather
+than omitted so the next reader does not go looking for a missing verb, the
+same way api.md records that `Exists` has no wire operation.
+
+The reason is what the verbs are for. Each answers a boolean — did I store,
+did I swap, did I delete — and `false` is a normal outcome, not a failure. A
+caller has to branch on that answer, which is a program's job rather than a
+shell's: a command whose refusal is a success would have to signal it through
+an exit code, and an operator pasting a one-off claim into a terminal has
+nobody to hand the claim to afterwards.
+
+They are reached through a client instead, on every transport:
+
+- **Go SDK** — a capability interface obtained by type assertion,
+  `client.KV().(transport.GuardedKVClient)`.
+- **REST** — `POST /kv/put-if-absent`, `/kv/compare-and-swap`,
+  `/kv/compare-and-delete`.
+- **gRPC and Unix** — `PutIfAbsent`, `CompareAndSwap`, `CompareAndDelete`.
+- **QUIC** — `kv.PutIfAbsent` and siblings.
+- **MCP** — the tools `qrdb_put_if_absent`, `qrdb_compare_and_swap` and
+  `qrdb_compare_and_delete`, which take the same `--database` scope the plain
+  KV tools do and require `kv:put`, `kv:put` and `kv:delete` respectively. An
+  agent driving `qrdb kv` through a shell has these as first-class tools and
+  does not need a subcommand for them.
+
+See [api.md](api.md) for the wire contract and [user.md](user.md) for when to
+reach for each one.
+
 ## Parity
 
 Every verb above has a `CommandDefinition` in the integration parity suite. A
 verb here without one, or the reverse, is a defect in whichever is behind.
+The guarded verbs are outside that correspondence by the section above: they
+have no command, so they have no definition, and adding one to satisfy the
+suite would be inventing a command to make a document true.

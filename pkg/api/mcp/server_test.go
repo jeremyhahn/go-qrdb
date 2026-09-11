@@ -71,7 +71,16 @@ func (m *mockKVService) Put(ctx context.Context, key string, value []byte) error
 
 // PutIfAbsent stores only when the key is absent, matching the real
 // engines. The map lookup is the same check they perform.
+//
+// The lock is held across the check AND the write, and on a GUARDED verb that
+// is not merely the map-safety every sibling here needs. Check-then-act under
+// no lock is the exact shape these verbs exist to replace, so a mock that
+// wrote it could report two winners for one key while the handler under test
+// was blameless — a test double cannot stand in for an atomic service by
+// being non-atomic.
 func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, exists := m.store[key]; exists {
 		return false, nil
 	}
@@ -80,8 +89,11 @@ func (m *mockKVService) PutIfAbsent(_ context.Context, key string, value []byte)
 }
 
 // CompareAndDelete mirrors PutIfAbsent's guard on the release side:
-// it removes the key only when the stored value still equals expected.
+// it removes the key only when the stored value still equals expected, under
+// one lock for the reason given on PutIfAbsent.
 func (m *mockKVService) CompareAndDelete(_ context.Context, key string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	current, ok := m.store[key]
 	if !ok {
 		return false, nil
@@ -600,6 +612,12 @@ func TestServer_ToolRegistration(t *testing.T) {
 		"qrdb_delete",
 		"qrdb_list",
 		"qrdb_scan",
+		// The guarded write verbs register with the KV set (go-qrdb#127), so
+		// a server with a KV service has them whether or not it has anything
+		// else.
+		"qrdb_put_if_absent",
+		"qrdb_compare_and_delete",
+		"qrdb_compare_and_swap",
 		"qrdb_health",
 		"qrdb_status",
 		"qrdb_peers",
@@ -1449,7 +1467,22 @@ func TestServer_MCPServer(t *testing.T) {
 	}
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap is the edit half of the guarded set (go-qrdb#56), and it
+// GUARDS rather than returning a constant.
+//
+// It was a `return false, nil` stub while no test drove the verb through a
+// tool handler. A stub that always declines is safe only until something
+// asserts the true branch — from go-qrdb#127 the qrdb_compare_and_swap handler
+// does, and against a stub "the swap was refused" would be indistinguishable
+// from "the handler never reached the service". An absent key is left absent,
+// as it is in the real engines: a swap is not a create.
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }

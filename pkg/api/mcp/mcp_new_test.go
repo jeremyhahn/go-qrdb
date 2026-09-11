@@ -2946,6 +2946,23 @@ func TestWithTimeSeries_NilNotRegistered(t *testing.T) {
 	}
 }
 
+// TestNewServer_AllOptions asserts that every wired service's tool GROUP
+// arrives on the server, and that nothing arrives from anywhere else.
+//
+// It used to assert one hardcoded total (48, then 51 once the guarded verbs
+// joined the KV group). The number was correct — measured, the all-options
+// server registers exactly 51 tools — but a total is a weak assertion that
+// fails for the wrong reasons: it goes red for ANY change to ANY group and
+// says only that the count moved, so whoever reads the failure still has to
+// work out which group gained or lost a tool, and the obvious way to make it
+// green again is to edit the number. The expectation here is derived from the
+// group builders instead, so it cannot fall out of date and a failure names
+// the group.
+//
+// This complements rather than duplicates tool_mapping_guard_test.go, which
+// asserts the tool -> PERMISSION table for a fully wired server. What is
+// checked here is the wiring itself: that each With* option actually causes
+// its group to be registered.
 func TestNewServer_AllOptions(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := newMockAdminService()
@@ -2967,12 +2984,44 @@ func TestNewServer_AllOptions(t *testing.T) {
 		WithTimeSeries(tsSvc),
 	)
 
-	tools := s.MCPServer().ListTools()
+	registered := s.MCPServer().ListTools()
 
-	// 5 KV + 7 admin + 1 capabilities + 4 shard-admin + 7 MVCC + 1 TX + 2 batch + 1 watch + 5 lease + 5 index + 10 TS = 48
-	expectedCount := 5 + 7 + 1 + 4 + 7 + 1 + 2 + 1 + 5 + 5 + 10
-	if len(tools) != expectedCount {
-		t.Errorf("expected %d tools, got %d", expectedCount, len(tools))
+	// The groups this server wires, each named by the option that wires it and
+	// enumerated by the builder that defines it. kvTools carries the guarded
+	// write verbs (go-qrdb#127), so they are covered here without being listed
+	// again — a second list would be a second definition to keep in step.
+	groups := map[string][]serverTool{
+		"kv (base)":            kvTools(kvSvc),
+		"admin (base)":         adminTools(adminSvc),
+		"mvcc (WithMVCC)":      mvccTools(mvccSvc),
+		"tx (WithTransaction)": transactionTools(txSvc),
+		"batch (WithBatch)":    batchTools(batchSvc),
+		"watch (WithWatch)":    watchTools(watchSvc),
+		"lease (WithLease)":    leaseTools(leaseSvc),
+		"index (WithIndex)":    indexTools(indexSvc),
+		"ts (WithTimeSeries)":  timeSeriesTools(tsSvc),
+	}
+
+	// Every tool a wired group defines must be on the server. A group whose
+	// option silently stopped registering it fails here, by name.
+	expected := map[string]string{}
+	for group, tools := range groups {
+		for _, tl := range tools {
+			expected[tl.Tool.Name] = group
+			if _, ok := registered[tl.Tool.Name]; !ok {
+				t.Errorf("%s: tool %q is defined by the group but not registered on the server",
+					group, tl.Tool.Name)
+			}
+		}
+	}
+
+	// And nothing else. Without this the test would pass on a server that had
+	// also registered a group no option asked for — which is how a tool
+	// reaches the privileged MCP surface unnoticed.
+	for name := range registered {
+		if _, ok := expected[name]; !ok {
+			t.Errorf("tool %q is registered but belongs to no wired group", name)
+		}
 	}
 }
 

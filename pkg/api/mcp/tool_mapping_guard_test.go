@@ -61,11 +61,20 @@ import (
 // (cross-transport parity with their gRPC proto options and REST routes; the
 // old table omitted them, leaving the two tools unconditionally denied).
 var expectedToolPerms = map[string]permission.Permission{
-	"qrdb_put":                            permission.KVPut,
-	"qrdb_get":                            permission.KVGet,
-	"qrdb_delete":                         permission.KVDelete,
-	"qrdb_list":                           permission.KVList,
-	"qrdb_scan":                           permission.KVRange,
+	"qrdb_put":    permission.KVPut,
+	"qrdb_get":    permission.KVGet,
+	"qrdb_delete": permission.KVDelete,
+	"qrdb_list":   permission.KVList,
+	"qrdb_scan":   permission.KVRange,
+	// The guarded write verbs take the permission of the write they perform,
+	// exactly as their REST routes do (go-qrdb#127): a conditional create and
+	// a conditional edit are puts, a conditional delete is a delete. They are
+	// NOT separately gated — reachability with ordinary kv:put / kv:delete is
+	// the same contract every other transport carries, and is why the
+	// conformance matrix seeds those two permissions and no more.
+	"qrdb_put_if_absent":                  permission.KVPut,
+	"qrdb_compare_and_delete":             permission.KVDelete,
+	"qrdb_compare_and_swap":               permission.KVPut,
 	"qrdb_mvcc_put_with_lease":            permission.MVCCPutWithLease,
 	"qrdb_mvcc_get_revision":              permission.MVCCGetRevision,
 	"qrdb_mvcc_get_at_revision":           permission.MVCCGetAtRevision,

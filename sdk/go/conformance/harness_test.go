@@ -57,6 +57,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	grpctransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/grpc"
+	mcptransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp"
 	quictransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/quic"
 	resttransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/rest"
 	unixtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix"
@@ -102,12 +103,6 @@ const (
 	unixTransport     transportKind = "unix"
 	restTransport     transportKind = "rest"
 
-	// mcpTransport is in the NOT-FOUND matrix (user_notfound_test.go) but not
-	// in transportKinds below, which is the guarded-verb axis: the MCP
-	// transport does not implement transport.GuardedKVClient, so a guarded
-	// cell for it would fail dialRemote's capability assertion rather than
-	// test anything. The two matrices deliberately have different transport
-	// axes; adding this to transportKinds would break the guarded suite.
 	mcpTransport transportKind = "mcp"
 )
 
@@ -115,10 +110,10 @@ const (
 //
 // go-qrdb#121 walked embedded and remote-gRPC because those were the only two
 // that carried transport.GuardedKVClient. go-qrdb#124/#125/#126 added the verbs
-// to QUIC, unix and REST, and the cells go here rather than into three
-// per-transport suites: the promise being tested is that the guarded plane
-// behaves IDENTICALLY however it is reached, and three parallel suites would
-// let three definitions of "works" drift apart, which is the exact failure the
+// to QUIC, unix and REST, and go-qrdb#127 to MCP; the cells go here rather than
+// into per-transport suites, because the promise being tested is that the
+// guarded plane behaves IDENTICALLY however it is reached, and parallel suites
+// would let several definitions of "works" drift apart — the exact failure the
 // matrix exists to prevent.
 var transportKinds = []transportKind{
 	embeddedTransport,
@@ -126,6 +121,37 @@ var transportKinds = []transportKind{
 	quicTransport,
 	unixTransport,
 	restTransport,
+	mcpTransport,
+}
+
+// carriesTypedCapabilityRefusal reports whether this transport can present a
+// server-side capability refusal a consumer can classify BY TYPE.
+//
+// It gates the typedRefusal cells of the matrix, and only those: every
+// transport in transportKinds carries the guarded verbs themselves, so every
+// transport walks the full-passage cells. What MCP cannot do is carry the
+// refusal the MULTI-KEY transaction plane owes on a state machine with no MVCC
+// store. A qrdb tool reports a service-layer failure as a tool RESULT carrying
+// the message string, and go-qrdb has no JSON-RPC error-code mapping for the
+// service error vocabulary (conventions/errors.md §5), so that refusal reaches
+// the client as prose. classifyRefusal deliberately refuses to accept prose —
+// it was tightened from a substring match to a type assertion precisely so a
+// wedged cell could not be scored as "refused as required" — and admitting MCP
+// by loosening it would trade a real gate for a wider matrix.
+//
+// So the gap is EXCLUDED AND NAMED rather than papered over: MCP's guarded
+// verbs are held to exactly the same standard as every other transport's, and
+// the four cells it does not run are the ones that would test a capability
+// MCP's error surface has not got yet. go-qrdb#169's error-typing sweep owns
+// that surface; when it lands this predicate loses its last false case and
+// goes away with it.
+//
+// The guarded verbs themselves DO carry the typed refusal on MCP — an older
+// server that never registered the tools is reported as
+// transport.CapabilityUnsupportedError (sdk/go/transport/mcp's guardedTool) —
+// so this is narrower than "MCP cannot type a refusal".
+func (tk transportKind) carriesTypedCapabilityRefusal() bool {
+	return tk != mcpTransport
 }
 
 // remote reports whether this transport crosses a real listener and therefore
@@ -214,11 +240,14 @@ func (c cell) name() string {
 // matrix is the go-qrdb#121 grid: {file, memory, pebble} x {standalone, raft}
 // x {embedded, remote-gRPC, QUIC, unix, REST}.
 //
-// It was 12 cells when only embedded and gRPC carried transport.GuardedKVClient
-// and is 30 now that QUIC, unix and REST do (go-qrdb#124/#125/#126). The engine
-// and mode axes are unchanged; only the transport axis grew, so a new
-// transport's cells inherit the same expected outcome its siblings have and a
-// transport that quietly weakened a verb shows up as a difference from them.
+// It was 12 cells when only embedded and gRPC carried transport.GuardedKVClient,
+// 35 once QUIC, unix and REST did (go-qrdb#124/#125/#126), and is 39 now that
+// MCP does (go-qrdb#127) — four rather than seven, because MCP runs the
+// full-passage cells and not the typed-refusal ones
+// (carriesTypedCapabilityRefusal). The engine and mode axes are unchanged; only
+// the transport axis grew, so a new transport's cells inherit the same expected
+// outcome its siblings have and a transport that quietly weakened a verb shows
+// up as a difference from them.
 //
 // The expected outcome per cell follows the scope ruled for v0.12: the
 // guarded/transaction plane under raft is promised on the DEFAULT sm_type
@@ -244,7 +273,17 @@ func matrix() []cell {
 			// Raft, default sm_type: the MVCC state machine over PebbleDB.
 			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: fullPassage,
 				smType: ""},
+		)
 
+		// The typed-refusal cells need a transport that can carry a typed
+		// capability refusal. Skipping them where it cannot is what keeps
+		// classifyRefusal a type assertion rather than a prose match — see
+		// carriesTypedCapabilityRefusal for the whole argument, and note that
+		// every transport still walks the four full-passage cells above.
+		if !tk.carriesTypedCapabilityRefusal() {
+			continue
+		}
+		cells = append(cells,
 			// Raft, non-default sm_types: no MVCC store, so the multi-key
 			// transaction plane must refuse cleanly and keep serving.
 			cell{backend: database.BackendMemory, mode: raft, transport: tk, want: typedRefusal,
@@ -263,8 +302,8 @@ func matrix() []cell {
 			// this cell now carries the single-key guarded plane like every
 			// other non-default sm_type, and refuses only the MULTI-KEY
 			// transaction plane it has no MVCC store for. This cell is what
-			// pins that through all five transports rather than only at the
-			// state machine.
+			// pins that through every transport that can carry a typed
+			// refusal rather than only at the state machine.
 			cell{backend: database.BackendPebble, mode: raft, transport: tk, want: typedRefusal,
 				smType: "fast", smStorage: "memory"},
 		)
@@ -343,7 +382,7 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 	cfg.Protocols.GRPC = c.transport == grpcTransport
 	cfg.Protocols.QUIC = c.transport == quicTransport
 	cfg.Protocols.Unix = c.transport == unixTransport
-	cfg.Protocols.MCP = false
+	cfg.Protocols.MCP = c.transport == mcpTransport
 	switch c.transport {
 	case grpcTransport:
 		cfg.Server.GRPCPort = freeTCPPort(t)
@@ -353,6 +392,8 @@ func (c cell) config(t *testing.T) *qrdbconfig.Config {
 		cfg.Server.AdminPort = freeTCPPort(t)
 	case unixTransport:
 		cfg.Unix.SocketPath = unixSocketPath(t)
+	case mcpTransport:
+		cfg.MCP.Port = freeTCPPort(t)
 	}
 
 	switch c.mode {
@@ -604,6 +645,13 @@ func (tk transportKind) dial(t *testing.T, n *node.Node, tlsCfg *tls.Config) tra
 	case restTransport:
 		tr, err = resttransport.New(
 			transport.WithAddress("https://"+addr(n.Server().RESTAddr(), "REST")),
+			transport.WithTLSConfig(tlsCfg),
+		)
+	case mcpTransport:
+		// MCP is Streamable HTTP at a PATH, not a bare host:port, which is
+		// why its address is assembled rather than passed straight through.
+		tr, err = mcptransport.New(
+			transport.WithAddress("https://"+addr(n.Server().MCPAddr(), "MCP")+"/mcp"),
 			transport.WithTLSConfig(tlsCfg),
 		)
 	default:

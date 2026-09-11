@@ -1,6 +1,6 @@
 # Key-Value Store — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-08-19
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-09-10
 
 ## Prerequisites
 
@@ -99,6 +99,52 @@ exactly where it is.
 qrdb --database billing kv list invoices/
 ```
 
+## Claiming a key so exactly one caller wins
+
+When two processes might write the same key at the same time, reading it and
+then writing it is not enough — both read the same value, both decide, and the
+second silently discards the first. Under a lock that is two holders.
+
+The **guarded write verbs** decide the condition inside the database, in the
+same step as the write, so exactly one caller can win:
+
+| Verb | Use it to | Answers |
+|---|---|---|
+| put-if-absent | claim a key nobody holds yet | stored: true / false |
+| compare-and-swap | change a value only if nobody else changed it first | swapped: true / false |
+| compare-and-delete | release a claim you still hold | deleted: true / false |
+
+**`false` is not an error.** It means somebody else got there first, which is
+the normal outcome of a race. Do not retry it — re-read, decide again, or give
+up; retrying an answer that will never change is a loop.
+
+These have **no `qrdb kv` command**; they are an API surface, reached through a
+client. Over the Go SDK they live on a capability interface a client is asked
+for by type:
+
+```go
+if gv, ok := client.KV().(transport.GuardedKVClient); ok {
+    stored, err := gv.PutIfAbsent(ctx, "claim/orders", []byte("worker-1"))
+}
+```
+
+**From an MCP agent** they are three tools, alongside `qrdb_put` and
+`qrdb_get`:
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `qrdb_put_if_absent` | `key`, `value` | `{"stored": true}` or `{"stored": false}` |
+| `qrdb_compare_and_swap` | `key`, `expected`, `next` | `{"swapped": …}` |
+| `qrdb_compare_and_delete` | `key`, `expected` | `{"deleted": …}` |
+
+Every value argument — `value`, `expected`, `next` — is **base64-encoded**, as
+it is for `qrdb_put`. The guard compares raw bytes, so a value that changed in
+transit would make a release fail against the very value it was meant to
+match. A missing value argument means the empty value, not "no value".
+
+You need `kv:put` to call the first two and `kv:delete` to call the third —
+the same permissions the ordinary write and delete need, not extra ones.
+
 ## Troubleshooting
 
 **"requires raft.sm_type: mvcc"** — the server keeps no revision history.
@@ -129,3 +175,15 @@ a reserved prefix. Internal namespaces (`__sys:`, `__tbl:`, `__idx:`, `ts:`,
 
 **Everything returns "unavailable"** — check whether the barrier is sealed
 (`qrdb barrier status`) and whether the node is healthy (`qrdb admin health`).
+
+**A guarded verb keeps answering `false`** — that is the guard doing its job,
+not a fault. For `put-if-absent` the key is already held; for the compare verbs
+the stored value is no longer the one you expected. Read the key to see who
+holds it and what it says now. Retrying unchanged will answer `false` forever.
+
+**A client says it has no guarded verbs** — `client.KV().(GuardedKVClient)`
+reporting false means the client is talking to a server that does not carry
+them, and a call made anyway returns a "capability unsupported" error rather
+than a wrong answer. Every transport carries them as of this release; a false
+here means the server is older than the client. Upgrade the server, or fall
+back to a transaction.

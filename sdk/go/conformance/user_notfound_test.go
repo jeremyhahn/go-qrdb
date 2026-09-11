@@ -32,7 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	mcptransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp"
 )
 
 // The user-not-found conformance matrix (go-qrdb#289).
@@ -420,7 +419,7 @@ func bootUserCell(t *testing.T, tk transportKind) userClients {
 		MinVersion:   tls.VersionTLS13,
 	}
 
-	sdkClient, err := sdk.NewClient(dialUser(t, tk, n, tlsCfg))
+	sdkClient, err := sdk.NewClient(tk.dial(t, n, tlsCfg))
 	if err != nil {
 		t.Fatalf("new SDK client: %v", err)
 	}
@@ -435,30 +434,6 @@ func bootUserCell(t *testing.T, tk transportKind) userClients {
 		roleID:     roleID,
 		realUserID: realUserID,
 	}
-}
-
-// dialUser builds the SDK transport for this cell. It defers to the guarded
-// matrix's dialer for the five transports that suite already covers, and
-// carries only the MCP case itself — MCP is reached over Streamable HTTP at
-// /mcp rather than through a bare host:port, so it does not fit that switch.
-func dialUser(t *testing.T, tk transportKind, n *node.Node, tlsCfg *tls.Config) transport.Transport {
-	t.Helper()
-	if tk != mcpTransport {
-		return tk.dial(t, n, tlsCfg)
-	}
-
-	addr := n.Server().MCPAddr()
-	if addr == "" {
-		t.Fatal("the node reports no MCP address; the listener did not bind")
-	}
-	tr, err := mcptransport.New(
-		transport.WithAddress("https://"+addr+"/mcp"),
-		transport.WithTLSConfig(tlsCfg),
-	)
-	if err != nil {
-		t.Fatalf("new mcp transport: %v", err)
-	}
-	return tr
 }
 
 // seedIdentityFixtures creates the role and the user the negative cases need,

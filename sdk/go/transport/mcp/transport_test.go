@@ -1519,7 +1519,23 @@ func TestConnect_NetworkInvalidAddress(t *testing.T) {
 	_ = tr.Close()
 }
 
-// CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
-func (*mockKVService) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
-	return false, nil
+// CompareAndSwap is the edit half of the guarded set (go-qrdb#56), and it
+// GUARDS rather than returning a constant.
+//
+// It was a `return false, nil` stub while no test drove the verb over this
+// transport. A stub that always declines is safe only for as long as nothing
+// asserts the true branch — the moment go-qrdb#127 gave MCP the verb, a stub
+// would have made "the swap was refused" indistinguishable from "the handler
+// never reached the service", which is the one distinction the guarded tests
+// exist to make. An absent key is left absent here, as it is in the real
+// store: a swap is not a create.
+func (m *mockKVService) CompareAndSwap(_ context.Context, key string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.store[key]
+	if !ok || !bytes.Equal(current, expected) {
+		return false, nil
+	}
+	m.store[key] = next
+	return true, nil
 }

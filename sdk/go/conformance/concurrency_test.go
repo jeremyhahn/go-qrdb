@@ -66,7 +66,7 @@ import (
 // gates every participant at the read point so the race is forced rather
 // than hoped for. That technique needs a seam INSIDE the code under test,
 // which is available there because the test owns the fake transaction
-// plane. It is not available here: this suite is black-box over five real
+// plane. It is not available here: this suite is black-box over six real
 // transports and a real server process, with no hook into
 // pkg/api/*/handlers_kv.go to hold a request mid-flight, and adding one
 // would be test-only production code for the sake of the test that finds
@@ -85,7 +85,7 @@ import (
 // ONE command and propose it ONCE), which is a property of that package, not
 // of the transport, and every cell of a given transport is served by the
 // same handler regardless of which engine or deployment mode answers it. So
-// contending on all ~35 matrix cells would spend CPU without widening what
+// contending on every matrix cell would spend CPU without widening what
 // could be caught. Standalone is chosen over raft for the same reason the
 // matrix avoids raft where it can: no leader election, and no risk of the
 // concurrent load itself starving a single-member group's apply loop and
